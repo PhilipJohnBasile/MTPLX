@@ -4,6 +4,135 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-07-06
+
+MTPLX v2: the coding-agent release. Session-cache v2 (RAM + SSD), the
+turbo profile with NAX verify kernels and compiled verify, a new verify
+attention kernel wave for long context, and a long campaign of
+OpenCode/agent-bridge fixes measured on real sessions.
+
+### Added
+
+- Session-cache v2: boundary-true GDN restores, O(1) RAM restores, SSD
+  cold tier (default on) that survives daemon restarts — a 100k-token
+  session restores in ~2s after a restart instead of a five-minute cold
+  prefill. Prompt-cache reuse now chains across agent tool rounds.
+- Turbo profile: verify-specialized quantized-matmul kernels
+  (`MTPLX_NAX_VERIFY`, vk_k/vk-q8 families) plus context-routed compiled
+  verify with a per-model quantization gate. Measured on M5 Max: 27B
+  Optimized-Speed 44.7 -> 58-60 tok/s chat lane; Optimized-Quality (q8)
+  31-36 -> 43-44 tok/s.
+- The quantized 27B flagships (Optimized-Speed, Optimized-Quality, and
+  the legacy Optimized hybrid) now default to the turbo profile on the
+  CLI and the bare OpenAI API — the same launch rule the macOS app
+  applies. Explicit `--profile` flags and wizard picks still win; other
+  models keep the sustained default.
+- `POST /admin/cache/clear` resets the MLX peak-memory counter after
+  dropping the session bank, so per-request `peak_memory_bytes` reports
+  the current phase instead of a process-lifetime ratchet (benchmark
+  harnesses that clear between context rows now chart honest per-row
+  peaks).
+- `--scheduler-mode ar_batch` now genuinely admits anonymous OpenAI
+  clients into the concurrency-adaptive batch lane (lone requests keep
+  solo MTP; real concurrency shares the batched AR decode lane), and
+  the batched lane samples on the GPU (decode-heavy batch-8 aggregate
+  70.9 -> 79.2 tok/s). Serial remains the default: measured end to end,
+  serialized solo-MTP still beats batched AR on prefill-heavy
+  concurrent loads because MTP decode is ~4x faster per stream.
+- Long-context decode wave: a packed-GQA verify attention kernel plus
+  commit-first KV donation in compiled verify. Measured on M5 Max
+  (Optimized-Speed): 64k decode +12%, 128k decode 17 -> 20+ tok/s, and
+  peak memory down 8 GB at 64k / 16 GB at 128k.
+- Startup warming without the wait: the daemon is ready in ~2s and the
+  deeper kernel/shape warmup continues silently in the background,
+  yielding instantly to real requests. First messages hit warm kernels
+  without a slow boot.
+- RAM session-cache budget now scales to the machine (roughly half the
+  RAM headroom above the model) instead of a flat cap, and the app's
+  Settings tab exposes explicit RAM and SSD cache limits.
+- Per-request presence/frequency penalties end-to-end (server, CLI
+  flags, dashboard slider, app dial), with MLX on-device penalty math.
+- App chat: markdown renders live during streaming at zero per-token
+  cost; each turn gets one compact activity strip with grouped tool
+  rounds and a sources footer for web results; turbo is a first-class
+  mode in Settings.
+- Tool contracts are date-anchored (web-search answers stop regressing
+  to the training cutoff) and post-search answers are no longer
+  clipped to one sentence.
+- Vision: images flow through the OpenAI API into MTP decode; MoE
+  multimodal checkpoints that store the tower under `model.visual.*`
+  (for example Ornith 1.0) are now recognised (community PR #134).
+- Gemma 4 assistant-pair models default to their measured-best MTP
+  depth; explicit `--depth` still wins.
+
+### Fixed
+
+- Fresh installs no longer crash at model load: transformers 5.13.0
+  broke mlx-lm's import (`AutoTokenizer.register` string key), which
+  killed every new install and DMG first run. mtplx now pins
+  `transformers<5.13` (#135, #136, community PR #137).
+- The app no longer kills a healthy engine. The health watchdog
+  treated a response it could not parse the same as a dead server and
+  terminated the daemon mid-session — the main driver of "Stream
+  offline" / "server dies mid-session during agent workloads" reports
+  (#105). Liveness is now transport truth: if the daemon answers, it
+  lives.
+- SSD session-cache restores are boundary-true for recurrent (GDN)
+  layers, fixing corrupted agent output after a prefix restore (prompt
+  recitation, phantom tool calls, argument leakage) (#130).
+- Vision + MTP: the draft head's committed history now consumes the
+  spliced vision rows instead of image-pad embeddings, fixing
+  fabricated visual differences between similar screenshots (#103).
+- Smart fan control ramps at request arrival, verifies actual RPM, and
+  holds through the post-response cache work instead of dropping to
+  auto while the GPU is still pinned (#127).
+- The app no longer rewrites the Hermes profile config on every
+  launch; user sections (memory/providers/delegation/auxiliary) are
+  merge-preserved (#131).
+- Served model identity is contract-match-only: third-party builds no
+  longer get coerced onto official `mtplx-*` model ids (#57).
+- OpenCode plan -> build mode switch no longer breaks the prompt cache
+  or hides file tools. The bridge misread OpenCode's build-mode
+  reminder ("no longer in read-only mode") as a read-only instruction,
+  hid write/edit exactly when the user said "execute the plan", and the
+  model spiralled re-planning files it could not create. OpenCode
+  toolsets now pass through byte-stable; the negation is parsed
+  correctly for other clients.
+- Agent transcripts render prefix-stable across rounds (historical
+  bytes never rewrite), force-answer and Pi-convergence contracts ride
+  as pure suffixes, and warm prefills inherit recurrent boundaries —
+  together these take mid-session tool rounds from multi-second cold
+  re-prefills to sub-2s warm restores.
+- One busy OpenCode conversation no longer evicts every other project
+  from the RAM session cache (prefix-superseded entries + a wider
+  high-memory entry budget); multitasking across projects keeps each
+  project's cache warm.
+- `mtplx start`'s live-dashboard handoff no longer crashes on an
+  ImportError (community PR #133).
+- The batch scheduler no longer accumulates every finished request
+  forever (community PR #132).
+- Prefill disconnect-cancel: closing an agent client mid-prefill frees
+  the engine immediately instead of finishing a 48k-token orphan.
+- CJK and dead-key input no longer drops composed characters in the
+  app's chat composer (community PR #119).
+- Dense-layout prefill chunk cache-cleanup cadence relaxed 1 -> 4:
+  5-21% prefill TPS, memory byte-identical.
+
+### Changed
+
+- Bumped to 2.0.0. The default OpenCode/agent daemon profile is turbo
+  with the compiled-verify per-model gate; q8 Quality stays on the
+  eager verify path it measures best on.
+- Removed the vestigial "required MLX fork" metadata from all profiles.
+  MTPLX runs on stock PyPI MLX and always has in the shipped product;
+  the speed stack (NAX verify kernels, packed-GQA verify attention,
+  compiled verify) ships as in-package Metal kernels, not a patched
+  MLX/qmm build. Profile payloads no longer carry
+  `required_mlx_fork_commit`/`required_mlx_fork_fragment`, `/health`
+  now reports a plain `mlx_runtime` diagnostic instead of a fork
+  expectation, and `--strict-fast-path` /
+  `--strict-mlx-fork-assert` are accepted as deprecated no-ops.
+
 ## [1.0.4] - 2026-06-12
 
 Same-day hotfix: 1.0.3 broke coding agents on their first tool turn,

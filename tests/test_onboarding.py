@@ -997,7 +997,7 @@ def test_quickstart_applies_saved_tuned_depth(monkeypatch):
     args = argparse.Namespace(depth=3, _explicit_depth=False, cache_dir=None)
     monkeypatch.setattr(public, "_apple_hardware_context", lambda: {"chip": "Apple M5"})
     monkeypatch.setattr(public, "_software_context", lambda: {"mtplx_version": "test", "mlx_version": "test"})
-    monkeypatch.setattr(public, "_mlx_backend_context", lambda _profile: {"stock_mlx_likely": True})
+    monkeypatch.setattr(public, "_mlx_backend_context", lambda: {"stock_mlx_likely": True})
     monkeypatch.setattr(public, "_tune_state_key", lambda *_args, **_kwargs: ("key", {}))
     monkeypatch.setattr(
         public,
@@ -1036,7 +1036,7 @@ def test_quickstart_tuning_prompt_can_save_and_apply(monkeypatch):
     )
     monkeypatch.setattr(public, "_apple_hardware_context", lambda: {"chip": "Apple M5"})
     monkeypatch.setattr(public, "_software_context", lambda: {"mtplx_version": "test", "mlx_version": "test"})
-    monkeypatch.setattr(public, "_mlx_backend_context", lambda _profile: {"stock_mlx_likely": True})
+    monkeypatch.setattr(public, "_mlx_backend_context", lambda: {"stock_mlx_likely": True})
     monkeypatch.setattr(public, "_tune_state_key", lambda *_args, **_kwargs: ("key", {}))
     monkeypatch.setattr("mtplx.ui.onboarding.screen_tuning_offer", lambda: True)
     calls = []

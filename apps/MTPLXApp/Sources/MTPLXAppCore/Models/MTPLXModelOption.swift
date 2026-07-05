@@ -13,8 +13,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     /// by `ModelFeasibility` for disk-space pre-flight (it multiplies
     /// by 2.5 to mirror the daemon's `required_download_free_bytes`).
     /// Measured from real on-disk symlink-resolved sizes (Speed) or HF
-    /// staging manifests (Quality); FP16 estimated from the runtime
-    /// note that FP16 keeps INT4 packs and only downcasts BF16 floats.
+    /// staging manifests (Quality); FP16 is the exact sum of the
+    /// published HF repo files (2026-07-03 audit — FP16 keeps INT4
+    /// packs and only downcasts BF16 floats, so it tracks its sibling).
     public var sizeBytes: Int64
     /// Approximate runtime peak unified-memory cost in GiB at the
     /// daemon's default `sustained` profile and a 16k context.
@@ -344,7 +345,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen3.5 9B Optimized Speed FP16",
                 "Qwen 3.5 9B Speed FP16",
             ],
-            sizeBytes: 7_783_300_114,
+            sizeBytes: 7_783_301_179,
             peakMemoryGiB: 10.5,
             recommendedFor: [.legacyApple]
         ),
@@ -384,7 +385,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen3.6 27B Optimized Speed FP16",
                 "Optimized Speed FP16",
             ],
-            sizeBytes: 17_179_869_184,
+            sizeBytes: 16_419_644_370,
             peakMemoryGiB: 17.5,
             recommendedFor: [.legacyApple]
         ),
@@ -427,7 +428,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen3.6 35B-A3B Optimized Speed FP16",
                 "Qwen3.6 35B Speed FP16",
             ],
-            sizeBytes: 21_016_117_499,
+            sizeBytes: 21_016_116_512,
             peakMemoryGiB: 28.5,
             recommendedFor: [.legacyApple]
         ),
@@ -465,7 +466,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen3.6 35B-A3B Optimized Balance FP16",
                 "Qwen3.6 35B Balance FP16",
             ],
-            sizeBytes: 29_672_250_227,
+            sizeBytes: 29_672_249_552,
             peakMemoryGiB: 32.5,
             recommendedFor: [.legacyApple]
         ),

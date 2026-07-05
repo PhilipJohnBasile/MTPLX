@@ -222,6 +222,38 @@ def _install_split_attention_hook(attn: Any) -> bool:
             and 0 < int(queries.shape[2]) <= sdpa_2pass_max_q
             and can_slice_mask
         )
+        # Packed-row GQA verify kernel (speed-war Lane A, 2026-07-05): the
+        # decode-verify q=2..4 window over a long dense KV. Uses the cache's
+        # full capacity buffers + offset, so it works identically on the
+        # eager stock KVCache (python offset) and inside the compiled verify
+        # graph (TensorOffsetKVCache array offset). Threshold checks the
+        # STATIC buffer capacity because the offset may be a traced array.
+        gqa_packed_enabled = bool(
+            getattr(self, "_mtplx_gqa_packed_sdpa_enabled", False)
+        )
+        gqa_packed_threshold = int(
+            getattr(self, "_mtplx_gqa_packed_sdpa_threshold", 8192)
+        )
+        should_use_gqa_packed = (
+            gqa_packed_enabled
+            and cache is not None
+            and not blockwise_enabled
+            and not vllm_metal_paged_enabled
+            and 2 <= int(queries.shape[2]) <= 4
+            and can_slice_mask
+            and getattr(cache, "keys", None) is not None
+            and getattr(cache, "values", None) is not None
+            and int(cache.keys.shape[2]) >= gqa_packed_threshold
+        )
+        if should_use_gqa_packed and isinstance(mask, mx.array):
+            # Only the capacity-wide tail-causal bool mask our cache
+            # adapters emit is equivalent to the kernel's built-in
+            # semantics; anything else falls back to stock.
+            should_use_gqa_packed = (
+                mask.dtype == mx.bool_
+                and int(mask.shape[-2]) == int(queries.shape[2])
+                and int(mask.shape[-1]) == int(cache.keys.shape[2])
+            )
         should_use_vllm_metal_paged = (
             vllm_metal_paged_enabled
             and cache is not None
@@ -262,6 +294,52 @@ def _install_split_attention_hook(attn: Any) -> bool:
                         "cache.state fallback after the partition threshold"
                     )
                 keys, values = cache.state
+                output = scaled_dot_product_attention(
+                    queries,
+                    keys,
+                    values,
+                    cache=cache,
+                    scale=self.scale,
+                    mask=mask,
+                )
+        elif should_use_gqa_packed:
+            from .kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
+
+            output = sdpa_gqa_packed_tail(
+                queries=queries,
+                keys=cache.keys,
+                values=cache.values,
+                offset=cache.offset,
+                scale=self.scale,
+            )
+            if output is not None:
+                self._mtplx_gqa_packed_sdpa_calls = (
+                    int(getattr(self, "_mtplx_gqa_packed_sdpa_calls", 0)) + 1
+                )
+                if _env_enabled("MTPLX_GQA_PACKED_SDPA_TRACE") and (
+                    self._mtplx_gqa_packed_sdpa_calls <= 2
+                ):
+                    import sys as _sys
+
+                    print(
+                        "mtplx_gqa_packed_route engaged "
+                        f"layer={getattr(self, '_mtplx_full_attention_index', -1)} "
+                        f"q_len={int(queries.shape[2])} "
+                        f"capacity={int(cache.keys.shape[2])}",
+                        file=_sys.stderr,
+                        flush=True,
+                    )
+            else:
+                if _env_enabled("MTPLX_GQA_PACKED_SDPA_TRACE"):
+                    import sys as _sys
+
+                    print(
+                        "mtplx_gqa_packed_route bailed_to_fused "
+                        f"layer={getattr(self, '_mtplx_full_attention_index', -1)} "
+                        f"q_len={int(queries.shape[2])}",
+                        file=_sys.stderr,
+                        flush=True,
+                    )
                 output = scaled_dot_product_attention(
                     queries,
                     keys,
@@ -354,9 +432,13 @@ def configure_split_full_attention(
     blockwise = _env_enabled("MTPLX_BLOCKWISE_ATTN", default=False)
     sdpa_2pass = _env_enabled("MTPLX_SDPA_2PASS", default=False)
     vllm_metal_paged = _env_enabled("MTPLX_VLLM_METAL_PAGED_ATTN", default=False)
+    gqa_packed = _env_enabled("MTPLX_GQA_PACKED_SDPA", default=False)
     blockwise_threshold = int(os.environ.get("MTPLX_BLOCKWISE_ATTN_THRESHOLD", "1024"))
     sdpa_2pass_threshold = int(os.environ.get("MTPLX_SDPA_2PASS_THRESHOLD", "1024"))
     sdpa_2pass_max_q = int(os.environ.get("MTPLX_SDPA_2PASS_MAX_Q", "16"))
+    gqa_packed_threshold = int(
+        os.environ.get("MTPLX_GQA_PACKED_SDPA_THRESHOLD", "8192")
+    )
     exact_gather_last_n = int(
         os.environ.get("MTPLX_VLLM_METAL_PAGED_ATTN_EXACT_GATHER_LAST_N", "0")
         or "0"
@@ -372,7 +454,7 @@ def configure_split_full_attention(
         chunk_defaulted = True
     min_prefix = int(threshold if threshold is not None else os.environ.get("MTPLX_SPLIT_FULL_ATTN_THRESHOLD", "1024"))
     stats = {
-        "enabled": bool(active or sdpa_2pass or vllm_metal_paged),
+        "enabled": bool(active or sdpa_2pass or vllm_metal_paged or gqa_packed),
         "split_full_attn_enabled": bool(active),
         "split_full_attn_chunk_size": int(chunk),
         "split_full_attn_chunk_size_was_explicit": bool(chunk_was_explicit),
@@ -383,6 +465,8 @@ def configure_split_full_attention(
         "sdpa_2pass_enabled": bool(sdpa_2pass),
         "sdpa_2pass_threshold": int(sdpa_2pass_threshold),
         "sdpa_2pass_max_q": int(sdpa_2pass_max_q),
+        "gqa_packed_sdpa_enabled": bool(gqa_packed),
+        "gqa_packed_sdpa_threshold": int(gqa_packed_threshold),
         "vllm_metal_paged_enabled": bool(vllm_metal_paged),
         "vllm_metal_exact_gather_last_n": int(exact_gather_last_n),
         "vllm_metal_exact_gather_indices": sorted(exact_gather_indices),
@@ -407,7 +491,7 @@ def configure_split_full_attention(
         )
         stats["installed"] += int(_install_split_attention_hook(attn))
         attn._mtplx_split_full_attention_enabled = bool(
-            active or sdpa_2pass or vllm_metal_paged
+            active or sdpa_2pass or vllm_metal_paged or gqa_packed
         )
         attn._mtplx_split_full_attention_explicit_enabled = bool(active)
         attn._mtplx_blockwise_full_attention_enabled = bool(blockwise)
@@ -415,6 +499,9 @@ def configure_split_full_attention(
         attn._mtplx_sdpa_2pass_enabled = bool(sdpa_2pass)
         attn._mtplx_sdpa_2pass_threshold = int(sdpa_2pass_threshold)
         attn._mtplx_sdpa_2pass_max_q = int(sdpa_2pass_max_q)
+        attn._mtplx_gqa_packed_sdpa_enabled = bool(gqa_packed)
+        attn._mtplx_gqa_packed_sdpa_threshold = int(gqa_packed_threshold)
+        attn._mtplx_gqa_packed_sdpa_calls = 0
         attn._mtplx_vllm_metal_paged_enabled = bool(vllm_metal_paged)
         attn._mtplx_vllm_metal_exact_gather_layer = exact_gather_layer
         attn._mtplx_full_attention_index = int(full_idx)

@@ -372,6 +372,11 @@ def load(
 
     configure_split_full_attention(model)
     configure_native_mlp(model)
+    from .nax_verify import install_nax_qlinear_patch, nax_env_enabled
+
+    if nax_env_enabled():
+        nax_report = install_nax_qlinear_patch()
+        logger.info("[nax-verify] %s", nax_report)
     adapter_path = Path(mtp_adapter) if mtp_adapter is not None else None
     adapter_metadata = None
     adapter_merge_report = None

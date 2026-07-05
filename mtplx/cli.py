@@ -241,7 +241,7 @@ On later runs it offers "same as last time?" so the chat is one keypress away.
 
 What gets asked:
   1. Model — your configured model, the verified default, custom HF, or local
-  2. Mode  — Sustained, Sustained Max, or Burst (Stable remains available via --profile safe)
+  2. Mode  — Sustained, Turbo, Sustained Max, or Burst (Stable remains available via --profile safe)
   3. Where — Web UI (default), terminal CLI, Pi, OpenCode Desktop, Swival, or Hermes
 
 Power-user shortcuts (any of these skip the onboarding wizard):
@@ -628,8 +628,12 @@ def _add_batching_args(parser: argparse.ArgumentParser) -> None:
         choices=SCHEDULER_MODE_CHOICES,
         default="serial",
         help=(
-            "Server scheduler mode. Default serial preserves the single-user "
-            "MTP oracle; cooperative/ar_batch are opt-in concurrent foundations."
+            "Server scheduler mode. Default serial keeps every request on "
+            "the solo MTP oracle (measured 2026-07-05: serialized MTP beats "
+            "the batched-AR lane end to end on prefill-heavy concurrent "
+            "loads because MTP decode is ~4x faster per stream); ar_batch "
+            "opts concurrent requests into the batched AR decode lane, "
+            "which wins on decode-heavy many-client loads."
         ),
     )
     parser.add_argument(
@@ -653,8 +657,12 @@ def _add_ssd_session_cache_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ssd-session-cache",
         choices=["off", "on", "write-only"],
-        default="off",
-        help="Persistent SessionBank SSD cold tier. Raw server defaults off.",
+        default="on",
+        help=(
+            "Persistent SessionBank SSD cold tier (default on; kvcache-v2). "
+            "Budgeted by min(configured cap, free_disk/4), disabled below "
+            "10 GiB free."
+        ),
     )
     parser.add_argument(
         "--ssd-session-cache-dir",
@@ -1255,7 +1263,6 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
         "draft_lm_head": draft_lm_head,
         "draft_sampler": draft_sampler,
         "enable_thinking": False,
-        "expected_mlx_qmv_fork_commit": profile.required_mlx_fork_commit,
         "strict_preflight": bool(args.strict),
         "preflight": preflight,
     }
@@ -1915,7 +1922,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         type=_profile_arg, metavar=_PROFILE_METAVAR,
         default=DEFAULT_PROFILE_NAME,
-        help="Runtime profile; start defaults to Sustained. Use --profile performance-cold --max for Burst.",
+        help="Runtime profile; start defaults to Sustained. Use --profile turbo for the verify-kernel fast path (4/8-bit affine), or --profile performance-cold --max for Burst.",
     )
     start_flow_p.add_argument("--download", action="store_true", help="Download the selected/default model if it is missing")
     start_flow_p.add_argument("--yes", action="store_true", help="Use defaults without interactive model prompts")
@@ -1959,7 +1966,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_flow_p.add_argument(
         "--strict-fast-path",
         action="store_true",
-        help="Fail Open WebUI startup if the optional fast MLX fork is not active",
+        help="Deprecated, no effect: MTPLX runs on stock PyPI MLX; no fork is required.",
     )
     _add_fan_mode_args(
         start_flow_p,
@@ -2170,7 +2177,7 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_server_p.add_argument(
         "--strict-fast-path",
         action="store_true",
-        help="Fail startup if performance-cold needs the optional fast MLX fork and it is not active.",
+        help="Deprecated, no effect: MTPLX runs on stock PyPI MLX; no fork is required.",
     )
     quickstart_server_p.set_defaults(func=cmd_serve_public)
 
@@ -2653,7 +2660,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument(
         "--strict-fast-path",
         action="store_true",
-        help="Fail startup if performance-cold needs the optional fast MLX fork and it is not active.",
+        help="Deprecated, no effect: MTPLX runs on stock PyPI MLX; no fork is required.",
     )
     serve_p.set_defaults(func=cmd_serve_public)
 

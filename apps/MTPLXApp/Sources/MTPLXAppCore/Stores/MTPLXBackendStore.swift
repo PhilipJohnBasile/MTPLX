@@ -1206,6 +1206,10 @@ public final class MTPLXBackendStore: ObservableObject {
             await refreshPrefillHistory()
             await refreshModels()
             await refreshLogs()
+        } catch is DecodingError {
+            // The daemon answered; only the app-side schema mapping failed.
+            // Never treat a decode bug as a dead daemon (2026-07-06 reap).
+            throw MTPLXAPIClientError.invalidResponse
         } catch {
             markDaemonUnreachableIfNeeded(
                 reason: "MTPLX lost contact with the model server. Start it again."
@@ -1217,6 +1221,8 @@ public final class MTPLXBackendStore: ObservableObject {
     public func refreshSnapshot() async throws {
         do {
             apply(snapshot: try await apiClient.snapshot())
+        } catch is DecodingError {
+            throw MTPLXAPIClientError.invalidResponse
         } catch {
             markDaemonUnreachableIfNeeded(
                 reason: "MTPLX lost contact with live metrics. Start it again."
@@ -1713,6 +1719,7 @@ public final class MTPLXBackendStore: ObservableObject {
         healthWatchTask = Task { @MainActor [weak self] in
             defer { probeClient.session.finishTasksAndInvalidate() }
             var consecutiveMisses = 0
+            var loggedUndecodable = false
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, !Task.isCancelled else { return }
@@ -1720,13 +1727,36 @@ public final class MTPLXBackendStore: ObservableObject {
                     consecutiveMisses = 0
                     continue
                 }
-                if let health = await probeClient.healthWithinDeadline(
+                switch await probeClient.livenessWithinDeadline(
                     seconds: Self.watchdogProbeDeadlineSeconds
-                ), health.ok {
+                ) {
+                case .healthy(let health) where health.ok:
                     consecutiveMisses = 0
                     self.health = health
                     self.currentFanMode = self.verifiedFanMode(from: health)
                     continue
+                case .healthy:
+                    // Answered but self-reported not-ok: treat as a miss so a
+                    // daemon stuck unhealthy still gets reaped eventually.
+                    break
+                case .aliveUndecodable(let detail):
+                    // The daemon answered 2xx — it is alive. A payload the
+                    // app cannot decode is an app-schema bug, never grounds
+                    // to kill a serving process (2026-07-06: the watchdog
+                    // reaped a healthy daemon 95 s after an OpenCode run
+                    // because one /health field stopped matching Codable).
+                    consecutiveMisses = 0
+                    if !loggedUndecodable {
+                        loggedUndecodable = true
+                        let excerpt = String(detail.prefix(300))
+                        await self.supervisor.logs.append(
+                            "health payload undecodable; daemon is alive, watchdog standing down on schema (\(excerpt))",
+                            stream: .system
+                        )
+                    }
+                    continue
+                case .unreachable:
+                    break
                 }
                 consecutiveMisses += 1
                 guard consecutiveMisses >= 2 else { continue }

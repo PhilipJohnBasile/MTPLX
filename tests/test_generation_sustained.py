@@ -343,14 +343,17 @@ def test_auto_sustained_prefill_policy_keeps_dense_decode_through_128k(monkeypat
     monkeypatch.setenv("MTPLX_CURRENT_PREFILL_CONTEXT_TOKENS", "65536")
     assert _sustained_prefill_layout() == "contiguous_dense_decode"
     assert _prefill_chunk_size() == 2048
-    assert _prefill_chunk_cache_cleanup_every() == 1
+    # Dense-layout cleanup cadence: every 4 chunks (2026-07-05 A/B — the
+    # per-chunk synchronize+clear_cache cost 5-21% prefill throughput with
+    # byte-identical peak memory; receipts in MEASUREMENTS).
+    assert _prefill_chunk_cache_cleanup_every() == 4
     assert _defer_verify_hidden_eval_enabled() is True
     assert _clear_cache_every() == 256
 
     monkeypatch.setenv("MTPLX_CURRENT_PREFILL_CONTEXT_TOKENS", "131072")
     assert _sustained_prefill_layout() == "contiguous_dense_decode"
     assert _prefill_chunk_size() == 2048
-    assert _prefill_chunk_cache_cleanup_every() == 1
+    assert _prefill_chunk_cache_cleanup_every() == 4
     assert _defer_verify_hidden_eval_enabled() is True
     assert _clear_cache_every() == 256
 
@@ -662,6 +665,9 @@ def test_sustained_prefill_chunks_without_full_prompt_logits(monkeypatch):
 
 
 def test_warm_restored_suffix_prefill_is_chunked_and_typed_for_abort(monkeypatch):
+    # kvcache-v2: suffixes <= MTPLX_SMALL_SUFFIX_FUSED_MAX fuse into one
+    # forward; this test guards the chunked lane used above that threshold.
+    monkeypatch.setenv("MTPLX_SMALL_SUFFIX_FUSED_MAX", "0")
     monkeypatch.setenv("MTPLX_SUSTAINED_PREFILL", "1")
     monkeypatch.setenv("MTPLX_PREFILL_CHUNK_SIZE", "2")
     monkeypatch.setenv("MTPLX_TARGET_EMIT_FULL_PREFILL_LOGITS", "0")
@@ -826,9 +832,11 @@ def test_restore_prefers_larger_near_gap_over_shorter_exact_prefix(monkeypatch):
     assert bank.prefix_restore_calls == [(7, "clone")]
     assert near_entry.hits == 1
     chunk_events = [event for event in prefill_events if event["phase"] == "chunk"]
-    assert [event["tokens_done"] for event in chunk_events] == [7, 8, 9]
-    assert [event["cached_tokens"] for event in chunk_events] == [7, 7, 7]
-    assert [event["new_prefill_tokens"] for event in chunk_events] == [2, 2, 2]
+    # kvcache-v2 fused small-suffix prefill emits one progress event for the
+    # whole (tiny) suffix instead of per-chunk events.
+    assert [event["tokens_done"] for event in chunk_events] == [7, 9]
+    assert [event["cached_tokens"] for event in chunk_events] == [7, 7]
+    assert [event["new_prefill_tokens"] for event in chunk_events] == [2, 2]
 
 
 def test_opencode_compact_restore_prefers_block_prefix_over_short_exact(monkeypatch):
@@ -939,7 +947,10 @@ def test_opencode_compact_restore_prefers_block_prefix_over_short_exact(monkeypa
     assert bank.near_allow_block == [True]
     assert bank.prefix_restore_calls == [(8, "clone")]
     assert block_entry.hits == 1
-    assert appended == [[8], [9, 10], [11]]
+    # kvcache-v2 fused small-suffix prefill appends the post-first-token
+    # history rows in one call instead of body/final chunks — same rows, same
+    # hidden positions, one eval barrier.
+    assert appended == [[8], [9, 10, 11]]
 
 
 def test_ssd_near_prefix_restore_time_is_cache_time_not_decode_time(monkeypatch):

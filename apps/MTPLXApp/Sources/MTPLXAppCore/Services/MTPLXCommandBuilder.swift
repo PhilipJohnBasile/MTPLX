@@ -651,7 +651,13 @@ struct ResolvedDaemonArgs {
             ? preset.batchingPreset
             : schedulingDefaults.batchingPreset
 
-        profile = preset.profile ?? configuration.profile
+        // "auto" = the recommended profile for the selected model (the
+        // per-model preset; turbo for the 27Bs). An explicit user pick
+        // always wins over the preset — the Settings picker must never
+        // lie (2026-07-03 turbo release).
+        profile = configuration.profile == "auto"
+            ? (preset.profile ?? MTPLXAppConfiguration.launchableProfile(configuration.profile))
+            : configuration.profile
 
         maxActiveRequests = targetOwnsScheduling
             ? preset.maxActiveRequests
@@ -949,6 +955,8 @@ private enum SchedulingOverridePreset: String {
 
 private enum ModelLaunchFamily {
     case qwen36_35BOptimizedSpeed
+    case qwen36_27BOptimizedSpeed
+    case qwen36_27BOptimizedQuality
     case gemma4
     case step
     case qwenDefault
@@ -965,6 +973,20 @@ private enum ModelLaunchFamily {
             || normalized.contains("mtplx-qwen36-35b-a3b-optimized-speed")
         {
             return .qwen36_35BOptimizedSpeed
+        }
+        // 27B Optimized-Speed only: the 4-bit affine model the turbo
+        // verify kernels are promoted for. Optimized-Quality (8-bit)
+        // must keep sustained — NAX has no 8-bit kernel and compiled
+        // verify measured a regression there (2026-07-02 matrix).
+        if normalized.contains("qwen3.6-27b-mtplx-optimized-speed")
+            || normalized.contains("qwen36-27b-optimized-speed")
+        {
+            return .qwen36_27BOptimizedSpeed
+        }
+        if normalized.contains("qwen3.6-27b-mtplx-optimized-quality")
+            || normalized.contains("qwen36-27b-optimized-quality")
+        {
+            return .qwen36_27BOptimizedQuality
         }
         if normalized.contains("step3.7")
             || normalized.contains("step-3.7")
@@ -987,6 +1009,17 @@ private enum ModelLaunchFamily {
             return .gemma4
         }
         return .qwenDefault
+    }
+
+    /// A "-FP16" precision sibling of a base artifact — the variant the
+    /// legacy (M1/M2) tier routes to. Same INT4 packs; BF16 floats
+    /// downcast to FP16.
+    static func isFP16PrecisionVariant(_ model: String) -> Bool {
+        let normalized = model
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        return normalized.contains("-fp16")
     }
 }
 
@@ -1030,8 +1063,8 @@ private struct TargetPreset {
     var environment: [String: String] = [:]
 
     private static let highMemoryThresholdBytes: UInt64 = 96 * 1024 * 1024 * 1024
-    private static let defaultOpenCodeSessionBankMaxEntries = "4"
-    private static let highMemoryOpenCodeSessionBankMaxEntries = "16"
+    private static let defaultOpenCodeSessionBankMaxEntries = "6"
+    private static let highMemoryOpenCodeSessionBankMaxEntries = "32"
 
     private static func physicalMemoryBytes(
         processEnvironment: [String: String]
@@ -1071,13 +1104,13 @@ private struct TargetPreset {
             "MTPLX_TOOL_PROMPT_MODE": "hybrid",
             "MTPLX_CHAT_TEMPLATE_PROFILE": "local_qwen36",
         ]
-        if highMemory {
-            environment["MTPLX_SESSION_BANK_MAX_BYTES"] = "24G"
-            environment["MTPLX_SESSION_BANK_PER_SESSION_BYTES"] = "16G"
-        } else {
-            environment["MTPLX_SESSION_BANK_MAX_BYTES"] = "8G"
-            environment["MTPLX_SESSION_BANK_PER_SESSION_BYTES"] = "4G"
-        }
+        // "auto": the engine budgets half of the RAM left after the model
+        // weights (floor 1 GiB, cap 48 GiB). Replaces the flat 24G/8G tier
+        // that ignored the loaded model's size — safe on 32 GB Macs, roomy
+        // on 128 GB ones. Explicit user limits from Settings override this
+        // after the base environment merge.
+        environment["MTPLX_SESSION_BANK_MAX_BYTES"] = "auto"
+        environment["MTPLX_SESSION_BANK_PER_SESSION_BYTES"] = "auto"
         return environment
     }
 
@@ -1088,6 +1121,12 @@ private struct TargetPreset {
         switch ModelLaunchFamily.detect(model) {
         case .qwen36_35BOptimizedSpeed:
             return applyingQwen36_35BOptimizedSpeedDefaults()
+        case .qwen36_27BOptimizedSpeed:
+            return applyingQwen36_27BOptimizedSpeedDefaults(
+                fp16Variant: ModelLaunchFamily.isFP16PrecisionVariant(model)
+            )
+        case .qwen36_27BOptimizedQuality:
+            return applyingQwen36_27BOptimizedQualityDefaults()
         case .qwenDefault:
             return self
         case .gemma4:
@@ -1095,6 +1134,46 @@ private struct TargetPreset {
         case .step:
             return applyingStepDefaults(processEnvironment: processEnvironment)
         }
+    }
+
+    private func applyingQwen36_27BOptimizedSpeedDefaults(fp16Variant: Bool) -> TargetPreset {
+        var preset = self
+        // Turbo = sustained plus the clean-room NAX verify kernels
+        // (engine TURBO_PROFILE carries the env). Chat lane measured
+        // 2026-07-02: 44.7 -> 58-60 tok/s on the app launch flags.
+        // The FP16 sibling (what the M1/M2 tier routes to) stays
+        // sustained: turbo's numerics corpus and chat-lane wins were
+        // measured on the BF16-float artifact on M5 only. Promote
+        // per-artifact after measurement — the same discipline that
+        // later admitted Quality q8.
+        preset.profile = fp16Variant ? "sustained" : "turbo"
+        preset.applyQwen36ThinkingSampler()
+        return preset
+    }
+
+    private func applyingQwen36_27BOptimizedQualityDefaults() -> TargetPreset {
+        var preset = self
+        // 8-bit Quality also gets turbo: the q8 verify_kernels branch is
+        // ULP-exact and measured +22-40% on the chat lane 2026-07-03
+        // (31-36 -> 43-44 tok/s; verify 81-93 -> 61-64 ms/call). The old
+        // "Quality stays sustained" ruling was about compiled verify
+        // (-15/-18%), which turbo does not use.
+        preset.profile = "turbo"
+        preset.applyQwen36ThinkingSampler()
+        return preset
+    }
+
+    // Qwen3.6 thinking-mode recommended sampling (0.6/0.95/20) — the
+    // same triple the 35B and Step presets already pin. The 27B models
+    // had no launch family until 2026-07-02 and silently fell through
+    // to the CLI default of 1.0.
+    private mutating func applyQwen36ThinkingSampler() {
+        temperature = 0.6
+        topP = 0.95
+        topK = 20
+        draftTemperature = 0.6
+        draftTopP = 0.95
+        draftTopK = 20
     }
 
     private func applyingQwen36_35BOptimizedSpeedDefaults() -> TargetPreset {
@@ -1117,7 +1196,13 @@ private struct TargetPreset {
         // Gemma assistant bundles have their own runtime contract. Benchmark's
         // Qwen burst profile must not leak into that path.
         preset.profile = nil
-        preset.depth = 6
+        // Assistant-pair acceptance collapses by draft position
+        // ([68.5, 45, 31, 21, 16]% measured 2026-07-03), making blocks
+        // past 2 EV-negative: depth 6 decoded 23-24.5 tok/s in-app vs
+        // 30.9 at depth 2 (+27%). Matches the engine's default cap; a
+        // measured per-model tune still overrides via
+        // resolvedDraftControlValue.
+        preset.depth = 2
         preset.temperature = 1.0
         preset.topP = 0.95
         preset.topK = 64
