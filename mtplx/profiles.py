@@ -52,6 +52,7 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
 DEFAULT_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
 DEFAULT_FP16_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-FP16"
 QUALITY_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality"
+QUALITY_FP16_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16"
 LEGACY_OPTIMIZED_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized"
 QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID = (
     "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"
@@ -94,6 +95,7 @@ DEFAULT_MODEL_ID = DEFAULT_HF_MODEL_ID
 DEFAULT_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed"
 DEFAULT_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed-fp16"
 QUALITY_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality"
+QUALITY_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality-fp16"
 LEGACY_OPTIMIZED_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized"
 
 

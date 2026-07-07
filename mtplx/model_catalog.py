@@ -222,6 +222,22 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "Optimized Quality",
         ),
     ),
+    CatalogModel(
+        id="optimized-quality-fp16",
+        display_name="Qwen 3.6 27B Optimized Quality FP16",
+        detail="FP16 quality artifact recommended for M1 and M2 Macs.",
+        hf_model_id="Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+        # Exact byte sum of the published HF repo files (2026-07-07 upload,
+        # verified via the tree API).
+        size_bytes=30_017_528_922,
+        peak_memory_gib=28.12,
+        recommended_tiers=frozenset({LEGACY_TIER}),
+        aliases=(
+            "mtplx-qwen36-27b-optimized-quality-fp16",
+            "Qwen3.6 27B Optimized Quality FP16",
+            "Optimized Quality FP16",
+        ),
+    ),
 )
 
 # Mirrors `modernTopRecommendationIDs` in MTPLXModelOption.swift: the
@@ -296,11 +312,13 @@ def recommended_catalog_ids(
         speed27 = "optimized-speed-fp16"
         speed35 = "qwen36-35b-a3b-optimized-speed-fp16"
         balance35 = "qwen36-35b-a3b-optimized-balance-fp16"
+        quality27 = "optimized-quality-fp16"
     else:
         small = "qwen35-9b-optimized-speed"
         speed27 = "optimized-speed"
         speed35 = "qwen36-35b-a3b-optimized-speed"
         balance35 = "qwen36-35b-a3b-optimized-balance"
+        quality27 = "optimized-quality"
     if memory_gib is None or memory_gib <= 0:
         return list(_MODERN_TOP_RECOMMENDATION_IDS)
     if memory_gib < 32:
@@ -311,11 +329,11 @@ def recommended_catalog_ids(
             speed27,
             "gemma4-optimized-speed",
             speed35,
-            "optimized-quality",
+            quality27,
         ]
     return [
         speed27,
-        "optimized-quality",
+        quality27,
         speed35,
         balance35,
         "gemma4-optimized-speed",

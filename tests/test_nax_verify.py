@@ -154,3 +154,69 @@ def test_m6_kernel_matches_stock_within_tolerance() -> None:
         assert diff < 0.25, f"m6 kernel drift too large at M={m}: {diff}"
     assert not m6_ksplit_eligible(4, K, N, 4, 64, mx.bfloat16)
     assert not m6_ksplit_eligible(7, K, N, 4, 64, mx.bfloat16)
+
+
+def test_vk_6bit_hexpack_ksplit_matches_stock() -> None:
+    """The 9B-tier 6-bit lane (2026-07-07): MLX packs 6-bit values
+    bit-contiguously little-endian; the hexpack kernels must agree with
+    stock quantized_matmul within the accumulation-order ULP band."""
+    from mtplx.verify_kernels import (
+        vk_eligible_ksplit,
+        vk_qmm_m4_ksplit,
+        vk_qmm_m6_ksplit,
+    )
+
+    K, N = 4096, 1024
+    for dtype in (mx.bfloat16, mx.float16):
+        for gs in (32, 64, 128):
+            mx.random.seed(5)
+            w = (mx.random.normal((N, K), dtype=mx.float32) * 0.02).astype(dtype)
+            w_q, scales, biases = mx.quantize(w, group_size=gs, bits=6)
+            mx.eval(w_q, scales, biases)
+            for m, fn in ((4, vk_qmm_m4_ksplit), (5, vk_qmm_m6_ksplit), (6, vk_qmm_m6_ksplit)):
+                assert vk_eligible_ksplit(m, K, N, 6, gs, dtype)
+                x = (mx.random.normal((m, K), dtype=mx.float32) * 0.5).astype(dtype)
+                y = fn(x, w_q, scales, biases, bits=6, group_size=gs)
+                ref = mx.quantized_matmul(
+                    x, w_q, scales=scales, biases=biases,
+                    transpose=True, group_size=gs, bits=6,
+                )
+                diff = float(mx.abs(y.astype(mx.float32) - ref.astype(mx.float32)).max())
+                assert y.shape == (m, N)
+                assert diff < 0.05, f"6-bit drift {dtype} gs={gs} M={m}: {diff}"
+
+
+def test_qlinear_patch_routes_6bit_verify_shapes() -> None:
+    """The patch routes 6-bit verify shapes (N >= 2048 floor) through the
+    hexpack kernels and leaves small-N projections on stock."""
+    from mtplx import verify_kernels
+
+    report = install_nax_qlinear_patch()
+    assert report["installed"] is True
+    calls = {"m4": 0}
+    orig = verify_kernels.vk_qmm_m4_ksplit
+
+    def counting(*a, **k):
+        calls["m4"] += 1
+        return orig(*a, **k)
+
+    from mtplx.attention_context import attention_phase
+
+    import mtplx.nax_verify  # noqa: F401  (patch reads through the module)
+
+    verify_kernels.vk_qmm_m4_ksplit = counting
+    try:
+        big = nn.QuantizedLinear(512, 2048, bias=False, group_size=64, bits=6)
+        small = nn.QuantizedLinear(512, 256, bias=False, group_size=64, bits=6)
+        x = (mx.random.normal((4, 512), dtype=mx.float32) * 0.5).astype(mx.bfloat16)
+        with attention_phase("decode_verify"):
+            mx.eval(big(x))
+            assert calls["m4"] == 1, "6-bit verify shape did not route the hexpack kernel"
+            mx.eval(small(x))
+            assert calls["m4"] == 1, "small-N 6-bit projection must stay stock"
+        with attention_phase("prefill"):
+            mx.eval(big(x))
+            assert calls["m4"] == 1, "prefill must stay stock"
+    finally:
+        verify_kernels.vk_qmm_m4_ksplit = orig
+        uninstall_nax_qlinear_patch()

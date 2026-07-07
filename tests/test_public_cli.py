@@ -1038,6 +1038,18 @@ def test_serve_defaults_quantized_27b_flagships_to_turbo(
         "Qwen3.6-27B-MTPLX-Optimized-Speed",
         "Qwen3.6-27B-MTPLX-Optimized-Quality",
         "Qwen3.6-27B-MTPLX-Optimized",
+        # 27B Speed-FP16 (M1/M2 routing target) promoted 2026-07-07:
+        # turbo measured 1.98-2.08x over true AR on the artifact itself
+        # (INT4/g64 weights, fp16 activations) vs 1.34x on sustained.
+        "Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
+        # 27B Quality-FP16 (M1/M2 quality pick, built 2026-07-07):
+        # turbo measured 2.5x over true AR on the artifact itself
+        # (q8/g64 weights, fp16 activations; 43.8/42.1 vs 17.4 tok/s).
+        "Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+        # 9B (6-bit) promoted 2026-07-07 with the 6-bit hexpack split-K
+        # kernels: live ABBA MTP D3 110/102 vs sustained 90/69 tok/s.
+        "Qwen3.5-9B-MTPLX-Optimized-Speed",
+        "Qwen3.5-9B-MTPLX-Optimized-Speed-FP16",
     ):
         model_dir = tmp_path / dir_name
         model_dir.mkdir()
@@ -1051,8 +1063,8 @@ def test_serve_default_profile_untouched_off_the_turbo_allowlist(
 ):
     monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
     for dir_name in (
-        # FP16 sibling stays sustained (matches the app's fp16 rule).
-        "Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
+        # 35B MoE: experts bypass the NAX patch; stays sustained.
+        "Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
         # Unrecognized third-party artifact.
         "example-model",
     ):

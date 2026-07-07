@@ -234,6 +234,10 @@ def _install_split_attention_hook(attn: Any) -> bool:
         gqa_packed_threshold = int(
             getattr(self, "_mtplx_gqa_packed_sdpa_threshold", 8192)
         )
+        if gqa_packed_enabled:
+            from .kernel_selfcheck import lane_disabled
+
+            gqa_packed_enabled = not lane_disabled("gqa_packed_sdpa")
         should_use_gqa_packed = (
             gqa_packed_enabled
             and cache is not None

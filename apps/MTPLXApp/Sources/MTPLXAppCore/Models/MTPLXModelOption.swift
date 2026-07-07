@@ -513,6 +513,25 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             peakMemoryGiB: 27.62,
             recommendedFor: [.modernApple]
         ),
+        MTPLXModelOption(
+            id: "optimized-quality-fp16",
+            displayName: "Qwen 3.6 27B Optimized Quality FP16",
+            shortName: "Qwen 3.6 27B Optimized Quality FP16",
+            detail: "FP16 quality artifact recommended for M1 and M2 Macs.",
+            hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+            localCandidates: [
+                "~/Documents/MTPLX/hf-staging/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+                "~/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+            ],
+            aliases: [
+                "mtplx-qwen36-27b-optimized-quality-fp16",
+                "Qwen3.6 27B Optimized Quality FP16",
+                "Optimized Quality FP16",
+            ],
+            sizeBytes: 30_017_528_922,
+            peakMemoryGiB: 28.12,
+            recommendedFor: [.legacyApple]
+        ),
     ]
 
     public static func option(matching model: String) -> MTPLXModelOption? {
@@ -584,7 +603,8 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 small: "qwen35-9b-optimized-speed-fp16",
                 speed27: "optimized-speed-fp16",
                 speed35: "qwen36-35b-a3b-optimized-speed-fp16",
-                balance35: "qwen36-35b-a3b-optimized-balance-fp16"
+                balance35: "qwen36-35b-a3b-optimized-balance-fp16",
+                quality27: "optimized-quality-fp16"
             )
         case .modernApple, .unknown:
             return recommendationIDs(
@@ -592,7 +612,8 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 small: "qwen35-9b-optimized-speed",
                 speed27: "optimized-speed",
                 speed35: "qwen36-35b-a3b-optimized-speed",
-                balance35: "qwen36-35b-a3b-optimized-balance"
+                balance35: "qwen36-35b-a3b-optimized-balance",
+                quality27: "optimized-quality"
             )
         }
     }
@@ -619,15 +640,16 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         small: String,
         speed27: String,
         speed35: String,
-        balance35: String
+        balance35: String,
+        quality27: String
     ) -> [String] {
         if memoryGiB < 32 {
             return [small]
         }
         if memoryGiB < 48 {
-            return [small, speed27, "gemma4-optimized-speed", speed35, "optimized-quality"]
+            return [small, speed27, "gemma4-optimized-speed", speed35, quality27]
         }
-        return [speed27, "optimized-quality", speed35, balance35, "gemma4-optimized-speed", small]
+        return [speed27, quality27, speed35, balance35, "gemma4-optimized-speed", small]
     }
 
     private static func optionWithID(_ id: String) -> MTPLXModelOption? {

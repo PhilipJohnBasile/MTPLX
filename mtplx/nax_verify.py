@@ -37,6 +37,15 @@ def nax_env_enabled() -> bool:
 
 @lru_cache(maxsize=1)
 def nax_available() -> bool:
+    if str(os.environ.get("MTPLX_FORCE_GPU_FAMILY_FALLBACK", "")).strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }:
+        # QA rehearsal switch: pretend this GPU is not G17-class so an M5
+        # exercises the exact plain-SIMD code path an M1-M4 user gets.
+        return False
     arch = str(mx.device_info().get("architecture", "")).lower()
     if not arch.startswith("applegpu_g17"):
         return False
@@ -877,6 +886,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
     original = nn.QuantizedLinear.__call__
 
     from .attention_context import current_attention_phase
+    from .kernel_selfcheck import lane_disabled
 
     def patched(self, x: mx.array) -> mx.array:  # type: ignore[no-untyped-def]
         bits = int(getattr(self, "bits", 0) or 0)
@@ -902,7 +912,12 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                 n = int(w_q.shape[0])
                 y = None
                 huge_n = n >= 100000
-                if m == 4 and huge_n and vk_eligible_m4(m, k, n, bits, group_size, x.dtype):
+                if (
+                    m == 4
+                    and huge_n
+                    and not lane_disabled("qmm_m4_wide")
+                    and vk_eligible_m4(m, k, n, bits, group_size, x.dtype)
+                ):
                     # lm_head-class shapes: the wide msg tile (few big TGs)
                     # wins isolated 1.34x while split-K thrashes (0.66x) in
                     # the 62k-tiny-threadgroup regime.
@@ -910,7 +925,11 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         bits=8, group_size=group_size,
                     )
-                elif m == 4 and vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype):
+                elif (
+                    m == 4
+                    and not lane_disabled("qmm_m4")
+                    and vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype)
+                ):
                     # Split-K morphology: the in-context winner (msg geometry
                     # loses its isolated 1.3-1.5x to co-residency on the
                     # layer shapes).
@@ -918,15 +937,68 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         bits=8, group_size=group_size,
                     )
-                elif huge_n and vk_eligible_m6(m, k, n, bits, group_size, x.dtype):
+                elif (
+                    huge_n
+                    and not lane_disabled("qmm_m6_wide")
+                    and vk_eligible_m6(m, k, n, bits, group_size, x.dtype)
+                ):
                     y = vk_qmm_m6(
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         bits=8, group_size=group_size,
                     )
-                elif vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype):
+                elif (
+                    not lane_disabled("qmm_m6")
+                    and vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype)
+                ):
                     y = vk_qmm_m6_ksplit(
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         bits=8, group_size=group_size,
+                    )
+                if y is not None:
+                    y = y.reshape(*x.shape[:-1], n)
+                    if "bias" in self:
+                        y = y + self["bias"]
+                    return y
+        if bits == 6 and x.ndim >= 2 and current_attention_phase() != "prefill":
+            # 6-bit affine (9B tier), added 2026-07-07: split-K hexpack
+            # kernels, exactness-gated vs stock across {bf16,fp16} x
+            # gs{32,64,128} (54 cases, dmax <= 0.027 bf16 / 0.003 fp16).
+            # Microbench on the 9B hot shapes: 1.1-2.4x vs stock; the tiny
+            # kv projection (N=1024) measured 0.92x at m4/bf16, so small-N
+            # stays stock via the floor below.
+            from .verify_kernels import (
+                vk_eligible_ksplit,
+                vk_qmm_m4_ksplit,
+                vk_qmm_m6_ksplit,
+            )
+
+            m = 1
+            for d in x.shape[:-1]:
+                m *= int(d)
+            if 4 <= m <= 6:
+                w_q = self["weight"]
+                k = int(x.shape[-1])
+                n = int(w_q.shape[0])
+                y = None
+                if (
+                    m == 4
+                    and n >= 2048
+                    and not lane_disabled("qmm_m4")
+                    and vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype)
+                ):
+                    y = vk_qmm_m4_ksplit(
+                        x.reshape(m, k), w_q, self["scales"], self["biases"],
+                        bits=6, group_size=group_size,
+                    )
+                elif (
+                    5 <= m <= 6
+                    and n >= 2048
+                    and not lane_disabled("qmm_m6")
+                    and vk_eligible_ksplit(m, k, n, bits, group_size, x.dtype)
+                ):
+                    y = vk_qmm_m6_ksplit(
+                        x.reshape(m, k), w_q, self["scales"], self["biases"],
+                        bits=6, group_size=group_size,
                     )
                 if y is not None:
                     y = y.reshape(*x.shape[:-1], n)
@@ -942,18 +1014,29 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                 k = int(x.shape[-1])
                 n = int(w_q.shape[0])
                 y = None
-                if m == 4 and m4_ksplit_eligible(m, k, n, bits, group_size, x.dtype):
+                if (
+                    m == 4
+                    and not lane_disabled("qmm_m4")
+                    and m4_ksplit_eligible(m, k, n, bits, group_size, x.dtype)
+                ):
                     # Plain SIMD K-split kernel: no NAX hardware requirement.
                     y = nax_qmm_m4(
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         group_size=group_size,
                     )
-                elif m <= 6 and m6_ksplit_eligible(m, k, n, bits, group_size, x.dtype):
+                elif (
+                    m <= 6
+                    and not lane_disabled("qmm_m6")
+                    and m6_ksplit_eligible(m, k, n, bits, group_size, x.dtype)
+                ):
                     y = nax_qmm_m6(
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         group_size=group_size,
                     )
-                elif m16_nax_eligible(m, k, n, bits, group_size, x.dtype):
+                elif (
+                    not lane_disabled("qmm_m16_nax")
+                    and m16_nax_eligible(m, k, n, bits, group_size, x.dtype)
+                ):
                     y = nax_qmm_m16(
                         x.reshape(m, k), w_q, self["scales"], self["biases"],
                         group_size=group_size,

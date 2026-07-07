@@ -981,7 +981,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]))
     }
 
-    func testCommandBuilderKeepsAutoProfileSustainedForQwen27BSpeedFP16Sibling() throws {
+    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BSpeedFP16Sibling() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         let command = try builder.buildServeCommand(
@@ -992,12 +992,12 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
 
-        // The FP16 sibling is what the M1/M2 legacy tier routes to.
-        // Turbo's numerics corpus and chat-lane wins were measured on
-        // the BF16-float artifact on M5 only, so auto keeps the FP16
-        // sibling on sustained until it is measured — promotion is
-        // per-artifact, the same way Quality q8 earned turbo.
-        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "sustained"]))
+        // The FP16 sibling (M1/M2 routing target) earned turbo on
+        // 2026-07-07 after its first e2e measurement: same INT4/g64
+        // weight packs the vk kernels cover, 1.98-2.08x over true AR
+        // under turbo vs 1.34x on sustained. Promotion is per-artifact,
+        // the same way Quality q8 earned turbo.
+        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
         // It still gets the Qwen3.6 thinking-mode sampler preset.
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
@@ -1021,6 +1021,51 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
+    }
+
+    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BQualityFP16Sibling() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/Users/youssof/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
+                profile: "auto"
+            )
+        )
+
+        // The Quality-FP16 sibling (M1/M2 quality pick, built 2026-07-07)
+        // shares the q8/g64 packs the ULP-exact vk kernels cover and
+        // measured 2.5x over true AR under turbo on its own artifact
+        // (43.8/42.1 vs 17.4 tok/s D3).
+        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
+    }
+
+    func testCommandBuilderResolvesAutoProfileToTurboForQwen359BOptimizedSpeed() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        for model in [
+            "/Users/youssof/.mtplx/models/Youssofal--Qwen3.5-9B-MTPLX-Optimized-Speed",
+            "/Users/youssof/.mtplx/models/Youssofal--Qwen3.5-9B-MTPLX-Optimized-Speed-FP16",
+        ] {
+            let command = try builder.buildServeCommand(
+                configuration: MTPLXAppConfiguration(
+                    executablePath: fake.path,
+                    model: model,
+                    profile: "auto"
+                )
+            )
+            // The 6-bit 9B earned turbo on 2026-07-07 with the 6-bit
+            // hexpack split-K kernels: live ABBA MTP D3 110/102 tok/s
+            // under turbo vs 90/69 sustained (AR flat both profiles).
+            XCTAssertTrue(
+                command.arguments.containsInOrder(["--profile", "turbo"]),
+                model
+            )
+            XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]), model)
+        }
     }
 
     func testCommandBuilderHonorsExplicitProfileOverPreset() throws {
@@ -3017,6 +3062,43 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(ids.contains("qwen35-4b-optimized-speed"))
         XCTAssertFalse(ids.contains("qwen35-9b-optimized-speed"))
         XCTAssertFalse(ids.contains { $0.contains("step") })
+    }
+
+    func testFreshLegacyLargeMemoryCatalogRoutesQualityToFP16Sibling() throws {
+        // The M1/M2 quality pick resolves the Quality-FP16 sibling
+        // (2.0.1, 2026-07-07) — same policy as the speed lane.
+        let m2 = DetectedHardware(
+            chipName: "Apple M2 Ultra",
+            appleSiliconGeneration: "m2",
+            unifiedMemoryBytes: 64 * 1_073_741_824
+        )
+
+        let ids = MTPLXModelOption.hardwareAwareOfficialCatalog(
+            hardware: m2,
+            includeInstalledOverrides: false
+        ).map(\.id)
+
+        XCTAssertEqual(ids, [
+            "optimized-speed-fp16",
+            "optimized-quality-fp16",
+            "qwen36-35b-a3b-optimized-speed-fp16",
+            "qwen36-35b-a3b-optimized-balance-fp16",
+            "gemma4-optimized-speed",
+            "qwen35-9b-optimized-speed-fp16",
+        ])
+        XCTAssertFalse(ids.contains("optimized-quality"))
+    }
+
+    func testOfficialModelCatalogIncludesOptimizedQualityFP16() throws {
+        let quality = try XCTUnwrap(
+            MTPLXModelOption.option(matching: "mtplx-qwen36-27b-optimized-quality-fp16")
+        )
+        XCTAssertEqual(quality.id, "optimized-quality-fp16")
+        XCTAssertEqual(
+            quality.hfModelID,
+            "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16"
+        )
+        XCTAssertTrue(quality.recommendedFor.contains(.legacyApple))
     }
 
     func testFreshModernSmallMemoryCatalogUses9BAsMinimum() throws {

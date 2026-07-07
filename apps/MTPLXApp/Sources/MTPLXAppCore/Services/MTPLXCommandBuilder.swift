@@ -957,6 +957,7 @@ private enum ModelLaunchFamily {
     case qwen36_35BOptimizedSpeed
     case qwen36_27BOptimizedSpeed
     case qwen36_27BOptimizedQuality
+    case qwen35_9BOptimizedSpeed
     case gemma4
     case step
     case qwenDefault
@@ -974,15 +975,23 @@ private enum ModelLaunchFamily {
         {
             return .qwen36_35BOptimizedSpeed
         }
-        // 27B Optimized-Speed only: the 4-bit affine model the turbo
-        // verify kernels are promoted for. Optimized-Quality (8-bit)
-        // must keep sustained — NAX has no 8-bit kernel and compiled
-        // verify measured a regression there (2026-07-02 matrix).
+        // 9B (6-bit) family, incl. the -FP16 sibling. Promoted to turbo
+        // 2026-07-07 with the 6-bit hexpack split-K kernels (live ABBA:
+        // MTP D3 110/102 vs sustained 90/69 tok/s, AR flat).
+        if normalized.contains("qwen3.5-9b-mtplx-optimized-speed")
+            || normalized.contains("qwen35-9b-optimized-speed")
+        {
+            return .qwen35_9BOptimizedSpeed
+        }
+        // 27B Speed family (4-bit affine, incl. the -FP16 sibling).
         if normalized.contains("qwen3.6-27b-mtplx-optimized-speed")
             || normalized.contains("qwen36-27b-optimized-speed")
         {
             return .qwen36_27BOptimizedSpeed
         }
+        // 27B Quality family (8-bit affine). The substring also matches the
+        // -FP16 sibling (M1/M2 quality routing target, added 2026-07-07),
+        // which shares the q8 packs the ULP-exact vk kernels cover.
         if normalized.contains("qwen3.6-27b-mtplx-optimized-quality")
             || normalized.contains("qwen36-27b-optimized-quality")
         {
@@ -1122,11 +1131,11 @@ private struct TargetPreset {
         case .qwen36_35BOptimizedSpeed:
             return applyingQwen36_35BOptimizedSpeedDefaults()
         case .qwen36_27BOptimizedSpeed:
-            return applyingQwen36_27BOptimizedSpeedDefaults(
-                fp16Variant: ModelLaunchFamily.isFP16PrecisionVariant(model)
-            )
+            return applyingQwen36_27BOptimizedSpeedDefaults()
         case .qwen36_27BOptimizedQuality:
             return applyingQwen36_27BOptimizedQualityDefaults()
+        case .qwen35_9BOptimizedSpeed:
+            return applyingQwen35_9BOptimizedSpeedDefaults()
         case .qwenDefault:
             return self
         case .gemma4:
@@ -1136,17 +1145,19 @@ private struct TargetPreset {
         }
     }
 
-    private func applyingQwen36_27BOptimizedSpeedDefaults(fp16Variant: Bool) -> TargetPreset {
+    private func applyingQwen36_27BOptimizedSpeedDefaults() -> TargetPreset {
         var preset = self
         // Turbo = sustained plus the clean-room NAX verify kernels
         // (engine TURBO_PROFILE carries the env). Chat lane measured
         // 2026-07-02: 44.7 -> 58-60 tok/s on the app launch flags.
-        // The FP16 sibling (what the M1/M2 tier routes to) stays
-        // sustained: turbo's numerics corpus and chat-lane wins were
-        // measured on the BF16-float artifact on M5 only. Promote
-        // per-artifact after measurement — the same discipline that
-        // later admitted Quality q8.
-        preset.profile = fp16Variant ? "sustained" : "turbo"
+        // The FP16 sibling (what the M1/M2 tier routes to) was promoted
+        // per-artifact on 2026-07-07 after its first e2e measurement:
+        // same INT4/g64 weight packs the vk kernels cover, turbo measured
+        // 1.98-2.08x over true AR (55-60 tok/s D3 vs 27-29 AR, acceptance
+        // 86/66/51, peak 18.6 GB) vs 1.34x on sustained, whose fp16
+        // verify-hidden-eval tax eats ~84% of decode wall. Same
+        // measurement-first discipline that admitted Quality q8.
+        preset.profile = "turbo"
         preset.applyQwen36ThinkingSampler()
         return preset
     }
@@ -1157,7 +1168,22 @@ private struct TargetPreset {
         // ULP-exact and measured +22-40% on the chat lane 2026-07-03
         // (31-36 -> 43-44 tok/s; verify 81-93 -> 61-64 ms/call). The old
         // "Quality stays sustained" ruling was about compiled verify
-        // (-15/-18%), which turbo does not use.
+        // (-15/-18%), which turbo does not use. The Quality-FP16 sibling
+        // (M1/M2 tier, built 2026-07-07) measured 2.5x over true AR under
+        // turbo on its own artifact (43.8/42.1 vs 17.4 tok/s D3).
+        preset.profile = "turbo"
+        preset.applyQwen36ThinkingSampler()
+        return preset
+    }
+
+    private func applyingQwen35_9BOptimizedSpeedDefaults() -> TargetPreset {
+        var preset = self
+        // 6-bit 9B earned turbo on 2026-07-07 when the 6-bit hexpack
+        // split-K verify kernels landed: live ABBA on the artifact
+        // measured MTP D3 110/102 tok/s under turbo vs 90/69 sustained
+        // (true AR 62-65 flat both profiles). Exactness gated vs stock
+        // across {bf16, fp16} x gs{32, 64, 128}; the load-time selfcheck
+        // re-proves it on every user's silicon.
         preset.profile = "turbo"
         preset.applyQwen36ThinkingSampler()
         return preset

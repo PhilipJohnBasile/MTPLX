@@ -1074,6 +1074,16 @@ def _health_runtime_mode_label(
     return mode
 
 
+def _kernel_selfcheck_health_payload() -> dict[str, Any]:
+    """Per-lane turbo kernel selfcheck verdicts (JSON primitives only)."""
+    try:
+        from mtplx.kernel_selfcheck import report_for_health
+
+        return report_for_health()
+    except Exception:
+        return {"ran": False}
+
+
 def _backend_descriptor(state: "ServerState") -> BackendDescriptor:
     descriptor = getattr(state, "backend_descriptor", None)
     if descriptor is not None:
@@ -18299,6 +18309,7 @@ def create_app(state: ServerState) -> FastAPI:
                 getattr(state.args, "api_key_source", "none") or "none"
             ),
             "paged_kv_quantization": _effective_paged_kv_quantization(),
+            "kernel_selfcheck": _kernel_selfcheck_health_payload(),
             "rate_limit_per_minute": int(state.args.rate_limit),
             "stream_interval": int(state.args.stream_interval),
             "warmup": state.warmup_status,

@@ -83,6 +83,8 @@ from mtplx.profiles import (
     DEFAULT_PUBLIC_MODEL_ID,
     LEGACY_OPTIMIZED_HF_MODEL_ID,
     LEGACY_OPTIMIZED_PUBLIC_MODEL_ID,
+    QUALITY_FP16_HF_MODEL_ID,
+    QUALITY_FP16_PUBLIC_MODEL_ID,
     QUALITY_HF_MODEL_ID,
     QUALITY_PUBLIC_MODEL_ID,
     QWEN35_9B_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
@@ -823,19 +825,40 @@ def _apply_model_contract_depth_default(
 
 # Quantized 27B flagships whose measured default profile is turbo. This is
 # the same launch rule the macOS app applies in MTPLXCommandBuilder
-# (Speed/Quality -> turbo; FP16 siblings stay sustained): NAX verify kernels
-# +22-40% chat decode on q8 (ULP-exact) and vk_k on q4, plus compiled verify
-# behind its per-model quant-bits gate. Before 2026-07-05 the bare CLI
-# (`mtplx serve` / quickstart / start) silently stayed on sustained, so every
-# OpenAI-API consumer — including third-party benchmark harnesses — measured
-# the slow path while the app ran turbo. Keep this list measured-win only:
-# 6-bit small models, 35B, Gemma, FP16 and third-party artifacts keep the
-# sustained default.
+# (Speed/Quality/Speed-FP16 -> turbo): NAX verify kernels +22-40% chat decode
+# on q8 (ULP-exact) and vk_k on q4, plus compiled verify behind its per-model
+# quant-bits gate. Before 2026-07-05 the bare CLI (`mtplx serve` / quickstart
+# / start) silently stayed on sustained, so every OpenAI-API consumer —
+# including third-party benchmark harnesses — measured the slow path while
+# the app ran turbo. Keep this list measured-win only: 6-bit small models
+# (vk covers 4/8-bit affine only), 35B MoE (experts bypass the NAX patch),
+# Gemma, and third-party artifacts keep the sustained default.
 _TURBO_DEFAULT_PUBLIC_MODEL_IDS = frozenset(
     {
         DEFAULT_PUBLIC_MODEL_ID,  # 27B Optimized-Speed (flat 4-bit)
         QUALITY_PUBLIC_MODEL_ID,  # 27B Optimized-Quality (8-bit)
         LEGACY_OPTIMIZED_PUBLIC_MODEL_ID,  # 27B Optimized (gdn8 hybrid, 8/4-bit)
+        # 27B Speed-FP16 (INT4/g64 weights, fp16 activations — the M1/M2
+        # routing target). Promoted 2026-07-07 after the first-ever e2e
+        # measurement: turbo 1.98-2.08x over true AR on M5 Max (55-60 tok/s
+        # D3 vs 27-29 AR), acceptance [86/66/51]%, peak 18.6 GB, vs only
+        # 1.34x on sustained (fp16 verify_hidden_eval tax ~8s/384-tok run).
+        # The 9B FP16 (6-bit) and 35B FP16 (MoE) siblings are NOT promoted.
+        DEFAULT_FP16_PUBLIC_MODEL_ID,
+        # 27B Quality-FP16 (q8/g64 weights, fp16 activations — the M1/M2
+        # quality pick, built 2026-07-07). Measured on its own artifact:
+        # turbo MTP D3 43.8/42.1 tok/s vs true AR 17.4 (2.5x), selfcheck
+        # all vk q8 lanes ok, parent logit-diff argmax 16/16.
+        QUALITY_FP16_PUBLIC_MODEL_ID,
+        # 9B (6-bit/g64) promoted 2026-07-07 after the 6-bit hexpack
+        # split-K kernels landed: live ABBA on the 9B measured turbo MTP
+        # D3 110/102 tok/s vs sustained 90/69 (+34%), true AR 62-65 flat
+        # both profiles -> multiplier 1.25x -> 1.68x. Exactness: 54
+        # synthetic {bf16,fp16}x{gs32,64,128} cases dmax <= 0.027 vs
+        # stock. The FP16 sibling shares the 6-bit packs and fp16 lanes
+        # are exactness-proven, so both promote together.
+        QWEN35_9B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+        QWEN35_9B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     }
 )
 
@@ -7628,6 +7651,9 @@ def _model_ref_from_public_model_id(model_id: str | None) -> str | None:
         QUALITY_PUBLIC_MODEL_ID.lower(): QUALITY_HF_MODEL_ID,
         QUALITY_HF_MODEL_ID.lower(): QUALITY_HF_MODEL_ID,
         Path(QUALITY_HF_MODEL_ID).name.lower(): QUALITY_HF_MODEL_ID,
+        QUALITY_FP16_PUBLIC_MODEL_ID.lower(): QUALITY_FP16_HF_MODEL_ID,
+        QUALITY_FP16_HF_MODEL_ID.lower(): QUALITY_FP16_HF_MODEL_ID,
+        Path(QUALITY_FP16_HF_MODEL_ID).name.lower(): QUALITY_FP16_HF_MODEL_ID,
         QWEN35_9B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID.lower(): QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID,
         QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID.lower(): QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID,
         Path(QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID).name.lower(): QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID,

@@ -4,6 +4,48 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-07-07
+
+Turbo for every Mac. The v2 turbo default now covers every dense catalog
+model on every Apple Silicon generation, with a load-time kernel
+self-validation safety net.
+
+### Added
+
+- 6-bit affine verify kernels (split-K hexpack family): the 6-bit 9B tier
+  gains 33-62% decode and 43% 2k-prefill under turbo (M5 Max, verified
+  arms). Qwen 3.5 9B and 9B FP16 now default to turbo.
+- New model: `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16`, the
+  missing M1/M2 quality artifact. Wired into the app picker, CLI catalog,
+  and chip-aware routing (a Quality pick on M1/M2 resolves the FP16
+  sibling, mirroring the speed lane). Validated against the bf16 parent
+  and measured at 2.5x over true AR under turbo.
+- Load-time kernel self-validation: every turbo lane checks itself against
+  stock MLX in the model's exact dtype/quantization at boot; a mismatching
+  lane falls back to the stock path for the session and the verdicts are
+  surfaced as `kernel_selfcheck` in `/health`. Worst case is v2.0.0 speed,
+  never wrong output.
+- `MTPLX_FORCE_GPU_FAMILY_FALLBACK=1` rehearses the exact M1-M4 code path
+  on newer machines; `MTPLX_KERNEL_SELFCHECK=0` disables the probe.
+- CI kernel matrix on real M1 runners: kernel exactness across
+  {bf16, fp16} x {4, 6, 8}-bit plus a live 4B turbo boot smoke.
+
+### Changed
+
+- 27B Optimized-Speed-FP16 (the M1/M2 routing target) defaults to turbo:
+  19-31% faster decode than the v2.0.0 sustained default across 0.5k-32k
+  context; true-AR multiplier 1.34x to ~2x. First-ever e2e measurement of
+  this artifact; exactness gated (30/30 hot-shape logit-diff cases on real
+  weights, greedy match turbo vs stock).
+- The published Speed-FP16 model card now recommends the turbo profile.
+
+### Unchanged on purpose
+
+- 35B A3B MoE and Gemma 4 keep sustained (expert layers / assistant-pair
+  architecture bypass these kernels; named 2.0.2 lanes). The 4B keeps
+  sustained (turbo measured slightly slower at matched depth). Compiled
+  verify stays off for 6-bit models.
+
 ## [2.0.0] - 2026-07-06
 
 MTPLX v2: the coding-agent release. Session-cache v2 (RAM + SSD), the

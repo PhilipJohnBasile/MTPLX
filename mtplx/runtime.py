@@ -377,6 +377,12 @@ def load(
     if nax_env_enabled():
         nax_report = install_nax_qlinear_patch()
         logger.info("[nax-verify] %s", nax_report)
+    from .kernel_selfcheck import maybe_run_model_selfcheck
+
+    # Turbo lanes validate themselves once per load on the model's actual
+    # dtype/quant format; a mismatching lane disables itself and serving
+    # continues on the stock path (surfaced in /health kernel_selfcheck).
+    maybe_run_model_selfcheck(model)
     adapter_path = Path(mtp_adapter) if mtp_adapter is not None else None
     adapter_metadata = None
     adapter_merge_report = None

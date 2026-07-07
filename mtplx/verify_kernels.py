@@ -31,9 +31,19 @@ lane-strided K) -> bf16 tail-ULP class differences, same as every custom
 verify kernel. Gated by the distribution/exactness corpus before product use
 (scripts/r1_chisquare_verifier_correctness.py and the promotion gates).
 
-Supported: 4-bit and 8-bit affine layouts, group_size in {32, 64, 128},
-bf16/fp16 activations, M in 4..6 (D3-D5 verify). Everything else falls back
-to stock. Plain SIMD - no NAX/G17/macOS gate; runs on all Apple Silicon.
+Supported: 4-bit, 6-bit and 8-bit affine layouts, group_size in {32, 64,
+128}, bf16/fp16 activations, M in 4..6 (D3-D5 verify). Everything else falls
+back to stock. Plain SIMD - no NAX/G17/macOS gate; runs on all Apple Silicon.
+
+6-bit (2026-07-07, the 9B-tier lane): MLX packs 6-bit affine values
+bit-contiguously little-endian - value k occupies bits [6k, 6k+6) of the
+byte stream (mlx/backend/metal/kernels/quantized.h, get_pack_factor 4 values
+per 3 bytes). The split-K kernels process one 16-value "hexpack" (3 uint32
+words, 12 bytes) per lane iteration so weight loads stay coalesced 32-bit
+reads and activation loads stay Vec8-wide (two per row). A hexpack never
+straddles a scale group because 16 divides every supported group_size.
+Only the split-K morphology is implemented for 6-bit (the in-context
+winner); the msg wide tile stays 4/8-bit.
 """
 
 from __future__ import annotations
@@ -267,6 +277,28 @@ def vk_qmm_m6_ksplit(x2, w_q, scales, biases, *, bits: int = 4, group_size: int 
 # ---------------------------------------------------------------------------
 
 
+# The 16 6-bit values of one hexpack, extracted from three little-endian
+# uint32 words (wa, wb, wc): value k = bits [6k, 6k+6) of the 96-bit stream.
+_HEXPACK6_EXTRACT = (
+    "(wa & 0x3Fu)",
+    "((wa >> 6) & 0x3Fu)",
+    "((wa >> 12) & 0x3Fu)",
+    "((wa >> 18) & 0x3Fu)",
+    "((wa >> 24) & 0x3Fu)",
+    "(((wa >> 30) & 0x3u) | ((wb & 0xFu) << 2))",
+    "((wb >> 4) & 0x3Fu)",
+    "((wb >> 10) & 0x3Fu)",
+    "((wb >> 16) & 0x3Fu)",
+    "((wb >> 22) & 0x3Fu)",
+    "(((wb >> 28) & 0xFu) | ((wc & 0x3u) << 4))",
+    "((wc >> 2) & 0x3Fu)",
+    "((wc >> 8) & 0x3Fu)",
+    "((wc >> 14) & 0x3Fu)",
+    "((wc >> 20) & 0x3Fu)",
+    "((wc >> 26) & 0x3Fu)",
+)
+
+
 def _pack_block(m: int, bits: int, sfx: str) -> str:
     """Emit loads + dequant + FMA for one pack index variable pack{sfx}.
 
@@ -277,6 +309,42 @@ def _pack_block(m: int, bits: int, sfx: str) -> str:
     independent per-column blocks better than one wide interleaved block.
     """
     p = f"pack{sfx}"
+    if bits == 6:
+        # One hexpack = 16 values = 3 words; two Vec8 activation loads/row.
+        lines = [f"int k_base{sfx} = {p} * 16;", f"int gi{sfx} = k_base{sfx} / GS;"]
+        for r in range(m):
+            lines.append(f"Vec8 v{sfx}_{r} = xv[({r} * K + k_base{sfx}) / 8];")
+            lines.append(f"Vec8 u{sfx}_{r} = xv[({r} * K + k_base{sfx}) / 8 + 1];")
+        for j in range(4):
+            lines.append(
+                f"uint32_t wa{sfx}_{j} = w_q[(n0 + {j}) * K_by_w + {p} * 3];"
+                f" uint32_t wb{sfx}_{j} = w_q[(n0 + {j}) * K_by_w + {p} * 3 + 1];"
+                f" uint32_t wc{sfx}_{j} = w_q[(n0 + {j}) * K_by_w + {p} * 3 + 2];"
+            )
+        for j in range(4):
+            lines.append(
+                f"float s{sfx}_{j} = float(scales[(n0 + {j}) * K_by_gs + gi{sfx}]);"
+                f" float b{sfx}_{j} = float(biases[(n0 + {j}) * K_by_gs + gi{sfx}]);"
+            )
+        for j in range(4):
+            block = [
+                "{",
+                f"    uint32_t wa = wa{sfx}_{j};",
+                f"    uint32_t wb = wb{sfx}_{j};",
+                f"    uint32_t wc = wc{sfx}_{j};",
+                f"    float s = s{sfx}_{j};",
+                f"    float b = b{sfx}_{j};",
+            ]
+            for ki, expr in enumerate(_HEXPACK6_EXTRACT):
+                block.append(f"    float w6_{ki} = float{expr} * s + b;")
+                xv = f"v{sfx}_{{r}}[{ki}]" if ki < 8 else f"u{sfx}_{{r}}[{ki - 8}]"
+                for r in range(m):
+                    block.append(
+                        f"    acc[{j} * {m} + {r}] += float({xv.format(r=r)}) * w6_{ki};"
+                    )
+            block.append("}")
+            lines.extend(block)
+        return "\n            ".join(lines)
     lines = [f"int k_base{sfx} = {p} * 8;", f"int gi{sfx} = k_base{sfx} / GS;"]
     for r in range(m):
         lines.append(f"Vec8 v{sfx}_{r} = xv[({r} * K + k_base{sfx}) / 8];")
@@ -365,16 +433,22 @@ def _build_ksplit_kernel(
         }}
         """
 
+    # Pack unit: values consumed per lane iteration. 4/8-bit process one
+    # 8-value span; 6-bit processes one 16-value hexpack (3 words).
+    # K_by_w = 32-bit weight words per output row for the multi-word
+    # layouts (8-bit: K/4; 6-bit: 3*K/16).
+    pack_unit = 16 if bits == 6 else 8
+    words_per_row = "3 * (K / 16)" if bits == 6 else "K / 4"
     if kconst:
         k_decl = f"""constexpr int K = {int(kconst)};
-        constexpr int K_by_p = K / 8;
-        constexpr int K_by_w = K / 4;
+        constexpr int K_by_p = K / {pack_unit};
+        constexpr int K_by_w = {words_per_row};
         constexpr int K_by_gs = K / GS;
         constexpr int per_part = K_by_p / K_PARTS;"""
     else:
-        k_decl = """int K = int(K_size);
-        int K_by_p = K / 8;
-        int K_by_w = K / 4;
+        k_decl = f"""int K = int(K_size);
+        int K_by_p = K / {pack_unit};
+        int K_by_w = {words_per_row};
         int K_by_gs = K / GS;
         int per_part = K_by_p / K_PARTS;"""
 
@@ -485,8 +559,10 @@ def _run_ksplit(
 
 
 def vk_eligible_ksplit(m: int, K: int, N: int, bits: int, group_size: int, dtype) -> bool:
+    # K % 64 also guarantees the 6-bit hexpack count (K/16) splits evenly
+    # across k_parts in {2, 4}.
     return (
-        int(bits) in (4, 8)
+        int(bits) in (4, 6, 8)
         and int(group_size) in (32, 64, 128)
         and dtype in (mx.bfloat16, mx.float16)
         and 4 <= int(m) <= 6
