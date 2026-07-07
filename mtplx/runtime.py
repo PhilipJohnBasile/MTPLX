@@ -352,6 +352,7 @@ def load(
         from .mimo_mtp_patch import inject_mimo_mtp_support, is_mimo_mtp_config
         from .nemotron_h_mtp_patch import inject_nemotron_h_mtp_support, is_nemotron_h_mtp_config
         from .step3p5_mtp_patch import inject_step3p5_mtp_support
+        from .hy_v3_mtp_patch import inject_hy_v3_mtp_support, is_hy_v3_mtp_config
 
         if is_nemotron_h_mtp_config(config):
             mtp_enabled = inject_nemotron_h_mtp_support(model, path, config, contract)
@@ -361,6 +362,8 @@ def load(
             mtp_enabled = inject_glm_mtp_support(model, path, config, contract)
         elif is_step3p5_mtp_config(config):
             mtp_enabled = inject_step3p5_mtp_support(model, path, config, contract)
+        elif is_hy_v3_mtp_config(config):
+            mtp_enabled = inject_hy_v3_mtp_support(model, path, config, contract)
         elif is_deepseek_mtp_config(config):
             mtp_enabled = inject_deepseek_mtp_support(model, path, config, contract)
         else:

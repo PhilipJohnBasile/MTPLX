@@ -13222,6 +13222,7 @@ def _run_runtime_import_smoke() -> list[dict[str, Any]]:
         ("mtplx.backends.mimo_mtp", "MiMoMTPBackend"),
         ("mtplx.backends.nemotron_h_mtp", "NemotronHMTPBackend"),
         ("mtplx.backends.step3p5_mtp", "Step3p5MTPBackend"),
+        ("mtplx.backends.hy_v3_mtp", "HyV3MTPBackend"),
     ):
         try:
             module = importlib.import_module(module_name)

@@ -1570,7 +1570,6 @@ def test_gemma4_pair_subfolder_reports_bundle_required(tmp_path):
         ("LongCatFlashForCausalLM", "longcat_flash", "longcat-flash-mtp"),
         ("OpenPanguForCausalLM", "openpangu", "pangu-ultra-moe-mtp"),
         ("Step3P5ForCausalLM", "step3p5", "step3p5-mtp"),
-        ("HyV3ForCausalLM", "hy_v3", "hy-v3-mtp"),
     ],
 )
 def test_big_mtp_architecture_markers_are_recognized_backend_pending(

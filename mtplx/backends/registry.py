@@ -411,10 +411,22 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         display_name="HY V3 MTP",
         family="hy",
         backend="hy_v3_mtp",
-        support_level="recognized-backend-pending",
-        runtime_compatibility="recognized-backend-pending",
+        support_level="experimental-native-contract-gated",
+        runtime_compatibility="native-contract-gated",
+        can_run_verified=True,
         aliases=("hy_v3_mtp", "hy_v3"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/hy_v3_mtp.py",),
+        family_gate="appended-layer-mtp-markers",
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/hy_v3_mtp.py",
+            "REFERENCES:TOOLS/mlx-lm/mlx_lm/models/hy_v3.py",
+        ),
+        notes=(
+            "Hy3 ships one appended NextN layer with its own 192-expert MoE, "
+            "eh_proj over concat[enorm(embedding), hnorm(hidden)], and shared "
+            "embeddings/head. The mlx-lm hy_v3 MTP revision exposes the head "
+            "natively (predict_next_tokens), so injection binds the existing "
+            "surface rather than grafting weights."
+        ),
     ),
     "generic-mtp": ArchitectureSupport(
         arch_id="generic-mtp",
