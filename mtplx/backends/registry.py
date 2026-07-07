@@ -21,6 +21,7 @@ SUPPORTED_ARCH_IDS = {
     "nemotron-h-mtp",
     "gemma4-assistant-mtp",
     "step3p5-mtp",
+    "hy-v3-mtp",
 }
 
 TIER_VERIFIED = "verified"
@@ -928,6 +929,7 @@ def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool
         "glm4-moe-mtp",
         "glm4-moe-lite-mtp",
         "step3p5-mtp",
+        "hy-v3-mtp",
     }:
         return _passes_appended_layer_gate(inspection)
     if arch_id == "mimo-mtp":
