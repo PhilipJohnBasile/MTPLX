@@ -63,8 +63,24 @@ def inject_hy_v3_mtp_support(
     from mlx_lm.models.base import create_attention_mask
     from mlx_lm.models.cache import KVCache
 
+    # validate_mtp_support (mtp_patch.py) requires model.mtp.layers to be a
+    # truthy container; the native mlx-lm MTPBlock exposes its single decoder
+    # as `.layer`. Expose a `.layers` alias (assigning a list to an nn.Module
+    # attribute registers it as a child-module container — an alias, not a
+    # weight copy) so the validator and any depth-indexing caller see a
+    # 1-element list.
+    if getattr(model.mtp, "layers", None) is None:
+        model.mtp.layers = [model.mtp.layer]
+
     original_outer_class = model.__class__
 
+    # Hy3 has exactly one native draft wiring (pre-final-norm trunk hidden,
+    # [enorm(embedding), hnorm(hidden)] concat). Like the sibling appended-layer
+    # backends (glm_mtp defaults post_norm, step3p5 pre_norm), we ACCEPT and
+    # IGNORE whatever hidden_variant / concat_order the runtime resolves from
+    # the contract default — raising would break every draft call, since
+    # runtime.draft_mtp resolves None/auto/contract to contract.hidden_variant
+    # (== 'post_norm' for a bare MTPContract).
     class _MTPLXHyV3Model(original_outer_class):
         def __call__(
             self,
@@ -77,10 +93,6 @@ def inject_hy_v3_mtp_support(
         ):
             if input_embeddings is not None:
                 raise ValueError("Hy3 MTP backend does not support input_embeddings")
-            if hidden_variant not in {None, "auto", "contract", "pre_norm"}:
-                raise ValueError(
-                    "Hy3 MTP drafts from the trunk pre-final-norm hidden state"
-                )
             if return_hidden:
                 # hy_v3's native forward already returns (logits, pre-norm h)
                 return super().__call__(
@@ -100,17 +112,11 @@ def inject_hy_v3_mtp_support(
             position_offset: int | None = None,
             mtp_depth: int | None = None,
         ):
-            if concat_order not in {None, "auto", "contract", "embedding_hidden"}:
-                raise ValueError(
-                    "Hy3 MTP backend supports embedding_hidden concat order only"
-                )
-            if mtp_hidden_variant not in {None, "auto", "contract", "pre_norm"}:
-                raise ValueError("Hy3 MTP consumes the pre-final-norm trunk hidden")
-            if mtp_depth not in {None, 0, 1}:
-                raise ValueError("Hy3 ships a single NextN layer (depth 1)")
+            # depth is informational for a single-layer head — the one NextN
+            # layer is reused regardless (mirrors GLM's modulo-into-layers).
             layer_cache = mtp_cache if mtp_cache is not None else cache
             if isinstance(layer_cache, list):
-                layer_cache = layer_cache[0]
+                layer_cache = layer_cache[0] if layer_cache else None
             # replicate Model.predict_next_tokens, keeping the draft hidden
             e_next = self.model.embed_tokens(next_token_ids)
             mask = create_attention_mask(e_next, layer_cache)
@@ -143,7 +149,5 @@ def inject_hy_v3_mtp_support(
             return [KVCache()]
 
     model.__class__ = _MTPLXHyV3Model
-    if contract is not None and hasattr(contract, "note"):
-        contract.note(arch_id="hy-v3-mtp", mtp_depth=1)
-    logger.info("[Hy3 MTP inject] native head bound for %s", path)
+    logger.info("[Hy3 MTP inject] native head bound (depth 1) for %s", path)
     return True
