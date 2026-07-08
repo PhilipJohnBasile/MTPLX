@@ -26,11 +26,19 @@ Two facts make this simpler than it looks:
    full_attention_interval == 0``. We reuse that class so the module tree and
    math match natively; keys map 1:1 after stripping the ``mtp.`` prefix.
 
-Status: experimental — the module tree and weight coverage are validated at
-load, but the draft-acceptance runtime contract (hidden_variant / concat_order)
-is pending a hardware measurement, exactly like the hy_v3 backend. Default
-wiring mirrors the vLLM/DeepSeek reference (pre-norm trunk hidden, concat order
-[embedding, hidden]); a contract override can flip it for the sweep.
+Status: loads + drafts, hardware-verified on Qwen3.6-35B-A3B (M5 Max 128 GB).
+Weight coverage is exact (strict load of all 46 mtp.* tensors); the trunk loads
+coherently (the double-shift note below) and the head reaches ~90% 1-step greedy
+draft acceptance on a structured smoke — well clear of the ~3% "donkey band",
+confirming the default wiring (pre-norm trunk hidden, concat order
+[embedding, hidden]). A full acceptance sweep across diverse text is the
+remaining production-tuning step; a contract override can flip the variant.
+
+Note (trunk double-shift): mlx-lm's qwen3_5 sanitize adds +1.0 to trunk norm
+weights when mtp.* keys are present (a raw zero-centered-norm convention). This
+export already stores final-convention norms, so the trunk-load shim strips
+mtp.* before sanitize to avoid a double shift (which otherwise corrupts the
+trunk into gibberish).
 """
 
 from __future__ import annotations
@@ -79,9 +87,26 @@ def install_qwen3_5_mtp_trunk_shim() -> None:
     name = "mlx_lm.models.qwen3_5_mtp"
     if name in sys.modules:
         return
+    import types
+
     import mlx_lm.models.qwen3_5_moe as base
 
-    sys.modules[name] = base
+    class _TrunkModel(base.Model):
+        def sanitize(self, weights):
+            # mlx-lm's qwen3_5 sanitize shifts trunk norm weights by +1.0 when
+            # any ``mtp.*`` key is present (a raw-checkpoint zero-centered-norm
+            # convention). This export stores trunk norms already in final
+            # convention (conv1d is sanitized), so that shift would double-apply
+            # and corrupt the trunk. Drop ``mtp.*`` here — the head is loaded
+            # separately by ``inject_qwen3_5_mtp_support`` — so the shift is
+            # driven only by the (correct) unsanitized-conv1d signal.
+            weights = {k: v for k, v in weights.items() if "mtp." not in str(k)}
+            return super().sanitize(weights)
+
+    shim = types.ModuleType(name)
+    shim.Model = _TrunkModel
+    shim.ModelArgs = base.ModelArgs
+    sys.modules[name] = shim
 
 
 def _strip_mtp_prefix(key: str) -> str | None:
@@ -233,6 +258,12 @@ def inject_qwen3_5_mtp_support(
     original_class = model.__class__
 
     class _MTPLXQwen35Model(original_class):
+        def _lm_logits(self, h):
+            lm = getattr(self.language_model, "lm_head", None)
+            if lm is not None:
+                return lm(h)
+            return self.model.embed_tokens.as_linear(h)
+
         def __call__(
             self,
             inputs,
@@ -244,17 +275,23 @@ def inject_qwen3_5_mtp_support(
         ):
             if input_embeddings is not None:
                 raise ValueError("Qwen3.5 MTP backend does not support input_embeddings")
-            out = super().__call__(inputs, cache=cache)
             if not return_hidden:
-                return out
-            if isinstance(out, tuple):
-                return out
-            # trunk returned logits only: re-derive pre-norm hidden via the head's
-            # own norm is not possible here, so require the trunk to expose hidden.
-            raise RuntimeError(
-                "Qwen3.5 trunk did not return hidden states; return_hidden requires "
-                "a hidden-returning trunk forward (validated during hardware bring-up)."
-            )
+                return super().__call__(inputs, cache=cache)
+            # Expose the pre-final-norm residual stream: Qwen3_5TextModel applies
+            # ``self.norm`` before returning, so temporarily swap it for identity
+            # (avoids re-running the hybrid linear/full attention layer loop).
+            inner = self.model  # Qwen3_5TextModel (outer Model.model property)
+            real_norm = inner.norm
+            try:
+                inner.norm = lambda x: x
+                pre_norm = inner(inputs, cache=cache)
+            finally:
+                inner.norm = real_norm
+            post_norm = real_norm(pre_norm)
+            logits = self._lm_logits(post_norm)
+            variant = hidden_variant or getattr(self, "_mtplx_hidden_variant", "pre_norm")
+            hidden = pre_norm if variant == "pre_norm" else post_norm
+            return logits, hidden
 
         def mtp_forward(
             self,
@@ -277,7 +314,7 @@ def inject_qwen3_5_mtp_support(
             mixed = self.mtp.fc(mx.concatenate([e, h], axis=-1))
             mask = create_attention_mask(mixed, layer_cache)
             hidden = self.mtp.layers[0](mixed, mask=mask, cache=layer_cache)
-            logits = self.lm_head(self.mtp.norm(hidden))
+            logits = self._lm_logits(self.mtp.norm(hidden))
             if not return_hidden:
                 return logits
             return logits, hidden

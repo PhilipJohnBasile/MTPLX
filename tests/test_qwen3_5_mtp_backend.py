@@ -32,10 +32,14 @@ def test_trunk_shim_makes_model_type_importable():
     install_qwen3_5_mtp_trunk_shim()
     import importlib
 
+    import mlx_lm.models.qwen3_5_moe as base
+
     mod = importlib.import_module("mlx_lm.models.qwen3_5_mtp")
-    # aliases to the vanilla MoE trunk module
-    assert mod is sys.modules["mlx_lm.models.qwen3_5_moe"]
+    # shim exposes the trunk classes; Model subclasses the vanilla MoE trunk but
+    # strips mtp.* in sanitize to avoid the double norm-shift
     assert hasattr(mod, "Model") and hasattr(mod, "ModelArgs")
+    assert issubclass(mod.Model, base.Model)
+    assert mod.ModelArgs is base.ModelArgs
 
 
 def test_strip_mtp_prefix():
