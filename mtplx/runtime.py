@@ -329,6 +329,15 @@ def load(
         path = Path(gemma4_pair["target_model"])
     config = load_config(path)
     from .step3p5_mtp_patch import is_step3p5_mtp_config
+    from .qwen3_5_mtp_patch import (
+        install_qwen3_5_mtp_trunk_shim,
+        is_qwen3_5_mtp_config,
+    )
+
+    # Qwen3.5-MoE MTP exports carry model_type ``qwen3_5_mtp`` (no mlx-lm module);
+    # the trunk is a vanilla ``qwen3_5_moe``. Alias it so the trunk loads.
+    if is_qwen3_5_mtp_config(config):
+        install_qwen3_5_mtp_trunk_shim()
 
     if is_step3p5_mtp_config(config):
         from mlx_lm.utils import load_model
@@ -353,6 +362,7 @@ def load(
         from .nemotron_h_mtp_patch import inject_nemotron_h_mtp_support, is_nemotron_h_mtp_config
         from .step3p5_mtp_patch import inject_step3p5_mtp_support
         from .hy_v3_mtp_patch import inject_hy_v3_mtp_support, is_hy_v3_mtp_config
+        from .qwen3_5_mtp_patch import inject_qwen3_5_mtp_support
 
         if is_nemotron_h_mtp_config(config):
             mtp_enabled = inject_nemotron_h_mtp_support(model, path, config, contract)
@@ -364,6 +374,8 @@ def load(
             mtp_enabled = inject_step3p5_mtp_support(model, path, config, contract)
         elif is_hy_v3_mtp_config(config):
             mtp_enabled = inject_hy_v3_mtp_support(model, path, config, contract)
+        elif is_qwen3_5_mtp_config(config):
+            mtp_enabled = inject_qwen3_5_mtp_support(model, path, config, contract)
         elif is_deepseek_mtp_config(config):
             mtp_enabled = inject_deepseek_mtp_support(model, path, config, contract)
         else:
