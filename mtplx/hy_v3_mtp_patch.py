@@ -82,6 +82,18 @@ def inject_hy_v3_mtp_support(
     # runtime.draft_mtp resolves None/auto/contract to contract.hidden_variant
     # (== 'post_norm' for a bare MTPContract).
     class _MTPLXHyV3Model(original_outer_class):
+        def make_cache(self):
+            # hy_v3 (plain causal MoE attention) does not define a native
+            # make_cache like the hybrid-attention backends (e.g. qwen3_5) do;
+            # mlx_lm.server falls back to a default per-layer KVCache list in
+            # this situation (mlx_lm.models.cache.make_prompt_cache's `else`
+            # branch). Replicate that directly here -- calling
+            # make_prompt_cache(self) would recurse, since it dispatches back
+            # to this very method once it sees the model has a make_cache.
+            from mlx_lm.models.cache import KVCache
+
+            return [KVCache() for _ in self.model.layers]
+
         def __call__(
             self,
             inputs,
