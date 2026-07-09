@@ -136,6 +136,28 @@ class MTPLXRuntime:
         hidden_variant: str | None = None,
         capture_backend: str | None = None,
     ):
+        text_model = getattr(self.model, "language_model", self.model)
+        inner = getattr(text_model, "model", None)
+        if not (hasattr(inner, "fa_idx") and hasattr(inner, "ssm_idx")):
+            # Uniform full-attention model (e.g. hy_v3): every layer is plain
+            # causal attention, so there is no GDN/recurrent state to capture
+            # and forward_with_gdn_capture's hybrid layout (fa_idx/ssm_idx,
+            # layer.is_linear) does not exist. The verify forward is just the
+            # plain AR forward; commit_captured_prefix with empty captures
+            # commits by trimming the standard (trimmable) KV caches, which is
+            # the correct prefix commit for pure-attention layers.
+            self._count("forward_ar_capture_plain_attention_calls")
+            if return_hidden:
+                logits, hidden = self.forward_ar(
+                    input_ids,
+                    cache=cache,
+                    return_hidden=True,
+                    hidden_variant=hidden_variant,
+                )
+                return logits, hidden, {}
+            logits = self.forward_ar(input_ids, cache=cache)
+            return logits, {}
+
         from .gdn_capture import forward_with_gdn_capture
 
         return forward_with_gdn_capture(
