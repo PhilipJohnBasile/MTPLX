@@ -807,6 +807,35 @@ def _has_all_suffixes_under_prefixes(
     return True
 
 
+_HY_V3_MTP_MARKER_SUFFIXES = (
+    "enorm.weight",
+    "hnorm.weight",
+    "eh_proj.weight",
+    "final_layernorm.weight",
+)
+
+
+def _passes_hy_v3_gate(inspection: Any) -> bool:
+    """Hy3's appended MTP block lives directly under an ``mtp.`` prefix
+    (``mtp.enorm.weight``, ``mtp.hnorm.weight``, ``mtp.eh_proj.weight``,
+    ``mtp.final_layernorm.weight``, ``mtp.layer.*``) rather than the
+    ``mtp.layers.{idx}.`` nesting DeepSeek/GLM/Step use, so it needs its own
+    gate instead of `_passes_appended_layer_gate` (verified against the
+    shipped `hy3-demolition-mlx-*-mtp` checkpoints' safetensors index)."""
+    keys = _weight_keys(inspection)
+    if not keys:
+        return False
+    count = int(getattr(inspection, "mtp_num_hidden_layers", 0) or 0)
+    if count <= 0:
+        return False
+    return _has_marker_under_prefixes(
+        keys,
+        ("mtp.",),
+        _HY_V3_MTP_MARKER_SUFFIXES,
+        ("mtp.layer.",),
+    )
+
+
 def _passes_appended_layer_gate(inspection: Any) -> bool:
     keys = _weight_keys(inspection)
     if not keys:
@@ -923,13 +952,14 @@ def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool
             tensor_gate
             and int(getattr(inspection, "mtp_num_hidden_layers", 0) or 0) > 0
         )
+    if arch_id == "hy-v3-mtp":
+        return _passes_hy_v3_gate(inspection)
     if arch_id in {
         "deepseek-v3-mtp",
         "glm-moe-dsa-mtp",
         "glm4-moe-mtp",
         "glm4-moe-lite-mtp",
         "step3p5-mtp",
-        "hy-v3-mtp",
     }:
         return _passes_appended_layer_gate(inspection)
     if arch_id == "mimo-mtp":
