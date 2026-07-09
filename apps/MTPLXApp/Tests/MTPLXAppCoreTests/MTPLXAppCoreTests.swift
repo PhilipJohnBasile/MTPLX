@@ -374,6 +374,10 @@ final class MTPLXAppCoreTests: XCTestCase {
         fi
         if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
           venv="$3"
+          if [ "$venv" = "--clear" ]; then
+            venv="$4"
+            rm -rf "$venv"
+          fi
           mkdir -p "$venv/bin"
           cat > "$venv/bin/python" <<'PYTHON'
         #!/bin/sh
@@ -535,6 +539,10 @@ final class MTPLXAppCoreTests: XCTestCase {
         fi
         if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
           venv="$3"
+          if [ "$venv" = "--clear" ]; then
+            venv="$4"
+            rm -rf "$venv"
+          fi
           mkdir -p "$venv/bin"
           cat > "$venv/bin/python" <<'PYTHON'
         #!/bin/sh
@@ -585,6 +593,101 @@ final class MTPLXAppCoreTests: XCTestCase {
         let installLog = try String(contentsOf: log, encoding: .utf8)
         XCTAssertTrue(installLog.contains("-m venv"), installLog)
         XCTAssertTrue(installLog.contains("mtplx-1.0.0-py3-none-any.whl[server]"), installLog)
+    }
+
+    // Issue #139: after an app update, the runtime venv's bin/python3
+    // symlink chain can dangle (it pointed into the replaced bundle),
+    // and a plain `python -m venv` over the corpse exits 1 with
+    // "[Errno 2] No such file or directory: …/bin/python3". The venv
+    // lives in Application Support, so DMG reinstalls never fix it —
+    // the bootstrapper must rebuild with --clear itself.
+    private func makeVenvFakePython(
+        home: URL,
+        log: URL,
+        failPlainVenv: Bool = false
+    ) throws -> URL {
+        try FileManager.default.createDirectory(
+            at: home, withIntermediateDirectories: true
+        )
+        let fakePython = home.appendingPathComponent("fake-python")
+        let plainVenvExit = failPlainVenv ? 1 : 0
+        try """
+        #!/bin/sh
+        echo "$*" >> "\(log.path)"
+        if [ "$1" = "--version" ]; then
+          echo "Python 3.13.0"
+          exit 0
+        fi
+        if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+          if [ "$3" = "--clear" ]; then
+            exit 0
+          fi
+          exit \(plainVenvExit)
+        fi
+        exit 0
+        """.data(using: .utf8)!.write(to: fakePython)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: fakePython.path
+        )
+        return fakePython
+    }
+
+    func testRuntimeBootstrapperRebuildsBrokenVenvWithClear() throws {
+        let home = temporaryDirectory()
+        let log = home.appendingPathComponent("venv.log")
+        let fakePython = try makeVenvFakePython(home: home, log: log)
+        let runtimeDir = home.appendingPathComponent("runtime-venv")
+        let bin = runtimeDir.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        // Dangling symlink: the interpreter the venv was built from is gone.
+        try FileManager.default.createSymbolicLink(
+            at: bin.appendingPathComponent("python3"),
+            withDestinationURL: home.appendingPathComponent("gone/python3.14")
+        )
+
+        let bootstrapper = MTPLXRuntimeBootstrapper(environment: ["HOME": home.path])
+        try bootstrapper.createRuntimeVenv(python: fakePython, runtimeDir: runtimeDir)
+
+        let calls = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(calls.contains("-m venv --clear \(runtimeDir.path)"), calls)
+    }
+
+    func testRuntimeBootstrapperRetriesVenvCreationWithClearOnFailure() throws {
+        let home = temporaryDirectory()
+        let log = home.appendingPathComponent("venv.log")
+        let fakePython = try makeVenvFakePython(home: home, log: log, failPlainVenv: true)
+        let runtimeDir = home.appendingPathComponent("runtime-venv")
+
+        let bootstrapper = MTPLXRuntimeBootstrapper(environment: ["HOME": home.path])
+        try bootstrapper.createRuntimeVenv(python: fakePython, runtimeDir: runtimeDir)
+
+        let calls = try String(contentsOf: log, encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertEqual(calls, [
+            "-m venv \(runtimeDir.path)",
+            "-m venv --clear \(runtimeDir.path)",
+        ])
+    }
+
+    func testRuntimeBootstrapperKeepsPlainVenvPathWhenHealthy() throws {
+        let home = temporaryDirectory()
+        let log = home.appendingPathComponent("venv.log")
+        let fakePython = try makeVenvFakePython(home: home, log: log)
+        let runtimeDir = home.appendingPathComponent("runtime-venv")
+        let bin = runtimeDir.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let venvPython = bin.appendingPathComponent("python")
+        try "#!/bin/sh\nexit 0\n".data(using: .utf8)!.write(to: venvPython)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: venvPython.path
+        )
+
+        let bootstrapper = MTPLXRuntimeBootstrapper(environment: ["HOME": home.path])
+        try bootstrapper.createRuntimeVenv(python: fakePython, runtimeDir: runtimeDir)
+
+        let calls = try String(contentsOf: log, encoding: .utf8)
+        XCTAssertTrue(calls.contains("-m venv \(runtimeDir.path)"), calls)
+        XCTAssertFalse(calls.contains("--clear"), calls)
     }
 
     func testCommandBuilderPrefersInstalledRuntimeOverSourceWrapper() throws {
@@ -903,6 +1006,7 @@ final class MTPLXAppCoreTests: XCTestCase {
                 "--profile", "sustained",
                 "--scheduler-mode", "serial",
                 "--batching-preset", "latency",
+                "--ssd-session-cache", "off",
                 "--api-key", "secret",
                 "--enable-thermal-poll",
                 "--fan-mode", "smart",
@@ -1592,7 +1696,10 @@ final class MTPLXAppCoreTests: XCTestCase {
             launchID: "opencode-ssd-off"
         )
 
-        XCTAssertFalse(command.arguments.contains("--ssd-session-cache"))
+        // "off" must be passed explicitly: the serve CLI default became
+        // "on" in 2.0.0, so omitting the flag would silently re-enable
+        // the cache the user disabled (issue #140).
+        XCTAssertTrue(command.arguments.containsInOrder(["--ssd-session-cache", "off"]))
         XCTAssertFalse(command.arguments.contains("--ssd-session-cache-max-size"))
         XCTAssertFalse(command.arguments.contains("--ssd-session-cache-min-prefix-tokens"))
         XCTAssertTrue(command.arguments.containsInOrder(["--scheduler-mode", "serial"]))
@@ -1603,6 +1710,30 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--reasoning", "auto"]))
         XCTAssertFalse(command.arguments.contains("--adaptive-policy"))
         XCTAssertFalse(command.arguments.contains("--adaptive-ev-base-depth"))
+    }
+
+    // Issue #140: Settings "Persistent Cache (SSD) = Off" + Play ->
+    // "Other, Custom client" launched the daemon with the SSD cache ON,
+    // because the .other preset says "on" and, before the fix, an
+    // explicit user "off" was expressed by omitting the flag — which the
+    // 2.0.0 serve CLI (default "on") reads as on with default limits.
+    func testCommandBuilderOtherTargetHonorsExplicitSSDOff() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                profile: "sustained",
+                ssdSessionCache: "off"
+            ),
+            target: .other,
+            launchID: "other-ssd-off"
+        )
+
+        XCTAssertTrue(command.arguments.containsInOrder(["--ssd-session-cache", "off"]))
+        XCTAssertFalse(command.arguments.contains("--ssd-session-cache-max-size"))
+        XCTAssertFalse(command.arguments.contains("--ssd-session-cache-min-prefix-tokens"))
     }
 
     func testCommandBuilderHonorsExplicitLatencySchedulingPresetForCodingAgents() throws {
@@ -2090,7 +2221,9 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(command.arguments.contains("--decode-batch-max"))
         XCTAssertFalse(command.arguments.contains("--batch-wait-ms"))
         XCTAssertFalse(command.arguments.contains("--prefill-chunk-tokens"))
-        XCTAssertFalse(command.arguments.contains("--ssd-session-cache"))
+        // The chat preset is SSD-off by design; that must reach argv
+        // explicitly now that the serve CLI defaults to "on".
+        XCTAssertTrue(command.arguments.containsInOrder(["--ssd-session-cache", "off"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--reasoning", "auto"]))
         XCTAssertFalse(command.arguments.contains("--top-k"))
         XCTAssertFalse(command.arguments.contains("--draft-temperature"))

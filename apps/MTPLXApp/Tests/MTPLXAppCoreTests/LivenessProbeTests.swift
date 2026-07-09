@@ -123,6 +123,21 @@ final class LivenessProbeTests: XCTestCase {
         }
     }
 
+    func testAuthRejectionIsAliveNotAMiss() async {
+        // /health requires the API key on LAN daemons; a 401/403 proves a
+        // live daemon speaking HTTP. A key mismatch is a configuration
+        // problem, never grounds for the watchdog to reap (issue #109).
+        for status in [401, 403] {
+            StubURLProtocol.handler = { _ in
+                (self.httpResponse(status), Data("{\"detail\": \"missing or invalid api key\"}".utf8))
+            }
+            let result = await makeClient().livenessWithinDeadline(seconds: 5)
+            guard case .aliveUnauthorized = result else {
+                return XCTFail("expected aliveUnauthorized for \(status), got \(result)")
+            }
+        }
+    }
+
     func testBackCompatShimReturnsPayloadOnlyWhenHealthy() async {
         StubURLProtocol.handler = { [goodHealthJSON] _ in
             (self.httpResponse(200), Data(goodHealthJSON.utf8))

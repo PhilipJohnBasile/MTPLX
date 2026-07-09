@@ -202,8 +202,14 @@ public struct MTPLXCommandBuilder: Sendable {
         if configuration.experimentalMTPCohorts {
             arguments.append("--experimental-mtp-cohorts")
         }
+        // Always pass the resolved SSD mode, including "off". Omitting
+        // the flag delegates the decision to the serve CLI default,
+        // which flipped from off to on in 2.0.0 (kvcache-v2) — turning
+        // a user's explicit Settings "Off" into a silently-on cache
+        // with default limits (issue #140). The app-daemon contract
+        // must be explicit so it can never drift with CLI defaults.
+        arguments.append(contentsOf: ["--ssd-session-cache", resolved.ssdSessionCache])
         if resolved.ssdSessionCache != "off" {
-            arguments.append(contentsOf: ["--ssd-session-cache", resolved.ssdSessionCache])
             if let ssdSessionCacheDir = configuration.ssdSessionCacheDir, !ssdSessionCacheDir.isEmpty {
                 arguments.append(contentsOf: ["--ssd-session-cache-dir", ssdSessionCacheDir])
             }

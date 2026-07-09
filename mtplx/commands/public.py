@@ -1185,7 +1185,7 @@ def _preserve_thinking_policy(args: Any) -> str:
         return "off"
     raw = getattr(args, "preserve_thinking", None)
     mode = str(raw or "auto").strip().lower()
-    return mode if mode in {"auto", "on", "off"} else "auto"
+    return mode if mode in {"auto", "on", "off", "scoped"} else "auto"
 
 
 def _pi_preserve_thinking_policy(args: Any) -> str:
@@ -9696,8 +9696,12 @@ def _batching_command_suffix(args: Any) -> str:
     if bool(getattr(args, "experimental_mtp_cohorts", False)):
         parts.append("--experimental-mtp-cohorts")
     ssd_session_cache = str(getattr(args, "ssd_session_cache", "on") or "on")
+    # Emit the mode unconditionally, "off" included: these generated
+    # commands are re-parsed by CLIs whose own default is "on"
+    # (kvcache-v2), so omitting an explicit "off" silently re-enables
+    # the cache (issue #140 class).
+    parts.extend(["--ssd-session-cache", shlex.quote(ssd_session_cache)])
     if ssd_session_cache != "off":
-        parts.extend(["--ssd-session-cache", shlex.quote(ssd_session_cache)])
         ssd_dir = getattr(args, "ssd_session_cache_dir", None)
         if ssd_dir:
             parts.extend(["--ssd-session-cache-dir", shlex.quote(str(ssd_dir))])

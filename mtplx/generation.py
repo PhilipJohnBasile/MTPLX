@@ -52,6 +52,7 @@ from .graphbank import (
     promote_kv_cache_offsets,
 )
 from .native_mlp import set_native_mlp_context
+from .loop_guard import LoopGuard, loop_guard_config_from_env
 from .profiles import resolve_long_context_mtp_depth
 from .runtime import MTPLXRuntime
 from .sampling import (
@@ -62,6 +63,7 @@ from .sampling import (
     residual_distribution,
     sample_from_distribution,
 )
+from .session_bank import _boundary_true_restore_enabled
 
 Mode = Literal["ar", "mtp1", "mtpk", "mtpa"]
 VerifyStrategy = Literal[
@@ -1579,6 +1581,7 @@ class GenerationStats:
     repetition_stop_repeats: int = 0
     repetition_stop_trimmed_tokens: int = 0
     repetition_stop_raw_tokens: int = 0
+    loop_guard: dict[str, object] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -2819,10 +2822,29 @@ def restore_or_prefill_prompt_state(
             exact_prefix_len = 0
 
         tried_larger_near_prefix = False
-        if (
-            0 < exact_prefix_len < len(prompt_ids)
-            and _opencode_compact_tool_history_policy(policy_fingerprint)
-        ):
+        if 0 < exact_prefix_len < len(prompt_ids):
+            # A short exact-prefix entry must not shadow a longer entry that
+            # shares a bigger prompt prefix. Pre-v2 the block-prefix lane was
+            # OpenCode-compact-only because broad block reuse could restore KV
+            # to `matched` while recurrent state stayed at the stored end,
+            # visibly degrading answers. kvcache-v2's boundary-true restore
+            # closed that class fail-safe (hybrid entries without a stored
+            # recurrent boundary at/below the match point are skipped), so the
+            # lane is safe for every client. Without it, agent harnesses whose
+            # transcripts diverge >8 tokens before the stored end (Pi,
+            # little-coder, Hermes, ...) froze on the oldest exact prefix and
+            # re-prefilled a growing suffix every turn (issue #138).
+            #   - OpenCode-compact keeps its unconditional True (unchanged).
+            #   - Other clients: env-decided default (block restore on, the
+            #     MTPLX_SESSION_BLOCK_PREFIX_RESTORE=0 kill-switch honored)
+            #     while boundary-true restore is enabled; tiny-gap-only when
+            #     the boundary-true off-switch restores pre-v2 semantics.
+            if _opencode_compact_tool_history_policy(policy_fingerprint):
+                allow_block_prefix: bool | None = True
+            elif _boundary_true_restore_enabled():
+                allow_block_prefix = None
+            else:
+                allow_block_prefix = False
             tried_larger_near_prefix = True
             near_prompt_state = _restore_near_prefix_prompt_state(
                 rt,
@@ -2835,33 +2857,7 @@ def restore_or_prefill_prompt_state(
                 draft_head_identity=draft_head_identity,
                 policy_fingerprint=policy_fingerprint,
                 min_restore_tokens=exact_prefix_len,
-                allow_block_prefix=True,
-                abort_check=abort_check,
-                chunk_callback=prefill_callback,
-                chunk_started_s=prefill_started_s,
-                cache_factory=restore_cache_factory,
-            )
-            if near_prompt_state is not None:
-                return _emit_prefill_complete(near_prompt_state)
-        elif 0 < exact_prefix_len < len(prompt_ids):
-            # Tokenizer-boundary drift can leave a newer near-exact snapshot
-            # slightly longer than the older exact prefix. Prefer that small
-            # safe overlap, but do not override an exact prefix with a large
-            # block-prefix restore: Desktop QA showed that broad block reuse can
-            # preserve speed while degrading the visible answer.
-            tried_larger_near_prefix = True
-            near_prompt_state = _restore_near_prefix_prompt_state(
-                rt,
-                prompt_ids,
-                base_hidden_variant=base_hidden_variant,
-                mtp_hidden_variant=mtp_hidden_variant,
-                mtp_history_policy=mtp_history_policy,
-                session_bank=session_bank,
-                template_hash=template_hash,
-                draft_head_identity=draft_head_identity,
-                policy_fingerprint=policy_fingerprint,
-                min_restore_tokens=exact_prefix_len,
-                allow_block_prefix=False,
+                allow_block_prefix=allow_block_prefix,
                 abort_check=abort_check,
                 chunk_callback=prefill_callback,
                 chunk_started_s=prefill_started_s,
@@ -3175,12 +3171,18 @@ def _distribution_from_mlx_logits(
     config: SamplerConfig,
     *,
     token_counts: Mapping[int, int] | None = None,
+    penalty_overlay: Mapping[int, float] | None = None,
 ) -> np.ndarray | SparseDistribution:
-    sparse = sparse_distribution_from_mlx_logits(logits, config, token_counts=token_counts)
+    sparse = sparse_distribution_from_mlx_logits(
+        logits, config, token_counts=token_counts, penalty_overlay=penalty_overlay
+    )
     if sparse is not None:
         return sparse
     return dense_distribution_from_logits(
-        _logits_to_numpy(logits), config, token_counts=token_counts
+        _logits_to_numpy(logits),
+        config,
+        token_counts=token_counts,
+        penalty_overlay=penalty_overlay,
     )
 
 
@@ -3207,18 +3209,24 @@ def _sample_from_logits(
     rng: np.random.Generator,
     *,
     token_counts: Mapping[int, int] | None = None,
+    penalty_overlay: Mapping[int, float] | None = None,
 ) -> tuple[int, np.ndarray | SparseDistribution | None]:
     if config.temperature <= 0:
-        if token_counts and (config.presence_penalty or config.frequency_penalty):
+        if penalty_overlay or (
+            token_counts and (config.presence_penalty or config.frequency_penalty)
+        ):
             logits = apply_penalties_mlx(
                 logits.reshape(-1),
                 token_counts,
                 config.presence_penalty,
                 config.frequency_penalty,
+                penalty_overlay=penalty_overlay,
             )
         _eval(logits)
         return int(mx.argmax(logits, axis=-1).item()), None
-    probs = _distribution_from_mlx_logits(logits, config, token_counts=token_counts)
+    probs = _distribution_from_mlx_logits(
+        logits, config, token_counts=token_counts, penalty_overlay=penalty_overlay
+    )
     return sample_from_distribution(probs, rng), probs
 
 
@@ -3947,6 +3955,7 @@ def generate_ar(
     trace_metadata: dict[str, Any] | None = None,
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     repetition_stop: bool = False,
+    loop_guard: bool = False,
 ) -> GenerationOutput:
     if getattr(rt, "backend_id", None) == "gemma4_assistant":
         from .backends.gemma4_assistant import generate_gemma4_ar
@@ -4028,6 +4037,10 @@ def generate_ar(
     events: list[dict] = []
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    _loop_guard_config = loop_guard_config_from_env(
+        bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
+    )
+    _loop_guard = LoopGuard(_loop_guard_config) if _loop_guard_config.enabled else None
     target_decode_time = 0.0
     target_forward_graph_time = 0.0
     target_eval_time = 0.0
@@ -4112,6 +4125,19 @@ def generate_ar(
         emit_trace()
 
     for step in range(max_tokens):
+        if _loop_guard is not None:
+            _guard_transition = _loop_guard.observe(tokens)
+            if _guard_transition is not None:
+                events.append(
+                    {
+                        "step": step,
+                        "loop_guard": {
+                            "transition": _guard_transition,
+                            "completion_tokens": len(tokens),
+                            **_loop_guard.summary(),
+                        },
+                    }
+                )
         token, _ = _sample_from_logits(
             logits[0],
             sampler,
@@ -4119,6 +4145,11 @@ def generate_ar(
             token_counts=Counter(tokens)
             if (sampler.presence_penalty or sampler.frequency_penalty)
             else None,
+            penalty_overlay=(
+                _loop_guard.penalties_for(tokens)
+                if _loop_guard is not None and _loop_guard.armed
+                else None
+            ),
         )
         tokens.append(token)
         emit_token(token)
@@ -4210,6 +4241,7 @@ def generate_ar(
             if repetition_result is None
             else len(tokens) + repetition_result.repeated_tokens
         ),
+        loop_guard=(_loop_guard.summary() if _loop_guard is not None else {}),
         decode_trace_path=str(trace.path) if trace.path is not None else None,
         decode_trace_run_id=trace.run_id if trace.enabled else None,
         events=events,
@@ -4954,6 +4986,7 @@ def generate_mtpk(
     trace_metadata: dict[str, Any] | None = None,
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     repetition_stop: bool = False,
+    loop_guard: bool = False,
     vision_splice: Any | None = None,
 ) -> GenerationOutput:
     """Generate with a fixed native-MTP depth.
@@ -5223,6 +5256,15 @@ def generate_mtpk(
     # vLLM-exact). Counts are rebuilt from `tokens` at each sample point — simple
     # and drift-proof; an incremental counter is a documented perf follow-up.
     _penalties_active = bool(sampler.presence_penalty) or bool(sampler.frequency_penalty)
+    # Loop Guard: loop-armed DRY-style steering (see mtplx/loop_guard.py).
+    # Disarmed = zero distribution impact (identity transform, fast paths kept).
+    # Armed = target distributions get sparse anti-cycle penalties per position;
+    # the draft proposal q stays untouched (proposal mismatch only costs
+    # acceptance, never correctness).
+    _loop_guard_config = loop_guard_config_from_env(
+        bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
+    )
+    _loop_guard = LoopGuard(_loop_guard_config) if _loop_guard_config.enabled else None
     events: list[dict] = []
     record_events = not _env_truthy("MTPLX_DROP_EVENTS")
     append_event = events.append if record_events else (lambda _event: None)
@@ -5872,6 +5914,20 @@ def generate_mtpk(
             streamed_token_count = min(streamed_token_count, len(tokens))
             emit_trace(force=True)
             break
+        if _loop_guard is not None:
+            _guard_transition = _loop_guard.observe(tokens)
+            if _guard_transition is not None:
+                append_event(
+                    {
+                        "step": step,
+                        "loop_guard": {
+                            "transition": _guard_transition,
+                            "completion_tokens": len(tokens),
+                            **_loop_guard.summary(),
+                        },
+                    }
+                )
+        _guard_armed = _loop_guard is not None and _loop_guard.armed
         primary_already_emitted = pending_primary is not None
         if pending_primary is None:
             primary, _ = _sample_from_logits(
@@ -5879,6 +5935,9 @@ def generate_mtpk(
                 sampler,
                 rng,
                 token_counts=Counter(tokens) if _penalties_active else None,
+                penalty_overlay=(
+                    _loop_guard.penalties_for(tokens) if _guard_armed else None
+                ),
             )
             tokens.append(primary)
             emit_new_tokens()
@@ -6481,6 +6540,25 @@ def generate_mtpk(
             )
             target_distribution_logits = verify_logits[:, :target_distribution_rows, :]
             started_distribution = time.perf_counter()
+            if _guard_armed:
+                # Loop Guard on the target_prefix lane: the accepted token is
+                # always the pre-sampled target id, so the steering must land
+                # on the pre-sample logits. Row r conditions on the committed
+                # tokens plus the in-block draft prefix before position r.
+                _guarded_rows = []
+                for _row_index in range(int(target_distribution_rows)):
+                    _row = target_distribution_logits[:, _row_index, :].reshape(-1)
+                    _row_overlay = _loop_guard.penalties_for(
+                        [*tokens, *draft_tokens[:_row_index]]
+                    )
+                    if _row_overlay:
+                        _row = apply_penalties_mlx(
+                            _row, None, penalty_overlay=_row_overlay
+                        )
+                    _guarded_rows.append(_row)
+                target_distribution_logits = mx.stack(_guarded_rows, axis=0)[
+                    None, ...
+                ]
             sampled_target_ids = sample_token_ids_from_mlx_logits(
                 target_distribution_logits,
                 sampler,
@@ -6530,6 +6608,7 @@ def generate_mtpk(
             defer_verify_hidden_eval
             and sampler.temperature > 0
             and not lazy_target_distributions
+            and not _guard_armed
             and (
                 _batch_target_arrays_enabled() or _batch_target_distributions_enabled()
             )
@@ -6638,6 +6717,7 @@ def generate_mtpk(
             sampler.temperature > 0
             and not target_distribution_precomputed
             and not lazy_target_distributions
+            and not _guard_armed
         ):
             target_distribution_rows = min(
                 int(verify_logits.shape[1]),
@@ -6674,8 +6754,20 @@ def generate_mtpk(
             # per-row counts.
             target_prefix_tokens = None
             target_distribution_batch = None
+        elif _guard_armed:
+            # Loop Guard armed: null only the batch so p/q rows rebuild per
+            # position with the guard overlay. target_prefix_tokens stays —
+            # the target_prefix pre-sample above already carried the overlay
+            # (and its lane has no draft distributions to fall back on).
+            target_distribution_batch = None
         for depth_index, draft_token in enumerate(draft_tokens):
             target_logits_for_draft = verify_logits[:, depth_index, :]
+            if _guard_armed:
+                _row_guard_overlay = _loop_guard.penalties_for(
+                    [*tokens, *draft_tokens[:depth_index]]
+                )
+            else:
+                _row_guard_overlay = None
             if _penalties_active:
                 # Per-position (vLLM-exact) prefix counts: committed completion
                 # (incl. this step's primary, already in `tokens`) + the in-block
@@ -6686,12 +6778,13 @@ def generate_mtpk(
             target_p_for_cache = None
             if sampler.temperature <= 0:
                 _greedy_row = target_logits_for_draft[0]
-                if _penalties_active:
+                if _penalties_active or _row_guard_overlay:
                     _greedy_row = apply_penalties_mlx(
                         _greedy_row,
-                        _working_counts,
+                        _working_counts if _penalties_active else None,
                         sampler.presence_penalty,
                         sampler.frequency_penalty,
+                        penalty_overlay=_row_guard_overlay,
                     )
                 target_token = int(mx.argmax(_greedy_row, axis=-1).item())
                 accepted_now = draft_token == target_token
@@ -6738,7 +6831,9 @@ def generate_mtpk(
             else:
                 target_p = (
                     target_distributions[depth_index]
-                    if target_distributions is not None and not _penalties_active
+                    if target_distributions is not None
+                    and not _penalties_active
+                    and not _guard_armed
                     else None
                 )
                 if target_p is None:
@@ -6747,6 +6842,7 @@ def generate_mtpk(
                         target_logits_for_draft[0],
                         sampler,
                         token_counts=_working_counts if _penalties_active else None,
+                        penalty_overlay=_row_guard_overlay,
                     )
                     elapsed_target_distribution = (
                         time.perf_counter() - started_target_distribution
@@ -6989,6 +7085,7 @@ def generate_mtpk(
                     target_distributions is not None
                     and not lazy_bonus_verify
                     and not _penalties_active
+                    and not _guard_armed
                     and len(target_distributions) > len(draft_tokens)
                 ):
                     bonus = sample_from_distribution(
@@ -7004,6 +7101,11 @@ def generate_mtpk(
                         sampler,
                         rng,
                         token_counts=Counter(tokens) if _penalties_active else None,
+                        penalty_overlay=(
+                            _loop_guard.penalties_for(tokens)
+                            if _guard_armed
+                            else None
+                        ),
                     )
                     if sampler.temperature > 0:
                         bonus_target_distribution_time = (
@@ -7516,6 +7618,7 @@ def generate_mtpk(
             if repetition_result is None
             else len(tokens) + repetition_result.repeated_tokens
         ),
+        loop_guard=(_loop_guard.summary() if _loop_guard is not None else {}),
         events=events,
     )
     _attach_runtime_diagnostics(stats, rt, counter_start)

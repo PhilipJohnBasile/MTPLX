@@ -835,6 +835,43 @@ def test_start_opencode_dry_run_json_writes_no_hidden_cap(
     assert "options" not in model
 
 
+def test_start_opencode_dry_run_emits_explicit_ssd_off(
+    monkeypatch, tmp_path, capsys
+):
+    """Issue #140 class: a generated server_command must carry an explicit
+    --ssd-session-cache off. The CLIs that re-parse these commands default
+    the flag to "on" (kvcache-v2), so omitting "off" silently re-enables
+    the cache the user disabled."""
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(tmp_path / "opencode.json"))
+    monkeypatch.setenv(
+        "MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(tmp_path / "default.dat")
+    )
+
+    code = main(
+        [
+            "start",
+            "opencode",
+            "--dry-run",
+            "--json",
+            "--model",
+            "models/example",
+            "--api-key",
+            "1234",
+            "--ssd-session-cache",
+            "off",
+            "--yes",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    command = payload["opencode"]["server_command"]
+    assert "--ssd-session-cache off" in command
+    assert "--ssd-session-cache-max-size" not in command
+    assert "--ssd-session-cache-min-prefix-tokens" not in command
+
+
 def test_start_opencode_dry_run_uses_qwen36_contract_draft_sampler(
     monkeypatch, tmp_path, capsys
 ):

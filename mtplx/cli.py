@@ -542,11 +542,13 @@ def _add_reasoning_effort_arg(parser: argparse.ArgumentParser) -> None:
 def _add_preserve_thinking_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--preserve-thinking",
-        choices=["auto", "on", "off"],
+        choices=["auto", "on", "off", "scoped"],
         default="auto",
         help=(
-            "Preserve prior assistant reasoning in Qwen chat-template history. "
-            "Default auto preserves it for reasoning-capable templates; off is a speed/debug mode."
+            "Reasoning-history policy for Qwen chat-template history. scoped keeps "
+            "reasoning only inside the active agent round (Qwen's trained contract); "
+            "on preserves all; off strips all. Default auto resolves to scoped for "
+            "checkpoint-capable templates."
         ),
     )
     parser.add_argument(

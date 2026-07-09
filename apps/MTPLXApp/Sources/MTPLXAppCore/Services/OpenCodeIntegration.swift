@@ -295,17 +295,10 @@ public struct OpenCodeIntegration: Sendable {
     }
 
     public static func baseURLString(host: String, port: Int) -> String {
-        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let clientHost: String
-        switch trimmed {
-        case "", "0.0.0.0", "::", "[::]":
-            clientHost = "127.0.0.1"
-        default:
-            clientHost = trimmed.contains(":") && !trimmed.hasPrefix("[")
-                ? "[\(trimmed)]"
-                : trimmed
-        }
-        return "http://\(clientHost):\(port)/v1"
+        // Shared bind->connect resolution (MTPLXServerURLs is the single
+        // Swift twin of mtplx/server_urls.py).
+        MTPLXServerURLs.baseURL(bindHost: host, port: port)
+            .absoluteString + "/v1"
     }
 
     public static func samplerTopK(forModelID modelID: String) -> Int {

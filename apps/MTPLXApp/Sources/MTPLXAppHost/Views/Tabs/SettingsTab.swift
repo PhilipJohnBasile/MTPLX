@@ -933,19 +933,34 @@ struct SettingsTab: View {
                 }
 
                 FormRow(label: "Host / Port") {
-                    HStack(spacing: 6) {
-                        TextField("127.0.0.1", text: $draftConfig.host)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            TextField("127.0.0.1", text: $draftConfig.host)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 160)
+                            Text(":")
+                                .foregroundStyle(Brand.typeTertiary)
+                            TextField(
+                                "8000",
+                                value: $draftConfig.port,
+                                format: .number.grouping(.never)
+                            )
                             .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 160)
-                        Text(":")
-                            .foregroundStyle(Brand.typeTertiary)
-                        TextField(
-                            "8000",
-                            value: $draftConfig.port,
-                            format: .number.grouping(.never)
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 80)
+                            .frame(maxWidth: 80)
+                        }
+                        if !MTPLXServerURLs.isLoopbackBind(draftConfig.host) {
+                            Text(
+                                MTPLXServerURLs.isWildcardBind(draftConfig.host)
+                                    ? "Serves on every interface (LAN). An API key is required."
+                                    : "Non-localhost host: an API key is required."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(
+                                (draftConfig.apiKey ?? "").isEmpty
+                                    ? Brand.warning
+                                    : Brand.typeTertiary
+                            )
+                        }
                     }
                 }
 

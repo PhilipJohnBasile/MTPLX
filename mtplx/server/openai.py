@@ -1595,6 +1595,13 @@ class ServerState:
             if self.runtime is not None
             else None
         )
+        # Scoped reasoning-history capability is a property of the loaded
+        # template (probed once after the profile is applied, cached here).
+        self.reasoning_history_scoped_capable = (
+            _template_supports_scoped_reasoning(self.runtime.tokenizer)
+            if self.runtime is not None
+            else False
+        )
         self.draft_sampler = (
             SamplerConfig(
                 temperature=float(args.draft_temperature),
@@ -8957,6 +8964,7 @@ def _message_to_template_dict(
     message: ChatMessage,
     *,
     strip_assistant_reasoning_history: bool,
+    include_reasoning_content: bool = False,
 ) -> dict[str, Any] | None:
     if not message.role:
         return None
@@ -8970,6 +8978,18 @@ def _message_to_template_dict(
             ).strip()
         )
     item: dict[str, Any] = {"role": message.role, "content": content}
+    if include_reasoning_content and message.role == "assistant":
+        # Scoped reasoning history carries the client's structured reasoning
+        # fields through to the chat template so its rolling checkpoint can
+        # keep them inside the active agent round (interleaved-thinking
+        # continuity) and drop them for completed turns. The legacy
+        # preserve/strip modes keep their historical behavior: the field is
+        # dropped here, so `on` stays byte-identical as the rollback path.
+        for key in ("reasoning_content", "reasoning"):
+            reasoning = _message_extra(message, key)
+            if reasoning:
+                item["reasoning_content"] = str(reasoning)
+                break
     if message.name:
         item["name"] = message.name
     if message.tool_call_id:
@@ -9280,17 +9300,26 @@ def _encode_messages(
     enable_thinking: bool,
     reasoning_effort: str | None = None,
     strip_assistant_reasoning_history: bool = False,
+    scoped_reasoning_history: bool = False,
     add_generation_prompt: bool = True,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
     tool_prompt_mode: str = _TOOL_PROMPT_MODE_HYBRID,
     template_observability: dict[str, Any] | None = None,
 ) -> list[int]:
+    # Scoped mode keeps reasoning_content on the normalized messages and
+    # passes preserve_thinking=False so the template's own rolling checkpoint
+    # governs: think blocks survive inside the active agent round (after the
+    # last real user query) and are dropped for completed turns.
+    template_preserve_thinking = (
+        not strip_assistant_reasoning_history and not scoped_reasoning_history
+    )
     prepared_messages: list[dict[str, Any]] = []
     for message in messages:
         item = _message_to_template_dict(
             message,
             strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+            include_reasoning_content=scoped_reasoning_history,
         )
         if item is not None:
             prepared_messages.append(item)
@@ -9331,6 +9360,9 @@ def _encode_messages(
             if effective_tool_prompt_mode == _TOOL_PROMPT_MODE_NATIVE and tools
             else None
         )
+        # The Gemma4 encoder has no rolling checkpoint; it keeps its binary
+        # preserve/strip contract (the scoped capability probe returns False
+        # for it, so scoped never resolves here in practice).
         return encode_chat_messages(
             tokenizer,
             normalized,
@@ -9350,7 +9382,7 @@ def _encode_messages(
         add_generation_prompt=add_generation_prompt,
         enable_thinking=enable_thinking,
         reasoning_effort=reasoning_effort,
-        preserve_thinking=not strip_assistant_reasoning_history,
+        preserve_thinking=template_preserve_thinking,
         tools=template_tools,
         template_observability=template_observability,
     )
@@ -9363,7 +9395,7 @@ def _encode_messages(
             add_generation_prompt=add_generation_prompt,
             enable_thinking=enable_thinking,
             reasoning_effort=reasoning_effort,
-            preserve_thinking=not strip_assistant_reasoning_history,
+            preserve_thinking=template_preserve_thinking,
             tools=template_tools,
             template_observability=template_observability,
         )
@@ -9373,7 +9405,7 @@ def _encode_messages(
         "tokenize": True,
         "add_generation_prompt": add_generation_prompt,
         "enable_thinking": enable_thinking,
-        "preserve_thinking": not strip_assistant_reasoning_history,
+        "preserve_thinking": template_preserve_thinking,
     }
     if reasoning_effort:
         template_kwargs["reasoning_effort"] = reasoning_effort
@@ -9538,6 +9570,7 @@ def _postcommit_next_turn_prefix_ids(
     enable_thinking: bool,
     reasoning_effort: str | None = None,
     strip_assistant_reasoning_history: bool,
+    scoped_reasoning_history: bool = False,
     tools: list[dict[str, Any]] | None,
     assistant_tool_calls: list[dict[str, Any]] | None,
     tool_prompt_mode: str = _TOOL_PROMPT_MODE_HYBRID,
@@ -9559,6 +9592,7 @@ def _postcommit_next_turn_prefix_ids(
         item = _message_to_template_dict(
             message,
             strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+            include_reasoning_content=scoped_reasoning_history,
         )
         if item is not None:
             normalized.append(item)
@@ -9566,18 +9600,26 @@ def _postcommit_next_turn_prefix_ids(
     item = _message_to_template_dict(
         sentinel_message,
         strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+        include_reasoning_content=scoped_reasoning_history,
     )
     if item is not None:
         normalized.append(item)
     if not normalized:
         return None
 
+    # Under scoped reasoning history the sentinel's role drives the template's
+    # rolling checkpoint exactly like the real next turn will: a user sentinel
+    # becomes the last query, so every completed round's think block is
+    # scoped out of the predicted prefix; a tool sentinel is not a query, so
+    # the active round's reasoning stays in - matching in-round continuation.
     rendered = _render_messages_for_postcommit(
         tokenizer,
         normalized,
         enable_thinking=enable_thinking,
         reasoning_effort=reasoning_effort,
-        preserve_thinking=not strip_assistant_reasoning_history,
+        preserve_thinking=(
+            not strip_assistant_reasoning_history and not scoped_reasoning_history
+        ),
         tools=tools,
         tool_prompt_mode=tool_prompt_mode,
     )
@@ -10356,6 +10398,7 @@ def _metrics_envelope(
         "repetition_stop_raw_tokens": int(
             stats.get("repetition_stop_raw_tokens") or 0
         ),
+        "loop_guard": dict(stats.get("loop_guard") or {}),
         "lock_wait_time_s": lock_wait_time_s,
         "session_id": session_id,
         **generation_limits,
@@ -10820,6 +10863,7 @@ DASHBOARD_READ_ONLY_SETTINGS_KEYS: tuple[str, ...] = (
     "ok",
     "preserve_thinking",
     "preserve_thinking_effective",
+    "reasoning_history_mode",
     "reasoning_policy",
     "restart_required_settings",
     "sampling_defaults",
@@ -12821,7 +12865,7 @@ def _policy_fingerprint(
     parts = [
         f"template={state.template_hash}",
         f"thinking={int(bool(thinking_enabled))}",
-        f"strip_reasoning={int(bool(state.args.strip_assistant_reasoning_history))}",
+        _reasoning_history_fingerprint_component(state),
         f"openai_bridge={_OPENAI_BRIDGE_POLICY_VERSION}",
         f"tool_prompt_mode={effective_tool_prompt_mode}",
         "tool_contract="
@@ -13502,6 +13546,7 @@ def _history_ids_for_postcommit(
         enable_thinking=thinking_enabled,
         reasoning_effort=reasoning_effort,
         strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+        scoped_reasoning_history=_reasoning_history_scoped_active(state),
         tools=tool_specs,
         assistant_tool_calls=assistant_tool_calls,
         tool_prompt_mode=effective_tool_prompt_mode,
@@ -13514,6 +13559,7 @@ def _history_ids_for_postcommit(
         enable_thinking=thinking_enabled,
         reasoning_effort=reasoning_effort,
         strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+        scoped_reasoning_history=_reasoning_history_scoped_active(state),
         add_generation_prompt=False,
         tools=tool_specs,
         tool_prompt_mode=effective_tool_prompt_mode,
@@ -13615,6 +13661,12 @@ def _generation_final_postcommit_compatibility(
     reason = "retokenized_history_mismatch"
     if bool(state.args.strip_assistant_reasoning_history) and thinking_enabled:
         reason = "reasoning_history_stripping_mismatch"
+    elif _reasoning_history_scoped_active(state) and thinking_enabled:
+        # Expected under scoped mode when a turn completes with a plain
+        # answer: the next user turn scopes this round's think block out, so
+        # the generation boundary is not a prefix of the next-turn prompt.
+        # In-round tool continuations (tool sentinel) still prefix-match.
+        reason = "reasoning_history_scoping_mismatch"
     elif str(generated.get("finish_reason") or "") == "stop":
         reason = "stop_token_boundary_mismatch"
     return {
@@ -14097,6 +14149,20 @@ def _uncapped_repetition_stop_enabled(generation_limits: dict[str, Any]) -> bool
     if generation_limits.get("server_max_response_tokens") is not None:
         return False
     raw = os.environ.get("MTPLX_UNCAPPED_REPETITION_STOP", "1").strip().lower()
+    return raw not in _UNCAPPED_RESPONSE_LEASE_DISABLED_VALUES
+
+
+def _loop_guard_enabled() -> bool:
+    """Loop Guard product default for the serve path: OFF (opt-in).
+
+    Founder ruling 2026-07-08: no synthetic steering touches sampling by
+    default. The guard's detector-gated DRY steering remains available for
+    users running repetition-damaged third-party quants via
+    ``MTPLX_LOOP_GUARD=1``, but the product answer to the quantized-model
+    loop marathons is the artifact lane (delta-net-sensitive quantization),
+    not a sampler intervention. Config knobs live in mtplx/loop_guard.py.
+    """
+    raw = os.environ.get("MTPLX_LOOP_GUARD", "0").strip().lower()
     return raw not in _UNCAPPED_RESPONSE_LEASE_DISABLED_VALUES
 
 
@@ -14741,6 +14807,7 @@ def _run_generation(
                         trace_metadata=trace_metadata,
                         prefill_callback=prefill_callback,
                         repetition_stop=uncapped_repetition_stop,
+                        loop_guard=_loop_guard_enabled(),
                     )
                 else:
                     adaptive_policy = _make_adaptive_policy(
@@ -14793,6 +14860,7 @@ def _run_generation(
                         prefill_callback=prefill_callback,
                         adaptive_policy=adaptive_policy,
                         repetition_stop=uncapped_repetition_stop,
+                        loop_guard=_loop_guard_enabled(),
                         online_correction_cache=bool(
                             state.args.online_correction_cache
                         ),
@@ -17905,15 +17973,85 @@ def _normalize_reasoning_mode(value: Any, *, default: str = "auto") -> str:
 
 def _normalize_preserve_thinking_policy(value: Any, *, default: str = "auto") -> str:
     mode = str(value or default).strip().lower()
-    if mode not in {"auto", "on", "off"}:
-        raise ValueError("preserve_thinking must be one of: auto, on, off")
+    if mode not in {"auto", "on", "off", "scoped"}:
+        raise ValueError("preserve_thinking must be one of: auto, on, off, scoped")
     return mode
 
 
 def _preserve_thinking_effective(args: argparse.Namespace) -> bool:
+    # "Effective" means reasoning history is NOT fully stripped. Scoped keeps
+    # the active round's reasoning, so it counts as preserving. This boolean
+    # feeds args.strip_assistant_reasoning_history and the app's Codable
+    # settings contract (must stay a bool - the 196e5fc lesson).
     return _normalize_preserve_thinking_policy(
         getattr(args, "preserve_thinking", "auto")
-    ) in {"auto", "on"}
+    ) in {"auto", "on", "scoped"}
+
+
+# Resolved reasoning-history modes. The user-facing policy is
+# {auto, on, off, scoped}; the resolved mode is one of these three.
+_REASONING_HISTORY_PRESERVE = "preserve"
+_REASONING_HISTORY_SCOPED = "scoped"
+_REASONING_HISTORY_STRIP = "strip"
+
+
+def _template_supports_scoped_reasoning(tokenizer: Any) -> bool:
+    """Startup capability probe for the scoped reasoning-history mode.
+
+    Qwen3.6/3.5 chat templates carry a "rolling checkpoint": they keep
+    ``<think>`` blocks only for assistant messages after the last real user
+    query (``ns.last_query_index``), which is exactly Qwen's trained
+    "no thinking content in completed-turn history" contract. Scoped mode
+    works by letting that checkpoint govern instead of overriding it with
+    ``preserve_thinking=True``, so it is only meaningful when the loaded
+    template actually implements the checkpoint. Templates without it (the
+    Gemma4 encoder, the froggeric profile, generic templates) fall back to
+    today's preserve-all behavior.
+    """
+    if is_gemma4_tokenizer(tokenizer):
+        return False
+    template = getattr(tokenizer, "chat_template", None)
+    return isinstance(template, str) and "last_query_index" in template
+
+
+def _reasoning_history_mode(state: "ServerState") -> str:
+    """Resolve the effective reasoning-history mode for the loaded template.
+
+    - ``on``  -> preserve-all (today's exact behavior, legacy fingerprint)
+    - ``off`` -> full strip (today's exact behavior, legacy fingerprint)
+    - ``auto``/``scoped`` -> scoped when the template carries the rolling
+      checkpoint, else preserve-all.
+    """
+    if bool(getattr(state.args, "strip_assistant_reasoning_history", False)):
+        return _REASONING_HISTORY_STRIP
+    policy = _normalize_preserve_thinking_policy(
+        getattr(state.args, "preserve_thinking", "auto")
+    )
+    if policy == "off":
+        return _REASONING_HISTORY_STRIP
+    if policy == "on":
+        return _REASONING_HISTORY_PRESERVE
+    if getattr(state, "reasoning_history_scoped_capable", False):
+        return _REASONING_HISTORY_SCOPED
+    return _REASONING_HISTORY_PRESERVE
+
+
+def _reasoning_history_scoped_active(state: "ServerState") -> bool:
+    return _reasoning_history_mode(state) == _REASONING_HISTORY_SCOPED
+
+
+def _reasoning_history_fingerprint_component(state: "ServerState") -> str:
+    """Session-cache identity component for the reasoning-history policy.
+
+    Explicit preserve/strip emit the exact legacy ``strip_reasoning={0|1}``
+    strings so existing users' warm session banks survive this release.
+    Only scoped mints a new component - honest, because its rendered prompt
+    bytes genuinely differ from both legacy modes.
+    """
+    mode = _reasoning_history_mode(state)
+    if mode == _REASONING_HISTORY_SCOPED:
+        return "reasoning_history=scoped"
+    return f"strip_reasoning={int(mode == _REASONING_HISTORY_STRIP)}"
 
 
 def _set_server_reasoning_mode(state: ServerState, mode: str) -> None:
@@ -17937,6 +18075,9 @@ def _server_settings_payload(state: ServerState) -> dict[str, Any]:
         "enable_thinking": bool(getattr(state.args, "enable_thinking", True)),
         "preserve_thinking": getattr(state.args, "preserve_thinking", "auto"),
         "preserve_thinking_effective": _preserve_thinking_effective(state.args),
+        # Additive string field (never replaces the boolean above - Swift
+        # Codable safety): the resolved reasoning-history mode.
+        "reasoning_history_mode": _reasoning_history_mode(state),
         "reasoning_parser": state.args.reasoning_parser,
         "generation_mode": state.args.generation_mode,
         "depth": state.args.depth,
@@ -18299,6 +18440,7 @@ def create_app(state: ServerState) -> FastAPI:
             "enable_thinking": state.args.enable_thinking,
             "preserve_thinking": getattr(state.args, "preserve_thinking", "auto"),
             "preserve_thinking_effective": _preserve_thinking_effective(state.args),
+            "reasoning_history_mode": _reasoning_history_mode(state),
             "strip_assistant_reasoning_history": bool(
                 state.args.strip_assistant_reasoning_history
             ),
@@ -19716,6 +19858,7 @@ def create_app(state: ServerState) -> FastAPI:
             enable_thinking=thinking_enabled,
             reasoning_effort=reasoning_effort,
             strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+            scoped_reasoning_history=_reasoning_history_scoped_active(state),
             tools=tool_specs if tools_active else None,
             tool_choice=request.tool_choice,
             tool_prompt_mode=template_tool_prompt_mode,
@@ -19990,6 +20133,9 @@ def create_app(state: ServerState) -> FastAPI:
         )
         request_observability["preserve_thinking_effective"] = (
             _preserve_thinking_effective(state.args)
+        )
+        request_observability["reasoning_history_mode"] = _reasoning_history_mode(
+            state
         )
         request_observability["strip_assistant_reasoning_history"] = bool(
             state.args.strip_assistant_reasoning_history
@@ -20792,6 +20938,9 @@ def create_app(state: ServerState) -> FastAPI:
                         enable_thinking=thinking_enabled,
                         reasoning_effort=reasoning_effort,
                         strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+                        scoped_reasoning_history=_reasoning_history_scoped_active(
+                            state
+                        ),
                         tools=tool_specs,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
@@ -21104,6 +21253,9 @@ def create_app(state: ServerState) -> FastAPI:
                         enable_thinking=thinking_enabled,
                         reasoning_effort=reasoning_effort,
                         strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+                        scoped_reasoning_history=_reasoning_history_scoped_active(
+                            state
+                        ),
                         tools=tool_specs,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
@@ -21259,6 +21411,9 @@ def create_app(state: ServerState) -> FastAPI:
                         enable_thinking=thinking_enabled,
                         reasoning_effort=reasoning_effort,
                         strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+                        scoped_reasoning_history=_reasoning_history_scoped_active(
+                            state
+                        ),
                         tools=None,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
@@ -23205,6 +23360,7 @@ def create_app(state: ServerState) -> FastAPI:
             enable_thinking=thinking_enabled,
             reasoning_effort=reasoning_effort,
             strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+            scoped_reasoning_history=_reasoning_history_scoped_active(state),
             tools=requested_tool_specs if tools_active else None,
             tool_choice=chat_request.tool_choice,
             tool_prompt_mode=tool_prompt_mode,
@@ -24161,11 +24317,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--preserve-thinking",
-        choices=["auto", "on", "off"],
+        choices=["auto", "on", "off", "scoped"],
         default="auto",
         help=(
-            "Preserve prior assistant <think>/reasoning blocks in chat-template "
-            "history. Default auto preserves them for Qwen reasoning templates."
+            "Reasoning-history policy for chat-template rendering. scoped "
+            "keeps <think>/reasoning blocks only inside the active agent "
+            "round (the template's rolling checkpoint - Qwen's trained "
+            "contract); on preserves all history reasoning; off strips it. "
+            "Default auto resolves to scoped for checkpoint-capable "
+            "templates, else preserve-all."
         ),
     )
     parser.add_argument(
@@ -24460,7 +24620,11 @@ def main(argv: list[str] | None = None) -> None:
     _startup_line("Model: " + str(args.model_id))
     _startup_line(
         "Reasoning history: "
-        + ("preserve" if _preserve_thinking_effective(args) else "strip")
+        + {
+            _REASONING_HISTORY_PRESERVE: "preserve",
+            _REASONING_HISTORY_SCOPED: "scoped (active round only)",
+            _REASONING_HISTORY_STRIP: "strip",
+        }[_reasoning_history_mode(state)]
         + f" (policy {getattr(args, 'preserve_thinking', 'auto')})"
     )
     if getattr(args, "api_key", None):
@@ -24503,8 +24667,18 @@ def main(argv: list[str] | None = None) -> None:
             _startup_line(
                 "warning: --launch-hermes was set but no Hermes command was provided."
             )
+    # Graceful-with-deadline shutdown (#124): a browser tab holding an
+    # infinite SSE stream (chat, dashboard, /metrics) otherwise makes
+    # uvicorn wait forever on Ctrl-C. The deadline lets in-flight requests
+    # finish, then cancels lingering streams and exits normally — atexit
+    # cleanup (thermal restore) still runs, unlike a hard os._exit.
     uvicorn.run(
-        app, host=args.host, port=args.port, log_level="warning", access_log=False
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="warning",
+        access_log=False,
+        timeout_graceful_shutdown=5,
     )
 
 

@@ -43,6 +43,10 @@ public struct MTPLXAPIClient: Sendable {
     public enum LivenessProbeResult: Sendable {
         case healthy(HealthPayload)
         case aliveUndecodable(String)
+        /// The daemon answered 401/403 — provably alive, credentials wrong.
+        /// An API-key mismatch is an app configuration bug and never
+        /// grounds to reap a serving process (liveness = transport truth).
+        case aliveUnauthorized
         case unreachable
     }
 
@@ -63,8 +67,12 @@ public struct MTPLXAPIClient: Sendable {
                     // 2xx arrived and the body was read; only the schema
                     // mapping failed. The daemon is alive.
                     return .aliveUndecodable(String(describing: error))
+                } catch MTPLXAPIClientError.httpStatus(401, _),
+                        MTPLXAPIClientError.httpStatus(403, _) {
+                    // An auth rejection is a live daemon speaking HTTP.
+                    return .aliveUnauthorized
                 } catch {
-                    // Transport failures, timeouts, non-2xx, non-HTTP.
+                    // Transport failures, timeouts, other non-2xx, non-HTTP.
                     return .unreachable
                 }
             }

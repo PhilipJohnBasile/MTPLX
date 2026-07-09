@@ -4,6 +4,100 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] - 2026-07-09
+
+The agent-reliability release: multi-turn agent sessions now render
+reasoning history on the model's trained contract (the fix for the
+plan-execution repetition marathons), LAN serving works from the app,
+and every agent client gets warm prefix reuse.
+
+### Changed
+
+- Reasoning history is now scoped to the active agent round by default
+  on Qwen3.6/3.5 models, matching Qwen's trained multi-turn contract.
+  The Qwen chat template keeps `<think>` blocks only for assistant
+  messages after the last real user query (its built-in "rolling
+  checkpoint"); MTPLX used to override that with `preserve_thinking`,
+  which rendered an off-contract empty `<think>` scaffold on every
+  completed assistant turn and replayed stale inline reasoning across
+  turns, while silently dropping the structured `reasoning_content`
+  fields agent clients such as OpenCode send. Scoped mode lets the
+  template's own checkpoint govern: completed turns render with no
+  think scaffold, and the active round (assistant -> tool -> assistant
+  chains) keeps its reasoning, now including structured
+  `reasoning_content` - strictly better in-round continuity than
+  before. `--preserve-thinking on` restores the previous behavior
+  byte-for-byte (including cache identity), `off` still strips
+  everything, and the new explicit `scoped` value pins the scoped mode.
+  Templates without the rolling checkpoint (Gemma 4, custom templates)
+  keep the previous preserve-all behavior. The resolved policy is shown
+  at startup ("Reasoning history: scoped (active round only)") and as
+  `reasoning_history_mode` in `/v1/mtplx/settings` and the snapshot.
+
+### Added
+
+- Loop Guard (opt-in): `MTPLX_LOOP_GUARD=1` enables a loop-armed
+  anti-repetition steering mode for models prone to verbatim repetition
+  marathons (for example repetition-damaged third-party quants). Unlike
+  a static presence penalty, the guard is completely inert until a real
+  loop is detected mid-response (bit-exact sampling otherwise, MTP
+  acceptance math unchanged), then penalizes only the tokens that would
+  extend a verbatim repeat and disarms once the loop is broken. Content
+  inside tool calls is never steered (code legitimately repeats short
+  token runs, so tool-call spans are masked token-exactly). The default
+  is OFF: no synthetic steering touches sampling unless you ask for it,
+  and the repetition fix that matters for MTPLX's own models is the
+  scoped reasoning history change above. Detector/steering knobs are
+  documented in `mtplx/loop_guard.py`; per-request guard activity is
+  visible under `loop_guard` in `/v1/mtplx/snapshot`.
+
+### Fixed
+
+- Hidden reasoning no longer leaks into visible chat content when a
+  long reasoning tag (e.g. `</reasoning>`) splits across a streaming
+  chunk boundary; the splitter held back too few bytes for tags longer
+  than `</think>` (PR #149 by @Osamaali313).
+- `mtplx` quickstart onboarding screens now display the requested
+  `--host`/`--port` in the Web UI and dashboard URLs instead of a
+  hardcoded `http://127.0.0.1:8000` (PR #148 by @hasegaw).
+- Ctrl-C now returns control to the terminal within a bounded delay
+  even when a browser tab holds an open chat/dashboard stream. The
+  server previously waited forever for infinite SSE generators to
+  finish; shutdown now drains in-flight requests with a 5-second
+  deadline, and thermal/fan cleanup still runs (#124).
+- Serving on any host and port now works from the app. Setting host
+  0.0.0.0 (LAN serving) used to misreport free ports as occupied, bump
+  the port, and kill the healthy daemon after a health-wait timeout,
+  because the app probed the bind address verbatim; all app-side
+  connections now resolve wildcard binds to a connectable loopback
+  address (#109). The app also surfaces the "LAN serving requires an
+  API key" rule before launch instead of a generic Degraded state, an
+  API-key mismatch reads as a live-but-unauthorized daemon instead of
+  a lost one, and the port-in-use preflight tests the address family
+  the daemon will actually bind.
+- The app now passes the SSD session cache setting to the daemon
+  explicitly, including "Off". Since 2.0.0 flipped the serve default to
+  on, an explicit Settings "Off" was silently re-enabled with default
+  limits on app-launched daemons, and `~/.mtplx/session-bank` kept
+  growing (#140; also the "session-bank came back after I deleted it"
+  half of #138). Generated `mtplx start` server commands carry the
+  explicit `--ssd-session-cache off` for the same reason.
+- The app's runtime venv now self-heals after app updates. A venv whose
+  base-interpreter symlink pointed into a replaced app bundle made every
+  reinstall fail with "[Errno 2] No such file or directory:
+  .../runtime-venv/bin/python3" and no DMG reinstall could fix it; venv
+  creation now rebuilds with `--clear` when the existing venv python is
+  broken or creation fails (#139).
+- Warm prefix reuse no longer freezes on the oldest short prefix for
+  agent harnesses outside OpenCode (Pi, little-coder, Hermes, custom
+  clients). The block-prefix restore lane was still gated to OpenCode's
+  compact tool contract even though kvcache-v2's boundary-true restores
+  made it exact for every client, so transcripts whose turns diverge
+  more than a few tokens before the stored end re-prefilled a growing
+  suffix every turn (#138). The lane now engages for all clients while
+  boundary-true restore is on; `MTPLX_SESSION_BLOCK_PREFIX_RESTORE=0`
+  still disables it.
+
 ## [2.0.1] - 2026-07-07
 
 Turbo for every Mac. The v2 turbo default now covers every dense catalog
