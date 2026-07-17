@@ -28,12 +28,51 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _TOP_LEVEL_MTP_PARTS = ("enorm", "hnorm", "eh_proj", "final_layernorm")
+
+
+def is_hy_v3_config(config: dict[str, Any]) -> bool:
+    """True for any hy_v3 checkpoint (with or without the MTP head)."""
+    model_type = str(config.get("model_type", "")).lower()
+    architectures = [str(a) for a in config.get("architectures") or []]
+    return model_type == "hy_v3" or any(
+        a in ("HyV3ForCausalLM", "HYV3ForCausalLM") for a in architectures
+    )
+
+
+def install_hy_v3_model_shim() -> None:
+    """Make ``mlx_lm.models.hy_v3`` importable on released mlx-lm.
+
+    No released mlx-lm ships a hy_v3 model class (ml-explore/mlx-lm#1211 is
+    open; the MTP surface lives only in the #1485 stack). Register the vendored
+    class so ``mlx_lm.utils.load`` can build the model. If a future upstream
+    module exists AND exposes the MTP surface (``predict_next_tokens``), prefer
+    it; a base-only upstream (which strips MTP in sanitize) is overridden, as
+    it would silently drop the head this backend exists to use. Idempotent.
+    """
+    name = "mlx_lm.models.hy_v3"
+    mod = sys.modules.get(name)
+    if mod is not None and hasattr(getattr(mod, "Model", None), "predict_next_tokens"):
+        return
+    if mod is None:
+        try:
+            import importlib
+
+            mod = importlib.import_module(name)
+        except ImportError:
+            mod = None
+    if mod is not None and hasattr(getattr(mod, "Model", None), "predict_next_tokens"):
+        return
+    from . import vendored_hy_v3
+
+    sys.modules[name] = vendored_hy_v3
+    logger.info("[Hy3] vendored hy_v3 model class registered as %s", name)
 
 
 def is_hy_v3_mtp_config(config: dict[str, Any]) -> bool:

@@ -569,6 +569,13 @@ def load(
     if is_qwen3_5_mtp_config(config):
         install_qwen3_5_mtp_trunk_shim()
 
+    # hy_v3 has no model class in any released mlx-lm; register the vendored
+    # one (kept MTP head) before mlx_lm.utils.load resolves the model type.
+    from .hy_v3_mtp_patch import install_hy_v3_model_shim, is_hy_v3_config
+
+    if is_hy_v3_config(config):
+        install_hy_v3_model_shim()
+
     if is_step3p5_mtp_config(config):
         from mlx_lm.utils import load_model
 
