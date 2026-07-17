@@ -25870,6 +25870,39 @@ def _gemma4_bundle_defaults(model_ref: str | None) -> tuple[dict[str, Any] | Non
     return sampler, draft_block_size
 
 
+def _model_declared_sampler_defaults(model_ref: str | None) -> dict[str, Any] | None:
+    """Official sampler defaults declared by the model artifact itself.
+
+    Reads ``generation_config.json`` next to the checkpoint. Scoped to hy_v3
+    (Tencent ships temperature=0.9 / top_p=1.0 / top_k off, which differs from
+    the project-wide 0.6/0.95/20 coding defaults) — existing Qwen/Gemma serving
+    defaults are deliberately left untouched (no-regression rule; widening this
+    to every family needs its own A/B).
+    """
+    if not model_ref:
+        return None
+    try:
+        from mtplx.hf_loader import resolve_model_path
+
+        path = resolve_model_path(str(model_ref))
+        config = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        if str(config.get("model_type", "")).lower() != "hy_v3":
+            return None
+        gen = json.loads((path / "generation_config.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    out: dict[str, Any] = {}
+    if isinstance(gen.get("temperature"), (int, float)):
+        out["temperature"] = float(gen["temperature"])
+    if isinstance(gen.get("top_p"), (int, float)):
+        out["top_p"] = float(gen["top_p"])
+    top_k = gen.get("top_k")
+    if isinstance(top_k, int):
+        # HF convention: top_k -1/0 = disabled; project sampler treats <=0 as off.
+        out["top_k"] = max(0, top_k)
+    return out or None
+
+
 def _apply_backend_server_defaults(
     args: argparse.Namespace,
     *,
@@ -25880,6 +25913,22 @@ def _apply_backend_server_defaults(
         and _model_ref_is_gemma4_pair(getattr(args, "model", None))
     ):
         args.backend_id = GEMMA4_BACKEND
+
+    declared = _model_declared_sampler_defaults(getattr(args, "model", None))
+    if declared:
+        if "temperature" in declared and not _server_flag_present(
+            explicit_flags, "temperature", "default-temperature"
+        ):
+            args.temperature = declared["temperature"]
+        if "top_p" in declared and not _server_flag_present(
+            explicit_flags, "top-p", "default-top-p"
+        ):
+            args.top_p = declared["top_p"]
+        if "top_k" in declared and not _server_flag_present(explicit_flags, "top-k"):
+            args.top_k = declared["top_k"]
+        LOGGER.info(
+            "[serve-defaults] model-declared sampler defaults applied: %s", declared
+        )
 
     sync_backend_arg_aliases(args)
     backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
