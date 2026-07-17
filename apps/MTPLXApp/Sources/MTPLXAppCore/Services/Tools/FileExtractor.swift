@@ -182,8 +182,14 @@ public enum FileExtractor {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
             process.arguments = ["-o", "-q", zipURL.path, "-d", unzipDir.path]
+            // Bounded wait (#158): a hostile or degenerate archive
+            // must not park the attachment flow forever — a timeout
+            // reads as "not extractable", same as a malformed docx.
+            let watchdog = SubprocessWatchdog(process)
             try process.run()
-            process.waitUntilExit()
+            guard watchdog.wait(for: process, timeout: 30) else {
+                return nil
+            }
 
             let xmlURL = unzipDir.appendingPathComponent("word/document.xml")
             guard let xmlData = try? Data(contentsOf: xmlURL) else { return nil }

@@ -114,13 +114,16 @@ public struct ModelDownloader: Sendable {
             let process = Process()
             process.executableURL = executable
             process.arguments = ["pull", repo, "--progress-json"]
-            // Inherit a sensible PATH so Homebrew installs and wrappers
-            // can find Python, git, and Hugging Face helpers even when
-            // the app was launched by Finder.
+            // Inherit a sensible PATH so Homebrew installs and wrappers can
+            // find their helpers. Apply caller-owned download knobs first,
+            // then pin Python's cache location so an override cannot send
+            // bytecode back into the signed app bundle.
             var env = self.processEnvironment
             env["PATH"] = MTPLXCommandBuilder.expandedPATH(environment: self.processEnvironment)
             env.merge(extraEnvironment) { _, new in new }
-            process.environment = env
+            process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+                environment: env
+            )
 
             let errPipe = Pipe()
             let outPipe = Pipe()

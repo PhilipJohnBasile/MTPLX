@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import deque
 import json
 import logging
 import os
@@ -100,6 +101,9 @@ class PendingWrite:
     tensors: dict[str, bytes]
     deferred: DeferredPayload | None = None
     created_at_s: float = field(default_factory=time.time)
+    # Estimated bytes this write pins in memory until the writer drains it
+    # (deferred payloads hold live KV arrays; encoded ones hold the buffers).
+    pinned_nbytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -167,6 +171,10 @@ def default_cold_tier_max_bytes() -> int:
     if ram <= 64 * GIB:
         return 32 * GIB
     return DEFAULT_COLD_TIER_MAX_BYTES
+
+
+def _env_size_bytes(name: str, default: int) -> int:
+    return parse_size_bytes(os.environ.get(name), default)
 
 
 def parse_size_bytes(value: str | int | None, default: int) -> int:
@@ -270,6 +278,24 @@ class SessionBankColdTier:
         self._queue: queue.Queue[PendingWrite | None] = queue.Queue(
             maxsize=max(1, int(writer_queue_depth))
         )
+        # Backlog byte cap (issue #145): every queued write pins its payload
+        # (deferred ones pin LIVE KV arrays) until the writer drains it. A
+        # count-bounded queue of 32 multi-GB snapshots can pin ~50 GB under
+        # distinct-prefix churn — measured live 2026-07-09 (active memory
+        # climbed 35 -> 66 GB while the bank ledger stayed flat). Cap the
+        # pinned bytes, drop new writes beyond it.
+        self._pending_bytes = 0
+        self._backlog_budget_bytes = _env_size_bytes(
+            "MTPLX_SSD_WRITER_BACKLOG_BYTES", 4 * 1024**3
+        )
+        # Hourly write budget (issue #144: 7 TB written / SSD wear): the
+        # different-repos pattern writes GBs per task and never restores
+        # them (measured 58 GB in 45 min with restore_hits=0). Rolling
+        # one-hour byte budget; beyond it new writes are skipped.
+        self._write_budget_per_hour_bytes = _env_size_bytes(
+            "MTPLX_SSD_WRITE_BUDGET_PER_HOUR", 64 * 1024**3
+        )
+        self._written_window: deque[tuple[float, int]] = deque()
         self._stop = threading.Event()
         self._base_lock = threading.RLock()
         self._disk_usage_lock = threading.Lock()
@@ -336,6 +362,9 @@ class SessionBankColdTier:
         if len(token_ids) < self.min_prefix_tokens:
             self._inc("skipped_too_short")
             return False
+        estimated_nbytes = int(getattr(entry, "nbytes", 0) or 0)
+        if not self._admit_write(estimated_nbytes):
+            return False
         boundaries = tuple(
             (int(r[0]), r[1], r[2] if len(r) > 2 else None)
             for r in (getattr(entry, "gdn_boundaries", None) or [])
@@ -381,6 +410,7 @@ class SessionBankColdTier:
                 payload_spec=None,
                 tensors={},
                 deferred=deferred,
+                pinned_nbytes=estimated_nbytes,
             )
         else:
             try:
@@ -408,10 +438,12 @@ class SessionBankColdTier:
                 metadata=metadata,
                 payload_spec=encoded.spec,
                 tensors=encoded.tensors,
+                pinned_nbytes=max(estimated_nbytes, int(encoded.nbytes)),
             )
         try:
             self._queue.put_nowait(pending)
         except queue.Full:
+            self._release_pending(pending.pinned_nbytes)
             self._inc("skipped_queue_full")
             logger.warning(
                 "SessionBank SSD writer queue full; skipping prefix_len=%d token_hash=%s",
@@ -573,11 +605,18 @@ class SessionBankColdTier:
     def stats(self) -> dict[str, Any]:
         with self._stats_lock:
             stats = dict(self._stats)
+        with self._stats_lock:
+            pending_bytes = int(self._pending_bytes)
+            written_last_hour = sum(nbytes for _, nbytes in self._written_window)
         stats.update(
             {
                 "enabled": self.enabled,
                 "restorable": self.restorable,
                 "writer_queue_depth": int(self._queue.qsize()),
+                "writer_backlog_bytes": pending_bytes,
+                "writer_backlog_budget_bytes": int(self._backlog_budget_bytes),
+                "written_bytes_last_hour": int(written_last_hour),
+                "write_budget_per_hour_bytes": int(self._write_budget_per_hour_bytes),
                 "dir": str(self.base_dir),
                 "manifest_path": str(self._manifest_path),
             }
@@ -786,6 +825,9 @@ class SessionBankColdTier:
                     self._inc("writes_completed")
                     with self._stats_lock:
                         self._stats["last_write_s"] = time.time()
+                        self._written_window.append(
+                            (time.time(), int(pending.pinned_nbytes))
+                        )
                     logger.info(
                         "SessionBank SSD wrote entry_id=%s prefix_len=%d nbytes=%d",
                         pending.entry_id,
@@ -801,7 +843,39 @@ class SessionBankColdTier:
                     exc,
                 )
             finally:
+                self._release_pending(pending.pinned_nbytes)
                 self._queue.task_done()
+
+    def _admit_write(self, estimated_nbytes: int) -> bool:
+        """Backlog + hourly-budget admission for a new SSD write."""
+
+        now = time.time()
+        with self._stats_lock:
+            if (
+                self._pending_bytes + max(0, estimated_nbytes)
+                > self._backlog_budget_bytes
+            ):
+                self._stats["skipped_backlog_bytes"] = (
+                    int(self._stats.get("skipped_backlog_bytes", 0) or 0) + 1
+                )
+                return False
+            while self._written_window and self._written_window[0][0] < now - 3600:
+                self._written_window.popleft()
+            written_last_hour = sum(nbytes for _, nbytes in self._written_window)
+            if (
+                written_last_hour + max(0, estimated_nbytes)
+                > self._write_budget_per_hour_bytes
+            ):
+                self._stats["skipped_write_budget"] = (
+                    int(self._stats.get("skipped_write_budget", 0) or 0) + 1
+                )
+                return False
+            self._pending_bytes += max(0, estimated_nbytes)
+        return True
+
+    def _release_pending(self, nbytes: int) -> None:
+        with self._stats_lock:
+            self._pending_bytes = max(0, self._pending_bytes - max(0, int(nbytes)))
 
     def _write_pending(self, pending: PendingWrite) -> bool:
         if pending.deferred is not None:

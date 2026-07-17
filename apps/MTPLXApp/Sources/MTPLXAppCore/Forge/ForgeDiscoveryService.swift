@@ -95,24 +95,43 @@ public struct ForgeDiscoveryService: Sendable {
         let process = Process()
         process.executableURL = executable
         process.arguments = args
-        process.environment = processEnvironment
+        process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+            environment: processEnvironment
+        )
 
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
 
+        let watchdog = SubprocessWatchdog(process)
         do {
             try process.run()
         } catch {
             throw ForgeDiscoveryError.backendNotAvailable
         }
 
-        let outData = try outPipe.fileHandleForReading.readToEnd() ?? Data()
-        let errData = try errPipe.fileHandleForReading.readToEnd() ?? Data()
-        process.waitUntilExit()
+        // Drain both pipes concurrently and bound the wait (#158): the
+        // old sequential readToEnd() pair deadlocked once a traceback
+        // filled stderr's 64KB pipe buffer while stdout was still open,
+        // and a wedged HF connection hung the wall forever. stdout is
+        // the JSON payload, so both sides use the lossless drain.
+        let stdoutDrain = SubprocessPipeDrain(outPipe)
+        let stderrDrain = SubprocessPipeDrain(errPipe)
+        let timeout: TimeInterval = 120
+        guard watchdog.wait(for: process, timeout: timeout) else {
+            stderrDrain.join(timeout: 1)
+            throw ForgeDiscoveryError.subprocessFailed(
+                exitCode: -2,
+                stderrTail: stderrDrain.snapshot()
+                    + "\n[forge discover timed out after \(Int(timeout))s and was terminated]"
+            )
+        }
+        stdoutDrain.join()
+        stderrDrain.join()
+        let outData = stdoutDrain.snapshotData()
 
-        let stderrText = String(data: errData, encoding: .utf8) ?? ""
+        let stderrText = stderrDrain.snapshot()
 
         if process.terminationStatus == 2,
            stderrText.range(of: "invalid choice", options: .caseInsensitive) != nil,

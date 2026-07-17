@@ -682,9 +682,10 @@ def _clear_cache_every() -> int:
         threshold = _env_int("MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD", 16384)
         if context_tokens >= threshold and _contiguous_dense_decode_prefill_enabled():
             # Default 16 tokens was per-step aggressive (sync barrier every
-            # tick). Bumped to 256 to amortize the sync cost while still
-            # bounding allocator growth.
-            return max(0, _env_int("MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT", 256))
+            # tick). 256 amortized it; 1024 (2026-07-16) removes the remaining
+            # -3.8% decode tax on 512-token generations at 33k ctx while
+            # marathon responses still get periodic allocator bounding.
+            return max(0, _env_int("MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT", 1024))
         return 0
     try:
         return max(0, int(raw))
@@ -1779,6 +1780,7 @@ def _prefill_restored_prompt_suffix(
     cached_tokens: int = 0,
     chunk_started_s: float | None = None,
     gdn_boundary_sink: list[tuple[int, Any, Any]] | None = None,
+    vision_splice: Any | None = None,
 ) -> tuple[Any, Any, float, float]:
     """Extend a restored SessionBank prefix without one giant suffix forward.
 
@@ -1804,6 +1806,46 @@ def _prefill_restored_prompt_suffix(
         _mtp_history_uses_committed_cache(mtp_history_policy)
         and restored.mtp_history_cache is not None
     )
+    # Vision suffixes: the caller pre-advanced the cursor past pads inside
+    # the restored prefix; trunk chunks consume the remaining rows
+    # sequentially, history windows read the same rows cursor-free.
+    splice_initial_cursor = (
+        int(vision_splice.cursor) if vision_splice is not None else 0
+    )
+
+    def _suffix_chunk_embeddings(chunk_array: Any) -> Any | None:
+        if vision_splice is None:
+            return None
+        from mtplx.vision.splice import spliced_chunk_embeddings
+
+        return spliced_chunk_embeddings(rt.embed_tokens, chunk_array, vision_splice)
+
+    def _history_window_embeddings(
+        token_ids: list[int], window_start: int
+    ) -> Any | None:
+        if vision_splice is None or not token_ids:
+            return None
+        pad_id = vision_splice.image_pad_token_id
+        if not any(token == pad_id for token in token_ids):
+            return None
+        from mtplx.vision.splice import spliced_embeddings_for_window
+
+        rows_before = splice_initial_cursor + sum(
+            1 for token in suffix[:window_start] if token == pad_id
+        )
+        return spliced_embeddings_for_window(
+            rt.embed_tokens,
+            mx.array([token_ids]),
+            vision_splice,
+            rows_before=rows_before,
+        )
+
+    def _check_splice_consumed() -> None:
+        if vision_splice is not None and vision_splice.remaining() > 0:
+            raise ValueError(
+                "vision splice overflow: restored-suffix prefill left "
+                f"{vision_splice.remaining()} unconsumed vision rows"
+            )
 
     def emit_chunk(chunk_len: int, chunk_elapsed: float, started: float) -> None:
         if chunk_callback is None:
@@ -1845,7 +1887,9 @@ def _prefill_restored_prompt_suffix(
         except Exception:
             pass
 
-    def append_history(hidden_states: Any, token_ids: list[int]) -> None:
+    def append_history(
+        hidden_states: Any, token_ids: list[int], window_start: int = 0
+    ) -> None:
         nonlocal mtp_history_time
         if not use_committed_mtp or not token_ids:
             return
@@ -1856,11 +1900,12 @@ def _prefill_restored_prompt_suffix(
             token_ids,
             mtp_hidden_variant=mtp_hidden_variant,
             force_eval=True,
+            input_embeddings=_history_window_embeddings(token_ids, window_start),
         )
         _check_postcommit_abort(abort_check)
 
     if use_committed_mtp and restored.hidden is not None:
-        append_history(restored.hidden, [int(suffix[0])])
+        append_history(restored.hidden, [int(suffix[0])], window_start=0)
 
     # kvcache-v2 small-suffix fast path: warm restores usually leave a tail of
     # tens-to-hundreds of tokens, and the chunked body/final split plus its
@@ -1870,15 +1915,18 @@ def _prefill_restored_prompt_suffix(
     # keep the chunked path for abort responsiveness.
     fused_max = _small_suffix_fused_max()
     if 0 < len(suffix) <= fused_max:
+        fused_array = mx.array([suffix])
+        fused_embeddings = _suffix_chunk_embeddings(fused_array)
         started = time.perf_counter()
         with attention_phase("prefill"):
             suffix_logits, suffix_hidden = rt.forward_ar(
-                mx.array([suffix]),
+                fused_array,
                 cache=restored.cache,
                 return_hidden=True,
                 hidden_variant=base_hidden_variant,
                 emit_logits=True,
                 logits_keep=1 if final_logits_only else None,
+                input_embeddings=fused_embeddings,
             )
         _eval(suffix_logits, suffix_hidden)
         chunk_elapsed = time.perf_counter() - started
@@ -1892,8 +1940,10 @@ def _prefill_restored_prompt_suffix(
             append_history(
                 suffix_hidden[:, :-1, :],
                 [int(token) for token in suffix[1:]],
+                window_start=1,
             )
         target_forward_time += _maybe_repage_target_prefill_cache(restored.cache)
+        _check_splice_consumed()
         return (
             suffix_logits[:, -1, :],
             suffix_hidden[:, -1:, :],
@@ -1918,6 +1968,7 @@ def _prefill_restored_prompt_suffix(
         for start, end in spans:
             _check_postcommit_abort(abort_check)
             chunk_array = body_array[:, start:end]
+            chunk_embeddings = _suffix_chunk_embeddings(chunk_array)
             started = time.perf_counter()
             with attention_phase("prefill"):
                 if use_committed_mtp:
@@ -1927,6 +1978,7 @@ def _prefill_restored_prompt_suffix(
                         return_hidden=True,
                         hidden_variant=base_hidden_variant,
                         emit_logits=False,
+                        input_embeddings=chunk_embeddings,
                     )
                 else:
                     hidden_chunk = None
@@ -1934,6 +1986,7 @@ def _prefill_restored_prompt_suffix(
                         rt,
                         chunk_array,
                         restored.cache,
+                        input_embeddings=chunk_embeddings,
                     )
             if hidden_chunk is None:
                 if logits_chunk is None:
@@ -1972,6 +2025,7 @@ def _prefill_restored_prompt_suffix(
                 append_history(
                     hidden_chunk,
                     [int(token) for token in suffix[start + 1 : end + 1]],
+                    window_start=start + 1,
                 )
             del hidden_chunk
             del logits_chunk
@@ -1980,14 +2034,17 @@ def _prefill_restored_prompt_suffix(
 
     started = time.perf_counter()
     _check_postcommit_abort(abort_check)
+    final_array = mx.array([[suffix[-1]]])
+    final_embeddings = _suffix_chunk_embeddings(final_array)
     with attention_phase("prefill"):
         suffix_logits, suffix_hidden = rt.forward_ar(
-            mx.array([[suffix[-1]]]),
+            final_array,
             cache=restored.cache,
             return_hidden=True,
             hidden_variant=base_hidden_variant,
             emit_logits=True,
             logits_keep=1 if final_logits_only else None,
+            input_embeddings=final_embeddings,
         )
     _eval(suffix_logits, suffix_hidden)
     chunk_elapsed = time.perf_counter() - started
@@ -1996,6 +2053,7 @@ def _prefill_restored_prompt_suffix(
     suffix_done = suffix_total
     emit_chunk(1, chunk_elapsed, started)
     _check_postcommit_abort(abort_check)
+    _check_splice_consumed()
     return (
         suffix_logits[:, -1, :],
         suffix_hidden[:, -1:, :],
@@ -2198,9 +2256,23 @@ def _restore_near_prefix_prompt_state(
     ):
         _check_postcommit_abort(abort_check)
         matched = int(matched)
+
+        def _near_debug(reason: str) -> None:
+            if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
+                print(
+                    f"[mtplx] near-prefix reject: entry_len="
+                    f"{int(getattr(entry, 'prefix_len', 0) or 0)} "
+                    f"matched={matched} min_restore={int(min_restore_tokens)} "
+                    f"reason={reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
         if matched <= int(min_restore_tokens):
+            _near_debug("matched_below_min_restore")
             continue
         if matched < 2 or matched >= int(getattr(entry, "prefix_len", 0) or 0):
+            _near_debug("matched_out_of_range")
             continue
         if not _entry_matches_restore_lookup(
             entry,
@@ -2211,6 +2283,7 @@ def _restore_near_prefix_prompt_state(
             draft_head_identity=draft_head_identity,
             policy_fingerprint=policy_fingerprint,
         ):
+            _near_debug("identity_mismatch")
             continue
         committed_history_required = _mtp_history_uses_committed_cache(
             mtp_history_policy
@@ -2220,7 +2293,27 @@ def _restore_near_prefix_prompt_state(
             or getattr(entry, "mtp_history_cache_ref", None) is not None
         )
         if committed_history_required and not has_committed_history:
+            _near_debug("missing_committed_mtp_history")
             continue
+        if getattr(entry, "has_recurrent", False):
+            gap_from_entry = int(getattr(entry, "prefix_len", 0) or 0) - matched
+            if gap_from_entry > max_gap:
+                # Boundary-true restores land at the newest recurrent boundary
+                # at/below `matched`, not at `matched` itself. A candidate is
+                # only worth taking when that achievable point still beats the
+                # exact-prefix alternative — otherwise a boundary-quantized
+                # restore silently LOSES tokens vs the plain exact restore
+                # (observed: block candidate matched=2560 restoring at 2354
+                # while an exact 2383-entry existed).
+                probe = getattr(entry, "recurrent_boundary_at_or_below", None)
+                achievable = 0
+                if callable(probe):
+                    boundary_probe = probe(matched)
+                    if boundary_probe is not None:
+                        achievable = int(boundary_probe[0])
+                if achievable <= int(min_restore_tokens):
+                    _near_debug(f"boundary_not_better:{achievable}")
+                    continue
 
         prefix_restore = None
         cache_restore_time_s = 0.0
@@ -2271,7 +2364,12 @@ def _restore_near_prefix_prompt_state(
                     prefix_restore = (cache, mtp_history_cache, "clone")
             cache_restore_time_s = time.perf_counter() - restore_started
         if prefix_restore is None:
+            _near_debug(
+                "restore_failed:"
+                + str(getattr(session_bank, "last_miss_reason", None))
+            )
             continue
+        _near_debug("served")
         boundary_hidden = None
         if len(prefix_restore) == 5:
             (
@@ -2500,13 +2598,74 @@ def _cache_has_recurrent_entries(cache: list[Any] | None) -> bool:
     return any(not _is_trimmable(entry) for entry in (cache or []))
 
 
+def _thin_gdn_boundary_records(
+    records: list[tuple[int, Any, Any]], cap: int
+) -> list[tuple[int, Any, Any]]:
+    """Thin boundary records to `cap` with geometric distance-from-tail coverage.
+
+    The retired policy ("keep the oldest + a dense tail", implemented as
+    pop(1) on every over-cap append) had no coverage guarantee in the middle:
+    any append churn after the cap — postcommit re-forward chunk edges,
+    inheritance re-thinning on clone/lease chains — ate the mid-prefix records
+    one by one, leaving [oldest, <recent tail>]. A near-miss prefix match that
+    landed in the hole then restored at the OLDEST boundary: measured
+    2026-07-17 on the Hermes lane, matched≈22.5k restored at 2,048 → 20k+
+    re-prefill and 35-50s TTFT (MEASUREMENTS 01:05 §B).
+
+    This policy keeps, in one pass over the records sorted by position:
+      - the newest record (divergence distance ~0),
+      - one record per power-of-two bucket of distance-from-newest
+        (256..512, 512..1024, ... tokens), preferring the record CLOSEST to
+        the newest inside each bucket,
+      - the oldest record (deep-divergence anchor).
+    Coverage invariant (unit-tested): for any matched position covered by the
+    original records, restoring at the nearest kept boundary at or below it
+    re-prefills at most ~3x the true divergence distance from the tail (plus
+    one capture-grid interval) — cost stays proportional to how far the
+    request actually diverged, never a cliff.
+    """
+    if len(records) <= max(2, cap):
+        return list(records)
+    ordered = sorted(records, key=lambda record: int(record[0]))
+    newest = ordered[-1]
+    oldest = ordered[0]
+    newest_pos = int(newest[0])
+    kept: dict[int, tuple[int, Any, Any]] = {int(newest[0]): newest, int(oldest[0]): oldest}
+    # Walk from the tail toward the head (distance from newest increasing).
+    # Keep the first record past each doubling floor — one keeper per
+    # distance scale, geometric spacing by construction regardless of how
+    # dense or lumpy the input grid is. The first floor adapts to the record
+    # span so the doubling chain always reaches the oldest record within the
+    # cap budget (cap-2 scales after newest+oldest): full-span coverage with
+    # worst-case slack span/2^(cap-2) instead of an uncovered deep-middle.
+    span = max(1, newest_pos - int(oldest[0]))
+    base = 256
+    scales = max(1, cap - 2)
+    while base * (1 << (scales - 1)) < span and base < span:
+        base *= 2
+    floor = 0
+    next_floor = base
+    idx = len(ordered) - 2
+    while idx > 0 and len(kept) < cap:
+        pos = int(ordered[idx][0])
+        distance = newest_pos - pos
+        if distance > floor:
+            kept.setdefault(pos, ordered[idx])
+            while next_floor < distance:
+                next_floor *= 2
+            floor = next_floor
+            next_floor *= 2
+        idx -= 1
+    return sorted(kept.values(), key=lambda record: int(record[0]))
+
+
 def _capture_gdn_boundary(
     sink: list[tuple[int, Any, Any]] | None,
     tokens_done: int,
     cache: list[Any],
     hidden_last: Any | None = None,
 ) -> None:
-    """Append a recurrent-only snapshot at `tokens_done`, tail-biased retention.
+    """Append a recurrent-only snapshot at `tokens_done`, geometric retention.
 
     `hidden_last` is the base hidden state of token `tokens_done - 1` when the
     producing chunk computed hidden (MTP streaming prefill). Restores use it to
@@ -2515,9 +2674,10 @@ def _capture_gdn_boundary(
     second time and break exactness (temp-0 divergence, found 2026-07-03).
 
     Snapshot cost is MB-scale per boundary (conv tail + GDN matrix state), so
-    the count is capped; when over cap the second-oldest is dropped — keeping
-    the oldest for deep-divergence restores and a dense tail where agent/RAG
-    divergence actually lands.
+    the count is capped; over cap the list is re-thinned to geometric
+    distance-from-tail coverage (see _thin_gdn_boundary_records — the previous
+    oldest+dense-tail pop(1) policy left a mid-prefix coverage hole that
+    near-miss restores fell into).
     """
     if sink is None or tokens_done < 1:
         return
@@ -2529,8 +2689,8 @@ def _capture_gdn_boundary(
             (int(tokens_done), snapshot_untrimmable_cache(cache), hidden_leaf)
         )
         cap = _gdn_boundary_max_count()
-        while len(sink) > cap:
-            sink.pop(1)
+        if len(sink) > cap:
+            sink[:] = _thin_gdn_boundary_records(sink, cap)
     except Exception:
         # Boundary capture is an accelerator for future restores; never let it
         # break the cold prefill that is running right now.
@@ -2571,10 +2731,11 @@ def _inherited_gdn_boundaries(entry: Any, restore_point: int) -> list:
     records = list(getattr(entry, "gdn_boundaries", None) or [])
     kept = [record for record in records if int(record[0]) <= int(restore_point)]
     cap = _gdn_boundary_max_count()
-    while len(kept) > cap:
-        # Tail-biased retention, mirroring _capture_gdn_boundary: keep the
-        # oldest record for deep-divergence restores and a dense tail.
-        kept.pop(1)
+    if len(kept) > cap:
+        # Geometric retention, mirroring _capture_gdn_boundary — the old
+        # oldest+dense-tail pop(1) here was the second churn site that
+        # hollowed out mid-prefix coverage on clone/lease chains.
+        kept = _thin_gdn_boundary_records(kept, cap)
     return kept
 
 
@@ -2678,11 +2839,22 @@ def restore_or_prefill_prompt_state(
     here — the only cost is the bank's snapshot copy, taken only when the
     new-prefill suffix is large enough to have been a real miss.
     """
+    bank_key_ids: list[int] | None = None
     if vision_splice is not None and session_bank is not None:
-        # Image content is not represented in token ids, so prefix reuse
-        # would alias different images. The server disables the bank for
-        # vision requests; enforce it here as well.
-        raise ValueError("vision requests must not use the session bank")
+        # Image content is not represented in token ids, so raw prefix reuse
+        # would alias different images. The bank may only participate through
+        # the content-keyed view: image pad positions remapped to surrogates
+        # derived from each image's byte digest, making the key sequence a
+        # pure function of text + pixels. Without that identity the server
+        # bypasses the bank; enforce the invariant here as well.
+        from mtplx.vision.splice import vision_bank_key_ids
+
+        bank_key_ids = vision_bank_key_ids(prompt_ids, vision_splice)
+        if bank_key_ids is None:
+            raise ValueError(
+                "vision requests must not use the session bank without "
+                "content-keyed ids"
+            )
     base_hidden_variant = _resolve_runtime_base_hidden_variant(rt, base_hidden_variant)
     mtp_hidden_variant = _resolve_runtime_mtp_hidden_variant(rt, mtp_hidden_variant)
     mtp_position_mode = _resolve_runtime_mtp_position_mode(rt)
@@ -2723,12 +2895,22 @@ def restore_or_prefill_prompt_state(
             if store_prefix_snapshot is None
             else bool(store_prefix_snapshot)
         )
-        if not enabled or session_bank is None or vision_splice is not None:
+        if not enabled or session_bank is None:
+            return
+        if vision_splice is not None and bank_key_ids is None:
             return
         if int(state.suffix_tokens or 0) < _store_on_prefill_min_suffix():
             # Warm restore or trivial extension: the existing postcommit
             # machinery owns those; storing again would just churn the bank.
             return
+        if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
+            print(
+                f"[mtplx] store-on-prefill: len={len(prompt_ids)} "
+                f"boundaries={len(list(getattr(state, 'gdn_boundaries', None) or []))} "
+                f"cached={int(state.cached_tokens)} restore={state.restore_mode}",
+                file=sys.stderr,
+                flush=True,
+            )
         try:
             mtp_snapshot = (
                 snapshot_cache(state.committed_mtp_cache)
@@ -2737,7 +2919,7 @@ def restore_or_prefill_prompt_state(
             )
             session_bank.put(
                 runtime=rt,
-                token_ids=list(prompt_ids),
+                token_ids=list(bank_key_ids if bank_key_ids is not None else prompt_ids),
                 cache=state.trunk_cache,
                 logits=state.logits,
                 hidden=state.hidden,
@@ -2809,11 +2991,14 @@ def restore_or_prefill_prompt_state(
             and not allow_live_frontier_reference
             else restore_mode
         )
+        # The bank only ever sees the content-keyed view of a vision prompt;
+        # for text prompts the two views are the same list.
+        bank_match_ids = bank_key_ids if bank_key_ids is not None else prompt_ids
         exact_prefix_len = 0
         try:
             longest_prefix = getattr(session_bank, "longest_prefix", None)
             if callable(longest_prefix):
-                exact_entry = longest_prefix(prompt_ids)
+                exact_entry = longest_prefix(bank_match_ids)
                 if exact_entry is not None:
                     exact_prefix_len = int(
                         getattr(exact_entry, "prefix_len", 0) or 0
@@ -2822,7 +3007,20 @@ def restore_or_prefill_prompt_state(
             exact_prefix_len = 0
 
         tried_larger_near_prefix = False
-        if 0 < exact_prefix_len < len(prompt_ids):
+        # Vision prompts stay off the near/block-prefix lane for now: that
+        # path interleaves bank matching with model forwards and would need
+        # the keyed/real id split threaded through it. Exact-prefix restores
+        # cover the strictly-extending agent flow; divergent vision histories
+        # fall back to a full prefill exactly like the pre-keying behavior.
+        # Fires on RAM exact-miss too (exact_prefix_len == 0): supersede
+        # removes short same-lineage RAM entries as turns extend, so a
+        # divergent agent turn often has rich near-prefix candidates in RAM
+        # but NO RAM exact match — gating this lane on an exact hit sent
+        # those turns to session_bank.restore(), whose SSD fallback served a
+        # stale short clean-prefix entry instead (#121, turns 6+ in the
+        # 2026-07-16 replay: ssd_clone at 2361 while RAM candidates matched
+        # 2770+ with boundaries).
+        if exact_prefix_len < len(prompt_ids) and vision_splice is None:
             # A short exact-prefix entry must not shadow a longer entry that
             # shares a bigger prompt prefix. Pre-v2 the block-prefix lane was
             # OpenCode-compact-only because broad block reuse could restore KV
@@ -2869,7 +3067,7 @@ def restore_or_prefill_prompt_state(
         restore_started = time.perf_counter()
         restored = session_bank.restore(
             rt,
-            prompt_ids,
+            bank_match_ids,
             mode=effective_restore_mode,
             session_id=session_id,
             hidden_variant=base_hidden_variant,
@@ -2889,6 +3087,14 @@ def restore_or_prefill_prompt_state(
             inherited_boundaries = _inherited_gdn_boundaries(
                 restored.entry, restored.entry.prefix_len
             )
+            if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
+                print(
+                    f"[mtplx] exact-restore: entry_len={restored.entry.prefix_len} "
+                    f"entry_boundaries={len(list(getattr(restored.entry, 'gdn_boundaries', None) or []))} "
+                    f"inherited={len(inherited_boundaries)} suffix={len(suffix)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if not suffix:
                 repage_time = _maybe_repage_target_prefill_cache(restored.cache)
                 return _emit_prefill_complete(PromptState(
@@ -2934,6 +3140,16 @@ def restore_or_prefill_prompt_state(
                 and _gdn_boundary_capture_enabled()
                 else None
             )
+            if vision_splice is not None:
+                # Rows for pads inside the restored prefix are already baked
+                # into the restored KV; the suffix consumes strictly after
+                # them.
+                pad_id = int(vision_splice.image_pad_token_id)
+                vision_splice.cursor = sum(
+                    1
+                    for token in prompt_ids[: restored.entry.prefix_len]
+                    if token == pad_id
+                )
             suffix_logits, suffix_hidden, suffix_time, mtp_history_time = (
                 _prefill_restored_prompt_suffix(
                     rt,
@@ -2948,6 +3164,7 @@ def restore_or_prefill_prompt_state(
                     cached_tokens=restored.entry.prefix_len,
                     chunk_started_s=prefill_started_s,
                     gdn_boundary_sink=suffix_boundary_sink,
+                    vision_splice=vision_splice,
                 )
             )
             return _emit_prefill_complete(PromptState(
@@ -5152,6 +5369,13 @@ def generate_mtpk(
         abort_check=abort_check,
     )
     prompt_prefix_bank_commit: dict[str, object] = {}
+    bank_commit_ids = prompt_ids
+    if vision_splice is not None and session_bank is not None:
+        # Same content-keyed view restore_or_prefill_prompt_state used; a
+        # None here is impossible past its guard.
+        from mtplx.vision.splice import vision_bank_key_ids
+
+        bank_commit_ids = vision_bank_key_ids(prompt_ids, vision_splice) or prompt_ids
     if (
         commit_prompt_state_to_bank
         and session_bank is not None
@@ -5168,7 +5392,7 @@ def generate_mtpk(
             )
             entry = session_bank.put(
                 runtime=rt,
-                token_ids=prompt_ids,
+                token_ids=list(bank_commit_ids),
                 cache=prompt_state.trunk_cache,
                 logits=prompt_state.logits,
                 hidden=prompt_state.hidden,
@@ -5192,6 +5416,16 @@ def generate_mtpk(
                 if mtp_snapshot is not None
                 or prompt_state.committed_mtp_cache is not None
                 else None,
+                # Issue #121 root cause (measured 2026-07-16): this commit is
+                # the PRIMARY store for tool-session turns and it dropped the
+                # recurrent boundaries the prefill captured/inherited. Every
+                # descendant entry was boundary-less, so hybrid-model
+                # near-prefix restores fail-closed (no_snapshot_coverage) and
+                # agent turns pinned on the oldest clean-prefix entry while
+                # skip% decayed (78%->52% over 12 turns in the replay).
+                gdn_boundaries=list(
+                    getattr(prompt_state, "gdn_boundaries", None) or []
+                ),
             )
             prompt_prefix_bank_commit = {
                 "stored": entry is not None,

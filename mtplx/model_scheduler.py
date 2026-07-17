@@ -8,12 +8,53 @@ maintenance work such as SessionBank postcommit snapshots.
 
 from __future__ import annotations
 
+import os
+import sys
 from collections import Counter, deque
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from threading import Condition, Thread, get_ident
 import time
 from typing import Any, Callable
+
+_QOS_CLASSES = {
+    "user_interactive": 0x21,
+    "user_initiated": 0x19,
+    "default": 0x15,
+    "utility": 0x11,
+    "background": 0x09,
+}
+
+
+def _pin_owner_thread_qos() -> str | None:
+    """Raise the model owner thread's macOS QoS class (Darwin, best-effort).
+
+    Python threads start at QOS_CLASS_DEFAULT, which the scheduler ranks
+    below every user-interactive app thread — on a busy Mac (Electron
+    renderers, WindowServer compositing) the decode loop gets preempted
+    between Metal submissions and 32k decode drops from ~43 to ~27 tok/s
+    (measured 2026-07-16, load 6.7 vs 13). USER_INITIATED marks in-flight
+    generation as work the user is waiting on without competing with UI
+    event handling the way USER_INTERACTIVE would.
+
+    MTPLX_GENERATION_QOS: user_interactive | user_initiated (default) |
+    default | utility | background | off.
+    """
+    raw = os.environ.get("MTPLX_GENERATION_QOS", "user_initiated").strip().lower()
+    if raw in {"off", "none", "0", "false"}:
+        return None
+    qos = _QOS_CLASSES.get(raw)
+    if qos is None or sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        if int(libsystem.pthread_set_qos_class_self_np(qos, 0)) == 0:
+            return raw
+        return None
+    except Exception:
+        return None
 
 
 @dataclass
@@ -61,6 +102,7 @@ class ModelWorkScheduler:
         self._active_batch_key: str | None = None
         self._active_started_at_s: float | None = None
         self._active_queue_wait_s: float | None = None
+        self.owner_qos: str | None = None
         self._thread = Thread(
             target=self._run,
             name=f"{self.name}-owner",
@@ -231,6 +273,7 @@ class ModelWorkScheduler:
 
     def _run(self) -> None:
         self._owner_thread_id = get_ident()
+        self.owner_qos = _pin_owner_thread_qos()
         while True:
             item = self._take_next()
             if item is None:

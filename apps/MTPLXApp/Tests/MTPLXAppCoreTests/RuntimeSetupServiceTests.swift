@@ -71,6 +71,43 @@ final class RuntimeSetupServiceTests: XCTestCase {
         return url
     }
 
+    private func assertTerminalWrapper(
+        home: URL,
+        engine: URL,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        for commandName in ["mtplx", "MTPLX"] {
+            let shim = home.appendingPathComponent(".mtplx/bin/\(commandName)")
+            XCTAssertNil(
+                try? FileManager.default.destinationOfSymbolicLink(atPath: shim.path),
+                "terminal command must be a wrapper, not a symlink",
+                file: file,
+                line: line
+            )
+            let wrapper = try String(contentsOf: shim, encoding: .utf8)
+            XCTAssertTrue(
+                wrapper.contains(
+                    "export PYTHONPYCACHEPREFIX='\(home.path)/Library/Caches/MTPLX/PythonBytecode'"
+                ),
+                wrapper,
+                file: file,
+                line: line
+            )
+            XCTAssertTrue(
+                wrapper.contains("exec '\(engine.path)' \"$@\""),
+                wrapper,
+                file: file,
+                line: line
+            )
+            XCTAssertTrue(
+                FileManager.default.isExecutableFile(atPath: shim.path),
+                file: file,
+                line: line
+            )
+        }
+    }
+
     private func temporaryDirectory() -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("runtime-setup-tests-\(UUID().uuidString)", isDirectory: true)
@@ -198,11 +235,7 @@ final class RuntimeSetupServiceTests: XCTestCase {
         // shim shadows it so the terminal still serves the engine.
         XCTAssertEqual(result.row(.globalCLI)?.state, .done)
         XCTAssertNil(result.row(.globalCLI)?.command)
-        let shim = home.appendingPathComponent(".mtplx/bin/mtplx")
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(atPath: shim.path),
-            engine.path
-        )
+        try assertTerminalWrapper(home: home, engine: engine)
     }
 
     /// The app is not polite about stale CLIs: anything older than the
@@ -235,11 +268,7 @@ final class RuntimeSetupServiceTests: XCTestCase {
         XCTAssertNil(result.row(.globalCLI)?.command, "no manual command — the app already fixed it")
         XCTAssertEqual(result.outcome?.engineReady, true)
 
-        let shim = home.appendingPathComponent(".mtplx/bin/mtplx")
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(atPath: shim.path),
-            engine.path
-        )
+        try assertTerminalWrapper(home: home, engine: engine)
         let zshrc = try String(
             contentsOf: home.appendingPathComponent(".zshrc"),
             encoding: .utf8
@@ -300,12 +329,7 @@ final class RuntimeSetupServiceTests: XCTestCase {
         )
         XCTAssertEqual(result.outcome?.engineReady, true)
 
-        let shim = home.appendingPathComponent(".mtplx/bin/mtplx")
-        XCTAssertEqual(
-            try FileManager.default.destinationOfSymbolicLink(atPath: shim.path),
-            engine.path,
-            "Shim must symlink to the app-owned engine"
-        )
+        try assertTerminalWrapper(home: home, engine: engine)
         let zshrc = try String(
             contentsOf: home.appendingPathComponent(".zshrc"),
             encoding: .utf8
@@ -318,6 +342,12 @@ final class RuntimeSetupServiceTests: XCTestCase {
         let engine = try makeFakeCLI(in: home.appendingPathComponent("engine"), version: "1.0.0")
         let emptyDir = home.appendingPathComponent("empty-bin", isDirectory: true)
         try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        let shimDir = home.appendingPathComponent(".mtplx/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: shimDir, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: shimDir.appendingPathComponent("mtplx"),
+            withDestinationURL: engine
+        )
 
         let service = RuntimeSetupService(
             processEnvironment: isolatedEnvironment(home: home, pathDir: emptyDir),
@@ -330,12 +360,130 @@ final class RuntimeSetupServiceTests: XCTestCase {
 
         XCTAssertEqual(second.row(.globalCLI)?.state, .done)
         XCTAssertEqual(second.row(.globalCLI)?.detail, "mtplx command ready.")
+        try assertTerminalWrapper(home: home, engine: engine)
+        let preservedSymlinks = try FileManager.default.contentsOfDirectory(
+            atPath: shimDir.path
+        ).filter { $0.hasPrefix("mtplx.pre-wrapper-") }
+        XCTAssertEqual(preservedSymlinks.count, 1, "the old symlink should be preserved exactly once")
         let zshrc = try String(
             contentsOf: home.appendingPathComponent(".zshrc"),
             encoding: .utf8
         )
         let occurrences = zshrc.components(separatedBy: ".mtplx/bin:").count - 1
         XCTAssertEqual(occurrences, 1, "PATH line must not be duplicated:\n\(zshrc)")
+    }
+
+    func testTerminalWrapperPinsCacheAndForwardsArguments() async throws {
+        let home = temporaryDirectory()
+        let engineDir = home.appendingPathComponent("engine", isDirectory: true)
+        try FileManager.default.createDirectory(at: engineDir, withIntermediateDirectories: true)
+        let engine = engineDir.appendingPathComponent("mtplx")
+        let log = home.appendingPathComponent("wrapper.log")
+        try """
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          echo "mtplx 1.0.0 (1.0.0)"
+          exit 0
+        fi
+        {
+          printf '%s\n' "$PYTHONPYCACHEPREFIX"
+          printf '%s\n' "$#"
+          printf '%s\n' "$1"
+          printf '%s\n' "$2"
+        } > "$MTPLX_TEST_WRAPPER_LOG"
+        """.write(to: engine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: engine.path
+        )
+        let emptyDir = home.appendingPathComponent("empty-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        var environment = isolatedEnvironment(home: home, pathDir: emptyDir)
+        environment["MTPLX_TEST_WRAPPER_LOG"] = log.path
+
+        let service = RuntimeSetupService(
+            processEnvironment: environment,
+            appVersion: "1.0.0",
+            engineInstaller: { _ in engine },
+            fanControlEnsurer: fanControlOK()
+        )
+        _ = await run(service)
+
+        let process = Process()
+        process.executableURL = home.appendingPathComponent(".mtplx/bin/mtplx")
+        process.arguments = ["alpha", "two words"]
+        environment["PYTHONPYCACHEPREFIX"] = "/Applications/MTPLX.app/Contents/Resources/cache"
+        process.environment = environment
+        try process.run()
+        process.waitUntilExit()
+
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(
+            try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init),
+            [
+                home.appendingPathComponent("Library/Caches/MTPLX/PythonBytecode").path,
+                "2",
+                "alpha",
+                "two words",
+            ]
+        )
+    }
+
+    func testCompletedUserLegacyShimMigratesOutsideOnboarding() throws {
+        let home = temporaryDirectory()
+        let environment = ["HOME": home.path]
+        let runtimeBin = URL(
+            fileURLWithPath: MTPLXCommandBuilder.appRuntimeBinDirectory(
+                environment: environment
+            ),
+            isDirectory: true
+        )
+        let engine = try makeFakeCLI(in: runtimeBin, version: "1.0.0")
+        let shimDir = home.appendingPathComponent(".mtplx/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: shimDir, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: shimDir.appendingPathComponent("mtplx"),
+            withDestinationURL: engine
+        )
+
+        XCTAssertTrue(
+            try RuntimeSetupService.migrateLegacyTerminalShimIfNeeded(
+                processEnvironment: environment
+            )
+        )
+        try assertTerminalWrapper(home: home, engine: engine)
+        XCTAssertFalse(
+            try RuntimeSetupService.migrateLegacyTerminalShimIfNeeded(
+                processEnvironment: environment
+            ),
+            "the normal-startup migration must be idempotent"
+        )
+        let preservedSymlinks = try FileManager.default.contentsOfDirectory(
+            atPath: shimDir.path
+        ).filter { $0.hasPrefix("mtplx.pre-wrapper-") }
+        XCTAssertEqual(preservedSymlinks.count, 1)
+    }
+
+    func testCompletedUserMigrationLeavesCustomLauncherUntouched() throws {
+        let home = temporaryDirectory()
+        let custom = try makeFakeCLI(
+            in: home.appendingPathComponent("custom-bin"),
+            version: "9.9.9"
+        )
+        let shimDir = home.appendingPathComponent(".mtplx/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: shimDir, withIntermediateDirectories: true)
+        let shim = shimDir.appendingPathComponent("mtplx")
+        try FileManager.default.createSymbolicLink(at: shim, withDestinationURL: custom)
+
+        XCTAssertFalse(
+            try RuntimeSetupService.migrateLegacyTerminalShimIfNeeded(
+                processEnvironment: ["HOME": home.path]
+            )
+        )
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: shim.path),
+            custom.path
+        )
     }
 
     func testExistingBrewCLIIsNotShadowedByShim() async throws {

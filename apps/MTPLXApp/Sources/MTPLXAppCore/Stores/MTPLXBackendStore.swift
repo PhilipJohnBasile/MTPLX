@@ -849,14 +849,19 @@ public final class MTPLXBackendStore: ObservableObject {
     public func updateRuntimeWithHomebrew() async {
         do {
             let bootstrapper = MTPLXRuntimeBootstrapper(environment: commandBuilder.environment)
-            let executable: URL
-            switch runtimeUpdateSnapshot?.action {
-            case .updateBundledRequired:
-                // App-owned runtimes refresh from the bundled wheel, not brew.
-                executable = try bootstrapper.installOrUpdate()
-            default:
-                executable = try bootstrapper.upgradeHomebrewRuntime()
-            }
+            let action = runtimeUpdateSnapshot?.action
+            // The install spawns venv/pip/brew subprocesses and waits on
+            // them; on the main actor that froze the whole UI for the
+            // install duration — or forever when the child wedged (#158).
+            let executable: URL = try await Task.detached(priority: .userInitiated) {
+                switch action {
+                case .updateBundledRequired:
+                    // App-owned runtimes refresh from the bundled wheel, not brew.
+                    return try bootstrapper.installOrUpdate()
+                default:
+                    return try bootstrapper.upgradeHomebrewRuntime()
+                }
+            }.value
             runtimeUpdateSnapshot = MTPLXRuntimeUpdateService.snapshot(
                 manifest: try? await runtimeUpdateService.fetchManifest(),
                 environment: commandBuilder.environment.merging(["PATH": executable.deletingLastPathComponent().path]) { current, _ in current }
@@ -2421,25 +2426,57 @@ public final class MTPLXBackendStore: ObservableObject {
 
     nonisolated private static func runFanCommand(
         executable: String,
-        arguments: [String]
+        arguments: [String],
+        timeout: TimeInterval = 20
     ) -> FanCommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        // Same contract as the runtime installer's watchdogged run() (#158):
+        // drain pipes as data arrives (a child that fills the 64KB pipe
+        // buffer before exit deadlocks a read-after-wait), and never wait
+        // on a child without a deadline — a wedged thermalforge/sudo must
+        // cost one timeout window, not park the restore loop forever. A
+        // timeout returns a nonzero exit code, which the retry loops
+        // already treat as "try the next invocation".
+        let output = SubprocessTailBuffer(capacity: 16384)
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if !chunk.isEmpty { output.append(chunk) }
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
+        defer {
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+
         do {
             try process.run()
-            process.waitUntilExit()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            return FanCommandResult(
-                exitCode: process.terminationStatus,
-                stdout: String(decoding: data, as: UTF8.self)
-            )
         } catch {
             return FanCommandResult(exitCode: 127, stdout: "")
         }
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if finished.wait(timeout: .now() + 5) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 2)
+            }
+            return FanCommandResult(exitCode: -2, stdout: output.snapshot())
+        }
+        return FanCommandResult(
+            exitCode: process.terminationStatus,
+            stdout: output.snapshot()
+        )
     }
 
     private func finishReadyDaemon(
@@ -2542,7 +2579,10 @@ public final class MTPLXBackendStore: ObservableObject {
             return
         }
 
-        let launch = hermesIntegration.launchInTerminal(configuration: configuration)
+        // Desktop-first (2026-07-16): the built Hermes Desktop app is the
+        // default handoff, matching the OpenCode card's flow; CLI-only
+        // installs keep the Terminal path.
+        let launch = await hermesIntegration.launch(configuration: configuration)
         clientHandoffNotice = ClientHandoffNotice.hermes(result: launch)
         await supervisor.logs.append(
             "Hermes handoff \(launch.action.rawValue): \(launch.detail)",

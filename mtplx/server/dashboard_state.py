@@ -591,3 +591,6 @@ class DashboardState:
     progress_events: ProgressEventGate = field(default_factory=ProgressEventGate)
     last_thermal: dict[str, Any] | None = None
     last_thermal_when_s: float = 0.0
+    # macOS kern.memorystatus_vm_pressure_level: 1 normal, 2 warning,
+    # 4 critical, 0 unknown. Written by the memory-pressure guard loop.
+    last_memory_pressure_level: int = 0

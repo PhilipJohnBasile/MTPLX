@@ -28,10 +28,16 @@ public struct HardwareInspector: Sendable {
 
     public init(
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        runner: @escaping @Sendable (URL, [String]) async throws -> (Int32, Data, Data) = Self.defaultRunner
+        runner: (@Sendable (URL, [String]) async throws -> (Int32, Data, Data))? = nil
     ) {
         self.processEnvironment = processEnvironment
-        self.runner = runner
+        self.runner = runner ?? { executable, arguments in
+            try await Self.runSubprocess(
+                executable: executable,
+                arguments: arguments,
+                environment: processEnvironment
+            )
+        }
     }
 
     public enum InspectorError: Error, Sendable {
@@ -149,25 +155,59 @@ public struct HardwareInspector: Sendable {
         executable: URL,
         arguments: [String]
     ) async throws -> (Int32, Data, Data) {
+        try await runSubprocess(
+            executable: executable,
+            arguments: arguments,
+            environment: ProcessInfo.processInfo.environment
+        )
+    }
+
+    private static func runSubprocess(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]
+    ) async throws -> (Int32, Data, Data) {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
                 process.executableURL = executable
                 process.arguments = arguments
+                process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+                    environment: environment
+                )
                 let outPipe = Pipe()
                 let errPipe = Pipe()
                 process.standardOutput = outPipe
                 process.standardError = errPipe
+                let watchdog = SubprocessWatchdog(process)
                 do {
                     try process.run()
                 } catch {
                     continuation.resume(throwing: error)
                     return
                 }
-                process.waitUntilExit()
-                let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                continuation.resume(returning: (process.terminationStatus, outData, errData))
+                // Drain as data arrives and bound the wait (#158): the
+                // old read-after-exit could deadlock on a chatty child,
+                // and a wedged CLI (Gatekeeper-stalled first exec)
+                // parked onboarding forever. A timeout throws, which
+                // detect() already degrades to the sysctl fallback.
+                let stdoutDrain = SubprocessPipeDrain(outPipe)
+                let stderrDrain = SubprocessPipeDrain(errPipe)
+                let timeout: TimeInterval = 60
+                guard watchdog.wait(for: process, timeout: timeout) else {
+                    continuation.resume(throwing: InspectorError.subprocessFailed(
+                        exitCode: -2,
+                        stderr: "timed out after \(Int(timeout))s and was terminated"
+                    ))
+                    return
+                }
+                stdoutDrain.join()
+                stderrDrain.join()
+                continuation.resume(returning: (
+                    process.terminationStatus,
+                    stdoutDrain.snapshotData(),
+                    stderrDrain.snapshotData()
+                ))
             }
         }
     }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect as py_inspect
 import json
 import logging
@@ -369,7 +370,7 @@ def load(
     else:
         from mlx_lm.utils import load as mlx_lm_load
 
-        model, tokenizer = mlx_lm_load(str(path))
+        model, tokenizer = mlx_lm_load(str(_mtp_alias_load_path(path, config)))
     runtime_metadata = _load_runtime_metadata(path)
     contract = (
         (contract or MTPContract())
@@ -493,6 +494,66 @@ def _load_tokenizer_resilient(model_path: Path, config: dict[str, Any]) -> Any:
         eos_token_ids=eos_ids,
         chat_template=None,
     )
+
+
+def _mtp_alias_load_path(path: Path, config: dict[str, Any] | None) -> Path:
+    """Loadable path for `*_mtp`-typed checkpoints (issue #147).
+
+    vLLM-convention MTP checkpoints ship config.json with model_type like
+    ``qwen3_5_mtp``: the trunk is the plain base architecture plus an
+    embedded MTP head. mlx_lm's class table has no ``*_mtp`` modules, so
+    handing it the raw dir fails with "Model type ... not supported" even
+    though the forge probe correctly reports the family as supported. When
+    the stripped base module exists in mlx_lm and the full name does not,
+    build a symlink wrapper with a patched config.json (model_type=base)
+    and load through it; MTP injection later picks the head up from the
+    original weights. Everything else returns the path untouched.
+    """
+
+    model_type = str((config or {}).get("model_type") or "")
+    if not model_type.endswith("_mtp"):
+        return path
+    base_type = model_type[: -len("_mtp")]
+    import importlib.util
+
+    def _mlx_lm_has(model_type_name: str) -> bool:
+        return (
+            importlib.util.find_spec(f"mlx_lm.models.{model_type_name}")
+            is not None
+        )
+
+    if _mlx_lm_has(model_type) or not _mlx_lm_has(base_type):
+        return path
+    try:
+        wrapper_root = Path.home() / ".mtplx" / "build-cache" / "mtp-alias-load"
+        digest = hashlib.sha256(
+            f"{path.resolve()}::{base_type}".encode("utf-8")
+        ).hexdigest()[:16]
+        wrapper = wrapper_root / f"{path.name}-{base_type}-{digest}"
+        patched_config = dict(config or {})
+        patched_config["model_type"] = base_type
+        marker = wrapper / ".mtplx-alias-source"
+        if not marker.exists() or marker.read_text(encoding="utf-8") != str(
+            path.resolve()
+        ):
+            wrapper.mkdir(parents=True, exist_ok=True)
+            for item in path.iterdir():
+                if item.name in {"config.json", ".mtplx-alias-source"}:
+                    continue
+                link = wrapper / item.name
+                if link.is_symlink() or link.exists():
+                    continue
+                link.symlink_to(item)
+            marker.write_text(str(path.resolve()), encoding="utf-8")
+        # Rewrite the config every time: the source config may have changed.
+        (wrapper / "config.json").write_text(
+            json.dumps(patched_config, indent=2), encoding="utf-8"
+        )
+        return wrapper
+    except Exception:
+        # Wrapper construction is best-effort; the raw path preserves the
+        # original (informative) mlx_lm error.
+        return path
 
 
 def _load_runtime_metadata(path: Path) -> dict[str, Any] | None:

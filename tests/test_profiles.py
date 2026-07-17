@@ -198,7 +198,7 @@ def test_sustained_profile_is_native_mtp_long_context_path() -> None:
     assert profile.env_dict()["MTPLX_PREFILL_EXTERNAL_EMIT_LOGITS"] == "0"
     assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY"] == "auto"
     assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD"] == "16384"
-    assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT"] == "256"
+    assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT"] == "1024"
     assert profile.env_dict()["MTPLX_LAZY_VERIFY_LOGITS"] == "1"
     assert profile.env_dict()["MTPLX_BATCH_TARGET_ARRAYS"] == "1"
     assert profile.env_dict()["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "1"

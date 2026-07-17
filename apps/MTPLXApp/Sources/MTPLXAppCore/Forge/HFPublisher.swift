@@ -98,7 +98,9 @@ public struct HFPublisher: Sendable {
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
-            process.environment = processEnvironment
+            process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+                environment: processEnvironment
+            )
 
             let stdinPipe = Pipe()
             let errPipe = Pipe()
@@ -197,9 +199,10 @@ public struct HFPublisher: Sendable {
             }
 
             continuation.onTermination = { @Sendable _ in
-                if process.isRunning {
-                    process.interrupt()
-                }
+                // Escalating cancel (#158 sweep): SIGINT alone left a
+                // SIGINT-deaf publish running invisibly after the user
+                // cancelled, still uploading on their connection.
+                SubprocessWatchdog.escalateCancel(process)
                 pollTask.cancel()
             }
         }

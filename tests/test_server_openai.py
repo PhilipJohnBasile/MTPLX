@@ -8643,7 +8643,7 @@ def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
         runtime=SimpleNamespace(tokenizer=tokenizer),
         args=parse_args(["--warmup-tokens", "0"]),
     )
-    postcommit_prefix = openai._history_ids_for_postcommit(
+    postcommit_prefix, postcommit_vision_splice = openai._history_ids_for_postcommit(
         state,
         messages=raw_messages,
         assistant_content=assistant_answer,
@@ -8658,6 +8658,7 @@ def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
         tools=tools,
     )
 
+    assert postcommit_vision_splice is None
     assert next_turn_prompt[: len(postcommit_prefix)] == postcommit_prefix
     rendered_prefix = tokenizer.decode(postcommit_prefix)
     assert "<mtplx_compacted_tool_output" in rendered_prefix
@@ -8722,7 +8723,7 @@ def test_postcommit_read_only_final_matches_next_turn_history_boundary():
         args=parse_args(["--warmup-tokens", "0"]),
     )
 
-    postcommit_prefix = openai._history_ids_for_postcommit(
+    postcommit_prefix, postcommit_vision_splice = openai._history_ids_for_postcommit(
         state,
         messages=raw_messages,
         assistant_content=assistant_answer,
@@ -8730,6 +8731,7 @@ def test_postcommit_read_only_final_matches_next_turn_history_boundary():
         thinking_enabled=True,
         tool_specs=tools,
     )
+    assert postcommit_vision_splice is None
     next_canonical, next_stats = openai._canonicalize_agent_transcript(
         [
             *raw_messages,
@@ -8815,7 +8817,7 @@ def test_postcommit_opencode_replay_strips_persisted_tool_preamble():
         args=parse_args(["--warmup-tokens", "0"]),
     )
 
-    postcommit_prefix = openai._history_ids_for_postcommit(
+    postcommit_prefix, postcommit_vision_splice = openai._history_ids_for_postcommit(
         state,
         messages=live_messages,
         assistant_content=assistant_answer,
@@ -8825,6 +8827,7 @@ def test_postcommit_opencode_replay_strips_persisted_tool_preamble():
         tool_prompt_mode="compact",
         strip_tool_call_preamble_text=True,
     )
+    assert postcommit_vision_splice is None
     next_canonical, stats = openai._canonicalize_agent_transcript(
         [
             *replay_messages,

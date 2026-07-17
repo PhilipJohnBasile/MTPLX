@@ -4,6 +4,27 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-07-17
+
+The community-fixes release. Memory: the v2.x reports are root-caused and
+closed (MLX allocator cache bounded by default, per-session admission
+re-clamped on sub-96GB machines, paged pool bounded by the context
+window, pressure responder redesigned, q4 kv-quant crash fixed, new
+`--memory-budget` knob). Agent sessions: warm prefix reuse survives every
+tool turn (#121), hybrid-model near-prefix restores no longer collapse to
+the oldest boundary (measured 0.4s instead of 33.8s on a 22k follow-up),
+restart-warm sessions keep their boundary records across SSD generations
+(#159, #144), and cache hits are reported in standard `usage` fields.
+Sampling: presence and frequency penalties fixed in the batched AR lane
+(#156). App: startup and update hang fixed plus a full subprocess
+watchdog sweep (#158), the Hermes tile launches Hermes Desktop, raw
+tool-call XML no longer leaks into no-tools chats (#160). CLI: `start
+opencode` serves the same lane the app serves. Backends: qwen3_5_mtp and
+hy_v3 land (#142, #147). Performance: the model-owner thread is
+QoS-pinned for 8 to 10% faster decode under real multitasking load.
+Operators: `MTPLX_COMPILED_VERIFY_MAX_CONTEXT` is env-overridable. Full
+details in docs/releases/v2.1.0.md.
+
 ## [2.0.2] - 2026-07-09
 
 The agent-reliability release: multi-turn agent sessions now render

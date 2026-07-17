@@ -52,9 +52,12 @@ final class SubprocessInterruptBox: @unchecked Sendable {
         lock.lock()
         let current = process
         lock.unlock()
-        if current?.isRunning == true {
-            current?.interrupt()
-        }
+        guard let current, current.isRunning else { return }
+        // Escalating cancel (#158 sweep): SIGINT first so the child
+        // can clean up, then terminate → SIGKILL if it ignores both —
+        // a cancelled tune or fan install must never linger as an
+        // invisible worker.
+        SubprocessWatchdog.escalateCancel(current)
     }
 }
 
@@ -161,21 +164,7 @@ struct FanControlInstaller: Sendable {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        let stdoutBuffer = FanControlTailBuffer(capacity: 65_536)
-        let stderrBuffer = FanControlTailBuffer(capacity: 16_384)
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if !chunk.isEmpty { stdoutBuffer.append(chunk) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if !chunk.isEmpty { stderrBuffer.append(chunk) }
-        }
-        defer {
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
-        }
-
+        let watchdog = SubprocessWatchdog(process)
         do {
             subprocess.set(process)
             try process.run()
@@ -189,11 +178,37 @@ struct FanControlInstaller: Sendable {
                 message: error.localizedDescription
             )
         }
-        process.waitUntilExit()
+        // `mtplx max --status/--install` answers with a JSON payload
+        // on stdout that gets parsed, so both pipes use the lossless
+        // drain, and the wait is bounded (#158): a wedged CLI must
+        // fail the fan step after one timeout window, not park
+        // onboarding or a tune forever. 120s covers a cold first exec
+        // (Gatekeeper scan + Python start) plus the helper copy.
+        let stdoutDrain = SubprocessPipeDrain(stdout)
+        let stderrDrain = SubprocessPipeDrain(stderr)
+        let timeout: TimeInterval = 120
+        guard watchdog.wait(for: process, timeout: timeout) else {
+            subprocess.clear(process)
+            stdoutDrain.join(timeout: 1)
+            stderrDrain.join(timeout: 1)
+            let commandLine = "\(executable.lastPathComponent) \(arguments.joined(separator: " "))"
+            return FanControlCommandResult(
+                ok: false,
+                exitCode: -2,
+                stdout: stdoutDrain.snapshot(),
+                // The timeout note rides on stderr so
+                // installFailureMessage() surfaces it too.
+                stderr: stderrDrain.snapshot()
+                    + "\n[\(commandLine) timed out after \(Int(timeout))s and was terminated]",
+                message: "\(commandLine) timed out after \(Int(timeout))s and was terminated"
+            )
+        }
         subprocess.clear(process)
+        stdoutDrain.join()
+        stderrDrain.join()
 
-        let stdoutText = stdoutBuffer.snapshot()
-        let stderrText = stderrBuffer.snapshot()
+        let stdoutText = stdoutDrain.snapshot()
+        let stderrText = stderrDrain.snapshot()
         let payloadOK = Self.payloadBool(stdoutText, path: ["ok"])
         let ok = process.terminationStatus == 0 && payloadOK != false
         return FanControlCommandResult(
@@ -285,31 +300,7 @@ struct FanControlInstaller: Sendable {
     }
 }
 
-// Same shape as the tail buffers in `ModelDownloader.swift` and
-// `AutoTuner.swift` — kept fileprivate so each file stays
-// self-contained without cross-file name clashes.
-
-private final class FanControlTailBuffer: @unchecked Sendable {
-    private let capacity: Int
-    private var buffer = Data()
-    private let lock = NSLock()
-
-    init(capacity: Int) {
-        self.capacity = capacity
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        buffer.append(chunk)
-        if buffer.count > capacity {
-            buffer.removeFirst(buffer.count - capacity)
-        }
-    }
-
-    func snapshot() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(data: buffer, encoding: .utf8) ?? ""
-    }
-}
+// The private FanControlTailBuffer that lived here moved to the shared
+// SubprocessPipeDrain (SubprocessSupport.swift) when runCommand gained
+// its deadline watchdog — the parsed JSON payload needs the drain's
+// lossless EOF join, not a racy readabilityHandler tail.

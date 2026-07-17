@@ -398,16 +398,22 @@ public final class DaemonSupervisor: @unchecked Sendable {
         process.arguments = ["-P", String(pid)]
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
+        // Bounded wait + lossless drain (#158): the PID list feeds the
+        // reap path, and a wedged pgrep must degrade to "no children
+        // found" (roots still get signalled) instead of hanging a
+        // daemon stop/restart.
+        let watchdog = SubprocessWatchdog(process)
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return []
         }
+        let drain = SubprocessPipeDrain(output)
+        guard watchdog.wait(for: process, timeout: 10) else { return [] }
         guard process.terminationStatus == 0 else { return [] }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(decoding: data, as: UTF8.self)
+        drain.join()
+        let text = drain.snapshot()
         return text
             .split(whereSeparator: \.isNewline)
             .compactMap { pid_t(String($0.trimmingCharacters(in: .whitespacesAndNewlines))) }

@@ -678,7 +678,7 @@ wheels = [
 
 [[package]]
 name = "mtplx"
-version = "2.0.2"
+version = "2.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -717,7 +717,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.136" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.136" },
     { name = "huggingface-hub", specifier = ">=0.36" },
-    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.31,<0.32" },
+    { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.31,<0.33" },
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=0.31,<0.32" },
     { name = "nanobind", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = ">=2" },
     { name = "numpy", specifier = ">=2" },
@@ -727,7 +727,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "safetensors", specifier = ">=0.6" },
-    { name = "transformers", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "<5.13" },
+    { name = "transformers", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "!=5.13.0,<5.14" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5" },
     { name = "uvicorn", specifier = ">=0.46" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.46" },

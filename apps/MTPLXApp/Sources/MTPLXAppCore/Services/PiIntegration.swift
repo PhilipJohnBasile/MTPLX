@@ -105,19 +105,34 @@ public struct PiIntegration: Sendable {
         process.arguments = ["-a", "Terminal", scriptURL.path]
         let stderr = Pipe()
         process.standardError = stderr
+        // The backend store calls this from the main actor, so a wedged
+        // LaunchServices `open` must cost one bounded window, never
+        // beachball the app (#158 pattern).
+        let stderrTail = SubprocessTailBuffer(capacity: 4096)
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if !chunk.isEmpty { stderrTail.append(chunk) }
+        }
+        defer { stderr.fileHandleForReading.readabilityHandler = nil }
+        let watchdog = SubprocessWatchdog(process)
         do {
             try process.run()
-            process.waitUntilExit()
+            guard watchdog.wait(for: process, timeout: 30) else {
+                return PiLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "could not open Pi automatically: open timed out after 30s and was terminated"
+                )
+            }
             guard process.terminationStatus == 0 else {
-                let data = stderr.fileHandleForReading.readDataToEndOfFile()
-                let message = String(data: data, encoding: .utf8)?
+                let message = stderrTail.snapshot()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return PiLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: message?.isEmpty == false
-                        ? "could not open Pi automatically: \(message!)"
-                        : "could not open Pi automatically: open exited \(process.terminationStatus)"
+                    detail: message.isEmpty
+                        ? "could not open Pi automatically: open exited \(process.terminationStatus)"
+                        : "could not open Pi automatically: \(message)"
                 )
             }
             let launchedPIDs = Self.waitForNewPiAgentPIDs(excluding: existingAgentPIDs)

@@ -46,6 +46,10 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # Compiled-verify commit-first donation (speed-war Lane A2): same
         # A/B requirement — an explicit env must beat the profile default.
         "MTPLX_COMPILED_VERIFY_DONATION",
+        # Compiled-verify context ceiling: operators sweep it for long-context
+        # A/Bs (2026-07-17 the sweep needed a site-packages patch because the
+        # profile stomped the env). Same precedent as DONATION above.
+        "MTPLX_COMPILED_VERIFY_MAX_CONTEXT",
     }
 )
 
@@ -224,7 +228,13 @@ SUSTAINED_PREFILL_ENV = {
     "MTPLX_VLLM_METAL_PAGED_TURBOQUANT": "0",
     "MTPLX_CLEAR_CACHE_EVERY": "auto",
     "MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD": "16384",
-    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "256",
+    # 256 -> 1024 (2026-07-16): the every-256-step clear measured -3.8%
+    # decode on 512-token generations at 33k ctx (42.55 -> 44.15 tok/s with
+    # clears off, matched load/acceptance). At 1024, typical agent turns
+    # (<1k tokens) never pay the sync, while marathon responses still get
+    # periodic allocator bounding. Memory re-validated on a 2k-token 33k-ctx
+    # marathon row before shipping.
+    "MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT": "1024",
 }
 
 

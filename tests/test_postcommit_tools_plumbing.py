@@ -280,7 +280,7 @@ def test_history_ids_with_tools_is_strict_prefix_of_next_prompt():
     ]
     assistant_content = "I will search for it."
 
-    history_ids = _history_ids_for_postcommit(
+    history_ids, _history_splice = _history_ids_for_postcommit(
         state,
         messages=messages,
         assistant_content=assistant_content,
@@ -323,7 +323,7 @@ def test_history_ids_use_next_turn_prefix_for_qwen_terminal_thinking_template():
     ]
     assistant_content = "OK"
 
-    history_ids = _history_ids_for_postcommit(
+    history_ids, _history_splice = _history_ids_for_postcommit(
         state,
         messages=messages,
         assistant_content=assistant_content,
@@ -361,7 +361,7 @@ def test_history_ids_preserve_qwen_no_thinking_plain_answer_boundary():
     ]
     assistant_content = '```python\nprint("hello")\n```'
 
-    history_ids = _history_ids_for_postcommit(
+    history_ids, _history_splice = _history_ids_for_postcommit(
         state,
         messages=messages,
         assistant_content=assistant_content,

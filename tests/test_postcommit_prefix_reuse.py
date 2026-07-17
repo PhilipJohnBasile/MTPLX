@@ -109,7 +109,7 @@ def test_postcommit_passes_session_bank_and_identities_to_restore(monkeypatch):
     monkeypatch.setattr(
         openai,
         "_history_ids_for_postcommit",
-        lambda *a, **k: [10, 11, 12, 13, 14],
+        lambda *a, **k: ([10, 11, 12, 13, 14], None),
     )
 
     bank = _Bank()
@@ -171,7 +171,7 @@ def test_postcommit_propagates_observability_fields(monkeypatch):
     monkeypatch.setattr(
         openai,
         "_history_ids_for_postcommit",
-        lambda *a, **k: [10, 11, 12, 13, 14],
+        lambda *a, **k: ([10, 11, 12, 13, 14], None),
     )
 
     state = _make_state(bank=_Bank())
@@ -224,7 +224,7 @@ def test_postcommit_cache_miss_reason_records_miss(monkeypatch):
     monkeypatch.setattr(
         openai,
         "_history_ids_for_postcommit",
-        lambda *a, **k: [10, 11, 12, 13, 14],
+        lambda *a, **k: ([10, 11, 12, 13, 14], None),
     )
 
     state = _make_state(bank=_Bank())

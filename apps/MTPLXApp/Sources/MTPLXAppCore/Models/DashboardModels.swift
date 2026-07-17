@@ -983,6 +983,12 @@ public struct MemSnapshot: Codable, Equatable, Sendable {
     public var activeMemoryBytes: Int?
     public var cacheMemoryBytes: Int?
     public var peakMemoryBytes: Int?
+    /// Attribution buckets: `active` split into what users actually ask
+    /// about. Weights come from shard file sizes, the bank figure is exact,
+    /// working set is the derived remainder (live KV + activations).
+    public var modelWeightsBytes: Int?
+    public var sessionBankBytes: Int?
+    public var generationWorkingBytes: Int?
     public var error: String?
 
     enum CodingKeys: String, CodingKey {
@@ -990,6 +996,9 @@ public struct MemSnapshot: Codable, Equatable, Sendable {
         case activeMemoryBytes = "active_memory_bytes"
         case cacheMemoryBytes = "cache_memory_bytes"
         case peakMemoryBytes = "peak_memory_bytes"
+        case modelWeightsBytes = "model_weights_bytes"
+        case sessionBankBytes = "session_bank_bytes"
+        case generationWorkingBytes = "generation_working_bytes"
         case error
     }
 }

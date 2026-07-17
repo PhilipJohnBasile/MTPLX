@@ -48,7 +48,7 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
         case .openCode:
             return "Use OpenCode Desktop, powered by MTPLX."
         case .hermes:
-            return "Use Hermes Agent with terminal, file, web, browser, and messaging tools."
+            return "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools."
         case .benchmark:
             return "Run AIME 2026."
         case .other:

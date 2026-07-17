@@ -889,6 +889,17 @@ class VllmMetalPagedKVCache:
             int((self.num_blocks * 3 + 1) // 2),
             int(self.num_blocks) + 1,
         )
+        window_tokens = _env_int("MTPLX_CONTEXT_WINDOW_TOKENS", 0)
+        if window_tokens > 0:
+            # Geometric growth must not overshoot the serving context window
+            # (#150: the 1.5x step at 100k+ ctx allocates GiBs of blocks no
+            # request can ever address). A genuinely larger requirement still
+            # wins — correctness over the clamp.
+            window_blocks = (int(window_tokens) + self.block_size - 1) // self.block_size
+            if window_blocks >= required_blocks:
+                grown_blocks = min(
+                    grown_blocks, max(window_blocks, int(self.num_blocks))
+                )
         if grown_blocks <= self.num_blocks:
             return True
         if self.key_cache is None or self.value_cache is None:
@@ -1437,6 +1448,14 @@ class VllmMetalPagedKVCache:
         outputs: list[Any] = []
         very_negative = mx.array(-1.0e30, dtype=mx.float32)
         eps = mx.array(1.0e-20, dtype=mx.float32)
+        # kv-quant stores values packed; _paged_range dequantizes them back to
+        # the logical head dim recorded in _shape, so the accumulator must be
+        # sized to the dequantized width, not the packed storage width (#150,
+        # q4 crash on the paged split-SDPA path).
+        if self.kv_quant and self._shape is not None:
+            value_dim = int(self._shape[2])
+        else:
+            value_dim = int(self.value_cache.shape[3])
 
         for q_start in range(0, q_len, q_chunk_size):
             q_end = min(q_len, q_start + q_chunk_size)
@@ -1454,7 +1473,7 @@ class VllmMetalPagedKVCache:
                     int(q.shape[0]),
                     int(q.shape[1]),
                     int(q.shape[2]),
-                    int(self.value_cache.shape[3]),
+                    value_dim,
                 ),
                 dtype=mx.float32,
             )

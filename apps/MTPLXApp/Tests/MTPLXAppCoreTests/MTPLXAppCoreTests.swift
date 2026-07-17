@@ -717,6 +717,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             "PYTHONHOME": "/dev/python",
             "VIRTUAL_ENV": "/dev/venv",
             "DYLD_LIBRARY_PATH": "/dev/lib",
+            "PYTHONPYCACHEPREFIX": "/Applications/MTPLX.app/Contents/Resources/PythonRuntime/cache",
             "MTPLX_FAST_MLX_SOURCE_PATH_ACTIVE": "/dev/mlx/python",
             "MTPLX_APP_SOURCE_WRAPPER_PATH": "/dev/repo/bin/mtplx",
             "MTPLX_SESSION_BANK_MAX_ENTRIES": "16",
@@ -729,8 +730,56 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertNil(env["MTPLX_FAST_MLX_SOURCE_PATH_ACTIVE"])
         XCTAssertNil(env["MTPLX_APP_SOURCE_WRAPPER_PATH"])
         XCTAssertEqual(env["MTPLX_DISABLE_FAST_MLX_AUTODISCOVERY"], "1")
+        XCTAssertEqual(
+            env["PYTHONPYCACHEPREFIX"],
+            "/Users/example/Library/Caches/MTPLX/PythonBytecode"
+        )
         XCTAssertEqual(env["MTPLX_SESSION_BANK_MAX_ENTRIES"], "16")
         XCTAssertTrue(env["PATH"]?.contains(fake.deletingLastPathComponent().path) ?? false)
+    }
+
+    func testPythonBytecodeSafeEnvironmentPreservesCallerVariables() {
+        let env = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(environment: [
+            "HOME": "/Users/example",
+            "PYTHONPATH": "/forge/python",
+            "HF_TOKEN": "fixture-token",
+            "PYTHONPYCACHEPREFIX": "/Applications/MTPLX.app/Contents/Resources/cache",
+        ])
+
+        XCTAssertEqual(env["PYTHONPATH"], "/forge/python")
+        XCTAssertEqual(env["HF_TOKEN"], "fixture-token")
+        XCTAssertEqual(
+            env["PYTHONPYCACHEPREFIX"],
+            "/Users/example/Library/Caches/MTPLX/PythonBytecode"
+        )
+    }
+
+    func testHardwareInspectorRoutesPythonBytecodeOutsideSignedBundle() async throws {
+        let root = temporaryDirectory()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let cacheLog = root.appendingPathComponent("pycache-prefix.log")
+        let script = try makeExecutable(
+            named: "mtplx",
+            body: """
+            #!/bin/sh
+            printf '%s' "$PYTHONPYCACHEPREFIX" > "$MTPLX_FAKE_LOG"
+            printf '%s\n' '{"chip":"Apple M5 Max","apple_silicon_generation":"m5","model_identifier":"Mac16,1","unified_memory_bytes":137438953472,"gpu_cores":40,"cpu_cores":18}'
+            """
+        )
+        let inspector = HardwareInspector(processEnvironment: [
+            "HOME": root.path,
+            "PATH": script.deletingLastPathComponent().path,
+            "MTPLX_APP_DISABLE_STANDARD_PATHS": "1",
+            "MTPLX_FAKE_LOG": cacheLog.path,
+        ])
+
+        let hardware = await inspector.detect()
+
+        XCTAssertEqual(hardware.chipName, "Apple M5 Max")
+        XCTAssertEqual(
+            try String(contentsOf: cacheLog, encoding: .utf8),
+            root.appendingPathComponent("Library/Caches/MTPLX/PythonBytecode").path
+        )
     }
 
     // MARK: - Launch-critical config sanitization (degraded-on-start class)
@@ -1127,6 +1176,19 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
     }
 
+    func testOnboardingTuneUsesTurboForQwen27BOptimizedModels() {
+        for model in [
+            "/Users/example/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "/Users/example/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Quality",
+        ] {
+            XCTAssertEqual(
+                MTPLXCommandBuilder.recommendedProfile(for: model),
+                "turbo",
+                model
+            )
+        }
+    }
+
     func testCommandBuilderResolvesAutoProfileToTurboForQwen27BQualityFP16Sibling() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
@@ -1483,7 +1545,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(LaunchTarget.hermes.title, "Hermes")
         XCTAssertEqual(
             LaunchTarget.hermes.tagline,
-            "Use Hermes Agent with terminal, file, web, browser, and messaging tools."
+            "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools."
         )
         XCTAssertEqual(LaunchTarget.hermes.systemImage, "sparkles")
         XCTAssertTrue(LaunchTarget.hermes.spawnsDaemon)
@@ -2391,6 +2453,52 @@ final class MTPLXAppCoreTests: XCTestCase {
             ),
             false
         )
+    }
+
+    func testHermesDesktopDiscoveryFindsBootstrapBundleAndReturnsNilWhenAbsent() throws {
+        let root = temporaryDirectory()
+        let hermesHome = root.appendingPathComponent(".hermes", isDirectory: true)
+        // Override pins discovery away from LaunchServices so the test is
+        // hermetic on machines that have a real Hermes installed.
+        let missingOverride = root.appendingPathComponent("Nowhere/Hermes.app", isDirectory: true)
+        let cliOnly = HermesIntegration(
+            hermesHome: hermesHome,
+            desktopApplicationOverride: missingOverride
+        )
+        XCTAssertNil(cliOnly.desktopApplicationURL())
+
+        let bundle = hermesHome
+            .appendingPathComponent("hermes-agent/apps/desktop/release/mac-arm64/Hermes.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let bootstrapped = HermesIntegration(hermesHome: hermesHome)
+        XCTAssertEqual(bootstrapped.desktopApplicationURL()?.path, bundle.path)
+    }
+
+    func testHermesActiveDesktopProfilePinWritesMTPLXAndReturnsPrevious() throws {
+        let root = temporaryDirectory()
+        let activeProfile = root
+            .appendingPathComponent("Library/Application Support/Hermes", isDirectory: true)
+            .appendingPathComponent("active-profile.json")
+        let integration = HermesIntegration(
+            hermesHome: root.appendingPathComponent(".hermes", isDirectory: true),
+            activeProfileURL: activeProfile
+        )
+
+        // First pin: no previous file, directory created on demand.
+        XCTAssertNil(try integration.writeActiveDesktopProfile())
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: activeProfile)) as? [String: Any]
+        )
+        XCTAssertEqual(object["profile"] as? String, "mtplx")
+
+        // Re-pin over a user's own selection: previous name is surfaced,
+        // file ends pinned to mtplx.
+        try #"{"profile": "research"}"#.write(to: activeProfile, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try integration.writeActiveDesktopProfile(), "research")
+        object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: activeProfile)) as? [String: Any]
+        )
+        XCTAssertEqual(object["profile"] as? String, "mtplx")
     }
 
     func testHermesIntegrationSyncsMTPLXProfileAndLaunchEnvironment() throws {
@@ -7609,7 +7717,8 @@ final class MTPLXAppCoreTests: XCTestCase {
         var completed: TuneResult?
         var failure: String?
 
-        for await event in tuner.stream(modelPath: "/models/qwen", candidates: [.ar, .d1]) {
+        let modelPath = "/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed"
+        for await event in tuner.stream(modelPath: modelPath, candidates: [.ar, .d1]) {
             switch event {
             case .completed(let result):
                 completed = result
@@ -7624,6 +7733,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(completed?.bestDepth, 1)
         let commands = try String(contentsOf: log, encoding: .utf8)
         XCTAssertTrue(commands.contains("--retune"), commands)
+        XCTAssertTrue(commands.contains("--profile turbo"), commands)
     }
 
     func testAutoTunerParsesGemmaBlockCandidates() throws {
@@ -8914,10 +9024,12 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     func testModelDownloaderIgnoresBriefStructuredStallEvents() async throws {
         let root = temporaryDirectory()
+        let cacheLog = root.appendingPathComponent("pycache-prefix.log")
         let script = try makeExecutable(
             named: "mtplx",
             body: """
             #!/bin/sh
+            printf '%s' "$PYTHONPYCACHEPREFIX" > "$MTPLX_FAKE_LOG"
             cat <<'JSON'
             {"event":"start","path":"/tmp/model","size_bytes":0,"total_bytes":100}
             {"event":"progress","path":"/tmp/model","size_bytes":11,"total_bytes":100,"rate_bps":0,"stalled_s":1}
@@ -8927,14 +9039,23 @@ final class MTPLXAppCoreTests: XCTestCase {
             """
         )
         let downloader = ModelDownloader(
-            processEnvironment: ["HOME": root.path],
+            processEnvironment: [
+                "HOME": root.path,
+                "MTPLX_FAKE_LOG": cacheLog.path,
+            ],
             modelCacheRoot: root.appendingPathComponent("cache", isDirectory: true),
             executableOverride: script
         )
         var progressCount = 0
         var stalledCount = 0
 
-        for await event in downloader.stream(repo: "Example/Quality", totalBytes: 100) {
+        for await event in downloader.stream(
+            repo: "Example/Quality",
+            totalBytes: 100,
+            extraEnvironment: [
+                "PYTHONPYCACHEPREFIX": "/Applications/MTPLX.app/Contents/Resources/cache"
+            ]
+        ) {
             switch event {
             case .progress:
                 progressCount += 1
@@ -8947,6 +9068,10 @@ final class MTPLXAppCoreTests: XCTestCase {
 
         XCTAssertEqual(progressCount, 2)
         XCTAssertEqual(stalledCount, 0)
+        XCTAssertEqual(
+            try String(contentsOf: cacheLog, encoding: .utf8),
+            root.appendingPathComponent("Library/Caches/MTPLX/PythonBytecode").path
+        )
     }
 
     func testModelDownloaderBootstrapsRuntimeWithHomebrewWhenMtplxIsMissing() async throws {

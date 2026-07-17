@@ -216,10 +216,18 @@ GENERATION_MODE_AR = "ar"
 GENERATION_MODES = {GENERATION_MODE_MTP, GENERATION_MODE_AR}
 OPENCODE_CHAT_TEMPLATE_PROFILE_DEFAULT = "local_qwen36"
 OPENCODE_FAIR_BATCHING_DEFAULTS: dict[str, Any] = {
-    "scheduler_mode": "ar_batch",
-    "batching_preset": "agent",
-    "decode_batch_max": 4,
-    "batch_wait_ms": 50,
+    # 2026-07-16 agent-lane TPS alignment: `mtplx start opencode` now matches
+    # the app's OpenCode launch card (serial + latency). The ar_batch/agent
+    # lane co-schedules OpenCode's title/summarize side calls with the main
+    # turn and measured 36.8 vs 51.4 decode tok/s at 8k (31.6 vs 42.4 at 33k)
+    # against the serial turbo lane on the same daemon/model — single-stream
+    # coding turns are the product path, and the app's launch card comment
+    # documents the same measured call. Explicit --scheduler-mode/--batching-
+    # preset flags still win (per-flag skip in _apply_opencode_fair_defaults).
+    "scheduler_mode": "serial",
+    "batching_preset": "latency",
+    "decode_batch_max": None,
+    "batch_wait_ms": None,
     "prefill_chunk_tokens": 2048,
     "ssd_session_cache": "on",
     "ssd_session_cache_max_size": "32GB",
@@ -886,6 +894,33 @@ def _apply_model_default_profile(args: Any, model_id: str) -> bool:
     return True
 
 
+def _resolved_default_profile_name(args: Any, model: str | None = None) -> str:
+    """Profile name the launch will actually resolve — for display strings.
+
+    Printed handoff/server commands used to bake the raw parser default
+    ("--profile sustained") even though serve-time per-model resolution
+    picks turbo for the quantized 27B flagships; users copying the printed
+    command then pinned the slower profile explicitly (2026-07-16
+    agent-lane TPS investigation). Mirrors _apply_model_default_profile
+    without mutating args.
+    """
+
+    current = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    cli_flags = getattr(args, "_cli_flags", set()) or set()
+    if "profile" in cli_flags or current != DEFAULT_PROFILE_NAME:
+        return current
+    model_ref = str(model if model is not None else getattr(args, "model", "") or "")
+    if not model_ref:
+        return current
+    try:
+        model_id = _public_model_id_for_args(args, model_ref)
+    except Exception:
+        return current
+    if model_id in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
+        return "turbo"
+    return current
+
+
 def _apply_qwen36_35b_optimized_speed_defaults(args: Any, model_id: str) -> None:
     if model_id != QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID:
         return
@@ -1452,7 +1487,7 @@ def _opencode_doctor_report(args: Any) -> dict[str, Any]:
         "deprecated_session_headers_plugin_configured": deprecated_plugin_configured,
         "session_headers_ready": False,
         "session_headers_status": "retired",
-        "expected_start_command": "mtplx start opencode --port 18083 --profile sustained --max",
+        "expected_start_command": "mtplx start opencode --port 18083 --max",
     }
 
 
@@ -1544,7 +1579,7 @@ def _pi_doctor_report(args: Any) -> dict[str, Any]:
             bool(model_config.get("reasoning")) if isinstance(model_config, dict) else False
         ),
         "has_hidden_max_tokens": "maxTokens" in json.dumps(model_config or {}),
-        "expected_start_command": "mtplx start pi --port 8000 --profile sustained --max",
+        "expected_start_command": "mtplx start pi --port 8000 --max",
     }
 
 
@@ -2990,7 +3025,7 @@ def _cmd_tune_candidate(args: Any) -> int:
                 return _tune_error("Gemma tune blocks must be between 2 and 8", json_output=True)
         elif value < 1 or value > MAX_PUBLIC_SPECULATIVE_DEPTH:
             return _tune_error("tune depths must be between 1 and 3", json_output=True)
-    profile = get_profile("performance-cold")
+    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
     runtime_env = _runtime_env_with_external_overrides(
         _runtime_env_with_model_contract_overrides(
             profile.env_dict(),
@@ -3166,8 +3201,9 @@ def _tune_settings(
         or getattr(args, "suite", None)
         or TUNE_DEFAULT_SUITE
     )
+    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
     return {
-        "profile": "performance-cold",
+        "profile": profile.name,
         "suite": str(suite),
         "depths": ",".join(str(depth) for depth in depths),
         "control_field": control_field,
@@ -3971,6 +4007,8 @@ def _tune_candidate_command(
         str(output),
         "--model",
         str(model),
+        "--profile",
+        str(settings.get("profile") or "performance-cold"),
         "--max-tokens",
         str(int(settings["max_tokens"])),
         "--limit",
@@ -4259,7 +4297,7 @@ def _tune_payload(
         "action": action,
         "run_id": run_id,
         "model": model,
-        "profile": "performance-cold",
+        "profile": str(settings.get("profile") or "performance-cold"),
         "suite": settings["suite"],
         "control_field": settings.get("control_field") or "depth",
         "settings": settings,
@@ -7954,9 +7992,19 @@ def cmd_serve_public(args: Any) -> int:
         except Exception:
             _print_serve_start_line("try: mtplx status")
         server_command = _server_command_name(args)
+        # Include --profile in the retry advice only when it carries real
+        # signal (explicit flag or a non-default from user config). Echoing
+        # the raw parser default here baked "--profile sustained" into copy-
+        # paste advice and pinned 27B users off the turbo model-default
+        # (2026-07-16). No model resolution may happen on this path.
+        advice_profile = str(getattr(args, "profile", None) or "")
         profile_arg = (
-            f" --profile {getattr(args, 'profile')}"
-            if getattr(args, "profile", None)
+            f" --profile {advice_profile}"
+            if advice_profile
+            and (
+                advice_profile != DEFAULT_PROFILE_NAME
+                or "profile" in (getattr(args, "_cli_flags", set()) or set())
+            )
             else ""
         )
         max_arg = " --max" if bool(getattr(args, "max", False)) else ""
@@ -10246,7 +10294,7 @@ def _quickstart_openwebui_payload(
         "server_command": (
             f"mtplx quickstart --host {host} --port {port} "
             f"--model {shlex.quote(str(getattr(args, 'model', DEFAULT_RUNTIME_MODEL_DIR)))} "
-            f"--profile {profile} "
+            f"--profile {_resolved_default_profile_name(args)} "
             f"{_fan_mode_command_suffix(args)}"
             f"{'--no-mtp ' if _generation_mode_from_args(args) == GENERATION_MODE_AR else ''}"
             f"{_batching_command_suffix(args)} "
@@ -10327,7 +10375,7 @@ def _quickstart_pi_payload(args: Any, *, write_config: bool = False) -> dict[str
         "server_command": (
             f"mtplx quickstart --host {host} --port {port} "
             f"--model {shlex.quote(str(getattr(args, 'model', DEFAULT_RUNTIME_MODEL_DIR)))} "
-            f"--profile {str(getattr(args, 'profile', None) or DEFAULT_PROFILE_NAME)} "
+            f"--profile {_resolved_default_profile_name(args)} "
             f"{_fan_mode_command_suffix(args)}"
             f"{'--no-mtp ' if _generation_mode_from_args(args) == GENERATION_MODE_AR else ''}"
             f"{_batching_command_suffix(args)} "
@@ -10505,7 +10553,7 @@ def _quickstart_opencode_payload(
         "server_command": (
             f"mtplx start opencode --host {host} --port {port} "
             f"--model {shlex.quote(str(getattr(args, 'model', DEFAULT_RUNTIME_MODEL_DIR)))} "
-            f"--profile {str(getattr(args, 'profile', None) or DEFAULT_PROFILE_NAME)} "
+            f"--profile {_resolved_default_profile_name(args)} "
             f"{_fan_mode_command_suffix(args)}"
             f"{'--no-mtp ' if generation_mode == GENERATION_MODE_AR else ''}"
             f"{api_key_suffix}"
@@ -10589,7 +10637,7 @@ def _quickstart_swival_payload(
         "server_command": (
             f"mtplx start swival --host {host} --port {port} "
             f"--model {shlex.quote(str(getattr(args, 'model', DEFAULT_RUNTIME_MODEL_DIR)))} "
-            f"--profile {str(getattr(args, 'profile', None) or DEFAULT_PROFILE_NAME)} "
+            f"--profile {_resolved_default_profile_name(args)} "
             f"{_fan_mode_command_suffix(args)}"
             f"{'--no-mtp ' if _generation_mode_from_args(args) == GENERATION_MODE_AR else ''}"
             f"{_batching_command_suffix(args)} "
@@ -10657,7 +10705,7 @@ def _quickstart_hermes_payload(
         "server_command": (
             f"mtplx start hermes --host {host} --port {port} "
             f"--model {shlex.quote(str(getattr(args, 'model', DEFAULT_RUNTIME_MODEL_DIR)))} "
-            f"--profile {str(getattr(args, 'profile', None) or DEFAULT_PROFILE_NAME)} "
+            f"--profile {_resolved_default_profile_name(args)} "
             f"{_fan_mode_command_suffix(args)}"
             f"{'--no-mtp ' if _generation_mode_from_args(args) == GENERATION_MODE_AR else ''}"
             f"{api_key_suffix}"
@@ -10981,14 +11029,16 @@ def _with_server_policy_args(target: Any, source: Any) -> Any:
 
 
 def _apply_opencode_fair_defaults(args: Any) -> None:
-    """Make ``mtplx start opencode`` choose the coding-agent fair lane by default."""
+    """Make ``mtplx start opencode`` match the app's measured OpenCode lane.
+
+    Every key is skipped when the user passed the matching flag, so explicit
+    ar_batch/agent experiments keep working. (The old early-return for
+    explicit ``--scheduler-mode serial`` predates serial being the default;
+    per-key skipping now covers that case and those users additionally get
+    the SSD/prefill defaults they were silently missing.)
+    """
 
     cli_flags = getattr(args, "_cli_flags", set()) or set()
-    if (
-        "scheduler-mode" in cli_flags
-        and str(getattr(args, "scheduler_mode", "") or "") == "serial"
-    ):
-        return
     for attr, value in OPENCODE_FAIR_BATCHING_DEFAULTS.items():
         flag = attr.replace("_", "-")
         if flag in cli_flags:
@@ -12537,7 +12587,7 @@ def cmd_integrate_public(args: Any) -> int:
             "docker_api_base_url": _openwebui_docker_api_base_url(int(args.port)),
             "model_id": model_id,
             "server_command": (
-                f"mtplx quickstart --profile sustained --host {args.host} --port {args.port} "
+                f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 "--no-stats-footer"
             ),
             "docker_command": _shell_join(docker_command),
@@ -12577,7 +12627,7 @@ def cmd_integrate_public(args: Any) -> int:
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             },
             "server_command": (
-                f"mtplx quickstart --profile sustained --host {args.host} --port {args.port} "
+                f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 "--no-stats-footer"
             ),
             "smoke": {
@@ -12595,7 +12645,7 @@ def cmd_integrate_public(args: Any) -> int:
             "model_id": model_id,
             "config_path": "~/.config/opencode/opencode.json",
             "server_command": (
-                f"mtplx quickstart --profile sustained --host {args.host} --port {args.port} "
+                f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 f"{api_key_suffix}--reasoning auto --no-stats-footer"
             ),
             "config": {
@@ -12670,7 +12720,7 @@ def cmd_integrate_public(args: Any) -> int:
                 context_window=context_window,
             ),
             "server_command": (
-                f"mtplx quickstart --profile sustained --host {args.host} --port {args.port} "
+                f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 "--no-stats-footer"
             ),
             "notes": [

@@ -809,10 +809,14 @@ def test_start_opencode_dry_run_json_writes_no_hidden_cap(
     assert "maxTokens" not in json.dumps(payload["opencode"]["config"])
     assert payload["opencode"]["provider"]["models"]
     command = payload["opencode"]["server_command"]
-    assert "--scheduler-mode ar_batch" in command
-    assert "--batching-preset agent" in command
-    assert "--decode-batch-max 4" in command
-    assert "--batch-wait-ms 50" in command
+    # 2026-07-16: `mtplx start opencode` runs the app's measured OpenCode
+    # lane (serial + latency). Those are the base defaults, so the command
+    # omits the scheduler flags entirely; the old ar_batch/agent stack must
+    # not reappear.
+    assert "--scheduler-mode" not in command
+    assert "--batching-preset" not in command
+    assert "--decode-batch-max" not in command
+    assert "--batch-wait-ms" not in command
     assert "--prefill-chunk-tokens 2048" in command
     assert "--ssd-session-cache on" in command
     assert "--ssd-session-cache-max-size 32GB" in command
@@ -2887,6 +2891,28 @@ def test_tune_dry_run_prints_clean_candidate_commands(capsys):
     assert "--_candidate 3" in out
 
 
+def test_tune_dry_run_threads_explicit_profile_to_every_candidate(capsys):
+    code = main(
+        [
+            "tune",
+            "--model",
+            "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "--profile",
+            "turbo",
+            "--dry-run",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["settings"]["profile"] == "turbo"
+    assert payload["candidates"]
+    for row in payload["candidates"]:
+        command = row["command"]
+        assert command[command.index("--profile") + 1] == "turbo"
+
+
 def test_bench_tune_dry_run_is_json_support_payload(capsys):
     code = main(
         [
@@ -2990,10 +3016,18 @@ def test_tune_candidate_skips_primary_gate_for_local_mtplx_runtime(
     def fake_depth_sweep(**_kwargs):
         return {"ok": True}
 
+    requested_profiles: list[str] = []
+    real_get_profile = public.get_profile
+
+    def recording_get_profile(name):
+        requested_profiles.append(name)
+        return real_get_profile(name)
+
     from mtplx.benchmarks.runners import mtp_depth_sweep
 
     monkeypatch.setattr(public, "_model_gate", fail_gate)
     monkeypatch.setattr(public, "_depth_sweep_native60", fake_depth_sweep)
+    monkeypatch.setattr(public, "get_profile", recording_get_profile)
     monkeypatch.setattr(
         mtp_depth_sweep,
         "write_depth_sweep",
@@ -3021,6 +3055,7 @@ def test_tune_candidate_skips_primary_gate_for_local_mtplx_runtime(
         concat_order=None,
         mtp_cache_policy="persistent",
         mtp_history_policy="committed",
+        profile="turbo",
     )
 
     code = public._cmd_tune_candidate(args)
@@ -3029,6 +3064,7 @@ def test_tune_candidate_skips_primary_gate_for_local_mtplx_runtime(
     assert code == 0
     assert payload["candidate"] == "1"
     assert output.exists()
+    assert requested_profiles == ["turbo"]
 
 
 def test_tune_retune_starts_max_fans_before_slow_diagnostics(
@@ -3685,6 +3721,7 @@ def test_tune_candidate_command_passes_sampler_policy(tmp_path):
         model="/tmp/model",
         output=tmp_path / "d1.json",
         settings={
+            "profile": "turbo",
             "suite": "long-code-uncapped",
             "max_tokens": 512,
             "limit": 1,
@@ -3699,6 +3736,7 @@ def test_tune_candidate_command_passes_sampler_policy(tmp_path):
     assert command[command.index("--temperature") + 1] == "0.7"
     assert command[command.index("--top-p") + 1] == "1.0"
     assert command[command.index("--top-k") + 1] == "13"
+    assert command[command.index("--profile") + 1] == "turbo"
 
 
 def test_tune_candidates_settle_between_depth_runs(tmp_path, monkeypatch):

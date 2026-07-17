@@ -178,8 +178,41 @@ def test_explicit_max_bytes_env_overrides_auto(monkeypatch):
 
 def test_per_session_auto_is_two_thirds_of_budget(monkeypatch):
     monkeypatch.delenv("MTPLX_SESSION_BANK_PER_SESSION_BYTES", raising=False)
-    es = _reload_module()
+    es = _es_with_ram(monkeypatch, 128 * GIB)
+    # 2/3 of 30G = 20G, inside the >=96G tier ceiling of 24G.
     assert es.resolve_session_bank_per_session_bytes(30 * GIB) == 20 * GIB
+
+
+def test_per_session_auto_clamped_by_ram_tier_small_box(monkeypatch):
+    monkeypatch.delenv("MTPLX_SESSION_BANK_PER_SESSION_BYTES", raising=False)
+    es = _es_with_ram(monkeypatch, 64 * GIB)
+    # 2/3 of a 22.5G budget = 15G, but the <96G tier ceiling is 8G (#150:
+    # the auto rule alone RAISED the admission gate vs the v1.0.4 flat gate,
+    # letting a 64GB box admit snapshots whose restore transients blow RAM).
+    assert es.resolve_session_bank_per_session_bytes(int(22.5 * GIB)) == 8 * GIB
+
+
+def test_per_session_auto_clamped_by_ram_tier_big_box(monkeypatch):
+    monkeypatch.delenv("MTPLX_SESSION_BANK_PER_SESSION_BYTES", raising=False)
+    es = _es_with_ram(monkeypatch, 128 * GIB)
+    # 2/3 of 48G = 32G, tier ceiling >=96G is 24G.
+    assert es.resolve_session_bank_per_session_bytes(48 * GIB) == 24 * GIB
+
+
+def test_memory_budget_env_tightens_auto_budget(monkeypatch):
+    monkeypatch.delenv("MTPLX_SESSION_BANK_MAX_BYTES", raising=False)
+    monkeypatch.setenv("MTPLX_MEMORY_BUDGET", "32G")
+    es = _es_with_ram(monkeypatch, 128 * GIB)
+    # The declared envelope substitutes for machine RAM in the surplus
+    # rule: 0.5 * (32 - 19) = 6.5G.
+    assert es.resolve_session_bank_max_bytes(19 * GIB) == (int(13 * GIB * 0.5), True)
+
+
+def test_memory_budget_env_ignored_when_looser_than_ram(monkeypatch):
+    monkeypatch.delenv("MTPLX_SESSION_BANK_MAX_BYTES", raising=False)
+    monkeypatch.setenv("MTPLX_MEMORY_BUDGET", "256G")
+    es = _es_with_ram(monkeypatch, 64 * GIB)
+    assert es.resolve_session_bank_max_bytes(19 * GIB) == (int(45 * GIB * 0.5), True)
 
 
 def test_per_session_explicit_env_clamped_to_budget(monkeypatch):
@@ -205,4 +238,5 @@ def test_manager_uses_auto_budget_for_bank(monkeypatch):
     manager = es.EngineSessionManager(model_weights_bytes=19 * GIB)
     expected = int(45 * GIB * 0.5)
     assert manager.bank.max_bytes == expected
-    assert manager.bank.per_session_max_bytes == max(GIB, expected * 2 // 3)
+    # 2/3 of the 22.5G budget = 15G, clamped to the <96G tier ceiling (#150).
+    assert manager.bank.per_session_max_bytes == 8 * GIB

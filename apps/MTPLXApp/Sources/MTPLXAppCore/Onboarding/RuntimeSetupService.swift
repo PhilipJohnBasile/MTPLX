@@ -93,7 +93,7 @@ public enum RuntimeSetupEvent: Equatable, Sendable {
 //   safe defaults; the tuner re-checks before measuring anyway).
 // - Terminal CLI: the user's terminal always ends up with a current
 //   `mtplx` — never a suggestion to fix it themselves. No CLI →
-//   install the shim (`~/.mtplx/bin/mtplx` symlink to the app engine
+//   install the shim (`~/.mtplx/bin/mtplx` wrapper around the app engine
 //   plus a PATH line in `~/.zshrc`, no sudo, LM Studio-style). Stale
 //   Homebrew → upgraded through brew; if brew fails, the shim
 //   shadows it. Stale anything else (pip, custom, unreadable) → the
@@ -376,31 +376,109 @@ public struct RuntimeSetupService: Sendable {
     }
 
     /// Expose the app-owned engine as a terminal command without sudo:
-    /// `~/.mtplx/bin/mtplx` symlinks to the venv binary (a stable path
-    /// across app updates) and `~/.zshrc` gains one guarded PATH line.
+    /// `~/.mtplx/bin/mtplx` wraps the venv binary (a stable path across
+    /// app updates) and pins Python bytecode outside the signed application.
+    /// `~/.zshrc` gains one guarded PATH line.
     /// Returns true when anything was newly written so the row can say
     /// "open a new terminal" only when it actually changed the shell.
     @discardableResult
     private func installTerminalShim(engineExecutable: URL) throws -> Bool {
+        try Self.installTerminalShim(
+            engineExecutable: engineExecutable,
+            processEnvironment: processEnvironment
+        )
+    }
+
+    /// Upgrade the direct app-runtime symlink shipped by older builds even
+    /// when onboarding is already complete. This is intentionally narrow:
+    /// custom, Homebrew, and source-checkout launchers remain untouched.
+    @discardableResult
+    public static func migrateLegacyTerminalShimIfNeeded(
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> Bool {
         let home = processEnvironment["HOME"] ?? NSHomeDirectory()
         let binDir = URL(fileURLWithPath: home)
             .appendingPathComponent(".mtplx")
             .appendingPathComponent("bin")
-        let shim = binDir.appendingPathComponent("mtplx")
+        let appRuntimeBin = URL(
+            fileURLWithPath: MTPLXCommandBuilder.appRuntimeBinDirectory(
+                environment: processEnvironment
+            )
+        ).resolvingSymlinksInPath().path
+        let fileManager = FileManager.default
+
+        for commandName in ["mtplx", "MTPLX"] {
+            let shim = binDir.appendingPathComponent(commandName)
+            guard let destination = try? fileManager.destinationOfSymbolicLink(
+                atPath: shim.path
+            ) else { continue }
+            let destinationURL = destination.hasPrefix("/")
+                ? URL(fileURLWithPath: destination)
+                : shim.deletingLastPathComponent().appendingPathComponent(destination)
+            let resolved = destinationURL.standardizedFileURL.resolvingSymlinksInPath()
+            guard resolved.path.hasPrefix(appRuntimeBin + "/") else { continue }
+            return try installTerminalShim(
+                engineExecutable: resolved,
+                processEnvironment: processEnvironment
+            )
+        }
+        return false
+    }
+
+    @discardableResult
+    private static func installTerminalShim(
+        engineExecutable: URL,
+        processEnvironment: [String: String]
+    ) throws -> Bool {
+        let home = processEnvironment["HOME"] ?? NSHomeDirectory()
+        let binDir = URL(fileURLWithPath: home)
+            .appendingPathComponent(".mtplx")
+            .appendingPathComponent("bin")
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: binDir, withIntermediateDirectories: true)
 
         var changed = false
-        let existingDestination = try? fileManager.destinationOfSymbolicLink(atPath: shim.path)
-        if existingDestination != engineExecutable.path {
-            if fileManager.fileExists(atPath: shim.path) || existingDestination != nil {
-                try fileManager.removeItem(at: shim)
-            }
-            try fileManager.createSymbolicLink(
-                at: shim,
-                withDestinationURL: engineExecutable
+        let safeEnvironment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+            environment: processEnvironment
+        )
+        let bytecodeCache = safeEnvironment["PYTHONPYCACHEPREFIX"]!
+        let wrapper = """
+        #!/bin/sh
+        export PYTHONPYCACHEPREFIX=\(Self.shellSingleQuoted(bytecodeCache))
+        exec \(Self.shellSingleQuoted(engineExecutable.path)) "$@"
+        """ + "\n"
+
+        // Default macOS volumes are case-insensitive, so these names usually
+        // resolve to one file. Writing both also protects users who install on
+        // a case-sensitive volume and invoke the documented uppercase alias.
+        for commandName in ["mtplx", "MTPLX"] {
+            let shim = binDir.appendingPathComponent(commandName)
+            let existingDestination = try? fileManager.destinationOfSymbolicLink(
+                atPath: shim.path
             )
-            changed = true
+            let existingWrapper = existingDestination == nil
+                ? try? String(contentsOf: shim, encoding: .utf8)
+                : nil
+            if existingDestination != nil || existingWrapper != wrapper {
+                if fileManager.fileExists(atPath: shim.path) || existingDestination != nil {
+                    let backup = binDir.appendingPathComponent(
+                        "\(commandName).pre-wrapper-\(UUID().uuidString)"
+                    )
+                    try fileManager.moveItem(at: shim, to: backup)
+                }
+                try wrapper.write(to: shim, atomically: true, encoding: .utf8)
+                try fileManager.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: shim.path
+                )
+                changed = true
+            } else if !fileManager.isExecutableFile(atPath: shim.path) {
+                try fileManager.setAttributes(
+                    [.posixPermissions: 0o755],
+                    ofItemAtPath: shim.path
+                )
+                changed = true
+            }
         }
 
         let zshrc = URL(fileURLWithPath: home).appendingPathComponent(".zshrc")
@@ -416,6 +494,10 @@ public struct RuntimeSetupService: Sendable {
             changed = true
         }
         return changed
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
     }
 
     private func defaultHomebrewUpgrader() -> HomebrewUpgrader? {

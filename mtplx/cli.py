@@ -585,7 +585,7 @@ def _add_bridge_prompt_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--chat-template-profile",
-        choices=["local_qwen36", "froggeric_v19", "tokenizer"],
+        choices=["local_qwen36", "froggeric_v19", "froggeric_v21_3", "tokenizer"],
         default="local_qwen36",
         help="Chat template profile for server/OpenCode paths.",
     )

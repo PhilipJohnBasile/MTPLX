@@ -311,10 +311,16 @@ public struct ForgeBuilder: Sendable {
             let process = Process()
             process.executableURL = executable
             process.arguments = ["forge", "--help"]
-            process.environment = processEnvironment
-            let null = Pipe()
-            process.standardOutput = null
-            process.standardError = null
+            process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+                environment: processEnvironment
+            )
+            // Null-route the help text — the old unread Pipe deadlocked
+            // the child once its output crossed the 64KB pipe buffer —
+            // and bound the wait so a wedged CLI reads as "no Forge
+            // backend" instead of hanging the launch-time probe (#158).
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            let watchdog = SubprocessWatchdog(process)
             do {
                 try process.run()
             } catch {
@@ -322,8 +328,8 @@ public struct ForgeBuilder: Sendable {
                 return
             }
             Task.detached {
-                process.waitUntilExit()
-                continuation.resume(returning: process.terminationStatus == 0)
+                let exited = watchdog.wait(for: process, timeout: 30)
+                continuation.resume(returning: exited && process.terminationStatus == 0)
             }
         }
     }
@@ -376,7 +382,9 @@ public struct ForgeBuilder: Sendable {
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
-            process.environment = processEnvironment
+            process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+                environment: processEnvironment
+            )
 
             let errPipe = Pipe()
             let outPipe = Pipe()
@@ -493,9 +501,10 @@ public struct ForgeBuilder: Sendable {
             }
 
             continuation.onTermination = { @Sendable _ in
-                if process.isRunning {
-                    process.interrupt()
-                }
+                // Escalating cancel (#158 sweep): SIGINT alone left a
+                // SIGINT-deaf build running invisibly after the user
+                // cancelled, contending with the daemon for GPU/RAM.
+                SubprocessWatchdog.escalateCancel(process)
                 pollTask.cancel()
             }
         }

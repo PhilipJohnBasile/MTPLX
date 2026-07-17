@@ -73,6 +73,28 @@ else
   echo "warning: MTPLX_RELEASE_SKIP_TESTS=1 — test gates skipped; this artifact is not release-ready" >&2
 fi
 
+# Pillar gate: live product checks against a serving daemon (vision-cache
+# survival, memory ceiling, long-output decode decay). These are the
+# founder-visible regressions unit tests cannot catch (2026-07-09: one
+# screenshot disabled prompt caching for the rest of the session and no
+# gate noticed). Requires a running daemon under verified max fans:
+#   MTPLX_RELEASE_PILLAR_QA_URL=http://127.0.0.1:<port> \
+#   MTPLX_RELEASE_PILLAR_QA_FAN_RPM=<measured rpm>
+# Skipping prints the same not-release-ready warning as the test gates.
+if [[ "${MTPLX_RELEASE_SKIP_PILLAR_QA:-0}" != "1" ]]; then
+  if [[ -z "${MTPLX_RELEASE_PILLAR_QA_URL:-}" ]]; then
+    echo "error: pillar gate needs MTPLX_RELEASE_PILLAR_QA_URL (a serving daemon under verified max fans)" >&2
+    echo "       or MTPLX_RELEASE_SKIP_PILLAR_QA=1 to skip (artifact then not release-ready)" >&2
+    exit 1
+  fi
+  echo "Release gate: pillar QA (vision cache / memory ceiling / decode decay)"
+  "$ROOT/.venv/bin/python" "$ROOT/scripts/pillar_gate_qa.py" \
+    --base-url "$MTPLX_RELEASE_PILLAR_QA_URL" \
+    --fan-rpm-verified "${MTPLX_RELEASE_PILLAR_QA_FAN_RPM:-0}"
+else
+  echo "warning: MTPLX_RELEASE_SKIP_PILLAR_QA=1 — pillar gate skipped; this artifact is not release-ready" >&2
+fi
+
 RELEASE_NOTES_MD="$ROOT/docs/releases/v$VERSION.md"
 if [[ ! -f "$RELEASE_NOTES_MD" ]]; then
   echo "error: release notes source missing: $RELEASE_NOTES_MD" >&2

@@ -102,8 +102,8 @@ def test_manager_default_max_entries_when_unset(monkeypatch):
     es = _reload_engine_session()
     monkeypatch.setattr(es.sys, "platform", "linux")
     mgr = es.EngineSessionManager()
-    # Mirrors SessionBank's public default.
-    assert mgr.bank.max_entries == 8
+    # Mirrors SessionBank's public default (24 since 2.0.3, #121).
+    assert mgr.bank.max_entries == 24
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-3"])
@@ -118,7 +118,7 @@ def test_manager_invalid_max_entries_falls_back_to_default(
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="mtplx.engine_session"):
         mgr = es.EngineSessionManager()
-    assert mgr.bank.max_entries == 8
+    assert mgr.bank.max_entries == 24
     assert any(
         "MTPLX_SESSION_BANK_MAX_ENTRIES" in rec.getMessage()
         and rec.levelno == logging.WARNING
@@ -147,7 +147,7 @@ def test_manager_byte_caps_alone_still_work(monkeypatch):
     es = _reload_engine_session()
     monkeypatch.setattr(es.sys, "platform", "linux")
     mgr = es.EngineSessionManager()
-    assert mgr.bank.max_entries == 8
+    assert mgr.bank.max_entries == 24
     assert mgr.bank.max_bytes == 16 * 1024**3
     assert mgr.bank.per_session_max_bytes == 8 * 1024**3
 
@@ -224,7 +224,9 @@ def test_manager_uses_24g_per_session_default_on_high_memory_darwin(
 
     mgr = es.EngineSessionManager()
 
-    assert mgr.bank.max_entries == 16
+    # Entry caps raised 16->48 for 2.0.3: tool sessions store ~3 entries
+    # per turn and the old cap churned warm entries to the SSD tier (#121).
+    assert mgr.bank.max_entries == 48
     assert mgr.bank.max_bytes == 24 * 1024**3
     assert mgr.bank.per_session_max_bytes == 24 * 1024**3
 
@@ -245,7 +247,8 @@ def test_manager_keeps_8g_per_session_default_below_high_memory_threshold(
 
     mgr = es.EngineSessionManager()
 
-    assert mgr.bank.max_entries == 8
+    # Entry cap raised 8->24 for 2.0.3 (#121); byte caps unchanged.
+    assert mgr.bank.max_entries == 24
     assert mgr.bank.per_session_max_bytes == 8 * 1024**3
 
 

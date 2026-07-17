@@ -389,6 +389,22 @@ if [[ "$PUBLIC_RELEASE" == "1" ]]; then
     echo "error: MTPLX_SPARKLE_PUBLIC_ED_KEY is required for public release builds" >&2
     exit 1
   fi
+  # A public bundle without these resources installs fine and then cannot
+  # self-heal its runtime on user Macs — the failure only surfaces on
+  # first engine start, far from the build. Fail here instead. (The wheel
+  # copy above silently skips when MTPLX_RUNTIME_WHEEL doesn't resolve —
+  # this script cd's to apps/MTPLXApp, so relative repo-root paths dangle;
+  # pass an absolute path.)
+  if ! /bin/ls "$BUNDLE_DIR/Contents/Resources/Runtime/"*.whl >/dev/null 2>&1; then
+    echo "error: public release bundle has no bundled runtime wheel under Contents/Resources/Runtime" >&2
+    echo "set MTPLX_RUNTIME_WHEEL to the release wheel (absolute path)" >&2
+    exit 1
+  fi
+  if [[ ! -x "$BUNDLE_DIR/Contents/Resources/PythonRuntime/bin/python3" ]]; then
+    echo "error: public release bundle has no bundled Python runtime under Contents/Resources/PythonRuntime" >&2
+    echo "set MTPLX_BUNDLED_PYTHON_DIR to an extracted python-build-standalone tree" >&2
+    exit 1
+  fi
   # The dirty marker matches git-describe shapes (hex-dirty) rather than a
   # bare "-dirty", which false-positives on prose in the bundled Python
   # stdlib ("quick-n-dirty" in idlelib).

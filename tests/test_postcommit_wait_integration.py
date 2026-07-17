@@ -408,7 +408,7 @@ def test_postcommit_skips_estimated_oversized_snapshot_before_prefill(
     monkeypatch.setattr(
         openai,
         "_history_ids_for_postcommit",
-        lambda *_args, **_kwargs: list(range(121_704)),
+        lambda *_args, **_kwargs: (list(range(121_704)), None),
     )
     restore_called = False
 

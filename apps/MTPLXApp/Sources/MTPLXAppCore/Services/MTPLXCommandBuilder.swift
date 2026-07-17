@@ -70,7 +70,50 @@ public struct MTPLXCommandBuilder: Sendable {
         if let bundledThermalForge = Self.bundledThermalForgePath() {
             env[bundledThermalForgeEnvKey] = bundledThermalForge
         }
+        return pythonBytecodeSafeEnvironment(environment: env)
+    }
+
+    /// Preserve a subprocess's caller-owned environment while ensuring an
+    /// app-owned Python interpreter cannot mutate the signed application.
+    /// Call sites that intentionally need broader developer, Forge, or
+    /// publishing variables use this narrower helper instead of the full app
+    /// subprocess sanitizer above.
+    static func pythonBytecodeSafeEnvironment(
+        environment: [String: String]
+    ) -> [String: String] {
+        var env = environment
+        // The bundled interpreter lives inside the signed app. CPython would
+        // otherwise create or refresh stdlib __pycache__ files there during
+        // first-run venv setup, invalidating the app's code signature. Keep
+        // bytecode caching enabled for fast launches, but route every app-
+        // spawned Python process to the user's disposable cache directory.
+        let home = environment["HOME"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? NSHomeDirectory()
+        env["PYTHONPYCACHEPREFIX"] = URL(fileURLWithPath: home)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+            .appendingPathComponent("MTPLX", isDirectory: true)
+            .appendingPathComponent("PythonBytecode", isDirectory: true)
+            .path
         return env
+    }
+
+    /// The concrete profile a fresh user should measure and then run for a
+    /// model. Keeping onboarding tune on this resolver prevents its benchmark
+    /// from selecting a depth under the legacy Burst lane and then launching
+    /// the finished daemon under a different profile.
+    public static func recommendedProfile(
+        for model: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        let preset = TargetPreset.preset(
+            for: nil,
+            processEnvironment: environment
+        ).applyingModelDefaults(
+            for: model,
+            processEnvironment: environment
+        )
+        return MTPLXAppConfiguration.launchableProfile(preset.profile ?? "sustained")
     }
 
     public static func resolveHomebrewExecutable(

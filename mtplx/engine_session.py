@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _HIGH_MEMORY_SESSION_BANK_THRESHOLD_BYTES = 96 * 1024**3
 _HIGH_MEMORY_PER_SESSION_MAX_BYTES = 24 * 1024**3
-_HIGH_MEMORY_MAX_ENTRIES = 16
+_HIGH_MEMORY_MAX_ENTRIES = 48
 # Model-aware auto budget (v2, founder ruling 2026-07-05): the RAM cache
 # defaults to half of the RAM that remains after the model weights, so a
 # 128 GB Mac gets a big warm cache while a 32 GB Mac is not handed the old
@@ -170,6 +170,19 @@ def model_weights_bytes(model_path: Any) -> int | None:
         return None
 
 
+def _memory_budget_bytes_env() -> int | None:
+    """MTPLX_MEMORY_BUDGET: total RAM envelope the server was asked to fit.
+
+    Set by the server from ``--memory-budget`` (normalized to plain bytes)
+    but accepted with K/M/G/T suffixes for direct env users.
+    """
+    raw = os.environ.get("MTPLX_MEMORY_BUDGET")
+    if raw is None or not raw.strip():
+        return None
+    value = _bank_bytes_from_env("MTPLX_MEMORY_BUDGET", 0)
+    return value if value > 0 else None
+
+
 def _auto_session_bank_max_bytes(model_bytes: int | None) -> int | None:
     """Half of the RAM surplus left after the model weights, clamped.
 
@@ -179,10 +192,17 @@ def _auto_session_bank_max_bytes(model_bytes: int | None) -> int | None:
     ``0.5 * (total_ram - model_weights)``, floored at 1 GiB (below that the
     bank is pure churn) and capped at 48 GiB. Returns None when either input
     is unknown so callers fall back to the legacy tiered defaults.
+
+    ``--memory-budget`` (MTPLX_MEMORY_BUDGET) substitutes for machine RAM in
+    the surplus formula when it is tighter, so a declared envelope scales the
+    whole cache stack down with one knob.
     """
     if model_bytes is None or model_bytes <= 0:
         return None
     total_ram = _detect_total_ram_bytes_for_session_bank()
+    budget = _memory_budget_bytes_env()
+    if budget is not None:
+        total_ram = budget if total_ram is None else min(total_ram, budget)
     if total_ram is None:
         return None
     surplus = total_ram - int(model_bytes)
@@ -241,7 +261,15 @@ def resolve_session_bank_per_session_bytes(
         )
         return min(parsed, int(max_bytes)) if auto_active else parsed
     if auto_active:
-        return max(_AUTO_BUDGET_FLOOR_BYTES, int(max_bytes) * 2 // 3)
+        # 2/3 of the bank budget, additionally clamped to the RAM-tier
+        # ceiling (8 GiB below 96 GiB RAM, 24 GiB above). The auto rule on
+        # its own RAISED the admission gate on small boxes relative to the
+        # v1.0.4 flat gate (64 GB Mac: 15 GiB vs 8 GiB), admitting snapshots
+        # whose restore-time transient copies blow past physical RAM (#150,
+        # ArthoPacini). Oversized snapshots still get the live-ref lease
+        # fallback, so warm reuse survives the clamp.
+        auto_cap = max(_AUTO_BUDGET_FLOOR_BYTES, int(max_bytes) * 2 // 3)
+        return min(auto_cap, _default_per_session_max_bytes())
     return _default_per_session_max_bytes()
 
 

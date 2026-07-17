@@ -204,14 +204,18 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
         try run(
             executable: brew,
             arguments: arguments,
-            displayCommand: brewCommand(arguments)
+            displayCommand: brewCommand(arguments),
+            // Formula installs legitimately take a while on cold caches;
+            // still bounded so a wedged brew cannot hold the app (#158).
+            timeout: 1800
         )
     }
 
     private func run(
         executable: URL,
         arguments: [String],
-        displayCommand: String
+        displayCommand: String,
+        timeout: TimeInterval = 900
     ) throws -> String {
         let process = Process()
         process.executableURL = executable
@@ -223,7 +227,7 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        let output = RuntimeInstallTailBuffer(capacity: 4096)
+        let output = SubprocessTailBuffer(capacity: 4096)
         stdout.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             if !chunk.isEmpty { output.append(chunk) }
@@ -237,6 +241,13 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
             stderr.fileHandleForReading.readabilityHandler = nil
         }
 
+        // Deadline watchdog instead of a bare waitUntilExit: a wedged child
+        // (pip stuck on an unreachable index, brew waiting on a lock) held
+        // the app forever with no error surface (#158). The handler is
+        // installed before run() so a fast exit cannot be missed.
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+
         do {
             try process.run()
         } catch {
@@ -246,7 +257,19 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
                 output: error.localizedDescription
             )
         }
-        process.waitUntilExit()
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if finished.wait(timeout: .now() + 10) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 5)
+            }
+            throw MTPLXRuntimeBootstrapperError.commandFailed(
+                command: displayCommand,
+                exitCode: -2,
+                output: output.snapshot()
+                    + "\n[timed out after \(Int(timeout))s and was terminated]"
+            )
+        }
         let tail = output.snapshot()
         guard process.terminationStatus == 0 else {
             throw MTPLXRuntimeBootstrapperError.commandFailed(
@@ -491,12 +514,21 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
         do {
             try process.run()
         } catch {
             return false
         }
-        process.waitUntilExit()
+        // A version probe must never wedge the install path (#158): a
+        // hung interpreter (Gatekeeper stall, dead NFS home) is treated
+        // as "not usable", not waited on forever.
+        if finished.wait(timeout: .now() + 15) == .timedOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + 5)
+            return false
+        }
         var data = stdout.fileHandleForReading.readDataToEndOfFile()
         data.append(stderr.fileHandleForReading.readDataToEndOfFile())
         let output = String(data: data, encoding: .utf8) ?? ""
@@ -505,28 +537,6 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
     }
 }
 
-private final class RuntimeInstallTailBuffer: @unchecked Sendable {
-    private let capacity: Int
-    private let lock = NSLock()
-    private var data = Data()
-
-    init(capacity: Int) {
-        self.capacity = max(256, capacity)
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        data.append(chunk)
-        if data.count > capacity {
-            data.removeFirst(data.count - capacity)
-        }
-        lock.unlock()
-    }
-
-    func snapshot() -> String {
-        lock.lock()
-        let copy = data
-        lock.unlock()
-        return String(data: copy, encoding: .utf8) ?? ""
-    }
-}
+// SubprocessTailBuffer moved to SubprocessSupport.swift, the shared
+// home of the app's watchdogged-subprocess plumbing (tail buffer,
+// deadline watchdog, lossless pipe drain).

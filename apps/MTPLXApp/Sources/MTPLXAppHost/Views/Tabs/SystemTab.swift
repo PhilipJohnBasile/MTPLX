@@ -132,29 +132,59 @@ struct SystemTab: View {
         let unified = snapshot?.machine.unifiedMemoryBytes ?? health?.unifiedMemoryBytes
 
         Card("Memory",
-             subtitle: "In-use plus cache vs your Mac's total. Lower is better.") {
+             subtitle: "What the engine is actually holding vs your Mac's total.") {
             if let mem, mem.ok, let total = unified, total > 0 {
                 let active = max(0, Double(mem.activeMemoryBytes ?? 0))
                 let cache = max(0, Double(mem.cacheMemoryBytes ?? 0))
                 let peak = Double(mem.peakMemoryBytes ?? 0)
+                let weights = max(0, Double(mem.modelWeightsBytes ?? 0))
+                let bank = max(0, Double(mem.sessionBankBytes ?? 0))
+                // Derived remainder of active; recomputed here so the three
+                // segments always sum to the active bar even if the daemon
+                // snapshot raced a prefill.
+                let working = max(0, active - weights - bank)
                 let used = active + cache
                 let headroom = max(0, Double(total) - used)
+                let hasAttribution = weights > 0
                 VStack(alignment: .leading, spacing: 14) {
-                    StackedBar(
-                        segments: [
-                            StackedBarSegment(label: "Active", value: active, tint: Brand.accent),
-                            StackedBarSegment(label: "Cache", value: cache, tint: Brand.coolChrome),
-                            StackedBarSegment(label: "Headroom", value: headroom, tint: Brand.textHighlight.opacity(0.35)),
-                        ],
-                        total: Double(total),
-                        height: 22
-                    )
-                    HStack(spacing: 18) {
-                        memoryTag(color: Brand.accent, label: "Active", value: Format.gigabytes(Int(active)))
-                        memoryTag(color: Brand.coolChrome, label: "Cache", value: Format.gigabytes(Int(cache)))
-                        memoryTag(color: Brand.textHighlight.opacity(0.7), label: "Headroom", value: Format.gigabytes(Int(headroom)))
-                        if peak > 0 {
-                            memoryTag(color: Brand.warning, label: "Peak", value: Format.gigabytes(Int(peak)))
+                    if hasAttribution {
+                        StackedBar(
+                            segments: [
+                                StackedBarSegment(label: "Model", value: min(weights, active), tint: Brand.accent),
+                                StackedBarSegment(label: "Sessions", value: bank, tint: Brand.coolChrome),
+                                StackedBarSegment(label: "Working", value: working, tint: Brand.warning.opacity(0.75)),
+                                StackedBarSegment(label: "Reusable", value: cache, tint: Brand.textHighlight.opacity(0.5)),
+                                StackedBarSegment(label: "Headroom", value: headroom, tint: Brand.textHighlight.opacity(0.35)),
+                            ],
+                            total: Double(total),
+                            height: 22
+                        )
+                        HStack(spacing: 14) {
+                            memoryTag(color: Brand.accent, label: "Model", value: Format.gigabytes(Int(min(weights, active))))
+                            memoryTag(color: Brand.coolChrome, label: "Sessions", value: Format.gigabytes(Int(bank)))
+                            memoryTag(color: Brand.warning.opacity(0.75), label: "Working", value: Format.gigabytes(Int(working)))
+                            memoryTag(color: Brand.textHighlight.opacity(0.6), label: "Reusable", value: Format.gigabytes(Int(cache)))
+                            if peak > 0 {
+                                memoryTag(color: Brand.danger, label: "Peak", value: Format.gigabytes(Int(peak)))
+                            }
+                        }
+                    } else {
+                        StackedBar(
+                            segments: [
+                                StackedBarSegment(label: "Active", value: active, tint: Brand.accent),
+                                StackedBarSegment(label: "Cache", value: cache, tint: Brand.coolChrome),
+                                StackedBarSegment(label: "Headroom", value: headroom, tint: Brand.textHighlight.opacity(0.35)),
+                            ],
+                            total: Double(total),
+                            height: 22
+                        )
+                        HStack(spacing: 18) {
+                            memoryTag(color: Brand.accent, label: "Active", value: Format.gigabytes(Int(active)))
+                            memoryTag(color: Brand.coolChrome, label: "Cache", value: Format.gigabytes(Int(cache)))
+                            memoryTag(color: Brand.textHighlight.opacity(0.7), label: "Headroom", value: Format.gigabytes(Int(headroom)))
+                            if peak > 0 {
+                                memoryTag(color: Brand.warning, label: "Peak", value: Format.gigabytes(Int(peak)))
+                            }
                         }
                     }
                 }
@@ -194,8 +224,13 @@ struct SystemTab: View {
 
         Card("Memory Detail") {
             VStack(spacing: 6) {
-                MetricRow(label: "Active", value: Format.bytes(mem?.activeMemoryBytes))
-                MetricRow(label: "Cache", value: Format.bytes(mem?.cacheMemoryBytes))
+                if let weights = mem?.modelWeightsBytes, weights > 0 {
+                    MetricRow(label: "Model weights", value: Format.bytes(weights))
+                    MetricRow(label: "Session cache (RAM)", value: Format.bytes(mem?.sessionBankBytes ?? 0))
+                    MetricRow(label: "Generation working set", value: Format.bytes(mem?.generationWorkingBytes ?? 0))
+                }
+                MetricRow(label: "Active (total in use)", value: Format.bytes(mem?.activeMemoryBytes))
+                MetricRow(label: "Reusable buffer pool", value: Format.bytes(mem?.cacheMemoryBytes))
                 MetricRow(
                     label: "Peak",
                     value: Format.bytes(mem?.peakMemoryBytes),

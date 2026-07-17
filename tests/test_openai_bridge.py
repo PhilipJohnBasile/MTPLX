@@ -765,7 +765,12 @@ def test_anthropic_payload_from_openai_response():
     assert payload["type"] == "message"
     assert payload["role"] == "assistant"
     assert payload["content"] == [{"type": "text", "text": "hello"}]
-    assert payload["usage"] == {"input_tokens": 12, "output_tokens": 3}
+    assert payload["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        # #121/#144 telemetry: session-cache hit mirrored Anthropic-style.
+        "cache_read_input_tokens": 0,
+    }
     assert payload["mtplx_stats"] == {"tok_s": 42.0}
 
 

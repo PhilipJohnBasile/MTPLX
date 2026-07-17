@@ -29,17 +29,25 @@ def test_config_detection_negative():
 
 
 def test_trunk_shim_makes_model_type_importable():
-    install_qwen3_5_mtp_trunk_shim()
+    # The shim is process-global by design in production; tests must undo the
+    # sys.modules mutation or it leaks into other suites (it made
+    # test_mtp_alias_load_path's known-alias case see a "native" module and
+    # skip building the #147 wrapper).
     import importlib
 
-    import mlx_lm.models.qwen3_5_moe as base
+    try:
+        install_qwen3_5_mtp_trunk_shim()
 
-    mod = importlib.import_module("mlx_lm.models.qwen3_5_mtp")
-    # shim exposes the trunk classes; Model subclasses the vanilla MoE trunk but
-    # strips mtp.* in sanitize to avoid the double norm-shift
-    assert hasattr(mod, "Model") and hasattr(mod, "ModelArgs")
-    assert issubclass(mod.Model, base.Model)
-    assert mod.ModelArgs is base.ModelArgs
+        import mlx_lm.models.qwen3_5_moe as base
+
+        mod = importlib.import_module("mlx_lm.models.qwen3_5_mtp")
+        # shim exposes the trunk classes; Model subclasses the vanilla MoE trunk
+        # but strips mtp.* in sanitize to avoid the double norm-shift
+        assert hasattr(mod, "Model") and hasattr(mod, "ModelArgs")
+        assert issubclass(mod.Model, base.Model)
+        assert mod.ModelArgs is base.ModelArgs
+    finally:
+        sys.modules.pop("mlx_lm.models.qwen3_5_mtp", None)
 
 
 def test_strip_mtp_prefix():

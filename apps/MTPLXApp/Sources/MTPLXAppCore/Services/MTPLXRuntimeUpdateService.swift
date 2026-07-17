@@ -375,19 +375,33 @@ public struct MTPLXRuntimeUpdateService: Sendable {
         process.arguments = ["--version"]
         var env = environment
         env["PATH"] = MTPLXCommandBuilder.expandedPATH(environment: environment)
-        process.environment = env
+        process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+            environment: env
+        )
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let watchdog = SubprocessWatchdog(process)
         do {
             try process.run()
         } catch {
             return nil
         }
-        process.waitUntilExit()
-        var data = stdout.fileHandleForReading.readDataToEndOfFile()
-        data.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        // A version probe must never wedge its caller (#158): a hung
+        // CLI (Gatekeeper stall, dead NFS home) reads as "version
+        // unknown", not an infinite wait — RuntimeSetupService calls
+        // this during onboarding. 30s covers a cold first exec of the
+        // Python entry point.
+        let stdoutDrain = SubprocessPipeDrain(stdout)
+        let stderrDrain = SubprocessPipeDrain(stderr)
+        guard watchdog.wait(for: process, timeout: 30) else {
+            return nil
+        }
+        stdoutDrain.join()
+        stderrDrain.join()
+        var data = stdoutDrain.snapshotData()
+        data.append(stderrDrain.snapshotData())
         let output = String(data: data, encoding: .utf8) ?? ""
         return MTPLXSemanticVersion(output)?.description
     }

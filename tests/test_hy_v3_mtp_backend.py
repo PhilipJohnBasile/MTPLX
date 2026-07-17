@@ -1,7 +1,18 @@
-"""Regression tests for the hy_v3 MTP backend (audit-driven)."""
+"""Regression tests for the hy_v3 MTP backend (audit-driven).
+
+mlx-lm ships models/hy_v3.py on main but not in any release yet (latest is
+0.31.3, checked 2026-07-11); the backend is inert until it lands, so these
+tests skip rather than break collection on released mlx-lm.
+"""
+import pytest
+
+hy_v3 = pytest.importorskip(
+    "mlx_lm.models.hy_v3",
+    reason="mlx-lm does not ship models/hy_v3 yet (unreleased upstream)",
+)
+
 import mlx.core as mx
 from pathlib import Path
-from mlx_lm.models import hy_v3
 from mtplx.hy_v3_mtp_patch import inject_hy_v3_mtp_support, is_hy_v3_mtp_config
 from mtplx.mtp_patch import validate_mtp_support, MTPContract
 from mtplx.backends.registry import SUPPORTED_ARCH_IDS

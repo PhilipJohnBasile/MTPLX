@@ -275,9 +275,14 @@ public struct AutoTuner: Sendable {
 
                 let process = Process()
                 process.executableURL = executable
+                let profile = MTPLXCommandBuilder.recommendedProfile(
+                    for: modelPath,
+                    environment: self.processEnvironment
+                )
                 process.arguments = [
                     "tune",
                     "--model", modelPath,
+                    "--profile", profile,
                     "--json",
                     "--yes",
                     "--retune",

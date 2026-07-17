@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+#if os(macOS)
+import AppKit
+#endif
 
 public struct HermesProfile: Identifiable, Equatable, Sendable {
     public let name: String
@@ -219,6 +222,12 @@ public struct HermesIntegration: Sendable {
     public let executablePath: String?
     public let environment: [String: String]
     public let terminalCommandURL: URL
+    /// Where the Hermes Desktop app reads its startup profile pin
+    /// (`{"profile": "<name>"}`, validated by their renderer's
+    /// PROFILE_NAME_RE; the desktop persists its own selection thereafter).
+    public let activeProfileURL: URL
+    /// Test seam: bypass bootstrap-layout + LaunchServices discovery.
+    public let desktopApplicationOverride: URL?
 
     public init(
         hermesHome: URL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".hermes", isDirectory: true),
@@ -226,12 +235,18 @@ public struct HermesIntegration: Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         terminalCommandURL: URL = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".mtplx")
-            .appendingPathComponent("open-hermes.command")
+            .appendingPathComponent("open-hermes.command"),
+        activeProfileURL: URL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/Hermes")
+            .appendingPathComponent("active-profile.json"),
+        desktopApplicationOverride: URL? = nil
     ) {
         self.hermesHome = hermesHome
         self.executablePath = executablePath
         self.environment = environment
         self.terminalCommandURL = terminalCommandURL
+        self.activeProfileURL = activeProfileURL
+        self.desktopApplicationOverride = desktopApplicationOverride
     }
 
     public func discoverProfiles() -> [HermesProfile] {
@@ -484,6 +499,142 @@ public struct HermesIntegration: Sendable {
         !Self.appLaunchedTerminalAgentPIDs().isEmpty
     }
 
+    public static let desktopBundleIdentifier = "com.nousresearch.hermes"
+
+    /// The built Hermes Desktop bundle to launch, or nil for CLI-only
+    /// installs. Bootstrap layout first (`hermes desktop` builds inside the
+    /// agent checkout under ~/.hermes), LaunchServices second.
+    /// `/Applications/Hermes.app` is only their Tauri *setup stub*
+    /// (`com.nousresearch.hermes.setup`) — a different bundle id, so the
+    /// LaunchServices lookup cannot match it.
+    public func desktopApplicationURL(fileManager: FileManager = .default) -> URL? {
+        if let override = desktopApplicationOverride {
+            return fileManager.fileExists(atPath: override.path) ? override : nil
+        }
+        let desktopRelease = hermesHome
+            .appendingPathComponent("hermes-agent", isDirectory: true)
+            .appendingPathComponent("apps", isDirectory: true)
+            .appendingPathComponent("desktop", isDirectory: true)
+            .appendingPathComponent("release", isDirectory: true)
+        for arch in ["mac-arm64", "mac"] {
+            let candidate = desktopRelease
+                .appendingPathComponent(arch, isDirectory: true)
+                .appendingPathComponent("Hermes.app", isDirectory: true)
+            if fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        #if os(macOS)
+        if let resolved = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: Self.desktopBundleIdentifier
+        ) {
+            return resolved
+        }
+        #endif
+        return nil
+    }
+
+    /// Pin the Desktop app's startup profile to the MTPLX profile. Returns
+    /// the previously pinned profile name (if any) so callers can surface
+    /// the switch to the user.
+    @discardableResult
+    public func writeActiveDesktopProfile(fileManager: FileManager = .default) throws -> String? {
+        try fileManager.createDirectory(
+            at: activeProfileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var previous: String?
+        if let data = try? Data(contentsOf: activeProfileURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            previous = object["profile"] as? String
+        }
+        let payload = try JSONSerialization.data(
+            withJSONObject: ["profile": Self.profileName]
+        )
+        try payload.write(to: activeProfileURL, options: .atomic)
+        return previous
+    }
+
+    #if os(macOS)
+    /// Launch the built Hermes Desktop app pinned to the MTPLX profile —
+    /// the OpenCode-style flow. Returns nil when no built Desktop bundle
+    /// exists so the caller can fall back to the Terminal handoff.
+    @MainActor
+    public func launchDesktopApplication(
+        configuration: MTPLXAppConfiguration
+    ) async -> HermesLaunchResult? {
+        guard let appURL = desktopApplicationURL() else { return nil }
+        let command = "open \(appURL.path)"
+        do {
+            _ = try sync(configuration: configuration)
+        } catch {
+            return HermesLaunchResult(
+                action: .unavailable,
+                command: command,
+                detail: "could not sync Hermes profile: \(error)"
+            )
+        }
+        let previous: String?
+        do {
+            previous = try writeActiveDesktopProfile()
+        } catch {
+            return HermesLaunchResult(
+                action: .unavailable,
+                command: command,
+                detail: "could not pin Hermes Desktop to the MTPLX profile: \(error)"
+            )
+        }
+        let openConfiguration = NSWorkspace.OpenConfiguration()
+        openConfiguration.activates = true
+        let opened = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            NSWorkspace.shared.openApplication(
+                at: appURL,
+                configuration: openConfiguration
+            ) { _, error in
+                continuation.resume(returning: error == nil)
+            }
+        }
+        guard opened else {
+            return HermesLaunchResult(
+                action: .unavailable,
+                command: command,
+                detail: "could not open Hermes Desktop at \(appURL.path)"
+            )
+        }
+        let previousNote: String
+        if let previous, previous != Self.profileName {
+            previousNote = " (was \(previous); the in-app profile picker switches back)"
+        } else {
+            previousNote = ""
+        }
+        return HermesLaunchResult(
+            action: .launched,
+            command: command,
+            detail: "opened Hermes Desktop pinned to profile \(Self.profileName)\(previousNote)"
+        )
+    }
+
+    /// Desktop-first launch: the built Desktop app when present (same flow
+    /// as the OpenCode card), the Terminal handoff otherwise. A present-but-
+    /// broken Desktop bundle falls back to Terminal rather than stranding
+    /// the user, carrying both details.
+    @MainActor
+    public func launch(configuration: MTPLXAppConfiguration) async -> HermesLaunchResult {
+        guard let desktop = await launchDesktopApplication(configuration: configuration) else {
+            return launchInTerminal(configuration: configuration)
+        }
+        if desktop.action == .launched {
+            return desktop
+        }
+        let terminal = launchInTerminal(configuration: configuration)
+        return HermesLaunchResult(
+            action: terminal.action,
+            command: terminal.command,
+            detail: "\(desktop.detail); fell back to Terminal: \(terminal.detail)"
+        )
+    }
+    #endif
+
     public func launchInTerminal(configuration: MTPLXAppConfiguration) -> HermesLaunchResult {
         do {
             _ = try sync(configuration: configuration)
@@ -530,19 +681,34 @@ public struct HermesIntegration: Sendable {
         process.arguments = ["-a", "Terminal", scriptURL.path]
         let stderr = Pipe()
         process.standardError = stderr
+        // The backend store calls this from the main actor, so a wedged
+        // LaunchServices `open` must cost one bounded window, never
+        // beachball the app (#158 pattern).
+        let stderrTail = SubprocessTailBuffer(capacity: 4096)
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if !chunk.isEmpty { stderrTail.append(chunk) }
+        }
+        defer { stderr.fileHandleForReading.readabilityHandler = nil }
+        let watchdog = SubprocessWatchdog(process)
         do {
             try process.run()
-            process.waitUntilExit()
+            guard watchdog.wait(for: process, timeout: 30) else {
+                return HermesLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "could not open Hermes automatically: open timed out after 30s and was terminated"
+                )
+            }
             guard process.terminationStatus == 0 else {
-                let data = stderr.fileHandleForReading.readDataToEndOfFile()
-                let message = String(data: data, encoding: .utf8)?
+                let message = stderrTail.snapshot()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return HermesLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: message?.isEmpty == false
-                        ? "could not open Hermes automatically: \(message!)"
-                        : "could not open Hermes automatically: open exited \(process.terminationStatus)"
+                    detail: message.isEmpty
+                        ? "could not open Hermes automatically: open exited \(process.terminationStatus)"
+                        : "could not open Hermes automatically: \(message)"
                 )
             }
             return HermesLaunchResult(
@@ -1335,7 +1501,8 @@ public struct HermesIntegration: Sendable {
     private func runAndCapture(
         executableURL: URL,
         arguments: [String],
-        environment overrideEnvironment: [String: String]? = nil
+        environment overrideEnvironment: [String: String]? = nil,
+        timeout: TimeInterval = 60
     ) async throws -> String {
         let processEnvironment = overrideEnvironment ?? environment
         return try await Task.detached(priority: .utility) {
@@ -1346,14 +1513,28 @@ public struct HermesIntegration: Sendable {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
+            // Drain as data arrives and bound the wait (#158): the old
+            // read-after-exit deadlocked once `hermes` output crossed
+            // the 64KB pipe buffer, and a wedged gateway command hung
+            // installStatus()/repairGateway() forever. Callers parse
+            // this output, so the drain joins on EOF rather than
+            // racing a readabilityHandler against termination.
+            let watchdog = SubprocessWatchdog(process)
             try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            guard process.terminationStatus == 0 else {
-                throw HermesIntegrationError.launchFailed(output)
+            let output = SubprocessPipeDrain(pipe)
+            guard watchdog.wait(for: process, timeout: timeout) else {
+                output.join(timeout: 1)
+                throw HermesIntegrationError.launchFailed(
+                    output.snapshot()
+                        + "\n[hermes \(arguments.joined(separator: " ")) timed out after \(Int(timeout))s and was terminated]"
+                )
             }
-            return output
+            output.join()
+            let text = output.snapshot()
+            guard process.terminationStatus == 0 else {
+                throw HermesIntegrationError.launchFailed(text)
+            }
+            return text
         }.value
     }
 

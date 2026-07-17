@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -57,7 +58,13 @@ def _boundary_true_restore_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 GIB = 1024**3
-DEFAULT_MAX_ENTRIES = 8
+# Tool sessions store ~3 entries per turn (prompt-prefix commit, postcommit,
+# generation-final); an 8-entry cap churned the whole bank every ~3 turns and
+# pushed warm boundary-carrying entries to the SSD tier, which does not yet
+# persist recurrent boundaries — the next divergent turn then fail-closed to
+# a stale short prefix (#121, measured 2026-07-16). Memory stays bounded by
+# max_bytes; the count cap only bounds scan cost.
+DEFAULT_MAX_ENTRIES = 24
 DEFAULT_MAX_BYTES = 24 * GIB
 DEFAULT_PER_SESSION_MAX_BYTES = 8 * GIB
 DEFAULT_IDLE_TTL_S = 60 * 60
@@ -385,6 +392,14 @@ class SessionBank:
             ),
             key=lambda item: item[0],
         )
+        if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
+            print(
+                f"[mtplx] bank-put: len={len(tokens)} "
+                f"boundaries={[b[0] for b in normalized_boundaries]} "
+                f"session={session_id}",
+                file=sys.stderr,
+                flush=True,
+            )
         if not normalized_boundaries:
             # Same-key replacement must not lose interior boundaries: the idle
             # postcommit re-put of a prompt-boundary entry (which restores
@@ -399,6 +414,24 @@ class SessionBank:
             inherited_loader = (
                 getattr(prior, "gdn_boundary_loader", None) if prior is not None else None
             )
+            if not normalized_boundaries and inherited_loader is None:
+                # Prefix-entry inheritance (#121, 2026-07-16): boundary
+                # records describe token PREFIXES, so any stored entry that
+                # is a strict prefix of the new tokens carries records that
+                # stay valid verbatim for the new entry. Put sites that have
+                # no PromptState in scope (generation-final commits) would
+                # otherwise store boundary-less entries and push the next
+                # divergent agent turn onto the fail-closed cold path.
+                prefix_donor = self.longest_prefix(tokens)
+                if prefix_donor is not None:
+                    # A loader-backed donor (exact SSD restore after a
+                    # restart) counts too: its records live on disk behind
+                    # the loader, and sharing the loader callable is safe —
+                    # it is a pure re-read of the donor's payload.
+                    normalized_boundaries = list(prefix_donor.gdn_boundaries)
+                    inherited_loader = getattr(
+                        prefix_donor, "gdn_boundary_loader", None
+                    )
         def live_ref_entry(reason: str, nbytes: int) -> SessionBankEntry | None:
             if not keep_live_ref or not cache:
                 return None
@@ -1084,6 +1117,17 @@ class SessionBank:
         if needs_boundary:
             boundary = entry.recurrent_boundary_at_or_below(matched)
             if boundary is None:
+                if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
+                    positions = [
+                        int(record[0])
+                        for record in (entry.gdn_boundaries or [])
+                    ]
+                    print(
+                        f"[mtplx] boundary-miss: entry_len={entry.prefix_len} "
+                        f"matched={matched} boundary_positions={positions}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 if _boundary_true_restore_enabled():
                     self.last_miss_reason = (
                         CacheMissReason.NO_SNAPSHOT_COVERAGE.value
@@ -1258,6 +1302,13 @@ class SessionBank:
         put_entry = getattr(self.cold_tier, "put_entry", None)
         if not callable(put_entry):
             return
+        # The tier serializes only MATERIALIZED boundary records. An entry
+        # whose records still sit behind the lazy loader (inherited from an
+        # SSD-restored donor) would persist a boundary-less package and
+        # silently downgrade its whole lineage on the next restart — so
+        # hydrate first. Runs on the postcommit/idle lane; the loader fails
+        # closed on a corrupt payload.
+        entry._ensure_boundaries_loaded()
         capabilities = ["ar_insert"]
         if entry.logits is not None and entry.hidden is not None:
             capabilities.append("mtp_full")
@@ -1513,9 +1564,41 @@ class SessionBank:
             )
             self._evict_entry(victim, reason=reason)
 
+    def shrink_to_bytes(self, target_bytes: int, *, reason: str = "memory_pressure") -> int:
+        """Evict least-recently-used entries until the bank fits the target.
+
+        The memory-pressure guard calls this when macOS reports system-wide
+        pressure (issue #144: a 64 GB Mac swapping 60 GB while the bank sat
+        on its full budget). Returns the number of entries evicted.
+        """
+
+        evicted = 0
+        target = max(0, int(target_bytes))
+        while self._entries and self.total_nbytes > target:
+            victim = min(
+                self._entries.values(),
+                key=lambda entry: (entry.last_access_s, -entry.nbytes, entry.created_at_s),
+            )
+            before = len(self._entries)
+            self._evict_entry(victim, reason=reason)
+            if len(self._entries) >= before:
+                # Defensive: an entry whose dict key drifted from its
+                # token_ids would make this loop spin forever while
+                # total_nbytes never shrinks (allocating an eviction-log
+                # record per iteration). Should be unreachable — put() keys
+                # strictly by token_ids — but an infinite allocator loop is
+                # never an acceptable failure mode for a pressure responder.
+                break
+            evicted += 1
+        return evicted
+
     def _evict_entry(self, entry: SessionBankEntry, *, reason: str) -> None:
         entry.eviction_reason = reason
-        self._entries.pop(entry.token_ids, None)
+        if self._entries.pop(entry.token_ids, None) is None:
+            for key, value in list(self._entries.items()):
+                if value is entry:
+                    self._entries.pop(key, None)
+                    break
         self.eviction_log.append(
             {
                 "reason": reason,

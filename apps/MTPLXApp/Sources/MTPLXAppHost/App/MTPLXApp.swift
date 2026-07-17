@@ -82,6 +82,10 @@ struct MTPLXApp: App {
     private let memoryPressureMonitor = AppMemoryPressureMonitor()
 
     init() {
+        // Existing users skip onboarding, so migrate the legacy terminal
+        // symlink on every app launch before it can run the bundled Python
+        // without the signature-safe bytecode cache environment.
+        _ = try? RuntimeSetupService.migrateLegacyTerminalShimIfNeeded()
         let backend = MTPLXBackendStore()
         let hermesAgentStore = HermesAgentStore()
         let benchmarkOrchestrator = BenchmarkOrchestrator()
