@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -67,6 +68,37 @@ def _run_probe(command: list[str], *, timeout_s: float = 3.0) -> dict[str, Any]:
         "stdout": proc.stdout.strip(),
         "stderr": proc.stderr.strip(),
         "ok": proc.returncode == 0,
+    }
+
+
+# Unix socket the ThermalForge privileged daemon listens on (matches
+# ThermalForgeDaemon.socketPath). Reaching it resets fans as root without sudo
+# and, unlike the `thermalforge auto` CLI, without quitting the menu bar app.
+THERMALFORGE_DAEMON_SOCKET = "/tmp/thermalforge.sock"
+
+
+def _daemon_socket_send(command: str, *, timeout_s: float = 3.0) -> dict[str, Any] | None:
+    """Send one newline-terminated command to the ThermalForge daemon socket.
+
+    Returns None when no daemon is reachable, so callers fall back to the CLI;
+    otherwise ``{"ok": bool, "response": str, "command": [...]}``. The daemon
+    speaks "auto" / "max" / "set <rpm>" / "status" and replies "ok", JSON, or
+    "error: ...".
+    """
+    if not os.path.exists(THERMALFORGE_DAEMON_SOCKET):
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout_s)
+            sock.connect(THERMALFORGE_DAEMON_SOCKET)
+            sock.sendall((command + "\n").encode())
+            response = sock.recv(8192).decode(errors="replace").strip()
+    except OSError:
+        return None
+    return {
+        "ok": bool(response) and not response.lower().startswith("error"),
+        "response": response,
+        "command": ["<thermalforge-daemon-socket>", command],
     }
 
 
@@ -1569,7 +1601,26 @@ def set_thermal_profile(profile: str, *, dry_run: bool = False) -> dict[str, Any
             "command": commands[0] if commands else None,
             "attempts": [],
         }
-    attempts = []
+    attempts: list[dict[str, Any]] = []
+
+    # ThermalForge exposes a privileged daemon socket that resets fans as root
+    # (no sudo) and, unlike the `auto` CLI, never quits the menu bar app. Prefer
+    # it for the fan reset so restoring fans can't take down a running app; the
+    # CLI candidates below stay the fallback when no daemon is reachable.
+    if profile == "silent" and str(selected.get("kind")) == "thermalforge":
+        reset = _daemon_socket_send("auto")
+        if reset is not None:
+            attempts.append(reset)
+            if reset["ok"]:
+                return {
+                    "ok": True,
+                    "profile": profile,
+                    "dry_run": False,
+                    "detection": detection,
+                    "command": reset["command"],
+                    "attempts": attempts,
+                }
+
     for command in commands:
         result = _run_probe(command, timeout_s=15.0)
         attempts.append(result)
