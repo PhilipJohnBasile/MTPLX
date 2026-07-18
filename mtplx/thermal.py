@@ -215,6 +215,14 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _min_or_none(values: list[int]) -> int | None:
+    return min(values) if values else None
+
+
+def _max_or_none(values: list[int]) -> int | None:
+    return max(values) if values else None
+
+
 def fan_summary() -> dict[str, Any]:
     """Best-effort fan-RPM summary, used to verify ``thermalforge max`` actually
     ramped the fans rather than silently no-op'ing.
@@ -292,14 +300,14 @@ def fan_summary() -> dict[str, Any]:
             )
     return {
         "ok": bool(rpms),
-        "min_rpm": min(rpms) if rpms else None,
-        "max_rpm": max(rpms) if rpms else None,
-        "actual_min_rpm": min(actual_rpms) if actual_rpms else None,
-        "actual_max_rpm": max(actual_rpms) if actual_rpms else None,
-        "target_min_rpm": min(target_rpms) if target_rpms else None,
-        "target_max_rpm": max(target_rpms) if target_rpms else None,
-        "capacity_min_rpm": min(capacity_rpms) if capacity_rpms else None,
-        "capacity_max_rpm": max(capacity_rpms) if capacity_rpms else None,
+        "min_rpm": _min_or_none(rpms),
+        "max_rpm": _max_or_none(rpms),
+        "actual_min_rpm": _min_or_none(actual_rpms),
+        "actual_max_rpm": _max_or_none(actual_rpms),
+        "target_min_rpm": _min_or_none(target_rpms),
+        "target_max_rpm": _max_or_none(target_rpms),
+        "capacity_min_rpm": _min_or_none(capacity_rpms),
+        "capacity_max_rpm": _max_or_none(capacity_rpms),
         "fans": fans,
         "raw": status,
     }
@@ -313,12 +321,17 @@ FAN_RAMP_TARGET_FRACTION = 0.85
 FAN_RAMP_FALLBACK_THRESHOLD_RPM = 4000
 
 
+def _fan_max_capacity(fan: dict[str, Any]) -> int | None:
+    """The fan's hardware max RPM, from the summary field or the raw status."""
+    raw = fan.get("max_capacity_rpm") or (fan.get("raw") or {}).get("max_rpm")
+    return _int_or_none(raw)
+
+
 def _fan_target_is_ramped(fan: dict[str, Any]) -> bool:
     target_int = _int_or_none(fan.get("target_rpm"))
     if target_int is None:
         return False
-    max_capacity = fan.get("max_capacity_rpm") or (fan.get("raw") or {}).get("max_rpm")
-    max_int = _int_or_none(max_capacity)
+    max_int = _fan_max_capacity(fan)
     if max_int and max_int > 0:
         return target_int >= int(max_int * FAN_RAMP_TARGET_FRACTION)
     return target_int >= FAN_RAMP_FALLBACK_THRESHOLD_RPM
@@ -332,14 +345,20 @@ def _fan_actual_is_ramped(
     actual_int = _int_or_none(fan.get("actual_rpm"))
     if actual_int is None:
         return False
-    max_capacity = fan.get("max_capacity_rpm") or (fan.get("raw") or {}).get("max_rpm")
-    max_int = _int_or_none(max_capacity)
+    max_int = _fan_max_capacity(fan)
     if max_int and max_int > 0:
         return actual_int >= int(max_int * fraction)
     target_int = _int_or_none(fan.get("target_rpm"))
     if target_int and target_int > 0:
         return actual_int >= int(target_int * fraction)
     return actual_int >= FAN_RAMP_FALLBACK_THRESHOLD_RPM
+
+
+def _ok_fans(summary: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Parsed fan rows when the summary is usable, else None."""
+    if not summary.get("ok"):
+        return None
+    return summary.get("fans") or []
 
 
 def _summary_indicates_max(summary: dict[str, Any]) -> bool:
@@ -353,9 +372,7 @@ def _summary_indicates_max(summary: dict[str, Any]) -> bool:
     earlier verification path falsely report failure.
     """
 
-    if not summary.get("ok"):
-        return False
-    for fan in summary.get("fans") or []:
+    for fan in _ok_fans(summary) or []:
         mode = (fan.get("mode") or "").lower()
         if mode in {"manual", "max"}:
             return True
@@ -369,9 +386,7 @@ def _summary_indicates_actual_ramp(
     *,
     fraction: float = FAN_RAMP_TARGET_FRACTION,
 ) -> bool:
-    if not summary.get("ok"):
-        return False
-    fans = summary.get("fans") or []
+    fans = _ok_fans(summary)
     return bool(fans) and all(_fan_actual_is_ramped(fan, fraction=fraction) for fan in fans)
 
 
@@ -390,9 +405,7 @@ def _rpm_range(min_value: Any, max_value: Any) -> str:
 def _summary_indicates_auto(summary: dict[str, Any]) -> bool:
     """Return True iff all parsed fan rows are back on the automatic curve."""
 
-    if not summary.get("ok"):
-        return False
-    fans = summary.get("fans") or []
+    fans = _ok_fans(summary)
     if not fans:
         return False
     for fan in fans:
