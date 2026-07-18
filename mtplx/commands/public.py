@@ -2025,7 +2025,6 @@ def cmd_stop_public(args: Any) -> int:
     """Stop a running MTPLX server via its health-reported pid."""
 
     from mtplx.daemon_client import (
-        DAEMON_PROBE_PORTS,
         probe_running_daemons,
         stop_daemon,
     )
@@ -10280,7 +10279,6 @@ def _quickstart_openwebui_payload(
     port = int(getattr(args, "port", 8000))
     model_id = _public_model_id_for_args(args, str(getattr(args, "model", "")))
     base = f"http://{_connect_host_for_bind(host)}:{port}"
-    profile = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
     context_window = _inspection_context_window(inspection)
     return {
         "integration": "openwebui",
