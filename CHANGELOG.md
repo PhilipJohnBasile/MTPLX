@@ -4,6 +4,32 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-07-19
+
+The copy-drafting and small-Mac release. Decoding: context-copy
+(prompt-lookup) drafting lands on by default (PR #151 by lBroth) with an
+exact temperature path — copied blocks are accepted with the target's own
+shaped probability, so the output distribution is unchanged at any
+temperature; measured +53% on edit-heavy agent turns at temp 0.6, parity
+on novel text (disable with MTPLX_CONTEXT_COPY=0). Models: the 4B
+zero-acceptance defect (#176) is root-caused and fixed — the engine heals
+raw delta-encoded MTP sidecars at load so existing downloads recover
+without re-downloading, the 4B Speed artifact is rebuilt (227.8 tok/s D3
+on M5 Max, 1.71x AR), and a new 4B Quality artifact ships (191.7 tok/s
+D3, 2.19x — the largest MTP multiplier in the fleet); sub-16GB Macs get
+first-class catalog recommendations. Tune (#177): a 0.0-acceptance depth
+can never win, be saved, or be replayed, and poisoned records are
+quarantined at load. Forge: FP16 precision option with M1/M2 auto-select
+(#166); the fp16 cast can no longer corrupt a sidecar in place;
+degenerate sidecars are quarantined on re-forge. Server: SSD session
+writer crash fixed — encode at enqueue (#169); live requests preempt idle
+cache maintenance. MoE: mtp_depth_max is a ceiling, not the default; the
+35B-A3B launches at its measured D2 (#174 part 1 by davidtai). Also: the
+Qwen 3.6 27B AR decode-trace crash fix (#167 by davidtai), truthful
+per-model profile display, hybrid-model boundary retention across append
+churn, and an experimental --draft-core device (opt-in). Full details in
+docs/releases/v2.2.0.md.
+
 ## [2.1.0] - 2026-07-17
 
 The community-fixes release. Memory: the v2.x reports are root-caused and
