@@ -1704,6 +1704,18 @@ class ServerState:
                 getattr(self.runtime, "model_path", None)
             ),
         )
+        # Keep the SSD cold-tier encode (full-KV byte conversion; post-#169
+        # it runs at enqueue, never on the writer thread) off request and
+        # stream tails: dispatch it to the scheduler's idle lane, where it
+        # reads the immutable bank entry on the model owner thread.
+        _bank = getattr(self.sessions, "bank", None)
+        if _bank is not None and hasattr(_bank, "cold_enqueue_dispatch"):
+            _scheduler = self.model_scheduler
+            _bank.cold_enqueue_dispatch = (
+                lambda job: _scheduler.submit_idle_postcommit(
+                    job, batch_key="ssd.cold_enqueue"
+                )
+            )
         self.last_metrics: list[dict[str, Any]] = []
         self.tool_parse_counters = {key: 0 for key in _TOOL_PARSE_COUNTER_KEYS}
         # Activity timestamps used by the parent-process thermal watchdog to
@@ -12761,6 +12773,18 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "mean_accept_probability_by_depth",
     "correction_tokens",
     "bonus_tokens",
+    # Context-copy (prompt-lookup) drafting counters. Cumulative per
+    # generation; suspended/backoff_tokens are end-of-generation gauges.
+    "context_copy_active",
+    "context_copy_probes",
+    "context_copy_rounds",
+    "context_copy_drafted_tokens",
+    "context_copy_accepted_blocks",
+    "context_copy_accepted_tokens",
+    "context_copy_suspensions",
+    "context_copy_suspended",
+    "context_copy_backoff_tokens",
+    "context_copy_disabled_reason",
     "verify_time_s",
     "draft_time_s",
     "accept_time_s",
@@ -21347,16 +21371,19 @@ def create_app(state: ServerState) -> FastAPI:
             )
             generated["stats"]["session_postcommit_snapshot"] = postcommit
 
-        # Bounded wait for the prior turn's postcommit to land before we
-        # admit this request to the model scheduler. Done HERE - off the
+        # A live user request never queues behind cache maintenance
+        # (POSTCOMMIT_STALL_DESIGN step 2, 2026-07-17): if the prior turn's
+        # postcommit is still in flight, abort it and admit this request
+        # immediately. The old unconditional bounded wait (8s default) made
+        # agent tool continuations watch dead air, usually timed out anyway,
+        # and then paid the prefill on top. Done HERE - off the
         # scheduler-owner thread, before any foreground submit and before
-        # the session lock is acquired - so a slow postcommit cannot deadlock
-        # against this request. The wait is best-effort: timeouts fall
-        # through to a cold prefill, never a hang.
+        # the session lock is acquired. Set MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S
+        # explicitly to restore the blocking wait.
         postcommit_wait_outcome: dict[str, Any] | None = None
         if session is not None:
             postcommit_wait_outcome = await asyncio.to_thread(
-                session.wait_for_pending_postcommit
+                session.resolve_pending_postcommit_for_request
             )
             request_observability["postcommit_wait"] = postcommit_wait_outcome
             if (

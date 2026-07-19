@@ -221,6 +221,67 @@ def test_low_mtp_norm_weights_are_not_shifted_without_delta_contract() -> None:
     assert float(finalized["pre_fc_norm_embedding.weight"][0].item()) == pytest.approx(0.125)
 
 
+def test_raw_delta_qwen_sidecar_norms_are_healed() -> None:
+    # The shipped 4B (#176) stores raw zero-centered norms with no declared
+    # encoding: q/k means ~0.75 plus sub-0.5 low-set norms is the two-signal
+    # raw-delta fingerprint, and the loader must restore the +1 convention.
+    mx = pytest.importorskip("mlx.core")
+    weights = {
+        "layers.0.input_layernorm.weight": mx.full((8,), 0.30, dtype=mx.float32),
+        "layers.0.post_attention_layernorm.weight": mx.full((8,), 0.39, dtype=mx.float32),
+        "layers.0.self_attn.q_norm.weight": mx.full((8,), 0.75, dtype=mx.float32),
+        "layers.0.self_attn.k_norm.weight": mx.full((8,), 0.74, dtype=mx.float32),
+        "norm.weight": mx.full((8,), 2.58, dtype=mx.float32),
+        "pre_fc_norm_embedding.weight": mx.full((8,), -0.41, dtype=mx.float32),
+        "pre_fc_norm_hidden.weight": mx.full((8,), -0.25, dtype=mx.float32),
+        "fc.weight": mx.full((4, 8), 0.007, dtype=mx.float32),
+    }
+
+    finalized = _finalize_mtp_weights(weights, {}, prequantized=True)
+
+    assert float(finalized["layers.0.self_attn.q_norm.weight"][0].item()) == pytest.approx(1.75)
+    assert float(finalized["layers.0.input_layernorm.weight"][0].item()) == pytest.approx(1.30)
+    assert float(finalized["norm.weight"][0].item()) == pytest.approx(3.58)
+    assert float(finalized["pre_fc_norm_embedding.weight"][0].item()) == pytest.approx(0.59)
+    assert float(finalized["pre_fc_norm_hidden.weight"][0].item()) == pytest.approx(0.75)
+    assert float(finalized["fc.weight"][0, 0].item()) == pytest.approx(0.007)
+
+
+def test_healthy_final_convention_sidecar_is_untouched() -> None:
+    mx = pytest.importorskip("mlx.core")
+    weights = {
+        "layers.0.input_layernorm.weight": mx.full((8,), 1.10, dtype=mx.float32),
+        "layers.0.post_attention_layernorm.weight": mx.full((8,), 1.24, dtype=mx.float32),
+        "layers.0.self_attn.q_norm.weight": mx.full((8,), 1.75, dtype=mx.float32),
+        "layers.0.self_attn.k_norm.weight": mx.full((8,), 1.74, dtype=mx.float32),
+        "norm.weight": mx.full((8,), 2.43, dtype=mx.float32),
+        "pre_fc_norm_embedding.weight": mx.full((8,), 0.52, dtype=mx.float32),
+        "pre_fc_norm_hidden.weight": mx.full((8,), 0.77, dtype=mx.float32),
+    }
+
+    finalized = _finalize_mtp_weights(weights, {}, prequantized=True)
+
+    for key, value in weights.items():
+        assert float(finalized[key][0].item()) == pytest.approx(float(value[0].item())), key
+
+
+def test_single_signal_low_norms_are_not_healed() -> None:
+    # q/k near raw levels but a healthy low set: one signal is not enough to
+    # rewrite weights (guards against overeager shifting of unusual models).
+    mx = pytest.importorskip("mlx.core")
+    weights = {
+        "layers.0.self_attn.q_norm.weight": mx.full((8,), 0.75, dtype=mx.float32),
+        "layers.0.self_attn.k_norm.weight": mx.full((8,), 0.74, dtype=mx.float32),
+        "layers.0.input_layernorm.weight": mx.full((8,), 0.90, dtype=mx.float32),
+        "pre_fc_norm_hidden.weight": mx.full((8,), 0.77, dtype=mx.float32),
+    }
+
+    finalized = _finalize_mtp_weights(weights, {}, prequantized=True)
+
+    assert float(finalized["layers.0.self_attn.q_norm.weight"][0].item()) == pytest.approx(0.75)
+    assert float(finalized["layers.0.input_layernorm.weight"][0].item()) == pytest.approx(0.90)
+
+
 def test_delta_encoded_mtp_norm_weights_are_restored_by_contract() -> None:
     mx = pytest.importorskip("mlx.core")
     weights = {

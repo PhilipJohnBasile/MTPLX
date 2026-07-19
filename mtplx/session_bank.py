@@ -342,6 +342,13 @@ class SessionBank:
         self.last_put_skipped_oversized_snapshot: bool = False
         self.eviction_log: list[dict[str, Any]] = []
         self.cold_tier = cold_tier
+        # Optional idle-lane dispatcher for SSD cold-tier enqueues. Post-#169
+        # put_entry encodes the full-KV payload at enqueue time, so calling it
+        # synchronously from a request/stream tail pays the byte conversion
+        # there. The server wires this to the model scheduler's idle lane;
+        # when unset (tests, CLI paths without a scheduler) the enqueue stays
+        # synchronous, preserving legacy behavior.
+        self.cold_enqueue_dispatch: Callable[[Callable[[], None]], Any] | None = None
         self.last_restore_source: str | None = None
         self.last_ssd_restore_s: float = 0.0
         self.last_prefix_diagnostic: dict[str, Any] | None = None
@@ -1302,6 +1309,32 @@ class SessionBank:
         put_entry = getattr(self.cold_tier, "put_entry", None)
         if not callable(put_entry):
             return
+        dispatch = self.cold_enqueue_dispatch
+        if dispatch is not None:
+            # Idle-lane path: the job reads the immutable bank entry (its
+            # arrays are settled snapshot copies, so buffer donation on the
+            # live cache cannot corrupt what gets encoded) on the model
+            # owner thread, keeping the full-KV byte encode out of the
+            # request/stream tail.
+            try:
+                dispatch(lambda: self._cold_enqueue_job(entry, put_entry))
+                return
+            except BaseException as exc:
+                self.eviction_log.append(
+                    {
+                        "reason": "ssd_enqueue_dispatch_error",
+                        "session_id": entry.session_id,
+                        "prefix_len": entry.prefix_len,
+                        "token_hash": entry.token_hash,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                # Fall through to the synchronous path.
+        self._cold_enqueue_job(entry, put_entry)
+
+    def _cold_enqueue_job(
+        self, entry: SessionBankEntry, put_entry: Callable[..., Any]
+    ) -> None:
         # The tier serializes only MATERIALIZED boundary records. An entry
         # whose records still sit behind the lazy loader (inherited from an
         # SSD-restored donor) would persist a boundary-less package and

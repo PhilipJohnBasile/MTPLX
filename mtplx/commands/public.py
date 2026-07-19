@@ -210,6 +210,11 @@ TUNE_POWERMETRICS_SAMPLE_INTERVAL_S = 1.5
 TUNE_CANDIDATE_SETTLE_S = 5.0
 TUNE_TIE_PREFER_DEEPER_WITHIN_PCT = 2.0
 TUNE_ACCEPTANCE_COLLAPSE_THRESHOLD = 0.05
+# Measured verdicts that affirmatively prove MTP loses in this environment;
+# only these clear a previously saved winner (a failed tune never does).
+TUNE_RECORD_CLEARING_VERDICTS = frozenset(
+    {"no_mtp_depth_beat_ar", "mtp_acceptance_collapsed"}
+)
 TUNE_TELEMETRY_ENV = "MTPLX_BENCH_TUNE_TELEMETRY"
 GENERATION_MODE_MTP = "mtp"
 GENERATION_MODE_AR = "ar"
@@ -795,6 +800,27 @@ def _model_draft_sampler_spec(
         return fallback
 
 
+# Artifacts whose fastest measured mode is shallower than their sidecar
+# ceiling. Same measured-win-only shape as _TURBO_DEFAULT_PUBLIC_MODEL_IDS
+# below, keyed by public model id; artifacts that declare
+# ``mtp_depth_default`` in their runtime contract take precedence.
+#
+# Qwen3.6-35B-A3B: per-level acceptance decays steeply on this MoE, so the
+# D3 ceiling is never the fastest mode. Two independent sweeps, greedy:
+#   M5 Max tune, pinned fans, 2026-07-19 (isolated candidates):
+#     AR 93.9 | D1 130.0 (1.39x) | D2 145.0 (1.54x) | D3 132.2 (1.41x)
+#     acceptance D2 [0.813, 0.575]; D3 tail level 0.218
+#   PR #174 reporter's sweep: AR 94.46 | D1 138.39 | D2 135.66 | D3 107.67
+# D2 is at or within noise of best in both datasets while D1 loses ~10% on
+# the M5 measurement and the D3 ceiling loses 9-22% everywhere, so D2 is
+# the fleet default.
+# Ceiling-vs-default split contributed by davidtai (PR #174).
+_MODEL_CONTRACT_DEPTH_DEFAULTS: dict[str, int] = {
+    QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID: 2,
+    QWEN36_35B_OPTIMIZED_BALANCE_PUBLIC_MODEL_ID: 2,
+}
+
+
 def _model_contract_depth(
     inspection: dict[str, Any],
     *,
@@ -805,9 +831,22 @@ def _model_contract_depth(
     if not isinstance(contract, dict):
         return int(fallback)
     try:
-        depth = int(contract.get("mtp_depth_max", fallback))
+        depth_max = int(contract.get("mtp_depth_max", fallback))
     except (TypeError, ValueError):
         return int(fallback)
+    # ``mtp_depth_max`` is a CEILING (the deepest sidecar the artifact
+    # supports), not a recommendation. Artifacts whose fastest mode is
+    # shallower declare ``mtp_depth_default``; the ceiling then only bounds
+    # it. Without the split every artifact runs at its maximum depth, a
+    # measured loss whenever per-level acceptance decays quickly.
+    measured_default = _MODEL_CONTRACT_DEPTH_DEFAULTS.get(
+        str(contract.get("public_model_id") or "").strip()
+    )
+    try:
+        depth = int(contract.get("mtp_depth_default", measured_default or depth_max))
+    except (TypeError, ValueError):
+        depth = measured_default or depth_max
+    depth = min(depth, depth_max)
     depth_ceiling = (
         MAX_GEMMA4_SPECULATIVE_DEPTH
         if _inspection_is_gemma4_assistant(inspection)
@@ -1722,6 +1761,7 @@ def _depth_sweep_native60(
     ar_only: bool = False,
     gemma4_draft_block_size: int | None = None,
     runtime_env: dict[str, str] | None = None,
+    draft_core: str = "stock",
 ) -> dict[str, Any]:
     from mtplx.benchmarks.runners.mtp_depth_sweep import run_mtp_depth_sweep
 
@@ -1755,6 +1795,7 @@ def _depth_sweep_native60(
             mtp_history_policy=mtp_history_policy,
             min_speculative_depth=1,
             verify_strategy="capture_commit",
+            draft_core=str(draft_core or "stock"),
             verify_core="linear-gdn-from-conv-tape",
             draft_lm_head_bits=int(draft_lm_head["bits"]),
             draft_lm_head_group_size=int(draft_lm_head["group_size"]),
@@ -2970,6 +3011,16 @@ def _cmd_tune(
                 if verdict == "no_quality_passed_mtp_depth_beat_ar"
                 else "no MTP depth beat AR"
             )
+            # A measured loss supersedes any stored winner for the same
+            # environment; otherwise a record poisoned by GPU contention
+            # replays forever (#177).
+            if save_default and not bool(getattr(args, "no_save", False)) and (
+                verdict in TUNE_RECORD_CLEARING_VERDICTS
+            ):
+                cleared = _clear_tune_record(state_key)
+                if cleared is not None:
+                    payload["cleared_saved_record"] = cleared
+                    write_json(output_path, payload)
         elif bool(getattr(args, "no_save", False)) or not save_default:
             payload["save_skipped_reason"] = "save disabled"
         write_json(output_path, payload)
@@ -3086,6 +3137,7 @@ def _cmd_tune_candidate(args: Any) -> int:
             else int(candidate)
         ),
         runtime_env=runtime_env,
+        draft_core=str(getattr(args, "draft_core", None) or "stock"),
     )
     from mtplx.benchmarks.runners.mtp_depth_sweep import write_depth_sweep
 
@@ -3237,6 +3289,11 @@ def _tune_settings(
         "draft_temperature": getattr(args, "draft_temperature", None),
         "draft_top_p": getattr(args, "draft_top_p", None),
         "draft_top_k": getattr(args, "draft_top_k", None),
+        "draft_core": (
+            str(getattr(args, "draft_core", None))
+            if getattr(args, "draft_core", None) not in (None, "stock")
+            else None
+        ),
         "candidate_settle_s": max(
             0.0,
             _tune_env_float("MTPLX_TUNE_CANDIDATE_SETTLE_S", TUNE_CANDIDATE_SETTLE_S),
@@ -3272,6 +3329,24 @@ def _load_tune_state() -> dict[str, Any]:
     return data
 
 
+def _tune_record_winner_collapsed(payload: dict[str, Any]) -> bool:
+    """True when a saved record's own results show its winner measured ~zero
+    acceptance — a poisoned artifact of pre-guard tunes under GPU contention
+    (#177). Records without acceptance evidence are trusted as-is."""
+    best = payload.get("best") or {}
+    if not isinstance(best, dict):
+        return False
+    mode = best.get("mode")
+    depth = best.get("depth")
+    rows = [row for row in payload.get("results") or [] if isinstance(row, dict)]
+    match = None
+    if mode is not None:
+        match = next((row for row in rows if row.get("mode") == mode), None)
+    if match is None and depth is not None:
+        match = next((row for row in rows if row.get("depth") == depth), None)
+    return _tune_row_acceptance_collapsed(match) if match is not None else False
+
+
 def _load_tune_record(state_key: str) -> dict[str, Any] | None:
     record = (_load_tune_state().get("records") or {}).get(state_key)
     if not isinstance(record, dict):
@@ -3282,7 +3357,38 @@ def _load_tune_record(state_key: str) -> dict[str, Any] | None:
         return None
     if not isinstance(best.get("depth"), int):
         return None
+    # Quarantine, don't replay: every consumer (cached tune replay, quickstart
+    # and Web UI depth application) treats a poisoned winner as absent, so an
+    # already-affected install falls back to defaults instead of running a
+    # depth whose measured acceptance was zero (#177).
+    if _tune_record_winner_collapsed(payload):
+        return None
     return record
+
+
+def _clear_tune_record(state_key: str) -> dict[str, Any] | None:
+    """Remove a previously saved winner for this state key, returning a short
+    summary of what was cleared (None when nothing was stored). A measured
+    no-winner verdict is affirmative evidence that the stored depth no longer
+    wins in this exact environment; without this, a record poisoned by GPU
+    contention outlives every honest retune (#177)."""
+    state = _load_tune_state()
+    records = state.get("records")
+    if not isinstance(records, dict) or state_key not in records:
+        return None
+    old = records.pop(state_key)
+    path = _tune_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, state)
+    old_payload = old.get("payload") if isinstance(old, dict) else None
+    old_best = (
+        old_payload.get("best") if isinstance(old_payload, dict) else None
+    )
+    return {
+        "state_key": state_key,
+        "previous_best": old_best if isinstance(old_best, dict) else None,
+        "saved_at": old.get("saved_at") if isinstance(old, dict) else None,
+    }
 
 
 def _save_tune_record(
@@ -4039,6 +4145,7 @@ def _tune_candidate_command(
         ("draft_temperature", "--draft-temperature"),
         ("draft_top_p", "--draft-top-p"),
         ("draft_top_k", "--draft-top-k"),
+        ("draft_core", "--draft-core"),
     ):
         value = settings.get(key)
         if value is not None:
@@ -4360,7 +4467,10 @@ def _best_multiplier_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     acceptance_collapsed = _tune_acceptance_collapsed_rows(annotated)
     candidates = [
-        row for row in faster_than_ar if row.get("quality_passed") is not False
+        row
+        for row in faster_than_ar
+        if row.get("quality_passed") is not False
+        and not _tune_row_acceptance_collapsed(row)
     ]
     raw_winner = max(
         candidates, key=lambda row: float(row["multiplier_vs_ar"]), default=None
@@ -4477,20 +4587,34 @@ def _best_multiplier_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _tune_row_acceptance_collapsed(row: dict[str, Any]) -> bool:
+    """True when a depth row carries acceptance evidence and it is ~zero at
+    every level. With zero accepted drafts every MTP depth does strictly more
+    work than AR per emitted token, so a >1.0x multiplier on such a row can
+    only be wall-clock noise (another workload suppressing the AR window),
+    never a true result (#177)."""
+    if row.get("depth") is None:
+        return False
+    acceptance = [
+        float(value)
+        for value in row.get("acceptance_by_depth") or []
+        if isinstance(value, (int, float))
+    ]
+    if not acceptance:
+        return False
+    return max(acceptance) <= TUNE_ACCEPTANCE_COLLAPSE_THRESHOLD
+
+
 def _tune_acceptance_collapsed_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     collapsed: list[dict[str, Any]] = []
     for row in rows:
-        if row.get("depth") is None:
+        if not _tune_row_acceptance_collapsed(row):
             continue
         acceptance = [
             float(value)
             for value in row.get("acceptance_by_depth") or []
             if isinstance(value, (int, float))
         ]
-        if not acceptance:
-            continue
-        if max(acceptance) > TUNE_ACCEPTANCE_COLLAPSE_THRESHOLD:
-            continue
         collapsed.append(
             {
                 "mode": row.get("mode"),
@@ -4672,6 +4796,16 @@ def _print_tune_human(payload: dict[str, Any], *, verbose: bool = False) -> None
             print("No MTP depth beat AR; draft acceptance collapsed")
         else:
             print("No MTP depth beat AR on this run")
+    cleared = payload.get("cleared_saved_record") or {}
+    if cleared:
+        previous = cleared.get("previous_best") or {}
+        previous_label = previous.get("mode") or (
+            f"D{previous.get('depth')}" if previous.get("depth") is not None else "record"
+        )
+        print(
+            f"Cleared saved default {previous_label}: "
+            "this run's measured verdict supersedes the stored winner."
+        )
     if payload.get("saved") and best:
         control_field = str(payload.get("control_field") or "").strip()
         control_label = "draft block" if control_field == "draft_block_size" else "depth"
@@ -7841,6 +7975,12 @@ def cmd_serve_public(args: Any) -> int:
         args,
         str(getattr(args, "model", "")),
     )
+    # Resolve the per-model default profile BEFORE any display surface
+    # renders. The startup banner used to print the raw parser default
+    # ("Profile sustained") while serve-time resolution then launched
+    # turbo; users echoed the banner in bug reports and pinned
+    # --profile sustained explicitly, really landing on the slow path.
+    _apply_model_default_profile(args, str(args.model_id))
     if not quiet_json:
         _print_serve_start_banner(args)
     if not dry_run and _port_is_busy(

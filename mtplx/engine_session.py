@@ -807,6 +807,64 @@ class EngineSession:
         record.mark_finished(outcome)
         return outcome
 
+    def resolve_pending_postcommit_for_request(self) -> dict[str, Any]:
+        """Foreground-request policy for a prior turn's pending postcommit.
+
+        Default (POSTCOMMIT_STALL_DESIGN step 2, 2026-07-17): a live user
+        request never queues behind cache maintenance. If a postcommit is
+        still in flight, abort it immediately and admit the request: the
+        canonical snapshot is superseded by the turn about to run anyway,
+        and the bank still holds the prompt-prefix boundary plus any
+        live-frontier reference for warm restore. This replaces the
+        unconditional bounded wait (default 8s) that agent clients paid on
+        every tool continuation: the wait usually timed out (a 20k-history
+        re-encode needs longer than the bound), aborted the job anyway, and
+        the user watched dead air before prefill even began.
+
+        Operators restore the old blocking behavior by setting
+        MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S explicitly.
+        """
+        raw = os.environ.get("MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S")
+        if raw is not None and raw.strip():
+            return self.wait_for_pending_postcommit()
+        with self._postcommit_lock:
+            record = self._pending_postcommit
+        if record is None:
+            outcome = {
+                "waited": False,
+                "elapsed_s": 0.0,
+                "outcome": "no_pending",
+                "timeout_s": 0.0,
+            }
+            self.last_postcommit_wait = outcome
+            return outcome
+        future = record.future
+        if hasattr(future, "done") and future.done():
+            outcome = {
+                "waited": False,
+                "elapsed_s": 0.0,
+                "outcome": "completed",
+                "timeout_s": 0.0,
+            }
+        else:
+            future_cancelled = record.abort("foreground_preempted_postcommit")
+            outcome = {
+                "waited": False,
+                "elapsed_s": 0.0,
+                "outcome": "aborted_for_foreground",
+                "timeout_s": 0.0,
+                "abort_requested": True,
+                "future_cancelled": bool(future_cancelled),
+                "abort_reason": "foreground_preempted_postcommit",
+            }
+        with self._postcommit_lock:
+            if self._pending_postcommit is record:
+                self._pending_postcommit = None
+        self.last_postcommit_wait = outcome
+        self.last_postcommit_outcome = outcome
+        record.mark_finished(outcome)
+        return outcome
+
     def try_begin_generation(self) -> bool:
         if not self._lock.acquire(blocking=False):
             return False
