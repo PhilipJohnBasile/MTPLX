@@ -1784,7 +1784,6 @@ def _session_bank_cold_tier_from_args(args: argparse.Namespace) -> Any | None:
         return None
     from mtplx.cache_bank import (
         DEFAULT_COLD_TIER_DIR,
-        DEFAULT_COLD_TIER_MAX_BYTES,
         DEFAULT_COLD_TIER_MIN_PREFIX_TOKENS,
         SessionBankColdTier,
         parse_size_bytes,
