@@ -12966,6 +12966,9 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "tool_parser_source",
     "tool_parse_status",
     "tool_calls_emitted",
+    "tool_arguments_degraded",
+    "tool_arguments_degraded_reasons",
+    "tool_parser_exceptions",
     "raw_tool_markup_suppressed",
     "legacy_bridge_used",
     "hidden_generation_repair_used",
@@ -13114,6 +13117,9 @@ def _merge_final_bridge_stats_into_latest_metrics(
         "tool_parser_source",
         "tool_parse_status",
         "tool_calls_emitted",
+        "tool_arguments_degraded",
+        "tool_arguments_degraded_reasons",
+        "tool_parser_exceptions",
         "tool_parse_success",
         "tool_parse_fallback",
         "tool_parse_fallback_reason",
@@ -23364,6 +23370,26 @@ def create_app(state: ServerState) -> FastAPI:
                                 stats["tool_calls_emitted"] = len(
                                     assistant_tool_calls or []
                                 )
+                                if getattr(extraction, "arguments_degraded", 0):
+                                    stats["tool_arguments_degraded"] = int(
+                                        extraction.arguments_degraded
+                                    )
+                                    stats["tool_arguments_degraded_reasons"] = list(
+                                        extraction.arguments_degraded_reasons
+                                    )
+                                    LOGGER.warning(
+                                        "tool-call arguments degraded to {} during parse",
+                                        extra={
+                                            "request_id": response_id,
+                                            "reasons": list(
+                                                extraction.arguments_degraded_reasons
+                                            ),
+                                        },
+                                    )
+                                if getattr(extraction, "parser_exceptions", 0):
+                                    stats["tool_parser_exceptions"] = int(
+                                        extraction.parser_exceptions
+                                    )
                                 stats["raw_tool_markup_suppressed"] = bool(
                                     extraction.raw_tool_markup_suppressed
                                     or streamed_tool_deltas_emitted
@@ -23935,6 +23961,24 @@ def create_app(state: ServerState) -> FastAPI:
             generated["stats"]["raw_tool_markup_suppressed"] = bool(
                 extraction.raw_tool_markup_suppressed
             )
+            if getattr(extraction, "arguments_degraded", 0):
+                generated["stats"]["tool_arguments_degraded"] = int(
+                    extraction.arguments_degraded
+                )
+                generated["stats"]["tool_arguments_degraded_reasons"] = list(
+                    extraction.arguments_degraded_reasons
+                )
+                LOGGER.warning(
+                    "tool-call arguments degraded to {} during parse",
+                    extra={
+                        "request_id": response_id,
+                        "reasons": list(extraction.arguments_degraded_reasons),
+                    },
+                )
+            if getattr(extraction, "parser_exceptions", 0):
+                generated["stats"]["tool_parser_exceptions"] = int(
+                    extraction.parser_exceptions
+                )
         else:
             tool_calls = None
             extraction = None

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -25,23 +25,51 @@ class ToolCallExtraction:
     status: str = "no_tool"
     malformed_reason: str | None = None
     raw_tool_markup_suppressed: bool = False
+    # Arguments that reached the client as {} because the model's emission
+    # carried none / carried something unparseable. Historically this
+    # defaulting was silent, which made empty-arguments bugs (issue #170)
+    # impossible to localize: nobody could tell "model emitted {}" apart
+    # from "parser lost the arguments".
+    arguments_degraded: int = 0
+    arguments_degraded_reasons: tuple[str, ...] = ()
+    parser_exceptions: int = 0
 
 
-def _serialize_tool_call_arguments(arguments: Any) -> str:
+# Private marker attached by _tool_call and stripped (never serialized to
+# clients) by parse_tool_calls' finalize pass.
+_ARGS_DEGRADED_KEY = "_mtplx_arguments_degraded"
+
+
+def _serialize_tool_call_arguments(arguments: Any) -> tuple[str, str | None]:
+    """Serialize arguments for the wire; report why {} was substituted.
+
+    The second element is None for faithful serializations (including a
+    genuine empty object) and a reason string whenever {} replaced
+    something that was absent or could not be represented.
+    """
     if isinstance(arguments, dict):
-        return json.dumps(
-            _order_tool_arguments_for_client_display("", arguments),
-            ensure_ascii=False,
-            separators=(",", ":"),
+        return (
+            json.dumps(
+                _order_tool_arguments_for_client_display("", arguments),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            None,
         )
+    if arguments is None:
+        return "{}", "missing_arguments"
     if isinstance(arguments, str):
         try:
             parsed = json.loads(arguments)
         except (TypeError, ValueError):
-            parsed = None
+            return "{}", "unparseable_arguments"
         if isinstance(parsed, dict):
-            return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-    return "{}"
+            return (
+                json.dumps(parsed, ensure_ascii=False, separators=(",", ":")),
+                None,
+            )
+        return "{}", "non_object_arguments"
+    return "{}", "non_object_arguments"
 
 
 _TOOL_ARGUMENT_PRIMARY_ORDER: dict[str, tuple[str, ...]] = {
@@ -87,14 +115,18 @@ def _order_tool_arguments_for_client_display(
 def _tool_call(name: str, arguments: Any) -> dict[str, Any]:
     if isinstance(arguments, dict):
         arguments = _order_tool_arguments_for_client_display(str(name), arguments)
-    return {
+    serialized, degraded_reason = _serialize_tool_call_arguments(arguments)
+    call: dict[str, Any] = {
         "id": f"call_{uuid.uuid4().hex[:8]}",
         "type": "function",
         "function": {
             "name": str(name),
-            "arguments": _serialize_tool_call_arguments(arguments),
+            "arguments": serialized,
         },
     }
+    if degraded_reason is not None:
+        call[_ARGS_DEGRADED_KEY] = degraded_reason
+    return call
 
 
 def _coerce_json_tool_payload(parsed: Any) -> dict[str, Any] | None:
@@ -112,7 +144,9 @@ def _coerce_json_tool_payload(parsed: Any) -> dict[str, Any] | None:
         arguments = (
             function.get("arguments")
             if "arguments" in function
-            else function.get("args", function.get("parameters", {}))
+            # A missing key stays None so the {} substitution is recorded,
+            # not silent (issue #170).
+            else function.get("args", function.get("parameters"))
         )
         if name:
             return _tool_call(str(name), arguments)
@@ -124,7 +158,7 @@ def _coerce_json_tool_payload(parsed: Any) -> dict[str, Any] | None:
     )
     if not name:
         return None
-    arguments = parsed.get("arguments", parsed.get("args", parsed.get("parameters", {})))
+    arguments = parsed.get("arguments", parsed.get("args", parsed.get("parameters")))
     return _tool_call(str(name), arguments)
 
 
@@ -257,7 +291,8 @@ def _parse_bracket_tool_calls(text: str) -> tuple[str, list[dict[str, Any]] | No
             try:
                 arguments = json.loads(args_text)
             except (TypeError, ValueError):
-                arguments = {}
+                # Recorded as degraded downstream instead of silently {}.
+                arguments = args_text
         calls.append(_tool_call(name, arguments))
     if not calls:
         return text, None
@@ -295,6 +330,28 @@ def parse_tool_calls(
     tokenizer: Any | None,
     tools: list[dict[str, Any]] | None = None,
 ) -> ToolCallExtraction:
+    result = _parse_tool_calls_impl(text, tokenizer, tools)
+    if not result.tool_calls:
+        return result
+    reasons = tuple(
+        reason
+        for call in result.tool_calls
+        if (reason := call.pop(_ARGS_DEGRADED_KEY, None)) is not None
+    )
+    if not reasons:
+        return result
+    return replace(
+        result,
+        arguments_degraded=len(reasons),
+        arguments_degraded_reasons=reasons,
+    )
+
+
+def _parse_tool_calls_impl(
+    text: str,
+    tokenizer: Any | None,
+    tools: list[dict[str, Any]] | None = None,
+) -> ToolCallExtraction:
     cleaned_text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL)
     raw_markup = any(
         marker in (text or "")
@@ -320,11 +377,15 @@ def parse_tool_calls(
                     if part.strip()
                 ]
             calls: list[dict[str, Any]] = []
+            native_parser_exceptions = 0
             for match in matches:
                 try:
                     parsed = parser(match.strip(), tools)
                 except Exception:
+                    # A swallowed parser exception used to drop the call with
+                    # no trace; the count now surfaces in mtplx_stats.
                     parsed = None
+                    native_parser_exceptions += 1
                 items = parsed if isinstance(parsed, list) else [parsed]
                 for item in items:
                     if not isinstance(item, dict):
@@ -332,7 +393,7 @@ def parse_tool_calls(
                     name = item.get("name")
                     if not name:
                         continue
-                    calls.append(_tool_call(str(name), item.get("arguments", {})))
+                    calls.append(_tool_call(str(name), item.get("arguments")))
             calls = _filter_known_tools(calls, tools) or []
             if calls:
                 if end:
@@ -351,6 +412,7 @@ def parse_tool_calls(
                     parser_source="native",
                     status="parsed",
                     raw_tool_markup_suppressed=raw_markup,
+                    parser_exceptions=native_parser_exceptions,
                 )
 
     if "<tool_call" in cleaned_text:
@@ -433,12 +495,14 @@ def extract_tool_calls_with_thinking(
     status = result.status
     source = result.parser_source
     malformed = result.malformed_reason
+    degradation_source = result
     if not calls and thinking_content:
         thinking_result = parse_tool_calls(thinking_content, tokenizer, tools)
         if thinking_result.tool_calls and not regular_content.strip():
             calls = thinking_result.tool_calls
             source = thinking_result.parser_source
             status = thinking_result.status
+            degradation_source = thinking_result
         elif thinking_result.status == "malformed_as_content" and status == "no_tool":
             status = thinking_result.status
             malformed = thinking_result.malformed_reason
@@ -453,6 +517,9 @@ def extract_tool_calls_with_thinking(
         raw_tool_markup_suppressed=(
             result.raw_tool_markup_suppressed or cleaned_thinking != thinking_content
         ),
+        arguments_degraded=degradation_source.arguments_degraded,
+        arguments_degraded_reasons=degradation_source.arguments_degraded_reasons,
+        parser_exceptions=degradation_source.parser_exceptions,
     )
 
 

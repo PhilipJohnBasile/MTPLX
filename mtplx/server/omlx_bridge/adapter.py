@@ -65,6 +65,14 @@ def _content_to_text(content: Any) -> str:
 
 
 def _try_parse_json(value: Any) -> dict[str, Any]:
+    """Parse history tool-call arguments to a dict, or fail loudly.
+
+    The chat path strict-validates arguments before this adapter runs
+    (_template_tool_call), so malformed input here means a caller bypassed
+    that contract. This used to fall back to {} silently, which erased
+    tool-call arguments from rendered history with no trace (issue #170's
+    class of failure); an invariant violation must raise, not degrade.
+    """
     if isinstance(value, dict):
         return value
     if value in (None, ""):
@@ -72,10 +80,14 @@ def _try_parse_json(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "tool-call arguments in history are not valid JSON"
+            ) from exc
+        if isinstance(parsed, dict):
+            return parsed
+        raise ValueError("tool-call arguments in history are not a JSON object")
+    raise ValueError("tool-call arguments in history are not a JSON object")
 
 
 def _drop_void_assistant_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
