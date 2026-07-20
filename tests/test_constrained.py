@@ -445,6 +445,109 @@ def test_json_object_and_lenient_schema_shapes_accepted():
         constraint_spec_from_response_format({"type": "json_schema"})
 
 
+def _tiny_tool_tokenizer():
+    """Tiny char tokenizer plus the Qwen-family special markers, so the
+    strict tool-call grammar is exercisable in CI without model weights."""
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
+
+    vocab = {chr(i): i - 32 for i in range(33, 127)}
+    vocab["<eos>"] = 0
+    # Space and newline via their byte-level alphabet symbols (raw space is
+    # not its own symbol there); the forced envelope head needs both.
+    vocab["Ġ"] = 95
+    vocab["Ċ"] = 96
+    backend = Tokenizer(models.BPE(vocab=vocab, merges=[], unk_token="<eos>"))
+    # The ByteLevel pre-tokenizer makes encode() map raw bytes to the
+    # byte-level symbols — llguidance canonically tokenizes forced-byte runs
+    # through the tokenizer, so "\n" must encode to Ċ, not UNK.
+    backend.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)
+    backend.decoder = decoders.ByteLevel()
+    hf_tok = PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="<eos>")
+    hf_tok.add_special_tokens(
+        {
+            "additional_special_tokens": [
+                "<tool_call>",
+                "</tool_call>",
+                "<think>",
+                "</think>",
+            ]
+        }
+    )
+    return hf_tok
+
+
+def test_strict_tool_call_grammar_end_to_end():
+    from mtplx.constrained import tool_call_constraint_spec
+
+    hf_tok = _tiny_tool_tokenizer()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "pick",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "n": {"type": "integer", "minimum": 0, "maximum": 9}
+                    },
+                    "required": ["n"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    spec = tool_call_constraint_spec(tools, "auto", hf_tok)
+    assert spec is not None and spec.source_type == "tool_call_strict"
+
+    n_vocab = 128
+    constraint = spec.build(hf_tok)
+    constraint.mask_logits_row(mx.zeros((n_vocab,)))  # bind
+
+    def ids(text):
+        return hf_tok.encode(text, add_special_tokens=False)
+
+    # Free text is unconstrained; a lone </think> is legal (the chat template
+    # opens the think block inside the generation prompt).
+    assert constraint.validate_prefix(ids("hello.")) == len(ids("hello."))
+    prelude = ids("reasoning...") + ids("</think>") + ids("ok.")
+    assert constraint.validate_prefix(prelude) == len(prelude)
+
+    # Inside the envelope everything is forced: walk the adversarial argmax
+    # (unmasked argmax is always a padding token; among legal tokens the
+    # lowest id wins, never what the schema wants).
+    constraint.advance_many(prelude)
+    trigger = ids("<tool_call>")
+    assert len(trigger) == 1
+    constraint.advance_many(trigger)
+    out = []
+    for _ in range(80):
+        if constraint.stopped or constraint.completed and out and out[-1] == trigger[0]:
+            break
+        row = -mx.arange(n_vocab, dtype=mx.float32)
+        masked = constraint.mask_logits_row(row)
+        token = int(mx.argmax(masked).item())
+        constraint.advance(token)
+        out.append(token)
+        if token == ids("</tool_call>")[0]:
+            break
+    text = hf_tok.decode(out).replace("</tool_call>", "")
+    payload = json.loads(text)
+    assert payload["name"] == "pick"
+    assert isinstance(payload["arguments"]["n"], int)
+    assert 0 <= payload["arguments"]["n"] <= 9
+    # Back in free text after the envelope closes.
+    assert constraint.completed
+    assert constraint.validate_prefix(ids("done.")) == len(ids("done."))
+
+    # A tool the request never declared is unreachable.
+    fresh = spec.build(hf_tok)
+    fresh.mask_logits_row(mx.zeros((n_vocab,)))
+    fresh.advance_many(trigger)
+    bad = ids('\n{"name": "rm_rf"')
+    assert fresh.validate_prefix(bad) < len(bad)
+
+
 def test_grammar_cache_canonicalizes_key_order():
     from mtplx import constrained as mod
 
