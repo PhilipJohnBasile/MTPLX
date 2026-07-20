@@ -15425,7 +15425,9 @@ def _run_generation(
                 dynamic_kv_reservation["env"]
             ), prefill_chunk_size_override(prefill_chunk_tokens):
                 constraint = (
-                    constraint_spec.build(state.runtime.tokenizer)
+                    constraint_spec.build(
+                        state.runtime.tokenizer, prompt_ids=prompt_ids
+                    )
                     if constraint_spec is not None
                     else None
                 )

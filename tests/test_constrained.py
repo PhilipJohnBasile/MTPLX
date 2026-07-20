@@ -548,6 +548,38 @@ def test_strict_tool_call_grammar_end_to_end():
     assert fresh.validate_prefix(bad) < len(bad)
 
 
+def test_json_prelude_gated_on_open_think_block():
+    hf_tok = _tiny_tool_tokenizer()
+    spec = constraint_spec_from_response_format(
+        {"type": "json_object"}, tokenizer=hf_tok
+    )
+    assert spec.grammar_with_prelude is not None
+    think_open = hf_tok.encode("<think>", add_special_tokens=False)[0]
+    think_close = hf_tok.encode("</think>", add_special_tokens=False)[0]
+    n_vocab = 160
+    prose = hf_tok.encode("hello", add_special_tokens=False)
+
+    # Prompt ends inside an open think block -> prelude grammar: reasoning
+    # text is legal before the document.
+    inside = spec.build(hf_tok, prompt_ids=[5, think_open])
+    inside.mask_logits_row(mx.zeros((n_vocab,)))
+    assert inside.validate_prefix(prose) == len(prose)
+
+    # Think block already closed -> plain grammar: prose is illegal, the
+    # document must start immediately (the prelude would otherwise allow
+    # unbounded free text on non-thinking runs).
+    closed = spec.build(hf_tok, prompt_ids=[5, think_open, 6, think_close])
+    closed.mask_logits_row(mx.zeros((n_vocab,)))
+    assert closed.validate_prefix(prose) == 0
+    brace = hf_tok.encode("{", add_special_tokens=False)
+    assert closed.validate_prefix(brace) == 1
+
+    # No prompt information -> conservative plain grammar.
+    unknown = spec.build(hf_tok)
+    unknown.mask_logits_row(mx.zeros((n_vocab,)))
+    assert unknown.validate_prefix(prose) == 0
+
+
 def test_grammar_cache_canonicalizes_key_order():
     from mtplx import constrained as mod
 

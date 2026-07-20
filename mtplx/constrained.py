@@ -78,13 +78,45 @@ class ConstraintSpec:
     model work) and bound to the runtime tokenizer lazily via ``build`` —
     once per generation attempt, because matcher state is consumed by a
     generation and blank-retry attempts must start fresh.
+
+    ``grammar_with_prelude`` exists for response_format grammars on
+    thinking templates: it accepts a leading ``TEXT </think>`` so the model
+    can close reasoning the chat template opened inside the prompt. It is
+    selected only when the prompt actually ends inside an open think block —
+    otherwise the prelude's free-text rule would let the model write prose
+    forever without ever starting the document.
     """
 
     grammar: str
     source_type: str
+    grammar_with_prelude: str | None = None
+    think_start_id: int | None = None
+    think_end_id: int | None = None
 
-    def build(self, tokenizer: Any) -> "GrammarConstraint":
-        return GrammarConstraint(self.grammar, tokenizer)
+    def build(
+        self, tokenizer: Any, prompt_ids: list[int] | None = None
+    ) -> "GrammarConstraint":
+        grammar = self.grammar
+        if self.grammar_with_prelude is not None and _prompt_ends_inside_think(
+            prompt_ids, self.think_start_id, self.think_end_id
+        ):
+            grammar = self.grammar_with_prelude
+        return GrammarConstraint(grammar, tokenizer)
+
+
+def _prompt_ends_inside_think(
+    prompt_ids: list[int] | None,
+    think_start_id: int | None,
+    think_end_id: int | None,
+) -> bool:
+    if not prompt_ids or think_start_id is None:
+        return False
+    for token in reversed(prompt_ids):
+        if token == think_start_id:
+            return True
+        if think_end_id is not None and token == think_end_id:
+            return False
+    return False
 
 
 def constraint_spec_from_response_format(
@@ -140,12 +172,25 @@ def constraint_spec_from_response_format(
                 "to be a JSON Schema object"
             )
         schema_json = _canonical_schema_json(schema)
-    think_prelude = tokenizer is not None and (
-        _single_token_id(tokenizer, THINK_START) is not None
-        and _single_token_id(tokenizer, THINK_END) is not None
+    grammar = _cached_grammar_for_schema(schema_json, think_prelude=False)
+    think_start_id = (
+        _single_token_id(tokenizer, THINK_START) if tokenizer is not None else None
     )
-    grammar = _cached_grammar_for_schema(schema_json, think_prelude=think_prelude)
-    return ConstraintSpec(grammar=grammar, source_type=str(format_type))
+    think_end_id = (
+        _single_token_id(tokenizer, THINK_END) if tokenizer is not None else None
+    )
+    grammar_with_prelude = (
+        _cached_grammar_for_schema(schema_json, think_prelude=True)
+        if think_start_id is not None and think_end_id is not None
+        else None
+    )
+    return ConstraintSpec(
+        grammar=grammar,
+        source_type=str(format_type),
+        grammar_with_prelude=grammar_with_prelude,
+        think_start_id=think_start_id,
+        think_end_id=think_end_id,
+    )
 
 
 def tool_call_constraint_spec(
