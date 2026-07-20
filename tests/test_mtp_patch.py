@@ -156,6 +156,52 @@ def test_prequantized_mtp_tensor_geometry_corrects_group_size() -> None:
     assert corrected.mtp_quant_group_size == 32
 
 
+def test_prequantized_mtp_tensor_geometry_handles_non_power_of_two_bits() -> None:
+    class FakeArray:
+        def __init__(self, shape: tuple[int, ...]):
+            self.shape = shape
+
+    contract = MTPContract(
+        mtp_quant_bits=5,
+        mtp_quant_group_size=32,
+        mtp_prequantized=True,
+    )
+    # 4096 logical columns at 5-bit pack into 4096 * 5 / 32 = 640 uint32 columns;
+    # 64 scale groups imply group_size 4096 / 64 = 64.
+    weights = {
+        "layers.0.self_attn.q_proj.weight": FakeArray((2048, 640)),
+        "layers.0.self_attn.q_proj.scales": FakeArray((2048, 64)),
+        "layers.0.self_attn.q_proj.biases": FakeArray((2048, 64)),
+    }
+
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_mtp_tensor_geometry_skips_indivisible_bit_geometry() -> None:
+    class FakeArray:
+        def __init__(self, shape: tuple[int, ...]):
+            self.shape = shape
+
+    contract = MTPContract(
+        mtp_quant_bits=3,
+        mtp_quant_group_size=64,
+        mtp_prequantized=True,
+    )
+    # 256 packed columns * 32 bits is not divisible by 3, so no logical column
+    # count can be recovered and the declared group_size must stand.
+    weights = {
+        "layers.0.self_attn.q_proj.weight": FakeArray((2048, 256)),
+        "layers.0.self_attn.q_proj.scales": FakeArray((2048, 32)),
+        "layers.0.self_attn.q_proj.biases": FakeArray((2048, 32)),
+    }
+
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+
+    assert corrected.mtp_quant_group_size == 64
+
+
 def test_prequantized_mtp_module_specs_read_mixed_quant_config() -> None:
     class FakeArray:
         def __init__(self, shape: tuple[int, ...]):
