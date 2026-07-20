@@ -20,6 +20,7 @@ tokens are set to -inf, which survives every downstream shaping step.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -46,6 +47,24 @@ SUPPORTED_RESPONSE_FORMAT_TYPES = ("text", "json_object", "json_schema")
 # JSON value, so the generic grammar pins the top-level type.
 _JSON_OBJECT_SCHEMA = '{"type": "object"}'
 
+# Strict tool-call constraint markers. These are the Qwen/Hermes-family
+# native tool-call and thinking tokens; strict mode only activates when the
+# runtime tokenizer encodes each marker as a single (special) token, so the
+# grammar can reference it as a hard boundary rather than bytes.
+TOOL_CALL_START = "<tool_call>"
+TOOL_CALL_END = "</tool_call>"
+THINK_START = "<think>"
+THINK_END = "</think>"
+
+
+def tool_call_strict_enabled() -> bool:
+    """Opt-in via MTPLX_TOOL_CALL_STRICT=1/true/on. Default off."""
+    return (os.environ.get("MTPLX_TOOL_CALL_STRICT") or "").strip().lower() in {
+        "1",
+        "true",
+        "on",
+    }
+
 
 class ResponseFormatError(ValueError):
     """Invalid or unsupported ``response_format``; message is client-safe."""
@@ -70,12 +89,18 @@ class ConstraintSpec:
 
 def constraint_spec_from_response_format(
     response_format: Any,
+    tokenizer: Any | None = None,
 ) -> ConstraintSpec | None:
     """Parse/validate a request's ``response_format`` into a ConstraintSpec.
 
     Returns None when no constraint applies (absent or ``type: text``).
     Raises ResponseFormatError for anything the server cannot honestly
     enforce — the caller turns that into a 400.
+
+    When a tokenizer is provided and its template family uses native
+    thinking markers, the grammar accepts an optional leading thinking
+    close (chat templates open ``<think>`` inside the generation prompt, so
+    the model's reasoning must be allowed to finish before the document).
     """
     if response_format is None:
         return None
@@ -115,8 +140,157 @@ def constraint_spec_from_response_format(
                 "to be a JSON Schema object"
             )
         schema_json = _canonical_schema_json(schema)
-    grammar = _cached_grammar_for_schema(schema_json)
+    think_prelude = tokenizer is not None and (
+        _single_token_id(tokenizer, THINK_START) is not None
+        and _single_token_id(tokenizer, THINK_END) is not None
+    )
+    grammar = _cached_grammar_for_schema(schema_json, think_prelude=think_prelude)
     return ConstraintSpec(grammar=grammar, source_type=str(format_type))
+
+
+def tool_call_constraint_spec(
+    tools: Any,
+    tool_choice: Any,
+    tokenizer: Any,
+) -> ConstraintSpec | None:
+    """Build a strict tool-call ConstraintSpec from a request's tools.
+
+    The grammar allows free text (and native thinking blocks) but forces any
+    tool-call envelope the model opens to carry a declared tool name and
+    schema-valid arguments. Returns None when no constraint applies
+    (tool_choice "none", or no function tools declared). Raises
+    ResponseFormatError for shapes strict mode cannot honestly enforce.
+    """
+    if isinstance(tool_choice, str) and tool_choice == "none":
+        return None
+    functions = _function_tools(tools)
+    if not functions:
+        return None
+    if tool_choice is not None and tool_choice != "auto":
+        raise ResponseFormatError(
+            "strict tool calls support tool_choice 'auto' or 'none' only; "
+            f"got {tool_choice!r}"
+        )
+    if not LLGUIDANCE_AVAILABLE:
+        raise ResponseFormatError(
+            "strict tool calls require the optional llguidance dependency "
+            "(pip install llguidance)"
+        )
+    if (
+        _single_token_id(tokenizer, TOOL_CALL_START) is None
+        or _single_token_id(tokenizer, TOOL_CALL_END) is None
+    ):
+        raise ResponseFormatError(
+            "strict tool calls require the chat template's tool-call markers "
+            f"({TOOL_CALL_START} / {TOOL_CALL_END}) to be single special "
+            "tokens; this model's template is not supported yet"
+        )
+    include_think = (
+        _single_token_id(tokenizer, THINK_START) is not None
+        and _single_token_id(tokenizer, THINK_END) is not None
+    )
+    cache_key = "structtool:" + json.dumps(
+        {
+            "functions": [[name, schema] for name, schema in functions],
+            "think": include_think,
+            "llg": LLGUIDANCE_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    with _CACHE_LOCK:
+        cached = _GRAMMAR_CACHE.get(cache_key)
+        if cached is not None:
+            _GRAMMAR_CACHE.move_to_end(cache_key)
+            return ConstraintSpec(grammar=cached, source_type="tool_call_strict")
+    grammar = _tool_call_lark_grammar(functions, include_think=include_think)
+    err = _llg.LLMatcher.validate_grammar(grammar)
+    if err:
+        raise ResponseFormatError(f"unsupported tool schema: {err}")
+    with _CACHE_LOCK:
+        _GRAMMAR_CACHE[cache_key] = grammar
+        while len(_GRAMMAR_CACHE) > _GRAMMAR_CACHE_MAX:
+            _GRAMMAR_CACHE.popitem(last=False)
+    return ConstraintSpec(grammar=grammar, source_type="tool_call_strict")
+
+
+def _function_tools(tools: Any) -> list[tuple[str, dict[str, Any]]]:
+    if not isinstance(tools, list):
+        return []
+    functions: list[tuple[str, dict[str, Any]]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            raise ResponseFormatError("each tool must be an object")
+        function = tool.get("function") if tool.get("type") == "function" else None
+        if function is None and "name" in tool:
+            function = tool
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            raise ResponseFormatError("each function tool must declare a name")
+        parameters = function.get("parameters")
+        if parameters is None:
+            parameters = {"type": "object"}
+        if not isinstance(parameters, dict):
+            raise ResponseFormatError(
+                f"tool {name!r} parameters must be a JSON Schema object"
+            )
+        functions.append((name, parameters))
+    return functions
+
+
+def _lark_string(text: str) -> str:
+    """A lark string literal; JSON escaping is a valid subset."""
+    return json.dumps(text)
+
+
+def _tool_call_lark_grammar(
+    functions: list[tuple[str, dict[str, Any]]],
+    *,
+    include_think: bool,
+) -> str:
+    """Free text + forced tool-call envelopes as a lark grammar.
+
+    Special tokens must appear at the rule level (llguidance rejects them
+    inside terminals), and the closing marker must be a bare special-token
+    reference — inside a quoted string it would match bytes the special
+    token never produces.
+    """
+    alternatives = []
+    for name, schema in functions:
+        name_inner = json.dumps(name)[1:-1]
+        head = f'\n{{"name": "{name_inner}", "arguments": '
+        alternatives.append(
+            f"TAG_TEXT <tool_call> {_lark_string(head)} %json "
+            f"{json.dumps(schema)} {_lark_string('}')} {_lark_string(chr(10))} "
+            "</tool_call>"
+        )
+    if include_think:
+        alternatives.append("TAG_TEXT <think> TAG_TEXT </think>")
+    seg = "seg: " + "\n   | ".join(alternatives)
+    # The optional prelude closes a thinking block the chat template opened
+    # inside the generation prompt (Qwen renders `<|im_start|>assistant\n
+    # <think>\n`, so generation begins mid-think and must be allowed out).
+    prelude = "prelude: TAG_TEXT </think>\n" if include_think else ""
+    start = "start: prelude? (seg)* tail\n" if include_think else "start: (seg)* tail\n"
+    return (
+        "%llguidance {}\n"
+        f"{start}"
+        f"{prelude}"
+        "tail: TAG_TEXT\n"
+        "TAG_TEXT: /(.|\\n)*/\n"
+        f"{seg}\n"
+    )
+
+
+def _single_token_id(tokenizer: Any, text: str) -> int | None:
+    unwrapped = _unwrap_hf_tokenizer(tokenizer)
+    try:
+        ids = unwrapped.encode(text, add_special_tokens=False)
+    except Exception:
+        return None
+    return int(ids[0]) if len(ids) == 1 else None
 
 
 class GrammarConstraint:
@@ -159,8 +333,33 @@ class GrammarConstraint:
         return masked.reshape(row.shape)
 
     def advance(self, token_id: int) -> None:
-        if self._matcher is not None and not self._matcher.is_stopped():
-            self._matcher.consume_token(int(token_id))
+        if self._matcher is None or self._matcher.is_stopped():
+            return
+        self._matcher.consume_token(int(token_id))
+        err = self._matcher.get_error()
+        if err:
+            # A committed token the grammar rejects means the decode loop
+            # desynced from the matcher — fail loudly rather than stream
+            # unconstrained output labeled as completed.
+            raise RuntimeError(
+                f"constrained decoding desync on token {int(token_id)}: {err}"
+            )
+
+    def advance_many(self, token_ids: list[int]) -> None:
+        for token_id in token_ids:
+            self.advance(token_id)
+
+    def validate_prefix(self, token_ids: list[int]) -> int:
+        """How many of token_ids extend the current state legally (no mutation).
+
+        Speculative windows get clamped to this prefix; the matcher itself
+        only ever advances through tokens that were actually committed.
+        """
+        if not token_ids:
+            return 0
+        if self._matcher is None or self._matcher.is_stopped():
+            return 0
+        return int(self._matcher.validate_tokens([int(t) for t in token_ids]))
 
     @property
     def stopped(self) -> bool:
@@ -169,7 +368,7 @@ class GrammarConstraint:
     @property
     def completed(self) -> bool:
         """True when the emitted text is a complete document per the grammar."""
-        if self._matcher is None:
+        if self._matcher is None or self._matcher.get_error():
             return False
         return bool(self._matcher.is_accepting() or self._matcher.is_stopped())
 
@@ -191,15 +390,24 @@ def _canonical_schema_json(schema: dict[str, Any]) -> str:
     return json.dumps(schema, sort_keys=True, separators=(",", ":"))
 
 
-def _cached_grammar_for_schema(schema_json: str) -> str:
-    key = f"{LLGUIDANCE_VERSION}:{schema_json}"
+def _cached_grammar_for_schema(schema_json: str, *, think_prelude: bool = False) -> str:
+    key = f"{LLGUIDANCE_VERSION}:think={int(think_prelude)}:{schema_json}"
     with _CACHE_LOCK:
         cached = _GRAMMAR_CACHE.get(key)
         if cached is not None:
             _GRAMMAR_CACHE.move_to_end(key)
             return cached
     try:
-        grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
+        if think_prelude:
+            grammar = (
+                "%llguidance {}\n"
+                "start: prelude? doc\n"
+                "prelude: TAG_TEXT </think>\n"
+                "TAG_TEXT: /(.|\\n)*/\n"
+                f"doc: %json {schema_json}\n"
+            )
+        else:
+            grammar = _llg.LLMatcher.grammar_from_json_schema(schema_json)
     except Exception as exc:
         raise ResponseFormatError(f"unsupported JSON Schema: {exc}") from exc
     err = _llg.LLMatcher.validate_grammar(grammar)

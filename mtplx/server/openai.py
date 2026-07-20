@@ -80,6 +80,8 @@ from mtplx.chat_encoding import encode_chat_messages, is_gemma4_tokenizer
 from mtplx.constrained import (
     ResponseFormatError,
     constraint_spec_from_response_format,
+    tool_call_constraint_spec,
+    tool_call_strict_enabled,
 )
 from mtplx.gemma4_pair import (
     GEMMA4_BACKEND,
@@ -15331,10 +15333,6 @@ def _run_generation(
         generation_mode,
         default=getattr(state.args, "generation_mode", "mtp"),
     )
-    if constraint_spec is not None:
-        # Grammar masks are wired into generate_ar only; never let a
-        # constrained request fall through to an unmasked lane.
-        effective_mode = "ar"
     requested_depth = (
         0
         if effective_mode == "ar"
@@ -15426,12 +15424,12 @@ def _run_generation(
             with _temporary_env(
                 dynamic_kv_reservation["env"]
             ), prefill_chunk_size_override(prefill_chunk_tokens):
+                constraint = (
+                    constraint_spec.build(state.runtime.tokenizer)
+                    if constraint_spec is not None
+                    else None
+                )
                 if effective_mode == "ar":
-                    constraint = (
-                        constraint_spec.build(state.runtime.tokenizer)
-                        if constraint_spec is not None
-                        else None
-                    )
                     out = generate_ar(
                         state.runtime,
                         prompt_ids,
@@ -15464,6 +15462,7 @@ def _run_generation(
                     out = generate_mtpk(
                         state.runtime,
                         prompt_ids,
+                        constraint=constraint,
                         vision_splice=vision_splice,
                         abort_check=(
                             (lambda: bool(cancel_event.is_set()))
@@ -20599,23 +20598,39 @@ def create_app(state: ServerState) -> FastAPI:
         )
         try:
             constraint_spec = constraint_spec_from_response_format(
-                request.response_format
+                request.response_format,
+                tokenizer=state.runtime.tokenizer,
             )
         except ResponseFormatError as constraint_error:
             raise HTTPException(status_code=400, detail=str(constraint_error))
+        if request.tools and tool_call_strict_enabled():
+            if constraint_spec is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "response_format constrained decoding cannot be "
+                        "combined with strict tool calls"
+                    ),
+                )
+            try:
+                constraint_spec = tool_call_constraint_spec(
+                    request.tools,
+                    request.tool_choice,
+                    state.runtime.tokenizer,
+                )
+            except ResponseFormatError as constraint_error:
+                raise HTTPException(status_code=400, detail=str(constraint_error))
         if constraint_spec is not None:
             if getattr(state.runtime, "backend_id", None) == "gemma4_assistant":
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "response_format constrained decoding is not supported "
-                        "on the gemma4_assistant backend"
+                        "constrained decoding is not supported on the "
+                        "gemma4_assistant backend"
                     ),
                 )
-            # Phase 1 pins constrained requests to the serial AR lane; the
-            # MTP verify paths and the batched AR pump do not apply grammar
-            # masks yet (see upstream issue #186 for the composition plan).
-            request_generation_mode = "ar"
+            # Constrained requests ride the serial lanes (MTP included since
+            # #186 phase 3); only the batched AR pump is bypassed.
         request_depth = _request_depth_for_generation(
             state,
             request,

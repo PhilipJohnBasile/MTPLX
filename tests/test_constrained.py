@@ -181,6 +181,186 @@ def test_generate_ar_rejects_constraint_on_gemma4_assistant_backend():
         )
 
 
+# --- generate_mtpk composition (#186 phase 3): scripted model, fake grammar -
+
+
+class _EvensOnlyConstraint:
+    """Duck-typed grammar allowing only even token ids, stopping after `limit`.
+
+    The scripted ramp model always prefers odd successors, so every even
+    committed token is the mask's or the clamp's doing.
+    """
+
+    def __init__(self, limit: int = 6):
+        self.limit = limit
+        self.advanced: list[int] = []
+        self.masked_steps = 0
+        self.mask_time_s = 0.0
+
+    def _legal(self, token_id: int) -> bool:
+        return token_id % 2 == 0 and len(self.advanced) < self.limit
+
+    def mask_logits_row(self, row):
+        self.masked_steps += 1
+        ids = mx.arange(row.shape[-1])
+        legal = (ids % 2) == 0
+        return mx.where(legal, row, mx.array(-np.inf, dtype=row.dtype))
+
+    def validate_prefix(self, token_ids):
+        count = 0
+        pos = len(self.advanced)
+        for token in token_ids:
+            if pos + count >= self.limit or int(token) % 2 != 0:
+                break
+            count += 1
+        return count
+
+    def advance(self, token_id: int) -> None:
+        self.advanced.append(int(token_id))
+
+    def advance_many(self, token_ids) -> None:
+        for token in token_ids:
+            self.advance(token)
+
+    @property
+    def stopped(self) -> bool:
+        return len(self.advanced) >= self.limit
+
+    @property
+    def completed(self) -> bool:
+        return self.stopped
+
+
+class _MTPScriptedModel:
+    """Deterministic mtpk stub: after token t, both trunk and MTP head want
+    t+1 (mod vocab) — always odd successors from even tokens and vice versa."""
+
+    def __init__(self, vocab: int = 8):
+        self.vocab = vocab
+        self.mtp = SimpleNamespace(_mtplx_lora_targets=[])
+
+    def make_cache(self):
+        return []
+
+    def make_mtp_cache(self):
+        return []
+
+    def mtp_update_cache(self, hidden_states, next_token_ids, **_kwargs):
+        return hidden_states
+
+    def _logits_for(self, last_tokens):
+        rows = []
+        for token in last_tokens:
+            row = [0.0] * self.vocab
+            row[(int(token) + 1) % self.vocab] = 10.0
+            rows.append(row)
+        return mx.array([rows], dtype=mx.float32)
+
+    def __call__(
+        self,
+        input_ids,
+        *,
+        cache=None,
+        return_hidden: bool = False,
+        hidden_variant: str | None = None,
+        emit_logits: bool = True,
+        logits_keep: int | None = None,
+    ):
+        toks = [int(t) for t in np.asarray(input_ids).reshape(-1)]
+        keep = len(toks) if logits_keep is None else min(len(toks), max(1, int(logits_keep)))
+        logits = self._logits_for(toks[-keep:]) if emit_logits else None
+        hidden = mx.zeros((1, len(toks), 2), dtype=mx.float32)
+        if not emit_logits:
+            return (None, hidden) if return_hidden else None
+        return (logits, hidden) if return_hidden else logits
+
+    def mtp_forward(
+        self,
+        hidden_states,
+        next_token_ids,
+        *,
+        mtp_cache=None,
+        concat_order=None,
+        return_hidden: bool = False,
+        mtp_hidden_variant: str | None = None,
+        position_offset=None,
+    ):
+        toks = [int(t) for t in np.asarray(next_token_ids).reshape(-1)]
+        logits = self._logits_for(toks)
+        hidden = mx.zeros((1, len(toks), 2), dtype=mx.float32)
+        return (logits, hidden) if return_hidden else logits
+
+
+def _mtpk_constrained(constraint, *, max_tokens: int = 12, depth: int = 2):
+    from mtplx.generation import generate_mtpk
+
+    rt = MTPLXRuntime(
+        model=_MTPScriptedModel(),
+        tokenizer=_Tokenizer(),
+        model_path=Path("tiny-constrained-mtpk"),
+        mtp_enabled=True,
+        contract=MTPContract(),
+    )
+    return generate_mtpk(
+        rt,
+        [0, 1, 2, 3],
+        max_tokens=max_tokens,
+        sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=0),
+        speculative_depth=depth,
+        seed=0,
+        stop_token_ids=set(),
+        verify_strategy="capture_commit",
+        constraint=constraint,
+    )
+
+
+def test_generate_mtpk_masks_and_clamps_to_grammar(monkeypatch):
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY", raising=False)
+    constraint = _EvensOnlyConstraint(limit=6)
+    out = _mtpk_constrained(constraint)
+    # The ramp model always wants odd successors; only the mask (primary) and
+    # the legality clamp (draft window / bonus) can keep the stream even.
+    assert out.tokens, "no tokens generated"
+    assert all(t % 2 == 0 for t in out.tokens), out.tokens
+    # The matcher advanced through exactly the committed stream, in order.
+    assert constraint.advanced == out.tokens
+    assert out.stats.constraint_active is True
+    assert out.stats.constraint_completed is True
+    assert out.stats.constraint_masked_steps >= 1
+
+
+def test_generate_mtpk_stops_at_grammar_terminal(monkeypatch):
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY", raising=False)
+    constraint = _EvensOnlyConstraint(limit=3)
+    out = _mtpk_constrained(constraint, max_tokens=20)
+    assert len(out.tokens) == 3, out.tokens
+    assert out.finish_reason == "stop"
+    assert out.stats.constraint_completed is True
+
+
+def test_generate_mtpk_unconstrained_reports_inactive(monkeypatch):
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY", raising=False)
+    out = _mtpk_constrained(None, max_tokens=6)
+    assert out.stats.constraint_active is False
+    assert out.stats.constraint_completed is None
+
+
+# --- strict tool-call constraint spec (phase 2) -----------------------------
+
+
+def test_tool_call_spec_paths_without_llguidance_dependency():
+    from mtplx.constrained import tool_call_constraint_spec
+
+    assert tool_call_constraint_spec(None, None, object()) is None
+    assert tool_call_constraint_spec([], "auto", object()) is None
+    assert (
+        tool_call_constraint_spec(
+            [{"type": "function", "function": {"name": "f"}}], "none", object()
+        )
+        is None
+    )
+
+
 # --- end-to-end with llguidance (tiny single-byte tokenizer) ---------------
 
 llguidance = pytest.importorskip("llguidance")

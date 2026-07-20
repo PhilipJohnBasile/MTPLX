@@ -4501,6 +4501,10 @@ def generate_ar(
             pass
     tokens: list[int] = []
     events: list[dict] = []
+    if constraint is not None:
+        # The repetition trimmer retracts committed tokens, which would
+        # desync the grammar matcher; constrained output is schema-shaped.
+        repetition_stop = False
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
     _loop_guard_config = loop_guard_config_from_env(
@@ -5479,6 +5483,7 @@ def generate_mtpk(
     repetition_stop: bool = False,
     loop_guard: bool = False,
     vision_splice: Any | None = None,
+    constraint: Any | None = None,
 ) -> GenerationOutput:
     """Generate with a fixed native-MTP depth.
 
@@ -5607,6 +5612,10 @@ def generate_mtpk(
         _default_stop_tokens(rt.tokenizer) if stop_token_ids is None else stop_token_ids
     )
     started_all = time.perf_counter()
+    if constraint is not None:
+        # The repetition trimmer retracts committed tokens, which would
+        # desync the grammar matcher; constrained output is schema-shaped.
+        repetition_stop = False
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
     draft_time = verify_time = 0.0
@@ -5758,6 +5767,11 @@ def generate_mtpk(
     bonus_time = 0.0
     online_hidden_corrector_time = 0.0
     tokens: list[int] = []
+    # Grammar-constrained decoding (#186 phase 3): the matcher advances only
+    # through committed tokens (synced once per cycle after the primary);
+    # speculative windows are clamped to the matcher's legal prefix before
+    # commit, so drafts stay unmasked and correctness is target-side only.
+    constraint_synced_tokens = 0
     # OpenAI-style presence/frequency penalties. When active, each token is
     # penalized by the counts of the completion-so-far (prompt excluded), and
     # every verified MTP position by its growing in-block prefix (per-position /
@@ -6473,10 +6487,30 @@ def generate_mtpk(
                     }
                 )
         _guard_armed = _loop_guard is not None and _loop_guard.armed
+        if constraint is not None:
+            # Sync the matcher through the previous cycle's committed window
+            # BEFORE masking this cycle's primary — a stale matcher would
+            # compute the mask at the wrong grammar position.
+            constraint.advance_many(tokens[constraint_synced_tokens:])
+            constraint_synced_tokens = len(tokens)
+            if (
+                constraint.stopped
+                and tokens
+                and not _is_stop(tokens[-1], stop_token_ids)
+            ):
+                append_event({"step": len(tokens), "constraint_stop": True})
+                break
         primary_already_emitted = pending_primary is not None
         if pending_primary is None:
+            primary_row = logits[0]
+            if constraint is not None:
+                # The one guaranteed-progress mask site: every cycle's fresh
+                # position samples from the constrained target distribution.
+                # Speculative windows are handled by the legality clamp below
+                # instead of per-row masks (see #186 phase 3).
+                primary_row = constraint.mask_logits_row(primary_row)
             primary, _ = _sample_from_logits(
-                logits[0],
+                primary_row,
                 sampler,
                 rng,
                 token_counts=Counter(tokens) if _penalties_active else None,
@@ -6486,6 +6520,12 @@ def generate_mtpk(
             )
             tokens.append(primary)
             emit_new_tokens()
+            if constraint is not None:
+                # Everything later this cycle (copy-block truncation, the
+                # accept-loop clamp, bonus checks) validates windows that
+                # FOLLOW the primary, so consume it now.
+                constraint.advance_many(tokens[constraint_synced_tokens:])
+                constraint_synced_tokens = len(tokens)
         else:
             primary = pending_primary
             pending_primary = None
@@ -6585,10 +6625,18 @@ def generate_mtpk(
             _cc_hist = prompt_ids + tokens
             ccopy_probes += 1
             _cc_pos, _cc_ext = ccopy_index.find(_cc_hist)
+            _cc_block: list[int] = []
             if _cc_pos is not None and _cc_ext >= ccopy_min_ext:
                 _cc_klen = block_for_ext(_cc_ext, ccopy_k)
                 _cc_block = [int(t) for t in _cc_hist[_cc_pos:_cc_pos + _cc_klen]]
                 _cc_block = _cc_block[: max(1, max_tokens - len(tokens))]
+                if constraint is not None:
+                    # Truncate the copy proposal at the first grammar-illegal
+                    # token so masked rejections stay rare instead of
+                    # systematic; an empty result falls through to the normal
+                    # MTP round (#186 phase 3).
+                    _cc_block = _cc_block[: constraint.validate_prefix(_cc_block)]
+            if _cc_block:
                 _cc_T = 1 + len(_cc_block)
                 _cc_before = None
                 if not _env_truthy("MTPLX_SKIP_VERIFY_SNAPSHOT"):
@@ -6700,6 +6748,14 @@ def generate_mtpk(
                     _cc_acc = _cc_acc[:_cc_stop_idx + 1]
                 tokens.extend(_cc_acc)
                 _cc_finished = _cc_stop_idx is not None
+                if constraint is not None and _cc_correction is not None and (
+                    constraint.validate_prefix([*_cc_acc, int(_cc_correction)])
+                    != len(_cc_acc) + 1
+                ):
+                    # Grammar-illegal residual: drop it; the next cycle's
+                    # masked primary resamples the position, which preserves
+                    # the masked target law exactly.
+                    _cc_correction = None
                 if _cc_correction is not None and not _cc_finished:
                     # Exactness requires the rejected position's token to be
                     # the residual sample drawn above, not a fresh draw from
@@ -7596,6 +7652,15 @@ def generate_mtpk(
             # the target_prefix pre-sample above already carried the overlay
             # (and its lane has no draft distributions to fall back on).
             target_distribution_batch = None
+        # Grammar clamp (#186 phase 3): drafts are proposed unmasked, so the
+        # committed window must stop at the grammar's legal prefix. One
+        # stateless validate call per cycle; the matcher itself only advances
+        # through committed tokens at the top-of-cycle sync.
+        constraint_legal_prefix = (
+            constraint.validate_prefix(list(draft_tokens))
+            if constraint is not None
+            else None
+        )
         for depth_index, draft_token in enumerate(draft_tokens):
             target_logits_for_draft = verify_logits[:, depth_index, :]
             if _guard_armed:
@@ -7710,6 +7775,19 @@ def generate_mtpk(
                     )
                 )
 
+            if (
+                constraint_legal_prefix is not None
+                and accepted_now
+                and depth_index >= constraint_legal_prefix
+            ):
+                # The model accepted a draft the grammar forbids here; reject
+                # it and let the next cycle's masked primary resample the
+                # position from the constrained distribution (which keeps the
+                # output law exactly the masked target law).
+                accepted_now = False
+                accept_prob = 0.0
+                event["drafts"][depth_index]["constraint_clamped"] = True
+
             event["drafts"][depth_index]["accepted"] = accepted_now
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
@@ -7746,7 +7824,15 @@ def generate_mtpk(
                 event["drafts"][depth_index]["online_correction_cache"][
                     "stored_token"
                 ] = cached_target
-            if sampler.temperature > 0:
+            if sampler.temperature > 0 and (
+                constraint is None
+                or constraint.validate_prefix(
+                    [*draft_tokens[:depth_index], int(correction)]
+                )
+                == depth_index + 1
+            ):
+                # A grammar-illegal residual correction is dropped, not
+                # committed; the masked primary resamples the position.
                 rejection_correction = int(correction)
             break
         elapsed_accept = max(
@@ -7984,6 +8070,20 @@ def generate_mtpk(
                 )
                 bonus_time += elapsed_bonus
                 _add_timing(event, "bonus_sample", elapsed_bonus)
+                if constraint is not None and (
+                    constraint.validate_prefix([*draft_tokens, int(bonus)])
+                    != len(draft_tokens) + 1
+                ):
+                    # Grammar-illegal bonus: skip it (same control path as
+                    # omit_speculative_bonus). `logits` already holds the
+                    # bonus-position row, so the next cycle's masked primary
+                    # resamples this exact position from the constrained
+                    # distribution.
+                    event["bonus_token_constraint_skipped"] = True
+                    maybe_eval_state_roots(event, len(tokens))
+                    append_event(event)
+                    emit_trace()
+                    continue
                 tokens.append(bonus)
                 pending_primary = bonus
                 bonus_tokens += 1
@@ -8232,10 +8332,17 @@ def generate_mtpk(
         # other downstream cache consumer must never see promoted
         # tensor-offset adapters.
         compiled_verify_bank.demote(cache)
+    if constraint is not None:
+        # Final sync so `completed` reflects every committed token (the loop
+        # may exit between the per-cycle sync and the last commit).
+        constraint.advance_many(tokens[constraint_synced_tokens:])
+        constraint_synced_tokens = len(tokens)
     finish_reason = (
         "stop"
         if repetition_result is not None
         or any(_is_stop(token, stop_token_ids) for token in tokens)
+        # A grammar-terminal exit is a completed document, not truncation.
+        or (constraint is not None and constraint.stopped)
         else "length"
     )
     if capture_final_state:
@@ -8254,6 +8361,16 @@ def generate_mtpk(
     reject_path_counts, repair_time_by_reject_depth = _reject_repair_breakdown(events)
     stats = GenerationStats(
         mode="mtpk",
+        constraint_active=constraint is not None,
+        constraint_completed=(
+            constraint.completed if constraint is not None else None
+        ),
+        constraint_masked_steps=(
+            constraint.masked_steps if constraint is not None else 0
+        ),
+        constraint_mask_time_s=(
+            constraint.mask_time_s if constraint is not None else 0.0
+        ),
         generated_tokens=len(tokens),
         elapsed_s=elapsed,
         **_generation_rate_fields(
