@@ -1581,6 +1581,14 @@ class GenerationStats:
     context_copy_suspended: bool = False
     context_copy_backoff_tokens: int = 0
     context_copy_disabled_reason: str | None = None
+    # Grammar-constrained decoding (response_format). constraint_completed is
+    # None when no constraint was active, False when generation ended before
+    # the grammar reached a complete document (truncation is never passed off
+    # as valid output).
+    constraint_active: bool = False
+    constraint_completed: bool | None = None
+    constraint_masked_steps: int = 0
+    constraint_mask_time_s: float = 0.0
     graphbank: dict[str, object] = field(default_factory=dict)
     reject_path_counts: dict[str, int] = field(default_factory=dict)
     repair_time_by_reject_depth_s: dict[str, float] = field(default_factory=dict)
@@ -4409,8 +4417,13 @@ def generate_ar(
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     repetition_stop: bool = False,
     loop_guard: bool = False,
+    constraint: Any | None = None,
 ) -> GenerationOutput:
     if getattr(rt, "backend_id", None) == "gemma4_assistant":
+        if constraint is not None:
+            raise ValueError(
+                "constrained decoding is not supported on the gemma4_assistant backend"
+            )
         from .backends.gemma4_assistant import generate_gemma4_ar
 
         return generate_gemma4_ar(
@@ -4595,8 +4608,14 @@ def generate_ar(
                         },
                     }
                 )
+        logits_row = logits[0]
+        if constraint is not None:
+            # Masking precedes every shaping step in _sample_from_logits, so
+            # both the greedy and sampled branches draw from the constrained
+            # distribution (-inf survives temperature/top-p/penalties).
+            logits_row = constraint.mask_logits_row(logits_row)
         token, _ = _sample_from_logits(
-            logits[0],
+            logits_row,
             sampler,
             rng,
             token_counts=Counter(tokens)
@@ -4611,6 +4630,13 @@ def generate_ar(
         tokens.append(token)
         emit_token(token)
         events.append({"step": step, "token": token})
+        if constraint is not None:
+            constraint.advance(token)
+            if constraint.stopped and not _is_stop(token, stop_token_ids):
+                # The grammar reached its terminal without the model emitting
+                # a stop token; end here rather than decode past the document.
+                events.append({"step": step, "constraint_stop": True})
+                break
         repetition_result = _trim_repeated_suffix(tokens, repetition_config)
         if repetition_result is not None:
             events.append(
@@ -4701,6 +4727,14 @@ def generate_ar(
         loop_guard=(_loop_guard.summary() if _loop_guard is not None else {}),
         decode_trace_path=str(trace.path) if trace.path is not None else None,
         decode_trace_run_id=trace.run_id if trace.enabled else None,
+        constraint_active=constraint is not None,
+        constraint_completed=(constraint.completed if constraint is not None else None),
+        constraint_masked_steps=(
+            constraint.masked_steps if constraint is not None else 0
+        ),
+        constraint_mask_time_s=(
+            constraint.mask_time_s if constraint is not None else 0.0
+        ),
         events=events,
     )
     _attach_runtime_diagnostics(

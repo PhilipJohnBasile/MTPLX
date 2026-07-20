@@ -77,6 +77,10 @@ from mtplx.backends.descriptors import (
 from mtplx.backends.registry import load_runtime_contract
 from mtplx.batching import BatchSchedulerConfig, SchedulerMode, SchedulerPreset
 from mtplx.chat_encoding import encode_chat_messages, is_gemma4_tokenizer
+from mtplx.constrained import (
+    ResponseFormatError,
+    constraint_spec_from_response_format,
+)
 from mtplx.gemma4_pair import (
     GEMMA4_BACKEND,
     gemma4_pair_sampler_defaults,
@@ -12784,6 +12788,11 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "context_copy_suspended",
     "context_copy_backoff_tokens",
     "context_copy_disabled_reason",
+    # Grammar-constrained decoding (response_format) counters.
+    "constraint_active",
+    "constraint_completed",
+    "constraint_masked_steps",
+    "constraint_mask_time_s",
     "verify_time_s",
     "draft_time_s",
     "accept_time_s",
@@ -15140,7 +15149,16 @@ def _run_generation_dispatched(
     history_bypass_reason = _ar_batch_history_bypass_reason(
         request_observability_for_lane
     )
-    if history_bypass_reason is not None:
+    if kwargs.get("constraint_spec") is not None:
+        # Grammar masks only exist on the serial AR path; the batched AR
+        # pump's per-job samplers carry no matcher state (issue #186 phase 1).
+        use_ar_batch = False
+        mtp_disabled_reason = "constrained_decoding"
+        request_observability_for_lane["scheduler_lane"] = "solo_constrained"
+        request_observability_for_lane["ar_batch_bypass_reason"] = (
+            "constrained_decoding"
+        )
+    elif history_bypass_reason is not None:
         use_ar_batch = False
         mtp_disabled_reason = None
         request_observability_for_lane["scheduler_lane"] = (
@@ -15292,6 +15310,7 @@ def _run_generation(
     cancel_event: Event | None = None,
     streaming_response: bool | None = None,
     vision_splice: Any | None = None,
+    constraint_spec: Any | None = None,
 ) -> dict[str, Any]:
     response_max, sampler, generation_limits = _generation_params(
         state,
@@ -15312,6 +15331,10 @@ def _run_generation(
         generation_mode,
         default=getattr(state.args, "generation_mode", "mtp"),
     )
+    if constraint_spec is not None:
+        # Grammar masks are wired into generate_ar only; never let a
+        # constrained request fall through to an unmasked lane.
+        effective_mode = "ar"
     requested_depth = (
         0
         if effective_mode == "ar"
@@ -15404,6 +15427,11 @@ def _run_generation(
                 dynamic_kv_reservation["env"]
             ), prefill_chunk_size_override(prefill_chunk_tokens):
                 if effective_mode == "ar":
+                    constraint = (
+                        constraint_spec.build(state.runtime.tokenizer)
+                        if constraint_spec is not None
+                        else None
+                    )
                     out = generate_ar(
                         state.runtime,
                         prompt_ids,
@@ -15414,8 +15442,16 @@ def _run_generation(
                         trace_label=trace_label,
                         trace_metadata=trace_metadata,
                         prefill_callback=prefill_callback,
-                        repetition_stop=uncapped_repetition_stop,
+                        # The repetition trimmer retracts already-committed
+                        # tokens, which would desync the grammar matcher;
+                        # constrained output is schema-shaped, not freeform.
+                        repetition_stop=(
+                            False
+                            if constraint is not None
+                            else uncapped_repetition_stop
+                        ),
                         loop_guard=_loop_guard_enabled(),
+                        constraint=constraint,
                     )
                 else:
                     adaptive_policy = _make_adaptive_policy(
@@ -15750,7 +15786,12 @@ def _run_generation(
             "end_to_end_tok_s": server_tok_s,
             "_final_state": final_state,
             "finish_reason": (
-                out.final_state.finish_reason if out.final_state is not None else "stop"
+                out.final_state.finish_reason
+                if out.final_state is not None
+                # The serial AR lane has no final_state; its GenerationOutput
+                # still reports length-vs-stop correctly — don't flatten a
+                # max_tokens truncation into "stop".
+                else (getattr(out, "finish_reason", None) or "stop")
             ),
         }
         if seed_is_explicit or out.text.strip():
@@ -16232,6 +16273,15 @@ def _stats_footer_text(state: ServerState, generated: dict[str, Any]) -> str:
     if not state.args.stats_footer:
         return ""
     stats = generated["stats"]
+    constraint_active = (
+        stats.get("constraint_active")
+        if isinstance(stats, dict)
+        else getattr(stats, "constraint_active", False)
+    )
+    if constraint_active:
+        # response_format promised machine-parseable output; a prose footer
+        # appended to the content would corrupt it for every JSON client.
+        return ""
     tok_s, decode_elapsed_s = _decode_timing(stats)
     completion_tokens = int(generated.get("completion_tokens") or 0)
     footer = f"**{tok_s:.1f} tok/s** · {completion_tokens} tokens · {decode_elapsed_s:.2f}s decode"
@@ -17080,6 +17130,8 @@ def _display_text(
     if not state.args.stats_footer:
         return text
     footer = _stats_footer_text(state, generated)
+    if not footer:
+        return text
     separator = "\n\n" if text.endswith("\n") else "\n\n"
     return f"{text}{separator}{footer}"
 
@@ -20545,6 +20597,25 @@ def create_app(state: ServerState) -> FastAPI:
             request,
             allow_client_controls=client_controls_allowed,
         )
+        try:
+            constraint_spec = constraint_spec_from_response_format(
+                request.response_format
+            )
+        except ResponseFormatError as constraint_error:
+            raise HTTPException(status_code=400, detail=str(constraint_error))
+        if constraint_spec is not None:
+            if getattr(state.runtime, "backend_id", None) == "gemma4_assistant":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "response_format constrained decoding is not supported "
+                        "on the gemma4_assistant backend"
+                    ),
+                )
+            # Phase 1 pins constrained requests to the serial AR lane; the
+            # MTP verify paths and the batched AR pump do not apply grammar
+            # masks yet (see upstream issue #186 for the composition plan).
+            request_generation_mode = "ar"
         request_depth = _request_depth_for_generation(
             state,
             request,
@@ -20699,6 +20770,10 @@ def create_app(state: ServerState) -> FastAPI:
             request_generation_mode=request_generation_mode,
             request_depth=request_depth,
         )
+        if constraint_spec is not None:
+            request_observability["constrained_decoding"] = (
+                constraint_spec.source_type
+            )
         if vision_splice is not None:
             request_observability["request_vision_images"] = len(vision_images)
             request_observability["request_vision_rows"] = vision_splice.total_rows
@@ -21208,6 +21283,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=request.seed,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         session_id=session_id,
@@ -21246,6 +21322,7 @@ def create_app(state: ServerState) -> FastAPI:
                     seed=request.seed,
                     draft_sampler=request_draft_sampler,
                     generation_mode=request_generation_mode,
+                    constraint_spec=constraint_spec,
                     depth=request_depth,
                     resolved_mtp_depth=effective_request_depth,
                     session_id=session_id,
@@ -21605,6 +21682,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=None,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         token_callback=on_tokens,
@@ -21729,6 +21807,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=None,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         token_callback=on_tokens,
@@ -21869,6 +21948,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=None,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         token_callback=on_tokens,
@@ -22044,6 +22124,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=None,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         token_callback=on_tokens,
@@ -22204,6 +22285,7 @@ def create_app(state: ServerState) -> FastAPI:
                         seed=None,
                         draft_sampler=request_draft_sampler,
                         generation_mode=request_generation_mode,
+                        constraint_spec=constraint_spec,
                         depth=request_depth,
                         resolved_mtp_depth=effective_request_depth,
                         token_callback=on_tokens,
@@ -22283,6 +22365,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 seed=request.seed,
                                 draft_sampler=request_draft_sampler,
                                 generation_mode=request_generation_mode,
+                                constraint_spec=constraint_spec,
                                 depth=request_depth,
                                 resolved_mtp_depth=effective_request_depth,
                                 token_callback=on_tokens,
@@ -22333,6 +22416,7 @@ def create_app(state: ServerState) -> FastAPI:
                                     seed=request.seed,
                                     draft_sampler=request_draft_sampler,
                                     generation_mode=request_generation_mode,
+                                    constraint_spec=constraint_spec,
                                     depth=request_depth,
                                     resolved_mtp_depth=effective_request_depth,
                                     token_callback=on_tokens,
