@@ -10812,3 +10812,95 @@ def test_request_parallel_tool_calls_only_honors_booleans():
     assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=False)) is False
     assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls="yes")) is None
     assert openai._request_parallel_tool_calls(SimpleNamespace()) is None
+# --- honest rejection of unsupported OpenAI options --------------------------
+
+
+def _options_client(monkeypatch):
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("ok"))
+    return TestClient(create_app(state))
+
+
+@pytest.mark.parametrize(
+    "payload, fragment",
+    [
+        ({"n": 2}, "n=2"),
+        ({"n": 0}, "n=0"),
+        ({"logprobs": True}, "logprobs"),
+        ({"top_logprobs": 5}, "top_logprobs"),
+        ({"logit_bias": {"50256": -100}}, "logit_bias"),
+        ({"stream_options": {"include_usage": True, "chunk_size": 8}}, "chunk_size"),
+        ({"stream_options": {"include_usage": "yes"}}, "boolean"),
+    ],
+)
+def test_unsupported_chat_options_rejected_with_400(monkeypatch, payload, fragment):
+    client = _options_client(monkeypatch)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={"messages": [{"role": "user", "content": "hi"}], **payload},
+    )
+    assert response.status_code == 400
+    assert fragment in json.dumps(response.json())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"n": 1},
+        {"logprobs": False},
+        {"logit_bias": {}},
+        {"stream_options": {"include_usage": True}},
+        {"stream_options": {"include_usage": False}},
+    ],
+)
+def test_supported_option_values_still_accepted(monkeypatch, payload):
+    client = _options_client(monkeypatch)
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={"messages": [{"role": "user", "content": "hi"}], **payload},
+    )
+    assert response.status_code == 200
+
+
+def test_stream_final_chunk_carries_usage_for_include_usage(monkeypatch):
+    state = _fake_streaming_session_state()
+    state.args.stream_interval = 1
+    monkeypatch.setattr(
+        openai, "_run_generation", _fake_streaming_generation("Hello there")
+    )
+    with TestClient(create_app(state)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "max_tokens": 32,
+            },
+        )
+    assert response.status_code == 200
+    payloads = _stream_payloads(response.text)
+    finals = [p for p in payloads if p.get("usage")]
+    assert finals, "no streamed chunk carried usage"
+    assert finals[-1]["usage"]["completion_tokens"] >= 1
+
+
+def test_unsupported_completion_options_rejected_with_400(monkeypatch):
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("ok"))
+    client = TestClient(create_app(state))
+    for payload, fragment in ((
+        {"n": 3}, "n=3"), ({"logprobs": 5}, "logprobs"),
+        ({"logit_bias": {"1": 5}}, "logit_bias"),
+    ):
+        response = client.post(
+            "/v1/completions",
+            headers={"x-mtplx-cache-mode": "bypass"},
+            json={"prompt": "hi", **payload},
+        )
+        assert response.status_code == 400, payload
+        assert fragment in json.dumps(response.json())

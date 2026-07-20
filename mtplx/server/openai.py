@@ -737,6 +737,12 @@ class ChatCompletionRequest(BaseModel):
     response_format: Any = None
     metadata: dict[str, Any] | None = None
     user: str | None = None
+    # Declared so unsupported values fail with a clear 400 instead of the
+    # extra="allow" catch-all silently discarding them.
+    n: int | None = None
+    logprobs: bool | None = None
+    top_logprobs: int | None = None
+    logit_bias: dict[str, Any] | None = None
 
 
 @dataclass
@@ -996,6 +1002,11 @@ class CompletionRequest(BaseModel):
     seed: int | None = None
     stop: Any = None
     stream: bool = False
+    # Declared so unsupported values fail with a clear 400 instead of the
+    # extra="allow" catch-all silently discarding them.
+    n: int | None = None
+    logprobs: int | None = None
+    logit_bias: dict[str, Any] | None = None
 
 
 class AnthropicMessage(BaseModel):
@@ -5577,6 +5588,51 @@ def _single_tool_call_stream_policy(
         return not parallel_tool_calls
     hint = (client_hint or "").lower()
     return "pi" in hint or ("opencode" in hint and explicit_single_tool)
+def _reject_unsupported_request_options(request: Any) -> None:
+    """400 on declared-but-unsupported OpenAI options instead of silence.
+
+    Every field here used to disappear into the extra="allow" catch-all;
+    clients assumed the server honored what it accepted (n-way sampling,
+    logprobs, logit bias) and silently got single-choice output instead.
+    """
+    n = getattr(request, "n", None)
+    if n is not None and int(n) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"n={n} is not supported; MTPLX serves one choice per request",
+        )
+    if getattr(request, "logprobs", None):
+        raise HTTPException(
+            status_code=400,
+            detail="logprobs is not supported yet",
+        )
+    if getattr(request, "top_logprobs", None):
+        raise HTTPException(
+            status_code=400,
+            detail="top_logprobs is not supported yet",
+        )
+    if getattr(request, "logit_bias", None):
+        raise HTTPException(
+            status_code=400,
+            detail="logit_bias is not supported yet",
+        )
+    stream_options = getattr(request, "stream_options", None)
+    if stream_options is not None:
+        unknown = set(stream_options) - {"include_usage"}
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "unsupported stream_options keys: "
+                    f"{', '.join(sorted(str(key) for key in unknown))}"
+                ),
+            )
+        include_usage = stream_options.get("include_usage")
+        if include_usage is not None and not isinstance(include_usage, bool):
+            raise HTTPException(
+                status_code=400,
+                detail="stream_options.include_usage must be a boolean",
+            )
 
 
 def _request_should_force_answer_for_read_only_inspection(
@@ -20333,6 +20389,7 @@ def create_app(state: ServerState) -> FastAPI:
     ) -> Any:
         if not request.messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
+        _reject_unsupported_request_options(request)
         headers = dict(raw_request.headers)
         metadata = _request_metadata(request)
         request_max_tokens = _request_max_tokens(request)
@@ -24233,6 +24290,7 @@ def create_app(state: ServerState) -> FastAPI:
 
     @app.post("/v1/completions")
     async def completions(raw_request: Request, request: CompletionRequest) -> Any:
+        _reject_unsupported_request_options(request)
         headers = dict(raw_request.headers)
         raw_metadata = _request_extra(request, "metadata", {})
         metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
