@@ -10722,3 +10722,93 @@ def test_completions_nonstream_stop_aborts_generation_early(monkeypatch):
     assert body["choices"][0]["finish_reason"] == "stop"
     assert body["usage"]["completion_tokens"] == len("Hello ") + len("STOP\n")
     assert body["mtplx_stats"]["stop_sequence_hit"] is True
+
+
+# --- parallel_tool_calls wiring ---------------------------------------------
+
+
+def _two_call_extraction(*_args, **_kwargs):
+    def _call(name):
+        return {
+            "id": f"call_{name}",
+            "type": "function",
+            "function": {"name": name, "arguments": "{\"q\": 1}"},
+        }
+
+    return SimpleNamespace(
+        cleaned_text="",
+        cleaned_thinking="",
+        tool_calls=[_call("session_status"), _call("session_status")],
+        parser_source="native",
+        status="parsed",
+        malformed_reason=None,
+        raw_tool_markup_suppressed=True,
+    )
+
+
+def test_parallel_tool_calls_false_truncates_nonstream_tool_calls(monkeypatch):
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("x"))
+    monkeypatch.setattr(
+        openai, "omlx_extract_tool_calls_with_thinking", _two_call_extraction
+    )
+    client = TestClient(create_app(state))
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "messages": [{"role": "user", "content": "status twice"}],
+            "tools": [_tool_schema()],
+            "parallel_tool_calls": False,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["choices"][0]["message"]["tool_calls"]) == 1
+    assert body["mtplx_stats"]["tool_calls_emitted"] == 1
+
+
+def test_parallel_tool_calls_unset_keeps_all_nonstream_tool_calls(monkeypatch):
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("x"))
+    monkeypatch.setattr(
+        openai, "omlx_extract_tool_calls_with_thinking", _two_call_extraction
+    )
+    client = TestClient(create_app(state))
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "messages": [{"role": "user", "content": "status twice"}],
+            "tools": [_tool_schema()],
+        },
+    )
+    assert response.status_code == 200
+    assert len(response.json()["choices"][0]["message"]["tool_calls"]) == 2
+
+
+def test_single_tool_call_stream_policy_declared_field_wins():
+    policy = openai._single_tool_call_stream_policy
+    # Declared field is authoritative in both directions.
+    assert policy(parallel_tool_calls=False, client_hint="", explicit_single_tool=False)
+    assert not policy(
+        parallel_tool_calls=True, client_hint="pi", explicit_single_tool=True
+    )
+    # Unset falls back to the legacy client-hint heuristics.
+    assert policy(parallel_tool_calls=None, client_hint="pi", explicit_single_tool=False)
+    assert policy(
+        parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=True
+    )
+    assert not policy(
+        parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=False
+    )
+    assert not policy(parallel_tool_calls=None, client_hint="", explicit_single_tool=False)
+
+
+def test_request_parallel_tool_calls_only_honors_booleans():
+    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=True)) is True
+    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=False)) is False
+    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls="yes")) is None
+    assert openai._request_parallel_tool_calls(SimpleNamespace()) is None

@@ -5549,6 +5549,36 @@ def _request_explicit_single_tool_then_answer(messages: list[ChatMessage]) -> bo
     return bool(_EXPLICIT_SINGLE_TOOL_THEN_ANSWER_RE.search(_last_user_text(messages)))
 
 
+def _request_parallel_tool_calls(request: Any) -> bool | None:
+    """The client's explicit parallel_tool_calls preference, or None.
+
+    Only genuine booleans count; anything else means the client expressed
+    no preference and the legacy client-hint heuristics apply.
+    """
+    value = getattr(request, "parallel_tool_calls", None)
+    return value if isinstance(value, bool) else None
+
+
+def _single_tool_call_stream_policy(
+    *,
+    parallel_tool_calls: bool | None,
+    client_hint: str,
+    explicit_single_tool: bool,
+) -> bool:
+    """Whether streaming should stop after the first complete tool call.
+
+    The request's declared ``parallel_tool_calls`` is authoritative when
+    present — previously this was decided purely by sniffing the client
+    name, and the declared field was accepted but never consulted. The
+    hint-based behavior is preserved as the fallback for clients that do
+    not send the field.
+    """
+    if parallel_tool_calls is not None:
+        return not parallel_tool_calls
+    hint = (client_hint or "").lower()
+    return "pi" in hint or ("opencode" in hint and explicit_single_tool)
+
+
 def _request_should_force_answer_for_read_only_inspection(
     messages: list[ChatMessage],
 ) -> bool:
@@ -12969,6 +12999,7 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "tool_arguments_degraded",
     "tool_arguments_degraded_reasons",
     "tool_parser_exceptions",
+    "tool_calls_truncated_parallel_disabled",
     "raw_tool_markup_suppressed",
     "legacy_bridge_used",
     "hidden_generation_repair_used",
@@ -21511,14 +21542,12 @@ def create_app(state: ServerState) -> FastAPI:
                 stream_client_hint = str(
                     request_observability.get("request_client_hint") or ""
                 ).lower()
-                single_tool_call_stream = (
-                    "pi" in stream_client_hint
-                    or (
-                        "opencode" in stream_client_hint
-                        and _request_explicit_single_tool_then_answer(
-                            messages_for_generation
-                        )
-                    )
+                single_tool_call_stream = _single_tool_call_stream_policy(
+                    parallel_tool_calls=_request_parallel_tool_calls(request),
+                    client_hint=stream_client_hint,
+                    explicit_single_tool=_request_explicit_single_tool_then_answer(
+                        messages_for_generation
+                    ),
                 )
                 orphan_stream_guard_enabled = bool(
                     tools_active and tool_result_history_present
@@ -23955,6 +23984,15 @@ def create_app(state: ServerState) -> FastAPI:
                 tool_specs,
             )
             tool_calls = extraction.tool_calls
+            if (
+                tool_calls
+                and len(tool_calls) > 1
+                and _request_parallel_tool_calls(request) is False
+            ):
+                # The client declared parallel_tool_calls=false; honor the
+                # OpenAI contract of at most one call per turn.
+                tool_calls = tool_calls[:1]
+                generated["stats"]["tool_calls_truncated_parallel_disabled"] = True
             generated["stats"]["tool_parser_source"] = extraction.parser_source
             generated["stats"]["tool_parse_status"] = extraction.status
             generated["stats"]["tool_calls_emitted"] = len(tool_calls or [])
