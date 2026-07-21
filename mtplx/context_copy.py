@@ -86,10 +86,13 @@ class NgramIndex:
             self.grams.setdefault(tuple(history[e - self.ng_min:e]), []).append(e)
         self.indexed = len(history)
 
-    def find(self, history: list[int]):
+    def find(self, history: list[int], *, max_pos: int | None = None):
         """Best match: (continuation_pos, extension) or (None, -1). Extension =
         how many tokens beyond ng_min the match runs backwards (0..ng_max-ng_min),
-        a free confidence signal (longer suffix match -> longer safe block)."""
+        a free confidence signal (longer suffix match -> longer safe block).
+        max_pos (exclusive) drops candidates with no continuation left in the
+        indexed region, so the best VALID match wins rather than a boundary
+        match being selected and then discarded by the caller."""
         L = len(history)
         if L < self.ng_min + 1:
             return None, -1
@@ -101,6 +104,8 @@ class NgramIndex:
         for pos in reversed(cands[-self.max_candidates:]):
             if pos >= L:                       # the trailing gram itself
                 continue
+            if max_pos is not None and pos >= max_pos:
+                continue                       # no prompt continuation to copy
             ext = 0                            # longest backward extension wins,
             while (ext < max_ext               # most recent wins ties
                    and pos - self.ng_min - 1 - ext >= 0

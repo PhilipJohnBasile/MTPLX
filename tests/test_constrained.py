@@ -613,3 +613,34 @@ def test_public_mtplx_stats_expose_constraint_counters():
     generated = {"stats": {key: 1 for key in keys}}
     public = _public_mtplx_stats(generated)
     assert keys <= set(public)
+
+
+def test_masked_row_through_real_sparse_topk_sampler():
+    # Grammar masks must survive the PRODUCT sampler path (temp 0.6,
+    # top_p 0.95, top_k 20 — the sparse top-k lane), not only argmax:
+    # -inf entries may never be sampled, and every legal token must stay
+    # reachable once the mask removes the illegal mass, because top-k
+    # selection runs on the MASKED row (mask-then-shape).
+    import mlx.core as mx
+    import numpy as np
+
+    from mtplx.generation import _sample_from_logits
+    from mtplx.sampling import SamplerConfig
+
+    vocab = 512
+    legal = {3: 2.0, 17: 1.8, 400: 1.6, 401: 1.4}
+    row = np.full(vocab, -np.inf, dtype=np.float32)
+    for token, logit in legal.items():
+        row[token] = logit
+
+    sampled = SamplerConfig(temperature=0.6, top_p=0.95, top_k=20)
+    rng = np.random.default_rng(7)
+    draws = {
+        _sample_from_logits(mx.array(row), sampled, rng)[0] for _ in range(400)
+    }
+    assert draws <= set(legal), draws
+    assert draws == set(legal), draws  # comparable masses: all four reachable
+
+    greedy = SamplerConfig(temperature=0.0, top_p=1.0, top_k=0)
+    token, _ = _sample_from_logits(mx.array(row), greedy, rng)
+    assert token == 3

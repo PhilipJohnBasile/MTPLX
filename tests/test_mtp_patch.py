@@ -380,3 +380,75 @@ def test_mtp_contract_detects_prequantized_switch_moe_sidecar() -> None:
     assert contract.mtp_prequantized is True
     assert contract.mtp_quant_policy == "all"
     assert contract.mtp_quant_bits == 4
+
+
+class _GeomArray:
+    def __init__(self, shape: tuple[int, ...]):
+        self.shape = shape
+
+
+def _geometry_weights(*, packed_cols: int, scale_groups: int) -> dict:
+    return {
+        "layers.0.mtp.fc.weight": _GeomArray((4096, packed_cols)),
+        "layers.0.mtp.fc.scales": _GeomArray((4096, scale_groups)),
+        "layers.0.mtp.fc.biases": _GeomArray((4096, scale_groups)),
+    }
+
+
+def _geometry_contract(bits: int, group_size: int) -> MTPContract:
+    return MTPContract(
+        mtp_quant_bits=bits,
+        mtp_quant_group_size=group_size,
+        mtp_prequantized=True,
+    )
+
+
+def test_prequantized_5bit_geometry_preserves_correct_declared_group_size() -> None:
+    # Issue #182 / PR #183 (Jonathangadeaharder): 640 uint32 words hold
+    # 640 * 32 / 5 = 4096 five-bit values. Floor division (32 // 5 = 6)
+    # undercounted to 3840 and overwrote the correct declared group size 64
+    # with an invalid 60, making the artifact unloadable.
+    contract = _geometry_contract(5, 64)
+    weights = _geometry_weights(packed_cols=640, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_5bit_geometry_heals_wrong_declared_group_size() -> None:
+    contract = _geometry_contract(5, 32)
+    weights = _geometry_weights(packed_cols=640, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_3bit_geometry_infers_exact_group_size() -> None:
+    # 384 words * 32 bits / 3 = 4096 values; groups of 64 -> 64 scale groups.
+    contract = _geometry_contract(3, 32)
+    weights = _geometry_weights(packed_cols=384, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_6bit_geometry_infers_exact_group_size() -> None:
+    # 768 words * 32 bits / 6 = 4096 values; groups of 64 -> 64 scale groups.
+    contract = _geometry_contract(6, 32)
+    weights = _geometry_weights(packed_cols=768, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_8bit_divisor_geometry_unchanged() -> None:
+    # Divisor widths keep the original arithmetic: 1024 words * 4/word = 4096.
+    contract = _geometry_contract(8, 32)
+    weights = _geometry_weights(packed_cols=1024, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64
+
+
+def test_prequantized_nondivisor_padded_geometry_keeps_declared_contract() -> None:
+    # 641 words * 32 = 20512 bits does not divide by 5: padded/ambiguous rows
+    # must be skipped rather than inferred, leaving the declared size alone.
+    contract = _geometry_contract(5, 64)
+    weights = _geometry_weights(packed_cols=641, scale_groups=64)
+    corrected = _contract_with_prequantized_tensor_geometry(contract, weights)
+    assert corrected.mtp_quant_group_size == 64

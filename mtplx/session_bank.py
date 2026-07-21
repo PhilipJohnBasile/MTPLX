@@ -12,6 +12,7 @@ import hashlib
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
@@ -340,7 +341,10 @@ class SessionBank:
         self.last_miss_reason: str | None = None
         self.last_put_nbytes: int = 0
         self.last_put_skipped_oversized_snapshot: bool = False
-        self.eviction_log: list[dict[str, Any]] = []
+        # Bounded: appended on every eviction/skip for the daemon's lifetime;
+        # health snapshots only ever read the newest entries, so an unbounded
+        # list is pure retention on long-running agent servers.
+        self.eviction_log: deque[dict[str, Any]] = deque(maxlen=256)
         self.cold_tier = cold_tier
         # Optional idle-lane dispatcher for SSD cold-tier enqueues. Post-#169
         # put_entry encodes the full-KV payload at enqueue time, so calling it
@@ -1298,7 +1302,7 @@ class SessionBank:
                 }
                 for entry in sorted(self._entries.values(), key=lambda item: item.prefix_len)
             ],
-            "eviction_log": list(self.eviction_log[-16:]),
+            "eviction_log": list(self.eviction_log)[-16:],
         }
 
     def _enqueue_cold_entry(self, entry: SessionBankEntry) -> None:

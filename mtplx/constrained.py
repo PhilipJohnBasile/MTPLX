@@ -427,7 +427,8 @@ class GrammarConstraint:
 
 _GRAMMAR_CACHE: OrderedDict[str, str] = OrderedDict()
 _GRAMMAR_CACHE_MAX = 64
-_TOKENIZER_CACHE: dict[tuple[int, int], tuple[Any, Any]] = {}
+_TOKENIZER_CACHE: OrderedDict[tuple[int, int], tuple[Any, Any]] = OrderedDict()
+_TOKENIZER_CACHE_MAX = 4
 _CACHE_LOCK = threading.Lock()
 
 
@@ -488,8 +489,11 @@ def _cached_ll_tokenizer(tokenizer: Any, n_vocab: int) -> Any:
     with _CACHE_LOCK:
         entry = _TOKENIZER_CACHE.get(key)
         if entry is not None and entry[0] is tokenizer:
+            _TOKENIZER_CACHE.move_to_end(key)
             return entry[1]
     ll_tokenizer = _llg_hf.from_tokenizer(tokenizer, n_vocab=int(n_vocab))
     with _CACHE_LOCK:
         _TOKENIZER_CACHE[key] = (tokenizer, ll_tokenizer)
+        while len(_TOKENIZER_CACHE) > _TOKENIZER_CACHE_MAX:
+            _TOKENIZER_CACHE.popitem(last=False)
     return ll_tokenizer

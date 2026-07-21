@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1828,6 +1829,22 @@ class _temporary_env:
 
 
 def cmd_doctor(args: Any) -> int:
+    # --json promises machine-parseable stdout. Probes import third-party
+    # packages whose lazy loaders print() import errors straight to stdout
+    # (huggingface_hub does, and a split/partially broken install makes it
+    # certain), which used to prefix the JSON document with prose and break
+    # every consumer. Build the whole report with stdout routed to stderr,
+    # then emit only the document.
+    if getattr(args, "json", False):
+        with contextlib.redirect_stdout(sys.stderr):
+            report = _build_doctor_report(args)
+        _print(report)
+        return 0
+    report = _build_doctor_report(args)
+    return _render_doctor_report(args, report)
+
+
+def _build_doctor_report(args: Any) -> dict[str, Any]:
     env = collect_environment(args.project_root).to_dict()
     from mtplx.hf_loader import hf_cache_report
     from mtplx.thermal import detect_thermal_control
@@ -1886,9 +1903,11 @@ def cmd_doctor(args: Any) -> int:
             output_dir=getattr(args, "output_dir", None),
             include_paths=bool(getattr(args, "include_paths", False)),
         )
-    if getattr(args, "json", False):
-        _print(report)
-    elif getattr(args, "summary", False):
+    return report
+
+
+def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
+    if getattr(args, "summary", False):
         diagnostics = report["diagnostics"]
         print(f"MTPLX doctor: {diagnostics['overall']}")
         for check in diagnostics["checks"]:

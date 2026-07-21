@@ -7,7 +7,7 @@ optimized runtime can tighten the same contracts after the MTP-1 gates pass.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
@@ -24,6 +24,7 @@ import numpy as np
 
 from .adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from .attention_context import attention_phase
+from .progress_heartbeat import tick as _owner_progress_tick
 from .cache_state import (
     detach_array_leaf,
     detach_cache_state,
@@ -53,6 +54,7 @@ from .graphbank import (
 )
 from .native_mlp import set_native_mlp_context
 from .loop_guard import LoopGuard, loop_guard_config_from_env
+from .thinking_guard import ThinkingGuard, ThinkingGuardConfig
 from .profiles import resolve_long_context_mtp_depth
 from .runtime import MTPLXRuntime
 from .sampling import (
@@ -138,6 +140,9 @@ def _eval(*values: Any, _caller_depth: int = 1) -> None:
     audit_path = os.environ.get("MTPLX_EVAL_AUDIT")
     if not audit_path:
         mx.eval(*values)
+        # Every settled engine forward (prefill chunk, verify, AR step) proves
+        # the model owner is alive; the stream stall watchdog compares readings.
+        _owner_progress_tick()
         return
 
     try:
@@ -146,6 +151,7 @@ def _eval(*values: Any, _caller_depth: int = 1) -> None:
         caller = None
     started = time.perf_counter()
     mx.eval(*values)
+    _owner_progress_tick()
     elapsed_s = time.perf_counter() - started
     entry = {
         "elapsed_s": elapsed_s,
@@ -1606,6 +1612,7 @@ class GenerationStats:
     repetition_stop_trimmed_tokens: int = 0
     repetition_stop_raw_tokens: int = 0
     loop_guard: dict[str, object] = field(default_factory=dict)
+    thinking_guard: dict[str, object] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -4417,6 +4424,7 @@ def generate_ar(
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     repetition_stop: bool = False,
     loop_guard: bool = False,
+    thinking_guard: ThinkingGuardConfig | None = None,
     constraint: Any | None = None,
 ) -> GenerationOutput:
     if getattr(rt, "backend_id", None) == "gemma4_assistant":
@@ -4511,6 +4519,32 @@ def generate_ar(
         bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
     )
     _loop_guard = LoopGuard(_loop_guard_config) if _loop_guard_config.enabled else None
+    _thinking_guard = (
+        ThinkingGuard(thinking_guard)
+        if thinking_guard is not None and thinking_guard.enabled
+        else None
+    )
+
+    def _ar_steer_overlay(working: Sequence[int]) -> dict[int, float] | None:
+        merged = (
+            _loop_guard.penalties_for(working)
+            if _loop_guard is not None and _loop_guard.armed
+            else None
+        )
+        forced = (
+            _thinking_guard.overlay_for(working)
+            if _thinking_guard is not None and _thinking_guard.steering_active
+            else None
+        )
+        if not forced:
+            return merged
+        if not merged:
+            return forced
+        combined = dict(merged)
+        for token_id, value in forced.items():
+            combined[token_id] = combined.get(token_id, 0.0) + value
+        return combined
+
     target_decode_time = 0.0
     target_forward_graph_time = 0.0
     target_eval_time = 0.0
@@ -4612,6 +4646,23 @@ def generate_ar(
                         },
                     }
                 )
+        if _thinking_guard is not None:
+            _tg_transition = _thinking_guard.observe(tokens)
+            if _tg_transition is not None:
+                events.append(
+                    {
+                        "step": step,
+                        "thinking_guard": {
+                            "transition": _tg_transition,
+                            "completion_tokens": len(tokens),
+                            **_thinking_guard.summary(),
+                        },
+                    }
+                )
+        _steer_active = (
+            (_loop_guard is not None and _loop_guard.armed)
+            or (_thinking_guard is not None and _thinking_guard.steering_active)
+        )
         logits_row = logits[0]
         if constraint is not None:
             # Masking precedes every shaping step in _sample_from_logits, so
@@ -4625,11 +4676,7 @@ def generate_ar(
             token_counts=Counter(tokens)
             if (sampler.presence_penalty or sampler.frequency_penalty)
             else None,
-            penalty_overlay=(
-                _loop_guard.penalties_for(tokens)
-                if _loop_guard is not None and _loop_guard.armed
-                else None
-            ),
+            penalty_overlay=(_ar_steer_overlay(tokens) if _steer_active else None),
         )
         tokens.append(token)
         emit_token(token)
@@ -4729,6 +4776,9 @@ def generate_ar(
             else len(tokens) + repetition_result.repeated_tokens
         ),
         loop_guard=(_loop_guard.summary() if _loop_guard is not None else {}),
+        thinking_guard=(
+            _thinking_guard.summary() if _thinking_guard is not None else {}
+        ),
         decode_trace_path=str(trace.path) if trace.path is not None else None,
         decode_trace_run_id=trace.run_id if trace.enabled else None,
         constraint_active=constraint is not None,
@@ -5482,6 +5532,7 @@ def generate_mtpk(
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     repetition_stop: bool = False,
     loop_guard: bool = False,
+    thinking_guard: ThinkingGuardConfig | None = None,
     vision_splice: Any | None = None,
     constraint: Any | None = None,
 ) -> GenerationOutput:
@@ -5787,6 +5838,36 @@ def generate_mtpk(
         bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
     )
     _loop_guard = LoopGuard(_loop_guard_config) if _loop_guard_config.enabled else None
+    # Thinking Guard: surfaced reasoning-token budget (mtplx/thinking_guard.py).
+    # Below budget = zero distribution impact; at budget the guard force-closes
+    # the reasoning segment through the same target-side overlay slot the Loop
+    # Guard uses (drafts stay untouched; rejections correct exactly).
+    _thinking_guard = (
+        ThinkingGuard(thinking_guard)
+        if thinking_guard is not None and thinking_guard.enabled
+        else None
+    )
+
+    def _steer_overlay(working: Sequence[int]) -> dict[int, float] | None:
+        merged = (
+            _loop_guard.penalties_for(working)
+            if _loop_guard is not None and _loop_guard.armed
+            else None
+        )
+        forced = (
+            _thinking_guard.overlay_for(working)
+            if _thinking_guard is not None and _thinking_guard.steering_active
+            else None
+        )
+        if not forced:
+            return merged
+        if not merged:
+            return forced
+        combined = dict(merged)
+        for token, value in forced.items():
+            combined[token] = combined.get(token, 0.0) + value
+        return combined
+
     events: list[dict] = []
     record_events = not _env_truthy("MTPLX_DROP_EVENTS")
     append_event = events.append if record_events else (lambda _event: None)
@@ -6486,7 +6567,23 @@ def generate_mtpk(
                         },
                     }
                 )
+        if _thinking_guard is not None:
+            _tg_transition = _thinking_guard.observe(tokens)
+            if _tg_transition is not None:
+                append_event(
+                    {
+                        "step": step,
+                        "thinking_guard": {
+                            "transition": _tg_transition,
+                            "completion_tokens": len(tokens),
+                            **_thinking_guard.summary(),
+                        },
+                    }
+                )
         _guard_armed = _loop_guard is not None and _loop_guard.armed
+        _steer_active = _guard_armed or (
+            _thinking_guard is not None and _thinking_guard.steering_active
+        )
         if constraint is not None:
             # Sync the matcher through the previous cycle's committed window
             # BEFORE masking this cycle's primary — a stale matcher would
@@ -6515,7 +6612,7 @@ def generate_mtpk(
                 rng,
                 token_counts=Counter(tokens) if _penalties_active else None,
                 penalty_overlay=(
-                    _loop_guard.penalties_for(tokens) if _guard_armed else None
+                    _steer_overlay(tokens) if _steer_active else None
                 ),
             )
             tokens.append(primary)
@@ -6624,11 +6721,15 @@ def generate_mtpk(
         if ccopy_active and cycle_depth >= 1 and len(tokens) >= ccopy_suspend_until:
             _cc_hist = prompt_ids + tokens
             ccopy_probes += 1
-            _cc_pos, _cc_ext = ccopy_index.find(_cc_hist)
+            # Prompt-only contract: candidates whose continuation starts at the
+            # prompt edge are dropped inside find() (the best VALID match wins),
+            # and the block is sliced from the prompt and capped at its
+            # boundary — never from already-generated output (self-repetition).
+            _cc_pos, _cc_ext = ccopy_index.find(_cc_hist, max_pos=len(prompt_ids))
             _cc_block: list[int] = []
             if _cc_pos is not None and _cc_ext >= ccopy_min_ext:
                 _cc_klen = block_for_ext(_cc_ext, ccopy_k)
-                _cc_block = [int(t) for t in _cc_hist[_cc_pos:_cc_pos + _cc_klen]]
+                _cc_block = [int(t) for t in prompt_ids[_cc_pos:_cc_pos + _cc_klen]]
                 _cc_block = _cc_block[: max(1, max_tokens - len(tokens))]
                 if constraint is not None:
                     # Truncate the copy proposal at the first grammar-illegal
@@ -6702,6 +6803,17 @@ def generate_mtpk(
                                 rng,
                             )
                         )
+                        break
+                # An accepted stop token ends the response: never accept, commit,
+                # or select state past it (mirrors the MTP acceptance loop's stop
+                # break). Every downstream boundary — capture-commit trim, the
+                # logits/hidden row, MTP history, and the emitted tokens — derives
+                # from _cc_nacc, so capping it here keeps them all at the stop. A
+                # rejection past the stop is void: the response is already over.
+                for _cc_i in range(_cc_nacc):
+                    if _is_stop(int(_cc_block[_cc_i]), stop_token_ids):
+                        _cc_nacc = _cc_i + 1
+                        _cc_correction = None
                         break
                 _cc_m = _cc_nacc + 1
                 _cc_ok = True
@@ -7432,15 +7544,16 @@ def generate_mtpk(
             )
             target_distribution_logits = verify_logits[:, :target_distribution_rows, :]
             started_distribution = time.perf_counter()
-            if _guard_armed:
-                # Loop Guard on the target_prefix lane: the accepted token is
-                # always the pre-sampled target id, so the steering must land
-                # on the pre-sample logits. Row r conditions on the committed
-                # tokens plus the in-block draft prefix before position r.
+            if _steer_active:
+                # Steering on the target_prefix lane (Loop Guard + Thinking
+                # Guard): the accepted token is always the pre-sampled target
+                # id, so overlays must land on the pre-sample logits. Row r
+                # conditions on the committed tokens plus the in-block draft
+                # prefix before position r.
                 _guarded_rows = []
                 for _row_index in range(int(target_distribution_rows)):
                     _row = target_distribution_logits[:, _row_index, :].reshape(-1)
-                    _row_overlay = _loop_guard.penalties_for(
+                    _row_overlay = _steer_overlay(
                         [*tokens, *draft_tokens[:_row_index]]
                     )
                     if _row_overlay:
@@ -7500,7 +7613,7 @@ def generate_mtpk(
             defer_verify_hidden_eval
             and sampler.temperature > 0
             and not lazy_target_distributions
-            and not _guard_armed
+            and not _steer_active
             and (
                 _batch_target_arrays_enabled() or _batch_target_distributions_enabled()
             )
@@ -7609,7 +7722,7 @@ def generate_mtpk(
             sampler.temperature > 0
             and not target_distribution_precomputed
             and not lazy_target_distributions
-            and not _guard_armed
+            and not _steer_active
         ):
             target_distribution_rows = min(
                 int(verify_logits.shape[1]),
@@ -7646,11 +7759,12 @@ def generate_mtpk(
             # per-row counts.
             target_prefix_tokens = None
             target_distribution_batch = None
-        elif _guard_armed:
-            # Loop Guard armed: null only the batch so p/q rows rebuild per
-            # position with the guard overlay. target_prefix_tokens stays —
-            # the target_prefix pre-sample above already carried the overlay
-            # (and its lane has no draft distributions to fall back on).
+        elif _steer_active:
+            # Steering active (Loop Guard armed and/or Thinking Guard forcing):
+            # null only the batch so p/q rows rebuild per position with the
+            # merged overlay. target_prefix_tokens stays — the target_prefix
+            # pre-sample above already carried the overlay (and its lane has
+            # no draft distributions to fall back on).
             target_distribution_batch = None
         # Grammar clamp (#186 phase 3): drafts are proposed unmasked, so the
         # committed window must stop at the grammar's legal prefix. One
@@ -7663,8 +7777,8 @@ def generate_mtpk(
         )
         for depth_index, draft_token in enumerate(draft_tokens):
             target_logits_for_draft = verify_logits[:, depth_index, :]
-            if _guard_armed:
-                _row_guard_overlay = _loop_guard.penalties_for(
+            if _steer_active:
+                _row_guard_overlay = _steer_overlay(
                     [*tokens, *draft_tokens[:depth_index]]
                 )
             else:
@@ -7734,7 +7848,7 @@ def generate_mtpk(
                     target_distributions[depth_index]
                     if target_distributions is not None
                     and not _penalties_active
-                    and not _guard_armed
+                    and not _steer_active
                     else None
                 )
                 if target_p is None:
@@ -7782,8 +7896,15 @@ def generate_mtpk(
             ):
                 # The model accepted a draft the grammar forbids here; reject
                 # it and let the next cycle's masked primary resample the
-                # position from the constrained distribution (which keeps the
-                # output law exactly the masked target law).
+                # position from the constrained distribution. Under pure
+                # temperature sampling the committed law is exactly the
+                # masked target law (Leviathan-Chen telescopes through the
+                # drop-and-resample). Under top-k/top-p the two coincide
+                # except in sub-top-k tail mass: draft-path positions commit
+                # from restrict-then-renormalize of the SHAPED unmasked law,
+                # masked-primary positions from shaping of the MASKED row.
+                # Every committed token is grammar-legal either way; a
+                # verify-row-masked variant would close the tail gap.
                 accepted_now = False
                 accept_prob = 0.0
                 event["drafts"][depth_index]["constraint_clamped"] = True
@@ -8007,7 +8128,7 @@ def generate_mtpk(
                     target_distributions is not None
                     and not lazy_bonus_verify
                     and not _penalties_active
-                    and not _guard_armed
+                    and not _steer_active
                     and len(target_distributions) > len(draft_tokens)
                 ):
                     bonus = sample_from_distribution(
@@ -8024,8 +8145,8 @@ def generate_mtpk(
                         rng,
                         token_counts=Counter(tokens) if _penalties_active else None,
                         penalty_overlay=(
-                            _loop_guard.penalties_for(tokens)
-                            if _guard_armed
+                            _steer_overlay(tokens)
+                            if _steer_active
                             else None
                         ),
                     )
@@ -8585,6 +8706,9 @@ def generate_mtpk(
             else len(tokens) + repetition_result.repeated_tokens
         ),
         loop_guard=(_loop_guard.summary() if _loop_guard is not None else {}),
+        thinking_guard=(
+            _thinking_guard.summary() if _thinking_guard is not None else {}
+        ),
         events=events,
     )
     _attach_runtime_diagnostics(stats, rt, counter_start)

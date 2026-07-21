@@ -403,3 +403,110 @@ def test_public_mtplx_stats_expose_context_copy_counters():
     generated = {"stats": {key: 1 for key in keys}}
     public = _public_mtplx_stats(generated)
     assert keys <= set(public)
+
+
+# --- stop-token boundary (copy round must never accept/commit past a stop) ---
+
+
+def _mtpk_stop(
+    model: _ScriptedModel,
+    prompt: list[int],
+    max_tokens: int,
+    *,
+    stop: set[int],
+    temperature: float = 0.0,
+):
+    return generate_mtpk(
+        _runtime(model),
+        prompt,
+        max_tokens=max_tokens,
+        sampler=SamplerConfig(temperature=temperature, top_p=1.0, top_k=0),
+        speculative_depth=1,
+        seed=0,
+        stop_token_ids=stop,
+        verify_strategy="capture_commit",
+        capture_final_state=True,
+    )
+
+
+# Two full mod-8 cycles: every rotation is a prompt gram, so the generated
+# tail re-enters the prompt immediately and the copy block proposed from the
+# second cycle contains the stop token (5) mid-block.
+_TWO_CYCLE_PROMPT = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0]
+
+
+def _assert_stop_boundary(out) -> None:
+    # The copy lane must actually have fired, or this test proves nothing.
+    assert out.stats.context_copy_rounds >= 1
+    # Emitted tokens end exactly at the first stop token.
+    assert list(out.tokens) == [1, 2, 3, 4, 5]
+    assert out.finish_reason == "stop"
+    final = out.final_state
+    assert final is not None
+    assert final.generated_token_ids == tuple(out.tokens)
+    assert final.safe_to_commit is True
+    # Cold-replay contract: the stored final logits row must be the model's
+    # next-token distribution AFTER the stop token (next_map(5) == 6), not a
+    # row selected past the stop from the rest of the accepted copy block.
+    next_after_stop = int(mx.argmax(final.final_logits[0]).item())
+    assert next_after_stop == 6
+    # Acceptance counters must not count tokens past the stop: the block from
+    # the second cycle is [2, 3, 4, 5, 6, 7, 0] and only [2, 3, 4, 5] commits.
+    assert out.stats.context_copy_accepted_tokens <= 4
+
+
+def test_greedy_copy_round_stops_at_accepted_stop_token(monkeypatch):
+    _clean_env(monkeypatch)
+    out = _mtpk_stop(
+        _ScriptedModel(8, lambda t: t + 1), _TWO_CYCLE_PROMPT, 80, stop={5}
+    )
+    _assert_stop_boundary(out)
+
+
+def test_sampled_copy_round_stops_at_accepted_stop_token(monkeypatch):
+    _clean_env(monkeypatch)
+    # Peaked one-hot logits: probability-ratio acceptance approaches 1 for the
+    # copied token, so the sampled branch walks the same copy block as greedy
+    # and must cap acceptance at the stop the same way.
+    out = _mtpk_stop(
+        _ScriptedModel(8, lambda t: t + 1),
+        _TWO_CYCLE_PROMPT,
+        80,
+        stop={5},
+        temperature=0.6,
+    )
+    _assert_stop_boundary(out)
+
+
+# --- prompt-boundary contract (copy blocks never slice generated output) ---
+
+
+def test_match_ending_at_prompt_edge_never_fires_a_self_copy_round(monkeypatch):
+    _clean_env(monkeypatch)
+    # The only prompt gram is (0..5) whose continuation starts exactly at the
+    # prompt edge: there is no prompt continuation to copy. Firing anyway
+    # (the pre-fix behavior) would slice the block out of the model's own
+    # generated output — exactly the self-repetition the module contract
+    # excludes.
+    out = _mtpk(_ScriptedModel(8, lambda t: t + 1), [0, 1, 2, 3, 4, 5], max_tokens=40)
+    assert out.stats.context_copy_probes > 0
+    assert out.stats.context_copy_rounds == 0
+    assert out.stats.context_copy_drafted_tokens == 0
+
+
+def test_copy_blocks_are_capped_at_the_prompt_boundary(monkeypatch):
+    _clean_env(monkeypatch)
+    out = _mtpk(_ScriptedModel(8, lambda t: t + 1), _TWO_CYCLE_PROMPT, max_tokens=60)
+    stats = out.stats
+    assert stats.context_copy_rounds >= 1
+    copy_events = [
+        event["context_copy"]
+        for event in stats.events
+        if isinstance(event, dict) and "context_copy" in event
+    ]
+    blocks = [event["block"] for event in copy_events if "block" in event]
+    assert blocks, "copy rounds fired but recorded no block events"
+    # Continuation positions in this prompt leave at most 7 prompt tokens; the
+    # confidence ladder alone would propose 8+ (up to 24), so any block longer
+    # than the prompt remainder proves a slice into generated output.
+    assert max(blocks) <= 7
