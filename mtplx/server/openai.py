@@ -137,6 +137,7 @@ from mtplx.server.omlx_bridge import (
     extract_thinking as omlx_extract_thinking,
     extract_tool_calls_with_thinking as omlx_extract_tool_calls_with_thinking,
     normalize_messages_for_template as omlx_normalize_messages_for_template,
+    parse_tool_calls as omlx_parse_tool_calls,
 )
 from mtplx.server_urls import bind_label, is_wildcard_bind, local_url_for_bind
 
@@ -6868,6 +6869,174 @@ class _ToolCallStreamParser:
         raise NotImplementedError
 
 
+class _SuffixedNativeToolCallStreamParser(_ToolCallStreamParser):
+    """Buffer and translate Hy3's native suffix-token tool protocol."""
+
+    dialect = "suffixed_native"
+    _OPEN_RE = re.compile(r"^<tool_calls?:[A-Za-z_][\w.-]*>", re.IGNORECASE)
+    _WRAPPER_RE = re.compile(
+        r"^<tool_calls(?P<suffix>:[A-Za-z_][\w.-]*)>",
+        re.IGNORECASE,
+    )
+
+    def __init__(
+        self,
+        *,
+        tools: list[dict[str, Any]],
+        tokenizer: Any | None,
+        argument_chunk_chars: int,
+    ) -> None:
+        self._tools = tools
+        self._tokenizer = tokenizer
+        self._argument_chunk_chars = max(1, int(argument_chunk_chars))
+        self._raw = ""
+        self._done = False
+        self._tool_calls: list[dict[str, Any]] | None = None
+        self._fallback_reason: str | None = None
+        self._remaining_text = ""
+
+    @property
+    def tool_calls(self) -> list[dict[str, Any]] | None:
+        return self._tool_calls
+
+    @property
+    def fallback_reason(self) -> str | None:
+        return self._fallback_reason
+
+    @property
+    def raw_text(self) -> str:
+        return self._raw
+
+    @property
+    def started(self) -> bool:
+        return bool(self._OPEN_RE.match(self._raw.lstrip()))
+
+    @property
+    def remaining_text(self) -> str:
+        return self._remaining_text
+
+    def _complete_span(self, *, final: bool) -> tuple[str, str] | None:
+        stripped = self._raw.lstrip()
+        wrapper = self._WRAPPER_RE.match(stripped)
+        if wrapper is not None:
+            suffix = wrapper.group("suffix")
+            close = f"</tool_calls{suffix}>"
+            end = _find_casefold(stripped, close, wrapper.end())
+            if end < 0:
+                if final:
+                    self._fallback_reason = "unclosed suffixed tool_calls block"
+                return None
+            end += len(close)
+            return stripped[:end], stripped[end:]
+
+        call = re.match(
+            r"^<tool_call(?P<suffix>:[A-Za-z_][\w.-]*)>",
+            stripped,
+            re.IGNORECASE,
+        )
+        if call is None:
+            if final:
+                self._fallback_reason = "invalid suffixed tool_call opener"
+            return None
+        close = f"</tool_call{call.group('suffix')}>"
+        end = _find_casefold(stripped, close, call.end())
+        if end < 0:
+            if final:
+                self._fallback_reason = "unclosed suffixed tool_call block"
+            return None
+        end += len(close)
+        return stripped[:end], stripped[end:]
+
+    def _finish_complete(self, complete: str, remaining: str) -> list[dict[str, Any]]:
+        extraction = omlx_parse_tool_calls(
+            complete,
+            self._tokenizer,
+            self._tools,
+        )
+        if not extraction.tool_calls:
+            self._fallback_reason = (
+                extraction.malformed_reason
+                or "unrecognized suffixed native tool call"
+            )
+            return []
+
+        normalized_calls: list[dict[str, Any]] = []
+        try:
+            for index, call in enumerate(extraction.tool_calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                if not isinstance(function, dict):
+                    raise _tool_protocol_error(
+                        f"suffixed tool_call[{index}] has no function"
+                    )
+                canonical_name = _canonical_tool_name_for_model_output(
+                    str(function.get("name") or ""),
+                    self._tools,
+                )
+                if canonical_name is None:
+                    raise _tool_protocol_error(
+                        f"unknown tool '{function.get('name') or ''}'"
+                    )
+                arguments = _json_object_value(
+                    function.get("arguments"),
+                    context=f"tool_call[{index}]",
+                )
+                arguments = _normalize_tool_arguments_for_schema(
+                    tool_name=canonical_name,
+                    arguments=arguments,
+                    tools=self._tools,
+                )
+                _validate_tool_arguments_for_schema(
+                    tool_name=canonical_name,
+                    arguments=arguments,
+                    tools=self._tools,
+                    context=f"tool_call[{index}]",
+                )
+                normalized_calls.append(
+                    {
+                        "id": str(call.get("id") or f"call_{uuid.uuid4().hex[:24]}"),
+                        "type": "function",
+                        "function": {
+                            "name": canonical_name,
+                            "arguments": _json_object_string(
+                                arguments,
+                                context=f"tool_call[{index}]",
+                            ),
+                        },
+                    }
+                )
+        except HTTPException as exc:
+            self._fallback_reason = _tool_protocol_reason(exc)
+            return []
+
+        self._tool_calls = normalized_calls
+        self._remaining_text = remaining
+        self._done = True
+        return list(
+            _stream_tool_call_deltas(
+                normalized_calls,
+                argument_chunk_chars=self._argument_chunk_chars,
+            )
+        )
+
+    def feed(self, text: str) -> list[dict[str, Any]]:
+        if self._done or self._fallback_reason:
+            self._raw += text
+            return []
+        self._raw += text
+        span = self._complete_span(final=False)
+        if span is None:
+            return []
+        return self._finish_complete(*span)
+
+    def finish(self) -> list[dict[str, Any]]:
+        if self._done or self._fallback_reason:
+            return []
+        span = self._complete_span(final=True)
+        if span is None:
+            return []
+        return self._finish_complete(*span)
+
+
 class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
     """Incrementally translate Qwen XML tool calls into OpenAI deltas.
 
@@ -7630,11 +7799,24 @@ class _ToolAwareContentStreamTranslator:
 
     def _tool_deltas_if_complete(self, *, final: bool) -> list[dict[str, Any]]:
         if self._tool_parser is None:
-            self._tool_parser = _QwenXMLToolCallStreamParser(
-                tools=self._tools,
-                call_index=len(self.tool_calls or []),
-                repair_unclosed_complete=self._repair_unclosed_complete,
-            )
+            stripped_pending = self._pending.lstrip()
+            lowered_pending = stripped_pending.lower()
+            if lowered_pending in {"<tool_call", "<tool_calls"} and not final:
+                return []
+            if lowered_pending.startswith(
+                "<tool_call:"
+            ) or lowered_pending.startswith("<tool_calls:"):
+                self._tool_parser = _SuffixedNativeToolCallStreamParser(
+                    tools=self._tools,
+                    tokenizer=self._tokenizer,
+                    argument_chunk_chars=self._argument_chunk_chars,
+                )
+            else:
+                self._tool_parser = _QwenXMLToolCallStreamParser(
+                    tools=self._tools,
+                    call_index=len(self.tool_calls or []),
+                    repair_unclosed_complete=self._repair_unclosed_complete,
+                )
             self.tool_parser_dialect = self._tool_parser.dialect
         chunk = self._pending
         self._pending = ""

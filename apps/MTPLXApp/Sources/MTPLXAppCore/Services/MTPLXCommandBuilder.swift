@@ -1016,6 +1016,7 @@ private enum ModelLaunchFamily {
     case qwen35_9BOptimizedSpeed
     case gemma4
     case step
+    case hy3
     case qwenDefault
 
     static func detect(_ model: String) -> ModelLaunchFamily {
@@ -1052,6 +1053,10 @@ private enum ModelLaunchFamily {
             || normalized.contains("qwen36-27b-optimized-quality")
         {
             return .qwen36_27BOptimizedQuality
+        }
+        // Tencent Hy3 295B MoE (hy_v3): dynamic 2-bit MTPLX artifact.
+        if normalized.contains("hy3-295b") || normalized.contains("hunyuan-3") {
+            return .hy3
         }
         if normalized.contains("step3.7")
             || normalized.contains("step-3.7")
@@ -1198,6 +1203,8 @@ private struct TargetPreset {
             return applyingGemma4Defaults()
         case .step:
             return applyingStepDefaults(processEnvironment: processEnvironment)
+        case .hy3:
+            return applyingHy3Defaults()
         }
     }
 
@@ -1270,6 +1277,27 @@ private struct TargetPreset {
         preset.draftTopK = 20
         preset.chatTemplateProfile = "local_qwen36"
         preset.reasoningParser = "qwen3"
+        return preset
+    }
+
+    private func applyingHy3Defaults() -> TargetPreset {
+        var preset = self
+        // Tencent Hy3 official inference settings (generation_config.json):
+        // temperature 0.9, top_p 1.0, top_k off — NOT the Qwen 0.6/0.95/20
+        // coding triple. Depth 1: the model ships a single NextN head and
+        // deeper reuse drafts carry ~20% positional acceptance (pure tax).
+        // Profile stays nil so the runtime contract's recommended profile
+        // (sustained) and the hy_v3 descriptor own the launch defaults.
+        preset.profile = nil
+        preset.depth = 1
+        preset.temperature = 0.9
+        preset.topP = 1.0
+        preset.topK = 0
+        preset.draftTemperature = 0.9
+        preset.draftTopP = 1.0
+        preset.draftTopK = 0
+        preset.chatTemplateProfile = "tokenizer"
+        preset.environment["MTPLX_CHAT_TEMPLATE_PROFILE"] = "tokenizer"
         return preset
     }
 
