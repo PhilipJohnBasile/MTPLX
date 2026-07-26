@@ -174,6 +174,53 @@ class RejectingTinyMTPModel(AcceptingTinyMTPModel):
         )
 
 
+class TargetOnlyRuntime:
+    """A runtime with no MTP head, returning logits ONLY — like Laguna's.
+
+    Mirrors ``_TargetOnlyRuntime`` in test_laguna_fused.py: asking it for hidden
+    states is the bug itself, so it says so loudly rather than quietly handing
+    back something unpackable.
+    """
+
+    def __init__(self, model: TinyModel):
+        self.model = model
+        self.mtp_enabled = False
+        self.model_path = Path("tiny-target-only")
+        self.contract = MTPContract()
+        self.diagnostic_counters: dict[str, int] = {}
+
+    def forward_ar(
+        self,
+        input_ids,
+        cache=None,
+        return_hidden: bool = False,
+        hidden_variant: str | None = None,
+        emit_logits: bool = True,
+        logits_keep: int | None = None,
+        input_embeddings=None,
+    ):
+        assert not return_hidden, (
+            "the warm-restore prefill must not ask a target-only runtime for "
+            "hidden states; its forward_ar returns logits alone"
+        )
+        assert hidden_variant is None, (
+            "hidden_variant must not travel to a target-only runtime: the "
+            "generic runtime forwards it to a model that cannot accept it"
+        )
+        return self.model(
+            input_ids,
+            cache=cache,
+            emit_logits=emit_logits,
+            logits_keep=logits_keep,
+        )
+
+    def make_cache(self):
+        return self.model.make_cache()
+
+    def repage_target_prefill_cache(self, _cache):
+        return False
+
+
 def _runtime(model: TinyModel, *, mtp_enabled: bool = True) -> MTPLXRuntime:
     return MTPLXRuntime(
         model=model,
@@ -193,6 +240,10 @@ def test_contiguous_then_repage_cache_layout_restores_paged_env(monkeypatch):
             events.append(("make_cache", os.environ.get("MTPLX_VLLM_METAL_PAGED_ATTN")))
             return cache
 
+        def repage_target_prefill_cache(self, received_cache):
+            configure(received_cache)
+            return True
+
     def configure(received_cache):
         events.append(("repage", os.environ.get("MTPLX_VLLM_METAL_PAGED_ATTN")))
         assert received_cache is cache
@@ -207,8 +258,9 @@ def test_contiguous_then_repage_cache_layout_restores_paged_env(monkeypatch):
         configure,
     )
 
-    made_cache = _make_target_prefill_cache(Runtime())
-    elapsed = _maybe_repage_target_prefill_cache(made_cache)
+    runtime = Runtime()
+    made_cache = _make_target_prefill_cache(runtime)
+    elapsed = _maybe_repage_target_prefill_cache(runtime, made_cache)
 
     assert elapsed >= 0.0
     assert events == [("make_cache", "0"), ("repage", "1")]
@@ -226,6 +278,10 @@ def test_contiguous_dense_decode_cache_layout_does_not_repage(monkeypatch):
             events.append(("make_cache", os.environ.get("MTPLX_VLLM_METAL_PAGED_ATTN")))
             return cache
 
+        def repage_target_prefill_cache(self, received_cache):
+            configure(received_cache)
+            return True
+
     def configure(_received_cache):
         raise AssertionError("dense decode layout must not repage after prefill")
 
@@ -238,8 +294,9 @@ def test_contiguous_dense_decode_cache_layout_does_not_repage(monkeypatch):
         configure,
     )
 
-    made_cache = _make_target_prefill_cache(Runtime())
-    elapsed = _maybe_repage_target_prefill_cache(made_cache)
+    runtime = Runtime()
+    made_cache = _make_target_prefill_cache(runtime)
+    elapsed = _maybe_repage_target_prefill_cache(runtime, made_cache)
 
     assert elapsed == 0.0
     assert events == [("make_cache", "0")]
@@ -755,6 +812,65 @@ def test_warm_restored_suffix_prefill_is_chunked_and_typed_for_abort(monkeypatch
     assert [event["cached_tokens"] for event in chunk_events] == [3, 3, 3, 3]
     assert [event["new_prefill_tokens"] for event in chunk_events] == [4, 4, 4, 4]
     assert chunk_events[-1]["live_prefill_tok_s"] is not None
+
+
+@pytest.mark.parametrize(
+    ("lane", "fused_max", "suffix_len"),
+    [("fused", 64, 2), ("chunked", 0, 4)],
+)
+def test_warm_restore_never_asks_a_target_only_runtime_for_hidden(
+    monkeypatch, lane, fused_max, suffix_len
+):
+    """Regression for the live serving crash at _prefill_restored_prompt_suffix.
+
+    Every warm restore asked the runtime for hidden states unconditionally, on
+    both lanes. A target-only runtime returns logits alone, so unpacking that
+    into ``(logits, hidden)`` raised ``ValueError: not enough values to unpack
+    (expected 2, got 1)``. The double asserts the request is never made at all
+    — including hidden_variant, which the generic runtime would forward to a
+    model that cannot accept it.
+    """
+
+    monkeypatch.setenv("MTPLX_SMALL_SUFFIX_FUSED_MAX", str(fused_max))
+    monkeypatch.setenv("MTPLX_SUSTAINED_PREFILL", "1")
+    monkeypatch.setenv("MTPLX_PREFILL_CHUNK_SIZE", "2")
+    model = TinyModel()
+    rt = TargetOnlyRuntime(model)
+
+    class Bank:
+        last_miss_reason = None
+
+        def restore(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                entry=SimpleNamespace(prefix_len=3),
+                cache=[],
+                logits=mx.zeros((1, 4), dtype=mx.float32),
+                # An AR turn banks the trunk cache only: no hidden was stored.
+                hidden=None,
+                mtp_history_cache=None,
+                restore_mode="clone",
+            )
+
+    prompt_state = restore_or_prefill_prompt_state(
+        rt,
+        list(range(3 + suffix_len)),
+        # The server hands AR runtimes the committed policy; the chokepoint
+        # guard downgrades it to cycle, and the suffix prefill must honor that.
+        mtp_history_policy="committed",
+        session_bank=Bank(),
+    )
+
+    assert prompt_state.cache_hit is True
+    assert prompt_state.mtp_history_policy == "cycle"
+    assert prompt_state.cached_tokens == 3
+    assert prompt_state.suffix_tokens == suffix_len
+    assert prompt_state.hidden is None
+    assert prompt_state.logits is not None
+    assert not any(call["return_hidden"] for call in model.calls)
+    if lane == "fused":
+        assert rt.diagnostic_counters["restored_suffix_prefill_fused"] == 1
+    else:
+        assert rt.diagnostic_counters["restored_suffix_prefill_chunks"] >= 1
 
 
 def test_restore_prefers_larger_near_gap_over_shorter_exact_prefix(monkeypatch):

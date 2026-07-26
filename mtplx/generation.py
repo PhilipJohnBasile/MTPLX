@@ -641,6 +641,50 @@ def _prefill_cache_only_forward(
     return None
 
 
+def _forward_ar_optional_hidden(
+    rt: MTPLXRuntime,
+    token_array: Any,
+    *,
+    cache: Any,
+    hidden_variant: str | None,
+    emit_logits: bool = True,
+    logits_keep: int | None = None,
+    input_embeddings: Any | None = None,
+) -> tuple[Any, Any]:
+    """`forward_ar` as (logits, hidden), with hidden None on target-only runtimes.
+
+    Only request hidden states from a runtime that can produce them. Target-only
+    AR runtimes (laguna_ar) have no draft head: their forward_ar returns logits
+    alone, so an ungated ``return_hidden=True`` unpacks a lone logits array as
+    ``(logits, hidden)`` and raises "not enough values to unpack (expected 2,
+    got 1)" — the live serving crash in the warm session-restore suffix prefill.
+    `hidden_variant` travels only on the hidden branch for the same reason: the
+    generic runtime forwards it to the model as a kwarg a stock target does not
+    accept. This mirrors the cold prefill path and generate_ar, which both gate
+    return_hidden on rt.mtp_enabled. Callers must treat hidden as optional.
+    """
+
+    if not rt.mtp_enabled:
+        logits = rt.forward_ar(
+            token_array,
+            cache=cache,
+            return_hidden=False,
+            emit_logits=emit_logits,
+            logits_keep=logits_keep,
+            input_embeddings=input_embeddings,
+        )
+        return logits, None
+    return rt.forward_ar(
+        token_array,
+        cache=cache,
+        return_hidden=True,
+        hidden_variant=hidden_variant,
+        emit_logits=emit_logits,
+        logits_keep=logits_keep,
+        input_embeddings=input_embeddings,
+    )
+
+
 def _prefill_chunk_size() -> int:
     override = _PREFILL_CHUNK_SIZE_OVERRIDE.get()
     if override is not None:
@@ -808,13 +852,13 @@ def _make_target_prefill_cache(rt: MTPLXRuntime):
         return rt.make_cache()
 
 
-def _maybe_repage_target_prefill_cache(cache: Any) -> float:
+def _maybe_repage_target_prefill_cache(rt: MTPLXRuntime, cache: Any) -> float:
     if not _contiguous_then_repage_prefill_enabled():
         return 0.0
-    from .cache_state import configure_tail_owned_attention_kv_cache
 
     started = time.perf_counter()
-    configure_tail_owned_attention_kv_cache(cache)
+    if not rt.repage_target_prefill_cache(cache):
+        return 0.0
     _eval_cache_roots(cache)
     return time.perf_counter() - started
 
@@ -1938,8 +1982,15 @@ def _prefill_restored_prompt_suffix(
     cached_tokens = max(0, int(cached_tokens))
     suffix_total = int(len(suffix))
     suffix_done = 0
+    # A committed history needs a draft head to append to. Requiring
+    # rt.mtp_enabled here is the chokepoint that keeps the hidden-only chunk
+    # branch (and every append_history call) off target-only AR runtimes, whose
+    # forward_ar returns logits alone — restore_or_prefill_prompt_state already
+    # downgrades those to the cycle policy, and _append_mtp_history could not
+    # run against them regardless.
     use_committed_mtp = (
-        _mtp_history_uses_committed_cache(mtp_history_policy)
+        rt.mtp_enabled
+        and _mtp_history_uses_committed_cache(mtp_history_policy)
         and restored.mtp_history_cache is not None
     )
     # Vision suffixes: the caller pre-advanced the cursor past pads inside
@@ -2056,16 +2107,19 @@ def _prefill_restored_prompt_suffix(
         fused_embeddings = _suffix_chunk_embeddings(fused_array)
         started = time.perf_counter()
         with attention_phase("prefill"):
-            suffix_logits, suffix_hidden = rt.forward_ar(
+            suffix_logits, suffix_hidden = _forward_ar_optional_hidden(
+                rt,
                 fused_array,
                 cache=restored.cache,
-                return_hidden=True,
                 hidden_variant=base_hidden_variant,
                 emit_logits=True,
                 logits_keep=1 if final_logits_only else None,
                 input_embeddings=fused_embeddings,
             )
-        _eval(suffix_logits, suffix_hidden)
+        if suffix_hidden is None:
+            _eval(suffix_logits)
+        else:
+            _eval(suffix_logits, suffix_hidden)
         chunk_elapsed = time.perf_counter() - started
         target_forward_time += chunk_elapsed
         _runtime_count(rt, "restored_suffix_prefill_fused")
@@ -2073,17 +2127,19 @@ def _prefill_restored_prompt_suffix(
         suffix_done = suffix_total
         emit_chunk(suffix_total, chunk_elapsed, started)
         _check_postcommit_abort(abort_check)
-        if len(suffix) > 1:
+        if len(suffix) > 1 and suffix_hidden is not None:
             append_history(
                 suffix_hidden[:, :-1, :],
                 [int(token) for token in suffix[1:]],
                 window_start=1,
             )
-        target_forward_time += _maybe_repage_target_prefill_cache(restored.cache)
+        target_forward_time += _maybe_repage_target_prefill_cache(
+            rt, restored.cache
+        )
         _check_splice_consumed()
         return (
             suffix_logits[:, -1, :],
-            suffix_hidden[:, -1:, :],
+            suffix_hidden[:, -1:, :] if suffix_hidden is not None else None,
             target_forward_time,
             mtp_history_time,
         )
@@ -2174,26 +2230,29 @@ def _prefill_restored_prompt_suffix(
     final_array = mx.array([[suffix[-1]]])
     final_embeddings = _suffix_chunk_embeddings(final_array)
     with attention_phase("prefill"):
-        suffix_logits, suffix_hidden = rt.forward_ar(
+        suffix_logits, suffix_hidden = _forward_ar_optional_hidden(
+            rt,
             final_array,
             cache=restored.cache,
-            return_hidden=True,
             hidden_variant=base_hidden_variant,
             emit_logits=True,
             logits_keep=1 if final_logits_only else None,
             input_embeddings=final_embeddings,
         )
-    _eval(suffix_logits, suffix_hidden)
+    if suffix_hidden is None:
+        _eval(suffix_logits)
+    else:
+        _eval(suffix_logits, suffix_hidden)
     chunk_elapsed = time.perf_counter() - started
     target_forward_time += chunk_elapsed
-    target_forward_time += _maybe_repage_target_prefill_cache(restored.cache)
+    target_forward_time += _maybe_repage_target_prefill_cache(rt, restored.cache)
     suffix_done = suffix_total
     emit_chunk(1, chunk_elapsed, started)
     _check_postcommit_abort(abort_check)
     _check_splice_consumed()
     return (
         suffix_logits[:, -1, :],
-        suffix_hidden[:, -1:, :],
+        suffix_hidden[:, -1:, :] if suffix_hidden is not None else None,
         target_forward_time,
         mtp_history_time,
     )
@@ -2552,15 +2611,18 @@ def _restore_near_prefix_prompt_state(
         else:
             started = time.perf_counter()
             with attention_phase("prefill"):
-                logits, hidden = rt.forward_ar(
+                logits, hidden = _forward_ar_optional_hidden(
+                    rt,
                     mx.array([[int(prompt_ids[restore_point - 1])]]),
                     cache=cache,
-                    return_hidden=True,
                     hidden_variant=base_hidden_variant,
                     emit_logits=True,
                     logits_keep=1 if _final_logits_prefill_enabled() else None,
                 )
-            _eval(logits, hidden)
+            if hidden is None:
+                _eval(logits)
+            else:
+                _eval(logits, hidden)
             repair_time = time.perf_counter() - started
         _check_postcommit_abort(abort_check)
         restore_kind_base = (
@@ -2616,11 +2678,11 @@ def _restore_near_prefix_prompt_state(
         if not suffix:
             entry.hits += 1
             entry.last_access_s = time.time()
-            repage_time = _maybe_repage_target_prefill_cache(cache)
+            repage_time = _maybe_repage_target_prefill_cache(rt, cache)
             return PromptState(
                 trunk_cache=cache,
                 logits=logits[:, -1, :],
-                hidden=hidden[:, -1:, :],
+                hidden=hidden[:, -1:, :] if hidden is not None else None,
                 committed_mtp_cache=mtp_history_cache,
                 token_prefix=tuple(int(token) for token in prompt_ids),
                 prompt_eval_time_s=repair_time + repage_time,
@@ -2995,6 +3057,15 @@ def restore_or_prefill_prompt_state(
         mtp_history_policy,
         len(prompt_ids),
     )
+    if not rt.mtp_enabled and _mtp_history_uses_committed_cache(mtp_history_policy):
+        # Target-only AR runtimes (e.g. laguna_ar) carry no MTP head, so a
+        # committed/last_window history policy would enter the
+        # _prefill_committed_mtp_history_streaming branch and call
+        # rt.make_mtp_cache(), which raises "MTP is not enabled for this
+        # runtime". Degrade to the cycle (AR) prefill path, which banks only
+        # the trunk cache — the prefix-reuse benefit AR turns actually use.
+        # MTP-enabled runtimes keep their requested committed policy.
+        mtp_history_policy = "cycle"
     mtp_history_window_tokens = (
         _mtp_history_last_window_tokens() if mtp_history_policy == "last_window" else 0
     )
@@ -3228,7 +3299,9 @@ def restore_or_prefill_prompt_state(
                     flush=True,
                 )
             if not suffix:
-                repage_time = _maybe_repage_target_prefill_cache(restored.cache)
+                repage_time = _maybe_repage_target_prefill_cache(
+                    rt, restored.cache
+                )
                 return _emit_prefill_complete(PromptState(
                     trunk_cache=restored.cache,
                     logits=restored.logits,
@@ -3444,10 +3517,20 @@ def restore_or_prefill_prompt_state(
                 )
                 prompt_eval_time += prompt_history_time
     else:
+        # Only request hidden states from a runtime that can produce them.
+        # Target-only AR runtimes (laguna_ar) have no draft head: their
+        # forward_ar returns logits alone, so _prefill(return_hidden=True)
+        # would unpack a lone logits array as (logits, hidden) and raise
+        # "not enough values to unpack (expected 2, got 1)" (the cycle-policy
+        # AR snapshot path exposed this once the committed-branch crash was
+        # fixed). MTP runtimes still get hidden — the draft head needs it —
+        # and this mirrors generate_ar, which gates return_hidden on
+        # rt.mtp_enabled. hidden stays None for AR; nothing downstream in the
+        # AR path consumes it (the bank stores trunk cache only).
         cache, logits, hidden, target_time = _prefill(
             rt,
             prompt_ids,
-            return_hidden=True,
+            return_hidden=rt.mtp_enabled,
             hidden_variant=base_hidden_variant,
             abort_check=abort_check,
             vision_splice=vision_splice,
@@ -4140,7 +4223,7 @@ def _prefill(
         hidden = None
         _eval(logits)
     target_forward_time += time.perf_counter() - started
-    target_forward_time += _maybe_repage_target_prefill_cache(cache)
+    target_forward_time += _maybe_repage_target_prefill_cache(rt, cache)
     _check_postcommit_abort(abort_check)
     return cache, logits[:, -1, :], hidden, target_forward_time
 
@@ -4360,7 +4443,7 @@ def _prefill_committed_mtp_history_streaming(
         )
     _eval(logits, hidden)
     target_forward_time += time.perf_counter() - started
-    target_forward_time += _maybe_repage_target_prefill_cache(cache)
+    target_forward_time += _maybe_repage_target_prefill_cache(rt, cache)
     _check_postcommit_abort(abort_check)
     return (
         cache,
@@ -4405,7 +4488,7 @@ def _prefill_with_hidden_sequence(
         )
     _eval(logits, hidden)
     target_forward_time = time.perf_counter() - started
-    target_forward_time += _maybe_repage_target_prefill_cache(cache)
+    target_forward_time += _maybe_repage_target_prefill_cache(rt, cache)
     return cache, logits[:, -1, :], hidden[:, -1:, :], hidden, target_forward_time
 
 
