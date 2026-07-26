@@ -17021,6 +17021,12 @@ class _NonDuplicatingTokenDecoder(_IncrementalTokenDecoder):
 class _ThinkingContentStreamSplitter:
     _TOOL_CALL_MARKER = "<tool_call"
     _TOOL_CALL_CLOSE_MARKER = "</tool_call>"
+    # Angle-bracketed protocol forms only. The former bare "function=" /
+    # "parameter=" entries flipped the think/content split on ordinary
+    # reasoning prose that merely *mentions* those substrings (any code
+    # discussion), leaking the rest of the think block into content
+    # (#196/#197 leak variant). Chunk-split "<function=" openers are already
+    # covered by the partial-prefix hold, so the bare forms bought nothing.
     _TOOL_CONTROL_MARKERS = (
         "<tool_call",
         "<function=",
@@ -17028,8 +17034,6 @@ class _ThinkingContentStreamSplitter:
         "</parameter>",
         "</function>",
         "</tool_call>",
-        "parameter=",
-        "function=",
     )
 
     def __init__(
@@ -24099,7 +24103,17 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                                 stats["tool_parse_success"] = True
                                 stats["tool_call_count"] = len(assistant_tool_calls)
-                                generated["finish_reason"] = "tool_calls"
+                                # Honest finish on budget cuts (#196/#197): a
+                                # length-truncated turn that still yielded
+                                # complete tool calls must NOT report
+                                # "tool_calls" — the client would treat the
+                                # batch as complete while a trailing call was
+                                # cut and swallowed. "length" tells agent
+                                # clients (OpenCode et al.) to continue.
+                                if str(generated.get("finish_reason") or "") == "length":
+                                    stats["tool_calls_truncated_by_length"] = True
+                                else:
+                                    generated["finish_reason"] = "tool_calls"
                             elif (
                                 extraction is not None
                                 and extraction.status == "malformed_as_content"
@@ -24678,7 +24692,12 @@ def create_app(state: ServerState) -> FastAPI:
                 "content": assistant_content or None,
                 "tool_calls": tool_calls,
             }
-            finish_reason = "tool_calls"
+            # Honest finish on budget cuts (#196/#197): see the streaming twin.
+            if str(generated.get("finish_reason") or "") == "length":
+                generated["stats"]["tool_calls_truncated_by_length"] = True
+                finish_reason = "length"
+            else:
+                finish_reason = "tool_calls"
         else:
             reasoning_text = ""
             if (
