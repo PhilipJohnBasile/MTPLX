@@ -38,6 +38,7 @@ from .cache_state import (
     owned_recurrent_state_stats,
     restore_cache,
     rollback_after_verify,
+    trim_verified_window_without_snapshot,
     snapshot_cache,
     snapshot_untrimmable_cache,
     tail_owned_attention_kv_stats,
@@ -73,6 +74,7 @@ from .sampling import (
     sample_from_distribution,
 )
 from .session_bank import _boundary_true_restore_enabled
+from .runtime_options import block_prefix_restore_enabled, env_bool
 
 Mode = Literal["ar", "mtp1", "mtpk", "mtpa"]
 VerifyStrategy = Literal[
@@ -233,6 +235,18 @@ def _env_falsey(name: str) -> bool:
         "no",
         "off",
     }
+
+
+def _skip_verify_snapshot() -> bool:
+    """The single parse of ``MTPLX_SKIP_VERIFY_SNAPSHOT`` (default OFF).
+
+    The serve fast path force-sets this to "1"; whether that is safe is
+    decided by the verify strategy, and the server now answers that from an
+    explicit list of strategies known to survive without the snapshot
+    rather than from a two-element list of the ones that need it.
+    """
+
+    return env_bool("MTPLX_SKIP_VERIFY_SNAPSHOT", default=False)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -694,12 +708,13 @@ def _sustained_prefill_layout() -> str:
     )
     if layout != "auto":
         return layout
-    kv_quant = (
-        os.environ.get("MTPLX_VLLM_METAL_PAGED_KV_QUANT")
-        or os.environ.get("MTPLX_PAGED_KV_QUANT")
-        or ""
-    ).strip().lower().replace("-", "_")
-    if kv_quant in {"q8", "q8_0", "int8", "q4", "q4_0", "int4"}:
+    # Canonicalize through the one parser: a raw membership test here missed
+    # documented spellings ("8", "8bit", "uint8") that the rest of the stack
+    # honours as q8, and silently picked the dense-decode layout for a
+    # quantized cache.
+    from .kv_quant import paged_kv_quant_mode_from_env
+
+    if paged_kv_quant_mode_from_env() != "off":
         return "contiguous_then_repage"
     context_tokens = _env_int("MTPLX_CURRENT_PREFILL_CONTEXT_TOKENS", 0)
     dense_max = _env_int("MTPLX_SUSTAINED_DENSE_DECODE_MAX_CONTEXT", 131072)
@@ -1032,8 +1047,14 @@ class _DecodeTrace:
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def _delta(self, totals: dict[str, Any], key: str) -> Any:
-        value = totals[key]
-        previous = self.last_totals[key]
+        # Lanes maintain different counter sets (AR omits MTP-only keys);
+        # a counter absent on either side is a zero delta, not an error.
+        value = totals.get(key)
+        previous = self.last_totals.get(key)
+        if value is None:
+            value = previous if previous is not None else 0
+        if previous is None:
+            previous = [0.0] * len(value) if isinstance(value, list) else 0
         if isinstance(value, list):
             return [(float(item) - float(prev)) for item, prev in zip(value, previous)]
         return value - previous
@@ -1305,7 +1326,7 @@ class _DecodeTrace:
             "lazy_mtp_history_append": _env_truthy("MTPLX_LAZY_MTP_HISTORY_APPEND"),
             "batch_target_arrays": _batch_target_arrays_enabled(),
             "drop_events": _env_truthy("MTPLX_DROP_EVENTS"),
-            "skip_verify_snapshot": _env_truthy("MTPLX_SKIP_VERIFY_SNAPSHOT"),
+            "skip_verify_snapshot": _skip_verify_snapshot(),
             "mtp_history_materialize_every": int(mtp_history_materialize_every),
             "mtp_history_materialize_events": int(mtp_history_materialize_events),
             "clear_cache_every": int(_clear_cache_every()),
@@ -1400,6 +1421,41 @@ class _DecodeTrace:
             key: (list(value) if isinstance(value, list) else value)
             for key, value in totals.items()
         }
+
+
+_AR_FORWARD_PROFILE: Any = None
+
+
+def _ar_forward_profiler(step: int) -> Any:
+    """Diagnostic lane: MTPLX_AR_PROFILE_TOKENS=N cProfiles decode forwards
+    for steps [8, 8+N) and dumps pstats to MTPLX_AR_PROFILE_PATH at the
+    last profiled step. Off (None) unless the env is set; throughput
+    measured with this enabled is not promotion evidence."""
+
+    global _AR_FORWARD_PROFILE
+    raw = os.environ.get("MTPLX_AR_PROFILE_TOKENS")
+    if not raw:
+        return None
+    try:
+        budget = int(raw)
+    except ValueError:
+        return None
+    first, last = 8, 8 + budget
+    if not first <= step < last:
+        if step == last and _AR_FORWARD_PROFILE is not None:
+            import pstats
+
+            path = os.environ.get(
+                "MTPLX_AR_PROFILE_PATH", "/tmp/mtplx-ar-forward.pstats"
+            )
+            pstats.Stats(_AR_FORWARD_PROFILE).dump_stats(path)
+            _AR_FORWARD_PROFILE = None
+        return None
+    if _AR_FORWARD_PROFILE is None:
+        import cProfile
+
+        _AR_FORWARD_PROFILE = cProfile.Profile()
+    return _AR_FORWARD_PROFILE
 
 
 def _batch_target_distributions_enabled() -> bool:
@@ -2305,13 +2361,8 @@ def _restore_near_prefix_prompt_state(
         return None
     max_gap = max(0, _env_int("MTPLX_SESSION_NEAR_PREFIX_MAX_TOKEN_GAP", 8))
     min_match = max(1, _env_int("MTPLX_SESSION_NEAR_PREFIX_MIN_MATCH_TOKENS", 64))
-    block_prefix_raw = os.environ.get("MTPLX_SESSION_BLOCK_PREFIX_RESTORE")
     block_prefix_enabled = (
-        (
-            True
-            if block_prefix_raw is None
-            else not _env_falsey("MTPLX_SESSION_BLOCK_PREFIX_RESTORE")
-        )
+        block_prefix_restore_enabled()
         if allow_block_prefix is None
         else bool(allow_block_prefix)
     )
@@ -4774,12 +4825,17 @@ def generate_ar(
             break
 
         started = time.perf_counter()
+        profiler = _ar_forward_profiler(step)
         with attention_phase("ar_decode"):
+            if profiler is not None:
+                profiler.enable()
             result_next = rt.forward_ar(
                 mx.array([[token]]),
                 cache=cache,
                 return_hidden=ar_return_hidden,
             )
+            if profiler is not None:
+                profiler.disable()
         if ar_return_hidden:
             logits_next, hidden_next = result_next
         else:
@@ -7805,7 +7861,7 @@ def generate_mtpk(
 
         before_verify = None
         if a3b_target_prefix_route is None:
-            if _env_truthy("MTPLX_SKIP_VERIFY_SNAPSHOT"):
+            if _skip_verify_snapshot():
                 event["snapshot"] = "skipped_capture_commit_required"
             else:
                 started = time.perf_counter()
@@ -8790,6 +8846,26 @@ def generate_mtpk(
                 cache,
                 before_verify,
                 verified_tokens=verified_token_count,
+                keep_tokens=committed_prefix_len,
+            )
+            elapsed_trim_commit = time.perf_counter() - started_trim_commit
+            if committed_from_trim:
+                commit_time += elapsed_trim_commit
+                _add_timing(event, "trim_commit", elapsed_trim_commit)
+        if (
+            not committed_from_capture
+            and not committed_from_trim
+            and before_verify is None
+        ):
+            # The verify snapshot was skipped (MTPLX_SKIP_VERIFY_SNAPSHOT=1,
+            # the product-profile default) and no capture/trim lane committed.
+            # All-trimmable caches can still repair exactly by trimming the
+            # uncommitted verify tail — without this, the first rejection on
+            # such a lane raised and killed the request.
+            started_trim_commit = time.perf_counter()
+            committed_from_trim = trim_verified_window_without_snapshot(
+                cache,
+                verified_tokens=len(verify_input),
                 keep_tokens=committed_prefix_len,
             )
             elapsed_trim_commit = time.perf_counter() - started_trim_commit

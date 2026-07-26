@@ -134,14 +134,75 @@ class MTPLXRuntime:
                 self._count("final_logits_tokens_emitted", 1)
             else:
                 self._count("full_logits_tokens_emitted", emitted)
-        if not return_hidden and hidden_variant is None and not kwargs:
-            return self.model(input_ids, cache=cache)
+        # kwargs == {"emit_logits": True} is semantically the plain call —
+        # MTP-patched wrappers advertise emit_logits via **kwargs, so on MTP
+        # runtimes the bare-kwargs case never occurs and the compiled hook
+        # must accept the default-emit form too.
+        plain_call = not kwargs or (
+            set(kwargs) == {"emit_logits"} and kwargs["emit_logits"] is True
+        )
+        if not return_hidden and hidden_variant is None and plain_call:
+            # Decode-only (seq_len == 1). Prefill is multi-token over an
+            # unprimed cache: seeding the compiled graph from its None KV
+            # leaves throws, and its shape differs from a single-token decode
+            # step, forcing a retrace. Prefill stays eager.
+            compiled = (
+                self._compiled_ar_forward(cache) if sequence_len == 1 else None
+            )
+            if compiled is not None:
+                # Engagement proof: arm A (flag off) must report 0 here,
+                # arm B (on) > 0 — the A/B credits nothing without it.
+                self._count("compiled_forward_calls")
+                return compiled(input_ids, cache)
+            if not kwargs:
+                return self.model(input_ids, cache=cache)
         return self.model(
             input_ids,
             cache=cache,
             return_hidden=return_hidden,
             **kwargs,
         )
+
+    def _compiled_ar_forward(self, cache):
+        """Compiled target forward (MTPLX_COMPILE_AR_FORWARD).
+
+        Kills the per-token Python graph rebuild by tracing the full trunk
+        forward once (CompiledARForward, KV state threaded). Applies to
+        fully-resident loads with a standard per-layer KV cache; a host-sync
+        buried in the model forward surfaces as an error on the first traced
+        call rather than silently degrading. Rebuilds per cache identity so a
+        new generation gets fresh threaded state. Returns None (the eager
+        path) otherwise.
+        """
+        from .compiled_forward import CompiledARForward, compile_forward_enabled
+
+        if not compile_forward_enabled() or not cache:
+            return None
+        # An unprimed cache (empty context / first token) has None KV leaves
+        # that would crash the compiled graph. Only compile once the cache
+        # holds real keys, and only for the plain growable KVCache shape the
+        # fixed-buffer conversion understands.
+        first = cache[0]
+        if getattr(first, "keys", None) is None:
+            return None
+        if any(
+            not hasattr(entry, "keys")
+            or not hasattr(entry, "values")
+            or not hasattr(entry, "offset")
+            for entry in cache
+        ):
+            return None
+        cache_key = id(first)
+        if (
+            getattr(self, "_compiled_ar", None) is None
+            or getattr(self, "_compiled_ar_key", None) != cache_key
+        ):
+            import os as _os
+
+            reserve = int(_os.environ.get("MTPLX_COMPILE_AR_RESERVE_TOKENS", "4096"))
+            self._compiled_ar = CompiledARForward(self.model, reserve_tokens=reserve)
+            self._compiled_ar_key = cache_key
+        return self._compiled_ar
 
     def forward_ar_capture(
         self,
@@ -341,8 +402,17 @@ def load(
     merge_mtp_adapter: bool = False,
     gemma4_draft_block_size: int | None = None,
     gemma4_target_distribution_mode: str | None = None,
+    proj_quant: str | None = None,
+    proj_requant: str | None = None,
 ) -> MTPLXRuntime:
-    """Load an MLX model and optionally inject native MTP support."""
+    """Load an MLX model and optionally inject native MTP support.
+
+    ``proj_quant`` / ``proj_requant`` (or the ``MTPLX_PROJ_QUANT`` /
+    ``MTPLX_PROJ_REQUANT`` environment variables) quantize the trunk
+    ``*_proj`` Linears at load time — see :mod:`mtplx.proj_quant`. Applied
+    to the trunk only, before MTP injection, so a draft head's precision is
+    never reduced.
+    """
     path = Path(model_path)
     from .gemma4_pair import resolve_gemma4_pair_paths
 
@@ -409,6 +479,25 @@ def load(
         from mlx_lm.utils import load as mlx_lm_load
 
         model, tokenizer = mlx_lm_load(str(_mtp_alias_load_path(path, config)))
+    import os as _os
+
+    proj_quant = proj_quant or _os.environ.get("MTPLX_PROJ_QUANT") or None
+    proj_requant = proj_requant or _os.environ.get("MTPLX_PROJ_REQUANT") or None
+    if proj_quant or proj_requant:
+        from .proj_quant import quantize_projections, requantize_projections
+
+        if proj_quant:
+            touched = quantize_projections(model, proj_quant)
+            logger.info(
+                "[proj-quant] quantized %d trunk *_proj modules to %s",
+                len(touched), proj_quant,
+            )
+        if proj_requant:
+            touched = requantize_projections(model, proj_requant)
+            logger.info(
+                "[proj-quant] requantized %d trunk *_proj modules to %s",
+                len(touched), proj_requant,
+            )
     runtime_metadata = _load_runtime_metadata(path)
     contract = (
         (contract or MTPContract())
