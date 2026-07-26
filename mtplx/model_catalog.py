@@ -48,6 +48,8 @@ class CatalogModel:
     peak_memory_gib: float
     recommended_tiers: frozenset[str]
     aliases: tuple[str, ...] = ()
+    # Target-only AR model (no native MTP head); serve must use --no-mtp.
+    ar_only: bool = False
 
     @property
     def download_gib(self) -> float:
@@ -252,6 +254,21 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "Qwen3.6 27B Optimized Quality FP16",
             "Optimized Quality FP16",
         ),
+    ),
+    CatalogModel(
+        id="laguna-s21-oq4e",
+        display_name="Laguna S-2.1 (community oQ4e)",
+        detail="Poolside coding model, mixed-precision 4-bit. AR-only (no MTP head yet).",
+        hf_model_id="mlx-community/Laguna-S-2.1-oQ4e",
+        size_bytes=64_129_728_868,
+        peak_memory_gib=74.0,
+        recommended_tiers=frozenset({MODERN_TIER}),
+        aliases=(
+            "mtplx-laguna-s21",
+            "Laguna S-2.1",
+            "Laguna-S-2.1-oQ4e",
+        ),
+        ar_only=True,
     ),
 )
 
