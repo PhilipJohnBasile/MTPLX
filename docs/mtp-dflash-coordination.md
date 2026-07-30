@@ -225,6 +225,16 @@ caught in verification and corrected below).
 | 35B-A3B MoE | **unmeasured** (likely 1.8–2.3× at D3) | Phase-0 measured baseline | **2.2–2.6×** (B≤8 + routing + truncation) | ~2.8×, iff u(M) ≪ i.i.d. AND τ≥5 |
 | Laguna-S | 1.0× (≈56 tok/s [measured]) | ccopy 1.0–1.1× blended | **ccopy 1.1–1.4× on code/edit**; trained-MTP 1.3–1.6× (75–90 tok/s) | ccopy ~1.5–1.6×; trained-MTP ~1.8× (~100) |
 
+> **Superseded in part by Phase 0 (§10a).** Measured on this machine: stock
+> AR is 31.1 tok/s (27B-4bit) and 18.0 (27B-8bit); the reference DFlash arm
+> reaches 1.55× / 2.09× at block 8, i.e. **below** the measured MTP D3
+> multipliers of 2.23× / 2.71×. The expected end-state rows below therefore
+> hold only if NAX wide-row verify kernels favour 9–16-row DFlash blocks
+> substantially more than they favour MTP's 4 rows. That is now a bounded
+> decision experiment to run before the multi-day build, not an assumption.
+> Note also that Laguna-S has no MTP head, so its floor is 1.0× — the lane's
+> case is strongest there.
+
 All end-state numbers [estimated], pending Phase-0 τ / u(M) / T_V(M). Key
 empirical datapoint: under the corrected AR, bstnxbt's 3.04× ≈ 66 tok/s ≈
 today's MTP+NAX 65.5 — the two lanes currently land at the same place, which
