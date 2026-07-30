@@ -48,7 +48,14 @@ def run_dflash_mlx_baseline(
         )
 
     try:
-        draft = load_draft(str(draft_model), sliding_window_size=draft_sliding_window_size)
+        import inspect
+
+        # Upstream dflash removed the sliding_window_size kwarg (window config now
+        # comes from the draft checkpoint's layer_types/sliding_window fields).
+        if "sliding_window_size" in inspect.signature(load_draft).parameters:
+            draft = load_draft(str(draft_model), sliding_window_size=draft_sliding_window_size)
+        else:
+            draft = load_draft(str(draft_model))
         target_model, tokenizer = load(str(model_path))
     except Exception as exc:
         return _error_result(
@@ -67,6 +74,11 @@ def run_dflash_mlx_baseline(
         prompts = prompts[:limit]
 
     for index, case in enumerate(prompts):
+        # Seed MLX RNG per prompt so runs are reproducible; the seed was
+        # previously recorded in the result but never applied.
+        import mlx.core as _mx
+
+        _mx.random.seed(seed + index)
         messages = case.messages or [{"role": "user", "content": case.prompt}]
         kwargs: dict[str, Any] = {}
         if enable_thinking is not None:

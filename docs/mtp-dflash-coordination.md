@@ -260,9 +260,10 @@ Vendored drafter module (MIT, NOTICE entry) with the §5.1 independence
 invariant asserted; 5-tap hidden capture on prefill + verify forwards,
 committed-rows-only; companion load on the model-owner thread via the gemma4
 pair seam; injection filling `draft_tokens`/`draft_probs` before
-`generation.py:7467` with the device-core skip pattern. **Soft-q from day
-one**, one-hot as the universal exact fallback/debug lane. Fixed-B, dense
-4-bit body first (kernels exist).
+`generation.py:7467` with the device-core skip pattern. **One-hot declarations day one** — both adversarial reviews and the Codex
+review converge here; soft-q is promoted only after the q-fidelity gate
+passes on the real runtime path (§11). Fixed-B, dense 4-bit body first
+(kernels exist).
 **Exactness gates**: the four blockers in §5.7. **Perf gate**: fixed-B beats
 measured MTP D3 on the same suite, or the lane ships disabled-by-default.
 
@@ -381,7 +382,68 @@ at B≤5 until the vk M8..16 extension (§8 Phase 4).
 
 ---
 
-*Full workflow reports (3 designs, 3 verdicts, 6 phase-1 maps, plus the
-2026-07-29 drafter-scan sweeps and verdicts) archived in the session
-transcript; verifier-corrected numbers in this doc supersede all earlier
-drafts.*
+## 11. Addendum — Codex external review deltas (2026-07-30)
+
+Codex (codex-cli 0.145.0, read-only, full code access) returned **FLAWED**,
+vs our verifiers' SOUND_WITH_FIXES. The split: its architectural
+recommendations converge with this doc (chain-only, fixed arm first,
+one-hot first, measured controller last); the FLAWED verdict targets
+implementation-readiness framing — places where this doc reads as if
+machinery exists that Phase 2 has to build. Accepted deltas:
+
+- **Drafter-cache transaction (new, real).** The DFlash drafter has its own
+  KV cache; the reference crops it after every block (dflash/model.py:
+  108–121) and crops the target cache post-acceptance. "Commit-only
+  companion caches" must therefore mean: rebuild drafter KV from the
+  committed prefix each cycle (simplest, cost must be priced) or implement
+  crop/rollback and prove committed-prefix logits identical vs AR. Ignoring
+  the drafter cache is not an option. Build order: transactions before any
+  speed measurement.
+- **Cycle cost is not one target forward (new, real).** All-accept cycles
+  may trigger a lazy bonus forward (generation.py:8047–8073); rejections
+  can trigger correction repair or full re-forward (:8319–8360). The
+  controller objective is E[committed] / E[draft + taps + verify(M) +
+  snapshot + repair + commit + bonus] — full-cycle wall clock, not
+  accepted-length over a static verify estimate.
+- **Per-position lane dispatch is new verifier code (accepted reword).**
+  `verify_strategy` is cycle-wide (:5630–5643); target_prefix ignores
+  draft_probs. The union chain reuses the existing acceptance *math*, but
+  mixing lane types per position inside one chain is new verifier
+  semantics + RNG accounting, not routing.
+- **Phase-0 measurement upgrades (accepted):** verify_ratio.py defaults
+  max_k=8 — extend to M=16 and record actual kernel dispatch per M, not an
+  extrapolated curve; measure BOTH `--generation-mode ar` and stock AR
+  (MTP sidecar loaded vs absent are different baselines, cli.py:2527–2548);
+  τ readout gets histogram + first-reject position + p50/p90 by category/
+  context-length/sampler, not just the mean; u(M) probe adds per-layer
+  routed IDs, assignment counts, and dispatch/MLP/scatter timings (union
+  count alone under-measures MoE row cost); prototype the 5-tap hook and
+  measure its target-forward slowdown BEFORE any DFlash throughput claim;
+  record drafter-block-vs-verify-rows accounting explicitly (reference
+  block 16 = 1 anchor + 15 masks = 15 draft tokens).
+- **Harness fixes (applied):** the τ runner now seeds MLX RNG per prompt
+  (it recorded `seed` but never used it). Interpretation note: the
+  reference drafts GREEDILY (draft-side sample has no temperature), so
+  measured τ is exactly the one-hot lane's acceptance — convenient for the
+  gate, but it cannot validate the soft-q uplift; that needs the §5.7
+  chi-square gate on our own lane.
+- **Scope fix (accepted):** grammar-constrained decoding under top-k/top-p
+  has a documented distribution gap in-engine (generation.py:7892–7907) —
+  the exactness claim explicitly excludes constrained generation until the
+  masked-verify-row variant exists.
+- **MTP-floor caveat (accepted):** the floor is a controller property, not
+  a crash property — a DFlash exception after mutating companion state
+  needs an explicit transaction boundary before falling back to MTP.
+
+Rejected as overreach: "the +10–25% and envelope are unsupported" (every
+such number is tagged [estimated] and Phase-0-gated — that is the design,
+not a flaw); "MTP floor does not follow" in the routing sense (collapse to
+(d,0) is trivially today's mode); FLAWED-as-architecture (its own
+alternative plan is this doc's §8 order with more conservative wording).
+
+---
+
+*Full workflow reports (3 designs, 3 verdicts, 6 phase-1 maps, the
+drafter-scan sweeps and verdicts, and the Codex review log) archived in the
+session transcript; verifier-corrected numbers in this doc supersede all
+earlier drafts.*
