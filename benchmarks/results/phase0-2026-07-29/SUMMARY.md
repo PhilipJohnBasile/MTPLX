@@ -352,3 +352,38 @@ NAX**; earlier "NAX on" labelling of that arm was wrong. Drafter quality
 remains confounded with architecture (386M June retrain with published
 results vs the dense 1.73B "still under training"). Per-case caps are
 160–192 tokens, not 256. No exact-token-stream equivalence yet.
+
+### The thinking mismatch also affected the DENSE arms — NO-GO narrows but holds
+
+Every DFlash arm in this programme ran through the same script with thinking
+enabled; every MTP arm ran `--disable-thinking`. Rerunning dense with
+thinking off (27B 4-bit, greedy, 24 prompts):
+
+| Dense arm | τ | tok/s | vs AR 31.0 |
+|---|---|---|---|
+| DFlash B5 | 3.42 | **58.6** (was 48.1 at B8) | **1.89×** |
+| DFlash B8 | 4.10 | 52.2 | 1.68× |
+| MTP D3 (tuned best) | — | — | **2.23–2.32×** |
+
+Thinking-off lifts dense DFlash from 1.55× to **1.89×** at its best block —
+a 22% improvement that shifts the optimum from B8 to B5 and narrows the gap
+to MTP considerably. **The dense NO-GO survives** (1.89× < 2.23×), but the
+margin is now ~18%, not the ~44% originally reported, and the earlier
+per-block dense sweep (B4–B16) was run under the wrong protocol throughout —
+its ordering is suspect even though its conclusion stands.
+
+Note the asymmetry that keeps the dense comparison fair: D3 *is* MTP's tuned
+best on this body (tune searched D1–D3 and selected D3), unlike the MoE case
+where MTP was reported off its worst depth.
+
+**Architecture split, restated with matched protocol on both sides:**
+
+| | Dense 27B | MoE 35B-A3B |
+|---|---|---|
+| DFlash best | 1.89× (B5) | **2.07× (B8)** |
+| MTP best | **2.23–2.32× (D3)** | 1.05× (D1) |
+| Winner | MTP, by ~18% | **DFlash, by ~2×** |
+
+The split is real and survives protocol matching, but the dense margin is
+much tighter than first reported. A finished 27B drafter could plausibly
+close 18%; z-lab's card still says "still under training."
