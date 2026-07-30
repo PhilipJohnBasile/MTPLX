@@ -310,3 +310,45 @@ throughput peaks early and falls — but here the peak sits **1.85× above AR**
 instead of below the incumbent. B5/B6 are indistinguishable (193.7–194.2,
 B5 repeat spread 0.4); B8 is ~3% behind; B16 costs 24%. Default should be
 B5–B6, not the reference's 16.
+
+### CORRECTED after Codex audit (REVERSAL SUSPECT → direction confirmed, numbers restated)
+
+Two errors of mine, both caught by the audit:
+
+1. **My aggregation helper was buggy** — it returned the first matching key
+   anywhere in the nested JSON, so the "MTP depth check" printed *identical*
+   MTP and AR values (102.8/102.8, 105.9/105.9), an impossible result I
+   reported without catching. The earlier "MTP D3 = 89.5, 106.6, 105.1" table
+   mixed AR values with wrong fields.
+2. **Protocol was not matched** — the DFlash arms ran with thinking enabled
+   (output began "Here's a thinking process") while MTP/AR ran
+   `--disable-thinking`.
+
+Corrected, aggregating tokens over decode-seconds across all 24 prompts:
+
+| Arm (MoE, greedy, 24 prompts, thinking OFF) | tok/s | vs AR |
+|---|---|---|
+| **DFlash B8** | **217.1** (τ 3.97) | **2.07×** |
+| **DFlash B5** | **207.6** (τ 3.33) | 1.98× |
+| MTP **D1** (the card's recommended default) | 111.0 | **1.05×** |
+| AR (MTPLX compare-AR) | 104.9–105.4 | 1.00× |
+| MTP D2 | 94.3 | 0.90× |
+| MTP D3 | 77.2 | 0.74× |
+
+Disabling thinking *raised* DFlash (188→217 at B8) and flipped the block
+optimum from B5 back to B8 — thinking-token content changes both acceptance
+and the cost balance, so it must be pinned in every arm.
+
+**MTP on this MoE peaks at D1 (1.05×) and degrades with depth** — 0.74× at
+D3, well below plain decoding. Consistent with one MTP layer applied
+recursively being unable to predict expert routing, and with the model card
+recommending D1. The earlier claim that "MTP is a net loss" was reported off
+its *worst* depth; at its best it is a marginal win.
+
+**Remaining caveats (Codex, unresolved):** AR 105 is MTPLX's compare-AR, not
+the stock baseline (112–116 measured independently) — against stock, DFlash
+is ~1.8–1.9×. The DFlash arm runs through stock `mlx_lm`, so it uses **no
+NAX**; earlier "NAX on" labelling of that arm was wrong. Drafter quality
+remains confounded with architecture (386M June retrain with published
+results vs the dense 1.73B "still under training"). Per-case caps are
+160–192 tokens, not 256. No exact-token-stream equivalence yet.

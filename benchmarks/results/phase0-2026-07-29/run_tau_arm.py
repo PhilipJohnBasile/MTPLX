@@ -25,6 +25,7 @@ def main():
         dflash_source=DFLASH_SRC,
         temperature=temp, top_p=0.95 if temp > 0 else 1.0, top_k=20 if temp > 0 else 0,
         max_tokens=256, block_size=(block or None), seed=0,
+        enable_thinking=False,
     )
     r["wall_s"] = round(time.time() - t0, 1)
     out = Path(__file__).parent / f"tau_{tag}.json"
