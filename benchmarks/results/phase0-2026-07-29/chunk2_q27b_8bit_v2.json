@@ -1,0 +1,112 @@
+{
+ "tag": "q27b_8bit_v2",
+ "model": "/Users/pjb/.mtplx/models/mlx-community--Qwen3.6-27B-8bit",
+ "condition": "stock mlx_lm forward, no engine, no NAX, greedy, ~1k ctx",
+ "ar_tok_s_runs": [
+  18.0,
+  17.99
+ ],
+ "ar_tok_s_best": 18.0,
+ "t_v_ms_by_M": {
+  "1": {
+   "ms_median": 55.483,
+   "ms_min": 54.971,
+   "ms_max": 55.839
+  },
+  "2": {
+   "ms_median": 55.884,
+   "ms_min": 55.799,
+   "ms_max": 56.147
+  },
+  "3": {
+   "ms_median": 58.232,
+   "ms_min": 57.816,
+   "ms_max": 58.414
+  },
+  "4": {
+   "ms_median": 58.5,
+   "ms_min": 58.022,
+   "ms_max": 58.672
+  },
+  "5": {
+   "ms_median": 59.101,
+   "ms_min": 58.882,
+   "ms_max": 59.219
+  },
+  "6": {
+   "ms_median": 71.474,
+   "ms_min": 70.748,
+   "ms_max": 72.004
+  },
+  "7": {
+   "ms_median": 86.301,
+   "ms_min": 83.281,
+   "ms_max": 86.736
+  },
+  "8": {
+   "ms_median": 87.689,
+   "ms_min": 87.005,
+   "ms_max": 88.793
+  },
+  "9": {
+   "ms_median": 114.624,
+   "ms_min": 113.555,
+   "ms_max": 116.299
+  },
+  "10": {
+   "ms_median": 131.987,
+   "ms_min": 125.578,
+   "ms_max": 137.428
+  },
+  "11": {
+   "ms_median": 136.083,
+   "ms_min": 134.192,
+   "ms_max": 136.704
+  },
+  "12": {
+   "ms_median": 126.945,
+   "ms_min": 124.417,
+   "ms_max": 135.723
+  },
+  "13": {
+   "ms_median": 125.199,
+   "ms_min": 124.433,
+   "ms_max": 126.076
+  },
+  "14": {
+   "ms_median": 128.735,
+   "ms_min": 127.364,
+   "ms_max": 129.684
+  },
+  "15": {
+   "ms_median": 130.487,
+   "ms_min": 130.145,
+   "ms_max": 130.659
+  },
+  "16": {
+   "ms_median": 130.153,
+   "ms_min": 129.238,
+   "ms_max": 130.585
+  }
+ },
+ "t_v_ratio_M16_over_M1": 2.346,
+ "m_values": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16
+ ],
+ "peak_memory_gb": 30.83
+}

@@ -1,0 +1,112 @@
+{
+ "tag": "q35b_a3b_v2",
+ "model": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+ "condition": "stock mlx_lm forward, no engine, no NAX, greedy, ~1k ctx",
+ "ar_tok_s_runs": [
+  115.76,
+  114.34
+ ],
+ "ar_tok_s_best": 115.76,
+ "t_v_ms_by_M": {
+  "1": {
+   "ms_median": 9.023,
+   "ms_min": 8.458,
+   "ms_max": 9.18
+  },
+  "2": {
+   "ms_median": 9.655,
+   "ms_min": 9.531,
+   "ms_max": 10.241
+  },
+  "3": {
+   "ms_median": 10.994,
+   "ms_min": 10.902,
+   "ms_max": 11.751
+  },
+  "4": {
+   "ms_median": 12.61,
+   "ms_min": 12.101,
+   "ms_max": 12.805
+  },
+  "5": {
+   "ms_median": 14.494,
+   "ms_min": 14.062,
+   "ms_max": 14.703
+  },
+  "6": {
+   "ms_median": 15.85,
+   "ms_min": 15.387,
+   "ms_max": 15.963
+  },
+  "7": {
+   "ms_median": 17.558,
+   "ms_min": 16.774,
+   "ms_max": 17.727
+  },
+  "8": {
+   "ms_median": 17.424,
+   "ms_min": 17.074,
+   "ms_max": 17.661
+  },
+  "9": {
+   "ms_median": 18.945,
+   "ms_min": 18.426,
+   "ms_max": 19.034
+  },
+  "10": {
+   "ms_median": 21.518,
+   "ms_min": 21.38,
+   "ms_max": 21.901
+  },
+  "11": {
+   "ms_median": 22.346,
+   "ms_min": 21.911,
+   "ms_max": 22.67
+  },
+  "12": {
+   "ms_median": 24.103,
+   "ms_min": 23.497,
+   "ms_max": 24.232
+  },
+  "13": {
+   "ms_median": 25.05,
+   "ms_min": 24.487,
+   "ms_max": 25.29
+  },
+  "14": {
+   "ms_median": 25.739,
+   "ms_min": 25.201,
+   "ms_max": 25.963
+  },
+  "15": {
+   "ms_median": 26.825,
+   "ms_min": 26.384,
+   "ms_max": 26.905
+  },
+  "16": {
+   "ms_median": 27.107,
+   "ms_min": 26.549,
+   "ms_max": 27.472
+  }
+ },
+ "t_v_ratio_M16_over_M1": 3.004,
+ "m_values": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16
+ ],
+ "peak_memory_gb": 21.11
+}

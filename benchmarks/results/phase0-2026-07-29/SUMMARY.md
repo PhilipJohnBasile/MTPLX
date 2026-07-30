@@ -118,33 +118,53 @@ uncontaminated.** It remains a Phase-2 task-1 constraint: rollback on hybrid
 bodies must use captured-state restore, never a trim — the failure mode is
 silent divergence, not a crash.
 
-**Measurement gap — 35B-A3B varied-token curve not obtained.** Stock
-`mlx_lm`'s GatedDeltaNet path raises `[conv] Spatial dimensions ... input
-(1,3,8192), weight (8192,4,1)` whenever the concatenated conv window falls
-under the kernel width of 4, and `trim_prompt_cache` does not restore GDN
-conv state. Rebuilding the cache per M and skipping M∈{2,3} did not clear
-it. Off-engine timing of hybrid-GDN bodies at small M is therefore
-unreliable; the production path (which has `gdn_capture.py` +
-`native_gdn_tail` for exactly this) is the correct instrument. Treat the
-35B M16 tax as ~2.96× identical-token, likely ~3.3–3.4× with realistic
-routing (scaling by Laguna's measured +14%) [estimated].
+**All curves re-measured with the fixed probe (varied real tokens, M=1..16,
+zero failures on every body).** Final numbers:
 
-**This GDN cache/conv fragility is a direct Phase-2 task-1 datapoint:**
-rejection rollback on hybrid-GDN targets cannot be a naive cache trim.
-Here it crashes loudly; the dangerous version is silent state divergence.
+| Body | AR tok/s | T_V(1) | M4/M1 | M9/M1 | M16/M1 |
+|---|---|---|---|---|---|
+| Qwen3.6-27B-4bit | 31.0 | 32.2 ms | 1.19 | **2.48** | 3.44 |
+| Qwen3.6-27B-8bit | 18.0 | 55.5 ms | 1.05 | **2.07** | 2.35 |
+| Qwen3.6-35B-A3B | 115.8 | 9.0 ms | 1.40 | **2.10** | 3.00 |
+| Laguna-S-2.1 oQ4e | 54.2 | 18.5 ms | 1.88 | 2.83 | 4.40 |
 
-Cross-validation: 27B-8bit curve predicts MTP D3 ≈ 2.6×; tuning.json measured
-2.71× — model and reality agree within ~4%. 27B-8bit AR at ~93% of bandwidth.
+The 35B varied-token curve (earlier recorded as an unobtainable gap with a
+~3.3–3.4× estimate) measures **3.00× at M16** — essentially unchanged from
+the identical-token 2.96×, so MoE routing diversity costs less than feared on
+this body. T_V(1) tracks 1/AR on every body, which is the cross-check that
+these curves are measuring what they claim.
 
-## Implied speedups [estimated from measured T_V + measured/published τ]
+## Verdict from the corrected curves: the Qwen DFlash lane is heading NO-GO
 
-- 27B-8bit DFlash interim: ~1.8–2.1× < MTP D3 2.71× — as designed; the M10+
-  128 ms plateau is the vk M8..16 port's target (largest kernel payoff).
-- 35B-A3B DFlash B8: E[commit]≈4.9 / 1.95 ≈ **2.5×** at measured-class τ.
-- Laguna + poolside drafter (published τ 6.42 @ k=15): block 8 ≈ **2.0–2.2×
-  (~110–120 tok/s)**, block 15 ≈ 1.8× — ABOVE the pre-measurement estimate
-  for a trained MTP head; ccopy blended 1.1–1.4× stands as the no-drafter
-  floor.
+The verify curve explains the whole result. MTP D3 verifies **M=4** rows,
+which sit in the nearly-free region; DFlash B8 verifies **M=9**, past the
+cost cliff. DFlash buys ~12% more committed tokens per cycle (τ 3.98 vs
+3.556) and pays roughly double the verify cost for them.
+
+| Body | MTP D3 [measured] | DFlash B8 [measured] | DFlash B16 |
+|---|---|---|---|
+| 27B 4-bit | **2.32×** | 1.55× | 1.18× |
+| 27B 8-bit | **2.84×** | 2.09× | 1.78× |
+
+With NAX applied to both arms (isolated kernel savings deflated by the 0.65
+in-engine factor: s4 3.6 ms, s9 18.2, s16 42.3): MTP D3 → **2.50×**,
+DFlash B8 → 1.99×, B16 → 1.86× on the 4-bit body. **R = 1.99/2.50 = 0.80**,
+below the 1.00 NO-GO line. NAX lifts wide blocks more in absolute ms but
+cannot cover a ~41 ms verify gap bought with 0.4 extra tokens. Flipping this
+needs a ~44% error in the NAX estimate — the in-engine sweep should confirm
+before the decision is called final, but the direction is clear.
+
+Note the 8-bit B8 arithmetic yields a negative implied drafter cost
+(−10.9 ms), i.e. the reference's 37.6 tok/s is *faster* than this probe's
+T_V(9) allows. Conditions differ (coding suite with 160–192-token
+generations vs a 512-step steady-decode probe), so the two are not perfectly
+matched — one more reason the in-engine sweep, not this arithmetic, is the
+final instrument.
+
+**Where the lane still makes sense: Laguna-S.** No MTP head means the floor
+is 1.0×, not 2.3–2.8×. With AR 54.2 tok/s, T_V(9) = 52.4 ms and poolside's
+published τ ≈ 6.4 at k=15, a block-8 lane implies roughly **1.4–1.5×**
+[estimated] — a real gain with no incumbent to displace.
 
 ## Deferred, with reasons
 
