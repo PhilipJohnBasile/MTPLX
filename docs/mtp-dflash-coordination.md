@@ -382,7 +382,18 @@ at B≤5 until the vk M8..16 extension (§8 Phase 4).
 
 ---
 
-## 10a. Phase 0 — EXECUTED 2026-07-30, gate GREEN [measured]
+## 10a. Phase 0 — EXECUTED 2026-07-30: reference-arm build gate GREEN, release gate PENDING [measured]
+
+Scope (Codex audit): every Phase-0 number is a reference-implementation or
+stock-`mlx_lm` measurement, not MTPLX's own path — no NAX, no engine cache
+machinery, no hidden taps, no repair/bonus accounting. They justify building
+the lane; they do not establish production performance. The 4-bit 27B body
+(the Phase-2 prize lane) was not measured. τ = committed tokens per cycle
+(matched drafts + the target's replacement token); block 16 = 1 anchor + 15
+draft rows. The temp-0.6 arm is sampled-draft (the MLX reference samples the
+draft too), so only the greedy arm maps to our one-hot lane. Quality: 24/26
+validations passed (both JSON-tool cases failed their validator).
+Corrections and gaps in full: `benchmarks/results/phase0-2026-07-29/SUMMARY.md`.
 
 Full results: `benchmarks/results/phase0-2026-07-29/SUMMARY.md`. Headlines:
 **τ = 4.31 greedy / 3.92 at the product sampler** (z-lab 27B drafter,

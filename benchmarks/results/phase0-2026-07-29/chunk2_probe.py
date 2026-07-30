@@ -40,26 +40,47 @@ def steady_ar(model, tok, prompt_tokens, n_gen=512, reps=2):
     return rates
 
 
-def t_v_curve(model, prompt_tokens, reps=6):
+def t_v_curve(model, prompt_tokens, reps=6, fresh_cache=False, m_values=None):
+    """T_V(M) at a ~1k-token cache.
+
+    fresh_cache=True rebuilds the prompt cache per M instead of trimming.
+    Required for hybrid-GDN bodies: trim_prompt_cache does not restore the
+    GatedDeltaNet conv state, so a trimmed cache can feed the depthwise conv
+    fewer positions than its kernel width (observed: kernel 4, M=3 -> [conv]
+    spatial-dims error on Qwen3.6-35B-A3B).
+    """
+    m_values = m_values or list(range(1, 17))
     cache = make_prompt_cache(model)
     logits = model(mx.array([prompt_tokens]), cache=cache)
     mx.eval(logits)
     curve = {}
-    dummy = [42] * 16
-    for m in range(1, 17):
-        rows = mx.array([dummy[:m]])
+    # Varied tokens per row: identical rows understate MoE expert fan-out
+    # (Codex audit finding) — use mid-context ids so routing diversity is real.
+    dummy = [int(t) for t in prompt_tokens[500:516]]
+    for m in m_values:
+        rows = mx.array([dummy[:m]], dtype=mx.int32)
+
+        def _reset():
+            nonlocal cache
+            if fresh_cache:
+                cache = make_prompt_cache(model)
+                out = model(mx.array([prompt_tokens]), cache=cache)
+                mx.eval(out)
+            else:
+                trim_prompt_cache(cache, m)
+
         # warmup at this M (kernel selection/compile)
         for _ in range(2):
             out = model(rows, cache=cache)
             mx.eval(out)
-            trim_prompt_cache(cache, m)
+            _reset()
         times = []
         for _ in range(reps):
             t0 = time.perf_counter()
             out = model(rows, cache=cache)
             mx.eval(out)
             times.append((time.perf_counter() - t0) * 1000)
-            trim_prompt_cache(cache, m)
+            _reset()
         times.sort()
         curve[m] = {"ms_median": round(times[len(times) // 2], 3),
                     "ms_min": round(times[0], 3), "ms_max": round(times[-1], 3)}
@@ -84,8 +105,13 @@ def main():
         prompt = "def fibonacci(n):\n    " * 80  # ~1k tokens of code-ish context
         ptok = tok.encode(prompt)[:1000]
 
+    fresh = "fresh" in sys.argv
     ar_rates = steady_ar(model, tok, ptok)
-    curve = t_v_curve(model, ptok)
+    gdn = "gdn" in sys.argv
+    # Stock mlx_lm GatedDeltaNet takes a conv path for 1 < S < kernel_width(4)
+    # that has no cached-state fallback, so M=2,3 cannot be timed off-engine.
+    ms = [1, 4, 6, 8, 10, 12, 16] if gdn else None
+    curve = t_v_curve(model, ptok, reps=3 if fresh else 6, fresh_cache=fresh, m_values=ms)
 
     result = {
         "tag": tag, "model": model_path,
@@ -95,6 +121,7 @@ def main():
         "t_v_ms_by_M": curve,
         "t_v_ratio_M16_over_M1": round(
             curve[16]["ms_median"] / curve[1]["ms_median"], 3),
+        "m_values": sorted(curve),
         "peak_memory_gb": round(mx.get_peak_memory() / 1e9, 2),
     }
     out = Path(__file__).parent / f"chunk2_{tag}.json"
