@@ -97,19 +97,26 @@ AR baselines are best-of-two runs; run pairs shown for spread. Laguna's
 identical-token curve also carried timing outliers (M8 max 230 ms vs 42.5 ms
 median) — medians are used throughout.
 
-**Hybrid-GDN verify forwards are not measurable off-engine (all three
-bodies).** `[conv] Spatial dimensions of input after padding cannot be
-smaller than weight spatial dimensions` fires whenever the GatedDeltaNet
-conv window falls below its kernel width of 4, and `trim_prompt_cache` does
-not restore GDN conv state. Reproduced on 27B-4bit (every M, 1–16), 35B-A3B,
-and — once the probe stopped trimming lucky — 27B-8bit's regime too; the
-original 8-bit curve completed only by accident of call ordering. Rebuilding
-the cache per M did not clear it. **Consequence: the T_V curves above are
-usable as relative shapes but the production path (`gdn_capture.py`,
-`native_gdn_tail`) is the only valid instrument for verify-row cost on these
-targets.** This is Codex's task-1 risk demonstrated on three bodies:
-rejection rollback on hybrid-GDN targets cannot be a naive cache trim — here
-it crashes loudly; the dangerous version is silent state divergence.
+**RETRACTED (2026-07-30): the "hybrid-GDN conv blocker" was a probe bug, not
+an engine defect.** The probe's prompt tokenizes to 480 tokens while the
+verify rows were sliced from `[500:516]` — an empty list. Every "verify
+forward" was shape `(1, 0)`; `S=0` is what raised the conv spatial-dims
+error. Tell that was missed: the three runs using synthetic 1000-id prompts
+completed, and only the real-tokenizer run failed — at *all sixteen* M
+values. Fixed (200-rep prompt, tail slice, shape asserts); the 27B-4bit
+curve below now measures cleanly at M=1..16 on a hybrid-GDN body. There is
+no GDN conv problem in this range.
+
+**The real defect, found while checking that claim: `trim_prompt_cache` is a
+silent no-op on hybrid caches.** `ArraysCache` implements no `trim`, so
+`can_trim_prompt_cache` returns False and `trim_prompt_cache` returns 0
+**without trimming the attention layers either** — no error. Measured: after
+an 8-row verify plus a 5-token trim, the attention offset was unchanged and
+next-step logits differed by max |Δ| = 1.17. MTPLX production code never
+calls it, and the reference DFlash port guards correctly, so **τ = 4.29 is
+uncontaminated.** It remains a Phase-2 task-1 constraint: rollback on hybrid
+bodies must use captured-state restore, never a trim — the failure mode is
+silent divergence, not a crash.
 
 **Measurement gap — 35B-A3B varied-token curve not obtained.** Stock
 `mlx_lm`'s GatedDeltaNet path raises `[conv] Spatial dimensions ... input

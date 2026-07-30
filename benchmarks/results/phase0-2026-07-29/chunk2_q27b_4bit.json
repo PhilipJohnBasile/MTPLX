@@ -3,61 +3,93 @@
  "model": "/Users/pjb/.mtplx/models/mlx-community--Qwen3.6-27B-4bit",
  "condition": "stock mlx_lm forward, no engine, no NAX, greedy, ~1k ctx",
  "ar_tok_s_runs": [
-  31.09,
-  31.15
+  31.03,
+  30.96
  ],
- "ar_tok_s_best": 31.15,
+ "ar_tok_s_best": 31.03,
  "t_v_ms_by_M": {
   "1": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 32.212,
+   "ms_min": 31.54,
+   "ms_max": 32.336
   },
   "2": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 33.29,
+   "ms_min": 32.727,
+   "ms_max": 33.961
   },
   "3": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 36.313,
+   "ms_min": 35.723,
+   "ms_max": 36.406
   },
   "4": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 38.472,
+   "ms_min": 38.299,
+   "ms_max": 38.84
   },
   "5": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 42.637,
+   "ms_min": 42.183,
+   "ms_max": 42.752
   },
   "6": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 55.94,
+   "ms_min": 55.879,
+   "ms_max": 56.201
   },
   "7": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 68.045,
+   "ms_min": 65.341,
+   "ms_max": 68.882
   },
   "8": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 69.365,
+   "ms_min": 68.901,
+   "ms_max": 69.693
   },
   "9": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 79.771,
+   "ms_min": 79.392,
+   "ms_max": 80.037
   },
   "10": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 109.37,
+   "ms_min": 108.672,
+   "ms_max": 111.151
   },
   "11": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 109.472,
+   "ms_min": 108.861,
+   "ms_max": 109.683
   },
   "12": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 109.49,
+   "ms_min": 108.828,
+   "ms_max": 109.624
   },
   "13": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 109.563,
+   "ms_min": 108.977,
+   "ms_max": 110.159
   },
   "14": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 110.099,
+   "ms_min": 109.628,
+   "ms_max": 112.019
   },
   "15": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 110.219,
+   "ms_min": 109.917,
+   "ms_max": 110.358
   },
   "16": {
-   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+   "ms_median": 110.831,
+   "ms_min": 110.451,
+   "ms_max": 112.889
   }
  },
- "t_v_ratio_M16_over_M1": null,
+ "t_v_ratio_M16_over_M1": 3.441,
  "m_values": [
   1,
   2,
@@ -76,5 +108,5 @@
   15,
   16
  ],
- "peak_memory_gb": 17.45
+ "peak_memory_gb": 17.39
 }

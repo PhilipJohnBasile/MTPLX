@@ -56,10 +56,12 @@ def t_v_curve(model, prompt_tokens, reps=6, fresh_cache=False, m_values=None):
     curve = {}
     # Varied tokens per row: identical rows understate MoE expert fan-out
     # (Codex audit finding) — use mid-context ids so routing diversity is real.
-    dummy = [int(t) for t in prompt_tokens[500:516]]
+    dummy = [int(t) for t in prompt_tokens[-16:]]
+    assert len(dummy) == 16, f"need 16 verify tokens, got {len(dummy)}"
     for m in m_values:
       try:
         rows = mx.array([dummy[:m]], dtype=mx.int32)
+        assert rows.shape[1] == m, f"verify rows {rows.shape} != M={m}"
 
         def _reset():
             nonlocal cache
@@ -107,7 +109,7 @@ def main():
         ptok = [(1000 + i * 7) % 90000 for i in range(1000)]
     else:
         model, tok = load(model_path)
-        prompt = "def fibonacci(n):\n    " * 80  # ~1k tokens of code-ish context
+        prompt = "def fibonacci(n):\n    " * 200  # >=1k tokens of code-ish context
         ptok = tok.encode(prompt)[:1000]
 
     fresh = "fresh" in sys.argv
