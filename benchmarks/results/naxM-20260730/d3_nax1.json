@@ -1,0 +1,4340 @@
+{
+  "adapter_ensemble_q": {
+    "enabled": false,
+    "epsilon": 0.5,
+    "min_depth": 2
+  },
+  "ar_only": false,
+  "ar_rows": [],
+  "base_hidden_variant": "post_norm",
+  "compare_ar": false,
+  "concat_order": "embedding_hidden",
+  "depths": [
+    {
+      "depth": 3,
+      "rows": [
+        {
+          "accept_probability_sum_by_depth": [
+            41.53904544806768,
+            36.19015758383835,
+            30.556519122983016
+          ],
+          "accept_time_s": 0.006546461081597954,
+          "acceptance_by_depth": [
+            0.8913043478260869,
+            0.8043478260869565,
+            0.6521739130434783
+          ],
+          "acceptance_rate": 0.782608695652174,
+          "accepted_by_depth": [
+            41,
+            37,
+            30
+          ],
+          "accepted_drafts": 108,
+          "adapter_ensemble_q": {
+            "adapter_selected": 0,
+            "base_selected": 0,
+            "calls": 0,
+            "changed": 0,
+            "enabled": false,
+            "epsilon": 0.5,
+            "fallbacks": 0,
+            "min_depth": 2,
+            "shared_selected": 0
+          },
+          "ar_decode_tok_s": null,
+          "ar_end_to_end_tok_s": null,
+          "ar_tok_s": null,
+          "bonus_time_s": 0.00010966492118313909,
+          "bonus_tokens": 29,
+          "capture_commit_time_s": 0.003625040117185563,
+          "category": "warm_coding",
+          "commit_time_s": 0.0,
+          "correction_tokens": 17,
+          "decode_elapsed_s": 3.1165419990429655,
+          "decode_tok_s": 55.51024181709254,
+          "deferred_correction_repairs": 16,
+          "draft_core": {
+            "device_calls": 0,
+            "device_compile_time_s": 0.0,
+            "device_d2_calls": 0,
+            "device_d2_compile_time_s": 0.0,
+            "device_d2_fallbacks": 0,
+            "device_fallbacks": 0,
+            "requested": "stock"
+          },
+          "draft_time_s": 0.6482872107299045,
+          "drafted_by_depth": [
+            46,
+            46,
+            46
+          ],
+          "drafted_tokens": 138,
+          "elapsed_s": 3.296711958013475,
+          "end_to_end_speedup_vs_ar": null,
+          "end_to_end_tok_s": 52.47652879696713,
+          "events": [
+            {
+              "accepted_depths": 1,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 2857,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003878874995280057
+                  },
+                  "token": 2857
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 198,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036094579845666885
+                  },
+                  "token": 1358
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0038425420061685145
+                  },
+                  "token": 727
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 198,
+              "primary": 464,
+              "primary_already_emitted": false,
+              "rejected_at_depth": 2,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 0,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 2,
+                "time_s": 0.0009869589703157544
+              },
+              "timing_s": {
+                "accept": 0.002907499030698091,
+                "capture_commit": 0.0002323330263607204,
+                "snapshot": 0.00016704201698303223,
+                "verify_eval": 0.038635042030364275,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03862937504891306,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.66698145121336e-06,
+                "verify_forward": 0.008952791977208108,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0009869589703157544
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 7683,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1445,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035802919883280993
+                  },
+                  "token": 1445
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 51372,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036254579899832606
+                  },
+                  "token": 51372
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1120,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035969159798696637
+                  },
+                  "token": 1120
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 198,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 1,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018913340172730386
+              },
+              "timing_s": {
+                "accept": 6.799900438636541e-05,
+                "bonus_sample": 6.041023880243301e-06,
+                "snapshot": 0.00013391702668741345,
+                "verify_eval": 0.04046766698593274,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.04046037496300414,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 7.292022928595543e-06,
+                "verify_forward": 0.007594917027745396,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013401670148596168,
+                "verify_target_distribution_lazy_bonus": 0.0005511670024134219
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 0.2620550655281668,
+                  "accepted": false,
+                  "correction": 198,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034606250119395554
+                  },
+                  "token": 271
+                },
+                {
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035819580079987645
+                  },
+                  "token": 727
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035284999758005142
+                  },
+                  "token": 2706
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 198,
+              "primary": 7683,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 1,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 2,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 1,
+                "time_s": 0.0004825000069104135
+              },
+              "timing_s": {
+                "accept": 0.00012083398178219795,
+                "capture_commit": 0.00019166700076311827,
+                "snapshot": 0.00013833300909027457,
+                "verify_eval": 0.03925208299187943,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03924591699615121,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.165995728224516e-06,
+                "verify_forward": 0.007267957960721105,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0004825000069104135
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 1697,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1445,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036035419907420874
+                  },
+                  "token": 1445
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 18904,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035013339947909117
+                  },
+                  "token": 18904
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1120,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035542499972507358
+                  },
+                  "token": 1120
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 198,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 3,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001840124954469502
+              },
+              "timing_s": {
+                "accept": 7.487507537007332e-05,
+                "bonus_sample": 4.999979864805937e-06,
+                "snapshot": 0.00013329199282452464,
+                "verify_eval": 0.03886487503768876,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03885937499580905,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.500041879713535e-06,
+                "verify_forward": 0.007356541987974197,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013689999468624592,
+                "verify_target_distribution_lazy_bonus": 0.0004711250076070428
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 11,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035022920346818864
+                  },
+                  "token": 1358
+                },
+                {
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003537416981998831
+                  },
+                  "token": 1005
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003540291974786669
+                  },
+                  "token": 13483
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 11,
+              "primary": 1697,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 1,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 4,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 1,
+                "time_s": 0.0005751659628003836
+              },
+              "timing_s": {
+                "accept": 0.0001173760392703116,
+                "capture_commit": 0.0002490000333636999,
+                "snapshot": 0.00013637496158480644,
+                "verify_eval": 0.037793249997776,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.037788124987855554,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.125009920448065e-06,
+                "verify_forward": 0.007402707997243851,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0005751659628003836
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 2706,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 28173,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033847910235635936
+                  },
+                  "token": 28173
+                },
+                {
+                  "accept_probability": 0.4706958525718988,
+                  "accepted": true,
+                  "correction": 1358,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034572500153444707
+                  },
+                  "token": 1358
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 727,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033982499735429883
+                  },
+                  "token": 727
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 11,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 5,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001774042088072747
+              },
+              "timing_s": {
+                "accept": 5.579087883234024e-05,
+                "bonus_sample": 4.334026016294956e-06,
+                "snapshot": 0.00011533399811014533,
+                "verify_eval": 0.0386489590164274,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03864408400841057,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.875008016824722e-06,
+                "verify_forward": 0.007445249997545034,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012863340671174228,
+                "verify_target_distribution_lazy_bonus": 0.0004877080209553242
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 30252,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003425916947890073
+                  },
+                  "token": 9176
+                },
+                {
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00345745898084715
+                  },
+                  "token": 5406
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003678582957945764
+                  },
+                  "token": 25
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 30252,
+              "primary": 2706,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 1,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 6,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 1,
+                "time_s": 0.0005030409665778279
+              },
+              "timing_s": {
+                "accept": 9.020906873047352e-05,
+                "capture_commit": 0.00019624998094514012,
+                "snapshot": 0.00013458298053592443,
+                "verify_eval": 0.03792441601399332,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.037919415975920856,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.00003807246685e-06,
+                "verify_forward": 0.008000749978236854,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0005030409665778279
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 8,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5406,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033939590211957693
+                  },
+                  "token": 5406
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034723749849945307
+                  },
+                  "token": 25
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 7683,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034947499516420066
+                  },
+                  "token": 7683
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 30252,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 7,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0017155010718852282
+              },
+              "timing_s": {
+                "accept": 6.595696322619915e-05,
+                "bonus_sample": 3.5410048440098763e-06,
+                "snapshot": 0.000122375029604882,
+                "verify_eval": 0.03892666700994596,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03892016602912918,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.500980816781521e-06,
+                "verify_forward": 0.007161874964367598,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012183760409243405,
+                "verify_target_distribution_lazy_bonus": 0.0004971250309608877
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "context_copy": {
+                "accepted": 1,
+                "block": 12,
+                "correction": 1697,
+                "extension": 1,
+                "time_s": 0.07826654199743643
+              },
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [],
+              "gated_stop_depth": null,
+              "mtp_history_policy": "committed",
+              "primary": 8,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "step": 8,
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 1,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 58,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034938750322908163
+                  },
+                  "token": 58
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 13061,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003615334047935903
+                  },
+                  "token": 8217
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003453250043094158
+                  },
+                  "token": 5491
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 13061,
+              "primary": 1697,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 2,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 9,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 2,
+                "time_s": 0.0010750419460237026
+              },
+              "timing_s": {
+                "accept": 0.0001222500577569008,
+                "capture_commit": 0.00020854099420830607,
+                "snapshot": 0.0001247919863089919,
+                "verify_eval": 0.04906645801384002,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.0490602080244571,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.249989382922649e-06,
+                "verify_forward": 0.007596874958835542,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0010750419460237026
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 4071,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5491,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033637500018812716
+                  },
+                  "token": 5491
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003711499972268939
+                  },
+                  "token": 198
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 262,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003475832985714078
+                  },
+                  "token": 262
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 13061,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 10,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018012499785982072
+              },
+              "timing_s": {
+                "accept": 6.599898915737867e-05,
+                "bonus_sample": 3.0830269679427147e-06,
+                "snapshot": 0.00014329096302390099,
+                "verify_eval": 0.039758791972417384,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.0397540419944562,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.749977961182594e-06,
+                "verify_forward": 0.007556457945611328,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001323667005635798,
+                "verify_target_distribution_lazy_bonus": 0.00047758297296240926
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 43,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5697,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0037706249859184027
+                  },
+                  "token": 5697
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 264,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003555875038728118
+                  },
+                  "token": 264
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 4566,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0037912080297246575
+                  },
+                  "token": 4566
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 4071,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 11,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0019480829942040145
+              },
+              "timing_s": {
+                "accept": 8.958304533734918e-05,
+                "bonus_sample": 4.125991836190224e-06,
+                "snapshot": 0.00013387500075623393,
+                "verify_eval": 0.039946458011399955,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03993774997070432,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 8.708040695637465e-06,
+                "verify_forward": 0.007322666002437472,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0014308749814517796,
+                "verify_target_distribution_lazy_bonus": 0.0005172080127522349
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "context_copy": {
+                "accepted": 16,
+                "block": 16,
+                "correction": null,
+                "extension": 2,
+                "time_s": 0.13078779203351587
+              },
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [],
+              "gated_stop_depth": null,
+              "mtp_history_policy": "committed",
+              "primary": 43,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "step": 12,
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 262,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003426165960263461
+                  },
+                  "token": 262
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 7189,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035743750049732625
+                  },
+                  "token": 7189
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 25,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003478458966128528
+                  },
+                  "token": 283
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 25,
+              "primary": 198,
+              "primary_already_emitted": false,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 13,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.0015844579902477562
+              },
+              "timing_s": {
+                "accept": 0.00010879203910008073,
+                "capture_commit": 0.00019345898181200027,
+                "snapshot": 0.00016183301340788603,
+                "verify_eval": 0.053966499981470406,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.0539596660528332,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.833928637206554e-06,
+                "verify_forward": 0.008707374974619597,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0015844579902477562
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 60,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1697,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003581958997529
+                  },
+                  "token": 1697
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 58,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003479790990240872
+                  },
+                  "token": 58
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 13061,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034727920428849757
+                  },
+                  "token": 13061
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 25,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 14,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001807666034437716
+              },
+              "timing_s": {
+                "accept": 5.733396392315626e-05,
+                "bonus_sample": 3.4170225262641907e-06,
+                "snapshot": 0.000132458982989192,
+                "verify_eval": 0.03925379196880385,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03924879204714671,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.999921657145023e-06,
+                "verify_forward": 0.007566415995825082,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012966660433448851,
+                "verify_target_distribution_lazy_bonus": 0.0005109999910928309
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 262,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 283,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034465829958207905
+                  },
+                  "token": 283
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 2958,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003404624992981553
+                  },
+                  "token": 2958
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003474250028375536
+                  },
+                  "token": 198
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 60,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 15,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001802499988116324
+              },
+              "timing_s": {
+                "accept": 6.479100557044148e-05,
+                "bonus_sample": 3.5829725675284863e-06,
+                "snapshot": 0.00013829197268933058,
+                "verify_eval": 0.03813608398195356,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.0381282499874942,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 7.833994459360838e-06,
+                "verify_forward": 0.007796791032887995,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001344666990917176,
+                "verify_target_distribution_lazy_bonus": 0.00045783299719914794
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5787,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003558209049515426
+                  },
+                  "token": 5787
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034482090268284082
+                  },
+                  "token": 25
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 1697,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003547458036337048
+                  },
+                  "token": 1103
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 1697,
+              "primary": 262,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 16,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.0013164170668460429
+              },
+              "timing_s": {
+                "accept": 0.00010608293814584613,
+                "capture_commit": 0.00021950004156678915,
+                "snapshot": 0.0001373330014757812,
+                "verify_eval": 0.03816504095448181,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03816029103472829,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.749919753521681e-06,
+                "verify_forward": 0.007949749997351319,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013164170668460429
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 2958,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 16793,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034403749741613865
+                  },
+                  "token": 16793
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 60,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034327080356888473
+                  },
+                  "token": 60
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 283,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034659579978324473
+                  },
+                  "token": 283
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 1697,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 17,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0016996660269796848
+              },
+              "timing_s": {
+                "accept": 5.7792989537119865e-05,
+                "bonus_sample": 2.416956704109907e-06,
+                "snapshot": 0.00012408301699906588,
+                "verify_eval": 0.03861158399377018,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03860629198607057,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.292007699608803e-06,
+                "verify_forward": 0.007361375028267503,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012795410002581775,
+                "verify_target_distribution_lazy_bonus": 0.0004201250267215073
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 271,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035042919917032123
+                  },
+                  "token": 271
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 262,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003438832995016128
+                  },
+                  "token": 262
+                },
+                {
+                  "accept_probability": 0.2703574646362566,
+                  "accepted": false,
+                  "correction": 440,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00361016602255404
+                  },
+                  "token": 413
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 440,
+              "primary": 2958,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 18,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.001533541944809258
+              },
+              "timing_s": {
+                "accept": 0.00011841603554785252,
+                "capture_commit": 0.00019995804177597165,
+                "snapshot": 0.00013345800107344985,
+                "verify_eval": 0.03783208294771612,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03782716696150601,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.915986210107803e-06,
+                "verify_forward": 0.007298667042050511,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001533541944809258
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 0.15886944933508046,
+                  "accepted": false,
+                  "correction": 1752,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034103330108337104
+                  },
+                  "token": 1724
+                },
+                {
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003477166988886893
+                  },
+                  "token": 5406
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00349016604013741
+                  },
+                  "token": 11
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 1752,
+              "primary": 440,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 1,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 19,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 1,
+                "time_s": 0.0005123339942656457
+              },
+              "timing_s": {
+                "accept": 9.758298983797431e-05,
+                "capture_commit": 0.00023229100042954087,
+                "snapshot": 0.0001277500414289534,
+                "verify_eval": 0.038833375030662864,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038828416960313916,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.95807034894824e-06,
+                "verify_forward": 0.007266458997037262,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0005123339942656457
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 1,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5645,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033579590381123126
+                  },
+                  "token": 5645
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 437,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035655000247061253
+                  },
+                  "token": 5406
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034091249690391123
+                  },
+                  "token": 11
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 437,
+              "primary": 1752,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 2,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 20,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 2,
+                "time_s": 0.0008790839347057045
+              },
+              "timing_s": {
+                "accept": 0.00010087405098602176,
+                "capture_commit": 0.0002241660258732736,
+                "snapshot": 0.00011750002158805728,
+                "verify_eval": 0.03882145800162107,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038816209009382874,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.24899223819375e-06,
+                "verify_forward": 0.007237540965434164,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0008790839347057045
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 420,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 81,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0037120420020073652
+                  },
+                  "token": 81
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 487,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003457416023593396
+                  },
+                  "token": 487
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 10845,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0037420419976115227
+                  },
+                  "token": 10845
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 437,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 21,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018632090068422258
+              },
+              "timing_s": {
+                "accept": 6.820802809670568e-05,
+                "bonus_sample": 2.333021257072687e-06,
+                "snapshot": 0.00012783403508365154,
+                "verify_eval": 0.03926616697572172,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03926033299649134,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.833979230374098e-06,
+                "verify_forward": 0.007168083044234663,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001379417022690177,
+                "verify_target_distribution_lazy_bonus": 0.0004837919841520488
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 871,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 4609,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034691670443862677
+                  },
+                  "token": 4609
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 12,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003515666991006583
+                  },
+                  "token": 12
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 23,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003517500008456409
+                  },
+                  "token": 23
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 420,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 22,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0017682479228824377
+              },
+              "timing_s": {
+                "accept": 6.43770326860249e-05,
+                "bonus_sample": 2.5010667741298676e-06,
+                "snapshot": 0.00012762501137331128,
+                "verify_eval": 0.037854791968129575,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03784879203885794,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.999929271638393e-06,
+                "verify_forward": 0.007263084000442177,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013404569472186267,
+                "verify_target_distribution_lazy_bonus": 0.00042779097566381097
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 198,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 430,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034872079850174487
+                  },
+                  "token": 430
+                },
+                {
+                  "accept_probability": 0.8112774181652761,
+                  "accepted": true,
+                  "correction": 281,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003485458961222321
+                  },
+                  "token": 281
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003540917008649558
+                  },
+                  "token": 25
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 871,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 23,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001783373998478055
+              },
+              "timing_s": {
+                "accept": 7.750099757686257e-05,
+                "bonus_sample": 3.5420525819063187e-06,
+                "snapshot": 0.0001443339860998094,
+                "verify_eval": 0.03825433395104483,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03824787505436689,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.458896677941084e-06,
+                "verify_forward": 0.0074132499867118895,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013014990254305303,
+                "verify_target_distribution_lazy_bonus": 0.0004818749730475247
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 285,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003544249979313463
+                  },
+                  "token": 285
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 364,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003369125013705343
+                  },
+                  "token": 364
+                },
+                {
+                  "accept_probability": 0.3486451480820239,
+                  "accepted": false,
+                  "correction": 82160,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035682919551618397
+                  },
+                  "token": 1500
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 82160,
+              "primary": 198,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 24,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.0012425010208971798
+              },
+              "timing_s": {
+                "accept": 0.00011329096741974354,
+                "capture_commit": 0.00022887502564117312,
+                "snapshot": 0.0001314579858444631,
+                "verify_eval": 0.0382414169725962,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03823733399622142,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.082976374775171e-06,
+                "verify_forward": 0.007343499979469925,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012425010208971798
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 12867,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 11,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035223339800722897
+                  },
+                  "token": 11
+                },
+                {
+                  "accept_probability": 0.908184313101177,
+                  "accepted": true,
+                  "correction": 1500,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033822919940575957
+                  },
+                  "token": 1500
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 303,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034006249625235796
+                  },
+                  "token": 303
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 82160,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 25,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0017646659980528057
+              },
+              "timing_s": {
+                "accept": 6.35830219835043e-05,
+                "bonus_sample": 3.6249984987080097e-06,
+                "snapshot": 0.00016237498493865132,
+                "verify_eval": 0.03866766701685265,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03866129199741408,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.375019438564777e-06,
+                "verify_forward": 0.007292333000805229,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012814580113627017,
+                "verify_target_distribution_lazy_bonus": 0.000483207986690104
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 28,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 925,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003376999986357987
+                  },
+                  "token": 925
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 11,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003472917014732957
+                  },
+                  "token": 11
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1151,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034705419675447047
+                  },
+                  "token": 1151
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 12867,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 26,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0017660419689491391
+              },
+              "timing_s": {
+                "accept": 7.229199400171638e-05,
+                "bonus_sample": 3.4999684430658817e-06,
+                "snapshot": 0.00015924999024719,
+                "verify_eval": 0.03906325000571087,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03905674995621666,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.500049494206905e-06,
+                "verify_forward": 0.007459042011760175,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012701249797828496,
+                "verify_target_distribution_lazy_bonus": 0.0004959169891662896
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 309,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 16,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003427124989684671
+                  },
+                  "token": 16
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1590,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035035829641856253
+                  },
+                  "token": 1590
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035875000176019967
+                  },
+                  "token": 198
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 28,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 27,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0017222489695996046
+              },
+              "timing_s": {
+                "accept": 4.8668007366359234e-05,
+                "bonus_sample": 4.458008334040642e-06,
+                "snapshot": 0.00018445798195898533,
+                "verify_eval": 0.037978417007252574,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03797245805617422,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.958951078355312e-06,
+                "verify_forward": 0.007212834025267512,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012189159751869738,
+                "verify_target_distribution_lazy_bonus": 0.0005033329944126308
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 16674,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 35463,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034120000200346112
+                  },
+                  "token": 35463
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 283,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034979169722646475
+                  },
+                  "token": 283
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1500,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035179999540559947
+                  },
+                  "token": 1500
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 309,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 28,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001789458969142288
+              },
+              "timing_s": {
+                "accept": 7.154099876061082e-05,
+                "bonus_sample": 4.04199818149209e-06,
+                "snapshot": 0.0001215840457007289,
+                "verify_eval": 0.03814433404477313,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038137709023430943,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.62502134218812e-06,
+                "verify_forward": 0.007186958042439073,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013074589660391212,
+                "verify_target_distribution_lazy_bonus": 0.0004820000031031668
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 413,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 363,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033448750036768615
+                  },
+                  "token": 363
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034748329780995846
+                  },
+                  "token": 198
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 309,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003490292001515627
+                  },
+                  "token": 309
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 16674,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 29,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001748999988194555
+              },
+              "timing_s": {
+                "accept": 6.762502016499639e-05,
+                "bonus_sample": 3.999972250312567e-06,
+                "snapshot": 0.0001235000090673566,
+                "verify_eval": 0.038109707995317876,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038103458005934954,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.249989382922649e-06,
+                "verify_forward": 0.0071996659971773624,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001263582962565124,
+                "verify_target_distribution_lazy_bonus": 0.000485417025629431
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 198,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 524,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033885829616338015
+                  },
+                  "token": 524
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 35463,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003422916983254254
+                  },
+                  "token": 35463
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033545829937793314
+                  },
+                  "token": 25
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 413,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 30,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0016748750349506736
+              },
+              "timing_s": {
+                "accept": 5.5583950597792864e-05,
+                "bonus_sample": 2.7489732019603252e-06,
+                "snapshot": 0.00012470799265429378,
+                "verify_eval": 0.03815420804312453,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03814820805564523,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.999987479299307e-06,
+                "verify_forward": 0.007166041003074497,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001274041016586125,
+                "verify_target_distribution_lazy_bonus": 0.0004008340183645487
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 309,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 388,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00346325000282377
+                  },
+                  "token": 388
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 2962,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003494374977890402
+                  },
+                  "token": 2962
+                },
+                {
+                  "accept_probability": 0.9375165102647318,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003480291983578354
+                  },
+                  "token": 198
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 198,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 31,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018561259494163096
+              },
+              "timing_s": {
+                "accept": 6.495806155726314e-05,
+                "bonus_sample": 2.291053533554077e-06,
+                "snapshot": 0.00013562495587393641,
+                "verify_eval": 0.03832179197343066,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03831629204796627,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.499925464391708e-06,
+                "verify_forward": 0.00727287499466911,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001451041956897825,
+                "verify_target_distribution_lazy_bonus": 0.0004050839925184846
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 388,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1380,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003406332980375737
+                  },
+                  "token": 1380
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035670410143211484
+                  },
+                  "token": 25
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003506166976876557
+                  },
+                  "token": 198
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 309,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 32,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018846670864149928
+              },
+              "timing_s": {
+                "accept": 7.27078877389431e-05,
+                "bonus_sample": 3.833032678812742e-06,
+                "snapshot": 0.00012587499804794788,
+                "verify_eval": 0.03845562500646338,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038449999992735684,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.62501372769475e-06,
+                "verify_forward": 0.007180166954640299,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0014250000822357833,
+                "verify_target_distribution_lazy_bonus": 0.00045966700417920947
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 0,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 0.1181209332044395,
+                  "accepted": false,
+                  "correction": 7189,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035286250058561563
+                  },
+                  "token": 2746
+                },
+                {
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035325419739820063
+                  },
+                  "token": 283
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003641083021648228
+                  },
+                  "token": 2857
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 7189,
+              "primary": 388,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 1,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 33,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 1,
+                "time_s": 0.0005231660325080156
+              },
+              "timing_s": {
+                "accept": 9.662494994699955e-05,
+                "capture_commit": 0.00020695797866210341,
+                "snapshot": 0.0001445410307496786,
+                "verify_eval": 0.03950479096965864,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03950037498725578,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.415982402861118e-06,
+                "verify_forward": 0.008076458005234599,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0005231660325080156
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 5712,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1989,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003690082987304777
+                  },
+                  "token": 1989
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 9028,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003538292017765343
+                  },
+                  "token": 9028
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 22246,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0037291250191628933
+                  },
+                  "token": 22246
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 7189,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 34,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018489170470274985
+              },
+              "timing_s": {
+                "accept": 6.587500683963299e-05,
+                "bonus_sample": 4.207948222756386e-06,
+                "snapshot": 0.00014108297182247043,
+                "verify_eval": 0.03936129197245464,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039355041983071715,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.249989382922649e-06,
+                "verify_forward": 0.007649708015378565,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013047500397078693,
+                "verify_target_distribution_lazy_bonus": 0.0005441670073196292
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 198,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 452,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003443000023253262
+                  },
+                  "token": 452
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 6708,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003661624970845878
+                  },
+                  "token": 6708
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 578,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003548417007550597
+                  },
+                  "token": 578
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 5712,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 35,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001851041044574231
+              },
+              "timing_s": {
+                "accept": 6.087496876716614e-05,
+                "bonus_sample": 4.500965587794781e-06,
+                "snapshot": 0.00015295803314074874,
+                "verify_eval": 0.038342999992892146,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.038337500009220093,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.499983672052622e-06,
+                "verify_forward": 0.007525958004407585,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013080000062473118,
+                "verify_target_distribution_lazy_bonus": 0.0005430410383269191
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 17470,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 309,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034205830306746066
+                  },
+                  "token": 309
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 3525,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003625915967859328
+                  },
+                  "token": 3525
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 2857,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003624957986176014
+                  },
+                  "token": 2857
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 198,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 36,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018384160357527435
+              },
+              "timing_s": {
+                "accept": 6.462493911385536e-05,
+                "bonus_sample": 3.999972250312567e-06,
+                "snapshot": 0.0001342499745078385,
+                "verify_eval": 0.038284124981146306,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03827841696329415,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.708017852157354e-06,
+                "verify_forward": 0.007557459000963718,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013057910255156457,
+                "verify_target_distribution_lazy_bonus": 0.0005326250102370977
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 3328,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 31489,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003439707972574979
+                  },
+                  "token": 31489
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1401,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036357080098241568
+                  },
+                  "token": 1401
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 430,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035210000351071358
+                  },
+                  "token": 430
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 17470,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 37,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001884708006400615
+              },
+              "timing_s": {
+                "accept": 8.466700091958046e-05,
+                "bonus_sample": 3.5829725675284863e-06,
+                "snapshot": 0.00015120796160772443,
+                "verify_eval": 0.039708832977339625,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039702125010080636,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.707967258989811e-06,
+                "verify_forward": 0.007631250016856939,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001423874986357987,
+                "verify_target_distribution_lazy_bonus": 0.00046083302004262805
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 5787,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003562041965778917
+                  },
+                  "token": 25
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0038284999900497496
+                  },
+                  "token": 198
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 388,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003457167011220008
+                  },
+                  "token": 388
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 3328,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 38,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0018237080075778067
+              },
+              "timing_s": {
+                "accept": 6.316794315353036e-05,
+                "bonus_sample": 3.5409466363489628e-06,
+                "snapshot": 0.00013116700574755669,
+                "verify_eval": 0.03837812499841675,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03837337502045557,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.749977961182594e-06,
+                "verify_forward": 0.007499375031329691,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013362489989958704,
+                "verify_target_distribution_lazy_bonus": 0.00048745900858193636
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 1021,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1989,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00348116597160697
+                  },
+                  "token": 1989
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 925,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003994000027887523
+                  },
+                  "token": 925
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 1,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003577916999347508
+                  },
+                  "token": 1
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 5787,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 39,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001966750016435981
+              },
+              "timing_s": {
+                "accept": 6.504100747406483e-05,
+                "bonus_sample": 3.999972250312567e-06,
+                "snapshot": 0.00014954200014472008,
+                "verify_eval": 0.039323957986198366,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03931904101045802,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.916975740343332e-06,
+                "verify_forward": 0.007819958962500095,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001360249996650964,
+                "verify_target_distribution_lazy_bonus": 0.0006065000197850168
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 313,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 313,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034346249885857105
+                  },
+                  "token": 313
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 77227,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003809874993748963
+                  },
+                  "token": 77227
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 15623,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0038070830050855875
+                  },
+                  "token": 15623
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 1021,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 40,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0021964581101201475
+              },
+              "timing_s": {
+                "accept": 7.012492278590798e-05,
+                "bonus_sample": 5.291949491947889e-06,
+                "snapshot": 0.0001391249825246632,
+                "verify_eval": 0.03918525000335649,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03917950001778081,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.749985575675964e-06,
+                "verify_forward": 0.007988292025402188,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0015999170718714595,
+                "verify_target_distribution_lazy_bonus": 0.000596541038248688
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 1,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 38135,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00399970798753202
+                  },
+                  "token": 38135
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 54084,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036237089661881328
+                  },
+                  "token": 6488
+                },
+                {
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036192500265315175
+                  },
+                  "token": 54084
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 54084,
+              "primary": 313,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 2,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 41,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 2,
+                "time_s": 0.0009397489484399557
+              },
+              "timing_s": {
+                "accept": 0.00012016802793368697,
+                "capture_commit": 0.00021158397430554032,
+                "snapshot": 0.00014824996469542384,
+                "verify_eval": 0.03821795800467953,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03821183298714459,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 6.125017534941435e-06,
+                "verify_forward": 0.007594999973662198,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0009397489484399557
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 271,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035922080278396606
+                  },
+                  "token": 271
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 262,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.00372587499441579
+                  },
+                  "token": 262
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 413,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035154169891029596
+                  },
+                  "token": 7189
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 413,
+              "primary": 54084,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 42,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.001503292005509138
+              },
+              "timing_s": {
+                "accept": 0.00013045803643763065,
+                "capture_commit": 0.00022662500850856304,
+                "snapshot": 0.0001355829881504178,
+                "verify_eval": 0.0391531249624677,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039147208037320524,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.916925147175789e-06,
+                "verify_forward": 0.007737624982837588,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001503292005509138
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 285,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5787,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003507375018671155
+                  },
+                  "token": 5787
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 25,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003548207983840257
+                  },
+                  "token": 25
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 198,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035238330019637942
+                  },
+                  "token": 198
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 413,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 43,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.001908124948386103
+              },
+              "timing_s": {
+                "accept": 8.608406642451882e-05,
+                "bonus_sample": 4.041008651256561e-06,
+                "snapshot": 0.00013762502931058407,
+                "verify_eval": 0.03970916598336771,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039703666989225894,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.498994141817093e-06,
+                "verify_forward": 0.008032208017539233,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0013647909509018064,
+                "verify_target_distribution_lazy_bonus": 0.0005433339974842966
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 4673,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035881249932572246
+                  },
+                  "token": 4673
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 14953,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035700000007636845
+                  },
+                  "token": 14953
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 4762,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035672090016305447
+                  },
+                  "token": 7
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 4762,
+              "primary": 285,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 44,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.001209373993333429
+              },
+              "timing_s": {
+                "accept": 0.00010379200102761388,
+                "capture_commit": 0.00020775001030415297,
+                "snapshot": 0.00013945897808298469,
+                "verify_eval": 0.039214666991028935,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039209417009260505,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 5.249981768429279e-06,
+                "verify_forward": 0.008471292036119848,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001209373993333429
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "bonus_token": 37595,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 77,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003428958007134497
+                  },
+                  "token": 77
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 3158,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034365419996902347
+                  },
+                  "token": 3158
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 5799,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0034817910054698586
+                  },
+                  "token": 5799
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 4762,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 45,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_bonus_path",
+                "rows": 4,
+                "time_s": 0.0016944179660640657
+              },
+              "timing_s": {
+                "accept": 5.095801316201687e-05,
+                "bonus_sample": 4.083034582436085e-06,
+                "snapshot": 0.0001272080116905272,
+                "verify_eval": 0.039190499985124916,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03918608301319182,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.416971933096647e-06,
+                "verify_forward": 0.007368875027168542,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.001253375958185643,
+                "verify_target_distribution_lazy_bonus": 0.00044104200787842274
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 2,
+              "capture_repair": "captured_prefix_pending_correction",
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 578,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033818749943748116
+                  },
+                  "token": 578
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 271,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0036736250040121377
+                  },
+                  "token": 271
+                },
+                {
+                  "accept_probability": 0.0,
+                  "accepted": false,
+                  "correction": 262,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.003381499962415546
+                  },
+                  "token": 331
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "pending_primary": 262,
+              "primary": 37595,
+              "primary_already_emitted": true,
+              "rejected_at_depth": 3,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": true,
+                "omitted": false
+              },
+              "step": 46,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.0012266249977983534
+              },
+              "timing_s": {
+                "accept": 9.795802179723978e-05,
+                "capture_commit": 0.0002015409991145134,
+                "snapshot": 0.00012199999764561653,
+                "verify_eval": 0.039057084009982646,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.039052459003869444,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.62500611320138e-06,
+                "verify_forward": 0.0073278330382891,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012266249977983534
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            },
+            {
+              "accepted_depths": 3,
+              "depth": 3,
+              "draft_core": "stock",
+              "drafts": [
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 460,
+                  "depth": 1,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0033651249832473695
+                  },
+                  "token": 460
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 7189,
+                  "depth": 2,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035957919899374247
+                  },
+                  "token": 7189
+                },
+                {
+                  "accept_probability": 1.0,
+                  "accepted": true,
+                  "correction": 248046,
+                  "depth": 3,
+                  "mtp_corrector": null,
+                  "timing_s": {
+                    "draft": 0.0035496249911375344
+                  },
+                  "token": 248046
+                }
+              ],
+              "gated_stop_depth": null,
+              "lazy_bonus_verify": {
+                "disabled_by": null,
+                "draft_tokens": 3,
+                "enabled": false,
+                "min_depth": 2,
+                "requested": false,
+                "verify_input_tokens": 4
+              },
+              "mtp_history_policy": "committed",
+              "primary": 262,
+              "primary_already_emitted": true,
+              "rejected_at_depth": null,
+              "requested_depth": 3,
+              "speculative_bonus": {
+                "distribution_row_needed": false,
+                "omitted": false
+              },
+              "step": 47,
+              "target_distribution_materialized": {
+                "batch_target_arrays": false,
+                "batch_target_distributions": false,
+                "mode": "lazy_accept_path",
+                "rows": 3,
+                "time_s": 0.0012352069607004523
+              },
+              "timing_s": {
+                "accept": 5.5668060667812824e-05,
+                "snapshot": 0.00012337503721937537,
+                "verify_eval": 0.03944812499685213,
+                "verify_eval_hidden": 0.0,
+                "verify_eval_joint": 0.03944354201667011,
+                "verify_eval_logits": 0.0,
+                "verify_eval_unattributed": 4.582980182021856e-06,
+                "verify_forward": 0.007387000019662082,
+                "verify_target_distribution": 0.0,
+                "verify_target_distribution_lazy_accept": 0.0012352069607004523
+              },
+              "verify_core": "stock",
+              "verify_strategy": "capture_commit"
+            }
+          ],
+          "exact_match": null,
+          "finish_reason": "stop",
+          "generated_tokens": 173,
+          "generation_ended_at": 1785452084.6972082,
+          "generation_started_at": 1785452081.392374,
+          "generation_window_s": 3.3048341274261475,
+          "graphbank": {},
+          "hit_token_budget": false,
+          "lazy_bonus_commit_time_s": 0.0,
+          "lazy_bonus_verify_calls": 0,
+          "mean_accept_probability_by_depth": [
+            0.9030227271319061,
+            0.7867425561703989,
+            0.6642721548474568
+          ],
+          "mean_accepted_drafts_per_cycle": 2.25,
+          "mtp_topk_reranker": {
+            "calls": 0,
+            "changed": 0,
+            "enabled": false,
+            "fallbacks": 0,
+            "mean_selected_rank": null,
+            "selected_rank_sum": 0
+          },
+          "online_correction_cache": {
+            "enabled": false,
+            "entries": 0,
+            "hits": 0,
+            "key_policy": "local_prefix",
+            "prompt_collisions": 0,
+            "prompt_enabled": false,
+            "prompt_hits": 0,
+            "prompt_min_depth": 2,
+            "prompt_skipped": 0,
+            "prompt_stores": 0,
+            "stores": 0
+          },
+          "online_hidden_corrector_time_s": 0.0,
+          "peak_memory_bytes": 20591177178,
+          "prompt_eval_time_s": 0.18016995897050947,
+          "prompt_id": "calib_code_parser_001",
+          "prompt_sha256": "b5377e90b27c5ce04bef006585ff75f9c2766bef53be0a2e5d5053ed88ef1280",
+          "reject_path_counts": {
+            "reject_depth_1": 5,
+            "reject_depth_2": 4,
+            "reject_depth_3": 7
+          },
+          "rejected_drafts": 16,
+          "repair_time_by_reject_depth_s": {},
+          "repair_time_s": 0.0,
+          "rollback_time_s": 0.0,
+          "snapshot_time_s": 0.0066273759584873915,
+          "speedup_vs_ar": null,
+          "target_distribution_materialized_rows": 153,
+          "target_distribution_materialized_windows": 46,
+          "target_distribution_share": 0.028829939152311204,
+          "target_forward_time_s": 2.610392081725877,
+          "text": "import json\nfrom pathlib import Path\nfrom typing import List, Dict\n\n\ndef load_records(path: Path) -> List[Dict]:\n    \"\"\"Load a JSONL file, skip blank lines, and raise ValueError with line numbers for invalid JSON.\"\"\"\n    records: List[Dict] = []\n    errors: List[str] = []\n\n    with path.open(\"r\", encoding=\"utf-8\") as f:\n        for lineno, line in enumerate(f, start=1):\n            stripped = line.strip()\n            if not stripped:\n                continue\n            try:\n                records.append(json.loads(stripped))\n            except json.JSONDecodeError as exc:\n                errors.append(f\"line {lineno}: {exc}\")\n\n    if errors:\n        raise ValueError(\"\\n\".join(errors))\n\n    return records",
+          "tok_s": 55.51024181709254,
+          "token_budget": 192,
+          "tokens": [
+            464,
+            2857,
+            198,
+            1445,
+            51372,
+            1120,
+            7683,
+            198,
+            1445,
+            18904,
+            1120,
+            1697,
+            11,
+            28173,
+            1358,
+            727,
+            2706,
+            30252,
+            5406,
+            25,
+            7683,
+            8,
+            1411,
+            1697,
+            58,
+            13061,
+            5491,
+            198,
+            262,
+            4071,
+            5697,
+            264,
+            4566,
+            43,
+            999,
+            11,
+            10390,
+            9813,
+            4965,
+            11,
+            321,
+            4673,
+            14953,
+            440,
+            1500,
+            4947,
+            364,
+            8060,
+            4566,
+            71483,
+            198,
+            262,
+            7189,
+            25,
+            1697,
+            58,
+            13061,
+            60,
+            283,
+            2958,
+            198,
+            262,
+            5787,
+            25,
+            1697,
+            16793,
+            60,
+            283,
+            2958,
+            271,
+            262,
+            440,
+            1752,
+            5645,
+            437,
+            81,
+            487,
+            10845,
+            420,
+            4609,
+            12,
+            23,
+            871,
+            430,
+            281,
+            25,
+            198,
+            285,
+            364,
+            82160,
+            11,
+            1500,
+            303,
+            12867,
+            925,
+            11,
+            1151,
+            28,
+            16,
+            1590,
+            198,
+            309,
+            35463,
+            283,
+            1500,
+            16674,
+            363,
+            198,
+            309,
+            413,
+            524,
+            35463,
+            25,
+            198,
+            388,
+            2962,
+            198,
+            309,
+            1380,
+            25,
+            198,
+            388,
+            7189,
+            1989,
+            9028,
+            22246,
+            5712,
+            452,
+            6708,
+            578,
+            198,
+            309,
+            3525,
+            2857,
+            17470,
+            31489,
+            1401,
+            430,
+            3328,
+            25,
+            198,
+            388,
+            5787,
+            1989,
+            925,
+            1,
+            1021,
+            313,
+            77227,
+            15623,
+            313,
+            38135,
+            54084,
+            271,
+            262,
+            413,
+            5787,
+            25,
+            198,
+            285,
+            4673,
+            14953,
+            4762,
+            77,
+            3158,
+            5799,
+            37595,
+            578,
+            271,
+            262,
+            460,
+            7189,
+            248046
+          ],
+          "validations": [
+            {
+              "detail": "",
+              "name": "no_degenerate_loop",
+              "passed": true
+            },
+            {
+              "detail": "",
+              "name": "balanced_delimiters",
+              "passed": true
+            }
+          ],
+          "verify_calls": 48,
+          "verify_eval_time_s": 1.8797393736895174,
+          "verify_forward_time_s": 0.5567236240603961,
+          "verify_hidden_eval_time_s": 0.0,
+          "verify_joint_eval_time_s": 1.8092340023140423,
+          "verify_target_distribution_time_s": 0.07024307997198775,
+          "verify_time_s": 2.4364629977499135
+        }
+      ],
+      "summary": {
+        "accept_probability_sum_by_depth": [
+          41.53904544806768,
+          36.19015758383835,
+          30.556519122983016
+        ],
+        "accept_time_s": 0.006546461081597954,
+        "acceptance_by_depth": [
+          0.8913043478260869,
+          0.8043478260869565,
+          0.6521739130434783
+        ],
+        "accepted_by_depth": [
+          41,
+          37,
+          30
+        ],
+        "accepted_drafts": 108,
+        "adapter_ensemble_q": {
+          "adapter_selected": 0,
+          "base_selected": 0,
+          "calls": 0,
+          "changed": 0,
+          "enabled": false,
+          "epsilon": "0.5",
+          "fallbacks": 0,
+          "min_depth": "2",
+          "shared_selected": 0
+        },
+        "bonus_time_s": 0.00010966492118313909,
+        "bonus_tokens": 29,
+        "capture_commit_time_s": 0.003625040117185563,
+        "commit_time_s": 0.0,
+        "correction_tokens": 17,
+        "deferred_correction_repairs": 16,
+        "draft_core": {
+          "device_d2_calls": 0,
+          "device_d2_compile_time_s": 0.0,
+          "device_d2_fallbacks": 0,
+          "requested": "stock"
+        },
+        "draft_time_s": 0.6482872107299045,
+        "drafted_by_depth": [
+          46,
+          46,
+          46
+        ],
+        "drafted_tokens": 138,
+        "elapsed_s": 3.296711958013475,
+        "exact_matches": null,
+        "exact_total": null,
+        "finish_reasons": {
+          "stop": 1
+        },
+        "generated_tokens": 173,
+        "hit_token_budget_count": 0,
+        "lazy_bonus_commit_ms_per_call": null,
+        "lazy_bonus_commit_time_s": 0.0,
+        "lazy_bonus_verify_calls": 0,
+        "mean_accept_probability_by_depth": [
+          0.9030227271319061,
+          0.7867425561703989,
+          0.6642721548474568
+        ],
+        "mean_ar_decode_tok_s": null,
+        "mean_ar_end_to_end_tok_s": null,
+        "mean_ar_tok_s": null,
+        "mean_decode_tok_s": 55.51024181709254,
+        "mean_end_to_end_tok_s": 52.47652879696713,
+        "mean_speedup_vs_ar": null,
+        "mean_tok_s": 55.51024181709254,
+        "mtp_topk_reranker": {
+          "calls": 0,
+          "changed": 0,
+          "depths": "",
+          "enabled": false,
+          "fallbacks": 0,
+          "mean_selected_rank": null,
+          "selected_rank_sum": 0,
+          "topk": ""
+        },
+        "online_correction_cache": {
+          "enabled": false,
+          "entries": 0,
+          "hits": 0,
+          "key_policy": "local_prefix",
+          "prompt_collisions": 0,
+          "prompt_enabled": false,
+          "prompt_hits": 0,
+          "prompt_skipped": 0,
+          "prompt_stores": 0,
+          "stores": 0
+        },
+        "online_hidden_corrector_time_s": 0.0,
+        "peak_memory_bytes": 20591177178,
+        "prompts": 1,
+        "reject_path_counts": {
+          "reject_depth_1": 5,
+          "reject_depth_2": 4,
+          "reject_depth_3": 7
+        },
+        "rejected_drafts": 16,
+        "repair_time_by_reject_depth_s": {},
+        "repair_time_s": 0.0,
+        "rollback_time_s": 0.0,
+        "snapshot_time_s": 0.0066273759584873915,
+        "speed_model": {
+          "ideal_no_repair_tok_s": 52.47652879696713,
+          "ideal_no_repair_verify25_tok_s": 64.36978867880707,
+          "ideal_no_repair_verify50_draft30_no_online_hidden_tok_s": 91.82618035239939,
+          "ideal_no_repair_verify50_draft30_tok_s": 91.82618035239939,
+          "ideal_no_repair_verify50_tok_s": 83.23388331093787,
+          "observed_tok_s": 52.47652879696713
+        },
+        "target_distribution_materialized_rows": 153,
+        "target_distribution_materialized_windows": 46,
+        "target_distribution_rows_per_window": 3.3260869565217392,
+        "target_distribution_share": 0.028829939152311204,
+        "target_forward_time_s": 2.610392081725877,
+        "validations_passed": 2,
+        "validations_total": 2,
+        "verify_calls": 48,
+        "verify_eval_time_s": 1.8797393736895174,
+        "verify_forward_time_s": 0.5567236240603961,
+        "verify_hidden_eval_time_s": 0.0,
+        "verify_joint_eval_time_s": 1.8092340023140423,
+        "verify_target_distribution_ms_per_row": 0.45910509785612913,
+        "verify_target_distribution_time_s": 0.07024307997198775,
+        "verify_time_s": 2.4364629977499135
+      }
+    }
+  ],
+  "draft_core": "stock",
+  "draft_lm_head": null,
+  "draft_margin_threshold": null,
+  "draft_sampler": {
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "enable_thinking": false,
+  "max_tokens": 512,
+  "min_speculative_depth": 3,
+  "model_path": "/Users/pjb/.mtplx/models/Fable-711-4bit",
+  "mtp_adapter_kind": null,
+  "mtp_adapter_merge_report": null,
+  "mtp_adapter_merged": false,
+  "mtp_adapter_path": null,
+  "mtp_cache_policy": "persistent",
+  "mtp_corrector_blend": null,
+  "mtp_corrector_kind": null,
+  "mtp_corrector_path": null,
+  "mtp_hidden_variant": "pre_norm",
+  "mtp_history_policy": "committed",
+  "mtp_quant_bits": null,
+  "mtp_quant_group_size": 64,
+  "mtp_quant_mode": "affine",
+  "mtp_quant_policy": null,
+  "mtp_topk_reranker": {
+    "enabled": false
+  },
+  "online_correction_cache": {
+    "enabled": false,
+    "key_policy": "local_prefix",
+    "min_depth": 1,
+    "prompt_enabled": false,
+    "prompt_min_depth": 2
+  },
+  "online_hidden_corrector": {
+    "alpha": 0.0,
+    "decay": 0.8,
+    "key": "global",
+    "max_feed_depth": null,
+    "warmup": 1
+  },
+  "prompt_suite": "mtplx/benchmarks/prompts/calibration_coding.jsonl",
+  "sampler": {
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "seed": 0,
+  "verify_core": "stock",
+  "verify_strategy": "capture_commit"
+}

@@ -211,15 +211,31 @@ no block size at which the z-lab drafter beats this model's own MTP heads.
 the drafter was trained against stock weights. Anyone drafting for a
 customized target should expect this.
 
-## Spin-off finding worth shipping on its own: depth 5 > depth 3
+## RETRACTED spin-off: "depth 5 beats depth 3" was single-run noise
 
-On Fable-711-4bit with NAX, depth 5 measures **57.9 tok/s vs depth 3's 55.5**
-(+4.3%). `mtplx tune` searches only AR/D1/D2/D3, so depth 5 is outside the
-current search space on every model. Single-prompt runs — needs repeats and a
-second model before shipping — but it is free throughput with no new
-components, and it raises the bar any external drafter must clear.
-(Note the non-monotonic dip at depth 6 → 47.5 tok/s, unexplained; likely a
-kernel-dispatch boundary, worth a look during the tune-range work.)
+The single-prompt runs showed depth 5 at 57.9 tok/s vs depth 3's 55.5 (+4.3%)
+and it was flagged as needing repeats. The repeats killed it — 3 prompts per
+run, interleaved ordering, same body and suite:
+
+| depth | runs (tok/s) | mean |
+|---|---|---|
+| 3 | 56.29, 56.18 | 56.23 |
+| 4 | 55.41 | 55.41 |
+| 5 | 57.60, **55.79** | 56.70 |
+| 6 | 46.53 | 46.53 |
+
+Depth 5's own two runs disagree by 1.80 tok/s — wider than the margin it
+"won" by, while depth 3's agree to 0.11. The original comparison paired
+depth 5's lucky sample against depth 3's ordinary one. **Depths 3–5 are
+indistinguishable at this sample size; there is no tune-range win here.**
+
+**The depth-6 dip is real and unexplained.** 47.5 tok/s (single-prompt run)
+then 46.53 (3-prompt run) — a reproducible ~17% drop at exactly M=7 verify
+rows, breaking the otherwise smooth curve. Candidate causes: a kernel
+dispatch boundary at M=7 (NAX m16 pads to 16; the vk path covers M 4..6), or
+a graphbank bucket edge. Worth one investigation because whatever costs 17%
+at M=7 may also be shaping M=8–9 costs, which is where any external drafter
+has to live.
 
 ## Corrected Laguna estimate (per Codex)
 
