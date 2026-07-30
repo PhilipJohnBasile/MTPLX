@@ -1,0 +1,94 @@
+{
+ "tag": "laguna_oq4e",
+ "model": "/Users/pjb/.mtplx/models/mlx-community--Laguna-S-2.1-oQ4e",
+ "condition": "stock mlx_lm forward, no engine, no NAX, greedy, ~1k ctx",
+ "ar_tok_s_runs": [
+  54.97,
+  54.53
+ ],
+ "ar_tok_s_best": 54.97,
+ "t_v_ms_by_M": {
+  "1": {
+   "ms_median": 18.52,
+   "ms_min": 17.919,
+   "ms_max": 18.576
+  },
+  "2": {
+   "ms_median": 24.808,
+   "ms_min": 24.007,
+   "ms_max": 38.532
+  },
+  "3": {
+   "ms_median": 28.098,
+   "ms_min": 28.041,
+   "ms_max": 28.438
+  },
+  "4": {
+   "ms_median": 32.78,
+   "ms_min": 32.454,
+   "ms_max": 33.221
+  },
+  "5": {
+   "ms_median": 36.135,
+   "ms_min": 35.73,
+   "ms_max": 36.289
+  },
+  "6": {
+   "ms_median": 40.481,
+   "ms_min": 40.111,
+   "ms_max": 40.584
+  },
+  "7": {
+   "ms_median": 40.075,
+   "ms_min": 39.643,
+   "ms_max": 40.709
+  },
+  "8": {
+   "ms_median": 42.515,
+   "ms_min": 42.243,
+   "ms_max": 230.466
+  },
+  "9": {
+   "ms_median": 45.054,
+   "ms_min": 44.635,
+   "ms_max": 45.298
+  },
+  "10": {
+   "ms_median": 52.261,
+   "ms_min": 51.791,
+   "ms_max": 53.643
+  },
+  "11": {
+   "ms_median": 54.802,
+   "ms_min": 54.655,
+   "ms_max": 54.927
+  },
+  "12": {
+   "ms_median": 61.337,
+   "ms_min": 61.143,
+   "ms_max": 61.715
+  },
+  "13": {
+   "ms_median": 63.816,
+   "ms_min": 62.943,
+   "ms_max": 64.403
+  },
+  "14": {
+   "ms_median": 66.277,
+   "ms_min": 65.517,
+   "ms_max": 66.315
+  },
+  "15": {
+   "ms_median": 68.66,
+   "ms_min": 67.79,
+   "ms_max": 68.778
+  },
+  "16": {
+   "ms_median": 71.144,
+   "ms_min": 70.912,
+   "ms_max": 71.43
+  }
+ },
+ "t_v_ratio_M16_over_M1": 3.841,
+ "peak_memory_gb": 65.11
+}

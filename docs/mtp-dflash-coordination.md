@@ -382,6 +382,25 @@ at B≤5 until the vk M8..16 extension (§8 Phase 4).
 
 ---
 
+## 10a. Phase 0 — EXECUTED 2026-07-30, gate GREEN [measured]
+
+Full results: `benchmarks/results/phase0-2026-07-29/SUMMARY.md`. Headlines:
+**τ = 4.31 greedy / 3.92 at the product sampler** (z-lab 27B drafter,
+stock 27B-8bit, 24/24 coding prompts clean) — the τ ≥ 4 gate passes; the
+DFlash lane proceeds to Phase 2 (one-hot first per §11). True AR baselines:
+27B-8bit **18.0 tok/s**, 35B-A3B **112.4**, Laguna **55.0** (validates the
+app-measured ~56). T_V(M)/T_V(1) at M16: 2.29 (27B-8bit, with a stock-qmm
+plateau from M10 — the vk M8..16 port's exact target), **2.96 (35B MoE)**,
+3.84 (Laguna MoE) — the i.i.d. ~10×-reads fear did not materialize; wide
+blocks are economically viable on both MoEs (block 8 sweet spot). Measured
+block-8 beats block-16 e2e on 8-bit (37.6 vs 32.1 tok/s), confirming the
+kernel-regime map with data. Cross-check: the 27B-8bit curve predicts MTP
+D3 ≈ 2.6× vs 2.71× measured in tuning.json — cost model within 4% of
+reality. Laguna upgrade [estimated from measured T_V + published τ 6.42]:
+poolside-drafter lane ≈ **2.0–2.2× (~110–120 tok/s)** at block 8 —
+above the earlier trained-MTP-head estimate; §7's Laguna row superseded
+accordingly.
+
 ## 11. Addendum — Codex external review deltas (2026-07-30)
 
 Codex (codex-cli 0.145.0, read-only, full code access) returned **FLAWED**,
