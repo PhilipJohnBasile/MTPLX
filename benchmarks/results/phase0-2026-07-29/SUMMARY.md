@@ -245,3 +245,52 @@ and T_V(9) = 52.4 ms with published τ 6.42: **2.26× with no drafter overhead,
 2.0–2.2×. Caveats: τ is published at k=15/block-16 rather than locally
 measured at B8, no MLX conversion of the poolside drafter exists yet, and the
 drafter's licensing is unresolved.
+
+---
+
+## THE REVERSAL: DFlash wins decisively on MoE (2026-07-30, protocol-matched)
+
+The dense-body NO-GO does **not** generalize. On Qwen3.6-35B-A3B (4-bit,
+NAX on), all arms greedy / 24 prompts / 256-token cap / seed 0:
+
+| Arm | τ | tok/s | vs AR |
+|---|---|---|---|
+| **DFlash B8** (z-lab 386M drafter) | 3.809 | **188.22, 188.30** | **1.79×** |
+| MTP D3 | — | 89.5, 106.6, 105.1 (mean 100.4) | 0.96× |
+| AR (same protocol) | — | 105.1 | 1.00× |
+
+DFlash's two runs agree to 0.04% — the tightest measurement in this
+programme. Output verified non-degenerate (24/26 validations, coherent code,
+per-prompt 162–234 tok/s, 20.6 GB peak).
+
+**MTP is a net LOSS on this body** (0.96× — slower than plain autoregressive
+decoding), matching the published mlx-lm finding of ~1.11× for native MTP on
+this exact model: one MTP layer cannot predict expert routing.
+
+### Why the conclusion splits by architecture
+
+| | Dense 27B | MoE 35B-A3B |
+|---|---|---|
+| MTP heads | strong (2.2–2.8×) | **net loss (0.96×)** |
+| T_V(9)/T_V(1) | 2.48× | **2.10×** (expert gather amortizes across rows) |
+| Drafter size | 1.73B | **386M** (~4× cheaper to run) |
+| Winner | **MTP** | **DFlash, ~1.9× over MTP** |
+
+Cheap verify rows + a tiny drafter + a weak incumbent — three independent
+factors all favouring DFlash, none of which hold on the dense body.
+
+### Ecosystem bug found: z-lab's MLX backend cannot load z-lab's newer drafters
+
+`dflash/model_mlx.py::load_draft` reads flat top-level `rope_theta` and
+`block_size`, but the June-retrained 35B-A3B drafter nests them under
+`rope_parameters` / `dflash_config`. Three separate `KeyError`s before it
+loads. The older 27B drafter (flat config, card still says "still under
+training") loads fine — which likely explains why community MLX benchmarks
+all use the weaker drafter. Local clone patched to accept both formats;
+worth an upstream PR.
+
+**Revised recommendation: build the DFlash lane for MoE targets first.** The
+drafter exists, needs no MLX port, has a permissive licence (Apache-2.0), and
+published numbers that now reproduce locally. Laguna remains second (bigger
+per-model win, but needs a trunk port and a licence answer). Dense Qwen stays
+NO-GO.

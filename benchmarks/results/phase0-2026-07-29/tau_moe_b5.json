@@ -1,0 +1,22 @@
+{
+ "backend": "dflash_mlx_official",
+ "model_path": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+ "draft_model": "z-lab/Qwen3.6-35B-A3B-DFlash",
+ "prompt_suite": "/Users/pjb/git/MTPLX/mtplx/benchmarks/prompts/calibration_coding.jsonl",
+ "error": {
+  "stage": "load_failed",
+  "type": "KeyError",
+  "message": "'rope_theta'",
+  "repr": "KeyError('rope_theta')"
+ },
+ "rows": [],
+ "summary": {
+  "prompts": 0,
+  "successful_prompts": 0,
+  "generated_tokens": 0,
+  "mean_tok_s": 0.0,
+  "validations_passed": 0,
+  "validations_total": 0
+ },
+ "wall_s": 0.5
+}
