@@ -46,6 +46,40 @@ draft positions, so 15 draft rows, not 16.
   interval, single ~1k context. Supports a coding-prompt prototype, not a
   context-independent acceptance claim.
 
+## 4-bit body (the Phase-2 prize lane) — added 2026-07-30
+
+| Arm (27B **4-bit**, greedy draft, coding suite) | τ | e2e tok/s |
+|---|---|---|
+| block 16 | 4.29 | 36.8 |
+| **block 8** | 3.98 | **48.1** |
+
+- **τ is quant-independent**: 4.29 (4-bit) vs 4.31 (8-bit). Acceptance is a
+  property of drafter/target agreement, not weight precision. The gate result
+  transfers across bodies.
+- **Block 8 wins on both quant widths** — +31% on 4-bit, +17% on 8-bit.
+  Independently validates the fixed-block-8 choice.
+
+### The sobering number: reference DFlash does NOT beat MTP self-speculation
+
+Measured AR on this machine (stock `mlx_lm`, greedy, ~1k ctx): **4-bit 31.1
+tok/s**, 8-bit 18.0 tok/s. Against those baselines the reference DFlash arm is:
+
+| Body | DFlash B8 | DFlash B16 | MTP D3 [measured, tuning.json cold suite] |
+|---|---|---|---|
+| 27B 4-bit | **1.55×** | 1.18× | **2.23×** |
+| 27B 8-bit | **2.09×** | 1.78× | **2.71×** |
+
+Caveats both ways: the DFlash tok/s come from the coding suite (160–192-token
+generations) while AR is a 512-step steady-decode probe, and the MTP figures
+are a different suite/model variant — these are not matched conditions. But
+same machine, same stock kernels, same model family: **the reference DFlash
+implementation lands below MTP D3 on both quant widths.** Any DFlash win has
+to come from what the reference does *not* have — NAX 16-row verify kernels
+(4-bit only), engine cache machinery, and block-8 routing — not from the
+drafter's raw acceptance. This is the strongest argument yet for Codex's
+"implementation green, release/performance gate pending" framing, and for
+keeping the MTP floor as the thing any DFlash arm must beat before promotion.
+
 ## True AR baselines + T_V(M) verify-cost curves (stock kernels, ~1k ctx, greedy)
 
 Rows are **identical repeated tokens** in the v1 curves. Codex audit finding:
@@ -62,6 +96,20 @@ tokens where possible — see the correction row.
 AR baselines are best-of-two runs; run pairs shown for spread. Laguna's
 identical-token curve also carried timing outliers (M8 max 230 ms vs 42.5 ms
 median) — medians are used throughout.
+
+**Hybrid-GDN verify forwards are not measurable off-engine (all three
+bodies).** `[conv] Spatial dimensions of input after padding cannot be
+smaller than weight spatial dimensions` fires whenever the GatedDeltaNet
+conv window falls below its kernel width of 4, and `trim_prompt_cache` does
+not restore GDN conv state. Reproduced on 27B-4bit (every M, 1–16), 35B-A3B,
+and — once the probe stopped trimming lucky — 27B-8bit's regime too; the
+original 8-bit curve completed only by accident of call ordering. Rebuilding
+the cache per M did not clear it. **Consequence: the T_V curves above are
+usable as relative shapes but the production path (`gdn_capture.py`,
+`native_gdn_tail`) is the only valid instrument for verify-row cost on these
+targets.** This is Codex's task-1 risk demonstrated on three bodies:
+rejection rollback on hybrid-GDN targets cannot be a naive cache trim — here
+it crashes loudly; the dangerous version is silent state divergence.
 
 **Measurement gap — 35B-A3B varied-token curve not obtained.** Stock
 `mlx_lm`'s GatedDeltaNet path raises `[conv] Spatial dimensions ... input

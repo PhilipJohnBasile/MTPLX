@@ -58,6 +58,7 @@ def t_v_curve(model, prompt_tokens, reps=6, fresh_cache=False, m_values=None):
     # (Codex audit finding) — use mid-context ids so routing diversity is real.
     dummy = [int(t) for t in prompt_tokens[500:516]]
     for m in m_values:
+      try:
         rows = mx.array([dummy[:m]], dtype=mx.int32)
 
         def _reset():
@@ -84,6 +85,10 @@ def t_v_curve(model, prompt_tokens, reps=6, fresh_cache=False, m_values=None):
         times.sort()
         curve[m] = {"ms_median": round(times[len(times) // 2], 3),
                     "ms_min": round(times[0], 3), "ms_max": round(times[-1], 3)}
+      except Exception as exc:  # e.g. GDN conv window < kernel width
+        curve[m] = {"error": type(exc).__name__ + ": " + str(exc)[:90]}
+        cache = make_prompt_cache(model)
+        mx.eval(model(mx.array([prompt_tokens]), cache=cache))
     return curve
 
 
@@ -119,8 +124,10 @@ def main():
         "ar_tok_s_runs": [round(r, 2) for r in ar_rates],
         "ar_tok_s_best": round(max(ar_rates), 2),
         "t_v_ms_by_M": curve,
-        "t_v_ratio_M16_over_M1": round(
-            curve[16]["ms_median"] / curve[1]["ms_median"], 3),
+        "t_v_ratio_M16_over_M1": (
+            round(curve[16]["ms_median"] / curve[1]["ms_median"], 3)
+            if "ms_median" in curve.get(16, {}) and "ms_median" in curve.get(1, {})
+            else None),
         "m_values": sorted(curve),
         "peak_memory_gb": round(mx.get_peak_memory() / 1e9, 2),
     }

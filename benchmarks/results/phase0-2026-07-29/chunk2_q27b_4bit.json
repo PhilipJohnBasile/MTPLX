@@ -1,0 +1,80 @@
+{
+ "tag": "q27b_4bit",
+ "model": "/Users/pjb/.mtplx/models/mlx-community--Qwen3.6-27B-4bit",
+ "condition": "stock mlx_lm forward, no engine, no NAX, greedy, ~1k ctx",
+ "ar_tok_s_runs": [
+  31.09,
+  31.15
+ ],
+ "ar_tok_s_best": 31.15,
+ "t_v_ms_by_M": {
+  "1": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "2": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "3": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "4": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "5": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "6": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "7": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "8": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "9": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "10": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "11": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "12": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "13": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "14": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "15": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  },
+  "16": {
+   "error": "ValueError: [conv] Spatial dimensions of input after padding cannot be smaller than weight spatial dim"
+  }
+ },
+ "t_v_ratio_M16_over_M1": null,
+ "m_values": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16
+ ],
+ "peak_memory_gb": 17.45
+}
