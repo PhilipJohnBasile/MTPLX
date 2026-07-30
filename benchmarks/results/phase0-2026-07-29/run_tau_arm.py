@@ -8,6 +8,7 @@ from mtplx.benchmarks.runners.competitor_baselines import run_dflash_mlx_baselin
 TARGETS = {
     "8bit": "/Users/pjb/.mtplx/models/mlx-community--Qwen3.6-27B-8bit",
     "4bit": "/Users/pjb/.mtplx/models/mlx-community--Qwen3.6-27B-4bit",
+    "fable4": "/Users/pjb/.mtplx/models/Fable-711-4bit",
 }
 SUITE = str(Path(__file__).resolve().parents[3] / "mtplx/benchmarks/prompts/calibration_coding.jsonl")
 DFLASH_SRC = str(Path(__file__).resolve().parents[3] / "tools/refs/dflash")

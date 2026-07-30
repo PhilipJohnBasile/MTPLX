@@ -178,3 +178,54 @@ published τ ≈ 6.4 at k=15, a block-8 lane implies roughly **1.4–1.5×**
 - Engine-wedge forensics: engine_wedge_metrics.txt — runaway generation
   (1200 completion tokens) with zero clients; server-side disconnect
   cancellation didn't fire. Reliability bug worth filing upstream.
+
+---
+
+## FINAL: same-body, same-suite head-to-head — Qwen NO-GO confirmed at every block size
+
+Codex's third review returned INSUFFICIENT DATA on the blanket Qwen call: the
+earlier comparison was cross-suite, and blocks 4–6 (below the M=6 verify-cost
+cliff) had never been tested. Both objections are now closed by measuring
+every arm on **one body (Fable-711-4bit) with one prompt suite**
+(`calibration_coding.jsonl`, greedy, 512 max tokens, seed 0).
+
+| Arm | τ | tok/s | note |
+|---|---|---|---|
+| **MTP D5** (NAX on) | — | **57.9** | best MTP arm found |
+| MTP D3 (NAX on) | — | 55.5 | today's tuned default |
+| MTP D8 (NAX on) | — | 51.8 | |
+| DFlash B5 | 3.05 | 52.0 | best DFlash arm |
+| DFlash B4 | 2.79 | 50.8 | |
+| DFlash B6 | 3.17 | 43.5 | |
+| DFlash B8 | 3.37 | 40.1 | |
+| MTP D15 (NAX on) | — | 29.3 | |
+
+Codex's required-τ table (τ needed to beat MTP): B4 ~3.02, B5 ~3.84,
+B6 ~4.57, B8 ~5.06. **Measured: 2.79, 3.05, 3.17, 3.37 — every block misses
+its bar.** Small blocks cut verify cost but acceptance falls faster than the
+savings accrue; large blocks buy acceptance at more than its worth. There is
+no block size at which the z-lab drafter beats this model's own MTP heads.
+
+**Drafter acceptance degrades on fine-tuned targets:** τ at B8 falls from
+3.98 on stock `mlx-community/Qwen3.6-27B-4bit` to 3.367 on Fable-711-4bit —
+the drafter was trained against stock weights. Anyone drafting for a
+customized target should expect this.
+
+## Spin-off finding worth shipping on its own: depth 5 > depth 3
+
+On Fable-711-4bit with NAX, depth 5 measures **57.9 tok/s vs depth 3's 55.5**
+(+4.3%). `mtplx tune` searches only AR/D1/D2/D3, so depth 5 is outside the
+current search space on every model. Single-prompt runs — needs repeats and a
+second model before shipping — but it is free throughput with no new
+components, and it raises the bar any external drafter must clear.
+(Note the non-monotonic dip at depth 6 → 47.5 tok/s, unexplained; likely a
+kernel-dispatch boundary, worth a look during the tune-range work.)
+
+## Corrected Laguna estimate (per Codex)
+
+The 1.4–1.5× figure stated earlier was wrong. From measured AR 54.18 tok/s
+and T_V(9) = 52.4 ms with published τ 6.42: **2.26× with no drafter overhead,
+≈2.14× (~116 tok/s) with ~3 ms of it** — consistent with the §10 addendum's
+2.0–2.2×. Caveats: τ is published at k=15/block-16 rather than locally
+measured at B8, no MLX conversion of the poolside drafter exists yet, and the
+drafter's licensing is unresolved.
