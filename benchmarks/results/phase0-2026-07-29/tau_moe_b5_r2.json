@@ -19,7 +19,7 @@
    "category": "warm_coding",
    "prompt_sha256": "b5377e90b27c5ce04bef006585ff75f9c2766bef53be0a2e5d5053ed88ef1280",
    "generated_tokens": 192,
-   "tok_s": 211.19691997679914,
+   "tok_s": 211.07243492577126,
    "acceptance_lengths": [
     1,
     1,
@@ -76,7 +76,7 @@
     1
    ],
    "mean_acceptance_length": 3.6226415094339623,
-   "prompt_tps": 543.3336001963008,
+   "prompt_tps": 549.3198369109366,
    "peak_memory_gb": 20.48028737,
    "finish_reason": "length",
    "validations": [
@@ -93,7 +93,7 @@
    "category": "cold_coding",
    "prompt_sha256": "47d975817a779710561a544c1f1ecfe53cbbdea68d62a4b4d67247b88756052e",
    "generated_tokens": 192,
-   "tok_s": 202.14681859553804,
+   "tok_s": 202.2886450648605,
    "acceptance_lengths": [
     1,
     3,
@@ -153,7 +153,7 @@
     2
    ],
    "mean_acceptance_length": 3.4285714285714284,
-   "prompt_tps": 934.9493083549995,
+   "prompt_tps": 920.9869977398572,
    "peak_memory_gb": 20.507791546,
    "finish_reason": "length",
    "validations": [
@@ -170,7 +170,7 @@
    "category": "warm_coding",
    "prompt_sha256": "2f40fb26ef09f1211a5bc45266039b9e6e0aacee8884350d2e058c5d3e35e41b",
    "generated_tokens": 192,
-   "tok_s": 196.621926142597,
+   "tok_s": 196.4307744566205,
    "acceptance_lengths": [
     1,
     1,
@@ -232,7 +232,7 @@
     2
    ],
    "mean_acceptance_length": 3.3275862068965516,
-   "prompt_tps": 1088.34667754594,
+   "prompt_tps": 1091.209793148926,
    "peak_memory_gb": 20.578119098,
    "finish_reason": "length",
    "validations": [
@@ -249,7 +249,7 @@
    "category": "cold_coding",
    "prompt_sha256": "ec4c04e3834d1cfb50d50c24742dcc97896c747b631c1964f38015d1456ea9c0",
    "generated_tokens": 192,
-   "tok_s": 186.5170741443734,
+   "tok_s": 187.47175255566282,
    "acceptance_lengths": [
     1,
     1,
@@ -313,7 +313,7 @@
     3
    ],
    "mean_acceptance_length": 3.216666666666667,
-   "prompt_tps": 930.9624291075586,
+   "prompt_tps": 930.6047213273758,
    "peak_memory_gb": 20.578119098,
    "finish_reason": "length",
    "validations": [
@@ -330,7 +330,7 @@
    "category": "tests",
    "prompt_sha256": "a5bc59e6a426832f50388b2be96cab274fa16308996e997803e1335d4bd7041d",
    "generated_tokens": 192,
-   "tok_s": 179.20508555221267,
+   "tok_s": 178.6412933967459,
    "acceptance_lengths": [
     1,
     1,
@@ -397,7 +397,7 @@
     2
    ],
    "mean_acceptance_length": 3.0634920634920637,
-   "prompt_tps": 964.3944175387014,
+   "prompt_tps": 965.9818416592243,
    "peak_memory_gb": 20.578119098,
    "finish_reason": "length",
    "validations": [
@@ -414,7 +414,7 @@
    "category": "refactor",
    "prompt_sha256": "acee29fac4d2ddea4d3ff8ab5632eed1b6ed2bd10542714c1933189e24c71d34",
    "generated_tokens": 192,
-   "tok_s": 217.1515716726324,
+   "tok_s": 221.05546588779816,
    "acceptance_lengths": [
     1,
     1,
@@ -470,8 +470,8 @@
     2
    ],
    "mean_acceptance_length": 3.7115384615384617,
-   "prompt_tps": 1108.0650589280785,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 1097.8130100879737,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -487,7 +487,7 @@
    "category": "warm_coding",
    "prompt_sha256": "19a2c21687f7cb17e3c8452f95cda2c2c9a37eea99105fb1ec0c10bc9098a39a",
    "generated_tokens": 192,
-   "tok_s": 196.79010070702162,
+   "tok_s": 196.53098089027887,
    "acceptance_lengths": [
     1,
     1,
@@ -549,8 +549,8 @@
     3
    ],
    "mean_acceptance_length": 3.3275862068965516,
-   "prompt_tps": 950.6216188045789,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 952.7187965097883,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -566,7 +566,7 @@
    "category": "cold_coding",
    "prompt_sha256": "68f573f37e81a19ca1f3f1535a5ec201de63760c051006b56ff9af02fc9766d6",
    "generated_tokens": 192,
-   "tok_s": 220.78074830290484,
+   "tok_s": 220.70029901701207,
    "acceptance_lengths": [
     1,
     1,
@@ -622,8 +622,8 @@
     1
    ],
    "mean_acceptance_length": 3.6923076923076925,
-   "prompt_tps": 939.4040014048616,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 937.1846650873215,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -639,7 +639,7 @@
    "category": "warm_coding",
    "prompt_sha256": "2494978d34d1b5516c3a9c7afa78773e8679629c2594f9f1b07bc6cc96c83680",
    "generated_tokens": 192,
-   "tok_s": 169.36101248945954,
+   "tok_s": 169.32258399300645,
    "acceptance_lengths": [
     1,
     1,
@@ -709,8 +709,8 @@
     3
    ],
    "mean_acceptance_length": 2.9242424242424243,
-   "prompt_tps": 1072.3413814778455,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 1071.5636852771106,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -726,7 +726,7 @@
    "category": "json_tool",
    "prompt_sha256": "9e2521787da7c3ead3d6d7534473ec65381028dfb80ce05aa3934b989a625b82",
    "generated_tokens": 160,
-   "tok_s": 203.29898110469767,
+   "tok_s": 199.42601651981812,
    "acceptance_lengths": [
     1,
     1,
@@ -777,8 +777,8 @@
     2
    ],
    "mean_acceptance_length": 3.425531914893617,
-   "prompt_tps": 922.3937783312998,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 919.7639625612752,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -799,7 +799,7 @@
    "category": "reasoning",
    "prompt_sha256": "40961add61145f03fcc2ef06d9b28db3358de3e3aa3dd7e8e1092b96c6d53ecc",
    "generated_tokens": 192,
-   "tok_s": 174.52021527815523,
+   "tok_s": 174.28580166218566,
    "acceptance_lengths": [
     1,
     1,
@@ -867,8 +867,8 @@
     3
    ],
    "mean_acceptance_length": 3,
-   "prompt_tps": 900.569445865024,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 895.1769606287746,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -884,7 +884,7 @@
    "category": "cold_coding",
    "prompt_sha256": "5821797a85b13d795441bee4de2750b0cbdd38321c602fe0f3fa469d1d518a04",
    "generated_tokens": 192,
-   "tok_s": 189.05346766489185,
+   "tok_s": 186.1593738114492,
    "acceptance_lengths": [
     1,
     1,
@@ -948,8 +948,8 @@
     2
    ],
    "mean_acceptance_length": 3.216666666666667,
-   "prompt_tps": 870.7905661766629,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 863.3630856146548,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -965,7 +965,7 @@
    "category": "warm_coding",
    "prompt_sha256": "4e94f1e7cd2f5e6026bcd58e7837e185d31e8f9cb59d3e1b67ce427952c08421",
    "generated_tokens": 192,
-   "tok_s": 182.08028155594974,
+   "tok_s": 181.55113454752032,
    "acceptance_lengths": [
     1,
     1,
@@ -1031,8 +1031,8 @@
     2
    ],
    "mean_acceptance_length": 3.1129032258064515,
-   "prompt_tps": 1048.0799202294284,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 1032.4785917720035,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1048,7 +1048,7 @@
    "category": "warm_coding",
    "prompt_sha256": "29f682a62a6c523da8b714c7d3240d8e91908cbefe3d70e90fed9a24e5a2c216",
    "generated_tokens": 192,
-   "tok_s": 178.3405273453284,
+   "tok_s": 177.72674996035838,
    "acceptance_lengths": [
     1,
     1,
@@ -1115,8 +1115,8 @@
     4
    ],
    "mean_acceptance_length": 3.0634920634920637,
-   "prompt_tps": 947.916950750045,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 934.4868830113138,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1132,7 +1132,7 @@
    "category": "warm_coding",
    "prompt_sha256": "e02f694d5163cde013f46190bff273310901c444dffa3a730b95411ff3b25b8c",
    "generated_tokens": 192,
-   "tok_s": 171.24773565276485,
+   "tok_s": 170.704170899264,
    "acceptance_lengths": [
     1,
     1,
@@ -1202,8 +1202,8 @@
     2
    ],
    "mean_acceptance_length": 2.9242424242424243,
-   "prompt_tps": 891.3640684654224,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 892.8214308917073,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1219,7 +1219,7 @@
    "category": "json_tool",
    "prompt_sha256": "978190bfa80fc0ce94f878de4a8897a0c88f08d305856408389179cc3bf15cd2",
    "generated_tokens": 160,
-   "tok_s": 226.91560658927287,
+   "tok_s": 227.47149535742676,
    "acceptance_lengths": [
     1,
     2,
@@ -1265,8 +1265,8 @@
     5
    ],
    "mean_acceptance_length": 3.8333333333333335,
-   "prompt_tps": 854.6205262087385,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 854.0182277472052,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1287,7 +1287,7 @@
    "category": "refactor",
    "prompt_sha256": "38f142cd824f3c59b31d3964dd255720d83db2632b3a271dfaf9c3157136afc6",
    "generated_tokens": 192,
-   "tok_s": 209.35850691334275,
+   "tok_s": 212.02361634332533,
    "acceptance_lengths": [
     1,
     2,
@@ -1345,8 +1345,8 @@
     2
    ],
    "mean_acceptance_length": 3.574074074074074,
-   "prompt_tps": 1057.5647863773656,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 1059.9151211923747,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1362,7 +1362,7 @@
    "category": "cold_coding",
    "prompt_sha256": "01f496128c922f05dc7cefe95b9b6c30928f19b0d2fb4b656ff3a267bd654414",
    "generated_tokens": 192,
-   "tok_s": 185.395964018545,
+   "tok_s": 186.31173197628905,
    "acceptance_lengths": [
     1,
     1,
@@ -1427,8 +1427,8 @@
     2
    ],
    "mean_acceptance_length": 3.1639344262295084,
-   "prompt_tps": 888.4402679835155,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 899.9772337987254,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1444,7 +1444,7 @@
    "category": "reasoning",
    "prompt_sha256": "3987d314ddcab1ce16125e4f081b94e2cba5effdec209233197c7531436ec101",
    "generated_tokens": 192,
-   "tok_s": 184.40433916501843,
+   "tok_s": 185.40622828314804,
    "acceptance_lengths": [
     1,
     1,
@@ -1509,8 +1509,8 @@
     2
    ],
    "mean_acceptance_length": 3.1639344262295084,
-   "prompt_tps": 790.7111475845882,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 798.14329607594,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1526,7 +1526,7 @@
    "category": "reasoning",
    "prompt_sha256": "b3b421742c9b380741ebcd1c753e470bc0f4afcbb7e9ac7c3719979860549f01",
    "generated_tokens": 192,
-   "tok_s": 178.06298770017503,
+   "tok_s": 178.99949757551187,
    "acceptance_lengths": [
     1,
     1,
@@ -1593,8 +1593,8 @@
     4
    ],
    "mean_acceptance_length": 3.0634920634920637,
-   "prompt_tps": 829.0279331120365,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 855.1749643073465,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1610,7 +1610,7 @@
    "category": "chat",
    "prompt_sha256": "083f2e868076aee6e1502bd09d3aa3fccd6a0c53bc3cacf733ce1ab5a83e15a6",
    "generated_tokens": 160,
-   "tok_s": 194.08096529922778,
+   "tok_s": 196.6254162942283,
    "acceptance_lengths": [
     1,
     3,
@@ -1662,8 +1662,8 @@
     4
    ],
    "mean_acceptance_length": 3.3541666666666665,
-   "prompt_tps": 857.3830017356386,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 861.53230534985,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1679,7 +1679,7 @@
    "category": "cold_coding",
    "prompt_sha256": "f0f0fa2e3634597a5675e3874fd995877a4a04e03744f3bd2e22531beb846248",
    "generated_tokens": 192,
-   "tok_s": 193.7017504507943,
+   "tok_s": 195.3676166656427,
    "acceptance_lengths": [
     1,
     1,
@@ -1741,8 +1741,8 @@
     2
    ],
    "mean_acceptance_length": 3.3275862068965516,
-   "prompt_tps": 933.1141309626731,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 974.8786309780595,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1758,7 +1758,7 @@
    "category": "warm_coding",
    "prompt_sha256": "0cb63709959999cd7866913fb912a1fa0b63a7065d5ffecc6edb7ec1f33e11aa",
    "generated_tokens": 192,
-   "tok_s": 248.3737261344206,
+   "tok_s": 250.10868981095632,
    "acceptance_lengths": [
     1,
     3,
@@ -1808,8 +1808,8 @@
     5
    ],
    "mean_acceptance_length": 4.173913043478261,
-   "prompt_tps": 1022.2024940398647,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 1021.6717562349343,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1825,7 +1825,7 @@
    "category": "cold_coding",
    "prompt_sha256": "8a3715d1732542ad223df5006591ceacaa8ff02f8a8f9c416c3a901854adf6a8",
    "generated_tokens": 192,
-   "tok_s": 153.12861402018893,
+   "tok_s": 154.39887000638478,
    "acceptance_lengths": [
     1,
     5,
@@ -1901,8 +1901,8 @@
     4
    ],
    "mean_acceptance_length": 2.6666666666666665,
-   "prompt_tps": 821.0863861998362,
-   "peak_memory_gb": 20.616191557,
+   "prompt_tps": 858.2853111866402,
+   "peak_memory_gb": 20.616191813,
    "finish_reason": "length",
    "validations": [
     {
@@ -1918,11 +1918,11 @@
   "prompts": 24,
   "successful_prompts": 24,
   "generated_tokens": 4512,
-  "mean_tok_s": 193.82228860317966,
+  "mean_tok_s": 194.17002666255271,
   "mean_acceptance_length": 3.3074404109255693,
   "validations_passed": 24,
   "validations_total": 26,
-  "peak_memory_gb": 20.616191557
+  "peak_memory_gb": 20.616191813
  },
- "wall_s": 29.1
+ "wall_s": 28.9
 }

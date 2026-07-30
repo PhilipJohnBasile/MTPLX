@@ -294,3 +294,19 @@ drafter exists, needs no MLX port, has a permissive licence (Apache-2.0), and
 published numbers that now reproduce locally. Laguna remains second (bigger
 per-model win, but needs a trunk port and a licence answer). Dense Qwen stays
 NO-GO.
+
+### MoE block sweep — optimum is B5–B6, ~1.85× AR
+
+| Block | τ | tok/s |
+|---|---|---|
+| B4 | 2.947 | 191.1 |
+| **B5** | 3.271 | **193.8, 194.2** |
+| **B6** | 3.519 | **193.7** |
+| B8 | 3.809 | 188.2, 188.3 |
+| B16 | 4.301 | 147.6 |
+
+Same shape as the dense body — τ rises monotonically with block size while
+throughput peaks early and falls — but here the peak sits **1.85× above AR**
+instead of below the incumbent. B5/B6 are indistinguishable (193.7–194.2,
+B5 repeat spread 0.4); B8 is ~3% behind; B16 costs 24%. Default should be
+B5–B6, not the reference's 16.
