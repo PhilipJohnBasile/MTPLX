@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+import functools
 import json
 import os
 import sys
@@ -1041,6 +1042,8 @@ class _DecodeTrace:
             "rejected_drafts": 0,
             "drafted_tokens": 0,
             "verify_calls": 0,
+            "verify_forward_calls": 0,
+            "repair_forward_calls": 0,
             "correction_tokens": 0,
             "bonus_tokens": 0,
             "verify_time_s": 0.0,
@@ -1144,6 +1147,15 @@ class _DecodeTrace:
             )
         ]
         verify_calls_delta = int(self._delta(totals, "verify_calls"))
+        verify_forward_calls_delta = int(
+            self._delta(totals, "verify_forward_calls")
+        )
+        repair_forward_calls_delta = int(
+            self._delta(totals, "repair_forward_calls")
+        )
+        verify_call_denominator_delta = (
+            verify_forward_calls_delta or verify_calls_delta
+        )
         accepted_drafts_delta = int(self._delta(totals, "accepted_drafts"))
         drafted_tokens_delta = int(self._delta(totals, "drafted_tokens"))
         verify_time_delta = float(self._delta(totals, "verify_time_s"))
@@ -1245,6 +1257,16 @@ class _DecodeTrace:
             "speculative_depth": self.speculative_depth,
             "verify_calls_total": int(totals["verify_calls"]),
             "verify_calls_delta": verify_calls_delta,
+            "verify_windows_total": int(totals["verify_calls"]),
+            "verify_windows_delta": verify_calls_delta,
+            "verify_forward_calls_total": int(
+                totals.get("verify_forward_calls") or totals["verify_calls"]
+            ),
+            "verify_forward_calls_delta": verify_forward_calls_delta,
+            "repair_forward_calls_total": int(
+                totals.get("repair_forward_calls") or 0
+            ),
+            "repair_forward_calls_delta": repair_forward_calls_delta,
             "accepted_drafts_total": int(totals["accepted_drafts"]),
             "accepted_drafts_delta": accepted_drafts_delta,
             "drafted_tokens_total": int(totals["drafted_tokens"]),
@@ -1311,43 +1333,47 @@ class _DecodeTrace:
             "snapshot_time_s_delta": float(self._delta(totals, "snapshot_time_s")),
             "bonus_time_s_delta": float(self._delta(totals, "bonus_time_s")),
             "verify_ms_per_call_delta": (
-                1000.0 * verify_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_forward_ms_per_call_delta": (
-                1000.0 * verify_forward_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_forward_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_eval_ms_per_call_delta": (
-                1000.0 * verify_eval_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_eval_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_logits_eval_ms_per_call_delta": (
-                1000.0 * verify_logits_eval_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_logits_eval_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_hidden_eval_ms_per_call_delta": (
-                1000.0 * verify_hidden_eval_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_hidden_eval_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_joint_eval_ms_per_call_delta": (
-                1000.0 * verify_joint_eval_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0 * verify_joint_eval_time_delta / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_target_distribution_ms_per_call_delta": (
-                1000.0 * verify_target_distribution_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0
+                * verify_target_distribution_time_delta
+                / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "verify_eval_unattributed_ms_per_call_delta": (
-                1000.0 * verify_eval_unattributed_time_delta / verify_calls_delta
-                if verify_calls_delta
+                1000.0
+                * verify_eval_unattributed_time_delta
+                / verify_call_denominator_delta
+                if verify_call_denominator_delta
                 else None
             ),
             "draft_ms_per_token_delta": (
@@ -1722,6 +1748,13 @@ class GenerationStats:
     bonus_tokens: int = 0
     correction_tokens: int = 0
     verify_calls: int = 0
+    # ``verify_calls`` remains the historical speculative-window counter.
+    # This counter is the number of physical target forwards used by the verify
+    # phase, which differs from windows on the sequential correctness lane.
+    verify_forward_calls: int = 0
+    # Rejection repair is timed separately from verification, so its physical
+    # target forwards must have a separate denominator as well.
+    repair_forward_calls: int = 0
     # Context-copy (prompt-lookup) drafting. Counters are cumulative per
     # generation; the per-round detail stays in events. accepted_tokens counts
     # verified matches (_cc_nacc), which can exceed emitted tokens when a stop
@@ -3648,6 +3681,85 @@ def _validate_target_prefix_sampler_request(config: SamplerConfig) -> None:
         )
 
 
+def _validated_external_draft_qs(
+    draft_qs: Any,
+    draft_tokens: Sequence[int],
+    *,
+    vocab_size: int,
+) -> list[np.ndarray | SparseDistribution]:
+    """Validate externally-declared proposal distributions without repairing them.
+
+    Exact speculative sampling requires the proposal probability ``q`` that
+    actually produced every draft token.  Normalizing, clipping, or silently
+    substituting a point mass here would change that declaration, so malformed
+    inputs fail closed at the engine boundary.
+    """
+    if draft_qs is None:
+        raise RuntimeError(
+            "non-greedy external block drafting requires exact draft_qs"
+        )
+    try:
+        qs = list(draft_qs)
+    except TypeError as exc:
+        raise RuntimeError("block_draft_source draft_qs must be a sequence") from exc
+    if len(qs) != len(draft_tokens):
+        raise RuntimeError(
+            "block_draft_source draft_qs length must match proposal tokens"
+        )
+
+    validated: list[np.ndarray | SparseDistribution] = []
+    for depth_index, (token, q) in enumerate(zip(draft_tokens, qs, strict=True)):
+        if int(token) < 0 or int(token) >= int(vocab_size):
+            raise RuntimeError(
+                f"block_draft_source token[{depth_index}] is outside the target vocab"
+            )
+        if isinstance(q, SparseDistribution):
+            token_ids = np.asarray(q.token_ids, dtype=np.int64)
+            probs = np.asarray(q.probs, dtype=np.float64)
+            if int(q.vocab_size) != int(vocab_size):
+                raise RuntimeError(
+                    f"block_draft_source draft_qs[{depth_index}] vocab mismatch"
+                )
+            if (
+                token_ids.ndim != 1
+                or probs.ndim != 1
+                or token_ids.shape != probs.shape
+                or token_ids.size == 0
+                or np.any(token_ids < 0)
+                or np.any(token_ids >= int(vocab_size))
+                or np.unique(token_ids).size != token_ids.size
+                or not np.all(np.isfinite(probs))
+                or np.any(probs <= 0.0)
+                or not np.isclose(float(probs.sum()), 1.0, rtol=1e-9, atol=1e-12)
+            ):
+                raise RuntimeError(
+                    f"block_draft_source draft_qs[{depth_index}] is not an "
+                    "exact normalized sparse distribution"
+                )
+            sampled_probability = q.probability(int(token))
+        else:
+            probs = np.asarray(q, dtype=np.float64)
+            if (
+                probs.ndim != 1
+                or probs.shape[0] != int(vocab_size)
+                or not np.all(np.isfinite(probs))
+                or np.any(probs < 0.0)
+                or not np.isclose(float(probs.sum()), 1.0, rtol=1e-9, atol=1e-12)
+            ):
+                raise RuntimeError(
+                    f"block_draft_source draft_qs[{depth_index}] is not an "
+                    "exact normalized dense distribution"
+                )
+            sampled_probability = float(probs[int(token)])
+        if not np.isfinite(sampled_probability) or sampled_probability <= 0.0:
+            raise RuntimeError(
+                f"block_draft_source draft_qs[{depth_index}] assigns no mass "
+                "to its sampled token"
+            )
+        validated.append(q)
+    return validated
+
+
 def _sample_from_logits(
     logits: mx.array,
     config: SamplerConfig,
@@ -4548,6 +4660,43 @@ def _add_timing(event: dict, key: str, elapsed_s: float) -> None:
     timings[key] = timings.get(key, 0.0) + elapsed_s
 
 
+def _forward_ar_one_row_sequence(
+    rt: MTPLXRuntime,
+    token_ids: Sequence[int],
+    *,
+    cache: list[Any],
+    hidden_variant: str,
+) -> tuple[mx.array, mx.array]:
+    """Run an AR suffix as evaluated one-token forwards.
+
+    This is the deliberately slow correctness oracle for models whose M>1
+    target arithmetic is not byte-identical to the M1 decode path.  Evaluating
+    each row before constructing the next one is part of the contract: it
+    mirrors :func:`generate_ar` and prevents MLX from turning the scalar chain
+    back into a differently scheduled lazy graph.
+    """
+
+    tokens = [int(token) for token in token_ids]
+    if not tokens:
+        raise ValueError("one-row AR sequence cannot be empty")
+    logits_parts: list[mx.array] = []
+    hidden_parts: list[mx.array] = []
+    for token in tokens:
+        row_logits, row_hidden = rt.forward_ar(
+            mx.array([[token]]),
+            cache=cache,
+            return_hidden=True,
+            hidden_variant=hidden_variant,
+        )
+        _eval(row_logits, row_hidden)
+        logits_parts.append(row_logits[:, -1:, :])
+        hidden_parts.append(row_hidden[:, -1:, :])
+    return (
+        mx.concatenate(logits_parts, axis=1),
+        mx.concatenate(hidden_parts, axis=1),
+    )
+
+
 def _reject_repair_breakdown(
     events: list[dict[str, Any]],
 ) -> tuple[dict[str, int], dict[str, float]]:
@@ -5201,7 +5350,7 @@ def generate_mtp1(
                     draft_q,
                     draft_token,
                 )
-                accepted_now = float(rng.random()) <= accept_prob
+                accepted_now = float(rng.random()) < accept_prob
                 correction = (
                     draft_token
                     if accepted_now
@@ -5323,7 +5472,7 @@ def generate_mtp1(
                     draft_q,
                     draft_token,
                 )
-                accepted_now = float(rng.random()) <= accept_prob
+                accepted_now = float(rng.random()) < accept_prob
                 correction = (
                     draft_token
                     if accepted_now
@@ -5510,7 +5659,7 @@ def generate_mtp1(
                 draft_q,
                 draft_token,
             )
-            accepted_now = float(rng.random()) <= accept_prob
+            accepted_now = float(rng.random()) < accept_prob
             correction = (
                 draft_token
                 if accepted_now
@@ -5689,7 +5838,7 @@ def generate_mtp1(
     )
 
 
-def generate_mtpk(
+def _generate_mtpk_impl(
     rt: MTPLXRuntime,
     prompt_ids: list[int],
     *,
@@ -5794,6 +5943,13 @@ def generate_mtpk(
         source_supports_target_prefix = bool(
             getattr(block_draft_source, "supports_target_prefix", False)
         )
+        if sampler.temperature > 0 and verify_strategy != "sequential":
+            raise ValueError(
+                "stochastic target sampling with external block drafting requires "
+                "verify_strategy='sequential'; capture-commit and target-prefix "
+                "remain greedy diagnostics because M>1 target probabilities "
+                "are not AR-authoritative"
+            )
         if (
             bool(
                 getattr(
@@ -5809,6 +5965,7 @@ def generate_mtpk(
                 "A3B whole-MoE target-prefix route"
             )
         if verify_strategy not in {
+            "sequential",
             "capture_commit",
             "graphbank_capture_commit",
         } and not (
@@ -5816,8 +5973,8 @@ def generate_mtpk(
             and source_supports_target_prefix
         ):
             raise ValueError(
-                "external block drafting requires capture-commit, or an "
-                "explicitly supported target-prefix source"
+                "external block drafting requires sequential, capture-commit, "
+                "or an explicitly supported target-prefix source"
             )
         incompatible = {
             "adaptive_policy": adaptive_policy is not None,
@@ -5915,8 +6072,14 @@ def generate_mtpk(
         raise ValueError("adapter_ensemble_epsilon must be in [0, 1]")
     if adapter_ensemble_min_depth < 1:
         raise ValueError("adapter_ensemble_min_depth must be >= 1")
+    if verify_strategy == "sequential" and not using_block_draft_source:
+        raise ValueError(
+            "verify_strategy='sequential' is restricted to external block "
+            "draft sources"
+        )
     if verify_strategy not in {
         "batched",
+        "sequential",
         "capture_commit",
         "graphbank",
         "graphbank_capture_commit",
@@ -5924,9 +6087,9 @@ def generate_mtpk(
         "trim_commit",
     }:
         raise ValueError(
-            "verify_strategy must be 'batched', 'capture_commit', "
-            "'graphbank', 'graphbank_capture_commit', 'target_prefix', "
-            "or 'trim_commit'"
+            "verify_strategy must be 'batched', 'sequential', "
+            "'capture_commit', 'graphbank', 'graphbank_capture_commit', "
+            "'target_prefix', or 'trim_commit'"
         )
     target_prefix_verify = verify_strategy == "target_prefix"
     # Constrained requests never engage the exact A3B route: the route
@@ -6257,6 +6420,7 @@ def generate_mtpk(
     append_event = events.append if record_events else (lambda _event: None)
     accepted = rejected = drafted = 0
     bonus_tokens = correction_tokens = verify_calls = 0
+    verify_forward_calls = repair_forward_calls = 0
     accepted_by_depth = [0 for _ in range(speculative_depth)]
     drafted_by_depth = [0 for _ in range(speculative_depth)]
     accept_probability_sum_by_depth = [0.0 for _ in range(speculative_depth)]
@@ -6817,6 +6981,8 @@ def generate_mtpk(
             "rejected_drafts": rejected,
             "drafted_tokens": drafted,
             "verify_calls": verify_calls,
+            "verify_forward_calls": verify_forward_calls,
+            "repair_forward_calls": repair_forward_calls,
             "correction_tokens": correction_tokens,
             "bonus_tokens": bonus_tokens,
             "verify_time_s": verify_time,
@@ -7158,7 +7324,7 @@ def generate_mtpk(
 
         cycle_depth = min(planned_depth, max_tokens - len(tokens))
         draft_tokens: list[int | None] = []
-        draft_probs: list[np.ndarray | None] = []
+        draft_probs: list[np.ndarray | SparseDistribution | None] = []
         draft_cache_keys: list[tuple[int, ...]] = []
         draft_hidden_for_update: list[mx.array] = []
         draft_hidden_update_keys: list[object] = []
@@ -7289,6 +7455,7 @@ def generate_mtpk(
                 verify_time += elapsed_verify
                 target_time += elapsed_verify
                 verify_calls += 1
+                verify_forward_calls += 1
                 _cc_correction: int | None = None
                 if sampler.temperature <= 0:
                     _cc_nacc = 0
@@ -7321,7 +7488,7 @@ def generate_mtpk(
                         _cc_accept_prob = compute_acceptance_probability(
                             _cc_target_p, _cc_draft_q, int(_cc_d)
                         )
-                        if float(rng.random()) <= _cc_accept_prob:
+                        if float(rng.random()) < _cc_accept_prob:
                             _cc_nacc += 1
                             continue
                         _cc_correction = int(
@@ -7373,6 +7540,7 @@ def generate_mtpk(
                         )
                     _eval(_cc_l2, _cc_h2)
                     repair_time += time.perf_counter() - started
+                    repair_forward_calls += 1
                     logits = _cc_l2[:, -1, :]
                     hidden = _cc_h2[:, -1:, :]
                     ccopy_active = False
@@ -7477,16 +7645,35 @@ def generate_mtpk(
 
         used_device_d2_core = False
         used_block_draft_source = False
+        external_soft_draft_q = False
         if using_block_draft_source:
             propose = getattr(block_draft_source, "propose", None)
             if not callable(propose):
                 raise TypeError("block_draft_source must implement propose(...)")
-            proposal = propose(
-                primary_token=int(primary),
-                max_draft_tokens=int(cycle_depth),
-                committed_tokens=tuple(tokens),
-                target_hidden=hidden,
-            )
+            proposal_kwargs = {
+                "primary_token": int(primary),
+                "max_draft_tokens": int(cycle_depth),
+                "committed_tokens": tuple(tokens),
+                "target_hidden": hidden,
+            }
+            try:
+                proposal = propose(
+                    **proposal_kwargs,
+                    draft_sampler=draft_sampler,
+                    rng=rng,
+                )
+            except TypeError as exc:
+                # Preserve legacy deterministic sources while making shared-RNG
+                # support mandatory for stochastic q.  Only retry the exact
+                # unexpected-keyword failure; never mask a TypeError raised by
+                # the source implementation itself.
+                unexpected_sampling_kwarg = (
+                    "unexpected keyword argument 'draft_sampler'" in str(exc)
+                    or "unexpected keyword argument 'rng'" in str(exc)
+                )
+                if not unexpected_sampling_kwarg or draft_sampler.temperature > 0:
+                    raise
+                proposal = propose(**proposal_kwargs)
             source_tokens = tuple(int(token) for token in proposal.tokens)
             if not source_tokens:
                 raise RuntimeError("block_draft_source returned an empty proposal")
@@ -7497,16 +7684,46 @@ def generate_mtpk(
             elapsed_draft = float(getattr(proposal, "elapsed_s", 0.0) or 0.0)
             draft_time += elapsed_draft
             draft_tokens = list(source_tokens)
-            draft_probs = [
-                SparseDistribution.one_hot(token, int(logits.shape[-1]))
-                if sampler.temperature > 0
-                else None
-                for token in draft_tokens
-            ]
-            source_name = str(
-                getattr(proposal, "source", None) or "external-one-hot"
-            )
+            vocab_size = int(logits.shape[-1])
+            if any(token < 0 or token >= vocab_size for token in draft_tokens):
+                raise RuntimeError(
+                    "block_draft_source returned a token outside the target vocab"
+                )
             source_metadata = dict(getattr(proposal, "metadata", {}) or {})
+            proposal_declaration = str(
+                source_metadata.get("declaration") or "<missing>"
+            )
+            proposal_draft_qs = getattr(proposal, "draft_qs", None)
+            validated_proposal_qs = None
+            if proposal_draft_qs is not None or sampler.temperature > 0:
+                validated_proposal_qs = _validated_external_draft_qs(
+                    proposal_draft_qs,
+                    draft_tokens,
+                    vocab_size=vocab_size,
+                )
+            if sampler.temperature > 0:
+                assert validated_proposal_qs is not None
+                draft_probs = validated_proposal_qs
+            else:
+                draft_probs = [None for _ in draft_tokens]
+            if validated_proposal_qs is not None:
+                external_soft_draft_q = any(
+                    (
+                        len(q.token_ids) > 1
+                        if isinstance(q, SparseDistribution)
+                        else int(np.count_nonzero(np.asarray(q) > 0.0)) > 1
+                    )
+                    for q in validated_proposal_qs
+                )
+                if external_soft_draft_q and a3b_target_prefix_route is not None:
+                    raise RuntimeError(
+                        "stochastic external draft_qs are not supported by the "
+                        "compiled staged target-prefix route; use sequential "
+                        "one-row verify for AR-authoritative target probabilities"
+                    )
+            source_name = str(
+                getattr(proposal, "source", None) or "external-block"
+            )
             for depth_index, draft_token in enumerate(draft_tokens):
                 drafted += 1
                 drafted_by_depth[depth_index] += 1
@@ -7523,13 +7740,59 @@ def generate_mtpk(
                         },
                         "mtp_corrector": None,
                         "draft_core": source_name,
-                        "declaration": "one_hot",
+                        "declaration": proposal_declaration,
                     }
                 )
             event["block_draft_source"] = {
                 "source": source_name,
                 "proposal_tokens": len(draft_tokens),
                 "metadata": source_metadata,
+                "draft_q": (
+                    "soft" if external_soft_draft_q
+                    else "point_mass" if validated_proposal_qs is not None
+                    else "absent"
+                ),
+                "engine_q_support_sizes": (
+                    [
+                        int(len(q.token_ids))
+                        if isinstance(q, SparseDistribution)
+                        else int(np.count_nonzero(np.asarray(q) > 0.0))
+                        for q in validated_proposal_qs
+                    ]
+                    if validated_proposal_qs is not None
+                    else []
+                ),
+                "engine_q_sampled_probabilities": (
+                    [
+                        float(q.probability(token))
+                        if isinstance(q, SparseDistribution)
+                        else float(np.asarray(q)[token])
+                        for token, q in zip(
+                            draft_tokens,
+                            validated_proposal_qs,
+                            strict=True,
+                        )
+                    ]
+                    if validated_proposal_qs is not None
+                    else []
+                ),
+                "acceptance": (
+                    "probability_ratio_residual"
+                    if sampler.temperature > 0
+                    else "target_prefix_match"
+                    if target_prefix_verify
+                    else "greedy_match"
+                ),
+                "target_sampler": {
+                    "temperature": float(sampler.temperature),
+                    "top_p": float(sampler.top_p),
+                    "top_k": int(sampler.top_k),
+                },
+                "draft_sampler": {
+                    "temperature": float(draft_sampler.temperature),
+                    "top_p": float(draft_sampler.top_p),
+                    "top_k": int(draft_sampler.top_k),
+                },
             }
             next_token = draft_tokens[-1]
             used_block_draft_source = True
@@ -8107,7 +8370,7 @@ def generate_mtpk(
 
         before_verify = None
         if a3b_target_prefix_route is None:
-            if _skip_verify_snapshot():
+            if _skip_verify_snapshot() and verify_strategy != "sequential":
                 event["snapshot"] = "skipped_capture_commit_required"
             else:
                 started = time.perf_counter()
@@ -8156,6 +8419,7 @@ def generate_mtpk(
                 lazy_bonus_verify_requested
                 and not lazy_target_distributions
                 and not target_prefix_verify
+                and not used_block_draft_source
                 and len(draft_tokens) > 0
                 and len(draft_tokens) >= lazy_bonus_verify_min_depth
                 and not any(
@@ -8210,7 +8474,19 @@ def generate_mtpk(
         started_forward = time.perf_counter()
         captures = None
         with attention_phase("decode_verify"):
-            if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:
+            if verify_strategy == "sequential":
+                verify_logits, verify_hidden = _forward_ar_one_row_sequence(
+                    rt,
+                    verify_input,
+                    cache=cache,
+                    hidden_variant=base_hidden_variant,
+                )
+                event["sequential_verify"] = {
+                    "rows": int(len(verify_input)),
+                    "forward_calls": int(len(verify_input)),
+                    "authoritative": True,
+                }
+            elif verify_strategy in {"capture_commit", "graphbank_capture_commit"}:
                 if compiled_verify_bank is not None:
                     verify_logits, verify_hidden, captures = (
                         compiled_verify_bank.forward_ar_capture(
@@ -8311,7 +8587,7 @@ def generate_mtpk(
         target_distribution_precomputed = False
         elapsed_target_distribution_eval = 0.0
         started_eval = time.perf_counter()
-        if target_prefix_verify:
+        if target_prefix_verify and not external_soft_draft_q:
             target_distribution_rows = min(
                 int(verify_logits.shape[1]),
                 target_distribution_rows_needed,
@@ -8481,6 +8757,9 @@ def generate_mtpk(
         verify_time += elapsed_verify
         target_time += elapsed_verify
         verify_calls += 1
+        verify_forward_calls += (
+            len(verify_input) if verify_strategy == "sequential" else 1
+        )
         if trace.enabled:
             trace_accounting_started = time.perf_counter()
             trace_verify_output_nbytes += (
@@ -8586,11 +8865,13 @@ def generate_mtpk(
                 accepted_now = draft_token == target_token
                 accept_prob = 1.0 if accepted_now else 0.0
                 correction = target_token
+                correction_origin = "target_argmax"
             elif target_prefix_tokens is not None:
                 target_token = int(target_prefix_tokens[depth_index])
                 accepted_now = int(draft_token) == target_token
                 accept_prob = 1.0 if accepted_now else 0.0
                 correction = target_token
+                correction_origin = "target_prefix_sample"
             elif target_distribution_batch is not None:
                 draft_q = draft_probs[depth_index]
                 if draft_q is None:
@@ -8604,7 +8885,7 @@ def generate_mtpk(
                 accept_prob = (
                     1.0 if q <= 0 and p > 0 else (0.0 if q <= 0 else min(1.0, p / q))
                 )
-                accepted_now = float(rng.random()) <= accept_prob
+                accepted_now = float(rng.random()) < accept_prob
                 target_p_for_cache = (
                     target_distribution_batch.to_distribution(depth_index)
                     if online_correction_cache
@@ -8623,6 +8904,9 @@ def generate_mtpk(
                         ),
                         rng,
                     )
+                )
+                correction_origin = (
+                    "accepted_draft" if accepted_now else "residual_p_minus_q"
                 )
             else:
                 target_p = (
@@ -8660,7 +8944,7 @@ def generate_mtpk(
                 accept_prob = compute_acceptance_probability(
                     target_p, draft_q, draft_token
                 )
-                accepted_now = float(rng.random()) <= accept_prob
+                accepted_now = float(rng.random()) < accept_prob
                 target_p_for_cache = target_p
                 correction = (
                     draft_token
@@ -8668,6 +8952,9 @@ def generate_mtpk(
                     else sample_from_distribution(
                         residual_distribution(target_p, draft_q), rng
                     )
+                )
+                correction_origin = (
+                    "accepted_draft" if accepted_now else "residual_p_minus_q"
                 )
 
             if (
@@ -8693,6 +8980,7 @@ def generate_mtpk(
             event["drafts"][depth_index]["accepted"] = accepted_now
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
+            event["drafts"][depth_index]["correction_origin"] = correction_origin
             accept_probability_sum_by_depth[depth_index] += float(accept_prob)
 
             if accepted_now:
@@ -8767,7 +9055,7 @@ def generate_mtpk(
             )
 
         event["accepted_depths"] = accepted_count
-        if used_block_draft_source:
+        if used_block_draft_source and verify_strategy != "sequential":
             commit_target_prefix = getattr(
                 block_draft_source,
                 "commit_target_prefix",
@@ -8839,6 +9127,28 @@ def generate_mtpk(
                 _add_timing(event, "online_hidden_corrector_update", elapsed_online)
 
         if accepted_count == len(draft_tokens):
+            if used_block_draft_source and verify_strategy == "sequential":
+                commit_target_prefix = getattr(
+                    block_draft_source,
+                    "commit_target_prefix",
+                    None,
+                )
+                if not callable(commit_target_prefix):
+                    raise TypeError(
+                        "block_draft_source must implement "
+                        "commit_target_prefix(accepted_draft_tokens)"
+                    )
+                commit_target_prefix(
+                    accepted_count,
+                    committed_target_rows=accepted_count + 1,
+                    residual_correction_rows=0,
+                )
+                event["block_draft_source"]["accepted_draft_tokens"] = int(
+                    accepted_count
+                )
+                event["block_draft_source"]["committed_target_rows"] = int(
+                    accepted_count + 1
+                )
             committed = [primary] + draft_tokens
             tokens.extend(draft_tokens)
             if _mtp_history_uses_committed_cache(mtp_history_policy):
@@ -8870,6 +9180,7 @@ def generate_mtpk(
                     elapsed_bonus_commit_forward + elapsed_bonus_commit_eval
                 )
                 lazy_bonus_commit_time += elapsed_bonus_commit
+                verify_forward_calls += 1
                 verify_forward_time += elapsed_bonus_commit_forward
                 verify_eval_time += elapsed_bonus_commit_eval
                 verify_joint_eval_time += elapsed_bonus_commit_eval
@@ -9238,8 +9549,34 @@ def generate_mtpk(
             rollback_time += elapsed_rollback
             _add_timing(event, "rollback", elapsed_rollback)
             started = time.perf_counter()
+            if used_block_draft_source and verify_strategy == "sequential":
+                # The first scalar verify captured the entire speculative
+                # window, including rejected rows.  Start a fresh tap epoch so
+                # the repair captures only the authoritative committed suffix.
+                begin_target_repair = getattr(
+                    block_draft_source,
+                    "begin_target_verify",
+                    None,
+                )
+                if not callable(begin_target_repair):
+                    raise TypeError(
+                        "block_draft_source must implement begin_target_verify()"
+                    )
+                begin_target_repair()
             with attention_phase("decode_verify"):
-                if generic_compiled_target_prefix and compiled_verify_bank is not None:
+                if verify_strategy == "sequential":
+                    repair_logits, repair_hidden = _forward_ar_one_row_sequence(
+                        rt,
+                        committed,
+                        cache=cache,
+                        hidden_variant=base_hidden_variant,
+                    )
+                    event["sequential_repair"] = {
+                        "rows": int(len(committed)),
+                        "forward_calls": int(len(committed)),
+                        "authoritative": True,
+                    }
+                elif generic_compiled_target_prefix and compiled_verify_bank is not None:
                     repair_logits, repair_hidden, _repair_captures = (
                         compiled_verify_bank.forward_ar_capture(
                             mx.array([committed]),
@@ -9255,11 +9592,44 @@ def generate_mtpk(
                         return_hidden=True,
                         hidden_variant=base_hidden_variant,
                     )
+            repair_forward_calls += (
+                len(committed) if verify_strategy == "sequential" else 1
+            )
             _eval(repair_logits, repair_hidden)
             elapsed_repair = time.perf_counter() - started
             target_time += elapsed_repair
             repair_time += elapsed_repair
             _add_timing(event, "repair_forward", elapsed_repair)
+            if used_block_draft_source and verify_strategy == "sequential":
+                commit_target_prefix = getattr(
+                    block_draft_source,
+                    "commit_target_prefix",
+                    None,
+                )
+                if not callable(commit_target_prefix):
+                    raise TypeError(
+                        "block_draft_source must implement "
+                        "commit_target_prefix(accepted_draft_tokens)"
+                    )
+                # ``committed`` is primary + accepted drafts + an optional
+                # residual correction. Keep the actual acceptance count
+                # separate from repair rows so staged sources cannot retain a
+                # stale queue merely because one correction row was committed.
+                correction_rows = int(rejection_correction is not None)
+                commit_target_prefix(
+                    accepted_count,
+                    committed_target_rows=len(committed),
+                    residual_correction_rows=correction_rows,
+                )
+                event["block_draft_source"]["accepted_draft_tokens"] = int(
+                    accepted_count
+                )
+                event["block_draft_source"]["committed_target_rows"] = int(
+                    len(committed)
+                )
+                event["block_draft_source"]["residual_correction_rows"] = int(
+                    correction_rows
+                )
         if _mtp_history_uses_committed_cache(mtp_history_policy):
             assert mtp_cache is not None and cycle_mtp_offset is not None
             _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
@@ -9535,6 +9905,8 @@ def generate_mtpk(
         bonus_tokens=bonus_tokens,
         correction_tokens=correction_tokens,
         verify_calls=verify_calls,
+        verify_forward_calls=verify_forward_calls,
+        repair_forward_calls=repair_forward_calls,
         context_copy_active=bool(ccopy_active),
         context_copy_probes=ccopy_probes,
         context_copy_rounds=ccopy_rounds,
@@ -9636,6 +10008,20 @@ def generate_mtpk(
         final_state=final_state,
         finish_reason=finish_reason,
     )
+
+
+@functools.wraps(_generate_mtpk_impl)
+def generate_mtpk(*args: Any, **kwargs: Any) -> GenerationOutput:
+    """Run fixed-depth generation and always release external source taps."""
+
+    block_draft_source = kwargs.get("block_draft_source")
+    try:
+        return _generate_mtpk_impl(*args, **kwargs)
+    finally:
+        if block_draft_source is not None:
+            close = getattr(block_draft_source, "close", None)
+            if callable(close):
+                close()
 
 
 def generate_mtpa(
@@ -9788,7 +10174,7 @@ def generate_mtpa(
                 accept_prob = compute_acceptance_probability(
                     target_p, draft_q, draft_token
                 )
-                accepted_now = float(rng.random()) <= accept_prob
+                accepted_now = float(rng.random()) < accept_prob
                 correction = (
                     draft_token
                     if accepted_now

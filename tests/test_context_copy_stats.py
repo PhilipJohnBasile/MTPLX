@@ -144,6 +144,7 @@ def test_full_accept_rounds_count_probes_rounds_blocks_tokens(monkeypatch):
     assert stats.context_copy_accepted_blocks == stats.context_copy_rounds
     assert stats.context_copy_drafted_tokens == stats.context_copy_accepted_tokens
     assert stats.context_copy_accepted_tokens > 0
+    assert stats.verify_forward_calls >= stats.verify_calls
     assert stats.context_copy_suspensions == 0
     assert stats.context_copy_suspended is False
     assert stats.context_copy_backoff_tokens == 64

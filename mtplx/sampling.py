@@ -288,7 +288,9 @@ def verify_one_token(
 ) -> SpeculativeDecision:
     rng = rng or np.random.default_rng()
     accept_p = acceptance_probability(target_p, draft_q, draft_token)
-    if float(rng.random()) <= accept_p:
+    # NumPy draws from [0, 1).  Strict inequality is required: ``u <= 0``
+    # would otherwise accept an impossible draft on the valid draw ``u=0``.
+    if float(rng.random()) < accept_p:
         return SpeculativeDecision(True, int(draft_token), accept_p)
     corrected = sample_from_distribution(residual_distribution(target_p, draft_q), rng)
     return SpeculativeDecision(False, corrected, accept_p)

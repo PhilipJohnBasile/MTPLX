@@ -1,11 +1,55 @@
 # MTP + DFlash coordination — the "Priced Union" design
 
-Status: measured build plan, corrected 2026-07-30. Produced by a 13-agent workflow (6 code/web mappers, 3
+Status: measured build plan, exactness gate corrected 2026-07-31. Produced by a 13-agent workflow (6 code/web mappers, 3
 competing designs, judge synthesis, 3 adversarial verifiers). All three verifiers
 returned SOUND_WITH_FIXES; every fix is folded into this document. Number tags:
 **[measured]** = observed on this M5 Max or in local records, **[verified]** = code
 read in the current checkout, **[published]** = external claim, **[estimated]** =
 model/extrapolation.
+
+> **2026-07-31 exactness correction (supersedes the equality language below):**
+> all existing in-engine receipts use greedy/one-hot proposals. They remain
+> useful performance and integration diagnostics, but same-seed byte equality
+> cannot certify the product sampling law. Evidence now uses both target and
+> draft samplers at `temperature=0.6`, `top_p=0.95`, `top_k=20`; DFlash samples
+> independent rows on the host, declares the observed sparse `q`, and the
+> engine must report probability-ratio acceptance plus residual correction.
+> The current multi-row capture-commit logits are not authoritative target
+> probabilities, so the evidence lane uses sequential verification. Staged-K1
+> remains parked until compiled target-prefix can carry the same `p/q` residual
+> contract. `benchmarks/dflash_engine_suite.py` records the observed proposal
+> declaration, sampler, verifier lane, and correction exercise. With no repeated
+> stochastic receipts it exits deferred; its position-marginal permutation test
+> may detect divergence but non-rejection is explicitly inconclusive until a
+> pre-registered equivalence/power bound and joint-sequence-law test exist.
+> There is therefore **no stochastic release receipt yet**.
+
+The implementation behind that gate is now hardened against the failure modes
+found in adversarial review:
+
+- acceptance uses the strict event `u < min(1, p(x) / q(x))`, so an impossible
+  proposal cannot be accepted when a deterministic test RNG returns zero;
+- the reference source adapts the published `dflash-mlx==0.1.0` API rather than
+  depending on an unpublished Git package, and Hub artifacts are resolved to an
+  immutable commit SHA before loading;
+- evidence receipts include that resolved draft SHA plus the engine Git HEAD,
+  dirty-state flag, and dirty-diff digest;
+- staged proposal state survives only a one-token acceptance with no residual
+  repair, preventing a rejected token's queued `q` from leaking into the next
+  block;
+- source taps close on every generator exit, including proposal and verifier
+  exceptions;
+- telemetry distinguishes logical verify windows, physical verification
+  forwards, and physical rejection-repair forwards, so each latency keeps the
+  correct denominator on the scalar sequential oracle;
+- the permutation diagnostic defers when its requested sample count cannot
+  attain the Bonferroni-adjusted threshold, and a synthetic-divergence test
+  proves the configured gate can reject.
+
+The CPU-only focused suite currently passes 137 tests, with 19 additional
+server/public-CLI metric tests passing. These checks establish implementation
+and receipt integrity only. The active GPU workload was not interrupted, so a
+real product-sampler model receipt and throughput result remain **HOLD**.
 
 ## Current decision
 

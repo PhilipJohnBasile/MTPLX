@@ -49,6 +49,26 @@ def test_verify_one_token_rejects_into_residual_when_random_is_high():
         assert decision.token_id == 1
 
 
+def test_zero_uniform_draw_cannot_accept_zero_probability_draft():
+    class ZeroRng:
+        def random(self):
+            return 0.0
+
+        def choice(self, values, p):
+            return np.asarray(values)[int(np.argmax(p))]
+
+    decision = verify_one_token(
+        np.array([0.0, 1.0]),
+        np.array([1.0, 0.0]),
+        0,
+        ZeroRng(),
+    )
+
+    assert decision.accept_probability == 0.0
+    assert decision.accepted is False
+    assert decision.token_id == 1
+
+
 def test_speculative_output_marginal_recovers_target_distribution():
     target = np.array([0.55, 0.25, 0.15, 0.05])
     draft = np.array([0.10, 0.55, 0.20, 0.15])

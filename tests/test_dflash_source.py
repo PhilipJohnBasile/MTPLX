@@ -14,9 +14,27 @@ from mtplx.runtime import MTPLXRuntime
 from mtplx.sampling import SamplerConfig
 
 
+@pytest.fixture(autouse=True)
+def _force_cpu():
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        yield
+    finally:
+        mx.set_default_device(previous)
+
+
 class _Tokenizer:
     def decode(self, tokens, **_kwargs):
         return " ".join(str(int(token)) for token in tokens)
+
+
+def test_block_draft_proposal_preserves_legacy_positional_fields() -> None:
+    proposal = BlockDraftProposal((7,), "legacy", 0.25, {"route": "old"})
+
+    assert proposal.elapsed_s == 0.25
+    assert proposal.metadata == {"route": "old"}
+    assert proposal.draft_qs is None
 
 
 class _ScriptedModel:

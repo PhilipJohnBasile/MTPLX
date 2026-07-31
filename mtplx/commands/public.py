@@ -4381,6 +4381,10 @@ def _tune_candidate_summary(
     generation_windows = _generation_windows_from_rows(generation_rows)
     hit_token_budget_count = _row_hit_token_budget_count(generation_rows)
     verify_calls = int(summary.get("verify_calls") or 0)
+    verify_forward_calls = int(
+        summary.get("verify_forward_calls") or verify_calls
+    )
+    repair_forward_calls = int(summary.get("repair_forward_calls") or 0)
     quality = summarize_benchmark_quality(generation_rows)
     acceptance = summary.get("acceptance_by_depth")
     if acceptance is None:
@@ -4409,15 +4413,19 @@ def _tune_candidate_summary(
         or _row_finish_reason_counts(generation_rows),
         "verify_time_s": summary.get("verify_time_s"),
         "verify_calls": verify_calls,
-        "verify_ms_per_call": _ms_per_call(summary.get("verify_time_s"), verify_calls),
+        "verify_forward_calls": verify_forward_calls,
+        "repair_forward_calls": repair_forward_calls,
+        "verify_ms_per_call": _ms_per_call(
+            summary.get("verify_time_s"), verify_forward_calls
+        ),
         "verify_forward_ms_per_call": _ms_per_call(
-            summary.get("verify_forward_time_s"), verify_calls
+            summary.get("verify_forward_time_s"), verify_forward_calls
         ),
         "verify_eval_ms_per_call": _ms_per_call(
-            summary.get("verify_eval_time_s"), verify_calls
+            summary.get("verify_eval_time_s"), verify_forward_calls
         ),
         "verify_hidden_eval_ms_per_call": _ms_per_call(
-            summary.get("verify_hidden_eval_time_s"), verify_calls
+            summary.get("verify_hidden_eval_time_s"), verify_forward_calls
         ),
         "accepted_by_depth": summary.get("accepted_by_depth"),
         "drafted_by_depth": summary.get("drafted_by_depth"),
@@ -9190,14 +9198,36 @@ def _generate_one_shot_public(
             "verify_ms_per_call": (
                 None
                 if generation_mode == GENERATION_MODE_AR
-                else 1000.0 * out.stats.verify_time_s / out.stats.verify_calls
-                if out.stats.verify_calls
+                else 1000.0
+                * out.stats.verify_time_s
+                / (
+                    int(getattr(out.stats, "verify_forward_calls", 0) or 0)
+                    or out.stats.verify_calls
+                )
+                if (
+                    int(getattr(out.stats, "verify_forward_calls", 0) or 0)
+                    or out.stats.verify_calls
+                )
                 else None
             ),
             "verify_calls": (
                 0
                 if generation_mode == GENERATION_MODE_AR
                 else int(getattr(out.stats, "verify_calls", 0) or 0)
+            ),
+            "verify_forward_calls": (
+                0
+                if generation_mode == GENERATION_MODE_AR
+                else int(
+                    getattr(out.stats, "verify_forward_calls", 0)
+                    or getattr(out.stats, "verify_calls", 0)
+                    or 0
+                )
+            ),
+            "repair_forward_calls": (
+                0
+                if generation_mode == GENERATION_MODE_AR
+                else int(getattr(out.stats, "repair_forward_calls", 0) or 0)
             ),
             "verify_time_s": (
                 0.0
@@ -9979,6 +10009,15 @@ def _quickstart_generate(
         "verify_calls": 0
         if generation_mode == GENERATION_MODE_AR
         else out.stats.verify_calls,
+        "verify_forward_calls": 0
+        if generation_mode == GENERATION_MODE_AR
+        else int(
+            getattr(out.stats, "verify_forward_calls", 0)
+            or out.stats.verify_calls
+        ),
+        "repair_forward_calls": 0
+        if generation_mode == GENERATION_MODE_AR
+        else int(getattr(out.stats, "repair_forward_calls", 0) or 0),
         "accepted_by_depth": (
             []
             if generation_mode == GENERATION_MODE_AR
@@ -9996,8 +10035,16 @@ def _quickstart_generate(
         "verify_ms_per_call": (
             None
             if generation_mode == GENERATION_MODE_AR
-            else 1000.0 * out.stats.verify_time_s / out.stats.verify_calls
-            if out.stats.verify_calls
+            else 1000.0
+            * out.stats.verify_time_s
+            / (
+                int(getattr(out.stats, "verify_forward_calls", 0) or 0)
+                or out.stats.verify_calls
+            )
+            if (
+                int(getattr(out.stats, "verify_forward_calls", 0) or 0)
+                or out.stats.verify_calls
+            )
             else None
         ),
     }

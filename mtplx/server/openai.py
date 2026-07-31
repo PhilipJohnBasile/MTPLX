@@ -11209,6 +11209,10 @@ def _metrics_envelope(
         "sliding_decode_tok_s_last_256": sliding_decode_tok_s_last_256,
         "mtp_depth": int(mtp_depth),
         "verify_calls": int(stats.get("verify_calls") or 0),
+        "verify_forward_calls": int(
+            stats.get("verify_forward_calls") or stats.get("verify_calls") or 0
+        ),
+        "repair_forward_calls": int(stats.get("repair_forward_calls") or 0),
         "accepted_by_depth": stats.get("accepted_by_depth") or [],
         "drafted_by_depth": stats.get("drafted_by_depth") or [],
         "mean_accept_probability_by_depth": (
@@ -13419,6 +13423,8 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "rejected_drafts",
     "drafted_tokens",
     "verify_calls",
+    "verify_forward_calls",
+    "repair_forward_calls",
     "accepted_by_depth",
     "drafted_by_depth",
     "mean_accept_probability_by_depth",
