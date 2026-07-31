@@ -240,6 +240,46 @@ def gated_delta_blocked_prefill(
 
 _PATCH_STATE: dict = {"installed": False, "original": None}
 
+# Component-timing accumulators: branch -> {calls, total_ms, by_t: {T: ms}}.
+_COMPONENT_TIMES: dict = {}
+
+
+def component_timing_report() -> dict:
+    """Snapshot of the accumulated GDN component times (diagnostic mode)."""
+    return {
+        branch: {
+            "calls": rec["calls"],
+            "total_ms": round(rec["total_ms"], 2),
+            "by_t": {t: round(ms, 2) for t, ms in sorted(rec["by_t"].items())},
+        }
+        for branch, rec in _COMPONENT_TIMES.items()
+    }
+
+
+def _timed_call(branch: str, t_len: int, fn):
+    import time as _time
+
+    t0 = _time.perf_counter()
+    y, s = fn()
+    mx.eval(y, s)
+    dt_ms = (_time.perf_counter() - t0) * 1000.0
+    rec = _COMPONENT_TIMES.setdefault(
+        branch, {"calls": 0, "total_ms": 0.0, "by_t": {}}
+    )
+    rec["calls"] += 1
+    rec["total_ms"] += dt_ms
+    rec["by_t"][t_len] = rec["by_t"].get(t_len, 0.0) + dt_ms
+    if rec["calls"] % 64 == 0:
+        try:
+            print(
+                f"[gdn-prefill/component-timing] {branch}: {rec['calls']} calls, "
+                f"{rec['total_ms']:.0f} ms total",
+                flush=True,
+            )
+        except Exception:
+            pass
+    return y, s
+
 
 def blocked_prefill_env_enabled() -> bool:
     return str(os.environ.get("MTPLX_GDN_BLOCKED_PREFILL", "")).strip().lower() in {
@@ -278,6 +318,22 @@ def install_gdn_blocked_prefill_patch() -> dict:
     debug = str(os.environ.get("MTPLX_GDN_BLOCKED_PREFILL_DEBUG", "")).strip() in {
         "1", "true", "on",
     }
+    # Component-timing diagnostic (MTPLX_GDN_PREFILL_COMPONENT_TIMING=1):
+    # force-evals the GDN output around each large-T call and accumulates
+    # per-branch GPU-inclusive wall time. Serve-to-serve TTFT wobble (+/-7%
+    # measured 2026-07-31) cannot resolve the ~2% GDN share, so promotion
+    # decisions use this component clock instead. The sync eval perturbs
+    # pipeline overlap — DIAGNOSTIC ONLY, never a production default; both
+    # the blocked and stock branches are timed identically so the
+    # comparison is fair.
+    component_timing = str(
+        os.environ.get("MTPLX_GDN_PREFILL_COMPONENT_TIMING", "")
+    ).strip() in {"1", "true", "on"}
+    # Force the stock branch while keeping the wrapper (and its component
+    # clock) installed: the fair "stock arm" for component A/Bs.
+    force_stock = str(
+        os.environ.get("MTPLX_GDN_BLOCKED_PREFILL_FORCE_STOCK", "")
+    ).strip() in {"1", "true", "on"}
     debug_state = {"routed": 0, "stock": 0, "logged": 0}
     try:
         debug_max = int(os.environ.get("MTPLX_GDN_BLOCKED_PREFILL_DEBUG_MAX", "6"))
@@ -289,6 +345,7 @@ def install_gdn_blocked_prefill_patch() -> dict:
     ):
         if (
             use_kernel
+            and not force_stock
             and mask is None
             and q.ndim == 4
             and q.shape[1] >= min_t
@@ -317,6 +374,12 @@ def install_gdn_blocked_prefill_patch() -> dict:
                             )
                         except Exception:
                             pass
+                if component_timing:
+                    return _timed_call(
+                        "blocked",
+                        int(q.shape[1]),
+                        lambda: gated_delta_blocked_prefill(q, k, v, g, beta, state),
+                    )
                 return gated_delta_blocked_prefill(q, k, v, g, beta, state)
         if debug:
             debug_state["stock"] += 1
@@ -331,6 +394,15 @@ def install_gdn_blocked_prefill_patch() -> dict:
                     )
                 except Exception:
                     pass
+        if component_timing and q.ndim == 4 and q.shape[1] >= min_t:
+            return _timed_call(
+                "stock",
+                int(q.shape[1]),
+                lambda: original(
+                    q, k, v, a, b, A_log, dt_bias,
+                    state=state, mask=mask, use_kernel=use_kernel,
+                ),
+            )
         return original(
             q, k, v, a, b, A_log, dt_bias, state=state, mask=mask, use_kernel=use_kernel
         )
