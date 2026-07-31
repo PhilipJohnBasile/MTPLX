@@ -298,6 +298,10 @@ class CostModelDepthPolicy:
     # Ignore absurd inter-observe gaps (queue waits, tool round-trips in
     # agent serving): a "cycle" above this is not a cycle measurement.
     MAX_CYCLE_MS = 5000.0
+    # The generation loop passes its own measured cycle wall-time when it
+    # sees this flag; the self-timed inter-observe fallback stays for
+    # callers that do not.
+    accepts_cycle_ms = True
 
     def __init__(
         self,
@@ -408,15 +412,20 @@ class CostModelDepthPolicy:
 
     # -- the drop-in interface ---------------------------------------------
 
-    def observe(self, *, attempted_depth: int, accepted_depths: int) -> dict:
+    def observe(
+        self,
+        *,
+        attempted_depth: int,
+        accepted_depths: int,
+        cycle_ms: float | None = None,
+    ) -> dict:
         import time as _time
 
         now = _time.perf_counter()
-        cycle_ms = None
-        if self._last_observe_s is not None:
+        if cycle_ms is None and self._last_observe_s is not None:
             cycle_ms = (now - self._last_observe_s) * 1000.0
-            if cycle_ms > self.MAX_CYCLE_MS or cycle_ms <= 0.0:
-                cycle_ms = None
+        if cycle_ms is not None and (cycle_ms > self.MAX_CYCLE_MS or cycle_ms <= 0.0):
+            cycle_ms = None
         self._last_observe_s = now
 
         self.cycles += 1
