@@ -275,6 +275,11 @@ def install_gdn_blocked_prefill_patch() -> dict:
     compute_g = _gd.compute_g
     min_t = _min_route_t()
 
+    debug = str(os.environ.get("MTPLX_GDN_BLOCKED_PREFILL_DEBUG", "")).strip() in {
+        "1", "true", "on",
+    }
+    debug_state = {"routed": 0, "stock": 0, "logged": 0}
+
     def patched(
         q, k, v, a, b, A_log, dt_bias, state=None, mask=None, use_kernel=True
     ):
@@ -293,7 +298,35 @@ def install_gdn_blocked_prefill_patch() -> dict:
                     Hv, Dv = v.shape[2:]
                     Dk = q.shape[3]
                     state = mx.zeros((B, Hv, Dv, Dk), dtype=mx.float32)
+                if debug:
+                    debug_state["routed"] += 1
+                    if debug_state["logged"] < 6:
+                        debug_state["logged"] += 1
+                        try:
+                            print(
+                                "[gdn-blocked-prefill/debug] routed call "
+                                f"T={q.shape[1]} qdtype={q.dtype} "
+                                f"q_flags={getattr(q, 'flags', None)} "
+                                f"state_dtype={state.dtype} "
+                                f"routed={debug_state['routed']}",
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                 return gated_delta_blocked_prefill(q, k, v, g, beta, state)
+        if debug:
+            debug_state["stock"] += 1
+            if q.ndim == 4 and q.shape[1] >= min_t and debug_state["logged"] < 12:
+                debug_state["logged"] += 1
+                try:
+                    print(
+                        "[gdn-blocked-prefill/debug] STOCK large-T call "
+                        f"T={q.shape[1]} mask={mask is not None} "
+                        f"g_ndim={'4d-vec' if getattr(a, 'ndim', 0) == 4 else 'scalar'}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
         return original(
             q, k, v, a, b, A_log, dt_bias, state=state, mask=mask, use_kernel=use_kernel
         )
