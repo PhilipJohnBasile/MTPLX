@@ -1134,8 +1134,11 @@ class CompiledVerifyBank:
             )
         self.permanent_eager = False
         if not parity and not parity2 and not _compiled_verify_bits_gate_ok(runtime):
-            # Per-model promotion gate: only 4-bit affine trunks measured a
-            # win; q8 (Optimized-Quality) measured -15/-18% and stays eager.
+            # Per-model promotion gate: 4-bit and 8-bit affine trunks engage
+            # (both parity2-validated; q8's early -15/-18% reading predated
+            # the 2.4.0 compiled stack — measured 2026-07-31: q8 304/304
+            # compiled, 0 fallbacks, 41.3 tok/s at league parity). Unmeasured
+            # quantizations (e.g. the 6-bit 9B) stay eager.
             self.permanent_eager = True
         self._capture_accepts_backend = _accepts_capture_backend(runtime)
         self._compiled: dict[tuple[int, str, int], Any] = {}
