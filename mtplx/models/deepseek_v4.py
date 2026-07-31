@@ -374,25 +374,41 @@ class Compressor(nn.Module):
         self.wkv = nn.Linear(self.dim, coff * head_dim, bias=False)
         self.wgate = nn.Linear(self.dim, coff * head_dim, bias=False)
         self.norm = nn.RMSNorm(head_dim, eps=args.rms_norm_eps)
+        # Compressor rope uses the compress theta + YaRN (reference passes the
+        # compressor its own freqs_cis; window w gets position w*ratio).
+        self._inv_freq = _yarn_inv_freq(
+            self.rope_head_dim, args.compress_rope_theta, args.original_seq_len,
+            args.rope_factor, args.beta_fast, args.beta_slow,
+        )
 
-    def __call__(self, x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
-        # NOTE(M3): overlap folding + decode state machine still to port. This
-        # implements the non-overlap, start_pos==0 pooling used by the M2 gate.
+    def __call__(self, x: mx.array) -> mx.array:
+        """Non-overlap (ratio != 4) prefill pooling, ``start_pos == 0``.
+
+        NOTE(M3): overlapping windows (ratio==4) fold in the previous window's
+        second half, and the single-token decode state machine (kv_state /
+        score_state) is separate.  This path is the one the M2 gate verifies.
+        """
         b, s, _ = x.shape
         ratio = self.compress_ratio
         d = self.head_dim
+        rd = self.rope_head_dim
         xf = x.astype(mx.float32)
         kv = self.wkv(xf)
         score = self.wgate(xf)
         cutoff = s - (s % ratio)
-        kv = kv[:, :cutoff].reshape(b, cutoff // ratio, ratio, -1)
-        score = score[:, :cutoff].reshape(b, cutoff // ratio, ratio, -1) + self.ape
-        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)  # [b, s//ratio, coff*d]
-        pooled = pooled[..., :d] if self.overlap else pooled
+        nwin = cutoff // ratio
+        kv = kv[:, :cutoff].reshape(b, nwin, ratio, -1)
+        score = score[:, :cutoff].reshape(b, nwin, ratio, -1) + self.ape
+        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)  # [b, nwin, coff*d]
+        if self.overlap:
+            pooled = pooled[..., :d]
         pooled = self.norm(pooled)
-        rd = self.rope_head_dim
+        # rope tail at window positions [0, ratio, 2*ratio, ...]
+        win_pos = mx.arange(nwin, dtype=mx.float32) * ratio
+        ang = win_pos[:, None] * self._inv_freq[None, :]
+        cos, sin = mx.cos(ang), mx.sin(ang)
         head = pooled[..., :-rd]
-        tail = _apply_interleaved_rope(pooled[..., -rd:], cos[: cutoff // ratio], sin[: cutoff // ratio])
+        tail = _apply_interleaved_rope(pooled[..., -rd:], cos[None], sin[None])
         return mx.concatenate([head, tail], axis=-1)
 
 
