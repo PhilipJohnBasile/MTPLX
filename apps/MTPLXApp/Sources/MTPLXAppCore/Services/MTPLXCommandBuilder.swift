@@ -203,6 +203,13 @@ public struct MTPLXCommandBuilder: Sendable {
         if !configuration.loadMTP {
             arguments.append("--no-load-mtp")
         }
+        // Target-only AR models (Laguna): the engine hard-rejects MTP loads,
+        // and a persisted/tuned depth would fail the daemon launch. One seam
+        // here covers every app launch path.
+        let arOnlyModel = MTPLXModelOption.isAROnlyReference(configuration.model)
+        if arOnlyModel {
+            arguments.append("--no-mtp")
+        }
         arguments.append(contentsOf: ["--scheduler-mode", resolved.schedulerMode])
         arguments.append(contentsOf: ["--batching-preset", resolved.batchingPreset])
         if let maxActiveRequests = resolved.maxActiveRequests, maxActiveRequests > 0 {
@@ -222,7 +229,7 @@ public struct MTPLXCommandBuilder: Sendable {
         // when the public control is not a Qwen-style depth knob. Gemma
         // assistant bundles expose the measured block size through the
         // same daemon flag, so the app must not clamp them to Qwen D3.
-        if let depth = resolved.depth {
+        if let depth = resolved.depth, !arOnlyModel {
             arguments.append(contentsOf: ["--depth", String(depth)])
         }
         if let verifyStrategy = resolved.verifyStrategy {

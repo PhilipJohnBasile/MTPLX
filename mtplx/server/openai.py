@@ -104,6 +104,8 @@ from mtplx.profiles import (
 )
 from mtplx.runtime_options import (
     apply_paged_kv_quantization_env,
+    block_prefix_restore_enabled,
+    canonicalize_flag_tokens,
     normalize_paged_kv_quantization,
     resolve_api_key,
 )
@@ -258,7 +260,22 @@ FAST_PATH_ENV = {
     "MTPLX_DROP_EVENTS": "1",
     "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
 }
-VERIFY_SNAPSHOT_REQUIRED_STRATEGIES = {"trim_commit", "target_prefix"}
+#: Verify strategies known to be correct with ``MTPLX_SKIP_VERIFY_SNAPSHOT=1``.
+#:
+#: Stated as a safe-list rather than as the complement (which used to be the
+#: two-element ``{"trim_commit", "target_prefix"}``) so that a verify strategy
+#: added later defaults to *keeping* the snapshot — slower, but correct —
+#: instead of silently inheriting the fast path's skip.
+VERIFY_SNAPSHOT_OPTIONAL_STRATEGIES = frozenset(
+    {
+        "batched",
+        "sequential",
+        "capture",
+        "capture_commit",
+        "graphbank",
+        "graphbank_capture_commit",
+    }
+)
 STATS_FOOTER_MARKER = "\n---\n⚡ **MTPLX TPS:**"
 THINK_OPEN = "<think>"
 THINK_CLOSE = "</think>"
@@ -544,7 +561,10 @@ def _server_runtime_env_overrides(
         .lower()
         .replace("-", "_")
     )
-    if generation_mode == "mtp" and verify_strategy in VERIFY_SNAPSHOT_REQUIRED_STRATEGIES:
+    if (
+        generation_mode == "mtp"
+        and verify_strategy not in VERIFY_SNAPSHOT_OPTIONAL_STRATEGIES
+    ):
         overrides["MTPLX_SKIP_VERIFY_SNAPSHOT"] = "0"
     return overrides
 
@@ -1408,6 +1428,7 @@ def _apply_metal_memory_caps(
     *,
     mx_module: Any | None = None,
     total_ram_bytes: int | None = None,
+    minimum_resident_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Pin MLX Metal allocator caps at startup to avoid wired-memory swap-out
     pathologies under sustained long-context inference.
@@ -1466,14 +1487,46 @@ def _apply_metal_memory_caps(
             max(4 * 1024**3, int(total_ram * 0.60)),
             160 * 1024**3,
         )
+    resident_floor = max(0, int(minimum_resident_bytes or 0))
+    if (
+        resident_floor
+        and total_ram is not None
+        and total_ram > 0
+        and resident_floor + 16 * 1024**3 > total_ram
+    ):
+        return {
+            "applied": False,
+            "reason": "insufficient_ram",
+            "total_ram_bytes": total_ram,
+            "total_ram_source": total_ram_source,
+            "minimum_resident_bytes": resident_floor,
+            "minimum_system_reserve_bytes": 16 * 1024**3,
+        }
     mem_limit = _parse_metal_memory_size_bytes(mem_raw, default_mem)
     wired_limit = _parse_metal_memory_size_bytes(wired_raw, default_wired)
+    if resident_floor:
+        if (mem_raw and mem_limit < resident_floor) or (
+            wired_raw and wired_limit < resident_floor
+        ):
+            return {
+                "applied": False,
+                "reason": "configured_cap_below_model_minimum",
+                "total_ram_bytes": total_ram,
+                "total_ram_source": total_ram_source,
+                "minimum_resident_bytes": resident_floor,
+                "memory_limit_bytes": int(mem_limit),
+                "wired_limit_bytes": int(wired_limit),
+            }
+        mem_limit = max(mem_limit, resident_floor)
+        wired_limit = max(wired_limit, resident_floor)
 
     applied: dict[str, Any] = {
         "applied": True,
         "total_ram_bytes": total_ram,
         "total_ram_source": total_ram_source,
     }
+    if resident_floor:
+        applied["minimum_resident_bytes"] = resident_floor
     if wired_limit > mem_limit:
         wired_limit = mem_limit
         applied["wired_limit_clamped_to_memory_limit"] = True
@@ -1499,6 +1552,56 @@ def _apply_metal_memory_caps(
     return applied
 
 
+def _validate_backend_context_memory_budget(
+    backend: BackendDescriptor,
+    caps: dict[str, Any],
+    requested_context_window: int | None,
+) -> None:
+    if backend.backend_id != "laguna_ar":
+        return
+    from mtplx.models.laguna_config import (
+        laguna_s_2_1_required_resident_bytes,
+    )
+
+    context_tokens = int(
+        requested_context_window or backend.context_window_policy.default
+    )
+    required = laguna_s_2_1_required_resident_bytes(context_tokens)
+    limits = [
+        int(caps[key])
+        for key in ("memory_limit_bytes", "wired_limit_bytes")
+        if isinstance(caps.get(key), int) and int(caps[key]) > 0
+    ]
+    if not limits or required <= min(limits):
+        return
+    raise RuntimeError(
+        f"Laguna-S-2.1 context window {context_tokens:,} requires about "
+        f"{required / 1024**3:.1f} GiB resident memory, above the active "
+        f"Metal cap of {min(limits) / 1024**3:.1f} GiB"
+    )
+
+
+def _select_backend_context_window(
+    backend: BackendDescriptor,
+    *,
+    model_max: int,
+    requested: int | None,
+) -> int:
+    requested_value = int(requested or 0)
+    default_value = (
+        backend.context_window_policy.default
+        if backend.backend_id == "laguna_ar"
+        else int(model_max)
+    )
+    return max(
+        4_096,
+        min(
+            int(model_max),
+            requested_value if requested_value > 0 else int(default_value),
+        ),
+    )
+
+
 class ServerState:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -1521,9 +1624,35 @@ class ServerState:
         self.generation_executor = self.model_scheduler
         self.postcommit_executor = None
         self.rate_limiter = _RateLimiter(args.rate_limit)
-        self.metal_memory_caps = _apply_metal_memory_caps()
-        self.profile = get_profile(args.profile)
         startup_backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
+        minimum_resident_bytes = None
+        if startup_backend.backend_id == "laguna_ar":
+            from mtplx.models.laguna_config import (
+                LAGUNA_S_2_1_MIN_RESIDENT_BYTES,
+            )
+
+            minimum_resident_bytes = LAGUNA_S_2_1_MIN_RESIDENT_BYTES
+        self.metal_memory_caps = _apply_metal_memory_caps(
+            minimum_resident_bytes=minimum_resident_bytes,
+        )
+        if self.metal_memory_caps.get("reason") in {
+            "insufficient_ram",
+            "configured_cap_below_model_minimum",
+        }:
+            required_gib = int(
+                self.metal_memory_caps.get("minimum_resident_bytes") or 0
+            ) / 1024**3
+            raise RuntimeError(
+                "Laguna-S-2.1 cannot load inside the available Metal memory "
+                f"budget; at least {required_gib:.1f} GiB resident plus "
+                "16 GiB system headroom is required"
+            )
+        _validate_backend_context_memory_budget(
+            startup_backend,
+            self.metal_memory_caps,
+            getattr(args, "context_window", None),
+        )
+        self.profile = get_profile(args.profile)
         runtime_label = _health_runtime_mode_label(
             self.profile.name,
             getattr(args, "generation_mode", None),
@@ -1709,10 +1838,10 @@ class ServerState:
             args.model,
         )
         requested_context_window = int(getattr(args, "context_window", None) or 0)
-        self.context_window = (
-            max(4_096, min(int(self.model_context_window_max), requested_context_window))
-            if requested_context_window > 0
-            else int(self.model_context_window_max)
+        self.context_window = _select_backend_context_window(
+            self.backend_descriptor,
+            model_max=int(self.model_context_window_max),
+            requested=requested_context_window,
         )
         _startup_line(f"[5/6] Context window: {self.context_window} tokens")
         # The paged KV pool clamps geometric growth to this window (#150);
@@ -2198,7 +2327,7 @@ class _BatchedARGenerationService:
             import mlx.core as mx
 
             prefill_started = time.perf_counter()
-            with attention_phase("ar_batch_shared_prefill"):
+            with attention_phase("prefill"):
                 logits = self.state.runtime.forward_ar(
                     mx.array([prefix_tokens]),
                     cache=cache,
@@ -2827,7 +2956,7 @@ def _resolve_context_window(tokenizer: Any, model_path: str) -> int:
                 if isinstance(value, int):
                     candidates.append(value)
 
-    sane = [value for value in candidates if 0 < value <= 1_000_000]
+    sane = [value for value in candidates if 0 < value <= 1_048_576]
     return max(sane) if sane else 262_144
 
 
@@ -3901,6 +4030,12 @@ _INVOKE_PARAMETER_BLOCK_RE = re.compile(
     r'<parameter\s+name="([^"]+)">\s*(.*?)\s*</parameter>',
     re.IGNORECASE | re.DOTALL,
 )
+_POOLSIDE_ARGUMENT_PAIR_RE = re.compile(
+    r"<arg_key>\s*(.*?)\s*</arg_key>\s*"
+    r"<arg_value>\s*(.*?)\s*</arg_value>",
+    re.IGNORECASE | re.DOTALL,
+)
+_POOLSIDE_TOOL_NAME_RE = re.compile(r"^\s*([A-Za-z_][\w.-]*)")
 _BRACKET_TOOL_CALL_RE = re.compile(
     r"\[(?:Calling tool|Tool call):\s*([A-Za-z_][\w.-]*)(?:\(({.*?})\))?\]",
     re.IGNORECASE | re.DOTALL,
@@ -6187,6 +6322,37 @@ def _parse_invoke_tool_call(block: str) -> tuple[str, Any] | None:
     return name, arguments
 
 
+def _parse_poolside_tool_call(block: str) -> tuple[str, Any] | None:
+    name_match = _POOLSIDE_TOOL_NAME_RE.match(block)
+    if name_match is None:
+        return None
+    name = name_match.group(1)
+    body = block[name_match.end() :]
+    arguments: dict[str, Any] = {}
+    consumed: list[tuple[int, int]] = []
+    for pair in _POOLSIDE_ARGUMENT_PAIR_RE.finditer(body):
+        key = pair.group(1).strip()
+        if not key:
+            raise _tool_protocol_error(f"tool '{name}' contains an empty arg_key")
+        if key in arguments:
+            raise _tool_protocol_error(
+                f"tool '{name}' contains duplicate arg_key '{key}'"
+            )
+        arguments[key] = _decode_tool_parameter_value(pair.group(2))
+        consumed.append(pair.span())
+    residue_parts: list[str] = []
+    cursor = 0
+    for start, end in consumed:
+        residue_parts.append(body[cursor:start])
+        cursor = end
+    residue_parts.append(body[cursor:])
+    if "".join(residue_parts).strip():
+        raise _tool_protocol_error(
+            f"tool '{name}' contains malformed Poolside arguments"
+        )
+    return name, arguments
+
+
 def _tool_marker_pairs_from_tokenizer(tokenizer: Any | None) -> list[tuple[str, str]]:
     if tokenizer is None:
         return []
@@ -6268,7 +6434,10 @@ def _parse_tool_call_payload(
     )
     if parsed is not None:
         return parsed
-    return _parse_invoke_tool_call(block)
+    parsed = _parse_invoke_tool_call(block)
+    if parsed is not None:
+        return parsed
+    return _parse_poolside_tool_call(block)
 
 
 def _repair_unclosed_tool_call_payload(
@@ -11744,9 +11913,10 @@ def _coerce_setting(name: str, value: Any) -> Any:
         return bool(value)
     if name == "reasoning_parser":
         text = str(value)
-        if text not in {"qwen3", "step3p5", "gemma4", "none"}:
+        if text not in {"qwen3", "step3p5", "gemma4", "poolside_v1", "none"}:
             raise ValueError(
-                "reasoning_parser must be 'qwen3', 'step3p5', 'gemma4', or 'none'"
+                "reasoning_parser must be 'qwen3', 'step3p5', 'gemma4', "
+                "'poolside_v1', or 'none'"
             )
         return text
     if name == "reasoning_effort":
@@ -11903,10 +12073,10 @@ def _effective_ram_session_cache_settings() -> dict[str, Any]:
     entries_raw = os.environ.get("MTPLX_SESSION_BANK_MAX_ENTRIES")
     max_bytes = os.environ.get("MTPLX_SESSION_BANK_MAX_BYTES") or "8G"
     per_session_bytes = os.environ.get("MTPLX_SESSION_BANK_PER_SESSION_BYTES") or "4G"
-    block_prefix_restore = _env_bool_setting(
-        "MTPLX_SESSION_BLOCK_PREFIX_RESTORE",
-        default=True,
-    )
+    # One parse, shared with the decode loop and the cold tier: an
+    # allowlist-only read here reported "off" for spellings the runtime
+    # honours as on (e.g. "enabled").
+    block_prefix_restore = block_prefix_restore_enabled()
     try:
         entries = max(1, int(entries_raw)) if entries_raw is not None else 4
     except ValueError:
@@ -13823,7 +13993,20 @@ def _tool_prompt_mode_for_request(
         headers=headers,
         metadata=metadata,
     )
-    if requested_mode is not None:
+    backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
+    required_mode = backend.required_tool_prompt_mode
+    if required_mode is not None:
+        if requested_mode is not None and requested_mode != required_mode:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"backend {backend.backend_id} requires tool_prompt_mode="
+                    f"{required_mode}"
+                ),
+            )
+        mode = required_mode
+        source = f"backend:{backend.backend_id}"
+    elif requested_mode is not None:
         mode = requested_mode
         source = "request"
     elif tools_active and client_hint == "opencode":
@@ -14223,6 +14406,16 @@ def _store_retokenized_history_snapshot(
     # (chat-template encoding is deterministic for the same messages and
     # tools), so `longest_prefix` matches and only the new user turn +
     # assistant turn need to be forward-AR'd.
+    # AR-only runtimes (laguna_ar target-only) have no MTP head. Banking under
+    # the "committed" MTP-history policy would drive
+    # restore_or_prefill_prompt_state into the committed-history prefill branch,
+    # which calls rt.make_mtp_cache() and raises "MTP is not enabled for this
+    # runtime" (the 2026-07-22 laguna serving-window failure). Route the
+    # postcommit re-prefill through the AR (cycle) path instead: the trunk cache
+    # is still banked for next-turn prefix reuse, and the stored policy metadata
+    # stays consistent with what the next AR turn looks up. MTP runtimes keep
+    # the committed policy unchanged.
+    history_mtp_policy = "committed" if state.runtime.mtp_enabled else "cycle"
     try:
         try:
             if _abort_requested():
@@ -14232,7 +14425,7 @@ def _store_retokenized_history_snapshot(
                     state.runtime,
                     history_ids,
                     mtp_hidden_variant="post_norm",
-                    mtp_history_policy="committed",
+                    mtp_history_policy=history_mtp_policy,
                     session_bank=state.sessions.bank,
                     template_hash=state.template_hash,
                     draft_head_identity=state.draft_head_identity,
@@ -14259,7 +14452,7 @@ def _store_retokenized_history_snapshot(
                 keep_live_ref=bool(keep_live_ref),
                 session_id=session_id,
                 template_hash=state.template_hash,
-                mtp_history_policy="committed",
+                mtp_history_policy=history_mtp_policy,
                 draft_head_identity=state.draft_head_identity,
                 policy_fingerprint=policy_fingerprint,
                 gdn_boundaries=list(
@@ -15060,9 +15253,13 @@ def _loop_guard_enabled() -> bool:
     ``MTPLX_LOOP_GUARD=1``, but the product answer to the quantized-model
     loop marathons is the artifact lane (delta-net-sensitive quantization),
     not a sampler intervention. Config knobs live in mtplx/loop_guard.py.
+
+    Parsed by loop_guard.py's own reader so this answer cannot disagree
+    with the guard the decode loop actually builds.
     """
-    raw = os.environ.get("MTPLX_LOOP_GUARD", "0").strip().lower()
-    return raw not in _UNCAPPED_RESPONSE_LEASE_DISABLED_VALUES
+    from mtplx.loop_guard import loop_guard_enabled_from_env
+
+    return loop_guard_enabled_from_env(default=False)
 
 
 def _fresh_seed() -> int:
@@ -15770,6 +15967,9 @@ def _run_generation(
                         mtp_history_policy="committed",
                         verify_strategy=state.args.verify_strategy,
                         verify_core=state.args.verify_core,
+                        draft_core=str(
+                            getattr(state.args, "draft_core", None) or "stock"
+                        ),
                         token_callback=record_tokens,
                         session_bank=session_bank,
                         session_id=session_id,
@@ -16698,7 +16898,7 @@ def _split_backend_reasoning_for_state(
     thinking_enabled: bool,
 ) -> tuple[str, str]:
     parser = _reasoning_parser_for_state(state)
-    if parser in {"qwen3", "step3p5"}:
+    if parser in {"qwen3", "step3p5", "poolside_v1"}:
         text = normalize_qwen_thinking_tags(
             text,
             thinking_enabled=thinking_enabled,
@@ -16821,6 +17021,12 @@ class _NonDuplicatingTokenDecoder(_IncrementalTokenDecoder):
 class _ThinkingContentStreamSplitter:
     _TOOL_CALL_MARKER = "<tool_call"
     _TOOL_CALL_CLOSE_MARKER = "</tool_call>"
+    # Angle-bracketed protocol forms only. The former bare "function=" /
+    # "parameter=" entries flipped the think/content split on ordinary
+    # reasoning prose that merely *mentions* those substrings (any code
+    # discussion), leaking the rest of the think block into content
+    # (#196/#197 leak variant). Chunk-split "<function=" openers are already
+    # covered by the partial-prefix hold, so the bare forms bought nothing.
     _TOOL_CONTROL_MARKERS = (
         "<tool_call",
         "<function=",
@@ -16828,8 +17034,6 @@ class _ThinkingContentStreamSplitter:
         "</parameter>",
         "</function>",
         "</tool_call>",
-        "parameter=",
-        "function=",
     )
 
     def __init__(
@@ -17466,7 +17670,7 @@ def _nonstream_chat_message_parts(
         stats["visible_reasoning_stripped"] = bool(
             reasoning_text and display_text != raw_text
         )
-    elif parser_enabled and parser in {"qwen3", "step3p5"}:
+    elif parser_enabled and parser in {"qwen3", "step3p5", "poolside_v1"}:
         if thinking_enabled and has_qwen_style_reasoning_marker:
             reasoning_text, display_text = _split_backend_reasoning_for_state(
                 state,
@@ -22241,7 +22445,8 @@ def create_app(state: ServerState) -> FastAPI:
                         or not tool_result_history_present
                         or not thinking_enabled
                         or request.seed is not None
-                        or _reasoning_parser_for_state(state) not in {"qwen3", "step3p5"}
+                        or _reasoning_parser_for_state(state)
+                        not in {"qwen3", "step3p5", "poolside_v1"}
                         # Forced final-answer turns intentionally rehearse
                         # before the visible marker; the buffered marker
                         # stream owns visibility, so a reasoning-shaped first
@@ -23898,7 +24103,17 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                                 stats["tool_parse_success"] = True
                                 stats["tool_call_count"] = len(assistant_tool_calls)
-                                generated["finish_reason"] = "tool_calls"
+                                # Honest finish on budget cuts (#196/#197): a
+                                # length-truncated turn that still yielded
+                                # complete tool calls must NOT report
+                                # "tool_calls" — the client would treat the
+                                # batch as complete while a trailing call was
+                                # cut and swallowed. "length" tells agent
+                                # clients (OpenCode et al.) to continue.
+                                if str(generated.get("finish_reason") or "") == "length":
+                                    stats["tool_calls_truncated_by_length"] = True
+                                else:
+                                    generated["finish_reason"] = "tool_calls"
                             elif (
                                 extraction is not None
                                 and extraction.status == "malformed_as_content"
@@ -24094,7 +24309,11 @@ def create_app(state: ServerState) -> FastAPI:
                             reset_orphan_stream_guards()
                             continue
                         elif kind == "close_unclosed_reasoning_for_repair":
-                            if _reasoning_parser_for_state(state) not in {"qwen3", "step3p5"}:
+                            if _reasoning_parser_for_state(state) not in {
+                                "qwen3",
+                                "step3p5",
+                                "poolside_v1",
+                            }:
                                 continue
                             for field, text in drain_stream_tokens([], force=True):
                                 for chunk in stream_content_delta_chunks(field, text):
@@ -24473,7 +24692,12 @@ def create_app(state: ServerState) -> FastAPI:
                 "content": assistant_content or None,
                 "tool_calls": tool_calls,
             }
-            finish_reason = "tool_calls"
+            # Honest finish on budget cuts (#196/#197): see the streaming twin.
+            if str(generated.get("finish_reason") or "") == "length":
+                generated["stats"]["tool_calls_truncated_by_length"] = True
+                finish_reason = "length"
+            else:
+                finish_reason = "tool_calls"
         else:
             reasoning_text = ""
             if (
@@ -25260,8 +25484,48 @@ def _apply_backend_server_defaults(
 
     sync_backend_arg_aliases(args)
     backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
+    required_tool_prompt_mode = backend.required_tool_prompt_mode
+    if required_tool_prompt_mode is not None:
+        requested_tool_prompt_mode = str(
+            getattr(args, "tool_prompt_mode", required_tool_prompt_mode)
+            or required_tool_prompt_mode
+        )
+        if (
+            _server_flag_present(explicit_flags, "tool-prompt-mode")
+            and requested_tool_prompt_mode != required_tool_prompt_mode
+        ):
+            raise ValueError(
+                f"{backend.display_name} requires --tool-prompt-mode "
+                f"{required_tool_prompt_mode}"
+        )
+        args.tool_prompt_mode = required_tool_prompt_mode
+    required_chat_template_profile = backend.required_chat_template_profile
+    if required_chat_template_profile is not None:
+        requested_profile = str(
+            getattr(args, "chat_template_profile", required_chat_template_profile)
+            or required_chat_template_profile
+        )
+        has_conflicting_profile = (
+            _server_flag_present(explicit_flags, "chat-template-profile")
+            and requested_profile != required_chat_template_profile
+        )
+        has_custom_path = bool(getattr(args, "chat_template_path", None))
+        if has_conflicting_profile or (
+            has_custom_path and not backend.allows_chat_template_path
+        ):
+            raise ValueError(
+                f"{backend.display_name} requires its tokenizer chat template"
+            )
+        args.chat_template_profile = required_chat_template_profile
+        args.chat_template_path = None
     if not _server_flag_present(explicit_flags, "reasoning-parser"):
         args.reasoning_parser = backend.reasoning_codec.parser
+    if (
+        backend.default_max_response_tokens is not None
+        and not _server_flag_present(explicit_flags, "max-response-tokens")
+        and getattr(args, "max_response_tokens", None) is None
+    ):
+        args.max_response_tokens = int(backend.default_max_response_tokens)
     if (
         not _server_flag_present(explicit_flags, "reasoning-effort")
         and getattr(args, "reasoning_effort", None) in (None, "auto")
@@ -25289,8 +25553,11 @@ def _apply_backend_server_defaults(
     if not _server_flag_present(explicit_flags, "draft-top-k"):
         args.draft_top_k = int(sampler["top_k"])
     if (
+        # `and`, not `or`: the flag's own default *is* LOCAL, so an `or` on
+        # the value fired regardless of provenance and rewrote an explicitly
+        # typed `--chat-template-profile local_qwen36` to `tokenizer`.
         not _server_flag_present(explicit_flags, "chat-template-profile")
-        or getattr(args, "chat_template_profile", None) == _CHAT_TEMPLATE_PROFILE_LOCAL
+        and getattr(args, "chat_template_profile", None) == _CHAT_TEMPLATE_PROFILE_LOCAL
     ):
         args.chat_template_profile = _CHAT_TEMPLATE_PROFILE_TOKENIZER
     if not _server_flag_present(
@@ -25466,9 +25733,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--kv-quant",
         dest="paged_kv_quantization",
         metavar="{off,q8,q4}",
-        default=os.environ.get("MTPLX_VLLM_METAL_PAGED_KV_QUANT")
-        or os.environ.get("MTPLX_PAGED_KV_QUANT")
-        or "off",
+        # Canonical, not raw: the runtime readers only understand
+        # off/q8/q4, so an env-supplied "uint8" must arrive here as "q8".
+        default=_effective_paged_kv_quantization(),
         help="Paged KV cache quantization mode: off, q8, or q4.",
     )
     parser.add_argument(
@@ -25621,7 +25888,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reasoning-parser",
-        choices=["qwen3", "step3p5", "gemma4", "none"],
+        choices=["qwen3", "step3p5", "gemma4", "poolside_v1", "none"],
         default="qwen3",
         help="Parser for streamed reasoning tags. Use 'none' to stream all text as content.",
     )
@@ -25888,7 +26155,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(raw_args)
     args._raw_args = list(raw_args)
-    args._cli_flags = _explicit_server_flags(raw_args)
+    args._cli_flags = canonicalize_flag_tokens(
+        _explicit_server_flags(raw_args), parser, args
+    )
     try:
         resolved_key = resolve_api_key(
             explicit_api_key=getattr(args, "api_key", None),

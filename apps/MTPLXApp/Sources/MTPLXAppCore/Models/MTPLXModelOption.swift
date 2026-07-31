@@ -29,6 +29,10 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     /// "Recommended for your Mac" badge on the model-pick step. M1/M2
     /// Speed → FP16 routing happens in `ModelPickStep`, not here.
     public var recommendedFor: [ChipTier]
+    /// Target-only AR model (no native MTP head). The engine hard-rejects
+    /// MTP loads for these (Laguna), so launches must carry `--no-mtp` and
+    /// the depth/auto-tune lane must stay out of the serve command.
+    public var arOnly: Bool
     public init(
         id: String,
         displayName: String,
@@ -39,7 +43,8 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         aliases: [String] = [],
         sizeBytes: Int64 = 0,
         peakMemoryGiB: Double = 0,
-        recommendedFor: [ChipTier] = []
+        recommendedFor: [ChipTier] = [],
+        arOnly: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -51,6 +56,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         self.sizeBytes = sizeBytes
         self.peakMemoryGiB = peakMemoryGiB
         self.recommendedFor = recommendedFor
+        self.arOnly = arOnly
     }
 
     enum CodingKeys: String, CodingKey {
@@ -64,6 +70,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         case sizeBytes
         case peakMemoryGiB
         case recommendedFor
+        case arOnly
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +85,33 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         sizeBytes = try container.decodeIfPresent(Int64.self, forKey: .sizeBytes) ?? 0
         peakMemoryGiB = try container.decodeIfPresent(Double.self, forKey: .peakMemoryGiB) ?? 0
         recommendedFor = try container.decodeIfPresent([ChipTier].self, forKey: .recommendedFor) ?? []
+        arOnly = try container.decodeIfPresent(Bool.self, forKey: .arOnly) ?? false
+    }
+
+    /// True when `reference` (a model string from configuration: catalog id,
+    /// alias, HF id, or a local path) resolves to a target-only AR model.
+    /// Used by the command builder so every app launch path carries the
+    /// correct `--no-mtp` shape without each caller re-deriving it.
+    public static func isAROnlyReference(_ reference: String) -> Bool {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        for option in MTPLXModelOption.officialCatalog where option.arOnly {
+            if option.id.lowercased() == lower { return true }
+            if option.hfModelID.lowercased() == lower { return true }
+            if option.aliases.contains(where: { $0.lowercased() == lower }) { return true }
+            let tail = (trimmed as NSString).lastPathComponent.lowercased()
+            let hfTail = (option.hfModelID as NSString).lastPathComponent.lowercased()
+            if !tail.isEmpty, tail == hfTail || tail == hfTail.replacingOccurrences(of: "/", with: "--") {
+                return true
+            }
+            if option.localCandidates.contains(where: {
+                Self.expand($0).lowercased() == Self.expand(trimmed).lowercased()
+            }) {
+                return true
+            }
+        }
+        return false
     }
 
     public var resolvedReference: String {
@@ -552,6 +586,25 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             peakMemoryGiB: 28.12,
             recommendedFor: [.legacyApple]
         ),
+        MTPLXModelOption(
+            id: "laguna-s21-oq4e",
+            displayName: "Laguna S-2.1 (community oQ4e)",
+            shortName: "Laguna S-2.1",
+            detail: "Poolside coding model, mixed-precision 4-bit. AR-only (no MTP head yet).",
+            hfModelID: "mlx-community/Laguna-S-2.1-oQ4e",
+            localCandidates: [
+                "~/.mtplx/models/mlx-community--Laguna-S-2.1-oQ4e",
+            ],
+            aliases: [
+                "mtplx-laguna-s21",
+                "Laguna S-2.1",
+                "Laguna-S-2.1-oQ4e",
+            ],
+            sizeBytes: 64_129_728_868,
+            peakMemoryGiB: 74.0,
+            recommendedFor: [.modernApple],
+            arOnly: true
+        ),
     ]
 
     public static func option(matching model: String) -> MTPLXModelOption? {
@@ -813,6 +866,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         }
         if normalized.contains("deepseek") {
             return "deepseek"
+        }
+        if normalized.contains("laguna") {
+            return "laguna"
         }
         if normalized.contains("glm") {
             return "glm"

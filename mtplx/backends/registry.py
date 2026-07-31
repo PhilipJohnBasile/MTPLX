@@ -12,6 +12,7 @@ from mtplx.profiles import DEFAULT_PROFILE_NAME, PROFILE_CHOICES, resolve_profil
 
 RUNTIME_CONTRACT_FILE = "mtplx_runtime.json"
 SUPPORTED_ARCH_IDS = {
+    "laguna-s-2.1-ar",
     "qwen3-next-mtp",
     "deepseek-v3-mtp",
     "glm-moe-dsa-mtp",
@@ -29,6 +30,7 @@ TIER_FAMILY_COMPATIBLE_UNVERIFIED = "family-compatible-unverified"
 TIER_ARCH_COMPATIBLE_UNVERIFIED = "architecture-compatible-but-unverified"
 TIER_INCOMPATIBLE_ARCHITECTURE = "incompatible-architecture"
 TIER_NO_MTP = "no-MTP"
+TIER_AR_ONLY = "AR-only"
 
 EXIT_VERIFIED = 0
 EXIT_NO_MTP = 2
@@ -113,6 +115,27 @@ class ArchitectureSupport:
 
 
 ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
+    "laguna-s-2.1-ar": ArchitectureSupport(
+        arch_id="laguna-s-2.1-ar",
+        display_name="Laguna-S-2.1 oQ4e (MLX)",
+        family="laguna",
+        backend="laguna_ar",
+        support_level="verified-native-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        aliases=("laguna", "LagunaForCausalLM"),
+        config_markers=(),
+        family_gate="laguna-s-2.1-mlx-4bit-geometry",
+        references=(
+            "https://huggingface.co/mlx-community/Laguna-S-2.1-oQ4e",
+            "https://huggingface.co/pipenetwork/Laguna-S-2.1-MLX-4bit/blob/5544297f819d50330bc3616dd15cbc7edb598b2f/laguna.py",
+        ),
+        notes=(
+            "Target-only AR runtime for the exact mlx-community Laguna-S-2.1-oQ4e "
+            "checkpoint; the artifact has no native MTP head and must be loaded "
+            "with mtp=False."
+        ),
+    ),
     "qwen3-next-mtp": ArchitectureSupport(
         arch_id="qwen3-next-mtp",
         display_name="Qwen3.6 / Qwen3-Next / Qwen3.5 MTP",
@@ -424,9 +447,11 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         notes=(
             "Hy3 ships one appended NextN layer with its own 192-expert MoE, "
             "eh_proj over concat[enorm(embedding), hnorm(hidden)], and shared "
-            "embeddings/head. The mlx-lm hy_v3 MTP revision exposes the head "
-            "natively (predict_next_tokens), so injection binds the existing "
-            "surface rather than grafting weights."
+            "embeddings/head. The draft consumes the POST-final-norm trunk "
+            "hidden (measured: teacher-forced agreement 0.773 post vs 0.387 "
+            "pre on real code). Injection grafts the head from the standard "
+            "appended-layer checkpoint; a native mlx-lm surface, when it "
+            "lands, is bound instead."
         ),
     ),
     "generic-mtp": ArchitectureSupport(
@@ -668,7 +693,9 @@ def _detect_arch_id(inspection: Any) -> str | None:
         reverse=True,
     )
     for support in supports:
-        if has_explicit_mtp and _support_alias_matches(support, combined):
+        if _support_alias_matches(support, combined) and (
+            has_explicit_mtp or support.runtime_compatibility == "native-ar-only"
+        ):
             return support.arch_id
     if "mtp" in combined or "nextn" in combined:
         return "generic-mtp"
@@ -816,23 +843,35 @@ _HY_V3_MTP_MARKER_SUFFIXES = (
 
 
 def _passes_hy_v3_gate(inspection: Any) -> bool:
-    """Hy3's appended MTP block lives directly under an ``mtp.`` prefix
-    (``mtp.enorm.weight``, ``mtp.hnorm.weight``, ``mtp.eh_proj.weight``,
-    ``mtp.final_layernorm.weight``, ``mtp.layer.*``) rather than the
-    ``mtp.layers.{idx}.`` nesting DeepSeek/GLM/Step use, so it needs its own
-    gate instead of `_passes_appended_layer_gate` (verified against the
-    shipped `hy3-demolition-mlx-*-mtp` checkpoints' safetensors index)."""
+    """Hy3's appended MTP block ships in one of two layouts: repacked
+    checkpoints put it directly under an ``mtp.`` prefix (``mtp.enorm.weight``,
+    ``mtp.eh_proj.weight``, ``mtp.layer.*`` — verified against the shipped
+    `hy3-demolition-mlx-*-mtp` indexes), while tencent-native exports keep the
+    canonical appended-layer form ``model.layers.{num_hidden_layers}.*``
+    (``...enorm.weight``, ``...self_attn.*``, ``...mlp.*``). Neither uses the
+    ``mtp.layers.{idx}.`` nesting DeepSeek/GLM/Step share, so this stays a
+    dedicated gate instead of `_passes_appended_layer_gate`."""
     keys = _weight_keys(inspection)
     if not keys:
         return False
     count = int(getattr(inspection, "mtp_num_hidden_layers", 0) or 0)
     if count <= 0:
         return False
-    return _has_marker_under_prefixes(
+    if _has_marker_under_prefixes(
         keys,
         ("mtp.",),
         _HY_V3_MTP_MARKER_SUFFIXES,
         ("mtp.layer.",),
+    ):
+        return True
+    start = int(getattr(inspection, "num_hidden_layers", 0) or 0)
+    if start <= 0:
+        return False
+    return _has_marker_under_prefixes(
+        keys,
+        (f"model.layers.{start}.",),
+        _HY_V3_MTP_MARKER_SUFFIXES,
+        ("self_attn.", "mlp."),
     )
 
 
@@ -947,6 +986,15 @@ def _passes_nemotron_h_gate(inspection: Any) -> bool:
 
 
 def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
+    if arch_id == "laguna-s-2.1-ar":
+        return bool(
+            getattr(inspection, "laguna_s_2_1_mlx_4bit_match", False)
+            and getattr(
+                inspection,
+                "laguna_s_2_1_artifacts_complete",
+                False,
+            )
+        )
     if arch_id == "qwen3-next-mtp":
         return bool(
             tensor_gate
@@ -1392,6 +1440,30 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
         )
 
     if not has_mtp:
+        if (
+            support is not None
+            and support.runtime_compatibility == "native-ar-only"
+            and _passes_family_runtime_gate(support.arch_id, inspection, tensor_gate)
+        ):
+            return CompatibilityVerdict(
+                tier=TIER_AR_ONLY,
+                arch_id=support.arch_id,
+                supported=True,
+                recognized=True,
+                can_run=True,
+                exit_code=EXIT_VERIFIED,
+                message=(
+                    f"{support.display_name} matches the bundled MLX loader; "
+                    "run in target-only AR mode because the checkpoint has no "
+                    "native MTP head."
+                ),
+                recommended_backend=support.backend,
+                recommended_profile=DEFAULT_PROFILE_NAME,
+                mtp_supported="no",
+                runtime_compatibility=support.runtime_compatibility,
+                support_level=support.support_level,
+                support_notes=support.notes,
+            )
         return CompatibilityVerdict(
             tier=TIER_NO_MTP,
             arch_id=detected_arch_id,

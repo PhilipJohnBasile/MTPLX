@@ -35,12 +35,12 @@ from mtplx.profiles import (
 )
 
 
-def test_catalog_has_thirteen_unique_entries():
+def test_catalog_has_fourteen_unique_entries():
     ids = [model.id for model in OFFICIAL_CATALOG]
-    assert len(ids) == 13
-    assert len(set(ids)) == 13
+    assert len(ids) == 14
+    assert len(set(ids)) == 14
     hf_ids = [model.hf_model_id for model in OFFICIAL_CATALOG]
-    assert len(set(hf_ids)) == 13
+    assert len(set(hf_ids)) == 14
 
 
 def test_catalog_matches_swift_official_catalog():

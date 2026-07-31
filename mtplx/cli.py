@@ -22,7 +22,7 @@ from .profiles import (
     list_profiles,
     resolve_profile_name,
 )
-from .runtime_options import normalize_paged_kv_quantization
+from .runtime_options import canonicalize_flag_tokens, normalize_paged_kv_quantization
 from .version import DISPLAY_VERSION, __version__
 
 # Help/usage advertises only the canonical profiles; the parser itself
@@ -1845,7 +1845,9 @@ class _FlagRecordingArgumentParser(argparse.ArgumentParser):
         raw = list(sys.argv[1:]) if args is None else list(args)
         parsed = super().parse_args(raw, namespace)
         if not hasattr(parsed, "_cli_flags"):
-            parsed._cli_flags = _explicit_cli_flags(raw)
+            parsed._cli_flags = canonicalize_flag_tokens(
+                _explicit_cli_flags(raw), self, parsed
+            )
         return parsed
 
 
@@ -2142,7 +2144,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reasoning_effort_arg(quickstart_server_p)
     quickstart_server_p.add_argument(
         "--reasoning-parser",
-        choices=["qwen3", "step3p5", "gemma4", "none"],
+        choices=["qwen3", "step3p5", "gemma4", "poolside_v1", "none"],
         default="qwen3",
     )
     _add_preserve_thinking_arg(quickstart_server_p)
@@ -2609,6 +2611,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="linear-gdn-from-conv-tape",
         help="Server verification core.",
     )
+    serve_p.add_argument(
+        "--draft-core",
+        choices=["stock", "device-d2", "device"],
+        default="stock",
+        help=(
+            "Server DraftCore backend. 'device' keeps the whole draft chain "
+            "on device with a single sync per cycle."
+        ),
+    )
     serve_p.add_argument("--mtp-adapter", type=Path)
     serve_p.add_argument(
         "--merge-mtp-adapter",
@@ -2622,7 +2633,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reasoning_effort_arg(serve_p)
     serve_p.add_argument(
         "--reasoning-parser",
-        choices=["qwen3", "step3p5", "gemma4", "none"],
+        choices=["qwen3", "step3p5", "gemma4", "poolside_v1", "none"],
         default="qwen3",
     )
     _add_preserve_thinking_arg(serve_p)
@@ -3825,7 +3836,9 @@ def main(argv: list[str] | None = None) -> int:
     if raw_args[0] not in command_names and not raw_args[0].startswith("-"):
         return _print_unknown_command(raw_args[0])
     args = parser.parse_args(raw_args)
-    args._cli_flags = _explicit_cli_flags(raw_args)
+    args._cli_flags = canonicalize_flag_tokens(
+        _explicit_cli_flags(raw_args), parser, args
+    )
     from .config import apply_user_config
 
     apply_user_config(args)

@@ -6,9 +6,14 @@ import hashlib
 import inspect as py_inspect
 import json
 import logging
+import os
+import re
+import subprocess
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .artifacts import inspect_model, load_config
 from .mtp_adapters import (
@@ -19,6 +24,56 @@ from .mtp_adapters import (
 from .mtp_patch import MTPContract, inject_mtp_support, validate_mtp_support
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .a3b_compiled_target_prefix import A3BCompiledTargetPrefixFactory
+
+
+def _detect_total_system_memory_bytes() -> int | None:
+    try:
+        import psutil
+
+        total = int(psutil.virtual_memory().total)
+        if total > 0:
+            return total
+    except Exception:
+        pass
+    if sys.platform == "darwin":
+        try:
+            total = int(
+                subprocess.check_output(
+                    ["sysctl", "-n", "hw.memsize"],
+                    text=True,
+                ).strip()
+            )
+            if total > 0:
+                return total
+        except Exception:
+            pass
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        total = page_size * pages
+        return total if total > 0 else None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _preflight_laguna_system_memory(config: dict[str, Any]) -> None:
+    if not _is_laguna_s_2_1_mlx_4bit_config(config):
+        return
+    from .models.laguna_config import LAGUNA_S_2_1_MIN_RESIDENT_BYTES
+
+    system_reserve = 16 * 1024**3
+    total = _detect_total_system_memory_bytes()
+    if total is None or total >= LAGUNA_S_2_1_MIN_RESIDENT_BYTES + system_reserve:
+        return
+    required = LAGUNA_S_2_1_MIN_RESIDENT_BYTES + system_reserve
+    raise RuntimeError(
+        "Laguna-S-2.1 requires at least "
+        f"{required / 1024**3:.1f} GiB unified memory "
+        "for weights, runtime headroom, and the system reserve"
+    )
 
 
 @dataclass
@@ -31,6 +86,16 @@ class MTPLXRuntime:
     mtp_adapter_path: Path | None = None
     mtp_adapter_metadata: dict[str, Any] | None = None
     mtp_adapter_merge_report: dict[str, Any] | None = None
+    a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
+    a3b_whole_moe_installed: bool = False
+    _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _a3b_whole_moe_request_geometry_keys: dict[
+        tuple[int, str, str], str
+    ] = field(default_factory=dict, init=False, repr=False)
     diagnostic_counters: dict[str, int] = field(default_factory=dict)
     _forward_ar_supports_emit_logits: bool | None = field(default=None, init=False, repr=False)
     _forward_ar_supports_logits_keep: bool | None = field(default=None, init=False, repr=False)
@@ -120,14 +185,75 @@ class MTPLXRuntime:
                 self._count("final_logits_tokens_emitted", 1)
             else:
                 self._count("full_logits_tokens_emitted", emitted)
-        if not return_hidden and hidden_variant is None and not kwargs:
-            return self.model(input_ids, cache=cache)
+        # kwargs == {"emit_logits": True} is semantically the plain call —
+        # MTP-patched wrappers advertise emit_logits via **kwargs, so on MTP
+        # runtimes the bare-kwargs case never occurs and the compiled hook
+        # must accept the default-emit form too.
+        plain_call = not kwargs or (
+            set(kwargs) == {"emit_logits"} and kwargs["emit_logits"] is True
+        )
+        if not return_hidden and hidden_variant is None and plain_call:
+            # Decode-only (seq_len == 1). Prefill is multi-token over an
+            # unprimed cache: seeding the compiled graph from its None KV
+            # leaves throws, and its shape differs from a single-token decode
+            # step, forcing a retrace. Prefill stays eager.
+            compiled = (
+                self._compiled_ar_forward(cache) if sequence_len == 1 else None
+            )
+            if compiled is not None:
+                # Engagement proof: arm A (flag off) must report 0 here,
+                # arm B (on) > 0 — the A/B credits nothing without it.
+                self._count("compiled_forward_calls")
+                return compiled(input_ids, cache)
+            if not kwargs:
+                return self.model(input_ids, cache=cache)
         return self.model(
             input_ids,
             cache=cache,
             return_hidden=return_hidden,
             **kwargs,
         )
+
+    def _compiled_ar_forward(self, cache):
+        """Compiled target forward (MTPLX_COMPILE_AR_FORWARD).
+
+        Kills the per-token Python graph rebuild by tracing the full trunk
+        forward once (CompiledARForward, KV state threaded). Applies to
+        fully-resident loads with a standard per-layer KV cache; a host-sync
+        buried in the model forward surfaces as an error on the first traced
+        call rather than silently degrading. Rebuilds per cache identity so a
+        new generation gets fresh threaded state. Returns None (the eager
+        path) otherwise.
+        """
+        from .compiled_forward import CompiledARForward, compile_forward_enabled
+
+        if not compile_forward_enabled() or not cache:
+            return None
+        # An unprimed cache (empty context / first token) has None KV leaves
+        # that would crash the compiled graph. Only compile once the cache
+        # holds real keys, and only for the plain growable KVCache shape the
+        # fixed-buffer conversion understands.
+        first = cache[0]
+        if getattr(first, "keys", None) is None:
+            return None
+        if any(
+            not hasattr(entry, "keys")
+            or not hasattr(entry, "values")
+            or not hasattr(entry, "offset")
+            for entry in cache
+        ):
+            return None
+        cache_key = id(first)
+        if (
+            getattr(self, "_compiled_ar", None) is None
+            or getattr(self, "_compiled_ar_key", None) != cache_key
+        ):
+            import os as _os
+
+            reserve = int(_os.environ.get("MTPLX_COMPILE_AR_RESERVE_TOKENS", "4096"))
+            self._compiled_ar = CompiledARForward(self.model, reserve_tokens=reserve)
+            self._compiled_ar_key = cache_key
+        return self._compiled_ar
 
     def forward_ar_capture(
         self,
@@ -168,6 +294,24 @@ class MTPLXRuntime:
             return_hidden=return_hidden,
             hidden_variant=hidden_variant,
             capture_backend=capture_backend,
+        )
+
+    def _forward_ar_capture_a3b_postconv(
+        self,
+        input_ids,
+        *,
+        cache,
+        hidden_variant: str | None,
+        postconv_implementations: tuple[Callable[..., Any], ...],
+    ):
+        from .gdn_capture import forward_with_a3b_gdn_postconv_capture
+
+        return forward_with_a3b_gdn_postconv_capture(
+            self.model,
+            input_ids,
+            cache=cache,
+            hidden_variant=hidden_variant,
+            postconv_implementations=postconv_implementations,
         )
 
     def draft_mtp(
@@ -289,6 +433,14 @@ class MTPLXRuntime:
         configure_tail_owned_attention_kv_cache(cache)
         return cache
 
+    def repage_target_prefill_cache(self, cache: Any) -> bool:
+        """Install the runtime's decode cache layout after contiguous prefill."""
+
+        from .cache_state import configure_tail_owned_attention_kv_cache
+
+        configure_tail_owned_attention_kv_cache(cache)
+        return True
+
     def make_mtp_cache(self):
         if not self.mtp_enabled:
             raise RuntimeError("MTP is not enabled for this runtime")
@@ -300,6 +452,37 @@ class MTPLXRuntime:
         return cache
 
 
+class LagunaARRuntime(MTPLXRuntime):
+    """Target-only runtime that preserves Laguna's native cache ownership."""
+
+    def forward_ar(
+        self,
+        input_ids,
+        cache=None,
+        return_hidden: bool = False,
+        hidden_variant: str | None = None,
+        emit_logits: bool = True,
+        logits_keep: int | None = None,
+        input_embeddings=None,
+    ):
+        del return_hidden, hidden_variant
+        return self.model(
+            input_ids,
+            cache=cache,
+            input_embeddings=input_embeddings,
+            emit_logits=emit_logits,
+            logits_keep=logits_keep,
+        )
+
+    def make_cache(self):
+        inner = getattr(self.model, "language_model", self.model)
+        return inner.make_cache()
+
+    def repage_target_prefill_cache(self, cache: Any) -> bool:
+        del cache
+        return False
+
+
 def load(
     model_path: Path | str,
     *,
@@ -309,8 +492,17 @@ def load(
     merge_mtp_adapter: bool = False,
     gemma4_draft_block_size: int | None = None,
     gemma4_target_distribution_mode: str | None = None,
+    proj_quant: str | None = None,
+    proj_requant: str | None = None,
 ) -> MTPLXRuntime:
-    """Load an MLX model and optionally inject native MTP support."""
+    """Load an MLX model and optionally inject native MTP support.
+
+    ``proj_quant`` / ``proj_requant`` (or the ``MTPLX_PROJ_QUANT`` /
+    ``MTPLX_PROJ_REQUANT`` environment variables) quantize the trunk
+    ``*_proj`` Linears at load time — see :mod:`mtplx.proj_quant`. Applied
+    to the trunk only, before MTP injection, so a draft head's precision is
+    never reduced.
+    """
     path = Path(model_path)
     from .gemma4_pair import resolve_gemma4_pair_paths
 
@@ -351,6 +543,18 @@ def load(
             return runtime
         path = Path(gemma4_pair["target_model"])
     config = load_config(path)
+    from .a3b_whole_moe import validate_a3b_whole_moe_load_options
+
+    validate_a3b_whole_moe_load_options(
+        mtp_adapter=mtp_adapter,
+        merge_mtp_adapter=merge_mtp_adapter,
+    )
+    if mtp and _is_laguna_s_2_1_mlx_4bit_config(config):
+        raise ValueError(
+            "Laguna-S-2.1 has no native MTP head; "
+            "load it with mtp=False (CLI: --no-mtp)."
+        )
+    _preflight_laguna_system_memory(config)
     from .step3p5_mtp_patch import is_step3p5_mtp_config
     from .qwen3_5_mtp_patch import (
         install_qwen3_5_mtp_trunk_shim,
@@ -368,9 +572,26 @@ def load(
         tokenizer = _load_tokenizer_resilient(path, config)
         model, _loaded_config = load_model(path)
     else:
-        from mlx_lm.utils import load as mlx_lm_load
+        model, tokenizer = _load_base_model(path, config)
+    import os as _os
 
-        model, tokenizer = mlx_lm_load(str(_mtp_alias_load_path(path, config)))
+    proj_quant = proj_quant or _os.environ.get("MTPLX_PROJ_QUANT") or None
+    proj_requant = proj_requant or _os.environ.get("MTPLX_PROJ_REQUANT") or None
+    if proj_quant or proj_requant:
+        from .proj_quant import quantize_projections, requantize_projections
+
+        if proj_quant:
+            touched = quantize_projections(model, proj_quant)
+            logger.info(
+                "[proj-quant] quantized %d trunk *_proj modules to %s",
+                len(touched), proj_quant,
+            )
+        if proj_requant:
+            touched = requantize_projections(model, proj_requant)
+            logger.info(
+                "[proj-quant] requantized %d trunk *_proj modules to %s",
+                len(touched), proj_requant,
+            )
     runtime_metadata = _load_runtime_metadata(path)
     contract = (
         (contract or MTPContract())
@@ -405,22 +626,85 @@ def load(
             mtp_enabled = inject_mtp_support(model, path, config, contract)
         if not mtp_enabled or not validate_mtp_support(model):
             raise RuntimeError(f"MTP injection failed for {path}")
-    from .attention_split import configure_split_full_attention
-    from .native_mlp import configure_native_mlp
+    compiled_target_factory = None
+    whole_moe_plan = None
+    selfcheck_report = None
+    # Laguna skips the qwen3-next kernel stack entirely; its own env-gated
+    # fused lanes install right before runtime construction below.
+    if not _is_laguna_s_2_1_mlx_4bit_config(config):
+        from .attention_split import configure_split_full_attention
+        from .moe_packed_projections import (
+            configure_moe_packed_projections,
+            moe_pack_gate_up_enabled,
+        )
+        from .native_mlp import configure_native_mlp
 
-    configure_split_full_attention(model)
-    configure_native_mlp(model)
-    from .nax_verify import install_nax_qlinear_patch, nax_env_enabled
+        configure_split_full_attention(model)
+        configure_native_mlp(model)
+        # Construction-time only: replaces the MoE gate/up projections with one
+        # packed matmul each. Must run after MTP injection so the draft block's
+        # MoE layer is packed too, and after load-coverage validation so the
+        # packed parameter tree is never compared against checkpoint keys.
+        if moe_pack_gate_up_enabled():
+            pack_report = configure_moe_packed_projections(model)
+            logger.info("[moe-pack] %s", pack_report)
+        from .nax_verify import install_nax_qlinear_patch, nax_env_enabled
 
-    if nax_env_enabled():
-        nax_report = install_nax_qlinear_patch()
-        logger.info("[nax-verify] %s", nax_report)
-    from .kernel_selfcheck import maybe_run_model_selfcheck
+        if nax_env_enabled():
+            nax_report = install_nax_qlinear_patch()
+            logger.info("[nax-verify] %s", nax_report)
+        from .qwen_row_owned_router import (
+            install_qwen_row_owned_routers,
+            prepare_qwen_row_owned_routers,
+        )
+        from .a3b_whole_moe import (
+            install_a3b_whole_moe,
+            prepare_a3b_whole_moe,
+            run_a3b_whole_moe_selfcheck,
+        )
 
-    # Turbo lanes validate themselves once per load on the model's actual
-    # dtype/quant format; a mismatching lane disables itself and serving
-    # continues on the stock path (surfaced in /health kernel_selfcheck).
-    maybe_run_model_selfcheck(model)
+        from .gdn_capture import (
+            install_a3b_gdn_postconv,
+            prepare_a3b_gdn_postconv,
+        )
+        from .a3b_compiled_target_prefix import (
+            preflight_a3b_k1_target_prefix_load_graph,
+            prepare_a3b_compiled_target_prefix,
+        )
+
+        whole_moe_plan = prepare_a3b_whole_moe(model, config=config)
+        router_plan = prepare_qwen_row_owned_routers(model, config=config)
+        postconv_plan = prepare_a3b_gdn_postconv(model, config=config)
+        postconv_factory = None
+        from .kernel_selfcheck import maybe_run_model_selfcheck
+
+        selfcheck_report = maybe_run_model_selfcheck(model)
+        if whole_moe_plan is not None and router_plan is None:
+            from .a3b_whole_moe import A3BWholeMoeConfigError
+
+            raise A3BWholeMoeConfigError(
+                "whole-MoE target M2 requires the accepted row-owned router/combine route"
+            )
+        if router_plan is not None:
+            router_report = install_qwen_row_owned_routers(router_plan, selfcheck_report)
+            logger.info("[qwen-row-owned-router] %s", router_report)
+        if whole_moe_plan is not None:
+            selfcheck_report = run_a3b_whole_moe_selfcheck(
+                whole_moe_plan,
+                selfcheck_report,
+            )
+        if postconv_plan is not None:
+            postconv_factory = install_a3b_gdn_postconv(
+                postconv_plan, selfcheck_report
+            )
+            from .gdn_capture import gdn_postconv_stats
+
+            logger.info("[a3b-gdn-postconv] %s", gdn_postconv_stats())
+        compiled_target_factory = prepare_a3b_compiled_target_prefix(
+            model,
+            config=config,
+            gdn_postconv_factory=postconv_factory,
+        )
     adapter_path = Path(mtp_adapter) if mtp_adapter is not None else None
     adapter_metadata = None
     adapter_merge_report = None
@@ -432,7 +716,22 @@ def load(
             adapter_merge_report = merge_installed_mtp_lora_adapters(model)
     elif merge_mtp_adapter:
         raise RuntimeError("merge_mtp_adapter requires mtp_adapter")
-    return MTPLXRuntime(
+    if _is_laguna_s_2_1_mlx_4bit_config(config):
+        # Env-gated fused decode paths (MTPLX_LAGUNA_*): with no switches set
+        # this returns an empty report and changes nothing, so default serving
+        # behavior is untouched; a serving wrapper that exports the measured
+        # stack gets it engaged at load, visible in this log line.
+        from .models.laguna_fused import install_from_env as _laguna_install_fused
+
+        fused_report = _laguna_install_fused(model)
+        if fused_report:
+            logger.info("[laguna-fused] %s", fused_report)
+    runtime_class = (
+        LagunaARRuntime
+        if _is_laguna_s_2_1_mlx_4bit_config(config)
+        else MTPLXRuntime
+    )
+    runtime = runtime_class(
         model,
         tokenizer,
         path,
@@ -441,23 +740,151 @@ def load(
         mtp_adapter_path=adapter_path,
         mtp_adapter_metadata=adapter_metadata,
         mtp_adapter_merge_report=adapter_merge_report,
+        a3b_compiled_target_prefix_factory=compiled_target_factory,
+        a3b_whole_moe_installed=False,
     )
+    if whole_moe_plan is not None:
+        if compiled_target_factory is None:
+            from .a3b_whole_moe import A3BWholeMoeConfigError
+
+            raise A3BWholeMoeConfigError(
+                "whole-MoE requires exact compiled target-prefix construction"
+            )
+        whole_moe_report = install_a3b_whole_moe(
+            whole_moe_plan,
+            selfcheck_report,
+            compiled_preflight=lambda: preflight_a3b_k1_target_prefix_load_graph(
+                runtime, compiled_target_factory
+            ),
+        )
+        runtime.a3b_whole_moe_installed = True
+        logger.info("[a3b-whole-moe] %s", whole_moe_report)
+    return runtime
 
 
 def inspect(path: Path | str):
     return inspect_model(path)
 
 
+def _is_laguna_s_2_1_mlx_4bit_config(config: dict[str, Any]) -> bool:
+    from .models.laguna_config import is_laguna_s_2_1_mlx_4bit_config
+
+    return is_laguna_s_2_1_mlx_4bit_config(config)
+
+
+def _model_classes_for_config(config: dict[str, Any]) -> tuple[type, type] | None:
+    """Return MTPLX-owned model classes for architectures missing in mlx-lm."""
+
+    if not _is_laguna_s_2_1_mlx_4bit_config(config):
+        return None
+    from .models.laguna import Model, ModelArgs
+
+    return Model, ModelArgs
+
+
+def _load_base_model(path: Path, config: dict[str, Any]) -> tuple[Any, Any]:
+    if (
+        config.get("architectures") == ["LagunaForCausalLM"]
+        and str(config.get("model_type") or "").lower() == "laguna"
+        and "model_file" in config
+    ):
+        raise ValueError("Laguna model_file execution is not permitted")
+    model_classes = _model_classes_for_config(config)
+    if model_classes is not None:
+        from mlx_lm.utils import load_model
+
+        from .models.laguna_config import laguna_module_quantization
+
+        tokenizer = _load_tokenizer_resilient(path, config)
+        load_kwargs: dict[str, Any] = {
+            "get_model_classes": lambda config: model_classes,
+        }
+        module_quantization = laguna_module_quantization(config)
+        if module_quantization is not None:
+            # The pinned oQ4e checkpoint keys its mixed-precision quantization
+            # dict by the ``language_model.``-prefixed export path. Strip the
+            # prefix so mlx-lm's config-driven quantizer addresses each module
+            # by its tree path (the BF16 routers carry no entry and stay
+            # unquantized). mlx-lm reads this from config["quantization"], not
+            # from any model-level predicate.
+            load_kwargs["model_config"] = {
+                "quantization": module_quantization,
+                "quantization_config": module_quantization,
+            }
+        model, _loaded_config = load_model(path, **load_kwargs)
+        return model, tokenizer
+
+    from mlx_lm.utils import load as mlx_lm_load
+
+    return mlx_lm_load(str(_mtp_alias_load_path(path, config)))
+
+
+# A chat_template that is nothing but a Jinja ``{% include %}`` redirect to a
+# sidecar file. The pinned Laguna-S-2.1 oQ4e checkpoint ships the 35-char stub
+# ``{% include 'chat_template.jinja' %}`` in tokenizer_config.json. transformers
+# compiles embedded chat templates in a loader-less Jinja Environment, so any
+# apply_chat_template on such a stub raises
+# ``TypeError('no loader for this environment specified')`` — the failure the
+# 2026-07-22 laguna serving window hit on both the one-shot and server paths.
+_JINJA_INCLUDE_CHAT_TEMPLATE_RE = re.compile(r"\{%-?\s*include\b")
+
+
+def _is_jinja_include_chat_template(chat_template: Any) -> bool:
+    """True when ``chat_template`` is a string carrying a Jinja include."""
+
+    return isinstance(chat_template, str) and bool(
+        _JINJA_INCLUDE_CHAT_TEMPLATE_RE.search(chat_template)
+    )
+
+
+def _pinned_chat_template_text(model_path: Path) -> str | None:
+    """Contents of the sidecar chat_template.jinja pinned next to the model.
+
+    Returns None when the file is absent or empty. The file is only read, never
+    mutated — its sha256 is load-bearing for artifact-integrity checks.
+    """
+
+    jinja = model_path / "chat_template.jinja"
+    if not jinja.exists():
+        return None
+    text = jinja.read_text(encoding="utf-8")
+    return text if text.strip() else None
+
+
+def _repair_included_chat_template(tokenizer: Any, model_path: Path) -> None:
+    """Swap an include-stub chat_template for the pinned sidecar contents.
+
+    The oQ4e tokenizer_config.json redirects its chat_template to a sidecar via
+    ``{% include 'chat_template.jinja' %}``. transformers cannot resolve the
+    include (no Jinja loader), so apply_chat_template raises the moment it runs.
+    The real template — self-contained, no include/import/extends — lives in
+    chat_template.jinja beside the weights; substitute its contents in memory.
+    Setting ``tokenizer.chat_template`` on the mlx-lm TokenizerWrapper forwards
+    to the underlying HF tokenizer, which is what apply_chat_template renders.
+    """
+
+    current = getattr(tokenizer, "chat_template", None)
+    if not _is_jinja_include_chat_template(current):
+        return
+    replacement = _pinned_chat_template_text(model_path)
+    if replacement is None:
+        return
+    tokenizer.chat_template = replacement
+
+
 def _load_tokenizer_resilient(model_path: Path, config: dict[str, Any]) -> Any:
     from mlx_lm.utils import load_tokenizer
 
     try:
-        return load_tokenizer(model_path)
+        tokenizer = load_tokenizer(model_path)
     except Exception as exc:  # noqa: BLE001 - transformers raises several strict-config errors
         logger.warning(
             "[tokenizer] AutoTokenizer parse failed (%s); using tokenizer.json fallback",
             exc,
         )
+    else:
+        _repair_included_chat_template(tokenizer, model_path)
+        return tokenizer
 
     from mlx_lm.tokenizer_utils import TokenizerWrapper
     from transformers import PreTrainedTokenizerFast
@@ -474,10 +901,14 @@ def _load_tokenizer_resilient(model_path: Path, config: dict[str, Any]) -> Any:
         **passthrough,
     )
     chat_template = tcfg.get("chat_template")
+    # An include-stub is not a usable template (transformers has no loader for
+    # it); treat it as absent so the pinned sidecar below supplies the real one.
+    if _is_jinja_include_chat_template(chat_template):
+        chat_template = None
     if not chat_template:
-        jinja = model_path / "chat_template.jinja"
-        if jinja.exists():
-            chat_template = jinja.read_text(encoding="utf-8")
+        replacement = _pinned_chat_template_text(model_path)
+        if replacement is not None:
+            chat_template = replacement
     if chat_template:
         hf_tokenizer.chat_template = chat_template
     eos = config.get("eos_token_id")
