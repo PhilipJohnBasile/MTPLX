@@ -9,6 +9,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from mtplx.benchmarks.protocol import (
+    build_effective_run_record,
+    weighted_tok_s,
+)
 from mtplx.benchmarks.schema import load_prompt_suite
 from mtplx.benchmarks.validators.basic import (
     validate_json_text,
@@ -31,7 +35,34 @@ def run_dflash_mlx_baseline(
     limit: int | None = None,
     enable_thinking: bool | None = None,
     draft_sliding_window_size: int | None = None,
+    model_revision: str | None = None,
+    draft_revision: str | None = None,
 ) -> dict[str, Any]:
+    if enable_thinking is None:
+        raise ValueError(
+            "enable_thinking must be explicit for an evidence-grade DFlash run"
+        )
+    effective_run = build_effective_run_record(
+        backend="dflash_mlx_official",
+        model_ref=model_path,
+        model_revision=model_revision,
+        draft_ref=draft_model,
+        draft_revision=draft_revision,
+        prompt_suite=prompt_suite,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        max_tokens=max_tokens,
+        seed=seed,
+        seed_policy="base_plus_prompt_index",
+        enable_thinking=enable_thinking,
+        block_size=block_size,
+        generation_mode="dflash",
+        nax_enabled=False,
+        verify_strategy="official_dflash",
+        compiled_verify="not_applicable",
+        runtime_switches={},
+    )
     _add_source_path(dflash_source)
 
     try:
@@ -164,6 +195,7 @@ def run_dflash_mlx_baseline(
         "block_size": block_size,
         "seed": seed,
         "enable_thinking": enable_thinking,
+        "effective_run": effective_run,
         "rows": rows,
         "summary": {
             "prompts": len(rows),
@@ -174,6 +206,7 @@ def run_dflash_mlx_baseline(
                 if successful
                 else 0.0
             ),
+            "weighted_tok_s": weighted_tok_s(successful),
             "mean_acceptance_length": _mean_present(
                 row.get("mean_acceptance_length") for row in successful
             ),

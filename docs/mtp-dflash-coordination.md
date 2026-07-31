@@ -1,13 +1,83 @@
 # MTP + DFlash coordination — the "Priced Union" design
 
-Status: design, 2026-07-29. Produced by a 13-agent workflow (6 code/web mappers, 3
+Status: measured build plan, corrected 2026-07-30. Produced by a 13-agent workflow (6 code/web mappers, 3
 competing designs, judge synthesis, 3 adversarial verifiers). All three verifiers
 returned SOUND_WITH_FIXES; every fix is folded into this document. Number tags:
 **[measured]** = observed on this M5 Max or in local records, **[verified]** = code
 read in the current checkout, **[published]** = external claim, **[estimated]** =
 model/extrapolation.
 
-## TL;DR
+## Current decision
+
+Phase 0 changed the implementation order. Under the final protocol-matched
+thinking-off runs:
+
+| Target | Best DFlash | Best MTP | Decision |
+|---|---:|---:|---|
+| Qwen3.6-35B-A3B MoE | **2.07x, B8, 217.1 tok/s** | 1.05x, D1, 111.0 tok/s | Build DFlash first |
+| Qwen3.6-27B dense | 1.89x, B5, 58.6 tok/s | **2.23-2.32x, D3** | Park current drafter |
+
+The reference-arm build gate has now produced an in-engine implementation,
+but **not a release candidate**. Two MoE lanes were measured on the pinned
+35B-A3B target and drafter:
+
+| MTPLX lane | Weighted result | Equality result | Decision |
+|---|---:|---:|---|
+| Wide B8, one-hot, capture-commit | 130.6 tok/s, 1.24x AR | DFlash = AR on 9/24; 8/24 three-way exact | Keep experimental |
+| Staged-K1 B8 over compiled target-prefix + whole-MoE | 170.0 tok/s, 1.30x AR | DFlash = MTP K1 on 24/24; both = AR on 13/24 | Hold |
+
+The wide lane reproduced the single-prompt reference result in-engine
+(220.6 tok/s on the 73-token pilot) and established that the target hidden
+taps and commit-only companion cache work. Its first full-suite mismatch was
+classified precisely: scalar AR selected token 1724 while the eight-row target
+verify selected 1752 at a 0.125-logit margin. A low-margin scalar replay fixed
+the immediate token but not delayed state drift; replaying enough cycles erased
+the speedup. NAX is not an answer because its accumulation order is explicitly
+not bit-exact.
+
+The staged lane amortizes one seven-token DFlash proposal across single-draft
+K1 verifies. It proves the DFlash integration adds no divergence relative to
+the existing compiled target-prefix control (24/24 identical) and reaches
+169.95 tok/s, but the control itself is only 13/24 byte-identical to
+`generate_ar`. That pre-existing target-prefix/AR discrepancy is now the
+release blocker. Do not redefine the gate around MTP parity and do not revive
+the rejected router/cache recalibration; fix the authoritative M1-versus-M2
+stream first.
+
+The implementation remains behind `MTPLX_DFLASH_DRAFT=1`. Wide mode has no
+heuristic “exactness” margin; the failed low-margin replay path was removed
+rather than left as an unsound switch. The staged mode is named `staged-k1`, not
+“staged-exact”: K1 describes its execution width and makes no AR-equivalence
+claim. It requires the fail-closed compiled A3B stack (compiled target-prefix,
+fused GDN post-conv, row-owned routing,
+packed gate/up, whole-MoE, and contiguous-dense decode layout) and still exits
+the benchmark gate nonzero until AR equality is restored.
+
+Evidence receipts: the historical wide run is
+`benchmarks/results/dflash-engine-suite-112-20260730.json`; the staged-K1 run
+(whose manifest predates the rename and therefore says `dflash_staged_exact`)
+is
+`benchmarks/results/dflash-engine-suite-staged-whole-moe-exact-b8-112-20260730.json`.
+Receipt names and payloads are immutable; their failed equality fields remain
+visible. The protocol-hardened wide rerun is
+`benchmarks/results/dflash-engine-suite-wide-protocol-v2-112-20260730.json`;
+it records every runtime switch and is the source for the current table. A
+post-rename one-prompt integration smoke is
+`benchmarks/results/dflash-engine-smoke-staged-k1-protocol-v2-20260730.json`
+(194.3 tok/s, 1.46x AR, three-way equality); it validates the live
+`staged-k1` wiring only and does not supersede the 24-prompt red gate.
+
+Every evidence-grade run records an effective-run manifest with explicit
+thinking mode, immutable target/drafter revisions, prompt-suite hash, sampler,
+token cap, seed, block size, generation mode, verify strategy, compiled-verify
+state, all execution-affecting runtime switches, NAX state, and
+`sum(tokens)/sum(decode_seconds)` aggregation. Intended command-line settings
+are not accepted as proof.
+
+The older envelope below is retained as design history. Where it conflicts
+with this section or the corrected Phase-0 summary, this section wins.
+
+## Original design TL;DR
 
 MTP and DFlash both save the *same* target forward passes, so their speedups share
 one `1/(1−α)` budget and never multiply. The honest combined value is

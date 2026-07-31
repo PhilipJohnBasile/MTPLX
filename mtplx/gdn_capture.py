@@ -2541,6 +2541,13 @@ def forward_with_a3b_gdn_postconv_capture(
 
     attention_mask = create_attention_mask(hidden_states, cache[3])
     captures: dict[int, dict[str, mx.array]] = {}
+    dflash_tap_ids = tuple(
+        int(layer_id)
+        for layer_id in (
+            getattr(model, "_mtplx_dflash_target_layer_ids", ()) or ()
+        )
+    )
+    dflash_hidden_by_layer: dict[int, mx.array] = {}
     implementation_iter = iter(postconv_implementations)
     for layer_idx, (layer, layer_cache, kind) in enumerate(
         zip(inner.layers, cache, _A3B_GDN_POSTCONV_LAYER_TYPES)
@@ -2559,6 +2566,14 @@ def forward_with_a3b_gdn_postconv_capture(
         h = hidden_states + r
         mlp_input = layer.post_attention_layernorm(h)
         hidden_states = h + layer.mlp(mlp_input)
+        if layer_idx in dflash_tap_ids:
+            dflash_hidden_by_layer[layer_idx] = hidden_states
+
+    _store_dflash_hidden_capture(
+        model,
+        dflash_tap_ids,
+        dflash_hidden_by_layer,
+    )
 
     pre_norm = hidden_states
     post_norm = inner.norm(hidden_states)
@@ -2591,6 +2606,13 @@ def forward_with_gdn_capture(
     fa_mask = create_attention_mask(hidden_states, cache[inner.fa_idx])
     ssm_mask = create_ssm_mask(hidden_states, cache[inner.ssm_idx])
     captures: dict[int, dict[str, mx.array]] = {}
+    dflash_tap_ids = tuple(
+        int(layer_id)
+        for layer_id in (
+            getattr(model, "_mtplx_dflash_target_layer_ids", ()) or ()
+        )
+    )
+    dflash_hidden_by_layer: dict[int, mx.array] = {}
     backend = resolve_gdn_capture_backend(capture_backend)
     context_len = _cache_context_len(cache)
     layer_eval_every = _target_layer_eval_every(context_len)
@@ -2654,9 +2676,16 @@ def forward_with_gdn_capture(
             h = hidden_states + r
             mlp_input = layer.post_attention_layernorm(h)
         hidden_states = h + layer.mlp(mlp_input)
+        if layer_idx in dflash_tap_ids:
+            dflash_hidden_by_layer[layer_idx] = hidden_states
         if layer_eval_enabled and (layer_idx + 1) % layer_eval_every == 0:
             mx.eval(hidden_states)
 
+    _store_dflash_hidden_capture(
+        model,
+        dflash_tap_ids,
+        dflash_hidden_by_layer,
+    )
     pre_norm = hidden_states
     post_norm = inner.norm(hidden_states)
     logits = inner.embed_tokens.as_linear(post_norm) if text_model.args.tie_word_embeddings else text_model.lm_head(post_norm)
@@ -2664,6 +2693,26 @@ def forward_with_gdn_capture(
         hidden = pre_norm if hidden_variant == "pre_norm" else post_norm
         return logits, hidden, captures
     return logits, captures
+
+
+def _store_dflash_hidden_capture(
+    model: Any,
+    layer_ids: tuple[int, ...],
+    hidden_by_layer: dict[int, mx.array],
+) -> None:
+    """Expose selected outputs from the authoritative inlined target forward."""
+
+    if not layer_ids:
+        return
+    missing = [layer_id for layer_id in layer_ids if layer_id not in hidden_by_layer]
+    if missing:
+        raise RuntimeError(
+            "hybrid target forward missed registered DFlash tap layers "
+            f"{missing}"
+        )
+    model._mtplx_dflash_captured_hidden = tuple(
+        hidden_by_layer[layer_id] for layer_id in layer_ids
+    )
 
 
 def commit_captured_prefix(

@@ -5743,6 +5743,7 @@ def generate_mtpk(
     thinking_guard: ThinkingGuardConfig | None = None,
     vision_splice: Any | None = None,
     constraint: Any | None = None,
+    block_draft_source: Any | None = None,
 ) -> GenerationOutput:
     """Generate with a fixed native-MTP depth.
 
@@ -5784,6 +5785,85 @@ def generate_mtpk(
         )
     if not rt.mtp_enabled:
         raise RuntimeError("generate_mtpk requires an MTP-enabled runtime")
+    using_block_draft_source = block_draft_source is not None
+    if using_block_draft_source:
+        if not _env_truthy("MTPLX_DFLASH_DRAFT"):
+            raise RuntimeError(
+                "external block drafting requires MTPLX_DFLASH_DRAFT=1"
+            )
+        source_supports_target_prefix = bool(
+            getattr(block_draft_source, "supports_target_prefix", False)
+        )
+        if (
+            bool(
+                getattr(
+                    block_draft_source,
+                    "requires_compiled_a3b_target_prefix",
+                    False,
+                )
+            )
+            and not bool(getattr(rt, "a3b_whole_moe_installed", False))
+        ):
+            raise ValueError(
+                "staged-K1 block drafting requires the installed compiled "
+                "A3B whole-MoE target-prefix route"
+            )
+        if verify_strategy not in {
+            "capture_commit",
+            "graphbank_capture_commit",
+        } and not (
+            verify_strategy == "target_prefix"
+            and source_supports_target_prefix
+        ):
+            raise ValueError(
+                "external block drafting requires capture-commit, or an "
+                "explicitly supported target-prefix source"
+            )
+        incompatible = {
+            "adaptive_policy": adaptive_policy is not None,
+            "mtp_corrector": mtp_corrector is not None,
+            "mtp_topk_reranker": mtp_topk_reranker is not None,
+            "adapter_ensemble_q": adapter_ensemble_q,
+            "online_hidden_corrector": online_hidden_corrector_alpha > 0,
+            "session_bank": session_bank is not None,
+            "vision_splice": vision_splice is not None,
+            "whole_moe_compiled": bool(
+                getattr(rt, "a3b_whole_moe_installed", False)
+            )
+            and not source_supports_target_prefix,
+        }
+        enabled_incompatible = [
+            name for name, enabled in incompatible.items() if enabled
+        ]
+        if enabled_incompatible:
+            raise ValueError(
+                "external block drafting v1 is incompatible with: "
+                + ", ".join(enabled_incompatible)
+            )
+        source_uses_compiled_target_prefix = (
+            verify_strategy == "target_prefix"
+            and source_supports_target_prefix
+            and compiled_verify_mode() == "on"
+        )
+        if (
+            compiled_verify_mode() != "off"
+            and not source_uses_compiled_target_prefix
+        ):
+            raise ValueError(
+                "external block drafting requires compiled verify OFF, except "
+                "for an explicitly supported compiled target-prefix source"
+            )
+        # The companion owns committed context; an MTP-history cache is both
+        # wasted work and the wrong identity for this source.
+        mtp_history_policy = "cycle"
+        prepare_draft_source = getattr(block_draft_source, "prepare", None)
+        if not callable(prepare_draft_source):
+            raise TypeError("block_draft_source must implement prepare(runtime)")
+        prepare_draft_source(rt)
+        begin_draft_request = getattr(block_draft_source, "begin_request", None)
+        if not callable(begin_draft_request):
+            raise TypeError("block_draft_source must implement begin_request()")
+        begin_draft_request()
     base_hidden_variant = _resolve_runtime_base_hidden_variant(rt, base_hidden_variant)
     mtp_hidden_variant = _resolve_runtime_mtp_hidden_variant(rt, mtp_hidden_variant)
     requested_speculative_depth = int(speculative_depth)
@@ -5879,7 +5959,18 @@ def generate_mtpk(
     )
     exact_a3b_target_prefix_factory = (
         rt.a3b_compiled_target_prefix_factory
-        if target_prefix_verify and constraint is None and not _ccopy_takes_over_lane
+        if target_prefix_verify and constraint is None
+        and not _ccopy_takes_over_lane
+        and (
+            not using_block_draft_source
+            or bool(
+                getattr(
+                    block_draft_source,
+                    "supports_target_prefix",
+                    False,
+                )
+            )
+        )
         else None
     )
     exact_a3b_target_prefix = exact_a3b_target_prefix_factory is not None
@@ -5911,19 +6002,20 @@ def generate_mtpk(
     if target_prefix_verify:
         if exact_a3b_target_prefix:
             validate_a3b_k1_target_prefix_sampler(sampler)
-            validate_a3b_k1_device_draft_request(
-                draft_sampler,
-                draft_margin_threshold=draft_margin_threshold,
-                adaptive_policy=adaptive_policy,
-                draft_core=draft_core,
-                online_correction_cache=online_correction_cache,
-                prompt_correction_cache=prompt_correction_cache,
-                adapter_ensemble_q=adapter_ensemble_q,
-                mtp_topk_reranker=mtp_topk_reranker,
-                loop_guard=_loop_guard_config.enabled,
-                presence_penalty=float(sampler.presence_penalty),
-                frequency_penalty=float(sampler.frequency_penalty),
-            )
+            if not using_block_draft_source:
+                validate_a3b_k1_device_draft_request(
+                    draft_sampler,
+                    draft_margin_threshold=draft_margin_threshold,
+                    adaptive_policy=adaptive_policy,
+                    draft_core=draft_core,
+                    online_correction_cache=online_correction_cache,
+                    prompt_correction_cache=prompt_correction_cache,
+                    adapter_ensemble_q=adapter_ensemble_q,
+                    mtp_topk_reranker=mtp_topk_reranker,
+                    loop_guard=_loop_guard_config.enabled,
+                    presence_penalty=float(sampler.presence_penalty),
+                    frequency_penalty=float(sampler.frequency_penalty),
+                )
         else:
             _validate_target_prefix_sampler_request(sampler)
     counter_start = _runtime_counter_snapshot(rt)
@@ -6822,6 +6914,16 @@ def generate_mtpk(
             require_request_preflight=bool(
                 getattr(rt, "a3b_whole_moe_installed", False)
             ),
+            dflash_target_model=(
+                getattr(block_draft_source, "target_model", None)
+                if using_block_draft_source
+                else None
+            ),
+            dflash_tap_count=(
+                int(getattr(block_draft_source, "target_layer_count", 0))
+                if using_block_draft_source
+                else 0
+            ),
         )
 
     step = 0
@@ -6853,6 +6955,7 @@ def generate_mtpk(
     )
     ccopy_active = (
         context_copy_enabled()
+        and not using_block_draft_source
         and not _penalties_active
         and (_ccopy_capture_lane or (_ccopy_tp_requested and not _ccopy_whole_moe_conflict))
     )
@@ -7373,7 +7476,67 @@ def generate_mtpk(
             ccopy_drafted += 1
 
         used_device_d2_core = False
+        used_block_draft_source = False
+        if using_block_draft_source:
+            propose = getattr(block_draft_source, "propose", None)
+            if not callable(propose):
+                raise TypeError("block_draft_source must implement propose(...)")
+            proposal = propose(
+                primary_token=int(primary),
+                max_draft_tokens=int(cycle_depth),
+                committed_tokens=tuple(tokens),
+                target_hidden=hidden,
+            )
+            source_tokens = tuple(int(token) for token in proposal.tokens)
+            if not source_tokens:
+                raise RuntimeError("block_draft_source returned an empty proposal")
+            if len(source_tokens) > cycle_depth:
+                raise RuntimeError(
+                    "block_draft_source exceeded the requested draft depth"
+                )
+            elapsed_draft = float(getattr(proposal, "elapsed_s", 0.0) or 0.0)
+            draft_time += elapsed_draft
+            draft_tokens = list(source_tokens)
+            draft_probs = [
+                SparseDistribution.one_hot(token, int(logits.shape[-1]))
+                if sampler.temperature > 0
+                else None
+                for token in draft_tokens
+            ]
+            source_name = str(
+                getattr(proposal, "source", None) or "external-one-hot"
+            )
+            source_metadata = dict(getattr(proposal, "metadata", {}) or {})
+            for depth_index, draft_token in enumerate(draft_tokens):
+                drafted += 1
+                drafted_by_depth[depth_index] += 1
+                event["drafts"].append(
+                    {
+                        "depth": depth_index + 1,
+                        "token": int(draft_token),
+                        "timing_s": {
+                            "draft": (
+                                elapsed_draft
+                                if depth_index == len(draft_tokens) - 1
+                                else 0.0
+                            ),
+                        },
+                        "mtp_corrector": None,
+                        "draft_core": source_name,
+                        "declaration": "one_hot",
+                    }
+                )
+            event["block_draft_source"] = {
+                "source": source_name,
+                "proposal_tokens": len(draft_tokens),
+                "metadata": source_metadata,
+            }
+            next_token = draft_tokens[-1]
+            used_block_draft_source = True
+
         device_d2_eligible = (
+            not used_block_draft_source
+            and
             _cc_draft_source_token is None
             and draft_core == "device-d2"
             and cycle_depth == 2
@@ -7448,7 +7611,7 @@ def generate_mtpk(
                 event["draft_core_error"] = repr(exc)
                 used_device_d2_core = False
 
-        if not used_device_d2_core:
+        if not used_block_draft_source and not used_device_d2_core:
             if draft_core == "device-d2" and not device_d2_eligible:
                 device_d2_fallbacks += 1
                 event["draft_core_fallback"] = {
@@ -7456,7 +7619,7 @@ def generate_mtpk(
                     "reason": "ineligible_contract",
                 }
 
-        used_device_core = used_device_d2_core
+        used_device_core = used_block_draft_source or used_device_d2_core
         a3b_k2 = (
             a3b_target_prefix_route is not None
             and int(getattr(a3b_target_prefix_route, "speculative_depth", 1)) == 2
@@ -7974,10 +8137,20 @@ def generate_mtpk(
                 bonus_distribution_row_needed
             )
             verified_token_count = 2
-            verify_input_array = mx.concatenate(
-                (mx.array([[primary]]), device_draft_token.reshape(1, 1)),
-                axis=1,
-            )
+            if used_block_draft_source:
+                if len(draft_tokens) != 1:
+                    raise RuntimeError(
+                        "compiled target-prefix block source must provide "
+                        "exactly one staged draft"
+                    )
+                verify_input_array = mx.array(
+                    [[int(primary), int(draft_tokens[0])]]
+                )
+            else:
+                verify_input_array = mx.concatenate(
+                    (mx.array([[primary]]), device_draft_token.reshape(1, 1)),
+                    axis=1,
+                )
         else:
             lazy_bonus_verify = (
                 lazy_bonus_verify_requested
@@ -8022,6 +8195,17 @@ def generate_mtpk(
             "omitted": bool(omit_speculative_bonus),
             "distribution_row_needed": bool(bonus_distribution_row_needed),
         }
+        if used_block_draft_source:
+            begin_target_verify = getattr(
+                block_draft_source,
+                "begin_target_verify",
+                None,
+            )
+            if not callable(begin_target_verify):
+                raise TypeError(
+                    "block_draft_source must implement begin_target_verify()"
+                )
+            begin_target_verify()
         set_native_mlp_context(len(tokens))
         started_forward = time.perf_counter()
         captures = None
@@ -8158,7 +8342,11 @@ def generate_mtpk(
                 target_distribution_logits,
                 sampler,
             )
-            if a3b_target_prefix_route is not None and not a3b_k2:
+            if (
+                a3b_target_prefix_route is not None
+                and not a3b_k2
+                and not used_block_draft_source
+            ):
                 _eval(sampled_target_ids, device_draft_token)
                 draft_token = int(np.asarray(device_draft_token).reshape(-1)[0])
                 draft_tokens[0] = draft_token
@@ -8391,6 +8579,10 @@ def generate_mtpk(
                         penalty_overlay=_row_guard_overlay,
                     )
                 target_token = int(mx.argmax(_greedy_row, axis=-1).item())
+                if _env_truthy("MTPLX_GREEDY_VERIFY_DIAGNOSTICS"):
+                    event["drafts"][depth_index]["target_top2_margin"] = (
+                        _top2_margin(_greedy_row)
+                    )
                 accepted_now = draft_token == target_token
                 accept_prob = 1.0 if accepted_now else 0.0
                 correction = target_token
@@ -8575,6 +8767,21 @@ def generate_mtpk(
             )
 
         event["accepted_depths"] = accepted_count
+        if used_block_draft_source:
+            commit_target_prefix = getattr(
+                block_draft_source,
+                "commit_target_prefix",
+                None,
+            )
+            if not callable(commit_target_prefix):
+                raise TypeError(
+                    "block_draft_source must implement "
+                    "commit_target_prefix(accepted_draft_tokens)"
+                )
+            commit_target_prefix(accepted_count)
+            event["block_draft_source"]["accepted_draft_tokens"] = int(
+                accepted_count
+            )
         if adaptive_policy is not None:
             event["policy"] = adaptive_policy.observe(
                 attempted_depth=max(1, len(draft_tokens)),
@@ -9057,11 +9264,16 @@ def generate_mtpk(
             assert mtp_cache is not None and cycle_mtp_offset is not None
             _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
             history_tokens = committed[1:]
-            if committed_from_capture or committed_from_trim:
+            if (
+                committed_from_capture or committed_from_trim
+            ):
                 history_hidden = verify_hidden[:, : max(0, len(committed) - 1), :]
             else:
                 history_hidden = repair_hidden[:, : max(0, len(committed) - 1), :]
-            if committed_from_capture and rejection_correction is not None:
+            if (
+                committed_from_capture
+                and rejection_correction is not None
+            ):
                 history_tokens = history_tokens[:-1]
                 history_hidden = verify_hidden[:, : max(0, committed_prefix_len - 1), :]
             draft_time += append_mtp_history(

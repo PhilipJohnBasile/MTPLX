@@ -1,0 +1,4302 @@
+{
+  "all_exact": true,
+  "dflash_all_exact": true,
+  "dflash_exact_cases": 1,
+  "effective_runs": {
+    "ar": {
+      "aggregation": "sum_generated_tokens/sum_decode_seconds",
+      "backend": "mtplx",
+      "block_size": null,
+      "compiled_verify": "not_applicable",
+      "draft": null,
+      "enable_thinking": false,
+      "generation_mode": "ar",
+      "max_tokens": 112,
+      "model": {
+        "ref": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "revision": "layout-sha256:c819b2e7980779504cf25af3cc4400b3e7b4dc0cdc535884e88c11d57898e77f"
+      },
+      "nax_enabled": false,
+      "prompt_suite": "/Users/pjb/git/MTPLX/mtplx/benchmarks/prompts/calibration_coding.jsonl",
+      "prompt_suite_sha256": "dc1ea13953ce4a2aae40f1147874e9a8caf77c30e335309c2fec73abd9e9edbb",
+      "schema": 1,
+      "seed": 0,
+      "seed_policy": "base_plus_prompt_index",
+      "temperature": 0.0,
+      "top_k": 0,
+      "top_p": 1.0,
+      "verify_strategy": "ar"
+    },
+    "dflash_b8": {
+      "aggregation": "sum_generated_tokens/sum_decode_seconds",
+      "backend": "mtplx",
+      "block_size": 8,
+      "compiled_verify": "on",
+      "draft": {
+        "ref": "z-lab/Qwen3.6-35B-A3B-DFlash",
+        "revision": "f181eece646affea2c38b2765f1aaa01a9734ccd"
+      },
+      "enable_thinking": false,
+      "generation_mode": "dflash_staged_exact",
+      "max_tokens": 112,
+      "model": {
+        "ref": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "revision": "layout-sha256:c819b2e7980779504cf25af3cc4400b3e7b4dc0cdc535884e88c11d57898e77f"
+      },
+      "nax_enabled": false,
+      "prompt_suite": "/Users/pjb/git/MTPLX/mtplx/benchmarks/prompts/calibration_coding.jsonl",
+      "prompt_suite_sha256": "dc1ea13953ce4a2aae40f1147874e9a8caf77c30e335309c2fec73abd9e9edbb",
+      "schema": 1,
+      "seed": 0,
+      "seed_policy": "base_plus_prompt_index",
+      "temperature": 0.0,
+      "top_k": 0,
+      "top_p": 1.0,
+      "verify_strategy": "target_prefix"
+    },
+    "mtp_d1": {
+      "aggregation": "sum_generated_tokens/sum_decode_seconds",
+      "backend": "mtplx",
+      "block_size": 1,
+      "compiled_verify": "on",
+      "draft": null,
+      "enable_thinking": false,
+      "generation_mode": "mtp_d1",
+      "max_tokens": 112,
+      "model": {
+        "ref": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "revision": "layout-sha256:c819b2e7980779504cf25af3cc4400b3e7b4dc0cdc535884e88c11d57898e77f"
+      },
+      "nax_enabled": false,
+      "prompt_suite": "/Users/pjb/git/MTPLX/mtplx/benchmarks/prompts/calibration_coding.jsonl",
+      "prompt_suite_sha256": "dc1ea13953ce4a2aae40f1147874e9a8caf77c30e335309c2fec73abd9e9edbb",
+      "schema": 1,
+      "seed": 0,
+      "seed_policy": "base_plus_prompt_index",
+      "temperature": 0.0,
+      "top_k": 0,
+      "top_p": 1.0,
+      "verify_strategy": "target_prefix"
+    }
+  },
+  "exact_cases": 1,
+  "mtp_all_exact": true,
+  "mtp_exact_cases": 1,
+  "rows": [
+    {
+      "accepted_drafts": 0,
+      "arm": "ar",
+      "category": "warm_coding",
+      "cycles": [
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 0
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 1
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 2
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 3
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 4
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 5
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 6
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 7
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 8
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 9
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 10
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 11
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 12
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 13
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 14
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 15
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 16
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 17
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 18
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 19
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 20
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 21
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 22
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 23
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 24
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 25
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 26
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 27
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 28
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 29
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 30
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 31
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 32
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 33
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 34
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 35
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 36
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 37
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 38
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 39
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 40
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 41
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 42
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 43
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 44
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 45
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 46
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 47
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 48
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 49
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 50
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 51
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 52
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 53
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 54
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 55
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 56
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 57
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 58
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 59
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 60
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 61
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 62
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 63
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 64
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 65
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 66
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 67
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 68
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 69
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 70
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 71
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 72
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 73
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 74
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 75
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 76
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 77
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 78
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 79
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 80
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 81
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 82
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 83
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 84
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 85
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 86
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 87
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 88
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 89
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 90
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 91
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 92
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 93
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 94
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 95
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 96
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 97
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 98
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 99
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 100
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 101
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 102
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 103
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 104
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 105
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 106
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 107
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 108
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 109
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 110
+        },
+        {
+          "accepted_depths": null,
+          "block_draft_source": null,
+          "drafts": [],
+          "greedy_exact_guard": null,
+          "primary": null,
+          "rejected_at_depth": null,
+          "step": 111
+        }
+      ],
+      "decode_seconds": 0.8460228749900125,
+      "drafted_tokens": 0,
+      "finish_reason": "length",
+      "generated_tokens": 112,
+      "order": [
+        "ar",
+        "mtp_d1",
+        "dflash_b8"
+      ],
+      "peak_memory_bytes": 32557292808,
+      "prompt_id": "calib_code_parser_001",
+      "prompt_sha256": "b5377e90b27c5ce04bef006585ff75f9c2766bef53be0a2e5d5053ed88ef1280",
+      "rejected_drafts": 0,
+      "text_sha256": "888d90cdcad6ec58ba4d622647da58bd659d49a25b1ca0edfc5657c7eb595bb5",
+      "tok_s": 132.38412732199728,
+      "token_ids": [
+        71093,
+        12305,
+        198,
+        262,
+        7189,
+        283,
+        2958,
+        198,
+        262,
+        440,
+        1724,
+        5406,
+        11,
+        359,
+        81,
+        504,
+        10845,
+        1095,
+        4609,
+        12,
+        23,
+        837,
+        430,
+        281,
+        25,
+        198,
+        285,
+        364,
+        1500,
+        4133,
+        11,
+        1500,
+        303,
+        12867,
+        925,
+        11,
+        1151,
+        28,
+        16,
+        1590,
+        198,
+        309,
+        35463,
+        283,
+        1500,
+        16674,
+        363,
+        198,
+        309,
+        413,
+        524,
+        35463,
+        25,
+        198,
+        388,
+        2962,
+        198,
+        309,
+        1380,
+        25,
+        198,
+        388,
+        3150,
+        283,
+        2857,
+        22246,
+        5712,
+        452,
+        6708,
+        8,
+        198,
+        309,
+        3525,
+        2857,
+        17470,
+        31489,
+        1401,
+        430,
+        378,
+        25,
+        198,
+        388,
+        4673,
+        14953,
+        925,
+        1,
+        7678,
+        4566,
+        506,
+        1500,
+        313,
+        1021,
+        4133,
+        15623,
+        313,
+        68,
+        54084,
+        494,
+        378,
+        198,
+        309,
+        413,
+        524,
+        11074,
+        23049,
+        11,
+        6249,
+        1590,
+        198,
+        388,
+        4673,
+        14953
+      ],
+      "token_sha256": "47b56eb53020b0c7a55f80ec904acbbd56abed7f56b14cdac7613e6543ba6a24",
+      "verify_calls": 111
+    },
+    {
+      "accepted_drafts": 46,
+      "arm": "mtp_d1",
+      "category": "warm_coding",
+      "cycles": [
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 12305,
+              "target_top2_margin": null,
+              "token": 12305
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 71093,
+          "rejected_at_depth": null,
+          "step": 0
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 262,
+              "target_top2_margin": null,
+              "token": 262
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 1
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 283,
+              "target_top2_margin": null,
+              "token": 25
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 7189,
+          "rejected_at_depth": 1,
+          "step": 2
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2958,
+              "target_top2_margin": null,
+              "token": 2958
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 3
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 262,
+              "target_top2_margin": null,
+              "token": 262
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 4
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 1724,
+              "target_top2_margin": null,
+              "token": 4965
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 440,
+          "rejected_at_depth": 1,
+          "step": 5
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 5406,
+              "target_top2_margin": null,
+              "token": 5406
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1724,
+          "rejected_at_depth": null,
+          "step": 6
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 359,
+              "target_top2_margin": null,
+              "token": 359
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 11,
+          "rejected_at_depth": null,
+          "step": 7
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 504,
+              "target_top2_margin": null,
+              "token": 504
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 81,
+          "rejected_at_depth": null,
+          "step": 8
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 1095,
+              "target_top2_margin": null,
+              "token": 10845
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 10845,
+          "rejected_at_depth": 1,
+          "step": 9
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4609,
+              "target_top2_margin": null,
+              "token": 4609
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1095,
+          "rejected_at_depth": null,
+          "step": 10
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 23,
+              "target_top2_margin": null,
+              "token": 23
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 12,
+          "rejected_at_depth": null,
+          "step": 11
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 430,
+              "target_top2_margin": null,
+              "token": 837
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 837,
+          "rejected_at_depth": 1,
+          "step": 12
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 281,
+              "target_top2_margin": null,
+              "token": 281
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 430,
+          "rejected_at_depth": null,
+          "step": 13
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 25,
+          "rejected_at_depth": null,
+          "step": 14
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 364,
+              "target_top2_margin": null,
+              "token": 364
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 285,
+          "rejected_at_depth": null,
+          "step": 15
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 4133,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1500,
+          "rejected_at_depth": 1,
+          "step": 16
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4133,
+          "rejected_at_depth": null,
+          "step": 17
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 303,
+              "target_top2_margin": null,
+              "token": 303
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1500,
+          "rejected_at_depth": null,
+          "step": 18
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 925,
+              "target_top2_margin": null,
+              "token": 12867
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 12867,
+          "rejected_at_depth": 1,
+          "step": 19
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 925,
+          "rejected_at_depth": null,
+          "step": 20
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 28,
+              "target_top2_margin": null,
+              "token": 220
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1151,
+          "rejected_at_depth": 1,
+          "step": 21
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 16,
+              "target_top2_margin": null,
+              "token": 16
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 28,
+          "rejected_at_depth": null,
+          "step": 22
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1590,
+          "rejected_at_depth": null,
+          "step": 23
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 35463,
+              "target_top2_margin": null,
+              "token": 35463
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 24
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1500,
+              "target_top2_margin": null,
+              "token": 1500
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 25
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 363,
+              "target_top2_margin": null,
+              "token": 363
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 16674,
+          "rejected_at_depth": null,
+          "step": 26
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 309,
+              "target_top2_margin": null,
+              "token": 331
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": 1,
+          "step": 27
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 413,
+              "target_top2_margin": null,
+              "token": 413
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 28
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 35463,
+              "target_top2_margin": null,
+              "token": 35463
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 524,
+          "rejected_at_depth": null,
+          "step": 29
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 25,
+          "rejected_at_depth": null,
+          "step": 30
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2962,
+              "target_top2_margin": null,
+              "token": 2962
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 31
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 309,
+              "target_top2_margin": null,
+              "token": 309
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 32
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 25,
+              "target_top2_margin": null,
+              "token": 25
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1380,
+          "rejected_at_depth": null,
+          "step": 33
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 388,
+              "target_top2_margin": null,
+              "token": 262
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": 1,
+          "step": 34
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 3150,
+              "target_top2_margin": null,
+              "token": 3150
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 35
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2857,
+              "target_top2_margin": null,
+              "token": 2857
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 36
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 5712,
+              "target_top2_margin": null,
+              "token": 22246
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 22246,
+          "rejected_at_depth": 1,
+          "step": 37
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 452,
+              "target_top2_margin": null,
+              "token": 5712
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 5712,
+          "rejected_at_depth": 1,
+          "step": 38
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 6708,
+              "target_top2_margin": null,
+              "token": 6708
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 452,
+          "rejected_at_depth": null,
+          "step": 39
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 8,
+          "rejected_at_depth": null,
+          "step": 40
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 3525,
+              "target_top2_margin": null,
+              "token": 413
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": 1,
+          "step": 41
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2857,
+              "target_top2_margin": null,
+              "token": 2857
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 3525,
+          "rejected_at_depth": null,
+          "step": 42
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 31489,
+              "target_top2_margin": null,
+              "token": 17470
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 17470,
+          "rejected_at_depth": 1,
+          "step": 43
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 1401,
+              "target_top2_margin": null,
+              "token": 31489
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 31489,
+          "rejected_at_depth": 1,
+          "step": 44
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 430,
+              "target_top2_margin": null,
+              "token": 430
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1401,
+          "rejected_at_depth": null,
+          "step": 45
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 25,
+              "target_top2_margin": null,
+              "token": 378
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 378,
+          "rejected_at_depth": 1,
+          "step": 46
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 25,
+          "rejected_at_depth": null,
+          "step": 47
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4673,
+              "target_top2_margin": null,
+              "token": 4673
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 48
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 925,
+              "target_top2_margin": null,
+              "token": 7
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 14953,
+          "rejected_at_depth": 1,
+          "step": 49
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 1,
+              "target_top2_margin": null,
+              "token": 7
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 925,
+          "rejected_at_depth": 1,
+          "step": 50
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 7678,
+              "target_top2_margin": null,
+              "token": 7678
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1,
+          "rejected_at_depth": null,
+          "step": 51
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 506,
+              "target_top2_margin": null,
+              "token": 383
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4566,
+          "rejected_at_depth": 1,
+          "step": 52
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1500,
+              "target_top2_margin": null,
+              "token": 1500
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 506,
+          "rejected_at_depth": null,
+          "step": 53
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1021,
+              "target_top2_margin": null,
+              "token": 1021
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 313,
+          "rejected_at_depth": null,
+          "step": 54
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 15623,
+              "target_top2_margin": null,
+              "token": 15623
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4133,
+          "rejected_at_depth": null,
+          "step": 55
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 68,
+              "target_top2_margin": null,
+              "token": 68
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 313,
+          "rejected_at_depth": null,
+          "step": 56
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 494,
+              "target_top2_margin": null,
+              "token": 54084
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 54084,
+          "rejected_at_depth": 1,
+          "step": 57
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 378,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 494,
+          "rejected_at_depth": 1,
+          "step": 58
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 378,
+          "rejected_at_depth": null,
+          "step": 59
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 413,
+              "target_top2_margin": null,
+              "token": 413
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 60
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11074,
+              "target_top2_margin": null,
+              "token": 11074
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 524,
+          "rejected_at_depth": null,
+          "step": 61
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 23049,
+          "rejected_at_depth": null,
+          "step": 62
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1590,
+              "target_top2_margin": null,
+              "token": 1590
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 6249,
+          "rejected_at_depth": null,
+          "step": 63
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 388,
+              "target_top2_margin": null,
+              "token": 388
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 64
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": null,
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 14953,
+              "target_top2_margin": null,
+              "token": 14953
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4673,
+          "rejected_at_depth": null,
+          "step": 65
+        }
+      ],
+      "decode_seconds": 0.5924930830369703,
+      "drafted_tokens": 66,
+      "finish_reason": "length",
+      "generated_tokens": 112,
+      "order": [
+        "ar",
+        "mtp_d1",
+        "dflash_b8"
+      ],
+      "peak_memory_bytes": 32557292808,
+      "prompt_id": "calib_code_parser_001",
+      "prompt_sha256": "b5377e90b27c5ce04bef006585ff75f9c2766bef53be0a2e5d5053ed88ef1280",
+      "rejected_drafts": 20,
+      "text_sha256": "888d90cdcad6ec58ba4d622647da58bd659d49a25b1ca0edfc5657c7eb595bb5",
+      "tok_s": 189.03174265919898,
+      "token_ids": [
+        71093,
+        12305,
+        198,
+        262,
+        7189,
+        283,
+        2958,
+        198,
+        262,
+        440,
+        1724,
+        5406,
+        11,
+        359,
+        81,
+        504,
+        10845,
+        1095,
+        4609,
+        12,
+        23,
+        837,
+        430,
+        281,
+        25,
+        198,
+        285,
+        364,
+        1500,
+        4133,
+        11,
+        1500,
+        303,
+        12867,
+        925,
+        11,
+        1151,
+        28,
+        16,
+        1590,
+        198,
+        309,
+        35463,
+        283,
+        1500,
+        16674,
+        363,
+        198,
+        309,
+        413,
+        524,
+        35463,
+        25,
+        198,
+        388,
+        2962,
+        198,
+        309,
+        1380,
+        25,
+        198,
+        388,
+        3150,
+        283,
+        2857,
+        22246,
+        5712,
+        452,
+        6708,
+        8,
+        198,
+        309,
+        3525,
+        2857,
+        17470,
+        31489,
+        1401,
+        430,
+        378,
+        25,
+        198,
+        388,
+        4673,
+        14953,
+        925,
+        1,
+        7678,
+        4566,
+        506,
+        1500,
+        313,
+        1021,
+        4133,
+        15623,
+        313,
+        68,
+        54084,
+        494,
+        378,
+        198,
+        309,
+        413,
+        524,
+        11074,
+        23049,
+        11,
+        6249,
+        1590,
+        198,
+        388,
+        4673,
+        14953
+      ],
+      "token_sha256": "47b56eb53020b0c7a55f80ec904acbbd56abed7f56b14cdac7613e6543ba6a24",
+      "verify_calls": 66
+    },
+    {
+      "accepted_drafts": 55,
+      "arm": "dflash_b8",
+      "category": "warm_coding",
+      "cycles": [
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 68,
+              "completion_tokens_before_cycle": 1,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 1,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 68
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 12305,
+              "target_top2_margin": null,
+              "token": 12305
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 71093,
+          "rejected_at_depth": null,
+          "step": 0
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 68,
+              "completion_tokens_before_cycle": 3,
+              "declaration": "one_hot",
+              "proposal": 2,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 262,
+              "target_top2_margin": null,
+              "token": 262
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 1
+        },
+        {
+          "accepted_depths": 0,
+          "block_draft_source": {
+            "accepted_draft_tokens": 0,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 72,
+              "completion_tokens_before_cycle": 5,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 3,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 4
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": false,
+              "correction": 283,
+              "target_top2_margin": null,
+              "token": 25
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 7189,
+          "rejected_at_depth": 1,
+          "step": 2
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 73,
+              "completion_tokens_before_cycle": 6,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 4,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 1
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2958,
+              "target_top2_margin": null,
+              "token": 2958
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 3
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 73,
+              "completion_tokens_before_cycle": 8,
+              "declaration": "one_hot",
+              "proposal": 5,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 262,
+              "target_top2_margin": null,
+              "token": 262
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 4
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 73,
+              "completion_tokens_before_cycle": 10,
+              "declaration": "one_hot",
+              "proposal": 6,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1724,
+              "target_top2_margin": null,
+              "token": 1724
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 440,
+          "rejected_at_depth": null,
+          "step": 5
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 79,
+              "completion_tokens_before_cycle": 12,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 7,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 6
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 5406,
+          "rejected_at_depth": null,
+          "step": 6
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 81,
+              "completion_tokens_before_cycle": 14,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 8,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 2
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 81,
+              "target_top2_margin": null,
+              "token": 81
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 359,
+          "rejected_at_depth": null,
+          "step": 7
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 81,
+              "completion_tokens_before_cycle": 16,
+              "declaration": "one_hot",
+              "proposal": 9,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 10845,
+              "target_top2_margin": null,
+              "token": 10845
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 504,
+          "rejected_at_depth": null,
+          "step": 8
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 81,
+              "completion_tokens_before_cycle": 18,
+              "declaration": "one_hot",
+              "proposal": 10,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4609,
+              "target_top2_margin": null,
+              "token": 4609
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1095,
+          "rejected_at_depth": null,
+          "step": 9
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 81,
+              "completion_tokens_before_cycle": 20,
+              "declaration": "one_hot",
+              "proposal": 11,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 23,
+              "target_top2_margin": null,
+              "token": 23
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 12,
+          "rejected_at_depth": null,
+          "step": 10
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 89,
+              "completion_tokens_before_cycle": 22,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 12,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 430,
+              "target_top2_margin": null,
+              "token": 430
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 837,
+          "rejected_at_depth": null,
+          "step": 11
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 89,
+              "completion_tokens_before_cycle": 24,
+              "declaration": "one_hot",
+              "proposal": 13,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 25,
+              "target_top2_margin": null,
+              "token": 25
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 281,
+          "rejected_at_depth": null,
+          "step": 12
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 89,
+              "completion_tokens_before_cycle": 26,
+              "declaration": "one_hot",
+              "proposal": 14,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 285,
+              "target_top2_margin": null,
+              "token": 285
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 13
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 89,
+              "completion_tokens_before_cycle": 28,
+              "declaration": "one_hot",
+              "proposal": 15,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1500,
+              "target_top2_margin": null,
+              "token": 1500
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 364,
+          "rejected_at_depth": null,
+          "step": 14
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 97,
+              "completion_tokens_before_cycle": 30,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 16,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 11,
+              "target_top2_margin": null,
+              "token": 11
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4133,
+          "rejected_at_depth": null,
+          "step": 15
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 97,
+              "completion_tokens_before_cycle": 32,
+              "declaration": "one_hot",
+              "proposal": 17,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 303,
+              "target_top2_margin": null,
+              "token": 303
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1500,
+          "rejected_at_depth": null,
+          "step": 16
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 97,
+              "completion_tokens_before_cycle": 34,
+              "declaration": "one_hot",
+              "proposal": 18,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 925,
+              "target_top2_margin": null,
+              "token": 925
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 12867,
+          "rejected_at_depth": null,
+          "step": 17
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 97,
+              "completion_tokens_before_cycle": 36,
+              "declaration": "one_hot",
+              "proposal": 19,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1151,
+              "target_top2_margin": null,
+              "token": 1151
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 11,
+          "rejected_at_depth": null,
+          "step": 18
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 105,
+              "completion_tokens_before_cycle": 38,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 20,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 16,
+              "target_top2_margin": null,
+              "token": 16
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 28,
+          "rejected_at_depth": null,
+          "step": 19
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 105,
+              "completion_tokens_before_cycle": 40,
+              "declaration": "one_hot",
+              "proposal": 21,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1590,
+          "rejected_at_depth": null,
+          "step": 20
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 105,
+              "completion_tokens_before_cycle": 42,
+              "declaration": "one_hot",
+              "proposal": 22,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 35463,
+              "target_top2_margin": null,
+              "token": 35463
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 21
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 105,
+              "completion_tokens_before_cycle": 44,
+              "declaration": "one_hot",
+              "proposal": 23,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1500,
+              "target_top2_margin": null,
+              "token": 1500
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 22
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 113,
+              "completion_tokens_before_cycle": 46,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 24,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 363,
+              "target_top2_margin": null,
+              "token": 363
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 16674,
+          "rejected_at_depth": null,
+          "step": 23
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 113,
+              "completion_tokens_before_cycle": 48,
+              "declaration": "one_hot",
+              "proposal": 25,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 309,
+              "target_top2_margin": null,
+              "token": 309
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 24
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 113,
+              "completion_tokens_before_cycle": 50,
+              "declaration": "one_hot",
+              "proposal": 26,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 524,
+              "target_top2_margin": null,
+              "token": 524
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 413,
+          "rejected_at_depth": null,
+          "step": 25
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 113,
+              "completion_tokens_before_cycle": 52,
+              "declaration": "one_hot",
+              "proposal": 27,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 25,
+              "target_top2_margin": null,
+              "token": 25
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 35463,
+          "rejected_at_depth": null,
+          "step": 26
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 121,
+              "completion_tokens_before_cycle": 54,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 28,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 388,
+              "target_top2_margin": null,
+              "token": 388
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 27
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 121,
+              "completion_tokens_before_cycle": 56,
+              "declaration": "one_hot",
+              "proposal": 29,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 2962,
+          "rejected_at_depth": null,
+          "step": 28
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 121,
+              "completion_tokens_before_cycle": 58,
+              "declaration": "one_hot",
+              "proposal": 30,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1380,
+              "target_top2_margin": null,
+              "token": 1380
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 29
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 121,
+              "completion_tokens_before_cycle": 60,
+              "declaration": "one_hot",
+              "proposal": 31,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 25,
+          "rejected_at_depth": null,
+          "step": 30
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 129,
+              "completion_tokens_before_cycle": 62,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 32,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 3150,
+              "target_top2_margin": null,
+              "token": 3150
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 31
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 129,
+              "completion_tokens_before_cycle": 64,
+              "declaration": "one_hot",
+              "proposal": 33,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 2857,
+              "target_top2_margin": null,
+              "token": 2857
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 283,
+          "rejected_at_depth": null,
+          "step": 32
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 129,
+              "completion_tokens_before_cycle": 66,
+              "declaration": "one_hot",
+              "proposal": 34,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 5712,
+              "target_top2_margin": null,
+              "token": 5712
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 22246,
+          "rejected_at_depth": null,
+          "step": 33
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 129,
+              "completion_tokens_before_cycle": 68,
+              "declaration": "one_hot",
+              "proposal": 35,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 6708,
+              "target_top2_margin": null,
+              "token": 6708
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 452,
+          "rejected_at_depth": null,
+          "step": 34
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 137,
+              "completion_tokens_before_cycle": 70,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 36,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 8,
+          "rejected_at_depth": null,
+          "step": 35
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 139,
+              "completion_tokens_before_cycle": 72,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 37,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 2
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 3525,
+              "target_top2_margin": null,
+              "token": 3525
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 309,
+          "rejected_at_depth": null,
+          "step": 36
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 139,
+              "completion_tokens_before_cycle": 74,
+              "declaration": "one_hot",
+              "proposal": 38,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 17470,
+              "target_top2_margin": null,
+              "token": 17470
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 2857,
+          "rejected_at_depth": null,
+          "step": 37
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 139,
+              "completion_tokens_before_cycle": 76,
+              "declaration": "one_hot",
+              "proposal": 39,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 1401,
+              "target_top2_margin": null,
+              "token": 1401
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 31489,
+          "rejected_at_depth": null,
+          "step": 38
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 139,
+              "completion_tokens_before_cycle": 78,
+              "declaration": "one_hot",
+              "proposal": 40,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 378,
+              "target_top2_margin": null,
+              "token": 378
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 430,
+          "rejected_at_depth": null,
+          "step": 39
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 147,
+              "completion_tokens_before_cycle": 80,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 41,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 25,
+          "rejected_at_depth": null,
+          "step": 40
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 147,
+              "completion_tokens_before_cycle": 82,
+              "declaration": "one_hot",
+              "proposal": 42,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4673,
+              "target_top2_margin": null,
+              "token": 4673
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 41
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 147,
+              "completion_tokens_before_cycle": 84,
+              "declaration": "one_hot",
+              "proposal": 43,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 925,
+              "target_top2_margin": null,
+              "token": 925
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 14953,
+          "rejected_at_depth": null,
+          "step": 42
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 147,
+              "completion_tokens_before_cycle": 86,
+              "declaration": "one_hot",
+              "proposal": 44,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 7678,
+              "target_top2_margin": null,
+              "token": 7678
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1,
+          "rejected_at_depth": null,
+          "step": 43
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 155,
+              "completion_tokens_before_cycle": 88,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 45,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 506,
+              "target_top2_margin": null,
+              "token": 506
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 4566,
+          "rejected_at_depth": null,
+          "step": 44
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 155,
+              "completion_tokens_before_cycle": 90,
+              "declaration": "one_hot",
+              "proposal": 46,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 313,
+              "target_top2_margin": null,
+              "token": 313
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1500,
+          "rejected_at_depth": null,
+          "step": 45
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 155,
+              "completion_tokens_before_cycle": 92,
+              "declaration": "one_hot",
+              "proposal": 47,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4133,
+              "target_top2_margin": null,
+              "token": 4133
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1021,
+          "rejected_at_depth": null,
+          "step": 46
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 155,
+              "completion_tokens_before_cycle": 94,
+              "declaration": "one_hot",
+              "proposal": 48,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 313,
+              "target_top2_margin": null,
+              "token": 313
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 15623,
+          "rejected_at_depth": null,
+          "step": 47
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 163,
+              "completion_tokens_before_cycle": 96,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 49,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 54084,
+              "target_top2_margin": null,
+              "token": 54084
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 68,
+          "rejected_at_depth": null,
+          "step": 48
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 163,
+              "completion_tokens_before_cycle": 98,
+              "declaration": "one_hot",
+              "proposal": 50,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 378,
+              "target_top2_margin": null,
+              "token": 378
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 494,
+          "rejected_at_depth": null,
+          "step": 49
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 163,
+              "completion_tokens_before_cycle": 100,
+              "declaration": "one_hot",
+              "proposal": 51,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 309,
+              "target_top2_margin": null,
+              "token": 309
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 198,
+          "rejected_at_depth": null,
+          "step": 50
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 169,
+              "completion_tokens_before_cycle": 102,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 52,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 6
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 524,
+              "target_top2_margin": null,
+              "token": 524
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 413,
+          "rejected_at_depth": null,
+          "step": 51
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 169,
+              "completion_tokens_before_cycle": 104,
+              "declaration": "one_hot",
+              "proposal": 53,
+              "queued_tokens_remaining": 4,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 23049,
+              "target_top2_margin": null,
+              "token": 23049
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 11074,
+          "rejected_at_depth": null,
+          "step": 52
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 169,
+              "completion_tokens_before_cycle": 106,
+              "declaration": "one_hot",
+              "proposal": 54,
+              "queued_tokens_remaining": 2,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 6249,
+              "target_top2_margin": null,
+              "token": 6249
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 11,
+          "rejected_at_depth": null,
+          "step": 53
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 169,
+              "completion_tokens_before_cycle": 108,
+              "declaration": "one_hot",
+              "proposal": 55,
+              "queued_tokens_remaining": 0,
+              "staged_exact": true,
+              "target_context_rows": 0
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot-staged"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 198,
+              "target_top2_margin": null,
+              "token": 198
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 1590,
+          "rejected_at_depth": null,
+          "step": 54
+        },
+        {
+          "accepted_depths": 1,
+          "block_draft_source": {
+            "accepted_draft_tokens": 1,
+            "metadata": {
+              "block_size": 8,
+              "committed_context_rows": 177,
+              "completion_tokens_before_cycle": 110,
+              "declaration": "one_hot",
+              "greedy_exact_margin": 0.0,
+              "proposal": 56,
+              "queued_tokens_remaining": 6,
+              "staged_exact": true,
+              "target_context_rows": 8
+            },
+            "proposal_tokens": 1,
+            "source": "dflash-one-hot"
+          },
+          "drafts": [
+            {
+              "accepted": true,
+              "correction": 4673,
+              "target_top2_margin": null,
+              "token": 4673
+            }
+          ],
+          "greedy_exact_guard": null,
+          "primary": 388,
+          "rejected_at_depth": null,
+          "step": 55
+        }
+      ],
+      "decode_seconds": 0.5724418749450706,
+      "drafted_tokens": 56,
+      "finish_reason": "length",
+      "generated_tokens": 112,
+      "order": [
+        "ar",
+        "mtp_d1",
+        "dflash_b8"
+      ],
+      "peak_memory_bytes": 32557292808,
+      "prompt_id": "calib_code_parser_001",
+      "prompt_sha256": "b5377e90b27c5ce04bef006585ff75f9c2766bef53be0a2e5d5053ed88ef1280",
+      "rejected_drafts": 1,
+      "text_sha256": "888d90cdcad6ec58ba4d622647da58bd659d49a25b1ca0edfc5657c7eb595bb5",
+      "tok_s": 195.65305212996012,
+      "token_ids": [
+        71093,
+        12305,
+        198,
+        262,
+        7189,
+        283,
+        2958,
+        198,
+        262,
+        440,
+        1724,
+        5406,
+        11,
+        359,
+        81,
+        504,
+        10845,
+        1095,
+        4609,
+        12,
+        23,
+        837,
+        430,
+        281,
+        25,
+        198,
+        285,
+        364,
+        1500,
+        4133,
+        11,
+        1500,
+        303,
+        12867,
+        925,
+        11,
+        1151,
+        28,
+        16,
+        1590,
+        198,
+        309,
+        35463,
+        283,
+        1500,
+        16674,
+        363,
+        198,
+        309,
+        413,
+        524,
+        35463,
+        25,
+        198,
+        388,
+        2962,
+        198,
+        309,
+        1380,
+        25,
+        198,
+        388,
+        3150,
+        283,
+        2857,
+        22246,
+        5712,
+        452,
+        6708,
+        8,
+        198,
+        309,
+        3525,
+        2857,
+        17470,
+        31489,
+        1401,
+        430,
+        378,
+        25,
+        198,
+        388,
+        4673,
+        14953,
+        925,
+        1,
+        7678,
+        4566,
+        506,
+        1500,
+        313,
+        1021,
+        4133,
+        15623,
+        313,
+        68,
+        54084,
+        494,
+        378,
+        198,
+        309,
+        413,
+        524,
+        11074,
+        23049,
+        11,
+        6249,
+        1590,
+        198,
+        388,
+        4673,
+        14953
+      ],
+      "token_sha256": "47b56eb53020b0c7a55f80ec904acbbd56abed7f56b14cdac7613e6543ba6a24",
+      "verify_calls": 56
+    }
+  ],
+  "schema": 1,
+  "summary": {
+    "ar": {
+      "accepted_drafts": 0,
+      "decode_seconds": 0.8460228749900125,
+      "drafted_tokens": 0,
+      "generated_tokens": 112,
+      "peak_memory_bytes": 32557292808,
+      "prompts": 1,
+      "rejected_drafts": 0,
+      "verify_calls": 111,
+      "weighted_tok_s": 132.38412732199728
+    },
+    "dflash_b8": {
+      "accepted_drafts": 55,
+      "decode_seconds": 0.5724418749450706,
+      "drafted_tokens": 56,
+      "generated_tokens": 112,
+      "peak_memory_bytes": 32557292808,
+      "prompts": 1,
+      "rejected_drafts": 1,
+      "verify_calls": 56,
+      "vs_ar": 1.4779192648532111,
+      "weighted_tok_s": 195.65305212996012
+    },
+    "mtp_d1": {
+      "accepted_drafts": 46,
+      "decode_seconds": 0.5924930830369703,
+      "drafted_tokens": 66,
+      "generated_tokens": 112,
+      "peak_memory_bytes": 32557292808,
+      "prompts": 1,
+      "rejected_drafts": 20,
+      "verify_calls": 66,
+      "vs_ar": 1.4279033784723902,
+      "weighted_tok_s": 189.03174265919898
+    }
+  },
+  "total_cases": 1
+}

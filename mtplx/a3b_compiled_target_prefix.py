@@ -54,7 +54,7 @@ _M3_REBASE1_STATE_START = 2 + _STATE_LEAVES
 _M3_FINAL_STATE_START = 2 + 2 * _STATE_LEAVES
 _FULL_ATTENTION_CACHE_STEP = 256
 _SHARED_M2_STEPS: dict[
-    tuple[int, str],
+    tuple[int, str, int],
     tuple[Callable[..., Any], dict[str, Any], weakref.ReferenceType[Any]],
 ] = {}
 _SHARED_M1_STEPS: dict[
@@ -254,7 +254,21 @@ def _make_a3b_k1_target_prefix_m2_step(
                     (entry.cache[0], entry.cache[1], entry.cache[2] - 1)
                 )
             final_state.extend(entry.cache)
-        return (logits, hidden, *primary_state, *final_state)
+        dflash_taps = tuple(
+            getattr(
+                runtime.model,
+                "_mtplx_dflash_captured_hidden",
+                (),
+            )
+            or ()
+        )
+        return (
+            logits,
+            hidden,
+            *primary_state,
+            *final_state,
+            *dflash_taps,
+        )
 
     return step
 
@@ -380,7 +394,17 @@ def _shared_m2_step(
     hidden_variant: str | None,
     postconv_implementations: tuple[Callable[..., Any], ...],
 ) -> Callable[..., Any]:
-    key = (id(runtime), str(hidden_variant or ""))
+    dflash_tap_count = len(
+        tuple(
+            getattr(
+                runtime.model,
+                "_mtplx_dflash_target_layer_ids",
+                (),
+            )
+            or ()
+        )
+    )
+    key = (id(runtime), str(hidden_variant or ""), dflash_tap_count)
     entry = _SHARED_M2_STEPS.get(key)
     if entry is not None:
         compiled, host, runtime_ref = entry
@@ -467,6 +491,8 @@ class A3BK1TargetPrefixRoute:
     # K1 route.  speculative_depth records which verify width the route serves.
     compiled_m3: Callable[..., Any] | None = None
     speculative_depth: int = 1
+    target_model: Any | None = None
+    dflash_tap_count: int = 0
 
     def verify_m2(self, input_ids):
         return self._forward_m2(input_ids)
@@ -542,6 +568,15 @@ class A3BK1TargetPrefixRoute:
             rollback[2] = None
         mx.async_eval(*outputs)
         primary_state = tuple(outputs[_PRIMARY_STATE_START:_FINAL_STATE_START])
+        if self.dflash_tap_count:
+            tap_start = _FINAL_STATE_START + len(self.state_slots)
+            tap_end = tap_start + int(self.dflash_tap_count)
+            taps = tuple(outputs[tap_start:tap_end])
+            if len(taps) != int(self.dflash_tap_count):
+                _fail("compiled A3B target-prefix missed DFlash tap outputs")
+            if self.target_model is None:
+                _fail("compiled A3B target-prefix lost its DFlash target model")
+            self.target_model._mtplx_dflash_captured_hidden = taps
         return outputs[0], outputs[1], primary_state
 
     def _forward_m1(self, input_ids, primary_state):
@@ -679,6 +714,8 @@ def install_a3b_k1_target_prefix_route(
     hidden_variant: str | None,
     state_rebase_every: int,
     require_request_preflight: bool = False,
+    dflash_target_model: Any | None = None,
+    dflash_tap_count: int = 0,
 ) -> A3BK1TargetPrefixRoute:
     """Validate external request facts and construct the fixed route."""
     # K1 (depth 1) is the shipped path; depth 2 (k=2, 3-row verify) is the
@@ -748,6 +785,8 @@ def install_a3b_k1_target_prefix_route(
         request_max_tokens=int(max_tokens),
         growth_reserve_tokens=reserve,
         prompt_tokens=int(prompt_tokens),
+        target_model=dflash_target_model,
+        dflash_tap_count=int(dflash_tap_count),
     )
     if require_request_preflight:
         specialization_key = _route_compile_specialization_key(

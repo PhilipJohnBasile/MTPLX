@@ -1,0 +1,41 @@
+{
+  "ar": {
+    "decode_tok_s": 107.92141995998423,
+    "text_sha256": "9e16d2f34e85064d24cc8878f91c3f6173d84e586843b88513a7bfd396690db6",
+    "tokens": 73
+  },
+  "block_size": 8,
+  "dflash": {
+    "accepted_drafts": 63,
+    "decode_tok_s": 220.58270850793858,
+    "drafted_tokens": 70,
+    "rejected_drafts": 2,
+    "text_sha256": "9e16d2f34e85064d24cc8878f91c3f6173d84e586843b88513a7bfd396690db6",
+    "tokens": 73,
+    "verify_calls": 10
+  },
+  "draft_model": "z-lab/Qwen3.6-35B-A3B-DFlash",
+  "draft_revision": "f181eece646affea2c38b2765f1aaa01a9734ccd",
+  "enable_thinking": false,
+  "exact_token_stream": true,
+  "generation_mode": "dflash-one-hot",
+  "max_tokens": 112,
+  "model": "/Users/pjb/.mtplx/models/Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+  "model_config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+  "mtp_d1": {
+    "accepted_drafts": 30,
+    "decode_tok_s": 123.31120157999273,
+    "drafted_tokens": 43,
+    "rejected_drafts": 13,
+    "text_sha256": "9e16d2f34e85064d24cc8878f91c3f6173d84e586843b88513a7bfd396690db6",
+    "tokens": 73,
+    "verify_calls": 43
+  },
+  "nax_enabled": false,
+  "prompt_sha256": "fb621de3ef53a5599e2c1cf19eb486c1f965fdb001a26f8fc987da5bed9ad03e",
+  "schema": 1,
+  "seed": 0,
+  "temperature": 0.0,
+  "top_k": 0,
+  "top_p": 1.0
+}

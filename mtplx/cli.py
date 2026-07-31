@@ -1290,7 +1290,7 @@ def _cmd_probe_contract(args: argparse.Namespace) -> int:
         args.prompts,
         max_prompt_tokens=args.max_prompt_tokens,
         chat_template=not args.raw_prompts,
-        enable_thinking=False if args.disable_thinking else None,
+        enable_thinking=args.enable_thinking,
     )
     if args.output:
         out = Path(args.output)
@@ -1722,6 +1722,8 @@ def _cmd_dflash_mlx_baseline(args: argparse.Namespace) -> int:
         limit=args.limit,
         enable_thinking=False if args.disable_thinking else None,
         draft_sliding_window_size=args.draft_sliding_window_size,
+        model_revision=args.model_revision,
+        draft_revision=args.draft_revision,
     )
     if args.output:
         write_competitor_result(args.output, result)
@@ -3739,6 +3741,16 @@ def build_parser() -> argparse.ArgumentParser:
     dflash_p = sub.add_parser("dflash-mlx-baseline", help="Run official DFlash MLX baseline")
     dflash_p.add_argument("--model", default=default_model)
     dflash_p.add_argument("--draft-model", default="z-lab/Qwen3.6-27B-DFlash")
+    dflash_p.add_argument(
+        "--model-revision",
+        required=True,
+        help="Immutable target revision or local artifact digest.",
+    )
+    dflash_p.add_argument(
+        "--draft-revision",
+        required=True,
+        help="Immutable drafter revision or local artifact digest.",
+    )
     dflash_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")
     dflash_p.add_argument("--dflash-source", default="REFERENCES:TOOLS/dflash")
     dflash_p.add_argument("--temperature", type=float, default=0.6)
@@ -3748,10 +3760,22 @@ def build_parser() -> argparse.ArgumentParser:
     dflash_p.add_argument("--block-size", type=int)
     dflash_p.add_argument("--seed", type=int, default=0)
     dflash_p.add_argument("--limit", type=int)
-    dflash_p.add_argument("--disable-thinking", action="store_true")
+    thinking_mode = dflash_p.add_mutually_exclusive_group(required=True)
+    thinking_mode.add_argument(
+        "--disable-thinking",
+        dest="enable_thinking",
+        action="store_false",
+        help="Pin thinking OFF; evidence-grade comparisons require an explicit mode.",
+    )
+    thinking_mode.add_argument(
+        "--enable-thinking",
+        dest="enable_thinking",
+        action="store_true",
+        help="Pin thinking ON; evidence-grade comparisons require an explicit mode.",
+    )
     dflash_p.add_argument("--draft-sliding-window-size", type=int)
     dflash_p.add_argument("--output")
-    dflash_p.set_defaults(func=_cmd_dflash_mlx_baseline)
+    dflash_p.set_defaults(func=_cmd_dflash_mlx_baseline, enable_thinking=None)
 
     ddtree_p = sub.add_parser("ddtree-mlx-baseline", help="Run DDTree MLX baseline")
     ddtree_p.add_argument("--model", default=default_model)
