@@ -13,6 +13,7 @@ from mtplx.profiles import DEFAULT_PROFILE_NAME, PROFILE_CHOICES, resolve_profil
 RUNTIME_CONTRACT_FILE = "mtplx_runtime.json"
 SUPPORTED_ARCH_IDS = {
     "laguna-s-2.1-ar",
+    "deepseek-v4",
     "qwen3-next-mtp",
     "deepseek-v3-mtp",
     "glm-moe-dsa-mtp",
@@ -192,6 +193,35 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "MTPLX routes verified-contract artifacts through the DeepSeek MTP backend."
         ),
     ),
+    "deepseek-v4": ArchitectureSupport(
+        arch_id="deepseek-v4",
+        display_name="DeepSeek-V4-Flash (MLX, target-only AR)",
+        family="deepseek",
+        backend="deepseek_v4",
+        support_level="experimental-native-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        # Keep aliases minimal: "deepseek_v4" is a substring of "deepseek_v4_mtp",
+        # so a longer alias here would out-sort (and wrongly capture) the
+        # deepseek-v4-mtp split config. Detection of the AR checkpoint works via
+        # this alias / the model_type; the MTP-split entry keeps priority for its
+        # own longer "deepseek_v4_mtp" marker.
+        aliases=("deepseek_v4",),
+        config_markers=(),
+        family_gate="deepseek-v4-mlx",
+        references=(
+            "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash",
+            "https://huggingface.co/mlx-community/DeepSeek-V4-Flash-4bit",
+            "REFERENCES:TOOLS/DeepSeek-V4-Flash/inference/model.py",
+        ),
+        notes=(
+            "Native MLX loader (mtplx.models.deepseek_v4) for the mlx-community "
+            "DeepSeek-V4-Flash 4bit/2bit checkpoints. V4 adds Hyper-Connections, "
+            "Compressed-Sparse-Attention, grouped output-LoRA, and hash layers "
+            "over V3.2. The published mlx conversion drops the MTP block, so this "
+            "runs target-only autoregressive (mtp=False)."
+        ),
+    ),
     "deepseek-v4-mtp": ArchitectureSupport(
         arch_id="deepseek-v4-mtp",
         display_name="DeepSeek V4 MTP",
@@ -199,11 +229,16 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         backend="deepseek_v4_mtp",
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
-        aliases=("deepseek_v4", "deepseek_v4_mtp"),
+        aliases=("deepseek_v4_mtp",),
         references=(
             "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/deepseek_v4_mtp.py",
         ),
-        notes="Detected separately because vLLM split the V4 MTP implementation from DeepSeek V3.",
+        notes=(
+            "The V4 MTP-split detection (vLLM separated V4 MTP from DeepSeek V3). "
+            "The current mlx-community artifacts drop the MTP block and run "
+            "target-only via arch_id 'deepseek-v4'; this entry stays for when an "
+            "MTP-bearing V4 checkpoint appears."
+        ),
     ),
     "glm4-moe-mtp": ArchitectureSupport(
         arch_id="glm4-moe-mtp",
@@ -985,7 +1020,18 @@ def _passes_nemotron_h_gate(inspection: Any) -> bool:
     return _has_marker_under_prefixes(keys, last_prefixes, ("final_layernorm.weight",))
 
 
+def _passes_deepseek_v4_gate(inspection: Any) -> bool:
+    """DeepSeek-V4-Flash MLX artifact: model_type deepseek_v4 (or the
+    DeepseekV4ForCausalLM architecture).  The mlx-community conversion drops the
+    MTP block, so this is a target-only AR gate with no MTP-marker requirement."""
+    model_type = _text(getattr(inspection, "model_type", None))
+    architecture = _compact(_text(getattr(inspection, "architecture", None)))
+    return model_type == "deepseek_v4" or "deepseekv4forcausallm" in architecture
+
+
 def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
+    if arch_id == "deepseek-v4":
+        return _passes_deepseek_v4_gate(inspection)
     if arch_id == "laguna-s-2.1-ar":
         return bool(
             getattr(inspection, "laguna_s_2_1_mlx_4bit_match", False)

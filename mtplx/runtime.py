@@ -779,6 +779,10 @@ def _is_laguna_s_2_1_mlx_4bit_config(config: dict[str, Any]) -> bool:
 def _model_classes_for_config(config: dict[str, Any]) -> tuple[type, type] | None:
     """Return MTPLX-owned model classes for architectures missing in mlx-lm."""
 
+    if str(config.get("model_type") or "").lower() == "deepseek_v4":
+        from .models.deepseek_v4 import Model, ModelArgs
+
+        return Model, ModelArgs
     if not _is_laguna_s_2_1_mlx_4bit_config(config):
         return None
     from .models.laguna import Model, ModelArgs
