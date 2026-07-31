@@ -1905,7 +1905,8 @@ class ServerState:
         from mtplx.thermal import SmartFanController
 
         self.smart_fans = SmartFanController(
-            log=lambda line: LOGGER.info("%s", line)
+            log=lambda line: LOGGER.info("%s", line),
+            activity_probe=self._smart_fan_activity_probe,
         )
         # Dashboard primitives: pub/sub bus, in-flight registry, 5-min rolling
         # TPS window, lifetime counters, prefill history. Created before
@@ -1914,6 +1915,29 @@ class ServerState:
         self.dashboard = DashboardState()
         self.ar_batch_service = _BatchedARGenerationService(self)
         self.warmup_status = _run_startup_warmup(self)
+
+    def _smart_fan_activity_probe(self) -> bool:
+        """True while any model work is executing, queued, or recently active.
+
+        Feeds the SmartFanController stale-lease reconciler (#201). Covers
+        every legitimate work state: foreground generation (begin/end_foreground
+        wraps dispatch on all paths including the AR batch service), scheduler
+        queues and the executing item of either lane (foreground + idle
+        postcommit), and a short recency window so back-to-back agent turns
+        never look idle between requests.
+        """
+        if self.has_foreground():
+            return True
+        scheduler = getattr(self, "model_scheduler", None)
+        if scheduler is not None and hasattr(scheduler, "any_pending_or_active"):
+            try:
+                if scheduler.any_pending_or_active():
+                    return True
+            except BaseException:
+                return True
+        last_started = float(getattr(self, "last_request_started_at", 0.0) or 0.0)
+        last_finished = float(getattr(self, "last_request_at", 0.0) or 0.0)
+        return (time.time() - max(last_started, last_finished)) < 30.0
 
     def begin_foreground(self) -> None:
         with self.foreground_lock:
