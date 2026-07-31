@@ -333,14 +333,29 @@ def install_gdn_blocked_prefill_patch() -> dict:
 
     _gd.gated_delta_update = patched
     patched_sites = ["mlx_lm.models.gated_delta"]
-    try:
-        from mlx_lm.models import qwen3_next as _qn
+    # Model modules bind the name at import (`from .gated_delta import
+    # gated_delta_update`), so patching the defining module alone misses
+    # them. Qwen3.6 loads as model_type qwen3_5 -> mlx_lm.models.qwen3_5
+    # holds its own binding (the first integration missed exactly this and
+    # every serve-level A/B ran stock on both arms). Sweep every loaded
+    # module that holds the original, and import the known model modules
+    # first so they exist to be swept even before the model loads.
+    import sys as _sys
 
-        if getattr(_qn, "gated_delta_update", None) is original:
-            _qn.gated_delta_update = patched
-            patched_sites.append("mlx_lm.models.qwen3_next")
-    except Exception:
-        pass
+    for _name in ("mlx_lm.models.qwen3_5", "mlx_lm.models.qwen3_next"):
+        try:
+            __import__(_name)
+        except Exception:
+            pass
+    for _name, _mod in list(_sys.modules.items()):
+        if _mod is None or not _name.startswith("mlx_lm"):
+            continue
+        if getattr(_mod, "gated_delta_update", None) is original:
+            try:
+                _mod.gated_delta_update = patched
+                patched_sites.append(_name)
+            except Exception:
+                pass
     _PATCH_STATE["installed"] = True
     _PATCH_STATE["original"] = original
     report = {
@@ -362,17 +377,16 @@ def uninstall_gdn_blocked_prefill_patch() -> None:
     if not _PATCH_STATE["installed"]:
         return
     original = _PATCH_STATE["original"]
-    try:
-        from mlx_lm.models import gated_delta as _gd
+    import sys as _sys
 
-        _gd.gated_delta_update = original
-    except Exception:
-        pass
-    try:
-        from mlx_lm.models import qwen3_next as _qn
-
-        _qn.gated_delta_update = original
-    except Exception:
-        pass
+    for _name, _mod in list(_sys.modules.items()):
+        if _mod is None or not _name.startswith("mlx_lm"):
+            continue
+        current = getattr(_mod, "gated_delta_update", None)
+        if current is not None and current is not original:
+            try:
+                _mod.gated_delta_update = original
+            except Exception:
+                pass
     _PATCH_STATE["installed"] = False
     _PATCH_STATE["original"] = None
