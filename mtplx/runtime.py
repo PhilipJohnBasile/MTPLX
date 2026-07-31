@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .artifacts import inspect_model, load_config
+from .artifacts import inspect_model, load_config, mtp_weights_present_on_disk
 from .mtp_adapters import (
     install_saved_mtp_lora_adapter,
     merge_installed_mtp_lora_adapters,
@@ -624,8 +624,22 @@ def load(
             mtp_enabled = inject_deepseek_mtp_support(model, path, config, contract)
         else:
             mtp_enabled = inject_mtp_support(model, path, config, contract)
-        if not mtp_enabled or not validate_mtp_support(model):
+        if mtp_enabled:
+            if not validate_mtp_support(model):
+                raise RuntimeError(f"MTP injection failed for {path}")
+        elif mtp_weights_present_on_disk(path, config):
+            # MTP weights ship with the model but injection could not use
+            # them: a genuine failure the operator should see.
             raise RuntimeError(f"MTP injection failed for {path}")
+        else:
+            # The config declares MTP layers but no MTP weights are present on
+            # disk (e.g. a quant conversion that dropped the draft head).
+            # Degrade to autoregressive rather than failing the load.
+            logger.warning(
+                "[MTP] %s declares MTP layer(s) but ships no MTP weights; "
+                "serving autoregressive (no speculative draft head).",
+                path,
+            )
     compiled_target_factory = None
     whole_moe_plan = None
     selfcheck_report = None
