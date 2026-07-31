@@ -507,9 +507,19 @@ class DeepseekV4Attention(nn.Module):
         per = self.n_heads * self.head_dim // g
         r = self.o_lora_rank
         og = o.reshape(b, s, g, per)
-        # wo_a.weight: [g*r, per]  ->  grouped [g, r, per]; batched matmul over g.
-        w = self.wo_a.weight.reshape(g, r, per)
-        # og: [b,s,g,per] ; want out[b,s,g,r] = sum_p og[...,g,p]*w[g,r,p]
+        # wo_a stores one [g*r, per] matrix applied group-wise.  When the module
+        # was quantised at load (real 4-bit checkpoint), dequantise to a dense
+        # [g*r, per] before the grouped reshape; on the unquantised M2 path
+        # wo_a is a plain nn.Linear.
+        if isinstance(self.wo_a, nn.QuantizedLinear):
+            w = mx.dequantize(
+                self.wo_a.weight, self.wo_a.scales, self.wo_a.biases,
+                group_size=self.wo_a.group_size, bits=self.wo_a.bits,
+            )
+        else:
+            w = self.wo_a.weight
+        w = w.reshape(g, r, per)  # grouped [g, r, per]
+        # out[b,s,g,r] = sum_p og[...,g,p] * w[g,r,p]
         out = mx.einsum("bsgp,grp->bsgr", og, w)
         out = out.reshape(b, s, g * r)
         return self.wo_b(out)
