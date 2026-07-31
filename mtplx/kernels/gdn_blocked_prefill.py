@@ -279,6 +279,10 @@ def install_gdn_blocked_prefill_patch() -> dict:
         "1", "true", "on",
     }
     debug_state = {"routed": 0, "stock": 0, "logged": 0}
+    try:
+        debug_max = int(os.environ.get("MTPLX_GDN_BLOCKED_PREFILL_DEBUG_MAX", "6"))
+    except ValueError:
+        debug_max = 6
 
     def patched(
         q, k, v, a, b, A_log, dt_bias, state=None, mask=None, use_kernel=True
@@ -300,7 +304,7 @@ def install_gdn_blocked_prefill_patch() -> dict:
                     state = mx.zeros((B, Hv, Dv, Dk), dtype=mx.float32)
                 if debug:
                     debug_state["routed"] += 1
-                    if debug_state["logged"] < 6:
+                    if debug_state["logged"] < debug_max:
                         debug_state["logged"] += 1
                         try:
                             print(
@@ -316,7 +320,7 @@ def install_gdn_blocked_prefill_patch() -> dict:
                 return gated_delta_blocked_prefill(q, k, v, g, beta, state)
         if debug:
             debug_state["stock"] += 1
-            if q.ndim == 4 and q.shape[1] >= min_t and debug_state["logged"] < 12:
+            if q.ndim == 4 and q.shape[1] >= 2 and debug_state["logged"] < 2 * debug_max:
                 debug_state["logged"] += 1
                 try:
                     print(
