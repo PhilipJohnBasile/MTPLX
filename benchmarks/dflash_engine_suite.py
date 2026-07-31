@@ -122,6 +122,8 @@ def _run_arm(
             speculative_depth=1,
             seed=seed,
             verify_strategy="target_prefix" if whole_moe else "capture_commit",
+            base_hidden_variant=runtime.contract.base_hidden_variant,
+            mtp_hidden_variant=runtime.contract.hidden_variant,
         )
     if arm == DFLASH_B8:
         source = DFlashDraftSource(
@@ -145,6 +147,8 @@ def _run_arm(
                     if dflash_lane == "staged-k1"
                     else "capture_commit"
                 ),
+                base_hidden_variant=runtime.contract.base_hidden_variant,
+                mtp_hidden_variant=runtime.contract.hidden_variant,
                 block_draft_source=source,
             )
         finally:
@@ -152,7 +156,11 @@ def _run_arm(
     raise ValueError(f"unknown arm {arm!r}")
 
 
-def _effective_records(args: argparse.Namespace, model_revision: str):
+def _effective_records(
+    args: argparse.Namespace,
+    model_revision: str,
+    runtime: Any,
+):
     compiled_verify = os.environ.get(
         "MTPLX_COMPILED_VERIFY",
         "off",
@@ -176,6 +184,7 @@ def _effective_records(args: argparse.Namespace, model_revision: str):
         "enable_thinking": False,
         "nax_enabled": nax_enabled,
         "runtime_switches": runtime_switches,
+        "runtime_contract": runtime.contract.to_dict(),
     }
     records = {
         AR: build_effective_run_record(
@@ -268,7 +277,7 @@ def main() -> int:
     draft_model = draft_module.load_draft(args.draft_model)
     sampler = SamplerConfig(temperature=0.0, top_p=1.0, top_k=0)
     model_revision = _artifact_layout_revision(args.model)
-    effective_runs = _effective_records(args, model_revision)
+    effective_runs = _effective_records(args, model_revision, runtime)
 
     rows: list[dict[str, Any]] = []
     exact_cases = 0
@@ -298,6 +307,22 @@ def main() -> int:
                 block_size=args.block_size,
                 dflash_lane=args.dflash_lane,
             )
+            expected_mode = "ar" if arm == AR else "mtpk"
+            if output.stats.mode != expected_mode:
+                raise RuntimeError(
+                    f"{arm} requested {expected_mode} but observed "
+                    f"{output.stats.mode}"
+                )
+            compiled_report = output.stats.graphbank.get("compiled_verify")
+            if args.dflash_lane == "staged-k1" and arm != AR:
+                if (
+                    not isinstance(compiled_report, dict)
+                    or compiled_report.get("mode") != "a3b_k1_target_prefix"
+                    or int(compiled_report.get("fallback_calls", -1)) != 0
+                ):
+                    raise RuntimeError(
+                        f"{arm} did not execute the compiled A3B K1 route"
+                    )
             outputs[arm] = output
             row = {
                 "prompt_id": case.id,
@@ -313,6 +338,26 @@ def main() -> int:
                 "rejected_drafts": output.stats.rejected_drafts,
                 "drafted_tokens": output.stats.drafted_tokens,
                 "verify_calls": output.stats.verify_calls,
+                "observed_mode": output.stats.mode,
+                "observed_speculative_depth": (
+                    output.stats.speculative_depth
+                ),
+                "observed_requested_speculative_depth": (
+                    output.stats.requested_speculative_depth
+                ),
+                "observed_runtime_mtp_enabled": (
+                    output.stats.runtime_mtp_enabled
+                ),
+                "observed_mtp_forward_calls": (
+                    output.stats.mtp_forward_calls
+                ),
+                "observed_forward_ar_plain_calls": (
+                    output.stats.forward_ar_plain_calls
+                ),
+                "observed_forward_ar_hidden_calls": (
+                    output.stats.forward_ar_hidden_calls
+                ),
+                "observed_compiled_verify": compiled_report,
                 "peak_memory_bytes": output.stats.peak_memory_bytes,
                 "token_sha256": hashlib.sha256(
                     json.dumps(list(output.tokens)).encode()
@@ -384,6 +429,13 @@ def main() -> int:
     payload = {
         "schema": 1,
         "includes_traces": bool(args.include_traces),
+        "runtime_observed": {
+            "mtp_enabled": bool(runtime.mtp_enabled),
+            "contract": runtime.contract.to_dict(),
+            "a3b_whole_moe_installed": bool(
+                runtime.a3b_whole_moe_installed
+            ),
+        },
         "effective_runs": effective_runs,
         "exact_cases": exact_cases,
         "dflash_exact_cases": dflash_exact_cases,

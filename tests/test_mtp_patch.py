@@ -317,6 +317,45 @@ def test_mtp_contract_accepts_forge_calibrated_hidden_variants() -> None:
     assert contract.to_dict()["base_hidden_variant"] == "post_norm"
 
 
+def test_mtp_contract_recovers_legacy_forge_provenance() -> None:
+    contract = MTPContract().with_runtime_metadata(
+        {
+            "forge_provenance": {
+                "mtp_contract": {
+                    "base_hidden_variant": "pre_norm",
+                    "hidden_variant": "post_norm",
+                    "concat_order": "embedding_hidden",
+                    "mtp_position_mode": "local",
+                }
+            }
+        }
+    )
+
+    assert contract.base_hidden_variant == "pre_norm"
+    assert contract.hidden_variant == "post_norm"
+    assert contract.mtp_position_mode == "local"
+
+
+def test_top_level_mtp_contract_wins_over_legacy_forge_provenance() -> None:
+    contract = MTPContract().with_runtime_metadata(
+        {
+            "mtp_contract": {
+                "base_hidden_variant": "post_norm",
+                "hidden_variant": "fc",
+            },
+            "forge_provenance": {
+                "mtp_contract": {
+                    "base_hidden_variant": "pre_norm",
+                    "hidden_variant": "post_norm",
+                }
+            },
+        }
+    )
+
+    assert contract.base_hidden_variant == "post_norm"
+    assert contract.hidden_variant == "fc"
+
+
 def test_mtp_contract_rejects_unknown_hidden_variant() -> None:
     with pytest.raises(ValueError, match="hidden_variant"):
         MTPContract(hidden_variant="mystery").validate()

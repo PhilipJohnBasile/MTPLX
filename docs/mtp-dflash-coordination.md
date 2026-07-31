@@ -18,13 +18,24 @@ thinking-off runs:
 | Qwen3.6-27B dense | 1.89x, B5, 58.6 tok/s | **2.23-2.32x, D3** | Park current drafter |
 
 The reference-arm build gate has now produced an in-engine implementation,
-but **not a release candidate**. Two MoE lanes were measured on the pinned
-35B-A3B target and drafter:
+but **not a release candidate**. A 2026-07-30 audit against
+`data-model-brain` exposed a silent runtime-contract mismatch: this artifact
+stores its authoritative contract under legacy
+`forge_provenance.mtp_contract`, while the loader previously read only a
+top-level `mtp_contract`. The old measurements therefore used default
+`post_norm`/`cache` settings instead of the artifact's forged
+`pre_norm`/`local` settings.
+
+The loader now recovers that legacy contract, canonical top-level metadata
+still wins when both forms exist, and the benchmark fails closed on observed
+mode/route mismatches. Every replacement receipt records the runtime-observed
+contract and whether the compiled whole-MoE path was actually installed.
+Under that corrected artifact contract, the two MoE lanes measure:
 
 | MTPLX lane | Weighted result | Equality result | Decision |
 |---|---:|---:|---|
-| Wide B8, one-hot, capture-commit | 130.6 tok/s, 1.24x AR | DFlash = AR on 9/24; 8/24 three-way exact | Keep experimental |
-| Staged-K1 B8 over compiled target-prefix + whole-MoE | 170.0 tok/s, 1.30x AR | DFlash = MTP K1 on 24/24; both = AR on 13/24 | Hold |
+| Wide B8, one-hot, capture-commit | 130.7 tok/s, 1.19x AR | DFlash = AR on 9/24; 8/24 three-way exact | Keep experimental |
+| Staged-K1 B8 over compiled target-prefix + whole-MoE | 171.3 tok/s, 1.32x AR | DFlash = MTP K1 on 24/24; both = AR on 13/24 | Hold |
 
 The wide lane reproduced the single-prompt reference result in-engine
 (220.6 tok/s on the 73-token pilot) and established that the target hidden
@@ -38,7 +49,7 @@ not bit-exact.
 The staged lane amortizes one seven-token DFlash proposal across single-draft
 K1 verifies. It proves the DFlash integration adds no divergence relative to
 the existing compiled target-prefix control (24/24 identical) and reaches
-169.95 tok/s, but the control itself is only 13/24 byte-identical to
+171.26 tok/s, but the control itself is only 13/24 byte-identical to
 `generate_ar`. That pre-existing target-prefix/AR discrepancy is now the
 release blocker. Do not redefine the gate around MTP parity and do not revive
 the rejected router/cache recalibration; fix the authoritative M1-versus-M2
@@ -53,24 +64,35 @@ fused GDN post-conv, row-owned routing,
 packed gate/up, whole-MoE, and contiguous-dense decode layout) and still exits
 the benchmark gate nonzero until AR equality is restored.
 
-Evidence receipts: the historical wide run is
+Evidence receipts: the corrected artifact-contract runs are
+`benchmarks/results/dflash-engine-suite-wide-artifact-contract-112-20260730.json`
+and
+`benchmarks/results/dflash-engine-suite-staged-k1-artifact-contract-112-20260730.json`.
+They are the sources for the current decision table. The historical wide run is
 `benchmarks/results/dflash-engine-suite-112-20260730.json`; the staged-K1 run
 (whose manifest predates the rename and therefore says `dflash_staged_exact`)
 is
 `benchmarks/results/dflash-engine-suite-staged-whole-moe-exact-b8-112-20260730.json`.
 Receipt names and payloads are immutable; their failed equality fields remain
-visible. The protocol-hardened wide rerun is
+visible. The protocol-hardened wide rerun,
 `benchmarks/results/dflash-engine-suite-wide-protocol-v2-112-20260730.json`;
-it records every runtime switch and is the source for the current table. A
-post-rename one-prompt integration smoke is
+and the earlier staged receipt both predate the legacy-contract loader fix and
+are retained only as default-contract diagnostics, not artifact evidence. A
+post-rename one-prompt integration smoke,
 `benchmarks/results/dflash-engine-smoke-staged-k1-protocol-v2-20260730.json`
-(194.3 tok/s, 1.46x AR, three-way equality); it validates the live
-`staged-k1` wiring only and does not supersede the 24-prompt red gate.
+(194.3 tok/s, 1.46x AR, three-way equality), has the same limitation.
+`benchmarks/results/dflash-engine-smoke-staged-k1-protocol-v3-20260730.json`
+is the diagnostic that exposed the observed default contract. Its replacement,
+`benchmarks/results/dflash-engine-smoke-staged-k1-artifact-contract-20260730.json`,
+records the recovered `pre_norm`/`post_norm`/`local` contract and three-way
+equality on one prompt; neither smoke supersedes the 24-prompt red gate.
 
 Every evidence-grade run records an effective-run manifest with explicit
 thinking mode, immutable target/drafter revisions, prompt-suite hash, sampler,
 token cap, seed, block size, generation mode, verify strategy, compiled-verify
-state, all execution-affecting runtime switches, NAX state, and
+state, all execution-affecting runtime switches, NAX state, the
+runtime-observed MTP contract, observed generation mode and speculative depth,
+observed MTP/AR call counts, observed compiled-route report, and
 `sum(tokens)/sum(decode_seconds)` aggregation. Intended command-line settings
 are not accepted as proof.
 

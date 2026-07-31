@@ -25,6 +25,7 @@ _COMPARISON_FIELDS = (
     "seed",
     "seed_policy",
     "enable_thinking",
+    "runtime_contract",
     "aggregation",
 )
 
@@ -58,6 +59,7 @@ def build_effective_run_record(
     verify_strategy: str,
     compiled_verify: str,
     runtime_switches: Mapping[str, str],
+    runtime_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     suite = Path(prompt_suite).expanduser().resolve()
     return {
@@ -89,6 +91,10 @@ def build_effective_run_record(
         "nax_enabled": bool(nax_enabled),
         "verify_strategy": str(verify_strategy),
         "compiled_verify": str(compiled_verify),
+        "runtime_contract": {
+            str(key): value
+            for key, value in sorted((runtime_contract or {}).items())
+        },
         "runtime_switches": {
             str(key): str(value)
             for key, value in sorted(runtime_switches.items())

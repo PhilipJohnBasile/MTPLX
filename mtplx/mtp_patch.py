@@ -198,6 +198,14 @@ class MTPContract:
         contract_data = metadata.get("mtp_contract")
         if isinstance(contract_data, dict):
             return self.with_metadata(contract_data, preserve_explicit=preserve_explicit)
+        provenance = metadata.get("forge_provenance")
+        if isinstance(provenance, dict):
+            legacy_contract = provenance.get("mtp_contract")
+            if isinstance(legacy_contract, dict):
+                return self.with_metadata(
+                    legacy_contract,
+                    preserve_explicit=preserve_explicit,
+                )
         return self.with_metadata(metadata, preserve_explicit=preserve_explicit)
 
 

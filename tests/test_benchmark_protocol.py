@@ -35,6 +35,12 @@ def _record(tmp_path: Path, **overrides):
         "verify_strategy": "official_dflash",
         "compiled_verify": "not_applicable",
         "runtime_switches": {"EXAMPLE_SWITCH": "off"},
+        "runtime_contract": {
+            "base_hidden_variant": "pre_norm",
+            "hidden_variant": "post_norm",
+            "concat_order": "embedding_hidden",
+            "mtp_position_mode": "local",
+        },
     }
     kwargs.update(overrides)
     return build_effective_run_record(**kwargs)
@@ -50,6 +56,7 @@ def test_effective_record_pins_the_executed_protocol(tmp_path: Path) -> None:
     assert record["verify_strategy"] == "official_dflash"
     assert record["compiled_verify"] == "not_applicable"
     assert record["runtime_switches"] == {"EXAMPLE_SWITCH": "off"}
+    assert record["runtime_contract"]["base_hidden_variant"] == "pre_norm"
     assert record["aggregation"] == WEIGHTED_TOK_S_AGGREGATION
 
 
@@ -69,6 +76,24 @@ def test_protocol_gate_catches_thinking_mismatch(tmp_path: Path) -> None:
     }
     with pytest.raises(ValueError, match="enable_thinking"):
         assert_protocol_match(thinking_off, thinking_on)
+
+
+def test_protocol_gate_catches_runtime_contract_mismatch(tmp_path: Path) -> None:
+    pre_norm = _record(tmp_path)
+    post_norm = _record(
+        tmp_path,
+        runtime_contract={
+            **pre_norm["runtime_contract"],
+            "base_hidden_variant": "post_norm",
+        },
+    )
+
+    assert protocol_mismatches(pre_norm, post_norm) == {
+        "runtime_contract": (
+            pre_norm["runtime_contract"],
+            post_norm["runtime_contract"],
+        )
+    }
 
 
 def test_arm_dimensions_do_not_make_protocol_incomparable(tmp_path: Path) -> None:
