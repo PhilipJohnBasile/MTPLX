@@ -110,6 +110,7 @@ from mtplx.runtime_options import (
     resolve_api_key,
 )
 from mtplx.draft_lm_head import _install_draft_lm_head
+from mtplx import request_capture
 from mtplx.fan_mode import (
     FAN_MODE_CHOICES,
     FAN_MODE_DEFAULT,
@@ -15719,6 +15720,18 @@ def _finalize_batched_ar_generation(
                 ensure_ascii=False,
             )
         )
+    if request_capture.capture_dir():
+        request_capture.capture_outcome(
+            (request_observability or {}).get("request_id"),
+            {
+                "scheduler_lane": "ar_batch",
+                "completion_tokens": completion_tokens,
+                "finish_reason": generated.get("finish_reason"),
+                "resolved_seed": stats.get("server_seed"),
+                "tok_s": round(float(generated.get("tok_s") or 0.0), 3),
+                **request_capture.clip_text_head_tail(generated.get("text") or ""),
+            },
+        )
     return generated
 
 
@@ -15837,6 +15850,44 @@ def _run_generation_dispatched(
     if response_id:
         request_observability_for_lane.setdefault("request_id", response_id)
     kwargs["request_observability"] = request_observability_for_lane
+    if request_capture.capture_dir() and not bool(
+        request_observability_for_lane.get("warmup")
+    ):
+        # Dispatch-time capture (#196/#197 third layer): persisted BEFORE any
+        # token is generated so a hung or early-stopped agent turn still
+        # leaves its bit-exact reproduction envelope on disk.
+        request_capture.capture_request(
+            request_observability_for_lane.get("request_id") or response_id,
+            {
+                "model_id": str(
+                    getattr(state.args, "model_id", None)
+                    or getattr(state, "model_id", None)
+                    or ""
+                ),
+                "prompt_len": len(prompt_ids),
+                "prompt_token_ids": [int(t) for t in prompt_ids],
+                "max_tokens": kwargs.get("max_tokens"),
+                "temperature": kwargs.get("temperature"),
+                "top_p": kwargs.get("top_p"),
+                "top_k": kwargs.get("top_k"),
+                "presence_penalty": kwargs.get("presence_penalty"),
+                "frequency_penalty": kwargs.get("frequency_penalty"),
+                "requested_seed": kwargs.get("seed"),
+                "generation_mode": str(effective_mode),
+                "depth": kwargs.get("depth"),
+                "session_id": kwargs.get("session_id"),
+                "session_restore_mode": kwargs.get("session_restore_mode"),
+                "has_constraint": kwargs.get("constraint_spec") is not None,
+                "tokenizer_template_hash": str(
+                    getattr(state, "main_system_prompt_hash", None) or ""
+                ),
+                "observability": {
+                    k: v
+                    for k, v in request_observability_for_lane.items()
+                    if isinstance(v, (str, int, float, bool))
+                },
+            },
+        )
     history_bypass_reason = _ar_batch_history_bypass_reason(
         request_observability_for_lane
     )
@@ -16518,6 +16569,20 @@ def _run_generation(
                 },
                 ensure_ascii=False,
             )
+        )
+    if request_capture.capture_dir():
+        request_capture.capture_outcome(
+            (request_observability or {}).get("request_id"),
+            {
+                "scheduler_lane": "serial",
+                "completion_tokens": last["completion_tokens"],
+                "finish_reason": last.get("finish_reason"),
+                "resolved_seed": last["stats"].get("server_seed"),
+                "attempts": last["stats"].get("server_attempts"),
+                "blank_retries": last["stats"].get("server_blank_retries"),
+                "tok_s": round(float(last["tok_s"]), 3),
+                **request_capture.clip_text_head_tail(last.get("text") or ""),
+            },
         )
     return last
 
