@@ -310,7 +310,19 @@ def install_gdn_blocked_prefill_patch() -> dict:
         pass
     _PATCH_STATE["installed"] = True
     _PATCH_STATE["original"] = original
-    return {"installed": True, "already": False, "sites": patched_sites, "min_t": min_t}
+    report = {
+        "installed": True,
+        "already": False,
+        "sites": patched_sites,
+        "min_t": min_t,
+    }
+    # logger.info at runtime setup is not captured in the serve console;
+    # print the banner so a daemon log proves the route is active.
+    try:
+        print(f"[mtplx] gdn-blocked-prefill {report}", flush=True)
+    except Exception:
+        pass
+    return report
 
 
 def uninstall_gdn_blocked_prefill_patch() -> None:
