@@ -492,10 +492,18 @@ def test_present_mtp_weights_bind_with_zero_missing_or_extra():
     model.load_weights(list(weights.items()), strict=True)
 
 
-def test_mtp_binds_through_the_quantized_load_path():
-    """The merged checkpoint ships the draft head quantized (affine 8-bit /
-    group_size 64, declared per-path in ``config["quantization"]``), so the tree
-    must survive ``nn.quantize`` with the same predicate mlx-lm applies."""
+def test_mtp_binds_through_an_all_affine_quantized_load_path():
+    """Whole draft head quantized affine 8-bit / group_size 64, declared per-path in
+    ``config["quantization"]``: the tree must survive ``nn.quantize`` with the same
+    predicate mlx-lm applies, and bind strictly afterwards.
+
+    This is the SUPERSEDED bank layout, kept as a gate because it is the A/B arm:
+    the merged dir now ships mxfp4 experts + bf16 projections (see the sibling test
+    below and ``test_merged_checkpoint_draft_head_is_a_lossless_representation``),
+    because a re-quantization of an already-4-bit source is lossy no matter how many
+    bits it lands in.  The affine bank is retained on disk as ``*.q8-bank.bak`` for
+    an acceptance A/B, so the load path for it must keep working.
+    """
     args = _args(hidden_size=64, q_lora_rank=64, o_lora_rank=64, head_dim=32,
                  num_attention_heads=4, moe_intermediate_size=64,
                  qk_rope_head_dim=8, o_groups=2)
@@ -517,6 +525,52 @@ def test_mtp_binds_through_the_quantized_load_path():
     model.load_weights(list(qw.items()), strict=True)
     assert isinstance(model.mtp[0].e_proj, nn.QuantizedLinear)
     assert model.mtp[0].e_proj.bits == 8 and model.mtp[0].e_proj.group_size == 64
+
+
+def test_mtp_binds_mxfp4_experts_beside_dense_bf16_projections():
+    """The bank the merged dir actually ships: routed experts mxfp4 group_size 32
+    (a byte repack of the source FP4, zero conversion error), every dense projection
+    left as plain bf16 with NO quantization entry at all.
+
+    Two ways this shape breaks a loader and both are gated here: mxfp4 modules carry
+    ``weight``/``scales`` and no ``biases``, and the unquantized projections must stay
+    plain ``nn.Linear`` -- a predicate that quantizes them anyway would reintroduce
+    exactly the lossy step this bank exists to avoid.  Synthetic weights, no
+    checkpoint read.
+    """
+    args = _args(hidden_size=64, q_lora_rank=64, o_lora_rank=64, head_dim=32,
+                 num_attention_heads=4, moe_intermediate_size=64,
+                 qk_rope_head_dim=8, o_groups=2)
+    model = D.Model(args)
+    model.sanitize(_synthetic_weights(args, with_mtp=True))
+    experts = {f"mtp.0.ffn.switch_mlp.{p}_proj" for p in ("gate", "up", "down")}
+    dense = {f"mtp.0.{s}" for s in (
+        "attn.wq_a", "attn.wq_b", "attn.wkv", "attn.wo_a", "attn.wo_b",
+        "e_proj", "h_proj", "ffn.shared_experts.gate_proj",
+        "ffn.shared_experts.up_proj", "ffn.shared_experts.down_proj")}
+
+    def predicate(path, module):
+        if path in experts and hasattr(module, "to_quantized"):
+            return {"group_size": 32, "bits": 4, "mode": "mxfp4"}
+        return False
+
+    nn.quantize(model, class_predicate=predicate)
+    tree = {k for k, _ in tree_flatten(model.parameters())}
+    for stem in experts:
+        assert f"{stem}.weight" in tree and f"{stem}.scales" in tree, stem
+        assert f"{stem}.biases" not in tree, (
+            f"{stem}: mxfp4 stores no zero point, so no .biases key ships"
+        )
+    for stem in dense:
+        assert f"{stem}.weight" in tree
+        assert f"{stem}.scales" not in tree, f"{stem} must stay dense bf16"
+
+    qw = {k: mx.zeros(v.shape, v.dtype) for k, v in tree_flatten(model.parameters())}
+    model.load_weights(list(qw.items()), strict=True)
+    assert isinstance(model.mtp[0].e_proj, nn.Linear)
+    assert not isinstance(model.mtp[0].e_proj, nn.QuantizedLinear)
+    switch = model.mtp[0].ffn.switch_mlp
+    assert switch.gate_proj.bits == 4 and switch.gate_proj.group_size == 32
 
 
 # --------------------------------------------------------------------------- #
@@ -551,7 +605,23 @@ def test_merged_checkpoint_mtp_keys_match_the_module_tree_exactly():
     """Structural counts from the real config, tiny per-unit dims, so the key
     NAMES are the real ones: the shipped ``mtp.0.*`` set must equal what the tree
     expects once the declared per-path quantization is expanded -- zero missing,
-    zero extra."""
+    zero extra.
+
+    Two things the expansion has to get right, and both are mode-dependent:
+
+    * **The precision rule is "no lossy re-quantization", not a bit floor.**  The
+      draft head must be the most accurate representation of the source available,
+      which for the routed experts means ``mxfp4`` group_size 32 -- MLX's mxfp4 is
+      byte-identical to the upstream FP4 e2m1 payload plus its e8m0 scales, so the
+      bank is a *repack* and carries zero conversion error.  A 4-bit count therefore
+      says nothing about fidelity here; re-quantizing those same tensors to affine
+      8-bit would be strictly worse despite the larger number.  What is still
+      forbidden is an affine (lossy) re-quantization below 8 bits.
+    * **mxfp4 ships no ``.biases``.**  The affine format stores weight/scales/biases;
+      mxfp4 stores weight/scales only, because an e8m0 power-of-two scale needs no
+      zero point.  Expanding biases unconditionally invents three keys that are not
+      on disk (``mtp.0.ffn.switch_mlp.{gate,up,down}_proj.biases``).
+    """
     import json
     cfg = json.load(open(os.path.join(_MERGED, "config.json")))
     wmap = json.load(open(os.path.join(
@@ -575,9 +645,19 @@ def test_merged_checkpoint_mtp_keys_match_the_module_tree_exactly():
         if path.endswith(".weight"):
             stem = path[: -len(".weight")]
             if stem in quantizable and stem in q:
-                assert q[stem]["bits"] >= 8, (
-                    f"{stem} is quantized below the MTP precision floor: {q[stem]}")
-                expected |= {f"{stem}.weight", f"{stem}.scales", f"{stem}.biases"}
+                mode = str(q[stem].get("mode") or "affine")
+                if mode == "mxfp4":
+                    # lossless repack of the FP4 source; bit count is not the metric
+                    assert int(q[stem]["bits"]) == 4, q[stem]
+                    assert int(q[stem]["group_size"]) == 32, q[stem]
+                else:
+                    assert mode == "affine", f"{stem}: unknown quant mode {q[stem]}"
+                    assert q[stem]["bits"] >= 8, (
+                        f"{stem} is lossily re-quantized below the MTP precision "
+                        f"floor: {q[stem]}")
+                expected |= {f"{stem}.weight", f"{stem}.scales"}
+                if mode == "affine":
+                    expected.add(f"{stem}.biases")
                 continue
         expected.add(path)
     assert expected == ckpt, {
@@ -585,6 +665,36 @@ def test_merged_checkpoint_mtp_keys_match_the_module_tree_exactly():
         "extra_in_ckpt": sorted(ckpt - expected)[:8],
     }
     assert len({wmap[k] for k in ckpt}) == 1, "mtp weights split across shards"
+
+
+@_needs_merged
+def test_merged_checkpoint_draft_head_is_a_lossless_representation():
+    """The shipped bank's own claim, read back off the artifact.
+
+    The draft head is the one place precision is a standing floor (acceptance
+    collapses long before perplexity notices), so the rule the dir must satisfy is
+    stronger than "high bit count": every ``mtp.0.*`` tensor is either a byte-level
+    repack of the source (mxfp4 experts) or a dense format that holds every source
+    value exactly (bf16 projections -- e4m3 x 2^k has <= 4 significant bits and a
+    power-of-two block scale, which bf16's 8 mantissa bits cover).  No entry may be
+    a lossy affine re-quantization.
+    """
+    import json
+    cfg = json.load(open(os.path.join(_MERGED, "config.json")))
+    mtp_quant = {k: v for k, v in cfg.get("quantization", {}).items()
+                 if k.startswith("mtp.")}
+    assert mtp_quant, "the merged config declares no per-path mtp quantization"
+    assert all(v.get("mode") == "mxfp4" for v in mtp_quant.values()), mtp_quant
+    assert set(mtp_quant) == {
+        "mtp.0.ffn.switch_mlp.gate_proj",
+        "mtp.0.ffn.switch_mlp.up_proj",
+        "mtp.0.ffn.switch_mlp.down_proj",
+    }, "only the routed experts are quantized; the dense projections ship bf16"
+    prov = cfg.get("mtp_provenance", {})
+    receipts = prov.get("exactness_receipts")
+    if receipts:
+        assert receipts["expert_mxfp4_vs_source_fp4_decode"]["max_abs_diff"] == 0.0
+        assert receipts["dense_bf16_vs_source_fp8_decode"]["max_abs_diff"] == 0.0
 
 
 @_needs_merged
