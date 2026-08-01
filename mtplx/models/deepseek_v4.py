@@ -83,6 +83,21 @@ Status:
     top-k boundary, so selections near the cut can differ from the reference.  The
     Hadamard rotation that precedes the FP4 step is implemented (it is graph, not
     noise), and is a no-op for selection on its own; see :class:`Indexer`.
+  * The ``swiglu_limit`` clamp (10.0 in the shipped config) is applied in every
+    expert, routed and shared, as the reference does (``Expert.forward``, model.py
+    L600-602, handed the limit at L624/L627).  The shared expert carries it in
+    :class:`DeepseekV4MLP`; the routed experts get it from :class:`ClampedSwiGLU`
+    plugged into ``SwitchGLU``'s ``activation`` seam, so the batched expert kernels
+    are untouched and one constructor covers score and hash layers alike.
+    The clamp is asymmetric — ``up`` clipped to ``[-limit, +limit]``, ``gate`` cut
+    only at ``+limit`` — and is gated against a NumPy oracle with the branches
+    driven into saturation, with the branch-flip and clamp-removal mutations
+    caught (tests/test_deepseek_v4_swiglu_clamp.py).  At ``swiglu_limit=0`` the
+    routed path defers to the stock fused ``swiglu``, bit-identically, which is
+    where the parity golden was captured.
+    Not yet measured: the activation ranges real V4-Flash weights actually reach,
+    i.e. how often the clamp binds in practice.  That needs a checkpoint load and
+    is deferred to a GPU window.
   * ``deepseek-v4`` is registered in ``mtplx/backends/registry.py`` so ``mtplx serve``
     resolves the load path.
 
@@ -105,7 +120,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_lm.models.base import BaseModelArgs
-from mlx_lm.models.switch_layers import SwitchGLU
+from mlx_lm.models.switch_layers import SwiGLU, SwitchGLU
 
 
 # Default per-layer compress ratios for DeepSeek-V4-Flash (43 body layers; the
@@ -1148,7 +1163,24 @@ class DeepseekV4Attention(nn.Module):
 # MoE (gate: sqrtsoftplus / hash / noaux bias  +  SwitchGLU + shared expert)
 # ---------------------------------------------------------------------------
 class DeepseekV4MLP(nn.Module):
-    """Shared-expert / dense MLP with the reference's swiglu clamp (limit=10)."""
+    """Shared-expert / dense MLP with the reference's swiglu clamp (limit=10).
+
+    Reference ``Expert.forward`` (model.py L596-606), verbatim::
+
+        gate = self.w1(x).float()
+        up = self.w3(x).float()
+        if self.swiglu_limit > 0:
+            up = torch.clamp(up, min=-self.swiglu_limit, max=self.swiglu_limit)
+            gate = torch.clamp(gate, max=self.swiglu_limit)
+        x = F.silu(gate) * up
+
+    Note the asymmetry, which is easy to get wrong in both directions: the *up*
+    branch (``w3`` = ``up_proj``) is clipped to ``[-limit, +limit]``, the *gate*
+    branch (``w1`` = ``gate_proj``) only has its upper tail cut at ``+limit`` and
+    keeps its whole negative range.  Both cuts land on the pre-activation
+    projections, before ``silu``.  ``limit <= 0`` disables the clamp entirely,
+    which is what the parity golden was captured at.
+    """
 
     def __init__(self, args: ModelArgs, intermediate_size: int):
         super().__init__()
@@ -1164,6 +1196,40 @@ class DeepseekV4MLP(nn.Module):
             gate = mx.minimum(gate, self.limit)
             up = mx.clip(up, -self.limit, self.limit)
         return self.down_proj(nn.silu(gate) * up)
+
+
+class ClampedSwiGLU(SwiGLU):
+    """``SwitchGLU`` activation carrying the reference's ``swiglu_limit`` clamp.
+
+    The reference applies the clamp inside *every* expert, routed ones included
+    (``MoE.__init__`` L624 passes ``swiglu_limit=args.swiglu_limit`` to each
+    routed :class:`Expert`, exactly as L627 does for the shared one).  Routed
+    experts here run through mlx-lm's :class:`SwitchGLU`, whose only seam is the
+    ``activation`` module it calls between the ``up``/``gate`` projections and
+    ``down_proj`` — which is precisely where the reference's clamp sits.  So the
+    faithful port is an activation, not a fork of ``SwitchGLU``: the batched
+    ``gather_mm``/``gather_qmm`` expert kernels are untouched.
+
+    ``SwitchGLU.__call__`` invokes ``self.activation(x_up, x_gate)``, so the
+    first argument is the *up* branch and the second is the *gate* branch — the
+    opposite of the reading the names suggest.  The clamp is asymmetric between
+    them; see :class:`DeepseekV4MLP` for the quoted reference lines.
+
+    At ``limit <= 0`` this defers to :class:`SwiGLU` untouched, so the disabled
+    path is the stock fused ``swiglu`` kernel and stays bit-identical to a model
+    built without this class at all (the parity golden was captured there).
+    Holds no parameters, so the load path and the weight tree are unchanged.
+    """
+
+    def __init__(self, limit: float = 0.0):
+        super().__init__()
+        self.limit = float(limit or 0.0)
+
+    def __call__(self, x: mx.array, gate: mx.array) -> mx.array:
+        if self.limit > 0:
+            x = mx.clip(x, -self.limit, self.limit)      # up:   two-sided
+            gate = mx.minimum(gate, self.limit)          # gate: upper tail only
+        return super().__call__(x, gate)
 
 
 class MoEGate(nn.Module):
@@ -1211,12 +1277,25 @@ class MoEGate(nn.Module):
 
 
 class DeepseekV4MoE(nn.Module):
+    """Routed experts + one shared expert (reference ``MoE``, model.py L609-644).
+
+    ``swiglu_limit`` reaches both halves: the routed experts through
+    :class:`ClampedSwiGLU` (the ``SwitchGLU`` activation seam) and the shared one
+    through :class:`DeepseekV4MLP`, matching L624/L627 where the reference hands
+    the same limit to both.  This constructor is the *only* place the backend
+    builds routed experts, so trunk score layers and trunk hash layers alike are
+    covered by construction rather than by call sites kept in sync.
+    """
+
     def __init__(self, args: ModelArgs, layer_id: int):
         super().__init__()
         self.args = args
         self.gate = MoEGate(args, layer_id)
         self.switch_mlp = SwitchGLU(
-            args.hidden_size, args.moe_intermediate_size, args.n_routed_experts
+            args.hidden_size,
+            args.moe_intermediate_size,
+            args.n_routed_experts,
+            activation=ClampedSwiGLU(args.swiglu_limit),
         )
         self.shared_experts = DeepseekV4MLP(
             args, args.moe_intermediate_size * args.n_shared_experts
