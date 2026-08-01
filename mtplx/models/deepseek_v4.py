@@ -805,11 +805,19 @@ def _sinkhorn_kernel_apply(comb: mx.array, hc: int, iters: int, eps: float) -> m
 def _sinkhorn_normalise(comb: mx.array, hc: int, iters: int, eps: float) -> mx.array:
     """Dispatch the Sinkhorn loop to the Metal kernel or the stock-MLX oracle.
 
-    The kernel path is taken only when :data:`_SINKHORN_KERNEL` is on and the
-    tensor is the fp32, small-``hc`` shape the kernel is built for (the model's
-    real path); every other case, and the default, falls to :func:`_sinkhorn_ops`.
+    The kernel path is taken only when :data:`_SINKHORN_KERNEL` is on, the
+    default device is a Metal GPU (a ``mx.fast.metal_kernel`` cannot run on CPU),
+    and the tensor is the fp32, small-``hc`` shape the kernel is built for (the
+    model's real path); every other case — CPU/no-Metal included, and the default —
+    falls to :func:`_sinkhorn_ops`, the bit-identical stock-MLX oracle.
     """
-    if _SINKHORN_KERNEL and comb.dtype == mx.float32 and hc * hc <= 64:
+    if (
+        _SINKHORN_KERNEL
+        and mx.metal.is_available()
+        and mx.default_device() == mx.gpu
+        and comb.dtype == mx.float32
+        and hc * hc <= 64
+    ):
         return _sinkhorn_kernel_apply(comb, hc, iters, eps)
     return _sinkhorn_ops(comb, iters, eps)
 

@@ -25,9 +25,8 @@ import sys
 import numpy as np
 import pytest
 
-mx = pytest.importorskip("mlx.core")
+pytest.importorskip("mlx.core")
 import mlx.core as mx  # noqa: E402
-import mlx.nn as nn  # noqa: E402
 from mlx.utils import tree_flatten, tree_unflatten  # noqa: E402
 
 if not mx.metal.is_available():
@@ -124,6 +123,60 @@ def test_dispatcher_off_is_untouched_ops():
     want = D._sinkhorn_ops(comb, iters, eps)
     mx.eval(got, want)
     assert mx.array_equal(got, want)
+
+
+# ---------------------------------------------------------------------------
+# device gate — a Metal kernel must never be dispatched on the CPU device
+# ---------------------------------------------------------------------------
+def test_cpu_device_falls_back_to_ops_flag_on():
+    """Flag ON but the default device is CPU: the gate must take the stock oracle,
+    never dispatch the Metal kernel on CPU (``[metal_kernel] Only supports the
+    GPU``).  This is the documented CPU fallback the dtype/size-only gate lacked;
+    it is what makes the CPU-pinned suites safe under a globally-forced flag."""
+    hc, iters, eps = 4, 20, 1e-6
+    comb = mx.array(
+        (np.random.default_rng(4).standard_normal((6, hc, hc)) * 2.5).astype(np.float32)
+    )
+    D._SINKHORN_KERNEL = True
+    mx.set_default_device(mx.cpu)
+    _reset_caches()
+    # No ValueError, and bit-identical to the oracle it is supposed to fall to.
+    got = D._sinkhorn_normalise(comb, hc, iters, eps)
+    want = D._sinkhorn_ops(comb, iters, eps)
+    mx.eval(got, want)
+    assert mx.array_equal(got, want), "CPU fallback is not bit-identical to _sinkhorn_ops"
+    # Positive proof the kernel path was skipped: nothing was ever built/cached.
+    assert len(D._SINKHORN_KERNELS) == 0, "a Metal kernel was built on the CPU device path"
+
+
+def test_cpu_full_forward_flag_on_matches_flag_off():
+    """End to end on the CPU device: a full tiny-stack forward with the flag forced
+    ON must complete (no Metal-on-CPU ValueError) and, because the gate now falls
+    back, be bitwise identical to the flag-OFF CPU forward."""
+    mx.set_default_device(mx.cpu)
+    off = _run_oneshot(kernel_on=False)
+    on = _run_oneshot(kernel_on=True)
+    assert np.array_equal(on, off), "CPU forward: flag-on diverged from flag-off"
+
+
+def test_gpu_device_routes_to_kernel_flag_on():
+    """The positive side of the device gate: on the GPU (the fixture's default) with
+    the flag ON, ``_sinkhorn_normalise`` must actually *route to the kernel*, not
+    quietly fall back.  Fallback is bit-identical to the oracle, so a value check
+    alone cannot see the difference — assert a kernel was built/dispatched (cache
+    populated) and is bit-exact (1e-6) to the oracle it replaces."""
+    hc, iters, eps = 4, 20, 1e-6
+    comb = mx.array(
+        (np.random.default_rng(5).standard_normal((6, hc, hc)) * 2.5).astype(np.float32)
+    )
+    D._SINKHORN_KERNEL = True
+    _reset_caches()
+    got = D._sinkhorn_normalise(comb, hc, iters, eps)
+    want = D._sinkhorn_ops(comb, iters, eps)
+    mx.eval(got, want)
+    assert len(D._SINKHORN_KERNELS) > 0, "GPU gate did not engage the kernel"
+    assert _argmax_exact(got, want), "GPU kernel argmax moved"
+    assert _maxabs(got, want) <= 1e-6, f"GPU kernel vs oracle max|d|={_maxabs(got, want):.2e}"
 
 
 # ---------------------------------------------------------------------------
@@ -308,17 +361,27 @@ def test_end_to_end_streaming_logits():
 
 
 def test_env_flag_parses():
-    """Default OFF; the standard truthy set turns it on."""
-    assert D._env_flag("MTPLX_DSV4_SINKHORN_KERNEL", False) is False
-    saved = os.environ.get("MTPLX_DSV4_SINKHORN_KERNEL")
+    """``_env_flag`` defaults OFF and the standard truthy set turns it on.
+
+    Hermetic in the variable it parses: it saves and clears any ambient
+    ``MTPLX_DSV4_SINKHORN_KERNEL`` *before* the default-OFF assertion, so the
+    assertion tests the parser's own default rather than reading a globally-forced
+    flag (e.g. running the whole suite under ``MTPLX_DSV4_SINKHORN_KERNEL=1`` to
+    exercise the CPU fallback).  The unset/default read was previously the first
+    line and picked up that ambient value.
+    """
+    name = "MTPLX_DSV4_SINKHORN_KERNEL"
+    saved = os.environ.get(name)
     try:
+        os.environ.pop(name, None)
+        assert D._env_flag(name, False) is False  # unset -> the given default
         for v in ("1", "true", "YES", "on"):
-            os.environ["MTPLX_DSV4_SINKHORN_KERNEL"] = v
-            assert D._env_flag("MTPLX_DSV4_SINKHORN_KERNEL", False) is True
-        os.environ["MTPLX_DSV4_SINKHORN_KERNEL"] = "0"
-        assert D._env_flag("MTPLX_DSV4_SINKHORN_KERNEL", False) is False
+            os.environ[name] = v
+            assert D._env_flag(name, False) is True
+        os.environ[name] = "0"
+        assert D._env_flag(name, False) is False
     finally:
         if saved is None:
-            os.environ.pop("MTPLX_DSV4_SINKHORN_KERNEL", None)
+            os.environ.pop(name, None)
         else:
-            os.environ["MTPLX_DSV4_SINKHORN_KERNEL"] = saved
+            os.environ[name] = saved
