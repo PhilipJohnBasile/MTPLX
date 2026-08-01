@@ -263,20 +263,50 @@ public final class StreamingDocumentStore: ObservableObject {
 
         // Single-line blocks never contain "\n"; merged segments always
         // do. That distinction is the "already merged" marker, so no
-        // block-struct change is needed.
+        // block-struct change is needed. Fence lines (```lang / ```)
+        // are excluded so a merged segment is always entirely inside or
+        // entirely outside a fence — the classifier's fence roles (and
+        // therefore live-card grouping + syntax coloring) stay exact
+        // for merged content.
         var lineIndexes: [Int] = []
         for (index, block) in blocks.enumerated()
-        where block.finalized && !block.text.contains("\n") {
+        where block.finalized
+            && !block.text.contains("\n")
+            && !StreamingMarkdownBlockSafety.isFenceLine(block.text) {
             lineIndexes.append(index)
         }
         guard lineIndexes.count >= segmentSize + Self.lineSegmentFreshWindow else {
             return
         }
 
-        let head = Array(lineIndexes.prefix(segmentSize))
-        guard let first = head.first, let last = head.last,
-              last - first == segmentSize - 1
-        else { return }
+        // Merge the FIRST contiguous run of candidates long enough to
+        // fold. (A fence line between candidates leaves an index gap;
+        // simply taking the first `segmentSize` candidates would fail
+        // the contiguity requirement forever once a fence scrolled by,
+        // and block count would grow unbounded again.)
+        var runStart = 0
+        var runLength = 1
+        var chosenStart: Int?
+        for k in 1..<lineIndexes.count {
+            if lineIndexes[k] == lineIndexes[k - 1] + 1 {
+                runLength += 1
+                if runLength >= segmentSize {
+                    chosenStart = runStart
+                    break
+                }
+            } else {
+                runStart = k
+                runLength = 1
+            }
+        }
+        guard let chosenStart else { return }
+        // Leave the newest candidates unmerged (fresh window) so the
+        // just-frozen lines never visibly reflow.
+        guard chosenStart + segmentSize <= lineIndexes.count - Self.lineSegmentFreshWindow else {
+            return
+        }
+        let first = lineIndexes[chosenStart]
+        let last = lineIndexes[chosenStart + segmentSize - 1]
 
         let merged = blocks[first...last].map(\.text).joined(separator: "\n")
         let mergedBlock = StreamingDocumentBlock(
@@ -957,6 +987,24 @@ public enum StreamingMathTextFormatter {
                 continue
             }
 
+            // \\ is LaTeX's row separator (matrices, cases, aligned):
+            // read it as "; " so multi-row structures stay one readable
+            // line. \! is negative thin space; \| is the norm bars.
+            if latex[next] == "\\" {
+                output.append("; ")
+                index = latex.index(after: next)
+                continue
+            }
+            if latex[next] == "!" {
+                index = latex.index(after: next)
+                continue
+            }
+            if latex[next] == "|" {
+                output.append("‖")
+                index = latex.index(after: next)
+                continue
+            }
+
             guard latex[next].isLetter else {
                 output.append(latex[index])
                 index = next
@@ -995,6 +1043,60 @@ public enum StreamingMathTextFormatter {
                 continue
             }
 
+            // Font/wrapper commands take one braced argument and read
+            // as their (recursively readable) body: \mathbb{C} -> ℂ,
+            // \text{ if }, \operatorname{Jac}, \vec{v} -> v⃗ …
+            // (2026-07-31 founder math repro: the jacobian answer is
+            // wall-to-wall \mathbb/\det/\partial and rendered as raw
+            // backslash soup before this.)
+            if let styled = styledGroupReplacement(
+                command: command,
+                in: latex,
+                argumentStart: commandEnd
+            ) {
+                output.append(styled.text)
+                index = styled.upperBound
+                continue
+            }
+
+            // \sqrt{...} and \sqrt[n]{...}
+            if command == "sqrt" {
+                var argStart = commandEnd
+                var indexPrefix = ""
+                if argStart < latex.endIndex, latex[argStart] == "[" {
+                    if let closeBracket = latex[argStart...].firstIndex(of: "]") {
+                        indexPrefix = String(latex[latex.index(after: argStart)..<closeBracket])
+                        argStart = latex.index(after: closeBracket)
+                    }
+                }
+                if let group = bracedGroup(in: latex, from: argStart) {
+                    let body = readableText(from: group.body)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    output.append(indexPrefix)
+                    output.append("√")
+                    if body.count > 1 {
+                        output.append("(\(body))")
+                    } else {
+                        output.append(body)
+                    }
+                    index = group.upperBound
+                    continue
+                }
+            }
+
+            // \begin{env} / \end{env}: emit the visual bracket for the
+            // environment and let the interior flow through (rows are
+            // "; " via \\, columns "  " via &).
+            if command == "begin" || command == "end",
+               let envGroup = bracedGroup(in: latex, from: commandEnd) {
+                output.append(environmentDelimiter(
+                    env: envGroup.body,
+                    opening: command == "begin"
+                ))
+                index = envGroup.upperBound
+                continue
+            }
+
             if let replacement = replacement(for: command) {
                 output.append(replacement)
             } else {
@@ -1003,10 +1105,95 @@ public enum StreamingMathTextFormatter {
             index = commandEnd
         }
 
-        return normalizeScripts(in: output)
+        return normalizeScripts(in: output.replacingOccurrences(of: "&", with: "  "))
+    }
+
+    /// One-braced-argument styling/wrapper commands.
+    private static func styledGroupReplacement(
+        command: String,
+        in latex: String,
+        argumentStart: String.Index
+    ) -> (text: String, upperBound: String.Index)? {
+        let accents: [String: Character] = [
+            "vec": "\u{20D7}", "hat": "\u{0302}", "bar": "\u{0304}",
+            "tilde": "\u{0303}", "dot": "\u{0307}", "ddot": "\u{0308}",
+            "overline": "\u{0304}", "widehat": "\u{0302}", "widetilde": "\u{0303}"
+        ]
+        let passthrough: Set<String> = [
+            "mathbf", "mathrm", "mathit", "mathsf", "mathcal", "mathfrak",
+            "boldsymbol", "bm", "text", "textbf", "textit", "textrm",
+            "texttt", "operatorname", "mbox", "emph"
+        ]
+        if command == "mathbb" {
+            guard let group = bracedGroup(in: latex, from: argumentStart) else { return nil }
+            return (doubleStruck(group.body), group.upperBound)
+        }
+        if passthrough.contains(command) {
+            guard let group = bracedGroup(in: latex, from: argumentStart) else { return nil }
+            return (readableText(from: group.body), group.upperBound)
+        }
+        if let combining = accents[command] {
+            guard let group = bracedGroup(in: latex, from: argumentStart) else { return nil }
+            let body = readableText(from: group.body)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if body.count == 1 {
+                return (body + String(combining), group.upperBound)
+            }
+            return (body, group.upperBound)
+        }
+        return nil
+    }
+
+    /// Double-struck (blackboard bold) letters for \mathbb and the
+    /// single-letter shorthand macros (\C, \R …) chat models use.
+    private static func doubleStruck(_ body: String) -> String {
+        let map: [Character: String] = [
+            "C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ",
+            "R": "ℝ", "Z": "ℤ", "F": "𝔽", "A": "𝔸", "B": "𝔹",
+            "D": "𝔻", "E": "𝔼", "G": "𝔾", "K": "𝕂", "1": "𝟙"
+        ]
+        return body.map { map[$0] ?? String($0) }.joined()
+    }
+
+    private static func environmentDelimiter(env: String, opening: Bool) -> String {
+        let name = env.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "*", with: "")
+        switch name {
+        case "pmatrix": return opening ? "(" : ")"
+        case "bmatrix": return opening ? "[" : "]"
+        case "Bmatrix": return opening ? "{" : "}"
+        case "vmatrix", "Vmatrix": return "|"
+        case "cases": return opening ? "{ " : ""
+        default: return ""
+        }
     }
 
     private static func replacement(for command: String) -> String? {
+        // Case-sensitive entries first: greek capitals are distinct
+        // commands (\Sigma ≠ \sigma — the lowercased switch below used
+        // to fold them together), and the single-letter blackboard
+        // shorthands (\C, \R …) that chat models emit for number sets.
+        switch command {
+        case "C", "R", "N", "Z", "Q", "H", "F":
+            return doubleStruck(command)
+        case "Gamma": return "Γ"
+        case "Delta": return "Δ"
+        case "Theta": return "Θ"
+        case "Lambda": return "Λ"
+        case "Xi": return "Ξ"
+        case "Pi": return "Π"
+        case "Sigma": return "Σ"
+        case "Upsilon": return "Υ"
+        case "Phi": return "Φ"
+        case "Psi": return "Ψ"
+        case "Omega": return "Ω"
+        case "Rightarrow", "Longrightarrow": return "⇒"
+        case "Leftarrow", "Longleftarrow": return "⇐"
+        case "Leftrightarrow", "Longleftrightarrow": return "⇔"
+        case "Re": return "ℜ"
+        case "Im": return "ℑ"
+        default: break
+        }
         switch command.lowercased() {
         case "le", "leq": return "≤"
         case "ge", "geq": return "≥"
@@ -1064,10 +1251,78 @@ public enum StreamingMathTextFormatter {
         case "nabla": return "∇"
         case "cup": return "∪"
         case "cap": return "∩"
-        case "subset": return "⊂"
-        case "subseteq": return "⊆"
         case "forall": return "∀"
         case "exists": return "∃"
+        case "det": return "det"
+        case "dim": return "dim"
+        case "ker": return "ker"
+        case "deg": return "deg"
+        case "gcd": return "gcd"
+        case "arg": return "arg"
+        case "exp": return "exp"
+        case "mod", "bmod", "pmod": return "mod "
+        case "mapsto", "longmapsto": return "↦"
+        case "longrightarrow": return "→"
+        case "longleftarrow": return "←"
+        case "langle": return "⟨"
+        case "rangle": return "⟩"
+        case "circ": return "∘"
+        case "bullet": return "•"
+        case "star": return "⋆"
+        case "oplus": return "⊕"
+        case "otimes": return "⊗"
+        case "emptyset", "varnothing": return "∅"
+        case "setminus": return "∖"
+        case "prime": return "′"
+        case "degree": return "°"
+        case "angle": return "∠"
+        case "perp": return "⊥"
+        case "parallel": return "∥"
+        case "sim": return "∼"
+        case "simeq": return "≃"
+        case "cong": return "≅"
+        case "propto": return "∝"
+        case "because": return "∵"
+        case "therefore": return "∴"
+        case "neg", "lnot": return "¬"
+        case "land", "wedge": return "∧"
+        case "lor", "vee": return "∨"
+        case "oint": return "∮"
+        case "iint": return "∬"
+        case "nmid": return "∤"
+        case "vert": return "|"
+        case "colon": return ":"
+        case "quad": return "  "
+        case "qquad": return "    "
+        case "ell": return "ℓ"
+        case "hbar": return "ℏ"
+        case "aleph": return "ℵ"
+        case "eta": return "η"
+        case "zeta": return "ζ"
+        case "kappa": return "κ"
+        case "rho", "varrho": return "ρ"
+        case "tau": return "τ"
+        case "xi": return "ξ"
+        case "chi": return "χ"
+        case "psi": return "ψ"
+        case "nu": return "ν"
+        case "iota": return "ι"
+        case "upsilon": return "υ"
+        case "varepsilon": return "ε"
+        case "varphi": return "φ"
+        case "vartheta": return "ϑ"
+        case "varsigma": return "ς"
+        case "cot": return "cot"
+        case "sec": return "sec"
+        case "csc": return "csc"
+        case "sinh": return "sinh"
+        case "cosh": return "cosh"
+        case "tanh": return "tanh"
+        case "arcsin": return "arcsin"
+        case "arccos": return "arccos"
+        case "arctan": return "arctan"
+        case "sup": return "sup"
+        case "inf": return "inf"
         default: return nil
         }
     }

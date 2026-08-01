@@ -21,6 +21,7 @@ import MTPLXAppCore
 struct ChatView: View {
     @EnvironmentObject private var chatViewModel: ChatViewModel
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var backend: MTPLXBackendStore
 
     var body: some View {
         HStack(spacing: 0) {
@@ -59,6 +60,11 @@ struct ChatView: View {
             if chatViewModel.current == nil {
                 _ = chatViewModel.createNewConversation()
             }
+        }
+        .onChange(of: backend.configuration.performanceLock, initial: true) { _, locked in
+            // Mirror for render leaves that can't take the flag as a
+            // parameter (theme closures, NSView viewports).
+            ChatRenderPreferences.plainTextOnly = locked
         }
     }
 }
