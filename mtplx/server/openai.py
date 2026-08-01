@@ -16056,6 +16056,7 @@ def _run_generation(
     streaming_response: bool | None = None,
     vision_splice: Any | None = None,
     constraint_spec: Any | None = None,
+    prefill_chunk_tokens: int | None = None,
 ) -> dict[str, Any]:
     response_max, sampler, generation_limits = _generation_params(
         state,
@@ -16168,7 +16169,14 @@ def _run_generation(
                 max_new_tokens=response_max,
                 mtp_depth=effective_depth,
             )
-            prefill_chunk_tokens = getattr(state.args, "prefill_chunk_tokens", None)
+            # Callers may tighten the prefill chunk for this generation
+            # (warming runs use a small chunk so their foreground-yield
+            # abort — checked once per chunk — fires fast); the serve-wide
+            # setting stays the default for real requests.
+            if prefill_chunk_tokens is None:
+                prefill_chunk_tokens = getattr(
+                    state.args, "prefill_chunk_tokens", None
+                )
             with _temporary_env(
                 dynamic_kv_reservation["env"]
             ), prefill_chunk_size_override(prefill_chunk_tokens):
@@ -16814,6 +16822,18 @@ class _BackgroundWarmup:
         else:
             self._finish()
 
+    # Warming prefills must yield to real traffic quickly: the
+    # foreground-yield abort only fires once per prefill chunk, and the
+    # serve-wide 2048-token chunk holds the model lock ~3s per chunk on
+    # the 27B — a request arriving mid-warmup stalled exactly that long
+    # (measured 3.1-3.3s mid-turn freezes on the first turns of a fresh
+    # serve, 2026-07-31). A 256-token warming chunk bounds the wait to
+    # ~0.4s and lets preempted steps resume instead of burning the
+    # resubmit budget and abandoning. Passed as a _run_generation kwarg:
+    # the generation applies its own prefill_chunk_size_override
+    # internally, so an outer ContextVar wrapper would be clobbered.
+    WARMUP_PREFILL_CHUNK_TOKENS = 256
+
     def _ladder_generation(self, context_tokens: int) -> dict[str, Any]:
         repeats = context_tokens // max(1, len(self.prompt_ids)) + 1
         prompt_ids = (list(self.prompt_ids) * repeats)[:context_tokens]
@@ -16827,6 +16847,7 @@ class _BackgroundWarmup:
             seed=0,
             request_observability={"warmup": True, "warmup_background": True},
             cancel_event=_ForegroundYield(self.state),
+            prefill_chunk_tokens=self.WARMUP_PREFILL_CHUNK_TOKENS,
         )
 
     def _finish(self, abandoned: bool = False) -> None:
