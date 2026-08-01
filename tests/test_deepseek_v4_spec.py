@@ -792,3 +792,113 @@ def test_window_rewind_past_retention_is_detected():
     with pytest.raises(ValueError):
         trim_verified_window_without_snapshot(cache, verified_tokens=4, keep_tokens=1)
     assert all(c.offset == 40 for c in cache)
+
+
+# ---------------------------------------------------------------------------
+# 4. the bench harness's spec-vs-AR policy
+# ---------------------------------------------------------------------------
+# The gates above run an all-fp32 shrunk model -- ``_seeded_model`` never calls
+# ``set_dtype``, so every cast the activation-storage fix introduces is a no-op
+# here and byte identity is the right bar.  On the real checkpoint at bf16 storage
+# it is not: draft and verify are batch-shaped forwards, so the committed row's KV
+# is projected inside a K+1-wide GEMM rather than alone, and at bf16 that reaches
+# the argmax on near-tied tokens.  scripts/deepseek_v4_mtpk_bench.py therefore
+# gates byte identity on the fp32 lane and reports it as data on the bf16 one.
+#
+# That decision is one boolean and one comparison, and it decides whether a GPU
+# window's exit status means anything -- so it is gated here rather than left to
+# the script.
+def _bench_module():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "deepseek_v4_mtpk_bench.py"
+    spec = importlib.util.spec_from_file_location("_dsv4_mtpk_bench_undertest", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_dsv4_mtpk_bench_undertest"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_spec_gates_are_captured_at_fp32_so_the_fix_is_a_no_op_here():
+    """The premise the whole section rests on, asserted rather than assumed."""
+    _, model = _seeded_model()
+    floats = [(k, v) for k, v in tree_flatten(model.parameters())
+              if v.dtype not in (mx.int32, mx.int64, mx.uint32, mx.uint64)]
+    assert floats, "no float parameters found — the check below would be vacuous"
+    assert all(v.dtype == mx.float32 for _, v in floats), (
+        "a spec-gate parameter is not fp32: " + ", ".join(
+            f"{k}={v.dtype}" for k, v in floats if v.dtype != mx.float32))
+    from mtplx.models import deepseek_v4 as backend
+
+    assert backend._store_dtype(mx.float32) == mx.float32
+    assert not backend._FP32_ACTIVATIONS, "the escape hatch leaked into the gates"
+
+
+def test_bench_env_flag_parsing_matches_the_backends(monkeypatch):
+    """The harness re-derives the flag so it can decide before a 90 GiB load; if the
+    two parsers drift, a window silently gates the wrong lane."""
+    bench = _bench_module()
+    from mtplx.models import deepseek_v4 as backend
+
+    for raw in ("1", "true", "TRUE", "yes", "on", "0", "false", "no", "off", "", "  ", "maybe"):
+        monkeypatch.setenv("MTPLX_DSV4_FP32_ACTIVATIONS", raw)
+        assert bench._fp32_activations_env() == backend._env_flag(
+            "MTPLX_DSV4_FP32_ACTIVATIONS", False
+        ), f"parsers disagree on {raw!r}"
+    monkeypatch.delenv("MTPLX_DSV4_FP32_ACTIVATIONS", raising=False)
+    assert bench._fp32_activations_env() is False
+
+
+def test_byte_identity_is_gated_on_the_fp32_lane_and_on_demand(monkeypatch):
+    bench = _bench_module()
+    monkeypatch.setenv("MTPLX_DSV4_FP32_ACTIVATIONS", "1")
+    assert bench._exactness_is_enforced(False) is True, "fp32 lane must stay a hard gate"
+    assert bench._exactness_is_enforced(True) is True
+
+    monkeypatch.setenv("MTPLX_DSV4_FP32_ACTIVATIONS", "0")
+    assert bench._exactness_is_enforced(False) is False, (
+        "the bf16 default must report divergence rather than fail on it")
+    assert bench._exactness_is_enforced(True) is True, "--require-exact must restore it"
+
+
+def test_divergence_reports_the_whole_shape_not_just_the_first_index():
+    bench = _bench_module()
+
+    same = bench._divergence([1, 2, 3], [1, 2, 3])
+    assert same["pass"] and same["divergent_tokens"] == 0
+    assert same["first_divergence_index"] is None
+
+    one = bench._divergence([1, 9, 3], [1, 2, 3])
+    assert not one["pass"]
+    assert one["divergent_tokens"] == 1 and one["first_divergence_index"] == 1
+    assert one["baseline_at_divergence"] == 2 and one["arm_at_divergence"] == 9
+
+    # a near-tie both arms recover from vs a rollback that desyncs: same first
+    # index, and only the count tells them apart.
+    recovered = bench._divergence([1, 9, 3, 4, 5], [1, 2, 3, 4, 5])
+    desynced = bench._divergence([1, 9, 8, 7, 6], [1, 2, 3, 4, 5])
+    assert recovered["first_divergence_index"] == desynced["first_divergence_index"] == 1
+    assert recovered["divergent_tokens"] == 1 and desynced["divergent_tokens"] == 4
+
+
+def test_a_truncated_arm_cannot_look_identical_by_ending_early():
+    bench = _bench_module()
+    short = bench._divergence([1, 2], [1, 2, 3, 4])
+    assert not short["pass"]
+    assert short["compared_tokens"] == 2 and short["divergent_tokens"] == 2
+    assert short["first_divergence_index"] == 2
+    assert short["baseline_at_divergence"] == 3 and short["arm_at_divergence"] is None
+
+
+def test_the_summary_cell_says_which_it_is():
+    """A receipt read months later must not mistake an ungated run for a passing one."""
+    bench = _bench_module()
+    assert bench._summary_cell(None) == "-"
+    assert bench._summary_cell({"pass": True, "enforced": False}) == "PASS"
+    gated = {"pass": False, "enforced": True, "divergent_tokens": 3}
+    assert bench._summary_cell(gated) == "FAIL"
+    reported = {"pass": False, "enforced": False, "divergent_tokens": 3}
+    assert bench._summary_cell(reported) == "3 div"
+    line = bench._divergence_line(
+        dict(reported, compared_tokens=256, first_divergence_index=41,
+             baseline_at_divergence=7, arm_at_divergence=9)
+    )
+    assert "reported not gated" in line and "3 divergent of 256" in line
