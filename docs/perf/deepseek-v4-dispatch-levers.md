@@ -26,6 +26,7 @@ token.
 |---|---|---|
 | Hyper-Connection chain collapse (derive fp32 weights once, one fused affine, `mx.compile` one shared tape) | `MTPLX_DSV4_HC_COMPILE` | `1` (on) |
 | Attention sink as one extra KV column + single `mx.softmax(precise=True)` | `MTPLX_DSV4_ATTN` | `fused` |
+| Sinkhorn's fixed 4×4, 20-iteration fp32 recurrence as one Metal dispatch | `MTPLX_DSV4_SINKHORN_KERNEL` | `0` (off) |
 
 `MTPLX_DSV4_HC_COMPILE=0` and `MTPLX_DSV4_ATTN=dense` restore the branch-point
 behaviour exactly; `MTPLX_DSV4_ATTN=sdpa` is the third arm (see below).
@@ -39,6 +40,7 @@ behaviour exactly; `MTPLX_DSV4_ATTN=sdpa` is the third arm (see below).
 | `fused` + no hc compile | 18,774 | 370 |
 | `dense` + hc compile | 14,811 | 292 |
 | **`fused` + hc compile (default)** | **14,639** | **288** |
+| `fused` + hc compile + Sinkhorn kernel (opt-in) | 7,845 | 155 |
 | `sdpa` + hc compile | 14,424 | 283 |
 
 **−26.1% dispatches, −25.0% command buffers.** At fp32: 17,733 → 13,039 (−26.5%).
@@ -67,6 +69,38 @@ of host encode the census attributed to the ~5,200 removed dispatches. So the
 "host encode is exposed" reading holds on the real model: here dispatch removal is
 wall-clock, near one for one. No regression — every arm's decode text stayed
 coherent.
+
+### Stage 4: Sinkhorn recurrence kernel
+
+The final Sinkhorn floor is now an opt-in, shape-specific Metal lane.  It replaces
+the 4×4 fp32 schedule (row softmax, then 20 column and 19 row normalisations) in
+each HC `pre` call.  On the same shrunk bf16 decode census it takes the default
+**14,639 dispatches to 7,845**: the **6,794** removed dispatches are the 3,354
+reductions, 3,354 divides, and 86 softmaxes collapsed to **86** kernel dispatches.
+This is not a general small-matrix kernel: the forced GPU lane accepts only
+`hc=4`, `iters=20`, `eps=1e-6`; CPU/no-Metal installs the stock oracle explicitly,
+and an unsupported GPU configuration fails at construction before generation.
+
+The requested real-checkpoint framing measured **+29.3% AR** with the kernel on
+against the unchanged fused-attention + HC-compile control.  This is a
+**stacked-window** comparison: the real 2-bit-DQ checkpoint, B=1 greedy,
+328-token prompt, 256 generated tokens, and cached o-LoRA were held fixed while
+the AR control and kernel arm shared the serialized, drift-bracketed window.
+AR clears **27 tok/s** in that framing; the best observed K=3 result is
+**32.5 tok/s**.  The conditions and arm-level receipt fields are the
+[`deepseek_v4_mtpk_bench.py`](../../scripts/deepseek_v4_mtpk_bench.py) contract;
+the recorded `bench/deepseek-v4/kernel-a-ab-20260801.{json,txt}` receipt is the
+source for these numbers.  They are already-measured generation results, not a
+fresh benchmark from this port; the profiler census above establishes dispatch
+structure only and is not presented as end-to-end timing.
+
+The near-tie diagnostic is deliberately disclosed rather than promoted.  In the
+bf16 serving lane the receipt records speculative-vs-AR divergence count, first
+index, and both tokens (the behavior specified by the
+[`spec gate`](../../tests/test_deepseek_v4_spec.py)); a close run is diagnostic
+data, not evidence of a separate or broader throughput claim.  Fused attention
+remains the default, and the Sinkhorn lane stays default-off until the requested
+serving decision changes that policy.
 
 **The mlx 0.32 arm is a clean null.** Re-running the default arm under mlx 0.32
 moved nothing past drift: once the host encode is gone, DeepSeek-V4 decode is
@@ -108,14 +142,10 @@ copies over the block, and wins.
 
 ## Deferred, with sizes
 
-- **The Sinkhorn reductions are the floor.** 3,678 of the remaining 14,639
-  dispatches (25%) are `row/col_reduce_sum`, one per normalisation pass.
-  `mx.compile` does not fuse reductions and no stock op does 20 alternating
-  normalisations in one launch. A single `mx.fast.metal_kernel` doing the whole
-  4×4 chain would take those 3,678 to 87 — deliberately not attempted here (the
-  hand-kernel receipt is a standing rule), but note the receipt was measured
-  against *tuned stock kernels*; here there is no stock competitor, only dispatch
-  count. Worth a decision, not a unilateral one.
+- **Sinkhorn is no longer a stock-op floor in the opt-in lane.** The hand kernel
+  is confined to the measured 4×4/20/1e-6 fp32 geometry and the stock loop remains
+  the default oracle.  It does not change the fused-attention default or make a
+  broader claim about other HC shapes.
 - **Precompute is off, definitively.** The reference computes
   `mixes = F.linear(x, hc_fn) * rsqrt` from the layer's own hidden state
   (`Block.hc_pre`, fetched read-only from the reference), so `comb` depends on

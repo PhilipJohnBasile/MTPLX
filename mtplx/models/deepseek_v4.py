@@ -802,24 +802,37 @@ def _sinkhorn_kernel_apply(comb: mx.array, hc: int, iters: int, eps: float) -> m
     return out.reshape(*lead, hc, hc)
 
 
-def _sinkhorn_normalise(comb: mx.array, hc: int, iters: int, eps: float) -> mx.array:
-    """Dispatch the Sinkhorn loop to the Metal kernel or the stock-MLX oracle.
+def _install_sinkhorn_normaliser(hc: int, iters: int, eps: float):
+    """Install the fixed Sinkhorn route for one Hyper-Connection instance.
 
-    The kernel path is taken only when :data:`_SINKHORN_KERNEL` is on, the
-    default device is a Metal GPU (a ``mx.fast.metal_kernel`` cannot run on CPU),
-    and the tensor is the fp32, small-``hc`` shape the kernel is built for (the
-    model's real path); every other case — CPU/no-Metal included, and the default —
-    falls to :func:`_sinkhorn_ops`, the bit-identical stock-MLX oracle.
+    The experimental lane is deliberately selected at model construction, never
+    in ``pre``'s token hot path.  CPU/no-Metal is an explicit stock-oracle route;
+    a GPU installation is allowed only for DeepSeek-V4-Flash's proven fp32
+    ``hc=4, iters=20, eps=1e-6`` geometry.  A forced flag on any other GPU
+    geometry fails here, before measured generation, instead of silently taking a
+    differently-shaped kernel or falling back.
     """
-    if (
-        _SINKHORN_KERNEL
-        and mx.metal.is_available()
-        and mx.default_device() == mx.gpu
-        and comb.dtype == mx.float32
-        and hc * hc <= 64
-    ):
+    def stock(comb: mx.array) -> mx.array:
+        return _sinkhorn_ops(comb, iters, eps)
+
+    if not _SINKHORN_KERNEL:
+        return False, stock
+    if not mx.metal.is_available() or mx.default_device() != mx.gpu:
+        return False, stock
+    if (hc, iters, eps) != (4, 20, 1e-6):
+        raise ValueError(
+            "MTPLX_DSV4_SINKHORN_KERNEL requires DeepSeek-V4-Flash's "
+            f"fp32 hc=4, iters=20, eps=1e-6 lane; got hc={hc}, "
+            f"iters={iters}, eps={eps!r}"
+        )
+    # Build/cache at installation so a Metal-source failure is reported before a
+    # measured forward, rather than as a late per-token fallback.
+    _sinkhorn_metal_kernel(hc, iters, eps)
+
+    def kernel(comb: mx.array) -> mx.array:
         return _sinkhorn_kernel_apply(comb, hc, iters, eps)
-    return _sinkhorn_ops(comb, iters, eps)
+
+    return True, kernel
 
 
 def hc_split_sinkhorn(
@@ -841,11 +854,13 @@ def hc_split_sinkhorn(
     post = 2.0 * mx.sigmoid(mixes[..., hc : 2 * hc] * scale[1] + base[hc : 2 * hc])
     comb = mixes[..., 2 * hc :] * scale[2] + base[2 * hc :]
     comb = comb.reshape(*comb.shape[:-1], hc, hc)  # [..., j, k]
-    comb = _sinkhorn_normalise(comb, hc, iters, eps)
+    # This standalone reference transcription is intentionally always stock.  A
+    # model instance installs its chosen route once in ``HyperConnection``.
+    comb = _sinkhorn_ops(comb, iters, eps)
     return pre, post, comb
 
 
-def _hc_pre_impl(x, fn_t, base, scale_vec, hc: int, iters: int, eps: float):
+def _hc_pre_impl(x, fn_t, base, scale_vec, hc: int, iters: int, eps: float, normalise=None):
     """:meth:`HyperConnection.pre` as one pure function of arrays.
 
     Identical arithmetic to ``_mixes`` + :func:`hc_split_sinkhorn` + the weighted
@@ -877,7 +892,10 @@ def _hc_pre_impl(x, fn_t, base, scale_vec, hc: int, iters: int, eps: float):
     pre = mx.sigmoid(t[..., :hc]) + eps
     post = 2.0 * mx.sigmoid(t[..., hc : 2 * hc])
     comb = t[..., 2 * hc :].reshape(*t.shape[:-1], hc, hc)  # [..., j, k]
-    comb = _sinkhorn_normalise(comb, hc, iters, eps)
+    if normalise is None:
+        def normalise(c):
+            return _sinkhorn_ops(c, iters, eps)
+    comb = normalise(comb)
 
     y = mx.sum(pre[..., None] * xf, axis=-2)  # [..., dim]
     return y.astype(dtype), post, comb
@@ -919,10 +937,27 @@ def _hc_compiled(kind: str, *consts):
     fn = _HC_COMPILED.get(key)
     if fn is None:
         if kind == "pre":
-            hc, iters, eps = consts
+            if len(consts) == 3:
+                # Compatibility for existing direct callers of the shared tape
+                # helper.  Model instances pass the installed bool below; these
+                # test-only callers recreate the same route selection once while
+                # building a tape, never from a token hot path.
+                hc, iters, eps = consts
+                sinkhorn_kernel, _ = _install_sinkhorn_normaliser(hc, iters, eps)
+            else:
+                hc, iters, eps, sinkhorn_kernel = consts
+
+            if sinkhorn_kernel:
+                def normalise(comb):
+                    return _sinkhorn_kernel_apply(comb, hc, iters, eps)
+            else:
+                def normalise(comb):
+                    return _sinkhorn_ops(comb, iters, eps)
 
             def impl(x, fn_t, base, scale_vec):
-                return _hc_pre_impl(x, fn_t, base, scale_vec, hc, iters, eps)
+                return _hc_pre_impl(
+                    x, fn_t, base, scale_vec, hc, iters, eps, normalise
+                )
         elif kind == "post":
             impl = _hc_post_impl
         elif kind == "head":
@@ -958,11 +993,15 @@ class HyperConnection(nn.Module):
     Checkpoint keys: ``model.layers.{i}.{attn_hc,ffn_hc}.{fn,base,scale}``.
     """
 
-    def __init__(self, dim: int, hc: int, eps: float):
+    def __init__(self, dim: int, hc: int, eps: float, iters: int = 20):
         super().__init__()
         self.dim = dim
         self.hc = hc
         self.eps = eps
+        self._iters = iters
+        self._sinkhorn_kernel, self._sinkhorn_normalise = _install_sinkhorn_normaliser(
+            hc, iters, eps
+        )
         mix_hc = (2 + hc) * hc
         self.fn = mx.zeros((mix_hc, hc * dim))
         self.base = mx.zeros((mix_hc,))
@@ -1010,9 +1049,20 @@ class HyperConnection(nn.Module):
         """Collapse the ``hc`` copies to one; return (y[..., dim], post, comb)."""
         fn_t, base, scale_vec = self._static()
         if _hc_use_compile(x):
-            impl = _hc_compiled("pre", self.hc, self._iters, self.eps)
+            impl = _hc_compiled(
+                "pre", self.hc, self._iters, self.eps, self._sinkhorn_kernel
+            )
             return impl(x, fn_t, base, scale_vec)
-        return _hc_pre_impl(x, fn_t, base, scale_vec, self.hc, self._iters, self.eps)
+        return _hc_pre_impl(
+            x,
+            fn_t,
+            base,
+            scale_vec,
+            self.hc,
+            self._iters,
+            self.eps,
+            self._sinkhorn_normalise,
+        )
 
     def post(self, x: mx.array, residual: mx.array, post: mx.array, comb: mx.array):
         """Expand one -> ``hc`` copies and re-mix with the residual copies.
@@ -1022,10 +1072,6 @@ class HyperConnection(nn.Module):
         """
         impl = _hc_compiled("post") if _hc_use_compile(residual) else _hc_post_impl
         return impl(x, residual, post, comb)
-
-    # iterations set at construction from args
-    _iters: int = 20
-
 
 class HeadHC(nn.Module):
     """Final head hyper-connection collapse (``ParallelHead.hc_head``, model.py L728).
@@ -2384,10 +2430,12 @@ class DeepseekV4DecoderLayer(nn.Module):
         self.ffn = DeepseekV4MoE(args, layer_id)
         self.attn_norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
         self.ffn_norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-        self.attn_hc = HyperConnection(args.hidden_size, args.hc_mult, args.hc_eps)
-        self.ffn_hc = HyperConnection(args.hidden_size, args.hc_mult, args.hc_eps)
-        self.attn_hc._iters = args.hc_sinkhorn_iters
-        self.ffn_hc._iters = args.hc_sinkhorn_iters
+        self.attn_hc = HyperConnection(
+            args.hidden_size, args.hc_mult, args.hc_eps, args.hc_sinkhorn_iters
+        )
+        self.ffn_hc = HyperConnection(
+            args.hidden_size, args.hc_mult, args.hc_eps, args.hc_sinkhorn_iters
+        )
 
     def __call__(self, h: mx.array, mask=None, cache=None, input_ids=None) -> mx.array:
         # h: [b, s, hc, dim]

@@ -115,13 +115,15 @@ def test_kernel_bit_identical_to_oracle(lead):
 
 
 def test_dispatcher_off_is_untouched_ops():
-    """Flag off -> exactly the stock ``_sinkhorn_ops`` array (no kernel involved)."""
+    """Flag off installs exactly the stock ``_sinkhorn_ops`` route."""
     hc, iters, eps = 4, 20, 1e-6
     comb = mx.array((np.random.default_rng(1).standard_normal((3, hc, hc))).astype(np.float32))
     D._SINKHORN_KERNEL = False
-    got = D._sinkhorn_normalise(comb, hc, iters, eps)
+    kernel, normalise = D._install_sinkhorn_normaliser(hc, iters, eps)
+    got = normalise(comb)
     want = D._sinkhorn_ops(comb, iters, eps)
     mx.eval(got, want)
+    assert kernel is False
     assert mx.array_equal(got, want)
 
 
@@ -141,10 +143,12 @@ def test_cpu_device_falls_back_to_ops_flag_on():
     mx.set_default_device(mx.cpu)
     _reset_caches()
     # No ValueError, and bit-identical to the oracle it is supposed to fall to.
-    got = D._sinkhorn_normalise(comb, hc, iters, eps)
+    kernel, normalise = D._install_sinkhorn_normaliser(hc, iters, eps)
+    got = normalise(comb)
     want = D._sinkhorn_ops(comb, iters, eps)
     mx.eval(got, want)
     assert mx.array_equal(got, want), "CPU fallback is not bit-identical to _sinkhorn_ops"
+    assert kernel is False
     # Positive proof the kernel path was skipped: nothing was ever built/cached.
     assert len(D._SINKHORN_KERNELS) == 0, "a Metal kernel was built on the CPU device path"
 
@@ -161,7 +165,7 @@ def test_cpu_full_forward_flag_on_matches_flag_off():
 
 def test_gpu_device_routes_to_kernel_flag_on():
     """The positive side of the device gate: on the GPU (the fixture's default) with
-    the flag ON, ``_sinkhorn_normalise`` must actually *route to the kernel*, not
+    the flag ON, construction must actually install the kernel route, not
     quietly fall back.  Fallback is bit-identical to the oracle, so a value check
     alone cannot see the difference — assert a kernel was built/dispatched (cache
     populated) and is bit-exact (1e-6) to the oracle it replaces."""
@@ -171,12 +175,26 @@ def test_gpu_device_routes_to_kernel_flag_on():
     )
     D._SINKHORN_KERNEL = True
     _reset_caches()
-    got = D._sinkhorn_normalise(comb, hc, iters, eps)
+    kernel, normalise = D._install_sinkhorn_normaliser(hc, iters, eps)
+    got = normalise(comb)
     want = D._sinkhorn_ops(comb, iters, eps)
     mx.eval(got, want)
     assert len(D._SINKHORN_KERNELS) > 0, "GPU gate did not engage the kernel"
+    assert kernel is True
     assert _argmax_exact(got, want), "GPU kernel argmax moved"
     assert _maxabs(got, want) <= 1e-6, f"GPU kernel vs oracle max|d|={_maxabs(got, want):.2e}"
+
+
+def test_gpu_invalid_geometry_fails_at_installation():
+    """A forced GPU lane must reject an unproved HC shape before generation.
+
+    The kernel is deliberately a DeepSeek-V4-Flash ``[4, 4]`` lane, not a
+    generic small-matrix fallback.  CPU remains an explicit stock route, while
+    a GPU configuration outside the measured geometry is a clear setup error.
+    """
+    D._SINKHORN_KERNEL = True
+    with pytest.raises(ValueError, match="hc=4, iters=20, eps=1e-6"):
+        D._install_sinkhorn_normaliser(8, 20, 1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -200,10 +218,12 @@ def test_kernel_composes_with_compile():
 
         D._SINKHORN_KERNEL = True
         _reset_caches()
-        eager = D._sinkhorn_normalise(comb, hc, iters, eps)
+        _, normalise = D._install_sinkhorn_normaliser(hc, iters, eps)
+        eager = normalise(comb)
 
         _reset_caches()
-        compiled = mx.compile(lambda c: D._sinkhorn_normalise(c, hc, iters, eps))(comb)
+        _, normalise = D._install_sinkhorn_normaliser(hc, iters, eps)
+        compiled = mx.compile(normalise)(comb)
 
         mx.eval(oracle, eager, compiled)
         assert mx.array_equal(compiled, eager), f"rows={rows}: compiled != eager"
@@ -311,18 +331,18 @@ def _worst_rel(ref, got):
 
 
 def _run_oneshot(kernel_on, seq=48):
-    _, model = _seeded_model()
     D._SINKHORN_KERNEL = kernel_on
     _reset_caches()
+    _, model = _seeded_model()
     out = model(_tokens(seq))
     mx.eval(out)
     return np.array(out.astype(mx.float32))
 
 
 def _run_streaming(kernel_on, prompt=21, total=120):
-    _, model = _seeded_model()
     D._SINKHORN_KERNEL = kernel_on
     _reset_caches()
+    _, model = _seeded_model()
     ids = _tokens(total)
     cache = model.make_cache()
     pieces = [model(ids[:, :prompt], cache=cache)]
