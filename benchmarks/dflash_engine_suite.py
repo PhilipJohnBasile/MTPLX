@@ -679,6 +679,8 @@ def main() -> int:
             "dflash_vs_ar_equal_cases": dflash_seeded_equal_cases,
             "mtp_vs_ar_equal_cases": mtp_seeded_equal_cases,
             "total_cases": len(cases),
+            # Gate semantics are governed by docs/dflash-gate-preregistration.md (§3 R3),
+            # pre-registered before the deciding measurement.
             "release_gate": False,
             "note": (
                 "Same-seed byte equality, including greedy equality, is only "

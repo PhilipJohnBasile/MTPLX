@@ -90,6 +90,10 @@ the immediate token but not delayed state drift; replaying enough cycles erased
 the speedup. NAX is not an answer because its accumulation order is explicitly
 not bit-exact.
 
+> **Gate statements in this section are superseded by
+> `docs/dflash-gate-preregistration.md` (see its §3 R3), which was written and
+> committed before the deciding measurement.**
+
 The staged lane amortizes one seven-token DFlash proposal across single-draft
 K1 verifies. It proves the DFlash integration adds no divergence relative to
 the existing compiled target-prefix control (24/24 identical) and reaches
