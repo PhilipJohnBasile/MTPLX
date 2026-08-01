@@ -21,6 +21,12 @@ public final class StreamingDocumentStore: ObservableObject {
     @Published public private(set) var blocks: [StreamingDocumentBlock] = []
     public private(set) var revision: Int = 0
     public private(set) var wordCount: Int = 0
+    /// Running count of line/block finalizations and segment merges,
+    /// available in RELEASE builds so UIStreamPerfProbe can emit a
+    /// record for every finalized line (the "poll every single line"
+    /// requirement) and correlate stalls with merge events.
+    public private(set) var liveFinalizedCount: Int = 0
+    public private(set) var liveSegmentMergeCount: Int = 0
 
     #if DEBUG
     public private(set) var diagnostics = StreamingDocumentDiagnostics()
@@ -81,6 +87,8 @@ public final class StreamingDocumentStore: ObservableObject {
         blocks = []
         revision = 0
         wordCount = 0
+        liveFinalizedCount = 0
+        liveSegmentMergeCount = 0
         nextBlockID = 0
         tailBlockID = nextBlockID
         nextBlockID += 1
@@ -278,6 +286,7 @@ public final class StreamingDocumentStore: ObservableObject {
             finalized: true
         )
         blocks.replaceSubrange(first...last, with: [mergedBlock])
+        liveSegmentMergeCount += 1
         #if DEBUG
         diagnostics.segmentMergeCount += 1
         diagnostics.visibleBlockCount = blocks.count
@@ -397,6 +406,9 @@ public final class StreamingDocumentStore: ObservableObject {
             blocks[index] = block
         } else {
             blocks.append(block)
+        }
+        if finalized {
+            liveFinalizedCount += 1
         }
         #if DEBUG
         os_signpost(

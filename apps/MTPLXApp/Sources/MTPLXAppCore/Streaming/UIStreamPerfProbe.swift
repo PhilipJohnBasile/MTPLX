@@ -76,6 +76,8 @@ public final class UIStreamPerfProbe: ObservableObject {
         var drainedBytes: Int
         var applyMs: Double      // document append duration (both docs)
         var blocksAfter: Int
+        var linesFinalized: Int  // lines finalized BY this flush
+        var merges: Int          // segment merges performed by this flush
     }
 
     private struct StallRecord {
@@ -95,7 +97,10 @@ public final class UIStreamPerfProbe: ObservableObject {
     private var flushes: [FlushRecord] = []
     private var stalls: [StallRecord] = []
     private var scrollTicks = 0
+    private var scrollPins = 0
     private var lastFlushAt: Double?
+    private var lastLinesTotal = 0
+    private var lastMergesTotal = 0
 
     // MARK: Stall monitor
 
@@ -199,7 +204,10 @@ public final class UIStreamPerfProbe: ObservableObject {
         flushes = []
         stalls = []
         scrollTicks = 0
+        scrollPins = 0
         lastFlushAt = nil
+        lastLinesTotal = 0
+        lastMergesTotal = 0
         AIMEDiagnostics.record("ui_turn_started", fields: [:], force: true)
     }
 
@@ -217,19 +225,61 @@ public final class UIStreamPerfProbe: ObservableObject {
         turnChars += bytes
     }
 
-    public func flushApplied(drainedBytes: Int, applyMs: Double, blocksAfter: Int) {
+    public func flushApplied(
+        drainedBytes: Int,
+        applyMs: Double,
+        blocksAfter: Int,
+        linesFinalizedTotal: Int = 0,
+        mergesTotal: Int = 0
+    ) {
         guard enabled, turnActive else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let gapMs = lastFlushAt.map { (now - $0) * 1000 } ?? 0
         lastFlushAt = now
+        let lineDelta = max(0, linesFinalizedTotal - lastLinesTotal)
+        let mergeDelta = max(0, mergesTotal - lastMergesTotal)
+        lastLinesTotal = max(lastLinesTotal, linesFinalizedTotal)
+        lastMergesTotal = max(lastMergesTotal, mergesTotal)
         flushes.append(FlushRecord(
             t: now,
             gapMs: gapMs,
             drainedBytes: drainedBytes,
             applyMs: applyMs,
-            blocksAfter: blocksAfter
+            blocksAfter: blocksAfter,
+            linesFinalized: lineDelta,
+            merges: mergeDelta
         ))
         hud.documentBlocks = blocksAfter
+        // The founder-reported failure shape is "freezes on NEW LINES":
+        // emit a record for every flush that finalized at least one
+        // line, so each line lands in the JSONL with its own apply cost
+        // and the gap that preceded it. No sampling, no cadence.
+        if lineDelta > 0 {
+            AIMEDiagnostics.record(
+                "ui_line_finalized",
+                fields: [
+                    "lines": .int(lineDelta),
+                    "gap_ms": .double((gapMs * 10).rounded() / 10),
+                    "apply_ms": .double((applyMs * 100).rounded() / 100),
+                    "blocks_after": .int(blocksAfter),
+                    "turn_chars": .int(turnChars)
+                ],
+                force: true
+            )
+        }
+        // Segment merges restructure the block list — if merge flushes
+        // spike apply cost, this record pins it directly.
+        if mergeDelta > 0 {
+            AIMEDiagnostics.record(
+                "ui_segment_merge",
+                fields: [
+                    "merges": .int(mergeDelta),
+                    "apply_ms": .double((applyMs * 100).rounded() / 100),
+                    "blocks_after": .int(blocksAfter)
+                ],
+                force: true
+            )
+        }
         // Slow applies are the streaming-jank signal — record each one.
         if applyMs >= 8 {
             AIMEDiagnostics.record(
@@ -243,6 +293,14 @@ public final class UIStreamPerfProbe: ObservableObject {
                 force: true
             )
         }
+    }
+
+    /// A synchronous bottom-pin ran inside the document-growth layout
+    /// pass (the anti-sawtooth path). Counted per turn; the A/B gate is
+    /// the video edge-tracker, this is the "did it engage" receipt.
+    public func scrollPinned() {
+        guard enabled else { return }
+        scrollPins += 1
     }
 
     public func scrollTick(distanceToBottom: Double, userInitiated: Bool) {
@@ -291,6 +349,9 @@ public final class UIStreamPerfProbe: ObservableObject {
                 "stall_ms_max": .double(turnStalls.map(\.ms).max() ?? 0),
                 "stall_ms_total": .double(turnStalls.map(\.ms).reduce(0, +)),
                 "scroll_ticks": .int(scrollTicks),
+                "scroll_pins": .int(scrollPins),
+                "lines_finalized": .int(flushes.map(\.linesFinalized).reduce(0, +)),
+                "segment_merges": .int(flushes.map(\.merges).reduce(0, +)),
                 "doc_blocks_final": .int(flushes.last?.blocksAfter ?? 0)
             ],
             flushImmediately: true,
@@ -326,8 +387,9 @@ public final class UIStreamPerfProbe: ObservableObject {
             lines.append(#"{"kind":"turn","request_id":"\#(id)"}"#)
             for r in records {
                 lines.append(String(
-                    format: #"{"kind":"flush","t":%.4f,"gap_ms":%.1f,"drained_bytes":%d,"apply_ms":%.2f,"blocks":%d}"#,
-                    r.t, r.gapMs, r.drainedBytes, r.applyMs, r.blocksAfter
+                    format: #"{"kind":"flush","t":%.4f,"gap_ms":%.1f,"drained_bytes":%d,"apply_ms":%.2f,"blocks":%d,"lines":%d,"merges":%d}"#,
+                    r.t, r.gapMs, r.drainedBytes, r.applyMs, r.blocksAfter,
+                    r.linesFinalized, r.merges
                 ))
             }
             for s in stallRecords {
