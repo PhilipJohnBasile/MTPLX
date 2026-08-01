@@ -492,7 +492,7 @@ def _ar(rt, prompt, max_tokens):
     )
 
 
-def _spec(rt, prompt, max_tokens, depth):
+def _spec(rt, prompt, max_tokens, depth, verify_strategy="batched"):
     from mtplx.generation import generate_mtpk
     from mtplx.sampling import SamplerConfig
 
@@ -504,6 +504,7 @@ def _spec(rt, prompt, max_tokens, depth):
         speculative_depth=depth,
         mtp_history_policy="committed",
         stop_token_ids=set(),
+        verify_strategy=verify_strategy,
     )
 
 
@@ -551,6 +552,37 @@ def test_spec_decode_exercises_both_accept_and_reject():
     assert out.tokens == baseline.tokens
     assert stats["accepted_drafts"] > 0, "premise: no draft was ever accepted"
     assert stats["rejected_drafts"] > 0, "premise: no draft was ever rejected"
+
+
+@pytest.mark.parametrize("skip_snapshot", [False, True])
+@pytest.mark.parametrize(
+    "verify_strategy", ["batched", "trim_commit", "target_prefix", "capture_commit"]
+)
+def test_spec_matches_ar_on_every_commit_lane(verify_strategy, skip_snapshot,
+                                              monkeypatch):
+    """Each verify strategy repairs a rejection through a different path, and the
+    exactness of ``trim`` is what all of them lean on here.
+
+    ``trim_commit``/``target_prefix`` commit the accepted prefix by trimming the
+    verify tail; ``capture_commit`` falls through to the same trim because this is a
+    pure-attention model with nothing recurrent to capture; ``batched`` rolls the
+    whole verify back and re-forwards.  With MTPLX_SKIP_VERIFY_SNAPSHOT=1 -- the
+    product-profile default -- there is no snapshot to restore from either, so the
+    only repair left is the engine's snapshot-free all-trimmable path.  All eight
+    combinations must land on the AR sequence.
+    """
+    if skip_snapshot:
+        monkeypatch.setenv("MTPLX_SKIP_VERIFY_SNAPSHOT", "1")
+    else:
+        monkeypatch.delenv("MTPLX_SKIP_VERIFY_SNAPSHOT", raising=False)
+    prompt = _prompt(17, vocab=8)
+    baseline = _ar(_runtime(vocab=8), prompt, 32)
+    out = _spec(_runtime(vocab=8), prompt, 32, 2, verify_strategy=verify_strategy)
+    stats = out.stats.to_dict()
+    assert stats["rejected_drafts"] > 0, "premise: the repair path must be exercised"
+    assert out.tokens == baseline.tokens, (
+        f"{verify_strategy} (skip_snapshot={skip_snapshot}) diverged from AR"
+    )
 
 
 def test_acceptance_counters_are_populated_per_depth():
