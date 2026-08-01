@@ -40,14 +40,14 @@ without reconstructing anything. Newest block first.
       BEFORE any measurement so no outcome can be rationalized after the fact.
       Separates question A (proposal-distribution correctness — the identity
       claim) from question B (target-implementation identity); replaces the
-      single probe with a 7-rung axis ladder whose first nonzero rung names the
-      mechanism; pre-commits the reading of every outcome including the
+      single probe with a 7-rung axis ladder (itself amended: not one-axis, and a
+      first-nonzero rung names only the first *exposed* difference); pre-commits the reading of every outcome including the
       do-not-ship ones.
 
 **The critical path is NOT the GPU** (from the pre-registration §9): the A-side
 rests on one 4-token single-position unit test, and both A-blockers the project
 itself named — the independent-product-q oracle and the temp>0 drafter canary —
-do not exist. H1 confirmation would remove the B blocker and create zero A
+do not exist. H1 confirmation would NOT remove the B blocker (§1b A8) and creates zero A
 evidence, so the lane cannot ship on it. These are CPU-only:
 - 📋 **A1** model-free rejection-sampler convergence suite (no model involved).
 - 📋 **A2** the real thing: a production-adapter harness driving the actual
@@ -55,7 +55,7 @@ evidence, so the lane cannot ship on it. These are CPU-only:
       independent finite-state oracle over a fixed emitted-token horizon
       (queue reuse, rejection clearing, bonus, max-length, stops), compared
       against the prefix-conditional target AR law.
-      `tests/test_dflash_joint_law_oracle.py` is a starting point ONLY — audited
+      `tests/prototypes/dflash_joint_law_oracle_not_evidence.py` is a starting point ONLY — audited
       2026-07-31 as NOT EVIDENCE: it never calls production, and its
       conditioning "fix" was a weakening that hid the modelling gap (a real
       decoder continues into the next cycle after a rejection, so the
@@ -72,7 +72,7 @@ evidence, so the lane cannot ship on it. These are CPU-only:
 
 **Blocked on GPU availability:**
 - ⏸ Run the L0–L6 axis ladder (after the probe is fixed). First nonzero rung
-      names the mechanism; L4-first means a state bug in the **already-shipping**
+      names the first *exposed* difference (provisional); L4-first would mean a state bug in the **already-shipping**
       compiled target-prefix stack, not the experimental lane.
 - ⏸ Complete the block-16 sweep with thinking disabled, to close the caveat
       in z-lab#151 (current tables are thinking-enabled; the partial

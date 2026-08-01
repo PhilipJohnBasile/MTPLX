@@ -131,9 +131,9 @@ Each rung is *intended* to add one axis; inputs and state identical across arms;
 
 **We do not certify B by sampling.** With a 151,936-token vocabulary, closeness testing to L1 ε costs Θ(max{m^(2/3)/ε^(4/3), m^(1/2)/ε²}) ≈ 4×10⁴ samples *per prefix* at ε=0.10 and ≈ 3.9×10⁶ at ε=0.01 ([Chan–Diakonikolas–Valiant–Valiant, arXiv:1308.3946](https://arxiv.org/abs/1308.3946)) [confirmed via Sweep 1]. We have **logit access to both implementations**, which removes the vocab dependence entirely (logit-access TV estimation is O(n/ε²), n = sequence length, and tight — [arXiv:2607.19510](https://arxiv.org/abs/2607.19510)) [uncertain — abstract-level, not read at source]. Teacher-forced on a shared prefix, per-position conditional TV is **not a statistic at all**: it is `½Σ_v |p₁(v) − p₂(v)|`, computed exactly from two logit vectors.
 
-**Sample plan (fixed now):** ≥ **100 prompts**, ≥ **30,000 probed positions** total, of which ≥ **10,000 must be decode-shape (L2/L4 geometry)**. Rationale, stated in the receipt: rule of three (Hanley & Lippman-Hand 1983) — zero argmax flips in 30,000 positions bounds the flip rate at **≤ 1×10⁻⁴ (95%)**. For contrast, **the current 24-prompt gate at a perfect 24/24 bounds the per-prompt divergence rate only at ≤ 12.5%**, and the probe's default `--probe-steps 8` bounds nothing below 37.5%. Both numbers go in the release note.
+**Sample plan (SUPERSEDED by §1b A4 — rule-of-three requires ZERO flips, positions within a continuation are correlated, and B6 is a path diagnostic not a joint-law bound; the numbers below stand only as a first draft):** ≥ **100 prompts**, ≥ **30,000 probed positions** total, of which ≥ **10,000 must be decode-shape (L2/L4 geometry)**. Rationale, stated in the receipt: rule of three (Hanley & Lippman-Hand 1983) — zero argmax flips in 30,000 positions bounds the flip rate at **≤ 1×10⁻⁴ (95%)**. For contrast, **the current 24-prompt gate at a perfect 24/24 bounds the per-prompt divergence rate only at ≤ 12.5%**, and the probe's default `--probe-steps 8` bounds nothing below 37.5%. Both numbers go in the release note.
 
-**Thresholds (anchored to the strictest already-shipping in-tree B gate, `phase0h_paged_verifier_exactness.py:507-510`):**
+**Thresholds — ANCHOR CORRECTED (see §1b A3).** These were originally described as anchored to the strictest already-shipping in-tree B gate (`phase0h_paged_verifier_exactness.py:507-510`). That is **false**: `mtplx/benchmarks/runners/batch_equivalence.py:34` uses **1e-3** and additionally requires support and argmax equality. The table below is therefore **looser than existing in-tree practice** and must either be re-anchored to 1e-3 with support equality, or accompanied by a written defence of why this lane gets a weaker standard. Do not read it as a settled threshold set:
 
 | # | Metric | PASS | ESCALATE | FAIL |
 |---|---|---|---|---|
@@ -167,7 +167,9 @@ None of this needs the GPU window. **It is the critical path, not Monday.**
 
 ## 5. Pre-committed decision rule
 
-| Monday outcome | Mechanism verdict | Gate becomes | Ships? |
+Per §1b A2 every "mechanism verdict" below is **provisional** — a first-nonzero rung names the first *exposed* difference and requires follow-up state hashes before any mechanism is claimed.
+
+| Monday outcome | Provisional mechanism hypothesis | Gate becomes | Ships? |
 |---|---|---|---|
 | **L0 ≠ 0.0** | measurement invalid | — | **No.** Everything downstream uninterpretable. Fix determinism first. |
 | **Δ = 0.0 at L1 and L2, nonzero first at L3** | compiler-induced numerics — **not** H1 as documented | B-side gate (§4.2) permitted **only** with a written argument for why compile-induced divergence is acceptable where kernel-induced is | Only after that argument + all of §4.3 |
@@ -192,7 +194,7 @@ None of this needs the GPU window. **It is the critical path, not Monday.**
 
 ## 7. Receipt requirements
 
-Every receipt carries: `git_head`, `git_dirty`, the full `MTPLX_*` env snapshot, model + draft **revision SHAs** (`protocol.py:435-439` refuses blanks), prompt-suite SHA, sampler triple, and the **pre-registration commit hash with an ancestry check against `git_head`**. Receipts print **two verdicts, never one**: `question_a_verdict` (A1–A5, with the A4 power table) and `question_b_verdict` (L0–L6 ladder, B1–B6, probed-position count, and the rule-of-three bound `3/N` for the achieved N). `release_gate_pass` is computed from both. Failed fields stay visible under their original names, forever.
+Every receipt carries: `git_head`, `git_dirty`, the full `MTPLX_*` env snapshot, model + draft **revision SHAs** (`protocol.py:435-439` refuses blanks), prompt-suite SHA, sampler triple, and the **pre-registration commit hash with an ancestry check against `git_head`**. Receipts print **a separate A verdict and B verdict, plus a final `A AND B` release verdict** (§1b A6): `question_a_verdict` (A1–A5, with the A4 power table) and `question_b_verdict` (L0–L6 ladder, B1–B6, probed-position count, and the rule-of-three bound `3/N` for the achieved N). `release_gate_pass` is computed from both. Failed fields stay visible under their original names, forever.
 
 ---
 
@@ -206,9 +208,9 @@ Every receipt carries: `git_head`, `git_dirty`, the full `MTPLX_*` env snapshot,
 
 ## 9. Can the lane ship if H1 is confirmed? — recommendation, not a hedge
 
-**No. Not on H1 alone.**
+**No. Not on H1 alone — and per §1b A8, H1 does not remove the B blocker at all.**
 
-H1 confirmation removes the **B** blocker. It creates **zero A evidence**, and A is the identity claim. Today the entire empirical A-side of this project is one 4-token, single-position unit test (`tests/test_sampling.py:72-76`) plus a declaration-bookkeeping audit that checks labels, not laws. The two A-blockers the project itself wrote down — the independent-product-q oracle and the temp>0 drafter canary — **do not exist** (C9), and the gate class its own doc calls "the only gate class that catches q-mis-declaration" has never been built or run. A lane whose selling point is exactness cannot ship with the exactness question untested and the numerics question freshly relaxed. That combination is exactly what an external reviewer will read as gate-shopping, and they would be right.
+H1 confirmation would at most justify *considering* a pre-committed compatibility exception for **B**. It creates **zero A evidence**, and A is the identity claim. Today the entire empirical A-side of this project is one 4-token, single-position unit test (`tests/test_sampling.py:72-76`) plus a declaration-bookkeeping audit that checks labels, not laws. The two A-blockers the project itself wrote down — the independent-product-q oracle and the temp>0 drafter canary — **do not exist** (C9), and the gate class its own doc calls "the only gate class that catches q-mis-declaration" has never been built or run. A lane whose selling point is exactness cannot ship with the exactness question untested and the numerics question freshly relaxed. That combination is exactly what an external reviewer will read as gate-shopping, and they would be right.
 
 **Concretely:**
 1. **Before Monday, no GPU needed:** land A1, A2, A3, and the A4 falsifier battery with committed known-bad receipts. This is the critical path and it is being blocked on a measurement it does not depend on.

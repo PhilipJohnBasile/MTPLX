@@ -37,7 +37,9 @@ evaluation order differ from the AR path.
 >
 > H1 remains *a* hypothesis, but is no longer the "leading" one on this
 > evidence. Use the L0–L6 axis ladder in the pre-registration, which adds one
-> axis per rung so the first nonzero rung names the mechanism. Also note the
+> axis per rung (note: the ladder itself was later amended — it is not
+> one-axis as first written, and a first-nonzero rung names only the first
+> *exposed* difference, provisionally). Also note the
 > probe as written cannot decide this: it compares two stock-MoE prefill
 > forwards with no `attention_phase`, no `mx.compile`, and no shadow cache.
 
