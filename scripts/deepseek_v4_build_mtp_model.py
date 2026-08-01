@@ -13,13 +13,12 @@ GiB), FP8/FP4-block quantized.
 This script merges the two into ONE stock-served model directory:
 
   1. hardlink every file of the MLX trunk snapshot (shards + tokenizer + …);
-  2. dequantize ``mtp.0.*`` from the upstream shard, rename it onto the MLX
-     module tree, re-quantize to affine 8-bit / group_size 64 and write it as one
-     extra shard;
+  2. translate ``mtp.0.*`` from the upstream shard onto the MLX module tree and
+     write it as one extra shard;
   3. rewrite ``model.safetensors.index.json`` (new entries + total_size) and
-     ``config.json`` (per-path ``quantization`` entries for the new stems) so the
-     result loads through the ordinary ``mlx_lm.utils.load_model`` path with no
-     sidecar, env var or special-case branch.
+     ``config.json`` (per-path ``quantization`` entries where the format needs
+     them) so the result loads through the ordinary ``mlx_lm.utils.load_model``
+     path with no sidecar, env var or special-case branch.
 
 Source quantization (upstream ``config.json`` ``quantization_config``:
 ``fmt e4m3``, ``scale_fmt ue8m0``, ``weight_block_size [128, 128]``):
@@ -43,13 +42,32 @@ scale semantics are right: ``fast_round_scale`` (kernel.py L36-37) forces the
 per-group max magnitude into ``(fp4_max/2, fp4_max]`` = ``(3, 6]`` before
 rounding, and into ``(224, 448]`` for FP8.
 
-Precision: the draft head is written at **8-bit** (affine, group_size 64).  MTP
-precision is a standing floor — never trade draft-head precision for memory
-without a measured acceptance A/B — so nothing here goes below q8 even though
-the upstream routed experts are natively 4-bit.  bf16 carries every FP8/FP4
-source value exactly (both formats hold <= 4 significant bits and power-of-two
-block scales), so the only loss introduced is the affine 8-bit grid itself,
-which the script measures and reports per stem.
+Precision — ``--bank exact`` (the default, and what the shipped dir holds).  MTP
+precision is a standing floor: the draft head must be the most accurate
+representation of the source available, because acceptance collapses long before
+perplexity notices.  The floor is therefore "no avoidable conversion error at
+all", not a bit count — a bit count is the wrong metric here, since re-quantizing
+an already-4-bit tensor to affine 8-bit is strictly *worse* than keeping it in its
+own format.  So nothing is re-quantized:
+
+  * **routed experts** stay FP4.  MLX's ``mxfp4`` mode is byte-identical to the
+    source layout (uint32 words of 8 e2m1 values, low nibble first, one uint8 e8m0
+    scale per 32), so the payload is REPACKED — ``w_u8.view(uint32)`` plus the
+    scale bytes verbatim — never decoded and re-encoded.  Receipt:
+    ``mx.dequantize(..., mode="mxfp4")`` equals the independent LUT decode of the
+    source bytes exactly, asserted per tensor.
+  * **FP8 e4m3 × e8m0 dense projections** are written as plain **bf16** with no
+    quantization entry: every such value has <= 4 significant bits and a
+    power-of-two block scale, so bf16's 8 mantissa bits hold it exactly.  Receipt:
+    bf16 == the float32 decode, max_abs_diff 0.0, asserted per tensor, with a
+    float32 fallback (and a printed warning) if that ever fails.
+  * **everything else** keeps its source dtype, round-trip asserted.
+
+``--bank affine-q8`` reproduces the superseded first bank (affine 8-bit,
+group_size 64, every stem) and exists only as the A/B arm: the merged dir keeps
+that bank beside the live one as ``*.q8-bank.bak`` so a measured acceptance
+comparison stays reproducible.  It is lossy by construction — it measures and
+reports its own error per stem — and must not be shipped as the default.
 
 Usage:
     python scripts/deepseek_v4_build_mtp_model.py \
@@ -296,8 +314,61 @@ def to_mx(a: np.ndarray, kind: str) -> mx.array:
     return arr.astype(mx.bfloat16) if kind == "bf16" else arr.astype(mx.float32)
 
 
+MXFP4_SPEC = {"group_size": FP4_GROUP, "bits": 4, "mode": "mxfp4"}
+
+
+def repack_fp4_to_mxfp4(w_u8: np.ndarray, s_u8: np.ndarray, label: str):
+    """Reinterpret one FP4 e2m1 x e8m0 tensor as MLX ``mxfp4``, bit-for-bit.
+
+    Both formats are the OCP microscaling layout: 4-bit elements packed low-nibble
+    first, one uint8 e8m0 scale per 32 elements along K.  MLX reads the payload as
+    uint32 words, the source stores it as bytes, and little-endian makes those the
+    same bytes in the same order — so the translation is a ``view``, not a decode.
+
+    Returns ``(weight_uint32, scales_uint8)`` and asserts the identity that makes
+    the view legitimate: MLX's own dequantizer must reproduce the reference LUT
+    decode of the source bytes EXACTLY.
+    """
+    ref = dequant_fp4_block(w_u8, s_u8)
+    if np.any(s_u8 == 255):
+        raise SystemExit(f"{label}: e8m0 NaN scale byte")
+    w32 = np.ascontiguousarray(w_u8).view(np.uint32)
+    got = np.array(
+        mx.dequantize(
+            mx.array(w32), mx.array(s_u8),
+            group_size=FP4_GROUP, bits=4, mode="mxfp4", dtype=mx.float32,
+        )
+    )
+    if not np.array_equal(got, ref):
+        raise SystemExit(
+            f"{label}: mxfp4 repack != source decode "
+            f"(max_abs={float(np.max(np.abs(got - ref))):.3e})"
+        )
+    return w32, s_u8, ref
+
+
+def dense_exact(dense_f32: np.ndarray, label: str):
+    """bf16 if it holds every value of ``dense_f32`` exactly, else float32.
+
+    FP8 e4m3 has 3 mantissa bits and the block scale is a power of two, so bf16's 8
+    mantissa bits are strictly more than enough — but that is an argument, and this
+    checks it per tensor rather than trusting it.  Returns ``(mx.array, dtype_name,
+    max_abs_diff)``.
+    """
+    bf = mx.array(dense_f32).astype(mx.bfloat16)
+    mx.eval(bf)
+    diff = float(np.max(np.abs(np.array(bf.astype(mx.float32)) - dense_f32)))
+    if diff == 0.0:
+        return bf, "bfloat16", diff
+    print(f"    !! {label}: bf16 inexact (max_abs_diff={diff:.3e}) -> float32")
+    return mx.array(dense_f32), "float32", diff
+
+
 def quantize_stem(dense_f32: np.ndarray, group_size: int, bits: int):
     """Affine-quantize one [out, in] matrix (or a stack thereof).
+
+    Only reachable under ``--bank affine-q8``; see the module docstring for why the
+    default bank does not re-quantize anything.
 
     bf16 is exact for every FP8/FP4 source value (both hold <= 4 significant bits
     with power-of-two block scales), and the checkpoint convention stores
@@ -361,8 +432,17 @@ def main() -> int:
     ap.add_argument("--source", default=None,
                     help="MLX trunk snapshot dir (default: 2bit-DQ from the HF cache)")
     ap.add_argument("--out", required=True, help="merged model directory to create")
-    ap.add_argument("--bits", type=int, default=8)
-    ap.add_argument("--group-size", type=int, default=64)
+    ap.add_argument(
+        "--bank",
+        choices=("exact", "affine-q8"),
+        default="exact",
+        help="exact = mxfp4 expert repack + dense bf16 (ships); affine-q8 = the "
+             "superseded lossy bank, kept only as the acceptance A/B arm",
+    )
+    ap.add_argument("--bits", type=int, default=8,
+                    help="affine-q8 bank only")
+    ap.add_argument("--group-size", type=int, default=64,
+                    help="affine-q8 bank only")
     ap.add_argument("--source-etag", default=None,
                     help="upstream shard etag, recorded in the provenance block")
     ap.add_argument("--source-revision", default="main")
@@ -388,6 +468,10 @@ def main() -> int:
     )
     print(f"routed experts : {n_experts}")
 
+    exact = args.bank == "exact"
+    print(f"bank           : {args.bank}"
+          + ("" if exact else f" (LOSSY A/B arm, q{args.bits}/gs{args.group_size})"))
+
     tensors: dict[str, mx.array] = {}
     quant_paths: dict[str, dict] = {}
     errs: list[tuple[str, float, float]] = []
@@ -398,27 +482,42 @@ def main() -> int:
 
     # ---- plain tensors -----------------------------------------------------
     for src, (dst, kind) in PLAIN_RENAME.items():
-        put(dst, to_mx(st.f32(f"mtp.0.{src}"), kind))
+        ref = st.f32(f"mtp.0.{src}")
+        arr = to_mx(ref, kind)
+        if exact:
+            mx.eval(arr)
+            if not np.array_equal(np.array(arr.astype(mx.float32)), ref):
+                raise SystemExit(f"mtp.0.{src}: dtype-preserving copy is not exact")
+        put(dst, arr)
 
     # ---- FP8-block dense projections --------------------------------------
+    print("\nfp8 e4m3 x e8m0 dense projections:")
     for src, dst in FP8_STEMS.items():
         w = st.bytes_of(f"mtp.0.{src}.weight")
         s = st.bytes_of(f"mtp.0.{src}.scale")
         dense = dequant_fp8_block(w, s)
         lo, hi = check_group_max(dense, s, FP8_BLOCK, 448.0, True, src)
-        qw, sc, bi, worst, frob = quantize_stem(dense, args.group_size, args.bits)
-        put(f"{dst}.weight", qw)
-        put(f"{dst}.scales", sc)
-        put(f"{dst}.biases", bi)
-        quant_paths[f"mtp.0.{dst}"] = {
-            "group_size": args.group_size, "bits": args.bits, "mode": "affine"
-        }
-        errs.append((dst, worst, frob))
-        print(f"  fp8 {src:26s} {tuple(dense.shape)!s:16s} "
-              f"blockmax[{lo:6.1f},{hi:6.1f}] q{args.bits} max_rel={worst:.2e}")
+        if exact:
+            arr, dtype_name, diff = dense_exact(dense, src)
+            put(f"{dst}.weight", arr)
+            errs.append((dst, diff, diff))
+            print(f"  {src:26s} -> {dst:28s} {tuple(dense.shape)!s:16s} "
+                  f"blockmax[{lo:6.1f},{hi:6.1f}] {dtype_name} exact")
+        else:
+            qw, sc, bi, worst, frob = quantize_stem(dense, args.group_size, args.bits)
+            put(f"{dst}.weight", qw)
+            put(f"{dst}.scales", sc)
+            put(f"{dst}.biases", bi)
+            quant_paths[f"mtp.0.{dst}"] = {
+                "group_size": args.group_size, "bits": args.bits, "mode": "affine"
+            }
+            errs.append((dst, worst, frob))
+            print(f"  {src:26s} -> {dst:28s} {tuple(dense.shape)!s:16s} "
+                  f"blockmax[{lo:6.1f},{hi:6.1f}] q{args.bits} max_rel={worst:.2e}")
         del dense
 
     # ---- FP4-block routed experts -> stacked SwitchGLU ---------------------
+    print("\nfp4 e2m1 x e8m0 routed experts:")
     for wsrc, dst in EXPERT_STEMS.items():
         qws, scs, bis = [], [], []
         worst = 0.0
@@ -428,6 +527,16 @@ def main() -> int:
             stem = f"mtp.0.ffn.experts.{i}.{wsrc}"
             w = st.bytes_of(stem + ".weight")
             s = st.bytes_of(stem + ".scale")
+            if exact:
+                # the repack asserts mxfp4 == the LUT decode per tensor, which
+                # subsumes the one-off check_fp4_against_mlx witness
+                w32, s8, dense = repack_fp4_to_mxfp4(w, s, stem)
+                lo, hi = check_group_max(dense, s, FP4_GROUP, 6.0, False, stem)
+                lo_all, hi_all = min(lo_all, lo), max(hi_all, hi)
+                qws.append(mx.array(w32))
+                scs.append(mx.array(s8))
+                del dense, w32
+                continue
             dense = dequant_fp4_block(w, s)
             if not checked_fp4:
                 check_fp4_against_mlx(w, s, dense)
@@ -443,14 +552,24 @@ def main() -> int:
             del dense
         put(f"{dst}.weight", mx.stack(qws))
         put(f"{dst}.scales", mx.stack(scs))
-        put(f"{dst}.biases", mx.stack(bis))
+        if exact:
+            # mxfp4 carries no zero point, so the module has no .biases tensor
+            quant_paths[f"mtp.0.{dst}"] = dict(MXFP4_SPEC)
+            errs.append((dst, 0.0, 0.0))
+            print(f"  experts.*.{wsrc} -> {dst:28s} x{n_experts} "
+                  f"groupmax[{lo_all:.1f},{hi_all:.1f}] mxfp4/gs{FP4_GROUP} "
+                  "ALL EXACT")
+        else:
+            put(f"{dst}.biases", mx.stack(bis))
+            quant_paths[f"mtp.0.{dst}"] = {
+                "group_size": args.group_size, "bits": args.bits, "mode": "affine"
+            }
+            errs.append((dst, worst, (num / den) ** 0.5))
+            print(f"  experts.*.{wsrc} -> {dst:28s} x{n_experts} "
+                  f"groupmax[{lo_all:.1f},{hi_all:.1f}] q{args.bits} "
+                  f"max_rel={worst:.2e}")
         del qws, scs, bis
-        quant_paths[f"mtp.0.{dst}"] = {
-            "group_size": args.group_size, "bits": args.bits, "mode": "affine"
-        }
-        errs.append((dst, worst, (num / den) ** 0.5))
-        print(f"  fp4 experts.*.{wsrc} -> {dst:28s} x{n_experts} "
-              f"groupmax[{lo_all:.1f},{hi_all:.1f}] q{args.bits} max_rel={worst:.2e}")
+        mx.clear_cache()
 
     st.close()
 
@@ -503,9 +622,32 @@ def main() -> int:
         "trunk_snapshot": str(trunk),
         "trunk_repo": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
         "mtp_shard": shard_name,
-        "mtp_quantization": {
-            "group_size": args.group_size, "bits": args.bits, "mode": "affine"
-        },
+        "mtp_bank": args.bank,
+        "mtp_representation": (
+            {
+                "routed_experts": {
+                    "format": "mxfp4", "group_size": FP4_GROUP, "bits": 4,
+                    "how": "byte repack of the source FP4 e2m1 payload + its e8m0 "
+                           "scales (format translation, NOT a re-quantization)",
+                    "weight_dtype": "uint32", "scales_dtype": "uint8",
+                },
+                "dense_projections": {
+                    "format": "dense bfloat16", "quantization_entry": "removed",
+                    "how": "bf16 represents every e4m3 x 2^k value exactly "
+                           "(<= 4 significant bits, power-of-two block scale)",
+                },
+                "other": "source dtype preserved (bf16 norms / f32 sinks, "
+                         "hyper-connections, router bias)",
+            }
+            if exact
+            else {
+                "all_stems": {
+                    "format": "affine", "group_size": args.group_size,
+                    "bits": args.bits,
+                    "how": "SUPERSEDED lossy re-quantization; A/B arm only",
+                },
+            }
+        ),
         "mtp_tensor_count": len(tensors),
         "mtp_shard_bytes": new_size,
         "built_by": "scripts/deepseek_v4_build_mtp_model.py",
@@ -516,7 +658,10 @@ def main() -> int:
     print(f"config: quantization {len(quant_paths)} new per-path entries "
           f"({len(cfg['quantization']) - 3} total)")
 
-    print("\nre-quantization error (relative to the exact FP8/FP4 source):")
+    label = ("conversion error (relative to the exact FP8/FP4 source) -- all zero "
+             "for the exact bank" if exact
+             else "re-quantization error (relative to the exact FP8/FP4 source)")
+    print(f"\n{label}:")
     for name, worst, frob in errs:
         print(f"  {name:34s} max_err/absmax={worst:.3e}  rel_frobenius={frob:.3e}")
 
