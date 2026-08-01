@@ -1035,6 +1035,16 @@ class DeepseekV4Cache:
         sliding window physically discards evicted rows.  Exceeding the bound raises
         instead of clamping: ``rollback_after_verify`` ignores the return value, so a
         clamped rewind would leave a silently desynced cache decoding on.
+
+        The speculative lane never approaches the bound (it rewinds at most the
+        verify width, ``K+1``).  The one caller that can is the session bank's
+        near-prefix restore, which trims a restored snapshot down to an arbitrary
+        matched prefix (``generation._trim_cache_to_offset``); on this backend that
+        depth is not recoverable at all — the rows are gone — so it raises rather
+        than returning the False that would let the caller fall back to a cold
+        prefill.  Serving V4 behind a session bank therefore needs either a
+        ``rollback_capacity`` sized for it or a ``max_rollback`` pre-check in that
+        caller.
         """
         n = int(n)
         if n <= 0:
