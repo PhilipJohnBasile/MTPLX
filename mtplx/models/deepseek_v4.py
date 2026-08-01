@@ -135,6 +135,27 @@ Status:
     ``deepseek-v4-mtp`` entry describes vLLM's *split* checkpoint layout, which is a
     different artifact shape MTPLX still has no loader for.
 
+Decode-path bytes (tests/test_deepseek_v4_o_lora.py):
+  * **o-LoRA weight handling.**  ``wo_a`` is static — ``[8192, 4096]`` on
+    DeepSeek-V4-Flash — and the first cut ran ``mx.dequantize`` on it inside every
+    ``_o_lora`` call, i.e. 64 MiB of dense bytes written and re-read per layer per
+    decoded token, 43 layers deep.  It is now dequantised once and kept
+    (``MTPLX_DSV4_O_LORA=cached``, the default, bit-identical to the old path and
+    gated as such), which is what the reference does — it holds ``wo_a`` dense and
+    just ``view``\\s it (model.py L537).  ``dequant`` restores the per-call
+    behaviour as an A/B control; ``gather_qmm`` skips the dense tensor entirely and
+    runs the 8 LoRA groups as one quantised block-diagonal matmul — the
+    optimisation the reference explicitly leaves on the table (L538-539) — and is
+    off by default because it is not bit-identical.
+    What it is worth: ``cached`` vs ``dequant`` on the real checkpoint measured
+    +2.1% AR (4.534 -> 4.627 tok/s) with fp32 activation storage, which is inside
+    this box's cross-window drift — i.e. not distinguishable from zero, because at
+    fp32 the einsum promotes ``wo_a`` anyway and caching removes the dequantize
+    but not the cast that followed it.  It is kept because it is bit-identical and
+    removes real redundant work, not because it is the speed win; the speed win is
+    the activation-dtype fix below.  ``cached`` costs +2.69 GiB resident, which
+    ``gather_qmm`` gives back in full.
+
 Provenance: reference files fetched read-only from
 ``https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash`` (inference/model.py,
 inference/kernel.py, config.json) and
@@ -147,6 +168,7 @@ elementwise math (verified elementwise, not by running the shipped kernel).
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional
 
@@ -174,6 +196,68 @@ _DEFAULT_COMPRESS_RATIOS = (
 # bound is too small mid-request -- is a hard failure.  See
 # :meth:`DeepseekV4Cache.trim` for what the capacity buys on each lane.
 _DEFAULT_ROLLBACK_CAPACITY = 64
+
+
+# ---------------------------------------------------------------------------
+# Decode-path knobs
+# ---------------------------------------------------------------------------
+#: How :meth:`DeepseekV4Attention._o_lora` gets ``wo_a``.
+#:
+#: ``cached`` (default)
+#:     Dequantise the static ``[o_groups*o_lora_rank, n_heads*head_dim/o_groups]``
+#:     matrix once and keep the dense result.  Bit-identical to ``dequant``.
+#: ``dequant``
+#:     Re-run ``mx.dequantize`` on every call — the pre-cache behaviour, kept as
+#:     the A/B control and as the oracle the bit-identity gate compares against.
+#: ``gather_qmm``
+#:     Skip the dense materialisation entirely and run the ``o_groups`` LoRA groups
+#:     as one quantised block-diagonal matmul.  *Not* bit-identical (different
+#:     accumulation order); off by default until a GPU window says it wins.
+_O_LORA_MODES = ("cached", "dequant", "gather_qmm")
+
+
+def _o_lora_mode_from_env() -> str:
+    raw = (os.environ.get("MTPLX_DSV4_O_LORA") or "").strip().lower()
+    if not raw:
+        return "cached"
+    if raw not in _O_LORA_MODES:
+        raise ValueError(
+            "MTPLX_DSV4_O_LORA must be one of "
+            f"{', '.join(_O_LORA_MODES)}; got {raw!r}"
+        )
+    return raw
+
+
+class _DerivedCache:
+    """Holder for a tensor derived from parameters (e.g. a one-time dequant).
+
+    A plain object rather than a bare ``mx.array`` attribute on purpose:
+    ``nn.Module.__setattr__`` routes every ``mx.array``/``dict``/``list``/``tuple``
+    into the module's own dict, and only the leading-underscore filter keeps it out
+    of ``parameters()``.  Hanging the cache off a plain object keeps it out of the
+    module dict altogether, so ``load_weights(strict=True)``, ``save_weights``,
+    ``set_dtype`` and ``mx.eval(model)`` cannot see it at all.
+
+    ``src`` holds the parameters the value was derived from, so a later
+    ``load_weights``/``update``/``set_dtype`` (which rebinds those arrays)
+    invalidates the cache by identity instead of serving a stale copy.
+    """
+
+    __slots__ = ("src", "value")
+
+    def __init__(self) -> None:
+        self.src: Optional[tuple] = None
+        self.value: Optional[mx.array] = None
+
+    def get(self, src: tuple) -> Optional[mx.array]:
+        if self.value is None or self.src is None or len(self.src) != len(src):
+            return None
+        return self.value if all(a is b for a, b in zip(self.src, src)) else None
+
+    def put(self, src: tuple, value: mx.array) -> mx.array:
+        self.src = src
+        self.value = value
+        return value
 
 
 @dataclass
@@ -1212,6 +1296,10 @@ class DeepseekV4Attention(nn.Module):
             bias=False,
         )
         self.wo_b = nn.Linear(self.n_groups * self.o_lora_rank, self.dim, bias=False)
+        # How _o_lora consumes wo_a, and where the one-time dequant lives.  Both
+        # are plain (non-array) attributes, so neither reaches the weight tree.
+        self.o_lora_mode = _o_lora_mode_from_env()
+        self._wo_a_cache = _DerivedCache()
 
         if self.compress_ratio:
             self.compressor = Compressor(args, self.compress_ratio, self.head_dim)
@@ -1234,30 +1322,133 @@ class DeepseekV4Attention(nn.Module):
         ang = positions[:, None].astype(mx.float32) * self._inv_freq[None, :]
         return mx.cos(ang), mx.sin(ang)
 
+    def _wo_a_quant(self):
+        """``wo_a``'s quantised tensors + format, or ``None`` when it is dense.
+
+        ``(weight, scales, biases, group_size, bits, mode)``.  ``biases`` is
+        ``None`` for the bias-free modes (mxfp4); ``mode`` is carried through
+        rather than assumed so the affine path stays byte-for-byte what it was.
+        """
+        wo = self.wo_a
+        if not isinstance(wo, nn.QuantizedLinear):
+            return None
+        return (
+            wo.weight,
+            wo.scales,
+            getattr(wo, "biases", None),
+            wo.group_size,
+            wo.bits,
+            getattr(wo, "mode", "affine"),
+        )
+
+    def _wo_a_grouped(self) -> mx.array:
+        """``wo_a`` as a dense ``[n_groups, o_lora_rank, per]`` tensor.
+
+        ``wo_a`` is **static**: one ``[g*r, per]`` matrix, the same on every token
+        of every step.  On the real checkpoint it is 4-bit, and the pre-cache code
+        ran ``mx.dequantize`` on it inside every ``_o_lora`` call — on
+        DeepSeek-V4-Flash that is a 64 MiB dense tensor written and re-read per
+        layer per decoded token, 43 layers deep, for a value that never changes.
+        The reference does the dequant once at load and keeps the dense matrix
+        (``wo_a = self.wo_a.weight.view(...)``, model.py L537).
+
+        ``cached`` therefore stores exactly what ``mx.dequantize`` returned, so the
+        consuming einsum sees the identical values and the path stays bit-identical
+        to ``dequant`` (gated by tests/test_deepseek_v4_o_lora.py).  Resident cost
+        is one dense copy per layer beside the quantised one it is derived from —
+        2.69 GiB across 43 layers on DeepSeek-V4-Flash.
+
+        Do not read the byte count above as a speed claim: measured on the real
+        checkpoint at fp32 activation storage, ``cached`` vs ``dequant`` is +2.1%
+        AR, inside cross-window drift (bench/deepseek-v4/goal-ab-20260731).  At
+        fp32 the einsum promotes ``wo_a`` regardless, so caching removes the
+        dequantize and not the cast behind it.  The measured decode win in this
+        lane is the activation-dtype fix, not this.
+        """
+        g = self.n_groups
+        r = self.o_lora_rank
+        per = self.n_heads * self.head_dim // g
+        q = self._wo_a_quant()
+        if q is None:
+            # Unquantised (the M2/parity path): wo_a is a plain nn.Linear.
+            return self.wo_a.weight.reshape(g, r, per)
+        w, scales, biases, group_size, bits, mode = q
+        src = (w, scales, biases)
+        if self.o_lora_mode != "dequant":
+            hit = self._wo_a_cache.get(src)
+            if hit is not None:
+                return hit
+        dense = mx.dequantize(
+            w, scales, biases, group_size=group_size, bits=bits, mode=mode
+        ).reshape(g, r, per)
+        if self.o_lora_mode == "dequant":
+            return dense
+        return self._wo_a_cache.put(src, dense)
+
+    def _o_lora_gather_qmm(self, o: mx.array) -> mx.array:
+        """Grouped o-LoRA as a quantised block-diagonal matmul (arm b).
+
+        The ``o_groups`` LoRA groups are ``o_groups`` independent ``[r, per]``
+        matrices, so the projection is one :func:`mx.gather_qmm` over a leading
+        group axis — every row visits every group, and nothing dense is ever
+        materialised.  The reference flags exactly this as the optimisation it did
+        not take ("wo_a is FP8 in checkpoint; could do FP8 einsum here for better
+        perf, but using BF16 for simplicity", model.py L538-539).
+
+        **Calling convention.**  ``x`` must carry the row axis in the *batch* dims
+        with the matmul rows in the last two, i.e. ``[g, rows, per] -> [g, rows,
+        r]``; a flat ``[rows, per]`` broadcasts instead and silently does ``g``
+        times the work while still producing usable-looking numbers.  This box's
+        ledger has been bitten by that twice, which is why the output shape is
+        checked here rather than assumed.
+
+        **Not bit-identical** to :meth:`_wo_a_grouped` + einsum: the quantised
+        kernel dequantises inside the accumulation, so the products are summed in
+        a different order.  Gated on tolerance + argmax stability, default off.
+        """
+        b, s, _ = o.shape
+        g = self.n_groups
+        r = self.o_lora_rank
+        per = self.n_heads * self.head_dim // g
+        w, scales, biases, group_size, bits, mode = self._wo_a_quant()
+        rows = b * s
+        # [b, s, g*per] -> [g, rows, per]: group g owns o's g-th per-wide chunk.
+        x = o.reshape(rows, g, per).swapaxes(0, 1)
+        out = mx.gather_qmm(
+            x,
+            w.reshape(g, r, -1),
+            scales.reshape(g, r, -1),
+            None if biases is None else biases.reshape(g, r, -1),
+            transpose=True,
+            group_size=group_size,
+            bits=bits,
+            mode=mode,
+        )
+        if tuple(out.shape) != (g, rows, r):
+            raise AssertionError(
+                "gather_qmm o-LoRA shape contract broken: expected "
+                f"{(g, rows, r)}, got {tuple(out.shape)} — an x of shape "
+                f"{tuple(x.shape)} was broadcast instead of batched"
+            )
+        return self.wo_b(out.swapaxes(0, 1).reshape(b, s, g * r))
+
     def _o_lora(self, o: mx.array) -> mx.array:
         """Grouped output-LoRA (reference model.py L536-542).
 
         ``o``: ``[b, s, n_heads*head_dim]`` -> reshape ``[b, s, n_groups, per]``;
         each group projects ``per -> o_lora_rank`` by its own slice of ``wo_a``;
         concat to ``n_groups*o_lora_rank`` then ``wo_b`` -> dim.
+
+        See :data:`_O_LORA_MODES` for the three ways ``wo_a`` gets there.
         """
+        if self.o_lora_mode == "gather_qmm" and self._wo_a_quant() is not None:
+            return self._o_lora_gather_qmm(o)
         b, s, _ = o.shape
         g = self.n_groups
         per = self.n_heads * self.head_dim // g
         r = self.o_lora_rank
         og = o.reshape(b, s, g, per)
-        # wo_a stores one [g*r, per] matrix applied group-wise.  When the module
-        # was quantised at load (real 4-bit checkpoint), dequantise to a dense
-        # [g*r, per] before the grouped reshape; on the unquantised M2 path
-        # wo_a is a plain nn.Linear.
-        if isinstance(self.wo_a, nn.QuantizedLinear):
-            w = mx.dequantize(
-                self.wo_a.weight, self.wo_a.scales, self.wo_a.biases,
-                group_size=self.wo_a.group_size, bits=self.wo_a.bits,
-            )
-        else:
-            w = self.wo_a.weight
-        w = w.reshape(g, r, per)  # grouped [g, r, per]
+        w = self._wo_a_grouped()  # [g, r, per]
         # out[b,s,g,r] = sum_p og[...,g,p] * w[g,r,p]
         out = mx.einsum("bsgp,grp->bsgr", og, w)
         out = out.reshape(b, s, g * r)
