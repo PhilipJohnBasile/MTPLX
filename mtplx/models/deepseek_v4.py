@@ -225,14 +225,24 @@ Dispatch structure (tests/test_deepseek_v4_kernel_paths.py, scripts/deepseek_v4_
   * **Together**: 19,809 -> 14,639 dispatches (-26.1%) and 384 -> 288 command
     buffers (-25.0%) per bf16 decode step; 17,733 -> 13,039 (-26.5%) at fp32.
     Roughly 5,200 fewer dispatches per token at ~2.9 us of host encode each.
-  * **What is left.**  3,678 of the remaining 14,639 (25%) are the Sinkhorn's own
-    row/column ``reduce_sum`` dispatches — 39 per ``pre`` call, one per
-    normalisation pass.  ``mx.compile`` does not fuse reductions and no stock op
-    does 20 alternating normalisations in one launch, so that is the floor for
-    this formulation.  Nothing about it is *algebraically* removable either: the
-    reference computes ``mixes = F.linear(x, hc_fn) * rsqrt`` from the layer's own
-    hidden state (``Block.hc_pre``), so ``comb`` is activation-dependent and
-    cannot be precomputed at load.
+  * **The Sinkhorn reduction floor (``MTPLX_DSV4_SINKHORN_KERNEL``).**  3,678 of
+    the remaining 14,639 (25%) are the Sinkhorn's own row/column ``reduce_sum``
+    dispatches — 39 per ``pre`` call, one per normalisation pass — plus the 39
+    fused divides and the row-softmax around them.  ``mx.compile`` does not fuse
+    reductions and no *stock* op does 20 alternating normalisations in one launch,
+    so this is the floor for the stock formulation.  It is not algebraically
+    removable — ``mixes = F.linear(x, hc_fn) * rsqrt`` is activation-dependent, so
+    ``comb`` cannot be precomputed at load — but the whole 40-pass schedule is a
+    deterministic recurrence on a ``[.., 4, 4]`` tensor, which is exactly what a
+    hand kernel does in one launch.  :func:`_sinkhorn_kernel_apply` runs the entire
+    schedule (softmax + 20 column- + 19 row-normalises) per ``pre`` call as a single
+    ``mx.fast.metal_kernel`` dispatch, one thread per matrix, the normalisations in
+    registers.  Measured on the shrunk census (bf16, per decode step): total ops
+    14,639 -> 7,845, the ~3,354 Sinkhorn ``reduce_sum`` + ~3,354 fused-divide +
+    ~86 softmax dispatches collapse to 86 kernel dispatches; command buffers
+    288 -> 155.  Bit-identical to the stock loop (:func:`_sinkhorn_ops`) at 1e-6,
+    argmax exact — it is env-gated **off** until a real-weights window confirms the
+    host-encode saving becomes tok/s.  See :data:`_SINKHORN_KERNEL`.
   * **``mx.fast.scaled_dot_product_attention`` does not fuse this attention, on
     any MLX on this box.**  It takes ``sinks=`` natively and the ``sdpa`` arm uses
     it and is gated exact — but its Metal kernels are only instantiated for head
@@ -392,6 +402,33 @@ _HC_COMPILE = _env_flag("MTPLX_DSV4_HC_COMPILE", True)
 #: small row count keeps the tape list bounded *and* puts compile only where it
 #: pays.
 _HC_COMPILE_MAX_ROWS = 32
+
+
+#: Whether the Sinkhorn alternating-normalisation loop runs as one Metal kernel.
+#:
+#: After :data:`_HC_COMPILE`, the whole decode step's remaining reduction floor is
+#: the Sinkhorn's own ``reduce_sum`` dispatches: 39 per ``pre`` call, one per
+#: normalisation pass (20 column-normalises over ``axis=-2`` + 19 row-normalises
+#: over ``axis=-1``), plus the 39 fused divides and the row-softmax.  ``mx.compile``
+#: does not fuse reductions and no stock op does 20 alternating normalisations in
+#: one launch, so at 86 ``pre`` calls per token that is ~3591 ``reduce_sum`` +
+#: ~3354 divide + ~86 softmax dispatches the host has to build and encode every
+#: step — all of it on a ``[..., hc, hc]`` tensor that is 16 floats at decode.
+#:
+#: :func:`_sinkhorn_kernel_apply` replaces the entire loop with one
+#: ``mx.fast.metal_kernel`` per ``pre`` call: one threadgroup thread per matrix
+#: carries the 16 floats in registers and runs all 40 normalisation passes
+#: internally, so the whole block collapses to a single dispatch.  The math is the
+#: *identical* fp32 arithmetic in the *identical* order as :func:`_sinkhorn_ops`
+#: (the loop it replaces); the only thing removed is dispatch count.  Composes with
+#: :data:`_HC_COMPILE` (the kernel call is opaque to ``mx.compile`` but sits at the
+#: tail of the ``pre`` tape).
+#:
+#: Default OFF — a pure dispatch-count lever whose win only shows on the real
+#: model's GPU window; the parity gate is exact (1e-6, argmax exact) so it can be
+#: flipped on the moment that window confirms tok/s.  Read from
+#: ``MTPLX_DSV4_SINKHORN_KERNEL`` at import; tests set the module attribute.
+_SINKHORN_KERNEL = _env_flag("MTPLX_DSV4_SINKHORN_KERNEL", False)
 
 
 #: Escape hatch restoring the pre-fix all-fp32 activation path (rope output,
@@ -638,6 +675,145 @@ def _apply_interleaved_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.arr
 # ---------------------------------------------------------------------------
 # Hyper-Connections
 # ---------------------------------------------------------------------------
+def _sinkhorn_ops(comb: mx.array, iters: int, eps: float) -> mx.array:
+    """The Sinkhorn alternating-normalisation loop as stock MLX ops.
+
+    ``comb`` is the *pre*-softmax ``[..., hc, hc]`` matrix (last axis ``k`` = the
+    softmax/row axis, ``axis=-2`` ``j`` = the column axis).  This is the oracle the
+    :func:`_sinkhorn_kernel_apply` Metal kernel is gated bit-identical against and
+    the path both :func:`hc_split_sinkhorn` and :func:`_hc_pre_impl` take when the
+    kernel is off; it is exactly the loop these two functions used to inline.
+    """
+    comb = mx.softmax(comb, axis=-1) + eps                       # row-softmax
+    comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)       # column normalise
+    for _ in range(iters - 1):
+        comb = comb / (comb.sum(axis=-1, keepdims=True) + eps)   # row normalise
+        comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)   # column normalise
+    return comb
+
+
+#: One compiled ``mx.fast.metal_kernel`` per ``(hc, iters, eps)`` structural triple.
+_SINKHORN_KERNELS: dict = {}
+
+
+def _sinkhorn_metal_kernel(hc: int, iters: int, eps: float):
+    """Build (and cache) the Sinkhorn kernel for one structural triple.
+
+    One thread owns one ``[hc, hc]`` matrix, loads its ``hc*hc`` floats into a
+    register array, and runs the *entire* normalisation schedule in registers:
+    the row-softmax, the first column-normalise, then ``iters-1`` alternating
+    row/column normalises.  Every arithmetic step is the same fp32 op in the same
+    order as :func:`_sinkhorn_ops` (max-stable ``exp``/sum/divide for the softmax;
+    ``sum + eps`` denominators for each normalise), so the result is the same real
+    number to fp32 rounding.  ``hc``/``iters``/``eps`` are baked in as compile-time
+    constants, so the register array is fixed-size and the loops unroll.
+    """
+    key = (int(hc), int(iters), float(eps))
+    kern = _SINKHORN_KERNELS.get(key)
+    if kern is not None:
+        return kern
+    n = hc * hc
+    # eps to full fp32 precision as a Metal float literal (matches the fp32 value
+    # ``comb + eps`` used in _sinkhorn_ops, where the python double is cast to fp32).
+    eps_lit = f"{float(eps):.9e}f"
+    source = f"""
+        using namespace metal;
+        constexpr uint HC = {hc};
+        constexpr uint N = {n};
+        constexpr uint ITERS = {iters};
+        constexpr float EPS = {eps_lit};
+
+        uint gid = thread_position_in_grid.x;
+        if (gid >= nmat) {{ return; }}
+        const uint off = gid * N;
+
+        float c[N];
+        for (uint i = 0; i < N; ++i) {{ c[i] = comb[off + i]; }}
+
+        // row-softmax over the last axis k (row i = c[i*HC + k]), then + EPS
+        for (uint i = 0; i < HC; ++i) {{
+            float m = c[i * HC];
+            for (uint k = 1; k < HC; ++k) {{ m = metal::max(m, c[i * HC + k]); }}
+            float s = 0.0f;
+            for (uint k = 0; k < HC; ++k) {{
+                float e = metal::exp(c[i * HC + k] - m);
+                c[i * HC + k] = e;
+                s += e;
+            }}
+            for (uint k = 0; k < HC; ++k) {{ c[i * HC + k] = c[i * HC + k] / s + EPS; }}
+        }}
+
+        // column normalise: sum over rows j (axis=-2), divide by (sum + EPS)
+        for (uint k = 0; k < HC; ++k) {{
+            float cs = 0.0f;
+            for (uint j = 0; j < HC; ++j) {{ cs += c[j * HC + k]; }}
+            float den = cs + EPS;
+            for (uint j = 0; j < HC; ++j) {{ c[j * HC + k] = c[j * HC + k] / den; }}
+        }}
+
+        // iters-1 alternating passes: row normalise then column normalise
+        for (uint it = 0; it < (ITERS - 1); ++it) {{
+            for (uint i = 0; i < HC; ++i) {{      // row normalise (axis=-1)
+                float rs = 0.0f;
+                for (uint k = 0; k < HC; ++k) {{ rs += c[i * HC + k]; }}
+                float den = rs + EPS;
+                for (uint k = 0; k < HC; ++k) {{ c[i * HC + k] = c[i * HC + k] / den; }}
+            }}
+            for (uint k = 0; k < HC; ++k) {{     // column normalise (axis=-2)
+                float cs = 0.0f;
+                for (uint j = 0; j < HC; ++j) {{ cs += c[j * HC + k]; }}
+                float den = cs + EPS;
+                for (uint j = 0; j < HC; ++j) {{ c[j * HC + k] = c[j * HC + k] / den; }}
+            }}
+        }}
+
+        for (uint i = 0; i < N; ++i) {{ out[off + i] = c[i]; }}
+    """
+    kern = mx.fast.metal_kernel(
+        name=f"mtplx_dsv4_sinkhorn_hc{hc}_it{iters}",
+        input_names=["comb", "nmat"],
+        output_names=["out"],
+        source=source,
+    )
+    _SINKHORN_KERNELS[key] = kern
+    return kern
+
+
+def _sinkhorn_kernel_apply(comb: mx.array, hc: int, iters: int, eps: float) -> mx.array:
+    """Run the whole Sinkhorn loop as one Metal dispatch per ``[..., hc, hc]``.
+
+    Flattens the leading dims to one matrix index, launches one thread per matrix,
+    and reshapes back.  Bit-identical (1e-6, argmax exact) to :func:`_sinkhorn_ops`
+    — see :data:`_SINKHORN_KERNEL`.
+    """
+    lead = tuple(int(d) for d in comb.shape[:-2])
+    nmat = 1
+    for d in lead:
+        nmat *= d
+    flat = comb.reshape(nmat, hc, hc)
+    kern = _sinkhorn_metal_kernel(hc, iters, eps)
+    (out,) = kern(
+        inputs=[flat, nmat],
+        grid=(nmat, 1, 1),
+        threadgroup=(min(nmat, 256), 1, 1),
+        output_shapes=[(nmat, hc, hc)],
+        output_dtypes=[comb.dtype],
+    )
+    return out.reshape(*lead, hc, hc)
+
+
+def _sinkhorn_normalise(comb: mx.array, hc: int, iters: int, eps: float) -> mx.array:
+    """Dispatch the Sinkhorn loop to the Metal kernel or the stock-MLX oracle.
+
+    The kernel path is taken only when :data:`_SINKHORN_KERNEL` is on and the
+    tensor is the fp32, small-``hc`` shape the kernel is built for (the model's
+    real path); every other case, and the default, falls to :func:`_sinkhorn_ops`.
+    """
+    if _SINKHORN_KERNEL and comb.dtype == mx.float32 and hc * hc <= 64:
+        return _sinkhorn_kernel_apply(comb, hc, iters, eps)
+    return _sinkhorn_ops(comb, iters, eps)
+
+
 def hc_split_sinkhorn(
     mixes: mx.array,
     scale: mx.array,
@@ -657,14 +833,7 @@ def hc_split_sinkhorn(
     post = 2.0 * mx.sigmoid(mixes[..., hc : 2 * hc] * scale[1] + base[hc : 2 * hc])
     comb = mixes[..., 2 * hc :] * scale[2] + base[2 * hc :]
     comb = comb.reshape(*comb.shape[:-1], hc, hc)  # [..., j, k]
-
-    # comb = softmax(comb, dim=-1) + eps
-    comb = mx.softmax(comb, axis=-1) + eps
-    # comb = comb / (comb.sum(dim=-2) + eps)   (column normalise)
-    comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)
-    for _ in range(iters - 1):
-        comb = comb / (comb.sum(axis=-1, keepdims=True) + eps)  # row normalise
-        comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)  # column normalise
+    comb = _sinkhorn_normalise(comb, hc, iters, eps)
     return pre, post, comb
 
 
@@ -700,12 +869,7 @@ def _hc_pre_impl(x, fn_t, base, scale_vec, hc: int, iters: int, eps: float):
     pre = mx.sigmoid(t[..., :hc]) + eps
     post = 2.0 * mx.sigmoid(t[..., hc : 2 * hc])
     comb = t[..., 2 * hc :].reshape(*t.shape[:-1], hc, hc)  # [..., j, k]
-
-    comb = mx.softmax(comb, axis=-1) + eps
-    comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)      # column normalise
-    for _ in range(iters - 1):
-        comb = comb / (comb.sum(axis=-1, keepdims=True) + eps)  # row normalise
-        comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)  # column normalise
+    comb = _sinkhorn_normalise(comb, hc, iters, eps)
 
     y = mx.sum(pre[..., None] * xf, axis=-2)  # [..., dim]
     return y.astype(dtype), post, comb
