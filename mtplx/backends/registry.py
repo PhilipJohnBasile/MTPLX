@@ -194,16 +194,29 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
     ),
     "deepseek-v4-mtp": ArchitectureSupport(
         arch_id="deepseek-v4-mtp",
-        display_name="DeepSeek V4 MTP",
+        display_name="DeepSeek V4 DSpark drafter",
         family="deepseek",
-        backend="deepseek_v4_mtp",
+        backend="deepseek_v4_dspark",
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
-        aliases=("deepseek_v4", "deepseek_v4_mtp"),
+        aliases=("deepseek_v4", "deepseek_v4_mtp", "deepseek_v4_dspark"),
         references=(
             "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/deepseek_v4_mtp.py",
+            "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
         ),
-        notes="Detected separately because vLLM split the V4 MTP implementation from DeepSeek V3.",
+        notes=(
+            "The arch_id says MTP for backwards compatibility, but V4 has no MTP "
+            "head: config's num_nextn_predict_layers=1 maps to zero tensors, and "
+            "the checkpoint's mtp.0/1/2.* weights are a 3-stage DSpark block "
+            "drafter (~20B, embed/lm_head shared with the target, taps at layers "
+            "40-42, dspark_block_size=5). A backend therefore needs the DSpark "
+            "block-draft contract, not the V3 MTP one. Base-model support is the "
+            "prerequisite: mlx-lm has no deepseek_v4 module at all "
+            "(ml-explore/mlx-lm#1233, #1281), and V4 is not a V3 delta — MQA with "
+            "a joint 512-dim K=V, per-head q-norm, attention sinks, inverse-RoPE "
+            "on the attention output, grouped low-rank O, per-layer compression "
+            "ratios, frozen hash-routing layers, and a 4-copy Sinkhorn residual."
+        ),
     ),
     "glm4-moe-mtp": ArchitectureSupport(
         arch_id="glm4-moe-mtp",
