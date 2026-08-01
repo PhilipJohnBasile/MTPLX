@@ -81,10 +81,11 @@ small-matrix kernel: the forced GPU lane accepts only `hc=4`, `iters=20`,
 GPU configuration fails at construction before generation.
 
 The independent E2E source is the local
-`bench/deepseek-v4/stacked-ab-20260801` receipt.  It is a stacked-window A/B on the
-real DeepSeek-V4-Flash **2-bit-DQ + mxfp4 MTP** checkpoint: B=1 greedy, 328 prompt
-tokens, 256 decode tokens, cached o-LoRA, HC compile on, and fused attention in
-both arms.  Only the Sinkhorn flag changes:
+`bench/deepseek-v4/stacked-ab-20260801` receipt; its immutable, scrubbed extraction
+is the tracked [stage-4 receipt](receipts/deepseek-v4-sinkhorn-stage4.md).  It is a
+stacked-window A/B on the real DeepSeek-V4-Flash **2-bit-DQ + mxfp4 MTP**
+checkpoint: B=1 greedy, 328 prompt tokens, 256 decode tokens, cached o-LoRA, HC
+compile on, and fused attention in both arms.  Only the Sinkhorn flag changes:
 
 | stacked-window arm | AR tok/s | K=3 spec tok/s |
 |---|---:|---:|

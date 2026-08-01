@@ -114,6 +114,73 @@ def test_kernel_bit_identical_to_oracle(lead):
     assert _maxabs(got, want) <= 1e-6, f"lead={lead}: max|d|={_maxabs(got, want):.2e}"
 
 
+def test_kernel_extreme_fp32_comb_matches_oracle():
+    """Large positive/negative logits stay finite and preserve the stock result."""
+    hc, iters, eps = 4, 20, 1e-6
+    comb = mx.array(
+        np.array(
+            [
+                [
+                    [96.0, -96.0, 48.0, -48.0],
+                    [-80.0, 80.0, -40.0, 40.0],
+                    [64.0, 64.0, -64.0, -64.0],
+                    [-100.0, -50.0, 0.0, 100.0],
+                ],
+                [
+                    [-120.0, -119.0, 119.0, 120.0],
+                    [72.0, -72.0, 71.0, -71.0],
+                    [-88.0, 44.0, 88.0, -44.0],
+                    [110.0, 55.0, -55.0, -110.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
+    )
+    want = _oracle(comb, iters, eps)
+    got = D._sinkhorn_kernel_apply(comb, hc, iters, eps)
+    mx.eval(want, got)
+    assert bool(mx.all(mx.isfinite(got))), "extreme comb produced non-finite output"
+    assert _argmax_exact(got, want), "extreme comb argmax moved"
+    assert _maxabs(got, want) <= 1e-6, (
+        f"extreme comb max|d|={_maxabs(got, want):.2e}"
+    )
+
+
+def test_kernel_near_equal_fp32_maxima_match_oracle():
+    """One-ULP-separated row maxima retain the stock Sinkhorn ordering."""
+    hc, iters, eps = 4, 20, 1e-6
+    hi = np.float32(16.0)
+    below = np.nextafter(hi, np.float32(-np.inf))
+    above = np.nextafter(hi, np.float32(np.inf))
+    comb = mx.array(
+        np.array(
+            [
+                [
+                    [hi, below, -hi, 0.0],
+                    [below, hi, 0.0, -hi],
+                    [above, hi, below, -hi],
+                    [hi, above, -hi, below],
+                ],
+                [
+                    [below, hi, above, -hi],
+                    [hi, below, -hi, above],
+                    [-hi, above, hi, below],
+                    [above, -hi, below, hi],
+                ],
+            ],
+            dtype=np.float32,
+        )
+    )
+    want = _oracle(comb, iters, eps)
+    got = D._sinkhorn_kernel_apply(comb, hc, iters, eps)
+    mx.eval(want, got)
+    assert bool(mx.all(mx.isfinite(got))), "near-equal comb produced non-finite output"
+    assert _argmax_exact(got, want), "near-equal comb argmax moved"
+    assert _maxabs(got, want) <= 1e-6, (
+        f"near-equal comb max|d|={_maxabs(got, want):.2e}"
+    )
+
+
 def test_dispatcher_off_is_untouched_ops():
     """Flag off installs exactly the stock ``_sinkhorn_ops`` route."""
     hc, iters, eps = 4, 20, 1e-6
