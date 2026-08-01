@@ -186,11 +186,67 @@ Decode-path bytes (tests/test_deepseek_v4_o_lora.py, tests/test_deepseek_v4_dtyp
     the argmax on near-tied tokens.  Speed and the byte gate are not separable
     here; see :mod:`scripts.deepseek_v4_mtpk_bench` for how divergence is
     reported, and the quality evidence is a task eval, not a byte compare.
-  * Still open: the attention builds the score block densely, so at bf16 the scores
-    round to bf16 where the reference's fused kernel keeps them in an fp32
-    accumulator.  Folding ``attn_sink`` in as a zero-valued extra column and
-    handing the whole thing to ``mx.fast.scaled_dot_product_attention`` would remove
-    both the rounding and the materialised ``[b, h, s, n_win+n_comp]`` block.
+
+Dispatch structure (tests/test_deepseek_v4_kernel_paths.py, scripts/deepseek_v4_dispatch_census.py):
+  The measured decode cycle is 84.8 ms fixed + 8.9 ms/K with the target forward
+  71-81% of it, so what is left to win is the *number* of kernels the host
+  encodes per token, not bytes.  ``scripts/deepseek_v4_dispatch_census.py``
+  counts them off the Metal dispatch stream itself (the instrumented MLX build in
+  ``mlx-profiler``), differencing a 9-step run against a 1-step one so load,
+  prefill and compile tracing cancel.  At DeepSeek-V4-Flash's *structure* (43
+  layers, hc_mult 4, 20 Sinkhorn iterations, shrunk widths) one bf16 ``s == 1``
+  decode step was **19,809 kernel dispatches in 384 command buffers**, and the
+  ``cb`` rows put **host encode at 58.8 ms against 34.8 ms of GPU execution** —
+  i.e. the encode is not hidden behind the GPU, it *is* the cycle.  ~2.9 us of
+  host encode per dispatch, whatever the tensor size.
+
+  * **Hyper-Connections** — the lever.  ``pre`` runs ``2 * n_layers + 1`` times
+    per token and almost all of it is 4x4 tensors.  Three changes, all
+    bit-identical at the decode shape: the fp32 casts of ``fn``/``base``/``scale``
+    are derived once instead of per call (:meth:`HyperConnection._static` — ``fn``
+    is 24 x 16384 on the real model); the three affine transforms become one
+    ``mixes * scale_vec + base`` over the whole row; and the whole function is a
+    module-level pure function of arrays so ``mx.compile`` can hold **one** tape
+    for all 87 Hyper-Connection modules.  That collapses the Sinkhorn loop's
+    ``divide(add(sum(x), eps))`` triples into one fused kernel each: per decode
+    step ``vs_Add`` 3570 -> 43 and ``g2_Divide`` 3408 -> 11, replaced by 3354
+    fused dispatches.  See :data:`_HC_COMPILE` for why the whole-forward compile
+    receipt does not apply here, and :data:`_HC_COMPILE_MAX_ROWS` for the shape
+    cap the tape cache needs.
+  * **Attention.**  The sink is now one extra KV column rather than a hand-rolled
+    fp32 softmax (:meth:`DeepseekV4Attention._attend`).  Worth 4 dispatches per
+    layer at bf16 (the ``maximum``/``max``-reduce/``exp``/``divide`` chain and the
+    two fp32 casts around it), 1 at fp32 — small next to the Sinkhorn — but it
+    also stops materialising both full-size fp32 temporaries: ``dense`` wrote
+    roughly 16 bytes of transient per score element (bf16 block, fp32 upcast,
+    fp32 exp, fp32 probabilities, bf16 cast) where ``fused`` writes 6.  At decode
+    that is noise; at a 1024-token prefill chunk on the real model it is ~670 MB
+    of fp32 traffic per compressed layer that no longer happens.
+  * **Together**: 19,809 -> 14,639 dispatches (-26.1%) and 384 -> 288 command
+    buffers (-25.0%) per bf16 decode step; 17,733 -> 13,039 (-26.5%) at fp32.
+    Roughly 5,200 fewer dispatches per token at ~2.9 us of host encode each.
+  * **What is left.**  3,678 of the remaining 14,639 (25%) are the Sinkhorn's own
+    row/column ``reduce_sum`` dispatches — 39 per ``pre`` call, one per
+    normalisation pass.  ``mx.compile`` does not fuse reductions and no stock op
+    does 20 alternating normalisations in one launch, so that is the floor for
+    this formulation.  Nothing about it is *algebraically* removable either: the
+    reference computes ``mixes = F.linear(x, hc_fn) * rsqrt`` from the layer's own
+    hidden state (``Block.hc_pre``), so ``comb`` is activation-dependent and
+    cannot be precomputed at load.
+  * **``mx.fast.scaled_dot_product_attention`` does not fuse this attention, on
+    any MLX on this box.**  It takes ``sinks=`` natively and the ``sdpa`` arm uses
+    it and is gated exact — but its Metal kernels are only instantiated for head
+    dims 64/96/128/256 (0.31.2) and 64/96/128/192/256 (0.32.0 and 0.32.1.dev),
+    verified against each shipped ``mlx.metallib``, and DeepSeek-V4's MLA latent
+    is 512 wide.  Every call therefore takes MLX's own unfused fallback.  It is
+    still the *cheapest measured arm* — 215 dispatches per step below ``fused``,
+    because its sink ``concatenate``/``slice`` pair on the score block costs less
+    at decode than ``fused``'s ``pad`` of the KV block — but it is not the default
+    because those two copies scale with ``s * n_heads`` at prefill where
+    ``fused``'s scales with ``n_kv``.  Pick on the real model with the env knob.
+    The consequence that survives either way: at bf16 the scores are still
+    rounded to bf16 before the softmax, because *something* has to materialise
+    them.  Only a kernel instantiated at head_dim 512 fixes that.
 
 Provenance: reference files fetched read-only from
 ``https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash`` (inference/model.py,
@@ -272,6 +328,70 @@ def _o_lora_mode_from_env() -> str:
             f"{', '.join(_O_LORA_MODES)}; got {raw!r}"
         )
     return raw
+
+
+#: How :meth:`DeepseekV4Attention._attend` forms the attention block.
+#:
+#: ``fused`` (default)
+#:     One zero row appended to the KV block (so its raw score is exactly 0),
+#:     the per-head ``attn_sink`` supplied as an additive column on top of it,
+#:     and one ``mx.softmax(..., precise=True)`` over the result.  Removes the
+#:     hand-rolled max/exp/sum/divide chain and the two full-size fp32
+#:     temporaries it materialised; the softmax keeps fp32 accumulators
+#:     internally at bf16 I/O, which is what the reference kernel does.
+#: ``sdpa``
+#:     ``mx.fast.scaled_dot_product_attention`` with ``sinks=attn_sink`` — the
+#:     same semantics expressed as one op.  See :meth:`DeepseekV4Attention._attend`
+#:     for why this is *not* the default on MLX 0.31.2.
+#: ``dense``
+#:     The pre-change path: materialised score block, fp32 softmax with the sink
+#:     folded into ``max``/``denom`` by hand.  Kept as the A/B control and as the
+#:     oracle the parity gate compares the other two against.
+_ATTN_MODES = ("fused", "sdpa", "dense")
+
+
+def _attn_mode_from_env() -> str:
+    raw = (os.environ.get("MTPLX_DSV4_ATTN") or "").strip().lower()
+    if not raw:
+        return "fused"
+    if raw not in _ATTN_MODES:
+        raise ValueError(
+            "MTPLX_DSV4_ATTN must be one of "
+            f"{', '.join(_ATTN_MODES)}; got {raw!r}"
+        )
+    return raw
+
+
+#: Whether the Hyper-Connection pre/post/head chains run through ``mx.compile``.
+#:
+#: The Sinkhorn normalisation is 20 alternating row/column passes over a
+#: ``[..., hc, hc]`` tensor — 16 floats at decode — and it runs twice per layer
+#: plus once at the head.  Uncompiled that is ~248 primitives per ``pre`` call
+#: and roughly two thirds of the entire decode step's graph, all of it host
+#: overhead on tensors too small for the GPU to notice.  ``mx.compile`` collapses
+#: each ``divide(add(sum(x), eps))`` triple into one fused kernel and replays a
+#: prebuilt tape instead of rebuilding the graph from Python on every call.
+#:
+#: This is *not* the whole-forward compile lever, which is dead on this box: that
+#: one lost because the kernels it fused were already bandwidth-bound.  Here the
+#: kernels are 4x4.
+#:
+#: ``MTPLX_DSV4_HC_COMPILE=0`` restores the eager path as the A/B control.  Read
+#: at import; tests set the module attribute.
+_HC_COMPILE = _env_flag("MTPLX_DSV4_HC_COMPILE", True)
+
+#: Row count (``b * s``) above which the compiled Hyper-Connection variant is
+#: bypassed.
+#:
+#: MLX keeps one compiled tape per distinct input *shape*, in an unbounded list
+#: it scans linearly on every call (``CompilerCache::find``).  Decode and
+#: speculative verify use a handful of tiny, repeating shapes, so they hit a warm
+#: tape every time.  Prefill does not — chunk remainders make ``s`` effectively
+#: arbitrary — and it is also the regime where the per-primitive overhead compile
+#: removes is already amortised over real work.  Capping the compiled path at a
+#: small row count keeps the tape list bounded *and* puts compile only where it
+#: pays.
+_HC_COMPILE_MAX_ROWS = 32
 
 
 #: Escape hatch restoring the pre-fix all-fp32 activation path (rope output,
@@ -548,6 +668,117 @@ def hc_split_sinkhorn(
     return pre, post, comb
 
 
+def _hc_pre_impl(x, fn_t, base, scale_vec, hc: int, iters: int, eps: float):
+    """:meth:`HyperConnection.pre` as one pure function of arrays.
+
+    Identical arithmetic to ``_mixes`` + :func:`hc_split_sinkhorn` + the weighted
+    sum, in the same order, and therefore bit-identical to them (gated by
+    tests/test_deepseek_v4_hc_compile.py).  Two structural differences, both of
+    which only remove primitives:
+
+    * ``fn_t``/``base``/``scale_vec`` arrive already fp32 and already transposed
+      / already expanded to one weight per mix column, so the per-call
+      ``astype``, ``.T`` and six parameter slices are gone.  All four are pure
+      functions of the parameters, so they are derived once (see
+      :meth:`HyperConnection._static`).  ``scale_vec`` repeats ``scale[0]`` over
+      the ``pre`` columns, ``scale[1]`` over the ``post`` columns and
+      ``scale[2]`` over the ``comb`` block, which is exactly the scalar each
+      column was multiplied by before.
+    * The three affine transforms become one ``mixes * scale_vec + base`` over
+      the whole ``[..., (2+hc)*hc]`` row, then sliced — the same multiply and add
+      per element.
+
+    Kept a module-level function taking arrays only so ``mx.compile`` can cache
+    one tape across all ``2 * n_layers + 1`` Hyper-Connection modules: they share
+    every shape and differ only in weight *values*, which are inputs.
+    """
+    dtype = x.dtype
+    xf = x.astype(mx.float32)
+    x_flat = xf.reshape(*xf.shape[:-2], -1)
+    rsqrt = mx.rsqrt(mx.mean(mx.square(x_flat), axis=-1, keepdims=True) + eps)
+    t = ((x_flat @ fn_t) * rsqrt) * scale_vec + base
+    pre = mx.sigmoid(t[..., :hc]) + eps
+    post = 2.0 * mx.sigmoid(t[..., hc : 2 * hc])
+    comb = t[..., 2 * hc :].reshape(*t.shape[:-1], hc, hc)  # [..., j, k]
+
+    comb = mx.softmax(comb, axis=-1) + eps
+    comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)      # column normalise
+    for _ in range(iters - 1):
+        comb = comb / (comb.sum(axis=-1, keepdims=True) + eps)  # row normalise
+        comb = comb / (comb.sum(axis=-2, keepdims=True) + eps)  # column normalise
+
+    y = mx.sum(pre[..., None] * xf, axis=-2)  # [..., dim]
+    return y.astype(dtype), post, comb
+
+
+def _hc_post_impl(x, residual, post, comb):
+    """:meth:`HyperConnection.post` as one pure function of arrays."""
+    dtype = x.dtype
+    xf = x.astype(mx.float32)
+    rf = residual.astype(mx.float32)
+    term = post[..., None] * xf[..., None, :]           # [..., hc, dim]
+    mixed = mx.einsum("...jk,...jd->...kd", comb, rf)   # sum_j comb[j,k] res[j]
+    return (term + mixed).astype(dtype)
+
+
+def _hc_head_impl(x, fn_t, base, scale, eps: float):
+    """:class:`HeadHC` as one pure function of arrays."""
+    dtype = x.dtype
+    xf = x.astype(mx.float32)
+    x_flat = xf.reshape(*xf.shape[:-2], -1)
+    rsqrt = mx.rsqrt(mx.mean(mx.square(x_flat), axis=-1, keepdims=True) + eps)
+    mixes = (x_flat @ fn_t) * rsqrt
+    pre = mx.sigmoid(mixes * scale + base) + eps
+    return mx.sum(pre[..., None] * xf, axis=-2).astype(dtype)
+
+
+#: One compiled tape per (impl, structural constants) pair.
+#:
+#: ``mx.compile`` keys its own cache on the *identity* of the function object, so
+#: the wrapper has to be built once and reused; rebuilding it per call would
+#: retrace every time and leak a cache entry per call.  The structural constants
+#: (``hc``, ``iters``, ``eps``) are closed over rather than passed, because they
+#: are not arrays and would otherwise be invisible to that cache key.
+_HC_COMPILED: dict = {}
+
+
+def _hc_compiled(kind: str, *consts):
+    key = (kind, consts)
+    fn = _HC_COMPILED.get(key)
+    if fn is None:
+        if kind == "pre":
+            hc, iters, eps = consts
+
+            def impl(x, fn_t, base, scale_vec):
+                return _hc_pre_impl(x, fn_t, base, scale_vec, hc, iters, eps)
+        elif kind == "post":
+            impl = _hc_post_impl
+        elif kind == "head":
+            (eps,) = consts
+
+            def impl(x, fn_t, base, scale):
+                return _hc_head_impl(x, fn_t, base, scale, eps)
+        else:  # pragma: no cover - programming error
+            raise ValueError(f"unknown Hyper-Connection kernel {kind!r}")
+        fn = mx.compile(impl)
+        _HC_COMPILED[key] = fn
+    return fn
+
+
+def _hc_use_compile(x: mx.array) -> bool:
+    """Is ``x`` in the shape regime the compiled tape is kept for?
+
+    See :data:`_HC_COMPILE_MAX_ROWS`.  Read through the module globals rather
+    than captured, so tests (and an operator) can flip either knob after import.
+    """
+    if not _HC_COMPILE:
+        return False
+    rows = 1
+    for d in x.shape[:-2]:
+        rows *= int(d)
+    return rows <= _HC_COMPILE_MAX_ROWS
+
+
 class HyperConnection(nn.Module):
     """Holds a block's ``{fn, base, scale}`` HC parameters and applies pre/post.
 
@@ -564,6 +795,8 @@ class HyperConnection(nn.Module):
         self.fn = mx.zeros((mix_hc, hc * dim))
         self.base = mx.zeros((mix_hc,))
         self.scale = mx.zeros((3,))
+        # Derived-from-parameters, so a plain object (see _DerivedCache).
+        self._static_cache = _DerivedCache()
 
     def _mixes(self, x: mx.array) -> mx.array:
         # x: [..., hc, dim]
@@ -571,17 +804,43 @@ class HyperConnection(nn.Module):
         rsqrt = mx.rsqrt(mx.mean(mx.square(x_flat), axis=-1, keepdims=True) + self.eps)
         return (x_flat @ self.fn.astype(mx.float32).T) * rsqrt
 
+    def _static(self):
+        """``(fn.T, base, scale_vec)`` in fp32, derived once from the parameters.
+
+        ``fn`` is ``[(2+hc)*hc, hc*dim]`` — 24 x 16384 on DeepSeek-V4-Flash — and
+        the eager path cast it to fp32 inside every call, on every one of the
+        ``2 * n_layers`` Hyper-Connections, for a value that never changes.  Same
+        shape of waste the ``wo_a`` dequant had, one order of magnitude smaller.
+        Keyed on the parameter arrays themselves, so ``load_weights``/``update``/
+        ``set_dtype`` invalidate it by identity.
+        """
+        src = (self.fn, self.base, self.scale)
+        hit = self._static_cache.get(src)
+        if hit is not None:
+            return hit
+        hc = self.hc
+        s = self.scale.astype(mx.float32)
+        scale_vec = mx.concatenate(
+            [
+                mx.broadcast_to(s[0:1], (hc,)),
+                mx.broadcast_to(s[1:2], (hc,)),
+                mx.broadcast_to(s[2:3], (hc * hc,)),
+            ]
+        )
+        value = (
+            self.fn.astype(mx.float32).T,
+            self.base.astype(mx.float32),
+            scale_vec,
+        )
+        return self._static_cache.put(src, value)
+
     def pre(self, x: mx.array):
         """Collapse the ``hc`` copies to one; return (y[..., dim], post, comb)."""
-        dtype = x.dtype
-        xf = x.astype(mx.float32)
-        mixes = self._mixes(xf)
-        pre, post, comb = hc_split_sinkhorn(
-            mixes, self.scale.astype(mx.float32), self.base.astype(mx.float32),
-            self.hc, self._iters, self.eps,
-        )
-        y = mx.sum(pre[..., None] * xf, axis=-2)  # [..., dim]
-        return y.astype(dtype), post, comb
+        fn_t, base, scale_vec = self._static()
+        if _hc_use_compile(x):
+            impl = _hc_compiled("pre", self.hc, self._iters, self.eps)
+            return impl(x, fn_t, base, scale_vec)
+        return _hc_pre_impl(x, fn_t, base, scale_vec, self.hc, self._iters, self.eps)
 
     def post(self, x: mx.array, residual: mx.array, post: mx.array, comb: mx.array):
         """Expand one -> ``hc`` copies and re-mix with the residual copies.
@@ -589,11 +848,8 @@ class HyperConnection(nn.Module):
         ``x``: ``[..., dim]``  ``residual``: ``[..., hc, dim]``
         ``post``: ``[..., hc]``  ``comb``: ``[..., hc, hc]``  ->  ``[..., hc, dim]``.
         """
-        xf = x.astype(mx.float32)
-        rf = residual.astype(mx.float32)
-        term = post[..., None] * xf[..., None, :]  # [..., hc, dim]
-        mixed = mx.einsum("...jk,...jd->...kd", comb, rf)  # sum_j comb[j,k] res[j]
-        return (term + mixed).astype(x.dtype)
+        impl = _hc_compiled("post") if _hc_use_compile(residual) else _hc_post_impl
+        return impl(x, residual, post, comb)
 
     # iterations set at construction from args
     _iters: int = 20
@@ -615,17 +871,28 @@ class HeadHC(nn.Module):
         self.fn = mx.zeros((hc, hc * dim))
         self.base = mx.zeros((hc,))
         self.scale = mx.zeros((1,))
+        self._static_cache = _DerivedCache()
+
+    def _static(self):
+        """``(fn.T, base, scale)`` in fp32, derived once (see
+        :meth:`HyperConnection._static`)."""
+        src = (self.fn, self.base, self.scale)
+        hit = self._static_cache.get(src)
+        if hit is not None:
+            return hit
+        value = (
+            self.fn.astype(mx.float32).T,
+            self.base.astype(mx.float32),
+            self.scale.astype(mx.float32),
+        )
+        return self._static_cache.put(src, value)
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [..., hc, dim]
-        dtype = x.dtype
-        xf = x.astype(mx.float32)
-        x_flat = xf.reshape(*xf.shape[:-2], self.hc * self.dim)
-        rsqrt = mx.rsqrt(mx.mean(mx.square(x_flat), axis=-1, keepdims=True) + self.eps)
-        mixes = (x_flat @ self.fn.astype(mx.float32).T) * rsqrt
-        pre = mx.sigmoid(mixes * self.scale.astype(mx.float32) + self.base.astype(mx.float32)) + self.eps
-        y = mx.sum(pre[..., None] * xf, axis=-2)
-        return y.astype(dtype)
+        fn_t, base, scale = self._static()
+        if _hc_use_compile(x):
+            return _hc_compiled("head", self.eps)(x, fn_t, base, scale)
+        return _hc_head_impl(x, fn_t, base, scale, self.eps)
 
 
 # ---------------------------------------------------------------------------
@@ -1384,6 +1651,8 @@ class DeepseekV4Attention(nn.Module):
         # are plain (non-array) attributes, so neither reaches the weight tree.
         self.o_lora_mode = _o_lora_mode_from_env()
         self._wo_a_cache = _DerivedCache()
+        # How _attend forms the score block (see _ATTN_MODES).
+        self.attn_mode = _attn_mode_from_env()
 
         if self.compress_ratio:
             self.compressor = Compressor(args, self.compress_ratio, self.head_dim)
@@ -1589,6 +1858,87 @@ class DeepseekV4Attention(nn.Module):
         neg = mx.array(mx.finfo(dtype).min, dtype)
         return mx.where(ok, mx.array(0.0, dtype), neg)[:, None]
 
+    def _attend(self, q_t: mx.array, full_kv: mx.array, add) -> mx.array:
+        """``softmax(q.k^T + mask, with attn_sink in the denominator) . kv``.
+
+        ``q_t``: ``[b, h, s, head_dim]``.  ``full_kv``: ``[b, n_kv, head_dim]`` —
+        one shared KV row per position (MQA-shaped MLA), used as both K and V.
+        ``add``: the additive ``[b, 1, s, n_kv]`` window+compressed mask, or
+        ``None`` when every column is attendable.
+
+        **The sink.**  ``attn_sink`` is a per-head learned logit that appears only
+        in the softmax denominator — the head can decide to attend to nothing.
+        Writing it as one extra KV column makes it ordinary attention: the
+        appended row is all zeros, so its raw score is *exactly* 0 whatever the
+        query is, an additive mask column carries the sink itself, and because
+        the same zero row is also the V row it contributes exactly nothing to the
+        numerator.  The whole block is then a single softmax, and MLX's is
+        ``precise``: fp32 max and fp32 accumulation with bf16 in and out, which is
+        what the reference kernel does with its FP32 fragments (kernel.py
+        L298/L305/L308-314) and what ``dense`` could only get by materialising the
+        entire block in fp32 twice over.
+
+        **Why not ``mx.fast.scaled_dot_product_attention`` by default.**  MLX
+        0.31.2 does take ``sinks=`` natively and the ``sdpa`` arm below uses it —
+        it is the same computation in one op.  But its fused Metal kernels are
+        only instantiated for head dims 64/96/128/256 (vector) and 64/80/128
+        (full) — ``ScaledDotProductAttention::use_fallback``, metal/
+        scaled_dot_product_attention.cpp L618-636 — and DeepSeek-V4's MLA latent
+        is 512 wide, so on this box every call would take MLX's *own* unfused
+        fallback: the same matmul/softmax/matmul, plus a ``concatenate`` of the
+        sink column and a ``slice`` to remove it again, i.e. two extra passes over
+        the full block.  ``fused`` is that fallback minus the two copies.  The arm
+        is kept, and kept exact, because the day MLX instantiates head_dim 512
+        (or the model is served through an absorbed-MLA rewrite that lands on a
+        supported dim) it becomes one kernel with no code change — that is the A/B
+        the mlx-0.32 venv arm is for.
+        """
+        if self.attn_mode == "sdpa":
+            # MLX appends and removes the sink column itself; the KV block stays
+            # exactly as built.  ``sinks`` must not promote past the value dtype.
+            kt = full_kv[:, None]
+            return mx.fast.scaled_dot_product_attention(
+                q_t,
+                kt,
+                kt,
+                scale=self.softmax_scale,
+                mask=add,
+                sinks=self.attn_sink.astype(kt.dtype),
+            )
+
+        if self.attn_mode == "dense":
+            kt = full_kv[:, None]
+            scores = (q_t * self.softmax_scale) @ mx.swapaxes(kt, -1, -2)
+            if add is not None:
+                scores = scores + add
+            # attn_sink: per-head learned logit in the softmax denominator.  The
+            # softmax itself runs in fp32 — the reference kernel keeps acc_s /
+            # scores_max / sum_exp in FP32 fragments and its attn_sink parameter
+            # is fp32 (kernel.py L298/L308-314, model.py L457) — but the
+            # probability block is cast back to the KV dtype before the PV gemm
+            # (``acc_s_cast`` is BF16, kernel.py L305/L340) and ``o`` is written
+            # at the model dtype (``o: T.Tensor[(b,m,h,d), BF16]``, L297).
+            # Keeping the probabilities fp32 here would promote kt for the second
+            # matmul and hand an fp32 ``o`` to the o-LoRA einsum, which then has
+            # to upcast wo_a as well.
+            sink = self.attn_sink.reshape(1, self.n_heads, 1, 1).astype(mx.float32)
+            sf = scores.astype(mx.float32)
+            m = mx.maximum(mx.max(sf, axis=-1, keepdims=True), sink)
+            ex = mx.exp(sf - m)
+            denom = mx.sum(ex, axis=-1, keepdims=True) + mx.exp(sink - m)
+            return (ex / denom).astype(kt.dtype) @ kt
+
+        # "fused": one zero KV row carries the sink column.
+        kt = mx.pad(full_kv, [(0, 0), (0, 1), (0, 0)])[:, None]
+        scores = (q_t * self.softmax_scale) @ mx.swapaxes(kt, -1, -2)
+        if add is not None:
+            scores = scores + mx.pad(add, [(0, 0), (0, 0), (0, 0), (0, 1)])
+        sink = self.attn_sink.reshape(1, self.n_heads, 1, 1).astype(scores.dtype)
+        scores = scores + mx.pad(
+            sink, [(0, 0), (0, 0), (0, 0), (int(full_kv.shape[1]), 0)]
+        )
+        return mx.softmax(scores, axis=-1, precise=True) @ kt
+
     def _indexer_active(self, n_comp: int) -> bool:
         """Is the top-k filter load-bearing for this call?
 
@@ -1680,28 +2030,13 @@ class DeepseekV4Attention(nn.Module):
             cache.advance(s)
 
         q_t = q.transpose(0, 2, 1, 3)          # [b, h, s, head_dim]
-        kt = full_kv[:, None]                  # [b, 1, s+n_comp, head_dim] (shared over heads)
-        scores = (q_t * self.softmax_scale) @ mx.swapaxes(kt, -1, -2)  # [b, h, s, s+n_comp]
+        # ``full_kv`` is [b, s+n_comp, head_dim] and shared over heads (MQA).
+        # q and the KV block always carry the same dtype (both follow x, or both
+        # follow the fp32 escape hatch), so either one names the score dtype.
         add = self._attn_mask(
-            positions, kv_pos, n_win, n_comp, ratio, scores.dtype, comp_sel=comp_sel
+            positions, kv_pos, n_win, n_comp, ratio, q_t.dtype, comp_sel=comp_sel
         )
-        if add is not None:
-            scores = scores + add
-        # attn_sink: per-head learned logit in the softmax denominator.  The
-        # softmax itself runs in fp32 — the reference kernel keeps acc_s /
-        # scores_max / sum_exp in FP32 fragments and its attn_sink parameter is
-        # fp32 (kernel.py L298/L308-314, model.py L457) — but the probability
-        # block is cast back to the KV dtype before the PV gemm (``acc_s_cast``
-        # is BF16, kernel.py L305/L340) and ``o`` is written at the model dtype
-        # (``o: T.Tensor[(b,m,h,d), BF16]``, L297).  Keeping the probabilities
-        # fp32 here would promote kt for the second matmul and hand an fp32 ``o``
-        # to the o-LoRA einsum, which then has to upcast wo_a as well.
-        sink = self.attn_sink.reshape(1, self.n_heads, 1, 1).astype(mx.float32)
-        sf = scores.astype(mx.float32)
-        m = mx.maximum(mx.max(sf, axis=-1, keepdims=True), sink)
-        ex = mx.exp(sf - m)
-        denom = mx.sum(ex, axis=-1, keepdims=True) + mx.exp(sink - m)
-        o = (ex / denom).astype(kt.dtype) @ kt   # [b, h, s, head_dim]
+        o = self._attend(q_t, full_kv, add)     # [b, h, s, head_dim]
         o = o.transpose(0, 2, 1, 3)            # [b, s, h, head_dim]
         # de-rotate the tail dims (reference L534, inverse rope)
         o = mx.concatenate(
