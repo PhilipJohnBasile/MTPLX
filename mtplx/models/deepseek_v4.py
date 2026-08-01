@@ -62,9 +62,16 @@ Status:
     per-head attn_sink; it is a dense equivalent of the reference sparse_attn, exact
     whenever every compressed position is selected (n_comp <= index_topk, i.e. up to
     ~index_topk*ratio tokens of context).
-  * Deferred (do not affect prefill correctness): the single-token streaming decode
-    KV-cache state machine, and the ratio-4 indexer top-k *filter* for very long
-    context (beyond index_topk compressed windows).  ``deepseek-v4`` is registered in
+  * Streaming decode runs off ``DeepseekV4Cache`` (``make_cache``): a sliding-window
+    per-position KV buffer, the growing compressed-KV rows, and the compressor's
+    in-progress window frontier.  Prompt-prefill + token-by-token decode reproduces
+    the one-shot forward (tests/test_deepseek_v4_decode.py), including partial
+    prompt windows, both compress ratios, and context past ``window_size``.  The
+    state machine is adapted from ds4.c (antirez/DwarfStar4, MIT).
+  * Deferred (does not affect correctness in the served regime): the ratio-4 indexer
+    top-k *filter* for very long context (beyond index_topk compressed windows); the
+    indexer submodule loads but its sparse selection is not applied, so attention
+    stays dense over compressed positions.  ``deepseek-v4`` is registered in
     ``mtplx/backends/registry.py`` so ``mtplx serve`` resolves the load path.
 
 Provenance: reference files fetched read-only from
@@ -352,8 +359,10 @@ class Compressor(nn.Module):
     NOTE: the reference simulates FP8/FP4 on the pooled KV at inference (``act_quant``
     /``fp4_act_quant`` in-place).  That QAT noise is intentionally dropped in this clean
     MLX path; the divergence it introduces is quantified in M3, not hidden here.
-    The incremental single-token decode state machine (kv_state/score_state buffers) is
-    a separate M3 deliverable; this class implements the prefill pooling only.
+
+    Two entry points share one pooling core (:meth:`_pool`): :meth:`__call__` pools a
+    whole sequence from position 0 (the parity-gated path), :meth:`step` pools
+    incrementally against a :class:`CompressorState` frontier for streaming decode.
     """
 
     def __init__(self, args: ModelArgs, compress_ratio: int, head_dim: int):
@@ -375,7 +384,9 @@ class Compressor(nn.Module):
             args.rope_factor, args.beta_fast, args.beta_slow,
         )
 
-    def _overlap_transform(self, t: mx.array, value: float) -> mx.array:
+    def _overlap_transform(
+        self, t: mx.array, value: float, prev: Optional[mx.array] = None
+    ) -> mx.array:
         """Reference ``overlap_transform`` (model.py L307-314).
 
         ``t``: ``[b, nwin, ratio, 2*d]`` -> ``[b, nwin, 2*ratio, d]``.  The first
@@ -383,27 +394,49 @@ class Compressor(nn.Module):
         first-half (``:d``) projection (``value`` for w==0); the last ``ratio``
         slots hold the current window's tokens under the second-half (``d:``)
         projection.
+
+        ``prev`` seeds window 0's first half from a window that was pooled in an
+        earlier call (streaming decode); ``None`` is the fresh-sequence pad.
         """
         b, nwin, r, _ = t.shape
         d = self.head_dim
         cur = t[..., d:]                       # [b, nwin, ratio, d]  (current, d: half)
-        prev = t[..., :d]                      # [b, nwin, ratio, d]  (:d half)
-        pad = mx.full((b, 1, r, d), value, dtype=t.dtype)
-        prev_shift = mx.concatenate([pad, prev[:, :-1]], axis=1)  # window w -> prev window w-1
+        prev_half = t[..., :d]                 # [b, nwin, ratio, d]  (:d half)
+        if prev is None:
+            seed = mx.full((b, 1, r, d), value, dtype=t.dtype)
+        else:
+            seed = prev[..., :d][:, None]      # [b, 1, ratio, d]
+        prev_shift = mx.concatenate([seed, prev_half[:, :-1]], axis=1)  # w -> window w-1
         return mx.concatenate([prev_shift, cur], axis=2)          # [b, nwin, 2*ratio, d]
 
-    def __call__(self, x: mx.array) -> mx.array:
-        """Prefill pooling (``start_pos == 0``) for non-overlap (ratio != 4) and
-        overlap (ratio == 4) windows.
+    def _pool(self, kv: mx.array, score: mx.array, first_window: int) -> mx.array:
+        """Gated pool + norm + compress-YaRN rope of already-formed windows.
 
-        NOTE(M3): the single-token decode state machine (kv_state / score_state)
-        for incremental compression is a separate follow-up; this is the prefill
-        path the attention forward uses.
+        ``kv``/``score``: ``[b, nwin, slots, d]`` (``slots`` is ``ratio``, or
+        ``2*ratio`` once ``_overlap_transform`` has folded the previous window in).
+        Window ``first_window + i`` ropes at absolute position ``(first_window+i)*ratio``
+        — its own first token — for both the overlap and non-overlap lanes.
+        """
+        nwin = kv.shape[1]
+        rd = self.rope_head_dim
+        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)            # [b, nwin, d]
+        pooled = self.norm(pooled)
+        win_pos = (mx.arange(nwin, dtype=mx.float32) + float(first_window)) * self.compress_ratio
+        ang = win_pos[:, None] * self._inv_freq[None, :]
+        cos, sin = mx.cos(ang), mx.sin(ang)
+        head = pooled[..., :-rd]
+        tail = _apply_interleaved_rope(pooled[..., -rd:], cos[None], sin[None])
+        return mx.concatenate([head, tail], axis=-1)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        """Whole-sequence pooling from ``start_pos == 0`` (the parity-gated path).
+
+        The incremental equivalent is :meth:`step`; both funnel into :meth:`_pool`
+        so the two paths cannot drift.
         """
         b, s, _ = x.shape
         ratio = self.compress_ratio
         d = self.head_dim
-        rd = self.rope_head_dim
         cutoff = s - (s % ratio)
         nwin = cutoff // ratio
         if nwin == 0:
@@ -414,15 +447,58 @@ class Compressor(nn.Module):
         if self.overlap:
             kv = self._overlap_transform(kv, 0.0)                          # [b,nwin,2*ratio,d]
             score = self._overlap_transform(score, float("-inf"))
-        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)            # [b, nwin, d]
-        pooled = self.norm(pooled)
-        # rope tail at window positions [0, ratio, 2*ratio, ...]
-        win_pos = mx.arange(nwin, dtype=mx.float32) * ratio
-        ang = win_pos[:, None] * self._inv_freq[None, :]
-        cos, sin = mx.cos(ang), mx.sin(ang)
-        head = pooled[..., :-rd]
-        tail = _apply_interleaved_rope(pooled[..., -rd:], cos[None], sin[None])
-        return mx.concatenate([head, tail], axis=-1)
+        return self._pool(kv, score, 0)
+
+    def step(self, x: mx.array, state: "CompressorState", offset: int) -> mx.array:
+        """Incremental pooling: consume ``x`` (positions ``offset..offset+s-1``) and
+        emit the compressed rows whose windows *complete* inside that span.
+
+        State machine adapted from ``ds4.c``'s ``compressor_decode_one`` (antirez/
+        DwarfStar4, MIT): a token at position ``p`` lands in slot ``p % ratio`` of the
+        in-progress window, and a row is emitted exactly when ``(p+1) % ratio == 0``.
+        Window ``w`` therefore becomes attendable by query ``p == (w+1)*ratio - 1``,
+        which is precisely what the prefill mask's ``c < (i+1)//ratio`` allows, so a
+        decode step needs no compressed-column mask at all.
+
+        The buffered frontier is the window's *projected* rows (post-``ape`` for the
+        gate), not the raw hidden states, so the emit does the same arithmetic on the
+        same values ``__call__`` would have.  For the overlap lane ``state.prev_*``
+        keeps the last completed window's full-width rows, which
+        :meth:`_overlap_transform` folds in under the ``:d`` projection.
+        """
+        b, s, _ = x.shape
+        ratio = self.compress_ratio
+        d = self.head_dim
+        xf = x.astype(mx.float32)
+        kv_rows = self.wkv(xf)                                   # [b, s, coff*d]
+        ape_idx = (mx.arange(s) + offset) % ratio                # slot of each token
+        score_rows = self.wgate(xf) + self.ape[ape_idx]
+        if state.cur_kv is not None:
+            kv_rows = mx.concatenate([state.cur_kv, kv_rows], axis=1)
+            score_rows = mx.concatenate([state.cur_score, score_rows], axis=1)
+        # kv_rows[:, 0] is at position offset - (offset % ratio), a window boundary.
+        total = kv_rows.shape[1]
+        nwin = total // ratio
+        filled = nwin * ratio
+        if nwin:
+            kv_w = kv_rows[:, :filled].reshape(b, nwin, ratio, -1)
+            score_w = score_rows[:, :filled].reshape(b, nwin, ratio, -1)
+            if self.overlap:
+                kv_slots = self._overlap_transform(kv_w, 0.0, state.prev_kv)
+                score_slots = self._overlap_transform(
+                    score_w, float("-inf"), state.prev_score
+                )
+                state.prev_kv = kv_w[:, -1]                      # [b, ratio, coff*d]
+                state.prev_score = score_w[:, -1]
+            else:
+                kv_slots, score_slots = kv_w, score_w
+            out = self._pool(kv_slots, score_slots, state.n_emitted)
+            state.n_emitted += nwin
+        else:
+            out = mx.zeros((b, 0, d), dtype=mx.float32)
+        state.cur_kv = kv_rows[:, filled:] if filled < total else None
+        state.cur_score = score_rows[:, filled:] if filled < total else None
+        return out
 
 
 class Indexer(nn.Module):
@@ -431,9 +507,13 @@ class Indexer(nn.Module):
     reference) plus ``wq_b``/``weights_proj``; scores compressed positions and returns
     the top-``index_topk`` to attend.
 
-    NOTE(M3): the full top-k selection + Hadamard rotation + FP4 QAT are integrated in
-    M3.  The submodule tree (wq_b, weights_proj, compressor) is defined here so the
-    checkpoint loads; a dense fallback is used until the sparse path is gated.
+    DEFERRED: the top-k selection + Hadamard rotation + FP4 QAT.  The submodule tree
+    (wq_b, weights_proj, compressor) is defined here so the checkpoint loads, but the
+    selection is not applied: attention stays dense over compressed positions, which
+    is exact while n_comp <= index_topk.  Because nothing reads ``self.compressor``
+    yet, streaming decode keeps no frontier for this lane — wiring the filter means
+    adding a second :class:`CompressorState` to :class:`DeepseekV4Cache`, exactly as
+    ds4.c carries ``index_state_kv`` beside ``attn_state_kv``.
     """
 
     def __init__(self, args: ModelArgs, compress_ratio: int):
@@ -448,6 +528,171 @@ class Indexer(nn.Module):
         self.weights_proj = nn.Linear(self.dim, self.n_heads, bias=False)
         self.softmax_scale = self.head_dim ** -0.5
         self.compressor = Compressor(args, compress_ratio, self.head_dim)
+
+
+# ---------------------------------------------------------------------------
+# Streaming decode state (sliding-window KV + compressed KV + compressor frontier)
+# ---------------------------------------------------------------------------
+class CompressorState:
+    """Rolling frontier of one compressor lane.
+
+    Mirrors ``ds4.c``'s ``attn_state_kv`` / ``attn_state_score`` row block
+    (antirez/DwarfStar4, MIT).  ds4 keeps a fixed ``coff*ratio`` block and clears the
+    unfilled tail after prefill (``compressor_finish_prefill_state_cpu``); here the
+    filled rows are simply buffered, which is the same state without the -inf padding.
+    """
+
+    def __init__(self) -> None:
+        self.cur_kv: Optional[mx.array] = None      # [b, offset % ratio, coff*head_dim]
+        self.cur_score: Optional[mx.array] = None   # same, post-``ape``
+        self.prev_kv: Optional[mx.array] = None     # [b, ratio, coff*head_dim] (overlap)
+        self.prev_score: Optional[mx.array] = None
+        self.n_emitted = 0
+
+    def reset(self) -> None:
+        self.cur_kv = None
+        self.cur_score = None
+        self.prev_kv = None
+        self.prev_score = None
+        self.n_emitted = 0
+
+
+class DeepseekV4Cache:
+    """Per-layer streaming cache.
+
+    Three pieces, following ``ds4_layer_cache`` (ds4.c, MIT):
+      * ``window``  — the rotated per-position KV rows still inside the sliding
+        window, sliding by one row once full (``kv_cache_push_raw``).
+      * ``compressed`` — every compressed KV row emitted so far
+        (``kv_cache_push_comp``).  Never evicted: attention stays dense over the
+        compressed axis, which is exact while ``n_comp <= index_topk``; the ratio-4
+        indexer top-k *filter* that bounds it for longer context is deferred.
+      * ``comp`` — the compressor's in-progress window (:class:`CompressorState`).
+
+    ``offset`` is the absolute position of the next token, i.e. the standard
+    mlx-lm cache contract the generate/serve path reads.
+    """
+
+    _META_VERSION = "mtplx-deepseek-v4-cache-v1"
+
+    def __init__(self, window_size: int, compress_ratio: int, head_dim: int) -> None:
+        self.window_size = int(window_size)
+        self.compress_ratio = int(compress_ratio)
+        self.head_dim = int(head_dim)
+        self.offset = 0
+        self.window: Optional[mx.array] = None      # [b, L, head_dim]
+        self.window_start = 0                       # abs position of window[:, 0]
+        self.compressed: Optional[mx.array] = None  # [b, n_comp, head_dim]
+        self.comp = CompressorState()
+
+    # -- streaming updates -------------------------------------------------
+    @property
+    def n_compressed(self) -> int:
+        return 0 if self.compressed is None else int(self.compressed.shape[1])
+
+    def update_window(self, kv: mx.array):
+        """Append ``kv`` (positions ``offset..offset+s-1``) and return the rows this
+        call can still see, as ``(rows, first_position)``.
+
+        A query at ``p`` attends ``(p - window_size, p]``, so once the newest query is
+        ``offset+s-1`` nothing older than ``offset+s-window_size`` can ever matter:
+        rows below that are dropped here rather than masked.  For ``s == 1`` that
+        leaves exactly the attendable set, so the decode step needs no mask.
+        """
+        s = int(kv.shape[1])
+        if self.window is None:
+            rows, start = kv, self.offset
+        else:
+            rows = mx.concatenate([self.window, kv], axis=1)
+            start = self.window_start
+        keep = self.window_size + s - 1
+        if rows.shape[1] > keep:
+            rows = rows[:, -keep:]
+            start = self.offset + s - keep
+        held = min(int(rows.shape[1]), self.window_size)
+        self.window = rows if held == rows.shape[1] else rows[:, -held:]
+        self.window_start = start + int(rows.shape[1]) - held
+        return rows, start
+
+    def update_compressed(self, compressor: Compressor, x: mx.array) -> None:
+        """Run the compressor frontier over ``x`` and append whatever it emitted."""
+        new = compressor.step(x, self.comp, self.offset)
+        if new.shape[1] == 0:
+            return
+        self.compressed = (
+            new if self.compressed is None
+            else mx.concatenate([self.compressed, new], axis=1)
+        )
+
+    def advance(self, s: int) -> None:
+        self.offset += int(s)
+
+    # -- mlx-lm cache contract --------------------------------------------
+    @property
+    def state(self):
+        return (
+            self.window,
+            self.compressed,
+            self.comp.cur_kv,
+            self.comp.cur_score,
+            self.comp.prev_kv,
+            self.comp.prev_score,
+        )
+
+    @state.setter
+    def state(self, value) -> None:
+        if value is None:
+            self.window = None
+            self.compressed = None
+            self.comp.reset()
+            self.offset = 0
+            self.window_start = 0
+            return
+        if not isinstance(value, (tuple, list)) or len(value) != 6:
+            raise ValueError("DeepSeek-V4 cache state must contain six entries")
+        (
+            self.window,
+            self.compressed,
+            self.comp.cur_kv,
+            self.comp.cur_score,
+            self.comp.prev_kv,
+            self.comp.prev_score,
+        ) = value
+
+    def replace_state(self, value) -> None:
+        self.state = value
+
+    @property
+    def meta_state(self):
+        return (
+            self._META_VERSION,
+            str(self.offset),
+            str(self.window_start),
+            str(self.comp.n_emitted),
+        )
+
+    @meta_state.setter
+    def meta_state(self, value) -> None:
+        if (
+            not isinstance(value, (tuple, list))
+            or len(value) != 4
+            or value[0] != self._META_VERSION
+        ):
+            raise ValueError(f"unsupported DeepSeek-V4 cache meta state: {value!r}")
+        self.offset = int(value[1])
+        self.window_start = int(value[2])
+        self.comp.n_emitted = int(value[3])
+
+    def is_trimmable(self) -> bool:
+        # Trimming would have to rewind the compressor frontier and the emitted
+        # compressed rows together; not supported (ds4 snapshots both or neither).
+        return False
+
+    def size(self) -> int:
+        return int(self.offset)
+
+    def empty(self) -> bool:
+        return self.offset == 0
 
 
 # ---------------------------------------------------------------------------
@@ -537,13 +782,19 @@ class DeepseekV4Attention(nn.Module):
         out = out.reshape(b, s, g * r)
         return self.wo_b(out)
 
-    def _attn_mask(self, s: int, n_comp: int, ratio: int, dtype) -> mx.array:
-        """Additive ``[1, 1, s, s + n_comp]`` mask reproducing the reference sparse
-        gather at prefill: a query attends the causal sliding window over the
-        per-position KV, plus every compressed window that is fully causal for it.
+    def _attn_mask(
+        self, q_pos: mx.array, kv_pos: mx.array, n_comp: int, ratio: int, dtype
+    ) -> mx.array:
+        """Additive ``[1, 1, s, len(kv_pos) + n_comp]`` mask reproducing the reference
+        sparse gather: a query attends the causal sliding window over the per-position
+        KV, plus every compressed window that is fully causal for it.
+
+        ``q_pos``/``kv_pos`` are *absolute* positions, so the same rule covers the
+        one-shot prefill (both ``arange(s)``) and a cached chunk whose KV rows start
+        before the queries.
         """
-        i = mx.arange(s)[:, None]
-        j = mx.arange(s)[None, :]
+        i = q_pos[:, None]
+        j = kv_pos[None, :]
         win_ok = (j <= i) & (j > i - self.window_size)
         if n_comp:
             c = mx.arange(n_comp)[None, :]
@@ -555,16 +806,18 @@ class DeepseekV4Attention(nn.Module):
         return mx.where(ok, mx.array(0.0, dtype), neg)[None, None]
 
     def __call__(self, x: mx.array, mask=None, cache=None) -> mx.array:
-        # NOTE(M3): prefill path (start_pos == 0). Attends the causal sliding window
-        # over per-position KV plus the compressor's compressed KV — a dense
-        # equivalent of the reference sparse_attn that is exact whenever every
-        # compressed position is selected (n_comp <= index_topk, i.e. moderate
-        # context). Streaming decode cache + the ratio-4 indexer top-k filter for
-        # very long context remain follow-ups; `mask` is built internally.
+        # Attends the causal sliding window over per-position KV plus the compressor's
+        # compressed KV — a dense equivalent of the reference sparse_attn, exact
+        # whenever every compressed position is selected (n_comp <= index_topk).  The
+        # ratio-4 indexer top-k filter for longer context remains a follow-up.
+        # `cache is None` runs the whole sequence in one shot (the parity-gated path);
+        # otherwise the same math runs incrementally off DeepseekV4Cache.  `mask` is
+        # built internally either way — it needs the compressed-position columns.
         b, s, _ = x.shape
         rd = self.rope_head_dim
         ratio = self.compress_ratio
-        positions = mx.arange(s)  # NOTE(M3): + cache.offset for decode
+        offset = 0 if cache is None else cache.offset
+        positions = mx.arange(offset, offset + s)
         cos, sin = self._rope_tables(positions)
 
         qr = self.q_norm(self.wq_a(x))
@@ -584,18 +837,41 @@ class DeepseekV4Attention(nn.Module):
         )
 
         # concat the compressor's compressed KV (reference cats kv + kv_compress)
-        full_kv = kv
-        n_comp = 0
-        if ratio:
-            kvc = self.compressor(x)  # [b, n_comp, head_dim]
-            n_comp = kvc.shape[1]
-            if n_comp:
-                full_kv = mx.concatenate([kv, kvc], axis=1)  # [b, s + n_comp, head_dim]
+        if cache is None:
+            full_kv = kv
+            n_comp = 0
+            if ratio:
+                kvc = self.compressor(x)  # [b, n_comp, head_dim]
+                n_comp = kvc.shape[1]
+                if n_comp:
+                    full_kv = mx.concatenate([kv, kvc], axis=1)  # [b, s+n_comp, head_dim]
+            kv_pos = positions
+        else:
+            # Compressor first: the window a token *completes* is attendable by that
+            # same token (mask rule `c < (i+1)//ratio`), so it must land in the cache
+            # before this step's scores are formed.  Order copied from ds4.c's decode
+            # layer (push raw KV, compressor_decode_one, then mixed attention).
+            if ratio:
+                cache.update_compressed(self.compressor, x)
+            win_kv, win_start = cache.update_window(kv)
+            n_comp = cache.n_compressed
+            full_kv = win_kv if not n_comp else mx.concatenate(
+                [win_kv, cache.compressed], axis=1
+            )
+            # s == 1: update_window already dropped every row outside the query's
+            # window and every emitted compressed row is causal for it — no mask.
+            kv_pos = None if s == 1 else mx.arange(
+                win_start, win_start + win_kv.shape[1]
+            )
+            cache.advance(s)
 
         q_t = q.transpose(0, 2, 1, 3)          # [b, h, s, head_dim]
         kt = full_kv[:, None]                  # [b, 1, s+n_comp, head_dim] (shared over heads)
         scores = (q_t * self.softmax_scale) @ mx.swapaxes(kt, -1, -2)  # [b, h, s, s+n_comp]
-        scores = scores + self._attn_mask(s, n_comp, ratio, scores.dtype)
+        if kv_pos is not None:
+            scores = scores + self._attn_mask(
+                positions, kv_pos, n_comp, ratio, scores.dtype
+            )
         # attn_sink: per-head learned logit in the softmax denominator
         sink = self.attn_sink.reshape(1, self.n_heads, 1, 1)
         m = mx.maximum(mx.max(scores, axis=-1, keepdims=True), sink)
@@ -792,5 +1068,14 @@ class Model(nn.Module):
         return weights
 
     def make_cache(self):
-        # NOTE(M3): real sliding-window + compressed KV caches. Placeholder for now.
-        return [None] * len(self.layers)
+        """One :class:`DeepseekV4Cache` per layer (sliding-window KV + compressed KV
+        + compressor frontier).  Shapes come off the built attention modules so the
+        cache cannot drift from the layer's own compress ratio."""
+        return [
+            DeepseekV4Cache(
+                window_size=layer.attn.window_size,
+                compress_ratio=layer.attn.compress_ratio,
+                head_dim=layer.attn.head_dim,
+            )
+            for layer in self.layers
+        ]
