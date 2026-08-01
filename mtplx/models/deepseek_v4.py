@@ -146,15 +146,23 @@ Decode-path bytes (tests/test_deepseek_v4_o_lora.py, tests/test_deepseek_v4_dtyp
     behaviour as an A/B control; ``gather_qmm`` skips the dense tensor entirely and
     runs the 8 LoRA groups as one quantised block-diagonal matmul — the
     optimisation the reference explicitly leaves on the table (L538-539) — and is
-    off by default because it is not bit-identical.
-    What it is worth: ``cached`` vs ``dequant`` on the real checkpoint measured
+    off by default because it is not bit-identical.  Note the measured risk: the
+    grouped kernel tracks the dense einsum to ~1e-6 against fp32 activations but
+    loses two orders of magnitude against bf16 ones on the CPU kernel, so its
+    accuracy has to be re-measured on Metal before it can be defaulted on.
+    What each is worth: ``cached`` vs ``dequant`` on the real checkpoint measured
     +2.1% AR (4.534 -> 4.627 tok/s) with fp32 activation storage, which is inside
     this box's cross-window drift — i.e. not distinguishable from zero, because at
     fp32 the einsum promotes ``wo_a`` anyway and caching removes the dequantize
     but not the cast that followed it.  It is kept because it is bit-identical and
     removes real redundant work, not because it is the speed win; the speed win is
-    the activation-dtype fix below.  ``cached`` costs +2.69 GiB resident, which
-    ``gather_qmm`` gives back in full.
+    the activation-dtype fix below.  ``cached`` costs +2.69 GiB resident, and
+    ``gather_qmm`` gives that back in full: on Metal at bf16 it measured AR 16.146
+    vs 15.954 tok/s (+1.2%), K=3 26.762 vs 25.856 (+3.5%), peak 94.31 vs 96.97
+    GiB.  A strictly better speed/memory point whose *quality* is unproven — one
+    256-token prompt showed no visible damage, which is not a quality result — so
+    it stays env-gated pending its own task eval.
+    (bench/deepseek-v4/goal-ab-20260731, configs B/D/A/C.)
   * **Activation dtype.**  The reference keeps the whole attention lane at the model
     dtype and uses fp32 only as arithmetic: ``apply_rotary_emb`` rotates in fp32 and
     copies back into the caller's bf16 tensor (L234/L243), the compressor pools in

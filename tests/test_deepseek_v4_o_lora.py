@@ -334,6 +334,40 @@ def test_gather_qmm_matches_the_cached_arm_within_tolerance():
         f"argmax moved under gather_qmm (rel={rel:.3e})")
 
 
+def test_gather_qmm_precision_drops_at_bf16_and_that_is_arm_bs_open_risk():
+    """The number the GPU window has to re-measure before arm (b) can be defaulted on.
+
+    Against an fp32 activation the quantised kernel tracks the dense einsum to ~1e-6
+    (above).  Hand it bf16 activations and the *CPU* kernel loses two orders of
+    magnitude — it accumulates the dequantised products at lower precision than the
+    dense matmul does — while the dense bf16 einsum stays near one bf16 ulp.
+
+    Metal's ``gather_qmm`` is a different kernel with fp32 simdgroup accumulation, so
+    this is the pessimistic end, not a prediction.  But it is measured and it is on
+    the wrong side, so the bound is pinned here rather than left to be discovered:
+    if a Metal A/B shows the same gap, arm (b)'s bytes are not worth its accuracy.
+    """
+    _, model = _quantized_model()
+    attn = model.layers[0].attn
+    attn.set_dtype(mx.bfloat16)          # attention only: no MoE, no gather_mm
+    mx.eval(attn.parameters())
+    mx.random.seed(3)
+    o = (mx.random.normal((1, 140, N_HEADS * HEAD_DIM)) * 0.5).astype(mx.bfloat16)
+
+    attn.o_lora_mode = "cached"
+    ref = attn._o_lora(o)
+    attn.o_lora_mode = "gather_qmm"
+    got = attn._o_lora(o)
+    mx.eval(ref, got)
+    assert ref.dtype == got.dtype == mx.bfloat16
+    a = np.array(ref.astype(mx.float32))
+    b = np.array(got.astype(mx.float32))
+    rel = float(np.max(np.abs(b - a)) / np.max(np.abs(a)))
+    # ~1.3e-2 on this box's CPU kernel — several bf16 ulps, not one.
+    assert 1e-3 < rel < 5e-2, (
+        f"bf16 gather_qmm gap {rel:.3e} moved; re-derive the arm (b) risk note")
+
+
 def test_gather_qmm_holds_through_streaming_decode():
     _, model = _quantized_model()
     ids = _tokens(40)
