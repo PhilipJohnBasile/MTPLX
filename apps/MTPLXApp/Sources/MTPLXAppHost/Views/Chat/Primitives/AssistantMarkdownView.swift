@@ -136,13 +136,12 @@ private struct AssistantProseMarkdownView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         case .math(let latex):
-            // Display equations render as readable math text (the AIME
-            // formatter), centered like ChatMathMarkdown's display rows.
-            // The Jun-6 perf rewrite of this view dropped the math path
-            // and chat regressed to raw $$...$$ source (QA-108).
-            Text(StreamingMathTextFormatter.readableText(from: latex))
-                .font(.system(size: 15, weight: .medium, design: .serif))
-                .foregroundStyle(Brand.typeHi)
+            // Display equations render structured (matrices as stacked
+            // grids with tall delimiters, lone fractions stacked) with
+            // readable-math fallback. The Jun-6 perf rewrite dropped
+            // the math path and chat regressed to raw $$...$$ (QA-108);
+            // the 2026-07-31 rework killed the one-line flattening.
+            MathDisplayLineView(latex: latex)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 4)
         case .table(let rows, let hasHeader):
@@ -380,6 +379,88 @@ private struct AssistantProseLine: Identifiable, Equatable {
                 : row
         }
         return .table(rows: padded, hasHeader: hasHeader)
+    }
+}
+
+// MARK: - MathDisplayLineView
+
+/// One display-math line. Matrices lay out as a Grid between tall thin
+/// delimiters; a lone \frac stacks numerator over denominator; anything
+/// else falls back to the readable one-liner. Parsed once per settled
+/// line (the settled pipeline caches by block text).
+private struct MathDisplayLineView: View {
+    let latex: String
+
+    var body: some View {
+        switch StreamingMathTextFormatter.displayContent(from: latex) {
+        case .plain(let text):
+            Text(text)
+                .font(.system(size: 15, weight: .medium, design: .serif))
+                .foregroundStyle(Brand.typeHi)
+        case .matrix(let prefix, let open, let close, let rows, let suffix):
+            HStack(alignment: .center, spacing: 6) {
+                if !prefix.isEmpty {
+                    Text(prefix)
+                        .font(.system(size: 15, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                }
+                if !open.isEmpty {
+                    Text(open)
+                        .font(.system(size: delimiterSize(for: rows.count), weight: .ultraLight))
+                        .foregroundStyle(Brand.typeHi)
+                }
+                Grid(horizontalSpacing: 14, verticalSpacing: 4) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                                Text(cell)
+                                    .font(.system(size: 15, weight: .medium, design: .serif))
+                                    .foregroundStyle(Brand.typeHi)
+                            }
+                        }
+                    }
+                }
+                if !close.isEmpty {
+                    Text(close)
+                        .font(.system(size: delimiterSize(for: rows.count), weight: .ultraLight))
+                        .foregroundStyle(Brand.typeHi)
+                }
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.system(size: 15, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                }
+            }
+        case .fraction(let prefix, let numerator, let denominator, let suffix):
+            HStack(alignment: .center, spacing: 8) {
+                if !prefix.isEmpty {
+                    Text(prefix)
+                        .font(.system(size: 15, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                }
+                VStack(spacing: 3) {
+                    Text(numerator)
+                        .font(.system(size: 14, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                    Rectangle()
+                        .fill(Brand.typeHi)
+                        .frame(height: 1)
+                    Text(denominator)
+                        .font(.system(size: 14, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                }
+                .fixedSize()
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.system(size: 15, weight: .medium, design: .serif))
+                        .foregroundStyle(Brand.typeHi)
+                }
+            }
+        }
+    }
+
+    private func delimiterSize(for rowCount: Int) -> CGFloat {
+        min(72, CGFloat(max(1, rowCount)) * 22)
     }
 }
 

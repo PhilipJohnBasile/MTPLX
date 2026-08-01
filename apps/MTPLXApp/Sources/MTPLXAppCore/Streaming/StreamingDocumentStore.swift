@@ -631,6 +631,25 @@ public final class StreamingDocumentStore: ObservableObject {
         ) != nil {
             return true
         }
+        // Tuples, coordinates, intervals, bare numbers and short symbol
+        // runs: $(0,0,0)$, $13/2$, $P_1$, $x$, $(1, -3/2, 13/2)$. The
+        // 2026-07-31 jacobian answer leaked literal $(0,0,0)$ on screen
+        // because none of the operator checks above fire for a plain
+        // tuple. Guard rails against currency ("paid $5, then $6"):
+        // the body must not have edge whitespace and must be composed
+        // entirely of math-ish characters.
+        guard trimmed == body else { return false }
+        let mathish = CharacterSet(charactersIn: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ ,.()[]|!'")
+        let allMathish = trimmed.unicodeScalars.allSatisfy { mathish.contains($0) }
+        guard allMathish else { return false }
+        let hasDigit = trimmed.contains { $0.isNumber }
+        if hasDigit && (trimmed.contains("(") || trimmed.contains(",") || trimmed.count <= 8) {
+            return true
+        }
+        // Single short identifiers ($x$, $xy$, $J$) — but not words.
+        if !hasDigit, trimmed.count <= 2, !trimmed.contains(" ") {
+            return true
+        }
         return false
     }
 
@@ -955,9 +974,81 @@ public struct StreamingMathRun: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Structured content for a DISPLAY math line, so matrices render as
+/// real stacked grids with tall delimiters and lone fractions render
+/// stacked — instead of the one-line "( a  b ; c  d )" flattening
+/// (2026-07-31 founder: "does this look like mathematical notation?").
+public enum MathDisplayContent: Equatable, Sendable {
+    case plain(String)
+    case matrix(prefix: String, open: String, close: String, rows: [[String]], suffix: String)
+    case fraction(prefix: String, numerator: String, denominator: String, suffix: String)
+}
+
 public enum StreamingMathTextFormatter {
+
+    /// Parse a display-math latex body into structured content. Falls
+    /// back to the readable one-liner for anything unrecognized.
+    public static func displayContent(from latex: String) -> MathDisplayContent {
+        let matrixEnvs: [String: (String, String)] = [
+            "pmatrix": ("(", ")"), "bmatrix": ("[", "]"),
+            "Bmatrix": ("{", "}"), "vmatrix": ("|", "|"),
+            "Vmatrix": ("‖", "‖"), "matrix": ("", ""),
+            "smallmatrix": ("(", ")"), "cases": ("{", "")
+        ]
+        for (env, delims) in matrixEnvs {
+            guard let beginRange = latex.range(of: "\\begin{\(env)}"),
+                  let endRange = latex.range(
+                    of: "\\end{\(env)}",
+                    range: beginRange.upperBound..<latex.endIndex
+                  )
+            else { continue }
+            let body = String(latex[beginRange.upperBound..<endRange.lowerBound])
+            let rows = body
+                .components(separatedBy: "\\\\")
+                .map { row in
+                    row.components(separatedBy: "&").map {
+                        readableText(from: $0).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+                .filter { row in row.contains { !$0.isEmpty } }
+            guard !rows.isEmpty else { continue }
+            let prefix = readableText(from: String(latex[..<beginRange.lowerBound]))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = readableText(from: String(latex[endRange.upperBound...]))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .matrix(
+                prefix: prefix,
+                open: delims.0,
+                close: delims.1,
+                rows: rows,
+                suffix: suffix
+            )
+        }
+
+        // Lone top-level fraction (optionally with an "lhs =" prefix
+        // and nothing after): render stacked.
+        if let fracRange = latex.range(of: "\\frac"),
+           let numerator = bracedGroup(in: latex, from: fracRange.upperBound),
+           let denominator = bracedGroup(in: latex, from: numerator.upperBound),
+           latex[denominator.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let prefix = readableText(from: String(latex[..<fracRange.lowerBound]))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .fraction(
+                prefix: prefix,
+                numerator: readableText(from: numerator.body)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                denominator: readableText(from: denominator.body)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                suffix: ""
+            )
+        }
+
+        return .plain(readableText(from: latex))
+    }
+
     public static func readableText(from latex: String) -> String {
-        guard latex.contains("\\") else { return latex }
+        // No commands: still normalize ^/_ scripts (x^2 → x², f_1 → f₁).
+        guard latex.contains("\\") else { return normalizeScripts(in: latex) }
         var output = ""
         var index = latex.startIndex
 
@@ -1376,6 +1467,41 @@ public enum StreamingMathTextFormatter {
         return "(\(value))"
     }
 
+    /// Converts `^…` / `_…` into REAL Unicode super/subscripts wherever
+    /// the glyphs exist (x^2 → x², f_1 → f₁, ℂ^3 → ℂ³, x^{13} → x¹³),
+    /// falling back to the caret/underscore form only for unmappable
+    /// bodies. 2026-07-31 founder: "does this look like mathematical
+    /// notation?" — literal ^ and _ do not.
+    private static let superscriptMap: [Character: Character] = [
+        "0": "⁰", "1": "¹", "2": "²", "3": "³", "4": "⁴",
+        "5": "⁵", "6": "⁶", "7": "⁷", "8": "⁸", "9": "⁹",
+        "+": "⁺", "-": "⁻", "−": "⁻", "=": "⁼", "(": "⁽", ")": "⁾",
+        "a": "ᵃ", "b": "ᵇ", "c": "ᶜ", "d": "ᵈ", "e": "ᵉ", "f": "ᶠ",
+        "g": "ᵍ", "h": "ʰ", "i": "ⁱ", "j": "ʲ", "k": "ᵏ", "l": "ˡ",
+        "m": "ᵐ", "n": "ⁿ", "o": "ᵒ", "p": "ᵖ", "r": "ʳ", "s": "ˢ",
+        "t": "ᵗ", "u": "ᵘ", "v": "ᵛ", "w": "ʷ", "x": "ˣ", "y": "ʸ",
+        "z": "ᶻ", "T": "ᵀ"
+    ]
+
+    private static let subscriptMap: [Character: Character] = [
+        "0": "₀", "1": "₁", "2": "₂", "3": "₃", "4": "₄",
+        "5": "₅", "6": "₆", "7": "₇", "8": "₈", "9": "₉",
+        "+": "₊", "-": "₋", "−": "₋", "=": "₌", "(": "₍", ")": "₎",
+        "a": "ₐ", "e": "ₑ", "h": "ₕ", "i": "ᵢ", "j": "ⱼ", "k": "ₖ",
+        "l": "ₗ", "m": "ₘ", "n": "ₙ", "o": "ₒ", "p": "ₚ", "r": "ᵣ",
+        "s": "ₛ", "t": "ₜ", "u": "ᵤ", "v": "ᵥ", "x": "ₓ"
+    ]
+
+    private static func mapped(_ body: String, via table: [Character: Character]) -> String? {
+        guard !body.isEmpty else { return nil }
+        var out = ""
+        for ch in body {
+            guard let m = table[ch] else { return nil }
+            out.append(m)
+        }
+        return out
+    }
+
     private static func normalizeScripts(in source: String) -> String {
         var output = ""
         var index = source.startIndex
@@ -1387,26 +1513,52 @@ public enum StreamingMathTextFormatter {
                 index = source.index(after: index)
                 continue
             }
+            let table = character == "^" ? superscriptMap : subscriptMap
 
             let next = source.index(after: index)
-            guard next < source.endIndex, source[next] == "{",
-                  let group = bracedGroup(in: source, from: next) else {
-                output.append(character)
-                index = next
+            // Braced script: ^{13}, _{n+1}
+            if next < source.endIndex, source[next] == "{",
+               let group = bracedGroup(in: source, from: next) {
+                let body = readableText(from: group.body)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let converted = mapped(body, via: table) {
+                    output.append(converted)
+                } else if character == "_", body.count > 1 {
+                    output.append("_(")
+                    output.append(body)
+                    output.append(")")
+                } else {
+                    output.append(character)
+                    output.append(body)
+                }
+                index = group.upperBound
                 continue
             }
 
-            let body = readableText(from: group.body)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if character == "_", body.count > 1 {
-                output.append("_(")
-                output.append(body)
-                output.append(")")
-            } else {
-                output.append(character)
-                output.append(body)
+            // Unbraced script: consume a digit run (x^25 means x²⁵ in
+            // chat-model output) or a single letter (f_i).
+            if next < source.endIndex {
+                var end = next
+                if source[next].isNumber || source[next] == "-" || source[next] == "−" {
+                    end = source.index(after: next)
+                    while end < source.endIndex, source[end].isNumber {
+                        end = source.index(after: end)
+                    }
+                } else if source[next].isLetter {
+                    end = source.index(after: next)
+                }
+                if end > next {
+                    let body = String(source[next..<end])
+                    if let converted = mapped(body, via: table) {
+                        output.append(converted)
+                        index = end
+                        continue
+                    }
+                }
             }
-            index = group.upperBound
+
+            output.append(character)
+            index = next
         }
 
         return output

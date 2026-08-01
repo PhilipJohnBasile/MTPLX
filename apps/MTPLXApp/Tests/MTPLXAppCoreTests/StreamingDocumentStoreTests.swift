@@ -150,13 +150,15 @@ final class StreamingDocumentStoreTests: XCTestCase {
     }
 
     func testReadableLatexFormatterCoversAIMEOperators() {
+        // 2026-07-31: ^/_ now render as real Unicode scripts wherever
+        // the glyphs exist (founder: literal carets are not math).
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"d_i\le6<9"#),
-            "d_i≤6<9"
+            "dᵢ≤6<9"
         )
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"d_i\in \{1,\dots,9\}"#),
-            "d_i∈ {1,…,9}"
+            "dᵢ∈ {1,…,9}"
         )
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"\frac{a+b}{2}"#),
@@ -164,11 +166,11 @@ final class StreamingDocumentStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"\int_{-\infty}^{\infty} e^{-x^2}"#),
-            "∫_(-∞)^∞ e^-x^2"
+            "∫_(-∞)^∞ e^-x²"
         )
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"\sum_{p=0}^6 \binom{6}{p}"#),
-            "Σ_(p=0)^6 C(6, p)"
+            "Σₚ₌₀⁶ C(6, p)"
         )
     }
 

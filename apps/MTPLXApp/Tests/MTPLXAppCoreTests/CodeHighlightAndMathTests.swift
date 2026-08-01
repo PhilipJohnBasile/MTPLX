@@ -9,15 +9,60 @@ final class MathReadableTextTests: XCTestCase {
     func testBlackboardAndArrow() {
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"F: \mathbb{C}^3 \to \mathbb{C}^3"#),
-            "F: ℂ^3 → ℂ^3"
+            "F: ℂ³ → ℂ³"
         )
     }
 
     func testSingleLetterBlackboardShorthand() {
         XCTAssertEqual(
             StreamingMathTextFormatter.readableText(from: #"\C^3\to \C^3"#),
-            "ℂ^3→ ℂ^3"
+            "ℂ³→ ℂ³"
         )
+    }
+
+    func testUnicodeScripts() {
+        XCTAssertEqual(StreamingMathTextFormatter.readableText(from: "x^2 + y^{13}"), "x² + y¹³")
+        XCTAssertEqual(StreamingMathTextFormatter.readableText(from: "f_1 + a_{n}"), "f₁ + aₙ")
+        XCTAssertEqual(StreamingMathTextFormatter.readableText(from: "x^25"), "x²⁵")
+        XCTAssertEqual(StreamingMathTextFormatter.readableText(from: "e^{x+y}"), "eˣ⁺ʸ")
+        // Unmappable script bodies (no superscript q glyph) keep the caret form.
+        XCTAssertEqual(StreamingMathTextFormatter.readableText(from: "e^{q+1}"), "e^q+1")
+    }
+
+    func testInlineTupleDollarsConvert() {
+        let runs = StreamingDocumentStore.mathRuns(in: "at the origin $(0,0,0)$ provides")
+        XCTAssertTrue(runs.contains { $0.kind == .inlineMath && $0.text == "(0,0,0)" }, "\(runs)")
+    }
+
+    func testCurrencyDollarsStayText() {
+        let runs = StreamingDocumentStore.mathRuns(in: "he paid $5, then $6.")
+        XCTAssertFalse(runs.contains { $0.kind != .text }, "\(runs)")
+    }
+
+    func testDisplayMatrixStructure() {
+        let content = StreamingMathTextFormatter.displayContent(
+            from: #"J_F(0,0,0) = \begin{pmatrix} 0 & 0 & 1 \\ 0 & 1 & 0 \\ 2 & 0 & 0 \end{pmatrix}"#
+        )
+        guard case .matrix(let prefix, let open, let close, let rows, _) = content else {
+            return XCTFail("expected matrix, got \(content)")
+        }
+        XCTAssertEqual(open, "(")
+        XCTAssertEqual(close, ")")
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows[0], ["0", "0", "1"])
+        XCTAssertEqual(rows[2], ["2", "0", "0"])
+        XCTAssertTrue(prefix.contains("J"), prefix)
+    }
+
+    func testDisplayLoneFractionStacks() {
+        let content = StreamingMathTextFormatter.displayContent(
+            from: #"\frac{x+1}{y-2}"#
+        )
+        guard case .fraction(_, let numerator, let denominator, _) = content else {
+            return XCTFail("expected fraction, got \(content)")
+        }
+        XCTAssertEqual(numerator, "x+1")
+        XCTAssertEqual(denominator, "y-2")
     }
 
     func testOperatorNames() {
