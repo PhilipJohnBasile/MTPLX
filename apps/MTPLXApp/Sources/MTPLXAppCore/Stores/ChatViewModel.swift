@@ -100,6 +100,9 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var streamingPhase: StreamingPhase = .idle
     public let streamingReasoningDocument = StreamingDocumentStore(mode: .plainLines)
     public let streamingContentDocument = StreamingDocumentStore(mode: .plainLines)
+    /// Frontend streaming-performance instrumentation (inert unless
+    /// MTPLX_UI_PERF / MTPLX_AIME_DIAGNOSTICS is set at launch).
+    public let uiPerfProbe = UIStreamPerfProbe()
     @Published public private(set) var hasStreamingReasoning: Bool = false
     @Published public private(set) var hasStreamingContent: Bool = false
     @Published public private(set) var handoffAssistantMessageID: UUID?
@@ -426,6 +429,7 @@ public final class ChatViewModel: ObservableObject {
         streamGeneration &+= 1
         let generation = streamGeneration
         isStreaming = true
+        uiPerfProbe.turnStarted()
         streamingPhase = reasoningEnabledProvider() == false ? .generating : .thinking
         streamingReasoningDocument.reset()
         streamingContentDocument.reset()
@@ -709,8 +713,10 @@ public final class ChatViewModel: ObservableObject {
         case .role:
             break
         case .reasoningDelta(let fragment):
+            uiPerfProbe.chunkArrived(bytes: fragment.utf8.count)
             appendStreamingReasoning(fragment)
         case .contentDelta(let fragment):
+            uiPerfProbe.chunkArrived(bytes: fragment.utf8.count)
             let split = leakedThinkingSplitter.feed(fragment)
             appendStreamingReasoning(split.reasoning)
             appendStreamingContent(split.content)
@@ -909,6 +915,12 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func flushStreamingBuffers() {
+        let drainedBytes = streamingReasoningBuffer.utf8.count
+            + streamingContentBuffer.utf8.count
+        let probeActive = uiPerfProbe.enabled && drainedBytes > 0
+        let applyStarted = probeActive
+            ? ProcessInfo.processInfo.systemUptime
+            : 0
         if !streamingReasoningBuffer.isEmpty {
             let delta = streamingReasoningBuffer
             streamingReasoningBuffer = ""
@@ -918,6 +930,15 @@ public final class ChatViewModel: ObservableObject {
             let delta = streamingContentBuffer
             streamingContentBuffer = ""
             streamingContentDocument.append(delta)
+        }
+        if probeActive {
+            let applyMs = (ProcessInfo.processInfo.systemUptime - applyStarted) * 1000
+            uiPerfProbe.flushApplied(
+                drainedBytes: drainedBytes,
+                applyMs: applyMs,
+                blocksAfter: streamingContentDocument.blocks.count
+                    + streamingReasoningDocument.blocks.count
+            )
         }
     }
 
@@ -1038,6 +1059,7 @@ public final class ChatViewModel: ObservableObject {
     private func finalizeAssistantTurnUI() {
         flushStreamingBuffers()
         stopStreamFlushLoop()
+        uiPerfProbe.turnEnded(requestId: currentRequestId)
         isStreaming = false
         streamingPhase = .idle
         currentRequestId = nil
@@ -1116,6 +1138,7 @@ public final class ChatViewModel: ObservableObject {
     // MARK: - Glue
 
     private func clearStreamingState() {
+        uiPerfProbe.turnEnded(requestId: currentRequestId)
         isStreaming = false
         streamingPhase = .idle
         stopStreamFlushLoop()

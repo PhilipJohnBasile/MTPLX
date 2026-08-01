@@ -82,6 +82,10 @@ struct ChatConversationView: View {
                         }
                     },
                     onScroll: { distanceToBottom, isUserInitiated in
+                        viewModel.uiPerfProbe.scrollTick(
+                            distanceToBottom: distanceToBottom,
+                            userInitiated: isUserInitiated
+                        )
                         performScrollActions(
                             policy.didScroll(
                                 distanceToBottom: distanceToBottom,

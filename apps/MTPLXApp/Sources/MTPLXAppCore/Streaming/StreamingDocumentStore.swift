@@ -204,7 +204,84 @@ public final class StreamingDocumentStore: ObservableObject {
             allocateNewTail()
             tailText = String(tailText[split...])
         }
+        coalesceFinalizedLineBlocksIfNeeded()
         upsertTail(text: tailText, finalized: false)
+    }
+
+    // MARK: - Line-segment coalescing (2026-07-31 streaming-jank fix)
+    //
+    // In line modes every finalized line is its own block, so a long
+    // code answer accumulates thousands of blocks — and thousands of
+    // realized SwiftUI views. Layout cost per flush then grows with
+    // answer length, which is exactly the founder-reported "starts
+    // smooth, then freezes and vomits words" curve (receipts:
+    // outputs/app-frontend-hunt-20260731.md — UI flushes sank from
+    // ~10.6/s to ~6/s with 250–800 ms stalls while the engine held a
+    // flat 54 tok/s).
+    //
+    // Once enough OLD finalized lines pile up, fold them into one
+    // multi-line segment block: the transcript's realized-view count
+    // stays O(answer/segment) instead of O(lines). A fresh window of
+    // recent lines is left unmerged so the just-frozen line's promotion
+    // to settled markdown never visibly re-wraps. The raw text, word
+    // count, and tail behavior are unchanged; `recentText` still walks
+    // blocks in order. Fence-safety classification happens at the view
+    // layer over block TEXTS, so a merged segment that opens a fence
+    // without closing it simply stays on the plain-text path — same
+    // rendering as unmerged, thirty-odd times fewer views.
+    //
+    // `MTPLX_STREAM_SEGMENT_LINES` tunes the segment size (default 32;
+    // 0 disables, which is also the A/B baseline arm).
+    static let lineSegmentSizeDefault = 32
+    nonisolated(unsafe) static var lineSegmentSizeOverrideForTesting: Int?
+    private static let lineSegmentSize: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["MTPLX_STREAM_SEGMENT_LINES"],
+              let value = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return lineSegmentSizeDefault }
+        return min(max(value, 0), 512)
+    }()
+    private static let lineSegmentFreshWindow = 8
+
+    private var effectiveLineSegmentSize: Int {
+        Self.lineSegmentSizeOverrideForTesting ?? Self.lineSegmentSize
+    }
+
+    private func coalesceFinalizedLineBlocksIfNeeded() {
+        // plainLines only: mathLines blocks carry parsed math runs that
+        // must stay per-line, and the other modes never finalize lines.
+        guard mode == .plainLines else { return }
+        let segmentSize = effectiveLineSegmentSize
+        guard segmentSize > 0 else { return }
+
+        // Single-line blocks never contain "\n"; merged segments always
+        // do. That distinction is the "already merged" marker, so no
+        // block-struct change is needed.
+        var lineIndexes: [Int] = []
+        for (index, block) in blocks.enumerated()
+        where block.finalized && !block.text.contains("\n") {
+            lineIndexes.append(index)
+        }
+        guard lineIndexes.count >= segmentSize + Self.lineSegmentFreshWindow else {
+            return
+        }
+
+        let head = Array(lineIndexes.prefix(segmentSize))
+        guard let first = head.first, let last = head.last,
+              last - first == segmentSize - 1
+        else { return }
+
+        let merged = blocks[first...last].map(\.text).joined(separator: "\n")
+        let mergedBlock = StreamingDocumentBlock(
+            id: blocks[first].id,
+            text: merged,
+            kind: .plain,
+            finalized: true
+        )
+        blocks.replaceSubrange(first...last, with: [mergedBlock])
+        #if DEBUG
+        diagnostics.segmentMergeCount += 1
+        diagnostics.visibleBlockCount = blocks.count
+        #endif
     }
 
     // MARK: - Markdown mode
@@ -1078,6 +1155,7 @@ public struct StreamingDocumentDiagnostics: Equatable, Sendable {
     public var mathParseCount: Int = 0
     public var visibleBlockCount: Int = 0
     public var renderPublicationCount: Int = 0
+    public var segmentMergeCount: Int = 0
 
     public init() {}
 }

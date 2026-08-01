@@ -224,3 +224,104 @@ final class StreamingDocumentStoreTests: XCTestCase {
         XCTAssertFalse(store.blocks.last?.finalized ?? true)
     }
 }
+
+// MARK: - Line-segment coalescing (2026-07-31 streaming-jank fix)
+
+@MainActor
+final class StreamingDocumentSegmentCoalescingTests: XCTestCase {
+    override func tearDown() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = nil
+        super.tearDown()
+    }
+
+    private func feedLines(_ store: StreamingDocumentStore, count: Int) {
+        for index in 0..<count {
+            store.append("line-\(index)\n")
+        }
+    }
+
+    func testOldFinalizedLinesMergeIntoOneSegmentBlock() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 4
+        let store = StreamingDocumentStore(mode: .plainLines)
+
+        // 4 (segment) + 8 (fresh window) finalized lines trip one merge.
+        feedLines(store, count: 12)
+        store.append("open tail")
+
+        let merged = store.blocks.filter { $0.text.contains("\n") }
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(
+            merged.first?.text,
+            "line-0\nline-1\nline-2\nline-3"
+        )
+        XCTAssertTrue(merged.first?.finalized ?? false)
+        // 1 segment + 8 fresh finalized lines + growing tail.
+        XCTAssertEqual(store.blocks.count, 10)
+        XCTAssertEqual(store.blocks.last?.text, "open tail")
+        XCTAssertFalse(store.blocks.last?.finalized ?? true)
+    }
+
+    func testRawTextAndRecentTextSurviveMerging() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 4
+        let store = StreamingDocumentStore(mode: .plainLines)
+        let reference = StreamingDocumentStore(mode: .plainLines)
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 0
+        // reference store built with merging disabled
+        feedLines(reference, count: 20)
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 4
+        feedLines(store, count: 20)
+
+        XCTAssertEqual(store.rawText, reference.rawText)
+        // recentText's contract is "roughly the last N characters for a
+        // live preview" — the exact cut position of a partial first
+        // line may shift by one separator because a merged segment's
+        // internal newlines count against the character budget while
+        // inter-block separators do not. The trailing complete lines
+        // must be identical.
+        let mergedRecent = store.recentText(characterLimit: 64)
+        let referenceRecent = reference.recentText(characterLimit: 64)
+        let mergedLines = mergedRecent.split(separator: "\n").map(String.init)
+        let referenceLines = referenceRecent.split(separator: "\n").map(String.init)
+        XCTAssertEqual(
+            mergedLines.suffix(8),
+            referenceLines.suffix(8)
+        )
+        XCTAssertTrue(mergedRecent.hasSuffix("line-19"))
+        XCTAssertLessThan(store.blocks.count, reference.blocks.count)
+    }
+
+    func testMergeDisabledWhenSegmentSizeZero() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 0
+        let store = StreamingDocumentStore(mode: .plainLines)
+
+        feedLines(store, count: 40)
+
+        XCTAssertFalse(store.blocks.contains { $0.text.contains("\n") })
+        // Every append ended in a newline, so there is no growing tail.
+        XCTAssertEqual(store.blocks.count, 40)
+    }
+
+    func testMathLinesModeNeverMerges() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 4
+        let store = StreamingDocumentStore(mode: .mathLines)
+
+        feedLines(store, count: 30)
+
+        XCTAssertFalse(store.blocks.contains { $0.text.contains("\n") })
+    }
+
+    func testRepeatedMergesKeepSegmentingAsLinesAccumulate() {
+        StreamingDocumentStore.lineSegmentSizeOverrideForTesting = 4
+        let store = StreamingDocumentStore(mode: .plainLines)
+
+        feedLines(store, count: 40)
+
+        let segments = store.blocks.filter { $0.text.contains("\n") }
+        XCTAssertGreaterThanOrEqual(segments.count, 2)
+        // Reassembling segments + lines must reproduce the exact input
+        // (all appends ended in newline, so no tail block exists).
+        let reassembled = store.blocks.map(\.text).joined(separator: "\n")
+        let expected = (0..<40).map { "line-\($0)" }.joined(separator: "\n")
+        XCTAssertEqual(reassembled, expected)
+    }
+}
