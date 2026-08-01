@@ -30,6 +30,21 @@ generated position.  Full agreement gates the streaming state machine at real
 dims.  The one-shot forward is a single call by definition, so it cannot be
 chunked; it is the memory high-water mark of a long run.
 
+Reading GATE A past ``index_topk * ratio``: below that threshold the two paths
+agree exactly (dense regime, 128/128 measured).  Above it the selection is
+*discrete*, and the two paths reduce over different shapes — so a compressed
+row sitting within float noise of the top-k cut can be selected by one path and
+not the other.  Measured at 3.4K context (bench/deepseek-v4/sparse-2bitdq-
+20260731-probe.json): the rank-512-vs-513 score gap is 2e-4..1e-2 on all 21
+ratio-4 layers while the inter-path score noise is 4e-3..2.9, so 18/21 layers
+select a slightly different row set and the logit rows spread by mean 0.11.
+A generated position whose top1-top2 margin is under that spread can therefore
+flip without anything being wrong.  Note the one-shot forward's own length
+changes ``n_comp`` too, so it is not a fixed oracle in this regime — two
+one-shot forwards over different totals disagree at the same position.  Judge a
+sparse GATE A by *where* it diverges (an isolated near-tie that does not
+propagate) rather than by an exact count.
+
 MUST run inside the box's serialized MLX window (bench/laguna/run_guarded.py) —
 the 2-bit checkpoint is ~90 GiB and does not fit beside the served model.
 
