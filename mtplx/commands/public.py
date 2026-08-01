@@ -550,8 +550,10 @@ def _model_gate_error_lines(inspection: dict[str, Any]) -> list[str]:
         )
     if runtime_compatibility == "missing-mtp-weights":
         lines.append(
-            "fix: choose a model with real MTP weights, or graft an MTP sidecar "
-            "into this base model."
+            "fix: use a complete model with matching MTP weights, or build and "
+            "verify one from its original source with mtplx forge. MTPLX does not "
+            "attach arbitrary sidecars because config/tensor checks cannot prove "
+            "their trunk lineage."
         )
     elif compatibility.get("tier") == TIER_ARCH_COMPATIBLE_UNVERIFIED:
         lines.append(

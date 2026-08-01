@@ -7299,7 +7299,10 @@ def test_start_gate_failure_is_human_readable_for_config_only_qwen(tmp_path, cap
     assert "error: model cannot run with MTPLX" in captured
     assert "runtime: missing-mtp-weights" in captured
     assert "mtplx_runtime.json is optional metadata" in captured
-    assert "fix: choose a model with real MTP weights" in captured
+    assert "fix: use a complete model with matching MTP weights" in captured
+    assert "original source with mtplx forge" in captured
+    assert "does not attach arbitrary sidecars" in captured
+    assert "graft an MTP sidecar" not in captured
     assert '"model_files"' not in captured
 
 
@@ -7325,7 +7328,10 @@ def test_start_gate_failure_is_human_readable_for_config_only_glm(tmp_path, caps
     assert "error: model cannot run with MTPLX" in captured
     assert "runtime: missing-mtp-weights" in captured
     assert "mtplx_runtime.json is optional metadata" in captured
-    assert "fix: choose a model with real MTP weights" in captured
+    assert "fix: use a complete model with matching MTP weights" in captured
+    assert "original source with mtplx forge" in captured
+    assert "does not attach arbitrary sidecars" in captured
+    assert "graft an MTP sidecar" not in captured
     assert "MTP MTP markers" not in captured
     assert '"model_files"' not in captured
 
