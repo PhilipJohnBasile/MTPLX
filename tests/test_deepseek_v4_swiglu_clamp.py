@@ -25,17 +25,18 @@ Three things there are easy to get wrong, and each has a mutation below:
   * both cuts are **pre-activation**, on the raw projections;
   * ``limit <= 0`` means *no clamp*, not a clamp at zero.
 
-The shared expert already had this (:class:`DeepseekV4MLP`); the routed experts
-run through mlx-lm's ``SwitchGLU`` and reach it via :class:`ClampedSwiGLU` on the
-``activation`` seam.
+The shared expert already had this (:class:`DeepseekV4MLP`, pinned by
+``test_shared_expert_applies_the_swiglu_clamp`` in test_deepseek_v4_mtp.py); the
+routed experts run through mlx-lm's ``SwitchGLU`` and reach it via
+:class:`ClampedSwiGLU` on the ``activation`` seam.
 
 Every gate here drives the branches into saturation on all four sides
 (gate above/below +/-limit, up above/below +/-limit) and **asserts** it did --
 the clamp being a no-op on the test inputs is exactly how this went untested the
 first time, so the saturation counts are part of the gate, not a comment.
 
-The parity golden was captured at ``swiglu_limit=0``; that path is held
-bit-identical to a stock unclamped ``SwitchGLU`` below, which is what keeps it
+Both parity goldens were captured at ``swiglu_limit=0``; that path is held
+bit-identical to a stock unclamped ``SwitchGLU`` below, which is what keeps them
 valid.  NumPy float64 oracle, CPU device so MLX fp32 is bit-exact IEEE rather
 than its reduced-precision GPU matmul path.  No torch, no download.
 """
@@ -77,7 +78,7 @@ CFG = dict(
     compress_ratios=[0, 4, 0], sliding_window=5,
     hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6, rms_norm_eps=1e-6,
     rope_theta=10000.0, routed_scaling_factor=1.5, scoring_func="sqrtsoftplus",
-    swiglu_limit=0.0,
+    swiglu_limit=0.0, num_nextn_predict_layers=1,
 )
 LIMIT = 1.5
 W_SCALE = 0.5
@@ -313,7 +314,7 @@ def test_a_wrong_limit_value_is_rejected():
 
 
 # --------------------------------------------------------------------------- #
-# 3. swiglu_limit=0 is bit-identical to stock -- this is what keeps the golden
+# 3. swiglu_limit=0 is bit-identical to stock -- this is what keeps the goldens
 # --------------------------------------------------------------------------- #
 def test_clamped_activation_at_zero_is_bit_identical_to_stock_swiglu():
     rng = np.random.default_rng(3)
@@ -334,7 +335,7 @@ def test_clamped_activation_at_zero_is_bit_identical_to_stock_swiglu():
 
 
 def test_moe_at_limit_zero_is_bit_identical_to_a_stock_switchglu():
-    """End-to-end on the module the golden exercises: a ``DeepseekV4MoE`` built
+    """End-to-end on the module the goldens exercise: a ``DeepseekV4MoE`` built
     at ``swiglu_limit=0`` must equal one whose routed experts are the unmodified
     mlx-lm ``SwitchGLU``, bit for bit."""
     args, moe, P, c = _build_moe(limit=0.0)
@@ -368,16 +369,16 @@ def test_limit_zero_leaves_the_parameter_tree_untouched():
 # --------------------------------------------------------------------------- #
 # 4. every routed-expert site is covered
 # --------------------------------------------------------------------------- #
-# The trunk's score layers and hash layers are the only routed-expert sites this
-# branch builds; both come out of ``DeepseekV4MoE.__init__``, which is the point
-# -- but assert it, so a future extra construction site cannot slip past.  When
-# the MTP draft block lands it is a ``DeepseekV4DecoderLayer`` subclass and so
-# constructs through the same seam; add it to ``sites`` below at that point.
 def test_every_routed_expert_site_carries_the_clamp():
+    """Trunk score layers, trunk hash layers and the MTP draft block.  All three
+    build their experts through ``DeepseekV4MoE.__init__``, which is the point --
+    but assert it, so a future extra construction site cannot slip past."""
     args = _args(swiglu_limit=LIMIT)
     model = D.Model(args)
     sites = {f"layers.{i}": layer.ffn for i, layer in enumerate(model.model.layers)}
-    assert len(sites) == args.num_hidden_layers
+    assert model.has_mtp
+    sites["mtp.0"] = model.mtp[0].ffn
+    assert len(sites) == args.num_hidden_layers + 1
 
     for name, ffn in sites.items():
         act = ffn.switch_mlp.activation
@@ -387,6 +388,7 @@ def test_every_routed_expert_site_carries_the_clamp():
     # both gate kinds are represented, so 'hash layers' is really covered
     assert sites[f"layers.{HASH_LAYER}"].gate.hash
     assert not sites[f"layers.{SCORE_LAYER}"].gate.hash
+    assert not sites["mtp.0"].gate.hash
 
 
 def test_every_routed_expert_site_is_functionally_clamped():
@@ -411,6 +413,7 @@ def test_every_routed_expert_site_is_functionally_clamped():
 
     pairs = [(f"layers.{i}", a.ffn, b.ffn)
              for i, (a, b) in enumerate(zip(on.model.layers, off.model.layers))]
+    pairs.append(("mtp.0", on.mtp[0].ffn, off.mtp[0].ffn))
     for name, ffn_on, ffn_off in pairs:
         idx, _ = ffn_off.gate(xf, ids_f)
         a, b = ffn_on.switch_mlp(xf, idx), ffn_off.switch_mlp(xf, idx)

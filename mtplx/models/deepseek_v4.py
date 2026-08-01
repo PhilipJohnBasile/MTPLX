@@ -50,7 +50,9 @@ Weight names mirror the reference module tree, which is exactly what the
 ``model.hc_head.{fn,base,scale}``, ``model.{embed_tokens,norm}``, ``lm_head``.
 Quantisation in that checkpoint is mixed: routed experts (``ffn.switch_mlp.*``) are
 **mxfp4 group_size 32** (scales, no biases); everything else is **affine 4-bit
-group_size 64** (weight/scales/biases).  The MTP block is dropped by the conversion.
+group_size 64** (weight/scales/biases).  The MTP block is dropped by the conversion
+— see :class:`DeepseekV4MTP` and ``scripts/deepseek_v4_build_mtp_model.py``, which
+restores it from the upstream FP8/FP4 checkpoint into a merged model directory.
 
 Status:
   * The four new-math components are numerically gated against the reference
@@ -83,18 +85,28 @@ Status:
     top-k boundary, so selections near the cut can differ from the reference.  The
     Hadamard rotation that precedes the FP4 step is implemented (it is graph, not
     noise), and is a no-op for selection on its own; see :class:`Indexer`.
+  * The MTP draft block (:class:`DeepseekV4MTP`) is implemented and gated against a
+    NumPy transcription of the reference ``MTPBlock`` (tests/test_deepseek_v4_mtp.py,
+    max_rel ~2e-7 at a shrunk config; nine implementation mutations all caught).
+    It binds through the ordinary load path from a checkpoint that ships ``mtp.0.*``
+    — no sidecar, no env var — and :meth:`Model.sanitize` drops it from the tree
+    when the weights are absent, which is the published mlx-community case and
+    keeps the runtime's degrade-to-autoregressive branch reachable unchanged.
+    What is NOT here: the speculative decode loop itself (draft/verify, cache
+    rollback, acceptance).  :meth:`Model.hc_hidden` / :meth:`Model.mtp_forward` /
+    :meth:`Model.make_mtp_cache` are the seams it needs.
   * The ``swiglu_limit`` clamp (10.0 in the shipped config) is applied in every
     expert, routed and shared, as the reference does (``Expert.forward``, model.py
     L600-602, handed the limit at L624/L627).  The shared expert carries it in
     :class:`DeepseekV4MLP`; the routed experts get it from :class:`ClampedSwiGLU`
     plugged into ``SwitchGLU``'s ``activation`` seam, so the batched expert kernels
-    are untouched and one constructor covers score and hash layers alike.
+    are untouched and one constructor covers trunk, hash and MTP layers alike.
     The clamp is asymmetric — ``up`` clipped to ``[-limit, +limit]``, ``gate`` cut
     only at ``+limit`` — and is gated against a NumPy oracle with the branches
     driven into saturation, with the branch-flip and clamp-removal mutations
     caught (tests/test_deepseek_v4_swiglu_clamp.py).  At ``swiglu_limit=0`` the
     routed path defers to the stock fused ``swiglu``, bit-identically, which is
-    where the parity golden was captured.
+    where both parity goldens were captured.
     Not yet measured: the activation ranges real V4-Flash weights actually reach,
     i.e. how often the clamp binds in practice.  That needs a checkpoint load and
     is deferred to a GPU window.
@@ -113,7 +125,7 @@ elementwise math (verified elementwise, not by running the shipped kernel).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional
 
 import mlx.core as mx
@@ -182,6 +194,10 @@ class ModelArgs(BaseModelArgs):
     beta_slow: int = 1
     attention_bias: bool = False
     tie_word_embeddings: bool = False
+    # multi-token prediction (draft head).  DeepSeek-V4-Flash ships one MTP block
+    # upstream as ``mtp.0.*``; a conversion that drops it leaves this field at 1
+    # while shipping no weights, which :meth:`Model.sanitize` detects and honours.
+    num_nextn_predict_layers: int = 0
 
     def __post_init__(self):
         # Accept the HF rope_scaling block and mirror it into the flat YaRN fields
@@ -1179,7 +1195,7 @@ class DeepseekV4MLP(nn.Module):
     branch (``w1`` = ``gate_proj``) only has its upper tail cut at ``+limit`` and
     keeps its whole negative range.  Both cuts land on the pre-activation
     projections, before ``silu``.  ``limit <= 0`` disables the clamp entirely,
-    which is what the parity golden was captured at.
+    which is what both parity goldens were captured at.
     """
 
     def __init__(self, args: ModelArgs, intermediate_size: int):
@@ -1217,7 +1233,7 @@ class ClampedSwiGLU(SwiGLU):
 
     At ``limit <= 0`` this defers to :class:`SwiGLU` untouched, so the disabled
     path is the stock fused ``swiglu`` kernel and stays bit-identical to a model
-    built without this class at all (the parity golden was captured there).
+    built without this class at all (both parity goldens were captured there).
     Holds no parameters, so the load path and the weight tree are unchanged.
     """
 
@@ -1283,8 +1299,10 @@ class DeepseekV4MoE(nn.Module):
     :class:`ClampedSwiGLU` (the ``SwitchGLU`` activation seam) and the shared one
     through :class:`DeepseekV4MLP`, matching L624/L627 where the reference hands
     the same limit to both.  This constructor is the *only* place the backend
-    builds routed experts, so trunk score layers and trunk hash layers alike are
-    covered by construction rather than by call sites kept in sync.
+    builds routed experts, so trunk score layers, trunk hash layers and the
+    :class:`DeepseekV4MTP` draft block (a :class:`DeepseekV4DecoderLayer`
+    subclass) are all covered by construction rather than by three call sites
+    kept in sync.
     """
 
     def __init__(self, args: ModelArgs, layer_id: int):
@@ -1343,6 +1361,89 @@ class DeepseekV4DecoderLayer(nn.Module):
         return h
 
 
+# ---------------------------------------------------------------------------
+# Multi-token-prediction draft block
+# ---------------------------------------------------------------------------
+class DeepseekV4MTP(DeepseekV4DecoderLayer):
+    """Speculative-decode draft block (reference ``MTPBlock``, model.py L738-766).
+
+    **What it owns.**  ``MTPBlock`` subclasses ``Block``, so the draft head is a
+    full decoder layer in its own right: its own attention, its own 256-expert
+    MoE, its own ``attn_norm``/``ffn_norm`` and its own two Hyper-Connection
+    blocks — none of it shared with the trunk.  On top of a body block it adds
+    six pieces (L742-752): ``enorm``/``hnorm`` normalise the two inputs,
+    ``e_proj``/``h_proj`` project and sum them, and ``norm`` + ``hc_head`` do the
+    final collapse that the trunk does with ``model.norm`` + ``model.hc_head``.
+    Every one of those ships upstream under ``mtp.0.*``.
+
+    **What it shares.**  Exactly two things, and it holds no copy of either:
+    the token embedding and the output projection.  ``Transformer.__init__``
+    L792-793 assigns ``mtp[i].embed = self.embed`` and ``mtp[i].head = self.head``
+    after constructing the block, so the draft's logits land in the same
+    vocabulary space as the target's — which is what makes accept/reject a
+    comparison of like with like.  Both are therefore passed *in* to
+    :meth:`__call__` rather than stored, so the 129280-row embedding and lm_head
+    are never duplicated in memory.
+
+    **Which layer it is.**  ``layer_id = n_layers + i`` (L791) — 43 on
+    DeepSeek-V4-Flash — and that index is what the inherited ``Attention`` and
+    ``Gate`` read.  ``compress_ratios[43] == 0`` in the shipped config, so the
+    draft block is a **pure sliding-window** attention layer: base ``rope_theta``,
+    no YaRN, no :class:`Compressor`, no :class:`Indexer`.  ``43 >=
+    num_hash_layers`` (3), so its gate is score-routed (``noaux_tc`` bias), not
+    hash-routed.  Both fall out of the inherited constructor rather than being
+    re-decided here.
+
+    **Forward** (L757-766).  ``h`` is the trunk's pre-head Hyper-Connection state
+    ``[b, s, hc, dim]`` (:meth:`DeepseekV4Model.hc_hidden`), ``input_ids`` are the
+    tokens whose *embeddings* get fused in — the caller aligns them, and for
+    speculative decode that means position ``i`` of ``input_ids`` is the token the
+    trunk predicted *at* ``h[:, i]``, i.e. shifted one ahead of the ids that
+    produced ``h``.  The block does not shift anything itself; the reference
+    does not either.
+    """
+
+    def __init__(self, args: ModelArgs, layer_id: Optional[int] = None):
+        layer_id = args.num_hidden_layers if layer_id is None else int(layer_id)
+        ratios = list(args.compress_ratios)
+        if len(ratios) <= layer_id:
+            # The shipped config carries the MTP layer's entry (44 ratios for 43
+            # layers, trailing 0).  A config trimmed to the trunk length gets the
+            # same value rather than an IndexError out of Attention.__init__.
+            ratios = ratios + [0] * (layer_id + 1 - len(ratios))
+            args = replace(args, compress_ratios=ratios)
+        super().__init__(args, layer_id)
+        dim = args.hidden_size
+        eps = args.rms_norm_eps
+        self.enorm = nn.RMSNorm(dim, eps=eps)
+        self.hnorm = nn.RMSNorm(dim, eps=eps)
+        self.e_proj = nn.Linear(dim, dim, bias=False)
+        self.h_proj = nn.Linear(dim, dim, bias=False)
+        self.norm = nn.RMSNorm(dim, eps=eps)
+        self.hc_head = HeadHC(dim, args.hc_mult, args.hc_eps)
+
+    def __call__(
+        self,
+        h: mx.array,
+        input_ids: mx.array,
+        embed_tokens: nn.Module,
+        lm_head: nn.Module,
+        cache=None,
+    ) -> mx.array:
+        """``h``: ``[b, s, hc, dim]`` -> draft logits ``[b, s, vocab]``.
+
+        ``embed_tokens``/``lm_head`` are the trunk's, per the sharing above.  The
+        reference's ``ParallelHead.get_logits`` slices ``x[:, -1]`` before the
+        matmul because its caller only ever wants the last row; the full sequence
+        is returned here (mlx-lm's convention) and that slice is the caller's.
+        """
+        e = self.enorm(embed_tokens(input_ids))          # [b, s, dim]
+        x = self.hnorm(h)                                # [b, s, hc, dim]
+        x = self.e_proj(e)[:, :, None, :] + self.h_proj(x)
+        x = super().__call__(x, mask=None, cache=cache, input_ids=input_ids)
+        return lm_head(self.norm(self.hc_head(x)))
+
+
 class DeepseekV4Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -1355,7 +1456,16 @@ class DeepseekV4Model(nn.Module):
         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
         self.hc_head = HeadHC(args.hidden_size, args.hc_mult, args.hc_eps)
 
-    def __call__(self, input_ids: mx.array, cache=None) -> mx.array:
+    def hc_hidden(self, input_ids: mx.array, cache=None) -> mx.array:
+        """Run the body and stop at the Hyper-Connection state ``[b, s, hc, dim]``.
+
+        This is the split point the MTP block needs: the reference keeps ``h`` in
+        hc form all the way out of the body and hands *that* tensor to both the
+        output head and ``MTPBlock.forward`` (``Transformer.forward`` L806-808 vs
+        model.py L757-763).  Collapsing to ``[b, s, dim]`` first — which is what
+        :meth:`__call__` returns — would destroy the copies the draft block's own
+        ``hnorm``/``h_proj`` read.
+        """
         h = self.embed_tokens(input_ids)  # [b, s, dim]
         # expand to hc_mult residual copies
         h = mx.broadcast_to(h[:, :, None, :], (*h.shape[:2], self.hc_mult, h.shape[-1]))
@@ -1365,9 +1475,15 @@ class DeepseekV4Model(nn.Module):
             cache = [None] * len(self.layers)
         for layer, c in zip(self.layers, cache):
             h = layer(h, mask=None, cache=c, input_ids=input_ids)
-        # collapse hc copies then final norm
-        h = self.hc_head(h)
-        return self.norm(h)
+        return h
+
+    def collapse(self, h: mx.array) -> mx.array:
+        """Head-side collapse of the hc copies + final norm (``ParallelHead.forward``
+        L718-721, minus the ``lm_head`` matmul the caller owns)."""
+        return self.norm(self.hc_head(h))
+
+    def __call__(self, input_ids: mx.array, cache=None) -> mx.array:
+        return self.collapse(self.hc_hidden(input_ids, cache))
 
 
 class Model(nn.Module):
@@ -1377,6 +1493,13 @@ class Model(nn.Module):
         self.model_type = args.model_type
         self.model = DeepseekV4Model(args)
         self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+        # Reference ``Transformer.mtp`` (model.py L789-793): a top-level list, so
+        # the parameter paths are ``mtp.{i}.*`` — exactly the upstream checkpoint's
+        # names.  Dropped again by :meth:`sanitize` if the weights are not there.
+        self.mtp = [
+            DeepseekV4MTP(args, args.num_hidden_layers + i)
+            for i in range(max(int(args.num_nextn_predict_layers or 0), 0))
+        ]
 
     def __call__(self, inputs: mx.array, cache=None) -> mx.array:
         out = self.model(inputs, cache)
@@ -1386,10 +1509,70 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def sanitize(self, weights: dict) -> dict:
-        """Adapt checkpoint tensors to this module tree.
+    # -- MTP (speculative draft head) --------------------------------------
+    @property
+    def has_mtp(self) -> bool:
+        return bool(self.mtp)
 
-        NOTE(M3): this is the placeholder from M1.  Confirmed remapping work for M3:
+    def hc_hidden(self, inputs: mx.array, cache=None) -> mx.array:
+        """Trunk forward stopping at the pre-head state the MTP block consumes."""
+        return self.model.hc_hidden(inputs, cache)
+
+    def logits_from_hc_hidden(self, h: mx.array) -> mx.array:
+        """``[b, s, hc, dim]`` -> target logits; the other half of :meth:`hc_hidden`.
+
+        ``logits_from_hc_hidden(hc_hidden(x)) == self(x)`` — a speculative step
+        gets the target's logits and the draft's input from one trunk pass.
+        """
+        return self.lm_head(self.model.collapse(h))
+
+    def mtp_forward(self, h: mx.array, input_ids: mx.array, index: int = 0,
+                    cache=None) -> mx.array:
+        """Draft logits from the trunk's ``h`` and the next tokens' ids.
+
+        Supplies the two modules the reference assigns onto the block (the trunk
+        embedding and lm_head) instead of duplicating them; see
+        :class:`DeepseekV4MTP` for the ``input_ids`` alignment contract.
+
+        ``cache`` is the **one** :class:`DeepseekV4Cache` belonging to block
+        ``index`` — i.e. ``make_mtp_cache()[index]``, not the list.  The trunk
+        takes a list because it has one entry per layer; a draft block is a
+        single layer and takes its own.
+        """
+        if not self.mtp:
+            raise RuntimeError("this checkpoint ships no MTP block")
+        if isinstance(cache, (list, tuple)):
+            raise TypeError(
+                "mtp_forward takes the MTP block's own cache, not the list: "
+                f"pass make_mtp_cache()[{index}]"
+            )
+        return self.mtp[index](
+            h, input_ids, self.model.embed_tokens, self.lm_head, cache=cache
+        )
+
+    def make_mtp_cache(self):
+        """One :class:`DeepseekV4Cache` per MTP block.
+
+        Separate from :meth:`make_cache`: the draft block's attention is its own
+        module with its own KV (reference ``Attention.__init__`` L474 registers a
+        per-instance ``kv_cache``), so it must not share the trunk's.  Its
+        ``compress_ratio`` is 0, which makes the cache a plain sliding window —
+        no compressed rows, no compressor frontier, nothing to roll back but the
+        window and ``offset``.
+        """
+        return [
+            DeepseekV4Cache(
+                window_size=block.attn.window_size,
+                compress_ratio=block.attn.compress_ratio,
+                head_dim=block.attn.head_dim,
+            )
+            for block in self.mtp
+        ]
+
+    def sanitize(self, weights: dict) -> dict:
+        """Adapt this module tree to the checkpoint's tensors.
+
+        Confirmed no-ops (the checkpoint already matches the tree):
           * ``ffn.switch_mlp.*`` ships pre-stacked (already ``[n_experts, ...]``) with
             mxfp4 scales and no biases — feed straight into ``SwitchGLU``'s quantised
             path (mode override supplied via config["quantization"]).
@@ -1397,9 +1580,19 @@ class Model(nn.Module):
             ``_o_lora`` consumes it as-is (reshaped to ``[g, r, per]``) — no split
             needed once quantised grouped matmul is wired.
           * ``ffn.gate.tid2eid`` (hash layers) loads as int32.
-        For M1 the identity map keeps the module importable and unit-testable on
-        synthetic weights.
+
+        The one real adaptation is the MTP block.  ``num_nextn_predict_layers`` is
+        not trustworthy on its own: the published MLX conversions declare 1 while
+        shipping no ``mtp.*`` tensor at all (which is what
+        ``mtplx.artifacts.mtp_weights_present_on_disk`` and the runtime's
+        degrade-to-autoregressive branch exist for).  So the *weights* decide —
+        a checkpoint that ships the draft head keeps it and binds through the
+        ordinary load path, and one that does not drops it from the tree here so
+        ``load_weights(strict=True)`` still sees an exact match instead of 58
+        spurious "missing" keys.
         """
+        if self.mtp and not any(str(k).startswith("mtp.") for k in weights):
+            self.mtp = []
         return weights
 
     def make_cache(self):
