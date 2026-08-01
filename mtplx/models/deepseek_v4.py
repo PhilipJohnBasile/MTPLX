@@ -52,14 +52,20 @@ Quantisation in that checkpoint is mixed: routed experts (``ffn.switch_mlp.*``) 
 **mxfp4 group_size 32** (scales, no biases); everything else is **affine 4-bit
 group_size 64** (weight/scales/biases).  The MTP block is dropped by the conversion.
 
-Milestone status (see the port's job card / report):
-  * M1 (this commit): architecture study + importable skeleton; MoE/gate/shared-expert
-    + HC + RoPE + o-LoRA math transcribed.  The four new-math components are
-    implemented but NOT yet numerically gated.
-  * M2: unit-gate HCA/CSA/o-LoRA/hash against the reference on small synthetic tensors.
-  * M3: load the real 4-bit weights and gate first-token logits against the reference.
-  * M4: register ``deepseek-v4`` in ``mtplx/backends/registry.py`` so ``mtplx serve``
-    can resolve the load path.
+Status:
+  * The four new-math components are numerically gated against the reference
+    (tests/test_deepseek_v4_new_math.py) and the WHOLE forward is gated layer-by-layer
+    against a reference golden covering every layer type
+    (tests/test_deepseek_v4_parity.py) — this is the prefill path.
+  * The attention integrates the compressor's compressed KV (overlap ratio-4 and
+    non-overlap ratio-128), the window+compressed causal mask, compress-YaRN rope and
+    per-head attn_sink; it is a dense equivalent of the reference sparse_attn, exact
+    whenever every compressed position is selected (n_comp <= index_topk, i.e. up to
+    ~index_topk*ratio tokens of context).
+  * Deferred (do not affect prefill correctness): the single-token streaming decode
+    KV-cache state machine, and the ratio-4 indexer top-k *filter* for very long
+    context (beyond index_topk compressed windows).  ``deepseek-v4`` is registered in
+    ``mtplx/backends/registry.py`` so ``mtplx serve`` resolves the load path.
 
 Provenance: reference files fetched read-only from
 ``https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash`` (inference/model.py,
@@ -81,18 +87,6 @@ import mlx.nn as nn
 
 from mlx_lm.models.base import BaseModelArgs
 from mlx_lm.models.switch_layers import SwitchGLU
-
-
-def _causal_window_mask(seqlen: int, window: int, dtype=mx.float32) -> mx.array:
-    """Additive ``[s, s]`` mask: 0 where token j is attendable from query i (causal,
-    within ``window`` positions), else a large negative.  Sliding window matches the
-    reference's ``window_size`` sparse gather at the dense-scaffold level.
-    """
-    i = mx.arange(seqlen)[:, None]
-    j = mx.arange(seqlen)[None, :]
-    allowed = (j <= i) & (j > i - window)
-    neg = mx.array(mx.finfo(dtype).min, dtype)
-    return mx.where(allowed, mx.array(0.0, dtype), neg)
 
 
 # Default per-layer compress ratios for DeepSeek-V4-Flash (43 body layers; the
@@ -381,27 +375,46 @@ class Compressor(nn.Module):
             args.rope_factor, args.beta_fast, args.beta_slow,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        """Non-overlap (ratio != 4) prefill pooling, ``start_pos == 0``.
+    def _overlap_transform(self, t: mx.array, value: float) -> mx.array:
+        """Reference ``overlap_transform`` (model.py L307-314).
 
-        NOTE(M3): overlapping windows (ratio==4) fold in the previous window's
-        second half, and the single-token decode state machine (kv_state /
-        score_state) is separate.  This path is the one the M2 gate verifies.
+        ``t``: ``[b, nwin, ratio, 2*d]`` -> ``[b, nwin, 2*ratio, d]``.  The first
+        ``ratio`` slots of window w hold the previous window's tokens under the
+        first-half (``:d``) projection (``value`` for w==0); the last ``ratio``
+        slots hold the current window's tokens under the second-half (``d:``)
+        projection.
+        """
+        b, nwin, r, _ = t.shape
+        d = self.head_dim
+        cur = t[..., d:]                       # [b, nwin, ratio, d]  (current, d: half)
+        prev = t[..., :d]                      # [b, nwin, ratio, d]  (:d half)
+        pad = mx.full((b, 1, r, d), value, dtype=t.dtype)
+        prev_shift = mx.concatenate([pad, prev[:, :-1]], axis=1)  # window w -> prev window w-1
+        return mx.concatenate([prev_shift, cur], axis=2)          # [b, nwin, 2*ratio, d]
+
+    def __call__(self, x: mx.array) -> mx.array:
+        """Prefill pooling (``start_pos == 0``) for non-overlap (ratio != 4) and
+        overlap (ratio == 4) windows.
+
+        NOTE(M3): the single-token decode state machine (kv_state / score_state)
+        for incremental compression is a separate follow-up; this is the prefill
+        path the attention forward uses.
         """
         b, s, _ = x.shape
         ratio = self.compress_ratio
         d = self.head_dim
         rd = self.rope_head_dim
-        xf = x.astype(mx.float32)
-        kv = self.wkv(xf)
-        score = self.wgate(xf)
         cutoff = s - (s % ratio)
         nwin = cutoff // ratio
-        kv = kv[:, :cutoff].reshape(b, nwin, ratio, -1)
-        score = score[:, :cutoff].reshape(b, nwin, ratio, -1) + self.ape
-        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)  # [b, nwin, coff*d]
+        if nwin == 0:
+            return mx.zeros((b, 0, d), dtype=x.dtype)
+        xf = x.astype(mx.float32)
+        kv = self.wkv(xf)[:, :cutoff].reshape(b, nwin, ratio, -1)          # [b,nwin,ratio,coff*d]
+        score = self.wgate(xf)[:, :cutoff].reshape(b, nwin, ratio, -1) + self.ape
         if self.overlap:
-            pooled = pooled[..., :d]
+            kv = self._overlap_transform(kv, 0.0)                          # [b,nwin,2*ratio,d]
+            score = self._overlap_transform(score, float("-inf"))
+        pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)            # [b, nwin, d]
         pooled = self.norm(pooled)
         # rope tail at window positions [0, ratio, 2*ratio, ...]
         win_pos = mx.arange(nwin, dtype=mx.float32) * ratio
@@ -524,9 +537,33 @@ class DeepseekV4Attention(nn.Module):
         out = out.reshape(b, s, g * r)
         return self.wo_b(out)
 
+    def _attn_mask(self, s: int, n_comp: int, ratio: int, dtype) -> mx.array:
+        """Additive ``[1, 1, s, s + n_comp]`` mask reproducing the reference sparse
+        gather at prefill: a query attends the causal sliding window over the
+        per-position KV, plus every compressed window that is fully causal for it.
+        """
+        i = mx.arange(s)[:, None]
+        j = mx.arange(s)[None, :]
+        win_ok = (j <= i) & (j > i - self.window_size)
+        if n_comp:
+            c = mx.arange(n_comp)[None, :]
+            comp_ok = c < ((i + 1) // ratio)  # window c valid iff c < ceil-free floor
+            ok = mx.concatenate([win_ok, comp_ok], axis=1)
+        else:
+            ok = win_ok
+        neg = mx.array(mx.finfo(dtype).min, dtype)
+        return mx.where(ok, mx.array(0.0, dtype), neg)[None, None]
+
     def __call__(self, x: mx.array, mask=None, cache=None) -> mx.array:
+        # NOTE(M3): prefill path (start_pos == 0). Attends the causal sliding window
+        # over per-position KV plus the compressor's compressed KV — a dense
+        # equivalent of the reference sparse_attn that is exact whenever every
+        # compressed position is selected (n_comp <= index_topk, i.e. moderate
+        # context). Streaming decode cache + the ratio-4 indexer top-k filter for
+        # very long context remain follow-ups; `mask` is built internally.
         b, s, _ = x.shape
         rd = self.rope_head_dim
+        ratio = self.compress_ratio
         positions = mx.arange(s)  # NOTE(M3): + cache.offset for decode
         cos, sin = self._rope_tables(positions)
 
@@ -535,35 +572,42 @@ class DeepseekV4Attention(nn.Module):
         # per-head RMS-like normalisation (no learned weight), reference L498
         q = q * mx.rsqrt(mx.mean(mx.square(q.astype(mx.float32)), axis=-1, keepdims=True) + self.eps)
         q = q.astype(x.dtype)
-        q_head = q[..., :-rd]
-        q_tail = _apply_interleaved_rope(q[..., -rd:], cos[None, :, None, :], sin[None, :, None, :])
-        q = mx.concatenate([q_head, q_tail], axis=-1)
+        q = mx.concatenate(
+            [q[..., :-rd], _apply_interleaved_rope(q[..., -rd:], cos[None, :, None, :], sin[None, :, None, :])],
+            axis=-1,
+        )
 
-        kv = self.kv_norm(self.wkv(x)).reshape(b, s, 1, self.head_dim)
-        kv_head = kv[..., :-rd]
-        kv_tail = _apply_interleaved_rope(kv[..., -rd:], cos[None, :, None, :], sin[None, :, None, :])
-        kv = mx.concatenate([kv_head, kv_tail], axis=-1)  # [b,s,1,head_dim]
+        kv = self.kv_norm(self.wkv(x))  # [b, s, head_dim] (single shared KV — MQA)
+        kv = mx.concatenate(
+            [kv[..., :-rd], _apply_interleaved_rope(kv[..., -rd:], cos[None, :, :], sin[None, :, :])],
+            axis=-1,
+        )
 
-        # NOTE(M3): dense (non-sparse) sliding-window attention as the scaffold path.
-        # The sparse top-k gather (window + compressed KV via Indexer/strided idx),
-        # the compressor's second cache, and the streaming decode cache are M3.
-        q_t = q.transpose(0, 2, 1, 3)  # [b,h,s,hd]
-        k_t = mx.broadcast_to(kv.transpose(0, 2, 1, 3), (b, self.n_heads, s, self.head_dim))
-        scores = (q_t * self.softmax_scale) @ k_t.transpose(0, 1, 3, 2)  # [b,h,s,s]
-        if mask is not None:
-            scores = scores + mask
-        # attn_sink: per-head learned logit appended to the softmax denominator.
+        # concat the compressor's compressed KV (reference cats kv + kv_compress)
+        full_kv = kv
+        n_comp = 0
+        if ratio:
+            kvc = self.compressor(x)  # [b, n_comp, head_dim]
+            n_comp = kvc.shape[1]
+            if n_comp:
+                full_kv = mx.concatenate([kv, kvc], axis=1)  # [b, s + n_comp, head_dim]
+
+        q_t = q.transpose(0, 2, 1, 3)          # [b, h, s, head_dim]
+        kt = full_kv[:, None]                  # [b, 1, s+n_comp, head_dim] (shared over heads)
+        scores = (q_t * self.softmax_scale) @ mx.swapaxes(kt, -1, -2)  # [b, h, s, s+n_comp]
+        scores = scores + self._attn_mask(s, n_comp, ratio, scores.dtype)
+        # attn_sink: per-head learned logit in the softmax denominator
         sink = self.attn_sink.reshape(1, self.n_heads, 1, 1)
         m = mx.maximum(mx.max(scores, axis=-1, keepdims=True), sink)
         ex = mx.exp(scores - m)
         denom = mx.sum(ex, axis=-1, keepdims=True) + mx.exp(sink - m)
-        attn = ex / denom
-        o = attn @ k_t  # [b,h,s,head_dim]
-        o = o.transpose(0, 2, 1, 3)  # [b,s,h,head_dim]
+        o = (ex / denom) @ kt                  # [b, h, s, head_dim]
+        o = o.transpose(0, 2, 1, 3)            # [b, s, h, head_dim]
         # de-rotate the tail dims (reference L534, inverse rope)
-        o_head = o[..., :-rd]
-        o_tail = _apply_interleaved_rope(o[..., -rd:], cos[None, :, None, :], -sin[None, :, None, :])
-        o = mx.concatenate([o_head, o_tail], axis=-1)
+        o = mx.concatenate(
+            [o[..., :-rd], _apply_interleaved_rope(o[..., -rd:], cos[None, :, None, :], -sin[None, :, None, :])],
+            axis=-1,
+        )
         o = o.reshape(b, s, self.n_heads * self.head_dim)
         return self._o_lora(o)
 
@@ -704,13 +748,12 @@ class DeepseekV4Model(nn.Module):
         h = self.embed_tokens(input_ids)  # [b, s, dim]
         # expand to hc_mult residual copies
         h = mx.broadcast_to(h[:, :, None, :], (*h.shape[:2], self.hc_mult, h.shape[-1]))
-        # NOTE(M3): dense sliding-window causal mask stands in for the reference's
-        # window + compressed-KV sparse top-k gather.
-        mask = _causal_window_mask(h.shape[1], self.args.window_size, h.dtype)
+        # The attention builds its own window + compressed-KV causal mask internally
+        # (it needs the compressed-position columns), so no mask is threaded here.
         if cache is None:
             cache = [None] * len(self.layers)
         for layer, c in zip(self.layers, cache):
-            h = layer(h, mask=mask, cache=c, input_ids=input_ids)
+            h = layer(h, mask=None, cache=c, input_ids=input_ids)
         # collapse hc copies then final norm
         h = self.hc_head(h)
         return self.norm(h)
