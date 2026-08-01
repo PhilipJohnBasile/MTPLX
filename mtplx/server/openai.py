@@ -6,6 +6,10 @@ can exercise the native-MTP runtime without turning MTPLX into a deployment
 server yet. The default live path preserves the single-user MTP oracle; the
 opt-in concurrent lane batches AR fallback work on the same single MLX owner
 thread so coding-agent bursts do not require parallel model loops.
+
+The Responses API adapter is stateless and text-only. It supports
+client-executed function/custom tools and namespace-grouped functions; MTPLX
+does not host web search, tool search, MCP, code interpreter, or similar tools.
 """
 
 # ruff: noqa: E402
@@ -132,6 +136,7 @@ from mtplx.reasoning_codecs import (
     stream_splitter_for_parser,
 )
 from mtplx.server.dashboard_state import DashboardState, InFlightHandle
+from mtplx.server import responses as responses_api
 from mtplx.server.omlx_bridge import (
     ToolCallStreamFilter as OMLXToolCallStreamFilter,
     extract_thinking as omlx_extract_thinking,
@@ -788,6 +793,9 @@ class ChatCompletionRequest(BaseModel):
     response_format: Any = None
     metadata: dict[str, Any] | None = None
     user: str | None = None
+    # Internal adapter control: Responses clients must never receive the
+    # browser-facing MTPLX TPS footer as model output.
+    suppress_stats_footer: bool = False
 
 
 @dataclass
@@ -13895,7 +13903,7 @@ def _request_observability(
             "x-mtplx-request-id",
         }
     }
-    return {
+    observability = {
         "request_message_count": len(request.messages),
         "request_message_roles": [message.role for message in request.messages],
         "request_message_chars": [
@@ -13921,6 +13929,14 @@ def _request_observability(
         "request_last_user_preview": user_texts[-1][:180] if user_texts else None,
         "request_last_user_chars": len(user_texts[-1]) if user_texts else 0,
     }
+    for key in (
+        "responses_reasoning_effort_requested",
+        "responses_reasoning_effort_effective",
+        "responses_reasoning_effort_downgraded",
+    ):
+        if key in metadata:
+            observability[f"request_{key}"] = metadata[key]
+    return observability
 
 
 def _last_user_text(messages: list[ChatMessage] | list[dict[str, Any]]) -> str:
@@ -17934,6 +17950,7 @@ def _nonstream_chat_message_parts(
     *,
     thinking_enabled: bool,
     suppress_visible_reasoning: bool = False,
+    suppress_stats_footer: bool = False,
 ) -> tuple[str, str]:
     raw_text = _strip_generated_chat_template_sentinels(
         str(generated.get("text") or "")
@@ -18018,7 +18035,7 @@ def _nonstream_chat_message_parts(
     display_text = _strip_mtplx_internal_continuation_markers(display_text)
     if suppress_visible_reasoning:
         reasoning_text = ""
-    if not getattr(state.args, "stats_footer", False):
+    if suppress_stats_footer or not getattr(state.args, "stats_footer", False):
         return display_text, reasoning_text
     footer = _stats_footer_text(state, generated)
     if not footer:
@@ -19961,7 +19978,10 @@ def create_app(state: ServerState) -> FastAPI:
         server_url = str(request.base_url).rstrip("/")
         return {
             "ok": True,
-            "name": "MTPLX OpenAI-compatible API",
+            "name": (
+                "MTPLX OpenAI-compatible API "
+                "(client function/custom/namespace Responses subset)"
+            ),
             "model": state.model_id,
             "message": "Do not use this as a browser chat page. Paste this URL into Open WebUI Settings > Connections as the OpenAI API Base URL.",
             "mtplx_api_base_url": f"{server_url}/v1",
@@ -19976,6 +19996,7 @@ def create_app(state: ServerState) -> FastAPI:
             "endpoints": {
                 "models": f"{server_url}/v1/models",
                 "chat_completions": f"{server_url}/v1/chat/completions",
+                "responses": f"{server_url}/v1/responses",
                 "health": f"{server_url}/health",
             },
         }
@@ -24591,7 +24612,11 @@ def create_app(state: ServerState) -> FastAPI:
                                     splitter.reentry_count
                                 )
                             footer = _stats_footer_text(state, generated)
-                            if footer and not assistant_tool_calls:
+                            if (
+                                footer
+                                and not assistant_tool_calls
+                                and not request.suppress_stats_footer
+                            ):
                                 # The footer is server-injected, not model
                                 # output: bypass stop monitoring so a stop
                                 # string like "\n\n" can neither suppress it
@@ -25031,6 +25056,7 @@ def create_app(state: ServerState) -> FastAPI:
                     generated,
                     thinking_enabled=thinking_enabled,
                     suppress_visible_reasoning=suppress_visible_reasoning,
+                    suppress_stats_footer=request.suppress_stats_footer,
                 )
                 if extraction is None:
                     # No tools were declared on this request, so any tool-call
@@ -25089,6 +25115,69 @@ def create_app(state: ServerState) -> FastAPI:
                 "mtplx_stats": _public_mtplx_stats(generated),
             }
         )
+
+    @app.post("/v1/responses")
+    async def responses(
+        raw_request: Request, request: responses_api.ResponsesRequest
+    ) -> Any:
+        """Translate the local, stateless client-tool Responses subset.
+
+        The chat endpoint remains the sole owner of prompt rendering, sampling,
+        tool parsing, session/cache policy, and cancellation.  This adapter is
+        intentionally not a second inference path.
+
+        Server-hosted tools are rejected because accepting them would tell
+        Codex a tool can run when this local daemon cannot execute it.
+        """
+
+        try:
+            conversion = responses_api.translate_request(request)
+        except responses_api.ResponsesProtocolError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Responses API: {exc}"
+            ) from exc
+        chat_data = dict(conversion.chat)
+        chat_messages = chat_data.pop("messages")
+        chat_request = ChatCompletionRequest(
+            messages=[ChatMessage.model_validate(message) for message in chat_messages],
+            **chat_data,
+        )
+        response_id = "resp_" + uuid.uuid4().hex
+        chat_response = await chat_completions(raw_request, chat_request)
+        if not isinstance(chat_response, (JSONResponse, StreamingResponse)):
+            return chat_response
+        if chat_response.status_code >= 400:
+            return chat_response
+        if request.stream:
+            if not isinstance(chat_response, StreamingResponse):
+                return chat_response
+            return StreamingResponse(
+                responses_api.stream_from_chat_sse(
+                    chat_response.body_iterator,
+                    response_id=response_id,
+                    model=state.model_id,
+                    response_fields=conversion.response_fields,
+                    custom_tool_names=conversion.custom_tool_names,
+                    namespace_functions=conversion.namespace_functions,
+                ),
+                media_type="text/event-stream",
+            )
+        if not isinstance(chat_response, JSONResponse):
+            return chat_response
+        try:
+            chat_payload = json.loads(chat_response.body)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"failed to translate chat response: {exc}"
+            ) from exc
+        payload = responses_api.payload_from_chat(
+            chat_payload,
+            response_id=response_id,
+            response_fields=conversion.response_fields,
+            custom_tool_names=conversion.custom_tool_names,
+            namespace_functions=conversion.namespace_functions,
+        )
+        return JSONResponse(payload, status_code=chat_response.status_code)
 
     @app.post("/v1/messages")
     async def anthropic_messages(
