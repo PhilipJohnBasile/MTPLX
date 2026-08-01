@@ -74,33 +74,37 @@ coherent.
 
 The final Sinkhorn floor is now an opt-in, shape-specific Metal lane.  It replaces
 the 4×4 fp32 schedule (row softmax, then 20 column and 19 row normalisations) in
-each HC `pre` call.  On the same shrunk bf16 decode census it takes the default
-**14,639 dispatches to 7,845**: the **6,794** removed dispatches are the 3,354
-reductions, 3,354 divides, and 86 softmaxes collapsed to **86** kernel dispatches.
-This is not a general small-matrix kernel: the forced GPU lane accepts only
-`hc=4`, `iters=20`, `eps=1e-6`; CPU/no-Metal installs the stock oracle explicitly,
-and an unsupported GPU configuration fails at construction before generation.
+each HC `pre` call.  The shrunk bf16 decode census shows the structural Sinkhorn
+stream collapsing from **6,794 dispatches to 86**.  This is not a general
+small-matrix kernel: the forced GPU lane accepts only `hc=4`, `iters=20`,
+`eps=1e-6`; CPU/no-Metal installs the stock oracle explicitly, and an unsupported
+GPU configuration fails at construction before generation.
 
-The requested real-checkpoint framing measured **+29.3% AR** with the kernel on
-against the unchanged fused-attention + HC-compile control.  This is a
-**stacked-window** comparison: the real 2-bit-DQ checkpoint, B=1 greedy,
-328-token prompt, 256 generated tokens, and cached o-LoRA were held fixed while
-the AR control and kernel arm shared the serialized, drift-bracketed window.
-AR clears **27 tok/s** in that framing; the best observed K=3 result is
-**32.5 tok/s**.  The conditions and arm-level receipt fields are the
-[`deepseek_v4_mtpk_bench.py`](../../scripts/deepseek_v4_mtpk_bench.py) contract;
-the recorded `bench/deepseek-v4/kernel-a-ab-20260801.{json,txt}` receipt is the
-source for these numbers.  They are already-measured generation results, not a
-fresh benchmark from this port; the profiler census above establishes dispatch
-structure only and is not presented as end-to-end timing.
+The independent E2E source is the local
+`bench/deepseek-v4/stacked-ab-20260801` receipt.  It is a stacked-window A/B on the
+real DeepSeek-V4-Flash **2-bit-DQ + mxfp4 MTP** checkpoint: B=1 greedy, 328 prompt
+tokens, 256 decode tokens, cached o-LoRA, HC compile on, and fused attention in
+both arms.  Only the Sinkhorn flag changes:
 
-The near-tie diagnostic is deliberately disclosed rather than promoted.  In the
-bf16 serving lane the receipt records speculative-vs-AR divergence count, first
-index, and both tokens (the behavior specified by the
-[`spec gate`](../../tests/test_deepseek_v4_spec.py)); a close run is diagnostic
-data, not evidence of a separate or broader throughput claim.  Fused attention
-remains the default, and the Sinkhorn lane stays default-off until the requested
-serving decision changes that policy.
+| stacked-window arm | AR tok/s | K=3 spec tok/s |
+|---|---:|---:|
+| stock Sinkhorn control | 22.318 | 30.440 |
+| Sinkhorn Metal kernel | **28.858 (+29.3%)** | **32.497** |
+
+So AR clears the requested **27 tok/s** bar, and the best K=3 is approximately
+**32.5 tok/s**.  Both arms produced coherent output.  The bf16 K=3 receipt also
+records the documented near-tie / `spec != AR` diagnostic; the harness reports
+that divergence as data rather than turning one prompt into a quality verdict
+(the behavior specified by the
+[`spec gate`](../../tests/test_deepseek_v4_spec.py)).
+
+The raw receipts are local benchmark artifacts and are intentionally not added to
+this code branch; the upstream PR comment carries the supporting table.  The
+[`deepseek_v4_mtpk_bench.py`](../../scripts/deepseek_v4_mtpk_bench.py) contract
+defines the receipt fields.  These throughput numbers come from real generation,
+not the profiler: the census above establishes dispatch structure only and is not
+presented as E2E timing.  Fused attention remains the default, and the Sinkhorn
+lane stays default-off until the requested serving decision changes that policy.
 
 **The mlx 0.32 arm is a clean null.** Re-running the default arm under mlx 0.32
 moved nothing past drift: once the host encode is gone, DeepSeek-V4 decode is
