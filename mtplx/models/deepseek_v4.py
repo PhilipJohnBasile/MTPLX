@@ -135,7 +135,7 @@ Status:
     ``deepseek-v4-mtp`` entry describes vLLM's *split* checkpoint layout, which is a
     different artifact shape MTPLX still has no loader for.
 
-Decode-path bytes (tests/test_deepseek_v4_o_lora.py):
+Decode-path bytes (tests/test_deepseek_v4_o_lora.py, tests/test_deepseek_v4_dtypes.py):
   * **o-LoRA weight handling.**  ``wo_a`` is static — ``[8192, 4096]`` on
     DeepSeek-V4-Flash — and the first cut ran ``mx.dequantize`` on it inside every
     ``_o_lora`` call, i.e. 64 MiB of dense bytes written and re-read per layer per
@@ -155,6 +155,34 @@ Decode-path bytes (tests/test_deepseek_v4_o_lora.py):
     removes real redundant work, not because it is the speed win; the speed win is
     the activation-dtype fix below.  ``cached`` costs +2.69 GiB resident, which
     ``gather_qmm`` gives back in full.
+  * **Activation dtype.**  The reference keeps the whole attention lane at the model
+    dtype and uses fp32 only as arithmetic: ``apply_rotary_emb`` rotates in fp32 and
+    copies back into the caller's bf16 tensor (L234/L243), the compressor pools in
+    fp32 but casts the row back before the norm (L362, and ``rotate_activation``
+    then asserts bf16 at L249), and ``sparse_attn`` is declared ``q/kv/o: BF16``
+    with fp32 accumulator fragments, casting the probability block to BF16 before
+    the PV gemm (kernel.py L295-297, L305, L340).  This backend stored all three in
+    fp32; since ``mx.concatenate`` and ``mx.matmul`` promote, that pulled the KV
+    cache, both attention matmuls, the o-LoRA einsum (which then had to upcast
+    ``wo_a`` too) and the entire residual stream up to fp32 on *every* layer.  The
+    three storage points now follow the reference.  This is a no-op at fp32 — where
+    both parity goldens and the decode oracle were captured — so no golden and no
+    tolerance moved; ``MTPLX_DSV4_FP32_ACTIVATIONS=1`` restores the promoting path
+    as the A/B arm.
+    This is where the decode speed in this lane comes from: on the real 2bit-DQ
+    checkpoint, in one window, AR 4.534 -> 15.954 tok/s (3.52x) and K=3
+    speculative 9.530 -> 25.856 tok/s, with the o-LoRA arm held fixed
+    (bench/deepseek-v4/goal-ab-20260731, configs B/D/A).  It is also what costs
+    spec==AR byte-identity: at fp32 the precision headroom absorbed the
+    batch-width-dependent rounding of a verify-shaped forward, at bf16 it reaches
+    the argmax on near-tied tokens.  Speed and the byte gate are not separable
+    here; see :mod:`scripts.deepseek_v4_mtpk_bench` for how divergence is
+    reported, and the quality evidence is a task eval, not a byte compare.
+  * Still open: the attention builds the score block densely, so at bf16 the scores
+    round to bf16 where the reference's fused kernel keeps them in an fp32
+    accumulator.  Folding ``attn_sink`` in as a zero-valued extra column and
+    handing the whole thing to ``mx.fast.scaled_dot_product_attention`` would remove
+    both the rounding and the materialised ``[b, h, s, n_win+n_comp]`` block.
 
 Provenance: reference files fetched read-only from
 ``https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash`` (inference/model.py,
@@ -201,6 +229,16 @@ _DEFAULT_ROLLBACK_CAPACITY = 64
 # ---------------------------------------------------------------------------
 # Decode-path knobs
 # ---------------------------------------------------------------------------
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in _TRUTHY
+
+
 #: How :meth:`DeepseekV4Attention._o_lora` gets ``wo_a``.
 #:
 #: ``cached`` (default)
@@ -226,6 +264,20 @@ def _o_lora_mode_from_env() -> str:
             f"{', '.join(_O_LORA_MODES)}; got {raw!r}"
         )
     return raw
+
+
+#: Escape hatch restoring the pre-fix all-fp32 activation path (rope output,
+#: compressed KV rows and the attention probability block).  The reference keeps
+#: all three at the model dtype — see :func:`_apply_interleaved_rope`,
+#: :class:`Compressor` and :meth:`DeepseekV4Attention.__call__` — so this is an
+#: A/B control, not a supported serving mode.  Read from
+#: ``MTPLX_DSV4_FP32_ACTIVATIONS`` at import; tests set the module attribute.
+_FP32_ACTIVATIONS = _env_flag("MTPLX_DSV4_FP32_ACTIVATIONS", False)
+
+
+def _store_dtype(dtype):
+    """Dtype an activation is *stored* at (fp32 math is unaffected either way)."""
+    return mx.float32 if _FP32_ACTIVATIONS else dtype
 
 
 class _DerivedCache:
@@ -432,15 +484,27 @@ def _apply_interleaved_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.arr
     Pair p = (x[2p], x[2p+1]) -> (x0*cos - x1*sin, x0*sin + x1*cos), matching
     ``apply_rotary_emb`` (model.py L232-244, forward direction).  The inverse
     (de-rotation applied to the attention output) uses cos, -sin.
+
+    **Dtype.**  The rotation is computed in fp32 (``cos``/``sin`` are fp32, so the
+    products promote) and *stored back at the input's dtype*, which is precisely
+    what the reference does: ``apply_rotary_emb`` rotates ``x.float()`` and then
+    ``y.copy_(x)`` into the caller's own bf16 tensor (L234/L243).  Returning fp32
+    instead would promote whatever the caller concatenates it with — the roped q,
+    the roped per-position KV and the compressor's roped rows all feed tensors the
+    rest of the layer is supposed to keep at the model dtype, and one fp32 column
+    is enough to drag the KV cache, the attention matmuls, the o-LoRA einsum and
+    then the whole residual stream up with it.  ``_FP32_ACTIVATIONS`` restores the
+    promoting behaviour for A/B.
     """
     shape = x.shape
+    out_dtype = _store_dtype(x.dtype)
     x = x.reshape(*shape[:-1], shape[-1] // 2, 2)
     x0 = x[..., 0]
     x1 = x[..., 1]
     r0 = x0 * cos - x1 * sin
     r1 = x0 * sin + x1 * cos
     out = mx.stack([r0, r1], axis=-1)
-    return out.reshape(shape)
+    return out.reshape(shape).astype(out_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -631,18 +695,28 @@ class Compressor(nn.Module):
         prev_shift = mx.concatenate([seed, prev_half[:, :-1]], axis=1)  # w -> window w-1
         return mx.concatenate([prev_shift, cur], axis=2)          # [b, nwin, 2*ratio, d]
 
-    def _pool(self, kv: mx.array, score: mx.array, first_window: int) -> mx.array:
+    def _pool(
+        self, kv: mx.array, score: mx.array, first_window: int, out_dtype
+    ) -> mx.array:
         """Gated pool + norm + compress-YaRN rope of already-formed windows.
 
         ``kv``/``score``: ``[b, nwin, slots, d]`` (``slots`` is ``ratio``, or
         ``2*ratio`` once ``_overlap_transform`` has folded the previous window in).
         Window ``first_window + i`` ropes at absolute position ``(first_window+i)*ratio``
         — its own first token — for both the overlap and non-overlap lanes.
+
+        ``out_dtype`` is the caller's own dtype: the *pooling* is fp32 (the
+        reference says so outright — "compression need fp32", L321-322) but the
+        emitted row is stored at the model dtype, because the reference casts back
+        before the norm (``kv = self.norm(kv.to(dtype))``, L362) and its
+        ``rotate_activation`` then asserts the row is bf16 (L249).  These rows are
+        concatenated with the per-position KV to form one attention tensor, so an
+        fp32 row promotes the whole thing.
         """
         nwin = kv.shape[1]
         rd = self.rope_head_dim
         pooled = mx.sum(kv * mx.softmax(score, axis=2), axis=2)            # [b, nwin, d]
-        pooled = self.norm(pooled)
+        pooled = self.norm(pooled.astype(out_dtype))
         win_pos = (mx.arange(nwin, dtype=mx.float32) + float(first_window)) * self.compress_ratio
         ang = win_pos[:, None] * self._inv_freq[None, :]
         cos, sin = mx.cos(ang), mx.sin(ang)
@@ -660,17 +734,18 @@ class Compressor(nn.Module):
         b, s, _ = x.shape
         ratio = self.compress_ratio
         d = self.head_dim
+        out_dtype = _store_dtype(x.dtype)
         cutoff = s - (s % ratio)
         nwin = cutoff // ratio
         if nwin == 0:
-            return mx.zeros((b, 0, d), dtype=x.dtype)
+            return mx.zeros((b, 0, d), dtype=out_dtype)
         xf = x.astype(mx.float32)
         kv = self.wkv(xf)[:, :cutoff].reshape(b, nwin, ratio, -1)          # [b,nwin,ratio,coff*d]
         score = self.wgate(xf)[:, :cutoff].reshape(b, nwin, ratio, -1) + self.ape
         if self.overlap:
             kv = self._overlap_transform(kv, 0.0)                          # [b,nwin,2*ratio,d]
             score = self._overlap_transform(score, float("-inf"))
-        return self._pool(kv, score, 0)
+        return self._pool(kv, score, 0, out_dtype)
 
     def step(self, x: mx.array, state: "CompressorState", offset: int) -> mx.array:
         """Incremental pooling: consume ``x`` (positions ``offset..offset+s-1``) and
@@ -692,6 +767,7 @@ class Compressor(nn.Module):
         b, s, _ = x.shape
         ratio = self.compress_ratio
         d = self.head_dim
+        out_dtype = _store_dtype(x.dtype)
         xf = x.astype(mx.float32)
         kv_rows = self.wkv(xf)                                   # [b, s, coff*d]
         ape_idx = (mx.arange(s) + offset) % ratio                # slot of each token
@@ -721,10 +797,10 @@ class Compressor(nn.Module):
                 state.prev_score = score_w[:, -1]
             else:
                 kv_slots, score_slots = kv_w, score_w
-            out = self._pool(kv_slots, score_slots, state.n_emitted)
+            out = self._pool(kv_slots, score_slots, state.n_emitted, out_dtype)
             state.n_emitted += nwin
         else:
-            out = mx.zeros((b, 0, d), dtype=mx.float32)
+            out = mx.zeros((b, 0, d), dtype=out_dtype)
         state.cur_kv = kv_rows[:, filled:] if filled < total else None
         state.cur_score = score_rows[:, filled:] if filled < total else None
         return out
@@ -1603,12 +1679,21 @@ class DeepseekV4Attention(nn.Module):
         )
         if add is not None:
             scores = scores + add
-        # attn_sink: per-head learned logit in the softmax denominator
-        sink = self.attn_sink.reshape(1, self.n_heads, 1, 1)
-        m = mx.maximum(mx.max(scores, axis=-1, keepdims=True), sink)
-        ex = mx.exp(scores - m)
+        # attn_sink: per-head learned logit in the softmax denominator.  The
+        # softmax itself runs in fp32 — the reference kernel keeps acc_s /
+        # scores_max / sum_exp in FP32 fragments and its attn_sink parameter is
+        # fp32 (kernel.py L298/L308-314, model.py L457) — but the probability
+        # block is cast back to the KV dtype before the PV gemm (``acc_s_cast``
+        # is BF16, kernel.py L305/L340) and ``o`` is written at the model dtype
+        # (``o: T.Tensor[(b,m,h,d), BF16]``, L297).  Keeping the probabilities
+        # fp32 here would promote kt for the second matmul and hand an fp32 ``o``
+        # to the o-LoRA einsum, which then has to upcast wo_a as well.
+        sink = self.attn_sink.reshape(1, self.n_heads, 1, 1).astype(mx.float32)
+        sf = scores.astype(mx.float32)
+        m = mx.maximum(mx.max(sf, axis=-1, keepdims=True), sink)
+        ex = mx.exp(sf - m)
         denom = mx.sum(ex, axis=-1, keepdims=True) + mx.exp(sink - m)
-        o = (ex / denom) @ kt                  # [b, h, s, head_dim]
+        o = (ex / denom).astype(kt.dtype) @ kt   # [b, h, s, head_dim]
         o = o.transpose(0, 2, 1, 3)            # [b, s, h, head_dim]
         # de-rotate the tail dims (reference L534, inverse rope)
         o = mx.concatenate(
