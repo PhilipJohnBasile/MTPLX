@@ -386,3 +386,69 @@ def test_bf16_streaming_decode_still_tracks_the_one_shot_forward():
     streamed = np.array(_run(model, ids, prompt_len=13)[0].astype(mx.float32))
     rel = float(np.max(np.abs(streamed - one_shot)) / np.max(np.abs(one_shot)))
     assert rel < 5e-2, f"bf16 decode drifts from the one-shot oracle: rel={rel:.3e}"
+
+
+# ---------------------------------------------------------------------------
+# the MTP draft block
+# ---------------------------------------------------------------------------
+# ``DeepseekV4MTP`` subclasses ``DeepseekV4DecoderLayer``, so the draft head runs
+# the same attention and inherits all three storage points by construction.  It is
+# gated separately because it is reached through a different entry point
+# (``Model.mtp_forward``) with a different cache (``make_mtp_cache``), and because
+# it is the module whose output the accept/reject comparison consumes: an fp32
+# draft against a bf16 target would silently make every verify a cross-dtype
+# comparison.
+def _mtp_model(dtype, seed=0):
+    args, model = _seeded_model(seed=seed, dtype=dtype, num_nextn_predict_layers=1)
+    assert model.mtp_blocks, "fixture built no draft block"
+    return args, model
+
+
+def _mtp_inputs(args, dtype, seq=40, seed=7):
+    mx.random.seed(seed)
+    h = (mx.random.normal((1, seq, args.hc_mult, args.hidden_size)) * 0.5).astype(dtype)
+    return h, mx.random.randint(0, VOCAB, (1, seq))
+
+
+def test_draft_block_keeps_its_activations_at_bf16():
+    """Draft logits and the draft block's own KV window stay at the model dtype."""
+    D._FP32_ACTIVATIONS = False
+    args, model = _mtp_model(mx.bfloat16)
+    h, ids = _mtp_inputs(args, mx.bfloat16)
+    cache = model.make_mtp_cache()
+
+    out = model.mtp_forward(h, ids, cache=cache[0])
+    mx.eval(out)
+    assert out.dtype == mx.bfloat16, "draft logits promoted"
+    assert cache[0].window.dtype == mx.bfloat16, "draft window KV promoted"
+    # compress_ratio is 0 on the draft layer, so there are no compressed rows to
+    # check — asserting that rather than silently skipping it.
+    assert cache[0].compressed is None
+
+
+def test_draft_block_honours_the_fp32_escape_hatch():
+    """The A/B control reaches the draft block too, or an arm would be half-applied."""
+    D._FP32_ACTIVATIONS = True
+    args, model = _mtp_model(mx.bfloat16)
+    h, ids = _mtp_inputs(args, mx.bfloat16)
+    cache = model.make_mtp_cache()
+    out = model.mtp_forward(h, ids, cache=cache[0])
+    mx.eval(out)
+    assert out.dtype == mx.float32
+    assert cache[0].window.dtype == mx.float32
+
+
+def test_fp32_draft_block_is_bit_identical_between_arms():
+    """At fp32 every cast is a no-op on the draft path as well as the trunk."""
+    args, model = _mtp_model(dtype=None)
+    h, ids = _mtp_inputs(args, mx.float32)
+
+    D._FP32_ACTIVATIONS = False
+    fixed = model.mtp_forward(h, ids, cache=model.make_mtp_cache()[0])
+    D._FP32_ACTIVATIONS = True
+    legacy = model.mtp_forward(h, ids, cache=model.make_mtp_cache()[0])
+    mx.eval(fixed, legacy)
+
+    assert fixed.dtype == legacy.dtype == mx.float32
+    assert mx.array_equal(fixed, legacy), "draft fp32 path is not bit-identical across arms"
+    assert len(set(np.array(mx.argmax(fixed[0], axis=-1)).tolist())) > 1

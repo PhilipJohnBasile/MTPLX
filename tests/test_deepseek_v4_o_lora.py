@@ -379,3 +379,121 @@ def test_gather_qmm_holds_through_streaming_decode():
     rel = float(np.max(np.abs(got - ref))) / (scale + 1e-12)
     assert rel < 2e-3, f"grouped qmm decode rel={rel:.3e}"
     assert np.array_equal(ref[0].argmax(-1), got[0].argmax(-1))
+
+
+# ---------------------------------------------------------------------------
+# the MTP draft block: same attention class, its own instance
+# ---------------------------------------------------------------------------
+# ``DeepseekV4MTP`` subclasses ``DeepseekV4DecoderLayer``, so the draft head runs
+# the *same* ``DeepseekV4Attention`` and inherits every mode above by
+# construction.  Inheriting it is not the same as proving it: the gates further
+# up build a model with no draft block and drive ``model.layers``, which the
+# draft block is not in.  The risk the cache introduces is specifically a
+# cross-instance one — one dense ``wo_a`` served to an attention it does not
+# belong to — and the draft block is the instance most likely to be missed,
+# because it is bound outside the layer list and reached through a different
+# entry point (``Model.mtp_forward``).  These gates cover that instance directly.
+def _quantized_mtp_model(seed=0):
+    """Seeded model **with** a draft block; ``wo_a`` quantised on every attention."""
+    args, model = _quantized_model(seed=seed, num_nextn_predict_layers=1)
+    assert model.mtp_blocks, "fixture built no draft block — the gates below are vacuous"
+    assert isinstance(model.mtp_blocks[0].attn.wo_a, nn.QuantizedLinear)
+    return args, model
+
+
+def _attentions(model):
+    return [l.attn for l in model.layers] + [b.attn for b in model.mtp_blocks]
+
+
+def _set_mode_everywhere(model, mode):
+    for attn in _attentions(model):
+        attn.o_lora_mode = mode
+
+
+def _mtp_inputs(args, seq=9, seed=7):
+    """``h`` is the trunk's pre-head hyper-connection state; ``ids`` the fused tokens."""
+    mx.random.seed(seed)
+    h = mx.random.normal((1, seq, args.hc_mult, args.hidden_size)) * 0.5
+    return h, mx.random.randint(0, VOCAB, (1, seq))
+
+
+def test_draft_block_carries_the_o_lora_machinery(monkeypatch):
+    """It reads the same env knob the trunk does, and holds its *own* cache object."""
+    monkeypatch.setenv("MTPLX_DSV4_O_LORA", "gather_qmm")
+    _, model = _quantized_mtp_model()
+    draft = model.mtp_blocks[0].attn
+    assert draft.o_lora_mode == "gather_qmm"
+    assert isinstance(draft._wo_a_cache, D._DerivedCache)
+    caches = [a._wo_a_cache for a in _attentions(model)]
+    assert len({id(c) for c in caches}) == len(caches), (
+        "attention instances share a _DerivedCache — trunk and draft would serve "
+        "each other's wo_a")
+
+
+def test_cached_dequant_is_bit_identical_through_mtp_forward():
+    """The bit-identity gate, run through the draft entry point rather than the trunk."""
+    args, model = _quantized_mtp_model()
+    h, ids = _mtp_inputs(args)
+
+    _set_mode_everywhere(model, "dequant")
+    ref = model.mtp_forward(h, ids)
+    mx.eval(ref)
+    assert model.mtp_blocks[0].attn._wo_a_cache.value is None, (
+        "the dequant arm populated the draft cache, so it is not a control")
+
+    _set_mode_everywhere(model, "cached")
+    first = model.mtp_forward(h, ids)      # populates
+    second = model.mtp_forward(h, ids)     # serves from cache
+    mx.eval(first, second)
+
+    assert model.mtp_blocks[0].attn._wo_a_cache.value is not None, (
+        "the draft block's cache never populated — the gate would be vacuous")
+    assert mx.array_equal(ref, first), "draft cached first call is not bit-identical"
+    assert mx.array_equal(ref, second), "draft cache-hit call is not bit-identical"
+    assert len(set(np.array(mx.argmax(ref[0], axis=-1)).tolist())) > 1
+
+
+def test_every_attention_caches_its_own_wo_a_not_a_neighbours():
+    """Per-instance keying, measured: five attentions, five distinct dense weights.
+
+    Identity keying gives trunk and draft no shared keyspace to collide in, but
+    "no shared keyspace" is an argument; this is the measurement.
+    """
+    args, model = _quantized_mtp_model()
+    _set_mode_everywhere(model, "cached")
+    model(_tokens(20))                     # populates the trunk
+    model.mtp_forward(*_mtp_inputs(args))  # populates the draft block
+
+    held = []
+    for i, attn in enumerate(_attentions(model)):
+        value = attn._wo_a_cache.value
+        assert value is not None, f"attention {i} cached nothing"
+        w, sc, bi, gs, bits, mode = attn._wo_a_quant()
+        own = mx.dequantize(
+            w, sc, bi, group_size=gs, bits=bits, mode=mode
+        ).reshape(value.shape)
+        mx.eval(value, own)
+        assert mx.array_equal(value, own), f"attention {i} cached another module's wo_a"
+        held.append(np.array(value.astype(mx.float32)))
+
+    assert len(held) == len(RATIOS) + 1
+    for i in range(len(held)):
+        for j in range(i + 1, len(held)):
+            assert not np.array_equal(held[i], held[j]), (
+                f"attentions {i} and {j} hold identical weights — the check above "
+                "cannot tell a cross-served cache from a correct one")
+
+
+def test_draft_block_cache_never_reaches_the_weight_tree():
+    """``mtp.0.*`` is a checkpoint path; a stray derived tensor there breaks strict load."""
+    args, model = _quantized_mtp_model()
+    before = {k for k, _ in tree_flatten(model.parameters())}
+    _set_mode_everywhere(model, "cached")
+    model.mtp_forward(*_mtp_inputs(args))
+    after = {k for k, _ in tree_flatten(model.parameters())}
+    assert before == after
+    draft = model.mtp_blocks[0].attn
+    assert draft._wo_a_cache.value is not None
+    assert not any(k.startswith("_wo_a") for k in dict(draft))
+    assert not any(k.startswith("mtp.0.attn._wo_a") for k in before)
+    model.load_weights(tree_flatten(model.parameters()), strict=True)
