@@ -606,9 +606,21 @@ def load(
         from .nemotron_h_mtp_patch import inject_nemotron_h_mtp_support, is_nemotron_h_mtp_config
         from .step3p5_mtp_patch import inject_step3p5_mtp_support
         from .hy_v3_mtp_patch import inject_hy_v3_mtp_support, is_hy_v3_mtp_config
+        from .models.deepseek_v4 import (
+            inject_deepseek_v4_mtp_support,
+            is_deepseek_v4_mtp_config,
+        )
         from .qwen3_5_mtp_patch import inject_qwen3_5_mtp_support
 
-        if is_nemotron_h_mtp_config(config):
+        if is_deepseek_v4_mtp_config(config):
+            # Native draft head: the block binds through the ordinary load path
+            # and the model already carries the runtime surface, so this only
+            # publishes it. Placed ahead of is_deepseek_mtp_config defensively --
+            # that predicate keys on model_type in {deepseek_v3, deepseek_v32,
+            # glm_moe_dsa}, so it cannot match a deepseek_v4 config today, but it
+            # is the arm that would build a V3 head if the sets ever overlap.
+            mtp_enabled = inject_deepseek_v4_mtp_support(model, path, config, contract)
+        elif is_nemotron_h_mtp_config(config):
             mtp_enabled = inject_nemotron_h_mtp_support(model, path, config, contract)
         elif is_mimo_mtp_config(config):
             mtp_enabled = inject_mimo_mtp_support(model, path, config, contract)

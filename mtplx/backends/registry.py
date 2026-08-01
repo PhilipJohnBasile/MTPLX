@@ -195,7 +195,7 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
     ),
     "deepseek-v4": ArchitectureSupport(
         arch_id="deepseek-v4",
-        display_name="DeepSeek-V4-Flash (MLX, target-only AR)",
+        display_name="DeepSeek-V4-Flash (MLX)",
         family="deepseek",
         backend="deepseek_v4",
         support_level="experimental-native-ar-only",
@@ -215,16 +215,24 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "REFERENCES:TOOLS/DeepSeek-V4-Flash/inference/model.py",
         ),
         notes=(
-            "Native MLX loader (mtplx.models.deepseek_v4) for the mlx-community "
-            "DeepSeek-V4-Flash 4bit/2bit checkpoints. V4 adds Hyper-Connections, "
-            "Compressed-Sparse-Attention, grouped output-LoRA, and hash layers "
-            "over V3.2. The published mlx conversion drops the MTP block, so this "
-            "runs target-only autoregressive (mtp=False)."
+            "Native MLX loader (mtplx.models.deepseek_v4) for DeepSeek-V4-Flash. "
+            "V4 adds Hyper-Connections, Compressed-Sparse-Attention, grouped "
+            "output-LoRA, and hash layers over V3.2. This is also the runnable "
+            "V4 MTP arch: the draft block (mtp.0.*) binds through the ordinary "
+            "load path when the checkpoint ships it, and the speculative lane "
+            "drives it through mtplx.generation like every other native MTP "
+            "backend. The published mlx-community conversions drop the block "
+            "while still declaring num_nextn_predict_layers, which is the case "
+            "the runtime's degrade-to-autoregressive branch covers -- those keep "
+            "running target-only (mtp=False). The runtime_compatibility field "
+            "stays 'native-ar-only' because it is what routes a checkpoint with "
+            "no draft head to the AR-only verdict; an MTP-bearing artifact is "
+            "resolved dynamically by the family gate instead."
         ),
     ),
     "deepseek-v4-mtp": ArchitectureSupport(
         arch_id="deepseek-v4-mtp",
-        display_name="DeepSeek V4 MTP",
+        display_name="DeepSeek V4 MTP (split checkpoint)",
         family="deepseek",
         backend="deepseek_v4_mtp",
         support_level="recognized-backend-pending",
@@ -234,10 +242,15 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/deepseek_v4_mtp.py",
         ),
         notes=(
-            "The V4 MTP-split detection (vLLM separated V4 MTP from DeepSeek V3). "
-            "The current mlx-community artifacts drop the MTP block and run "
-            "target-only via arch_id 'deepseek-v4'; this entry stays for when an "
-            "MTP-bearing V4 checkpoint appears."
+            "vLLM's SPLIT V4 MTP layout: a standalone checkpoint carrying only "
+            "the draft module (model_type deepseek_v4_mtp / "
+            "DeepseekV4MTPForCausalLM), which vLLM separated out from DeepSeek "
+            "V3. MTPLX now has a real V4 draft-head runtime, but it is not this "
+            "artifact shape -- it loads a MERGED directory whose ordinary shards "
+            "carry mtp.0.* beside the trunk, which detects as arch_id "
+            "'deepseek-v4'. This entry stays pending because MTPLX has no loader "
+            "that assembles a target from two separate repos, not because the "
+            "backend is missing."
         ),
     ),
     "glm4-moe-mtp": ArchitectureSupport(

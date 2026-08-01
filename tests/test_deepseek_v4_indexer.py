@@ -550,7 +550,9 @@ def test_cache_carries_a_second_compressor_lane():
     assert c.compressed.shape[-1] == HEAD_DIM
 
     state, meta = c.state, c.meta_state
-    assert len(state) == 11 and len(meta) == 5
+    # 15 = window + (rows, cur_kv, cur_score, prev_kv, prev_score, journal kv/score)
+    # for the attention lane and again for the indexer lane.
+    assert len(state) == 15 and len(meta) == 5
     fresh = D.DeepseekV4Cache(WINDOW, 4, HEAD_DIM)
     fresh.state = state
     fresh.meta_state = meta

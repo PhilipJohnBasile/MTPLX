@@ -79,6 +79,17 @@ Status:
     mid-generation.  The state machine is adapted from ds4.c (antirez/DwarfStar4,
     MIT), which carries ``index_state_kv``/``index_comp_kv`` beside the attention
     lane's for exactly this reason.
+  * That cache is **rewindable** (``DeepseekV4Cache.trim``), which is what the
+    speculative lane needs on a rejected draft: emitted compressed rows truncate,
+    both compressor frontiers rebuild from a bounded journal of their own projected
+    rows, and the sliding window retains ``rollback_capacity`` extra rows because
+    eviction cannot be undone.  Exactness is gated bit-for-bit against a
+    never-speculated arm, on every lane and across every boundary that can break a
+    rewind (tests/test_deepseek_v4_spec.py), with four rollback mutations caught.
+    Making it exact is also what lets the *engine's* generic all-trimmable
+    rejection repair serve this backend
+    (``mtplx.cache_state.trim_verified_window_without_snapshot``) instead of a
+    bespoke snapshot/restore path.
   * Dropped on purpose: the reference's inference-time QAT emulation (FP8 on the
     attention compressor's rows, FP4 on the indexer's q and rows).  It is noise
     injection, not model math — except that in the indexer it perturbs a *discrete*
@@ -92,9 +103,17 @@ Status:
     — no sidecar, no env var — and :meth:`Model.sanitize` drops it from the tree
     when the weights are absent, which is the published mlx-community case and
     keeps the runtime's degrade-to-autoregressive branch reachable unchanged.
-    What is NOT here: the speculative decode loop itself (draft/verify, cache
-    rollback, acceptance).  :meth:`Model.hc_hidden` / :meth:`Model.mtp_forward` /
-    :meth:`Model.make_mtp_cache` are the seams it needs.
+  * The speculative lane is wired: :class:`Model` carries the uniform runtime draft
+    surface (``__call__(return_hidden=...)``, :meth:`Model.mtp_forward`,
+    :meth:`Model.mtp_update_cache`, :meth:`Model.make_mtp_cache`) and
+    :func:`inject_deepseek_v4_mtp_support` publishes it, so ``mtplx.generation``
+    drives draft/verify/accept/reject/rollback here exactly as it does for every
+    other native MTP backend — no parallel loop.  Greedy speculative decode at K =
+    1, 2, 3 emits the identical committed sequence as pure AR through the real
+    engine (tests/test_deepseek_v4_spec.py); acceptance counters are the engine's
+    and come with it.  Not owned here: draft/verify are batch-shaped forwards, so
+    the committed row's KV is projected inside a K+1-wide GEMM rather than alone —
+    the invariance is committed-sequence exactness, not bitwise-identical logits.
   * The ``swiglu_limit`` clamp (10.0 in the shipped config) is applied in every
     expert, routed and shared, as the reference does (``Expert.forward``, model.py
     L600-602, handed the limit at L624/L627).  The shared expert carries it in
@@ -111,7 +130,10 @@ Status:
     i.e. how often the clamp binds in practice.  That needs a checkpoint load and
     is deferred to a GPU window.
   * ``deepseek-v4`` is registered in ``mtplx/backends/registry.py`` so ``mtplx serve``
-    resolves the load path.
+    resolves the load path.  That arch_id is what BOTH the AR-only mlx-community
+    conversions and an MTP-bearing merged directory detect as; the separate
+    ``deepseek-v4-mtp`` entry describes vLLM's *split* checkpoint layout, which is a
+    different artifact shape MTPLX still has no loader for.
 
 Provenance: reference files fetched read-only from
 ``https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash`` (inference/model.py,
@@ -143,6 +165,15 @@ _DEFAULT_COMPRESS_RATIOS = (
     + [4, 128] * 20
     + [4, 0]
 )
+
+# How many token positions a :class:`DeepseekV4Cache` can un-decode (``trim``).
+# Speculative decode only ever rewinds the rejected tail of one verify batch, so
+# the real requirement is ``speculative_depth + 1`` (<= 9 for every depth MTPLX
+# runs).  The default is set an order of magnitude above that because the cost is
+# a handful of retained rows per layer, while the alternative -- discovering the
+# bound is too small mid-request -- is a hard failure.  See
+# :meth:`DeepseekV4Cache.trim` for what the capacity buys on each lane.
+_DEFAULT_ROLLBACK_CAPACITY = 64
 
 
 @dataclass
@@ -581,6 +612,12 @@ class Compressor(nn.Module):
         kv_rows = self.wkv(xf)                                   # [b, s, coff*d]
         ape_idx = (mx.arange(s) + offset) % ratio                # slot of each token
         score_rows = self.wgate(xf) + self.ape[ape_idx]
+        # Rollback journal: the projected rows are per-position pure functions, so
+        # keeping the most recent few is all a rewind needs to rebuild the frontier
+        # (:meth:`CompressorState.rollback`).  Pushed BEFORE the frontier concat so
+        # the journal stores each row exactly once, as the very array the emit path
+        # consumes — a rebuilt frontier is then bit-identical, not merely equal.
+        state.push_rollback_rows(kv_rows, score_rows)
         if state.cur_kv is not None:
             kv_rows = mx.concatenate([state.cur_kv, kv_rows], axis=1)
             score_rows = mx.concatenate([state.cur_score, score_rows], axis=1)
@@ -723,19 +760,53 @@ class Indexer(nn.Module):
 # Streaming decode state (sliding-window KV + compressed KV + compressor frontier)
 # ---------------------------------------------------------------------------
 class CompressorState:
-    """Rolling frontier of one compressor lane.
+    """Rolling frontier of one compressor lane, plus its rollback journal.
 
     Mirrors ``ds4.c``'s ``attn_state_kv`` / ``attn_state_score`` row block
     (antirez/DwarfStar4, MIT).  ds4 keeps a fixed ``coff*ratio`` block and clears the
     unfilled tail after prefill (``compressor_finish_prefill_state_cpu``); here the
     filled rows are simply buffered, which is the same state without the -inf padding.
+
+    **Rollback.**  Speculative decode has to un-decode the rejected tail of a verify
+    batch, and on this lane that means rewinding the frontier *and* the rows already
+    emitted from it.  The emitted rows are trivial — a compressed row is a pure
+    function of one completed window, so dropping the rows past the rewind point is
+    exact.  The frontier is not: after a window completes, ``cur_*`` is reset to the
+    remainder, so a rewind that crosses an emission boundary needs rows the frontier
+    no longer holds.  They are also not recomputable without the hidden states, which
+    the cache does not keep.
+
+    So this state carries a bounded **journal** of the last ``rollback_rows`` projected
+    rows (``tail_kv``/``tail_score``, the same post-``wkv``/post-``ape`` values the emit
+    path consumes).  :meth:`rollback` slices the frontier back out of it.  The journal
+    is sized to always cover the deepest legal rewind:
+
+        ``rollback_rows = (2 if overlap else 1) * ratio + rollback_capacity``
+
+    — ``ratio`` rows for ``prev_*`` (the last completed window, overlap lane only),
+    up to ``ratio - 1`` for ``cur_*``, and ``rollback_capacity`` for the rewind itself.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        ratio: int = 0,
+        overlap: bool = False,
+        rollback_capacity: int = 0,
+    ) -> None:
+        self.ratio = int(ratio)
+        self.overlap = bool(overlap)
+        self.rollback_capacity = max(0, int(rollback_capacity))
+        self.rollback_rows = (
+            0
+            if self.ratio <= 0
+            else (2 if self.overlap else 1) * self.ratio + self.rollback_capacity
+        )
         self.cur_kv: Optional[mx.array] = None      # [b, offset % ratio, coff*head_dim]
         self.cur_score: Optional[mx.array] = None   # same, post-``ape``
         self.prev_kv: Optional[mx.array] = None     # [b, ratio, coff*head_dim] (overlap)
         self.prev_score: Optional[mx.array] = None
+        self.tail_kv: Optional[mx.array] = None     # [b, <=rollback_rows, coff*head_dim]
+        self.tail_score: Optional[mx.array] = None
         self.n_emitted = 0
 
     def reset(self) -> None:
@@ -743,7 +814,64 @@ class CompressorState:
         self.cur_score = None
         self.prev_kv = None
         self.prev_score = None
+        self.tail_kv = None
+        self.tail_score = None
         self.n_emitted = 0
+
+    # -- rollback journal --------------------------------------------------
+    def push_rollback_rows(self, kv: mx.array, score: mx.array) -> None:
+        """Append this step's freshly projected rows to the bounded journal."""
+        if self.rollback_rows <= 0 or kv.shape[1] == 0:
+            return
+        self.tail_kv = kv if self.tail_kv is None else mx.concatenate(
+            [self.tail_kv, kv], axis=1
+        )
+        self.tail_score = score if self.tail_score is None else mx.concatenate(
+            [self.tail_score, score], axis=1
+        )
+        if self.tail_kv.shape[1] > self.rollback_rows:
+            self.tail_kv = self.tail_kv[:, -self.rollback_rows:]
+            self.tail_score = self.tail_score[:, -self.rollback_rows:]
+
+    def rollback(self, n: int, new_offset: int) -> None:
+        """Rewind ``n`` token positions; ``new_offset`` is the resulting offset.
+
+        Rebuilds ``cur_*``/``prev_*``/``n_emitted`` from the journal so the state is
+        the one this lane would hold had those ``n`` tokens never been stepped —
+        bit-identical, because every row it installs is a slice of the same array
+        the forward pass produced for that position.
+        """
+        if self.ratio <= 0:
+            return
+        held = 0 if self.tail_kv is None else int(self.tail_kv.shape[1])
+        kept = held - int(n)
+        if kept < 0:
+            raise ValueError(
+                f"compressor rollback of {n} exceeds the journal ({held} rows held)"
+            )
+        r = int(new_offset) % self.ratio
+        need = r + (self.ratio if (self.overlap and new_offset >= self.ratio) else 0)
+        if kept < need:
+            raise ValueError(
+                f"compressor rollback of {n} leaves {kept} journal rows, "
+                f"{need} needed to rebuild the frontier at offset {new_offset}"
+            )
+        if kept == 0:
+            self.tail_kv = None
+            self.tail_score = None
+        else:
+            self.tail_kv = self.tail_kv[:, :kept]
+            self.tail_score = self.tail_score[:, :kept]
+        self.n_emitted = int(new_offset) // self.ratio
+        self.cur_kv = None if r == 0 else self.tail_kv[:, kept - r:]
+        self.cur_score = None if r == 0 else self.tail_score[:, kept - r:]
+        if self.overlap and self.n_emitted > 0:
+            lo = kept - r - self.ratio
+            self.prev_kv = self.tail_kv[:, lo: lo + self.ratio]
+            self.prev_score = self.tail_score[:, lo: lo + self.ratio]
+        else:
+            self.prev_kv = None
+            self.prev_score = None
 
 
 class DeepseekV4Cache:
@@ -771,21 +899,57 @@ class DeepseekV4Cache:
 
     ``offset`` is the absolute position of the next token, i.e. the standard
     mlx-lm cache contract the generate/serve path reads.
+
+    **Rollback (``trim``).**  The speculative lane verifies ``K+1`` tokens in one
+    forward and then has to un-decode the rejected tail.  All three lanes here are
+    rewindable, by three different mechanisms, each chosen because it is *exact*:
+
+      * emitted compressed rows (both lanes) — **truncate**.  A row is a pure
+        function of one completed window, so the rows a shorter context would have
+        produced are a prefix of the rows this one did.
+      * compressor / indexer frontier — **journal**.  ``cur_*``/``prev_*`` are
+        rebuilt from :class:`CompressorState`'s bounded row journal, because a
+        rewind across an emission boundary needs rows the frontier itself dropped
+        and the cache keeps no hidden states to recompute them from.
+      * sliding-window KV — **retention**.  Evicted rows are gone for good, so the
+        window simply holds ``rollback_capacity`` rows more than it needs and
+        returns only the attendable prefix to attention (which is why the retention
+        change is invisible to the forward).  ``trim`` past that bound raises rather
+        than silently half-rewinding.
+
+    ``rollback_capacity`` is therefore a hard bound on rewind depth, uniform across
+    the three lanes.  It is not a bound on how far back the model can *attend*.
     """
 
-    _META_VERSION = "mtplx-deepseek-v4-cache-v2"
+    _META_VERSION = "mtplx-deepseek-v4-cache-v3"
 
-    def __init__(self, window_size: int, compress_ratio: int, head_dim: int) -> None:
+    def __init__(
+        self,
+        window_size: int,
+        compress_ratio: int,
+        head_dim: int,
+        rollback_capacity: int = _DEFAULT_ROLLBACK_CAPACITY,
+    ) -> None:
         self.window_size = int(window_size)
         self.compress_ratio = int(compress_ratio)
         self.head_dim = int(head_dim)
+        self.rollback_capacity = max(0, int(rollback_capacity))
         self.offset = 0
         self.window: Optional[mx.array] = None      # [b, L, head_dim]
         self.window_start = 0                       # abs position of window[:, 0]
         self.compressed: Optional[mx.array] = None  # [b, n_comp, head_dim]
-        self.comp = CompressorState()
+        overlap = self.compress_ratio == 4
+        self.comp = CompressorState(
+            ratio=self.compress_ratio,
+            overlap=overlap,
+            rollback_capacity=self.rollback_capacity,
+        )
         self.index_compressed: Optional[mx.array] = None  # [b, n_comp, index_head_dim]
-        self.index_comp = CompressorState()
+        self.index_comp = CompressorState(
+            ratio=self.compress_ratio,
+            overlap=overlap,
+            rollback_capacity=self.rollback_capacity,
+        )
 
     # -- streaming updates -------------------------------------------------
     @property
@@ -800,24 +964,35 @@ class DeepseekV4Cache:
         """Append ``kv`` (positions ``offset..offset+s-1``) and return the rows this
         call can still see, as ``(rows, first_position)``.
 
-        A query at ``p`` attends ``(p - window_size, p]``, so once the newest query is
-        ``offset+s-1`` nothing older than ``offset+s-window_size`` can ever matter:
-        rows below that are dropped here rather than masked.  For ``s == 1`` that
-        leaves exactly the attendable set, so the decode step needs no mask.
+        A query at ``p`` attends ``(p - window_size, p]``, so once the oldest query is
+        ``offset`` nothing older than ``offset - window_size`` can matter to this
+        call: those rows are excluded from the returned slice rather than masked.
+        For ``s == 1`` that leaves exactly the attendable set, so the decode step
+        needs no mask.
+
+        What is *returned* and what is *retained* are two different sets.  The buffer
+        keeps ``window_size + rollback_capacity`` rows so a rewind still has the rows
+        the shorter context would have been holding (eviction is irreversible — see
+        the class docstring); the extra rows never reach attention, so retention
+        depth cannot change the forward.
         """
         s = int(kv.shape[1])
         if self.window is None:
-            rows, start = kv, self.offset
+            buf, buf_start = kv, self.offset
         else:
-            rows = mx.concatenate([self.window, kv], axis=1)
-            start = self.window_start
-        keep = self.window_size + s - 1
-        if rows.shape[1] > keep:
-            rows = rows[:, -keep:]
-            start = self.offset + s - keep
-        held = min(int(rows.shape[1]), self.window_size)
-        self.window = rows if held == rows.shape[1] else rows[:, -held:]
-        self.window_start = start + int(rows.shape[1]) - held
+            buf = mx.concatenate([self.window, kv], axis=1)
+            buf_start = self.window_start
+        # rows visible to this call's oldest query (position ``offset``)
+        first_visible = max(0, self.offset - self.window_size + 1)
+        lo = max(0, first_visible - buf_start)
+        rows = buf[:, lo:] if lo else buf
+        start = buf_start + lo
+        keep = self.window_size + self.rollback_capacity
+        if buf.shape[1] > keep:
+            buf = buf[:, -keep:]
+            buf_start = self.offset + s - keep
+        self.window = buf
+        self.window_start = buf_start
         return rows, start
 
     @staticmethod
@@ -841,6 +1016,64 @@ class DeepseekV4Cache:
     def advance(self, s: int) -> None:
         self.offset += int(s)
 
+    # -- rollback ----------------------------------------------------------
+    @property
+    def max_rollback(self) -> int:
+        """Deepest legal :meth:`trim`, in token positions."""
+        return min(self.rollback_capacity, int(self.offset))
+
+    def trim(self, n: int) -> int:
+        """Un-decode the last ``n`` token positions; returns ``n``.
+
+        The mlx-lm cache trim contract (``rollback_after_verify`` /
+        ``trim_verified_window_to_prefix`` in ``mtplx.cache_state``), implemented
+        exactly: afterwards every field holds what it would hold had those ``n``
+        tokens never been passed to the model, so the next forward is bit-identical
+        to the one the shorter context would have run.
+
+        Unlike a plain KV cache this trim is *bounded* (:attr:`max_rollback`) — the
+        sliding window physically discards evicted rows.  Exceeding the bound raises
+        instead of clamping: ``rollback_after_verify`` ignores the return value, so a
+        clamped rewind would leave a silently desynced cache decoding on.
+        """
+        n = int(n)
+        if n <= 0:
+            return 0
+        if n > int(self.offset):
+            raise ValueError(
+                f"cannot trim {n} tokens from a DeepSeek-V4 cache at offset "
+                f"{self.offset}"
+            )
+        if n > self.rollback_capacity:
+            raise ValueError(
+                f"DeepSeek-V4 cache rollback of {n} exceeds rollback_capacity="
+                f"{self.rollback_capacity}: the sliding window has already evicted "
+                "the rows that depth would need"
+            )
+        new_offset = int(self.offset) - n
+        if self.window is not None:
+            kept = int(self.window.shape[1]) - n
+            if kept <= 0:
+                self.window = None
+                self.window_start = new_offset
+            else:
+                self.window = self.window[:, :kept]
+        if self.compress_ratio:
+            n_rows = new_offset // self.compress_ratio
+            if self.compressed is not None:
+                self.compressed = None if n_rows == 0 else self.compressed[:, :n_rows]
+            self.comp.rollback(n, new_offset)
+            # The indexer lane only exists on ratio-4 layers; on ratio-128 its
+            # state is constructed but never stepped, so there is nothing to rewind.
+            if self.compress_ratio == 4:
+                if self.index_compressed is not None:
+                    self.index_compressed = (
+                        None if n_rows == 0 else self.index_compressed[:, :n_rows]
+                    )
+                self.index_comp.rollback(n, new_offset)
+        self.offset = new_offset
+        return n
+
     # -- mlx-lm cache contract --------------------------------------------
     @property
     def state(self):
@@ -851,11 +1084,15 @@ class DeepseekV4Cache:
             self.comp.cur_score,
             self.comp.prev_kv,
             self.comp.prev_score,
+            self.comp.tail_kv,
+            self.comp.tail_score,
             self.index_compressed,
             self.index_comp.cur_kv,
             self.index_comp.cur_score,
             self.index_comp.prev_kv,
             self.index_comp.prev_score,
+            self.index_comp.tail_kv,
+            self.index_comp.tail_score,
         )
 
     @state.setter
@@ -869,8 +1106,8 @@ class DeepseekV4Cache:
             self.offset = 0
             self.window_start = 0
             return
-        if not isinstance(value, (tuple, list)) or len(value) != 11:
-            raise ValueError("DeepSeek-V4 cache state must contain eleven entries")
+        if not isinstance(value, (tuple, list)) or len(value) != 15:
+            raise ValueError("DeepSeek-V4 cache state must contain fifteen entries")
         (
             self.window,
             self.compressed,
@@ -878,11 +1115,15 @@ class DeepseekV4Cache:
             self.comp.cur_score,
             self.comp.prev_kv,
             self.comp.prev_score,
+            self.comp.tail_kv,
+            self.comp.tail_score,
             self.index_compressed,
             self.index_comp.cur_kv,
             self.index_comp.cur_score,
             self.index_comp.prev_kv,
             self.index_comp.prev_score,
+            self.index_comp.tail_kv,
+            self.index_comp.tail_score,
         ) = value
 
     def replace_state(self, value) -> None:
@@ -912,9 +1153,11 @@ class DeepseekV4Cache:
         self.index_comp.n_emitted = int(value[4])
 
     def is_trimmable(self) -> bool:
-        # Trimming would have to rewind the compressor frontier and the emitted
-        # compressed rows together; not supported (ds4 snapshots both or neither).
-        return False
+        # :meth:`trim` rewinds all three lanes exactly, which is what lets the
+        # engine's snapshot-free rejection repair
+        # (``mtplx.cache_state.trim_verified_window_without_snapshot``) serve this
+        # backend instead of a bespoke restore path.
+        return True
 
     def size(self) -> int:
         return int(self.offset)
@@ -1429,6 +1672,7 @@ class DeepseekV4MTP(DeepseekV4DecoderLayer):
         embed_tokens: nn.Module,
         lm_head: nn.Module,
         cache=None,
+        return_hidden: bool = False,
     ) -> mx.array:
         """``h``: ``[b, s, hc, dim]`` -> draft logits ``[b, s, vocab]``.
 
@@ -1436,12 +1680,23 @@ class DeepseekV4MTP(DeepseekV4DecoderLayer):
         reference's ``ParallelHead.get_logits`` slices ``x[:, -1]`` before the
         matmul because its caller only ever wants the last row; the full sequence
         is returned here (mlx-lm's convention) and that slice is the caller's.
+
+        ``return_hidden`` additionally returns the block's own pre-head
+        Hyper-Connection state ``[b, s, hc, dim]``.  That is the tensor a
+        multi-step draft chain feeds back in as ``h``: it occupies exactly the
+        position the trunk's :meth:`DeepseekV4Model.hc_hidden` output does, which
+        is what makes step ``i+1`` of the chain the same computation step ``i``
+        ran.  Depth > 1 is an MTPLX extension either way — the reference ships one
+        block and defines only the depth-1 call — and it is the same extension the
+        sibling appended-layer backends make (GLM's modulo-into-layers, Hy3's
+        single NextN layer reused at every depth).
         """
         e = self.enorm(embed_tokens(input_ids))          # [b, s, dim]
         x = self.hnorm(h)                                # [b, s, hc, dim]
         x = self.e_proj(e)[:, :, None, :] + self.h_proj(x)
         x = super().__call__(x, mask=None, cache=cache, input_ids=input_ids)
-        return lm_head(self.norm(self.hc_head(x)))
+        logits = lm_head(self.norm(self.hc_head(x)))
+        return (logits, x) if return_hidden else logits
 
 
 class DeepseekV4Model(nn.Module):
@@ -1501,9 +1756,54 @@ class Model(nn.Module):
             for i in range(max(int(args.num_nextn_predict_layers or 0), 0))
         ]
 
-    def __call__(self, inputs: mx.array, cache=None) -> mx.array:
-        out = self.model(inputs, cache)
-        return self.lm_head(out)
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache=None,
+        return_hidden: bool = False,
+        input_embeddings=None,
+        hidden_variant: Optional[str] = None,
+        emit_logits: bool = True,
+        logits_keep: Optional[int] = None,
+        **kwargs,
+    ):
+        """Target forward; also the MTPLX runtime's ``forward_ar`` surface.
+
+        Plain ``model(ids)`` / ``model(ids, cache=cache)`` is unchanged.  The extra
+        keywords are the contract ``mtplx.runtime.MTPLXRuntime.forward_ar`` drives
+        every MTP backend through:
+
+        * ``return_hidden`` — also return the state the draft block consumes.  For
+          this architecture that is the pre-head Hyper-Connection tensor
+          ``[b, s, hc, dim]`` (:meth:`hc_hidden`), NOT a ``[b, s, dim]`` hidden:
+          collapsing first would destroy the copies ``DeepseekV4MTP.hnorm`` /
+          ``h_proj`` read.  Engine code only ever slices axis 1 of this tensor and
+          hands it back to :meth:`mtp_forward`, so the extra axis is transparent.
+        * ``hidden_variant`` — accepted and ignored.  The variant knob picks
+          between a Qwen-style draft's pre-norm/post-norm/fc taps; V4's draft input
+          is defined by the reference as exactly one tensor, so there is nothing to
+          pick.  Raising instead would break every draft call, since
+          ``runtime.draft_mtp`` always resolves the contract default.  Same
+          decision as the sibling appended-layer backends (glm_mtp, step3p5, hy3).
+        * ``emit_logits`` / ``logits_keep`` — skip, or restrict to the last ``k``
+          rows, the ``lm_head`` matmul.  Over a 129280-row vocabulary that matmul
+          dominates a prefill chunk, and prefill only needs the final row.
+        """
+        if input_embeddings is not None:
+            raise ValueError(
+                "the DeepSeek-V4 backend does not support input_embeddings "
+                "(no vision splice path)"
+            )
+        h = self.model.hc_hidden(inputs, cache)
+        logits = None
+        if emit_logits:
+            source = h
+            if logits_keep is not None:
+                source = h[:, -max(1, int(logits_keep)):]
+            logits = self.logits_from_hc_hidden(source)
+        if not return_hidden:
+            return logits
+        return logits, h
 
     @property
     def layers(self):
@@ -1511,8 +1811,23 @@ class Model(nn.Module):
 
     # -- MTP (speculative draft head) --------------------------------------
     @property
+    def mtp_blocks(self) -> list:
+        """The draft blocks, however ``mtp`` is currently bound.
+
+        :meth:`__init__` binds ``self.mtp`` to a plain list so the parameter paths
+        are the checkpoint's ``mtp.{i}.*``.  ``inject_deepseek_v4_mtp_support``
+        rebinds it (post-load) to a container that also answers ``.layers``, which
+        is what ``mtplx.mtp_patch.validate_mtp_support`` probes for.  Everything
+        else goes through this property so neither binding is load-bearing.
+        """
+        blocks = getattr(self, "mtp", None)
+        if blocks is None:
+            return []
+        return list(getattr(blocks, "layers", blocks))
+
+    @property
     def has_mtp(self) -> bool:
-        return bool(self.mtp)
+        return bool(self.mtp_blocks)
 
     def hc_hidden(self, inputs: mx.array, cache=None) -> mx.array:
         """Trunk forward stopping at the pre-head state the MTP block consumes."""
@@ -1526,29 +1841,108 @@ class Model(nn.Module):
         """
         return self.lm_head(self.model.collapse(h))
 
-    def mtp_forward(self, h: mx.array, input_ids: mx.array, index: int = 0,
-                    cache=None) -> mx.array:
+    def mtp_forward(
+        self,
+        h: mx.array,
+        input_ids: mx.array,
+        index: int = 0,
+        cache=None,
+        *,
+        mtp_cache=None,
+        concat_order: Optional[str] = None,
+        return_hidden: bool = False,
+        mtp_hidden_variant: Optional[str] = None,
+        position_offset: Optional[int] = None,
+        mtp_depth: Optional[int] = None,
+    ):
         """Draft logits from the trunk's ``h`` and the next tokens' ids.
 
         Supplies the two modules the reference assigns onto the block (the trunk
         embedding and lm_head) instead of duplicating them; see
         :class:`DeepseekV4MTP` for the ``input_ids`` alignment contract.
 
-        ``cache`` is the **one** :class:`DeepseekV4Cache` belonging to block
-        ``index`` — i.e. ``make_mtp_cache()[index]``, not the list.  The trunk
-        takes a list because it has one entry per layer; a draft block is a
-        single layer and takes its own.
+        Two ways to hand it a cache, because it answers to two callers:
+
+        * ``cache`` — the **one** :class:`DeepseekV4Cache` belonging to block
+          ``index`` (``make_mtp_cache()[index]``, not the list).  The trunk takes a
+          list because it has one entry per layer; a draft block is a single layer
+          and takes its own.
+        * ``mtp_cache`` — the whole list, which is what
+          ``MTPLXRuntime.draft_mtp`` passes; ``index`` selects from it.
+
+        The remaining keywords are the runtime's uniform draft signature.
+        ``concat_order`` and ``mtp_hidden_variant`` are Qwen-shaped knobs with no
+        V4 counterpart (see :meth:`__call__`) and are accepted and ignored;
+        ``mtp_depth`` is informational, as it is for every single-block draft head
+        (the one block is reused at every depth); ``position_offset`` is rejected
+        rather than ignored, because silently dropping it would put the draft's
+        RoPE at the wrong absolute position instead of failing.
         """
-        if not self.mtp:
+        blocks = self.mtp_blocks
+        if not blocks:
             raise RuntimeError("this checkpoint ships no MTP block")
         if isinstance(cache, (list, tuple)):
             raise TypeError(
                 "mtp_forward takes the MTP block's own cache, not the list: "
                 f"pass make_mtp_cache()[{index}]"
             )
-        return self.mtp[index](
-            h, input_ids, self.model.embed_tokens, self.lm_head, cache=cache
+        if position_offset is not None:
+            raise ValueError(
+                "the DeepSeek-V4 draft block takes its RoPE offset from its own "
+                "cache; explicit position_offset is not supported"
+            )
+        if mtp_cache is not None:
+            if not isinstance(mtp_cache, (list, tuple)):
+                raise TypeError("mtp_cache must be the make_mtp_cache() list")
+            if cache is not None:
+                raise TypeError("pass either cache= or mtp_cache=, not both")
+            cache = mtp_cache[index] if mtp_cache else None
+        return blocks[index](
+            h,
+            input_ids,
+            self.model.embed_tokens,
+            self.lm_head,
+            cache=cache,
+            return_hidden=return_hidden,
         )
+
+    def mtp_update_cache(
+        self,
+        h: mx.array,
+        input_ids: mx.array,
+        index: int = 0,
+        *,
+        mtp_cache=None,
+        concat_order: Optional[str] = None,
+        mtp_hidden_variant: Optional[str] = None,
+        position_offset: Optional[int] = None,
+        mtp_depth: Optional[int] = None,
+        input_embeddings=None,
+    ) -> mx.array:
+        """Append committed history to the draft cache; returns the draft hidden.
+
+        ``MTPLXRuntime.update_mtp_cache`` drives this to keep the draft block's KV
+        in step with the tokens the target committed.  The ``lm_head`` matmul still
+        runs — the draft head shares the trunk's 129280-row projection and this
+        call is off the hot path (history append, not per-step drafting).
+        """
+        if input_embeddings is not None:
+            raise ValueError(
+                "the DeepSeek-V4 backend does not support input_embeddings "
+                "(no vision splice path)"
+            )
+        _logits, hidden = self.mtp_forward(
+            h,
+            input_ids,
+            index,
+            mtp_cache=mtp_cache,
+            concat_order=concat_order,
+            return_hidden=True,
+            mtp_hidden_variant=mtp_hidden_variant,
+            position_offset=position_offset,
+            mtp_depth=mtp_depth,
+        )
+        return hidden
 
     def make_mtp_cache(self):
         """One :class:`DeepseekV4Cache` per MTP block.
@@ -1557,8 +1951,8 @@ class Model(nn.Module):
         module with its own KV (reference ``Attention.__init__`` L474 registers a
         per-instance ``kv_cache``), so it must not share the trunk's.  Its
         ``compress_ratio`` is 0, which makes the cache a plain sliding window —
-        no compressed rows, no compressor frontier, nothing to roll back but the
-        window and ``offset``.
+        no compressed rows, no compressor frontier, so ``trim`` there rewinds only
+        the window and ``offset``.
         """
         return [
             DeepseekV4Cache(
@@ -1566,7 +1960,7 @@ class Model(nn.Module):
                 compress_ratio=block.attn.compress_ratio,
                 head_dim=block.attn.head_dim,
             )
-            for block in self.mtp
+            for block in self.mtp_blocks
         ]
 
     def sanitize(self, weights: dict) -> dict:
@@ -1591,7 +1985,7 @@ class Model(nn.Module):
         ``load_weights(strict=True)`` still sees an exact match instead of 58
         spurious "missing" keys.
         """
-        if self.mtp and not any(str(k).startswith("mtp.") for k in weights):
+        if self.mtp_blocks and not any(str(k).startswith("mtp.") for k in weights):
             self.mtp = []
         return weights
 
@@ -1607,3 +2001,74 @@ class Model(nn.Module):
             )
             for layer in self.layers
         ]
+
+
+# ---------------------------------------------------------------------------
+# MTPLX runtime binding (speculative lane)
+# ---------------------------------------------------------------------------
+class MTPHead(nn.Module):
+    """Post-load container so ``model.mtp`` answers ``.layers``.
+
+    Every other MTP backend is an mlx-lm model that MTPLX *grafts* a draft head
+    onto, and ``mtplx.mtp_patch.validate_mtp_support`` probes that graft with
+    ``model.mtp.layers``.  This backend owns its draft head natively and binds it
+    from the checkpoint's own ``mtp.{i}.*`` paths, which means ``Model.mtp`` has to
+    be a plain list at load time — a container would rename every tensor.  So the
+    list is wrapped here *after* the weights are bound, holding the very same block
+    objects (no copy, no re-load), and :attr:`Model.mtp_blocks` reads through either
+    binding.  Same move ``hy_v3_mtp_patch`` makes when it aliases
+    ``model.mtp.layers = [model.mtp.layer]``.
+    """
+
+    def __init__(self, blocks):
+        super().__init__()
+        self.layers = list(blocks)
+
+
+def is_deepseek_v4_mtp_config(config: dict) -> bool:
+    """Does this artifact declare a DeepSeek-V4 draft head?
+
+    Weight presence is decided later by :meth:`Model.sanitize` (the published
+    mlx-community conversions declare the layer and ship no tensors, which is what
+    the runtime's degrade-to-autoregressive branch exists for).
+    """
+    model_type = str((config or {}).get("model_type") or "").lower()
+    architectures = [str(a) for a in (config or {}).get("architectures") or []]
+    if model_type != "deepseek_v4" and not any(
+        a.lower() == "deepseekv4forcausallm" for a in architectures
+    ):
+        return False
+    return int((config or {}).get("num_nextn_predict_layers") or 0) > 0
+
+
+def inject_deepseek_v4_mtp_support(
+    model,
+    path=None,
+    config: Optional[dict] = None,
+    contract=None,
+) -> bool:
+    """Enable the speculative lane on an already-loaded DeepSeek-V4 model.
+
+    There is nothing to graft: :class:`DeepseekV4MTP` binds through the ordinary
+    load path from the checkpoint's ``mtp.0.*`` tensors, and :class:`Model` already
+    carries the runtime's draft surface (``__call__(return_hidden=...)``,
+    :meth:`Model.mtp_forward`, :meth:`Model.mtp_update_cache`,
+    :meth:`Model.make_mtp_cache`).  All this does is publish that fact in the shape
+    ``mtplx.mtp_patch.validate_mtp_support`` checks, and report False — the
+    degrade-to-autoregressive signal — for a checkpoint whose draft head
+    :meth:`Model.sanitize` dropped.
+
+    Returns True when the model can speculate.  The ``path``/``config``/``contract``
+    parameters exist to match the sibling ``inject_*_mtp_support`` signature the
+    runtime dispatches on; a bare :class:`~mtplx.mtp_patch.MTPContract` needs no
+    adaptation here, because the V4 draft input is a single defined tensor with no
+    hidden-variant or concat-order choice to make.
+    """
+    if not is_deepseek_v4_mtp_config(config or {}):
+        return False
+    blocks = getattr(model, "mtp_blocks", None)
+    if not blocks:
+        return False
+    if getattr(getattr(model, "mtp", None), "layers", None) is None:
+        model.mtp = MTPHead(blocks)
+    return True

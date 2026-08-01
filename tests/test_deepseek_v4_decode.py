@@ -190,15 +190,17 @@ def test_make_cache_shape():
     assert [c.n_compressed for c in cache] == [0, 1, 0, 1]
     assert cache[0].comp.cur_kv is None
     assert cache[1].comp.cur_kv.shape[1] == 1
-    # Window bookkeeping: it never holds more than window_size rows, and its start
-    # position is what the cached-chunk mask is built from.
+    # Window bookkeeping: the buffer holds the attendable window_size rows plus
+    # rollback_capacity older ones (retained only so trim can rewind -- they are
+    # never returned to attention), and window_start is where the buffer starts.
     for c in cache:
         assert c.window.shape[1] == 5 and c.window_start == 0
     model(_tokens(40)[:, 5:40], cache=cache)
     for c in cache:
+        held = min(40, WINDOW + c.rollback_capacity)
         assert c.offset == 40
-        assert c.window.shape[1] == WINDOW
-        assert c.window_start == 40 - WINDOW
+        assert c.window.shape[1] == held
+        assert c.window_start == 40 - held
     assert [c.n_compressed for c in cache] == [0, 10, 0, 10]  # 40 // 4
 
 
