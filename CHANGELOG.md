@@ -726,4 +726,16 @@ working as one product. Full notes:
   completions, and Anthropic `stop_sequences`) and `/v1/completions`
   streams tokens as they are generated with real finish reasons.
 
-[1.0.0]: https://github.com/youssofal/mtplx/releases/tag/v1.0.0
+[2.4.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.4.1
+[2.4.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.4.0
+[2.3.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.3.0
+[2.2.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.2.0
+[2.1.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.1.0
+[2.0.2]: https://github.com/youssofal/MTPLX/releases/tag/v2.0.2
+[2.0.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.0.1
+[2.0.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.0.0
+[1.0.4]: https://github.com/youssofal/MTPLX/releases/tag/v1.0.4
+[1.0.3]: https://github.com/youssofal/MTPLX/releases/tag/v1.0.3
+[1.0.2]: https://github.com/youssofal/MTPLX/releases/tag/v1.0.2
+[1.0.1]: https://github.com/youssofal/MTPLX/releases/tag/v1.0.1
+[1.0.0]: https://github.com/youssofal/MTPLX/releases/tag/v1.0.0
