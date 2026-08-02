@@ -22,6 +22,7 @@ PLIST = Path("/Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist")
 BENCH = Path("/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4")
 WRAPPER_ENV = "MTPLX_DSV4_ADAPTIVE_WIDTH_POSTFLIGHT_WRAPPER"
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+INVALID_TAG_RECEIPT_PREFIX = "adaptive-width-invalid-tag-"
 REQUIRED_PROBES = (
     "lock_free",
     "wired_limit_mb",
@@ -31,9 +32,28 @@ REQUIRED_PROBES = (
 
 
 def _validate_tag(tag: str) -> str:
-    if tag in {"", ".", ".."} or TAG_PATTERN.fullmatch(tag) is None:
+    if (
+        not isinstance(tag, str)
+        or tag in {"", ".", ".."}
+        or TAG_PATTERN.fullmatch(tag) is None
+    ):
         raise ValueError("invalid bracket tag: expected a safe basename")
     return tag
+
+
+def _tag_sha256(tag: object) -> str:
+    encoded = (
+        tag.encode("utf-8", errors="surrogatepass")
+        if isinstance(tag, str)
+        else repr(tag).encode("utf-8", errors="surrogatepass")
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _invalid_tag_receipt_path(bench_dir: Path, tag: object) -> Path:
+    digest = _tag_sha256(tag)
+    name = f"{INVALID_TAG_RECEIPT_PREFIX}{digest}-pid-{os.getpid()}-postflight.json"
+    return bench_dir / name
 
 
 def _postflight_collector():
@@ -119,18 +139,37 @@ def run(
     postflight_collector=_postflight_collector,
     bench_dir: Path = BENCH,
 ) -> int:
-    tag = _validate_tag(tag)
-    environment = dict(os.environ)
-    environment[WRAPPER_ENV] = "1"
-    child_error = None
+    bench_dir = Path(bench_dir)
+    tag_sha256 = _tag_sha256(tag)
+    tag_validation_error = None
     try:
-        completed = run_command(_command(tag), check=False, env=environment)
-        child_exit_code = int(completed.returncode)
-    except Exception as error:
-        child_exit_code = 1
-        child_error = f"{type(error).__name__}: {error}"
+        valid_tag = _validate_tag(tag)
+    except ValueError as error:
+        valid_tag = None
+        tag_validation_error = f"{type(error).__name__}: {error}"
 
-    primary, primary_sha256, primary_error = _read_primary(bench_dir / f"{tag}.json")
+    child_started = valid_tag is not None
+    child_error = None
+    if child_started:
+        environment = dict(os.environ)
+        environment[WRAPPER_ENV] = "1"
+        try:
+            completed = run_command(_command(valid_tag), check=False, env=environment)
+            child_exit_code = int(completed.returncode)
+        except Exception as error:
+            child_exit_code = 1
+            child_error = f"{type(error).__name__}: {error}"
+        primary, primary_sha256, primary_error = _read_primary(
+            bench_dir / f"{valid_tag}.json"
+        )
+        receipt_path = bench_dir / f"{valid_tag}-postflight.json"
+    else:
+        child_exit_code = None
+        primary = None
+        primary_sha256 = None
+        primary_error = "primary receipt skipped because bracket tag is invalid"
+        receipt_path = _invalid_tag_receipt_path(bench_dir, tag)
+
     try:
         raw_postflight = postflight_collector()
         postflight, postflight_errors = _validate_postflight(raw_postflight)
@@ -139,7 +178,9 @@ def run(
         postflight_errors = [f"{type(error).__name__}: {error}"]
 
     errors = list(postflight_errors)
-    if child_exit_code != 0:
+    if tag_validation_error is not None:
+        errors.append(tag_validation_error)
+    if child_started and child_exit_code != 0:
         errors.append(f"guarded child exited {child_exit_code}")
     if child_error is not None:
         errors.append(child_error)
@@ -149,7 +190,11 @@ def run(
     receipt = {
         "kind": "deepseek_v4_adaptive_width_guarded_postflight",
         "timestamp_utc": datetime.now(UTC).isoformat(),
-        "tag": tag,
+        "tag": valid_tag,
+        "tag_valid": valid_tag is not None,
+        "tag_sha256": tag_sha256,
+        "tag_validation_error": tag_validation_error,
+        "guarded_child_started": child_started,
         "guarded_child_exit_code": child_exit_code,
         "primary_receipt": primary,
         "primary_receipt_sha256": primary_sha256,
@@ -159,7 +204,7 @@ def run(
         "validation_errors": errors,
         "status": status,
     }
-    _write_receipt(bench_dir / f"{tag}-postflight.json", receipt)
+    _write_receipt(receipt_path, receipt)
     return status
 
 

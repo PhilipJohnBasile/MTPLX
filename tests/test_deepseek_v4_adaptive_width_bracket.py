@@ -432,3 +432,71 @@ def test_postflight_wrapper_always_writes_and_fails_closed(tmp_path, failure):
     assert status == 1
     receipt = json.loads((tmp_path / f"{tag}-postflight.json").read_text())
     assert receipt["status"] == 1
+
+
+@pytest.mark.parametrize(
+    "tag",
+    ("../../escaped", "", ".", "..", "slash/name", "bad tag"),
+)
+def test_invalid_tag_skips_child_but_collects_postflight_and_writes_safe_receipt(
+    tmp_path, tag
+):
+    wrapper = _wrapper_module()
+    collected = []
+
+    def collect():
+        collected.append(True)
+        return _postflight(True)
+
+    status = wrapper.run(
+        tag,
+        run_command=lambda *_a, **_k: pytest.fail("invalid tag started child"),
+        postflight_collector=collect,
+        bench_dir=tmp_path,
+    )
+
+    digest = hashlib.sha256(tag.encode("utf-8", errors="surrogatepass")).hexdigest()
+    receipts = list(
+        tmp_path.glob(
+            f"adaptive-width-invalid-tag-{digest}-pid-*-postflight.json"
+        )
+    )
+    assert status == 1
+    assert collected == [True]
+    assert len(receipts) == 1
+    assert receipts[0].parent.resolve() == tmp_path.resolve()
+    assert list(tmp_path.iterdir()) == receipts
+    pid_text = receipts[0].name.removeprefix(
+        f"adaptive-width-invalid-tag-{digest}-pid-"
+    ).removesuffix("-postflight.json")
+    assert pid_text.isdecimal()
+    receipt = json.loads(receipts[0].read_text())
+    assert receipt["tag_valid"] is False
+    assert receipt["tag_sha256"] == digest
+    assert receipt["guarded_child_started"] is False
+    assert receipt["guarded_child_exit_code"] is None
+    assert receipt["postflight_ok"] is True
+    assert set(receipt["postflight"]) == set(wrapper.REQUIRED_PROBES)
+    assert receipt["status"] == 1
+
+
+def test_invalid_tag_path_strictly_rejects_malformed_restoration_probe(tmp_path):
+    wrapper = _wrapper_module()
+    probes = _postflight(True)
+    probes["wired_limit_mb"] = {"ok": 1}
+
+    status = wrapper.run(
+        "invalid/tag",
+        run_command=lambda *_a, **_k: pytest.fail("invalid tag started child"),
+        postflight_collector=lambda: probes,
+        bench_dir=tmp_path,
+    )
+
+    receipt_path = next(tmp_path.glob("adaptive-width-invalid-tag-*-postflight.json"))
+    receipt = json.loads(receipt_path.read_text())
+    assert status == 1
+    assert receipt["postflight_ok"] is False
+    assert any(
+        "wired_limit_mb is missing or malformed" in error
+        for error in receipt["validation_errors"]
+    )
