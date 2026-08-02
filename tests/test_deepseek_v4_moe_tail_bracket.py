@@ -20,6 +20,7 @@ _VALIDATOR = _ROOT / "scripts" / "deepseek_v4_validate_moe_tail_k3_bracket.py"
 _GUARD = _ROOT / "scripts" / "deepseek_v4_guard_window.py"
 _BENCHMARK = _ROOT / "scripts" / "deepseek_v4_mtpk_bench.py"
 _ARMS = _ROOT / "scripts" / "deepseek_v4_moe_tail_arms.sh"
+_POSTFLIGHT = _ROOT / "scripts" / "deepseek_v4_moe_tail_guarded_bracket.py"
 
 _spec = importlib.util.spec_from_file_location("dsv4_moe_tail_bracket", _VALIDATOR)
 V = importlib.util.module_from_spec(_spec)
@@ -30,6 +31,12 @@ if str(_ROOT / "scripts") not in sys.path:
 _bench_spec = importlib.util.spec_from_file_location("dsv4_moe_tail_bench", _BENCHMARK)
 H = importlib.util.module_from_spec(_bench_spec)
 _bench_spec.loader.exec_module(H)
+
+_postflight_spec = importlib.util.spec_from_file_location(
+    "dsv4_moe_tail_postflight", _POSTFLIGHT
+)
+P = importlib.util.module_from_spec(_postflight_spec)
+_postflight_spec.loader.exec_module(P)
 
 
 def _stage4_env(_enabled: bool) -> dict[str, str]:
@@ -306,6 +313,76 @@ def test_shell_help_documents_exact_guard_restore_and_real_ready_stop_check():
     assert "/v1/chat/completions" in source
     assert "Say READY" in source
     assert 'finish_reason == "stop"' in source
+
+
+def test_outer_guarded_wrapper_runs_postflight_after_child_failure(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(
+        P.subprocess,
+        "run",
+        lambda command, check=False, **_kwargs: calls.append(command)
+        or SimpleNamespace(returncode=17),
+    )
+    monkeypatch.setattr(
+        P,
+        "collect_postflight",
+        lambda: {
+            "lock_free": {"ok": True},
+            "wired_limit_mb": {"ok": True, "value": 114688},
+            "quality_models": {"ok": True},
+            "quality_ready_chat": {"ok": True},
+        },
+    )
+    monkeypatch.setattr(P, "_write_receipt", lambda path, receipt: calls.append(receipt))
+
+    assert P.run("test-tag", bench_dir=tmp_path) == 17
+    assert calls[0][-3:] == ["/bin/zsh", str(P.ARMS), "test-tag"]
+    receipt = calls[1]
+    assert receipt["child_exit_code"] == 17
+    assert receipt["postflight_ok"] is True
+    assert receipt["exit_code"] == 17
+
+
+def test_outer_guarded_wrapper_fails_successful_child_when_postflight_fails(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        P.subprocess,
+        "run",
+        lambda _command, check=False, **_kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        P,
+        "collect_postflight",
+        lambda: {
+            "lock_free": {"ok": False, "error": "still locked"},
+            "wired_limit_mb": {"ok": True, "value": 114688},
+            "quality_models": {"ok": True},
+            "quality_ready_chat": {"ok": True},
+        },
+    )
+    receipts = []
+    monkeypatch.setattr(P, "_write_receipt", lambda _path, receipt: receipts.append(receipt))
+
+    assert P.run("test-tag", bench_dir=tmp_path) == 1
+    assert receipts[0]["child_exit_code"] == 0
+    assert receipts[0]["postflight_ok"] is False
+    assert receipts[0]["exit_code"] == 1
+
+
+def test_outer_guarded_wrapper_source_keeps_run_guarded_as_service_owner():
+    source = _POSTFLIGHT.read_text()
+    assert "/Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py" in source
+    assert "--lock-timeout-seconds" in source
+    assert "fcntl.LOCK_NB" in source
+    assert "iogpu.wired_limit_mb" in source
+    assert "/v1/models" in source
+    assert "/v1/chat/completions" in source
+    assert "finish_reason" in source
+    assert "MTPLX_DSV4_MOE_TAIL_POSTFLIGHT_WRAPPER" in source
+    assert "launchctl" not in source
+    assert "bootstrap" not in source
 
 
 def test_single_process_source_is_clean_before_mlx_and_loads_once():

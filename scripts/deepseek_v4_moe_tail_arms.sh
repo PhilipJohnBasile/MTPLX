@@ -5,17 +5,16 @@ set -euo pipefail
 
 usage() {
   /bin/cat <<'EOF'
-Run this bracket only through the canonical guarded window:
+Do not execute this inner child directly. Run the postflight wrapper instead:
 
   /Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python \
-    /Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py \
-    --plist /Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist \
-    --timeout-seconds 300 \
-    --lock-timeout-seconds 3600 --child-timeout-seconds 3600 \
-    -- /bin/zsh \
-    /private/tmp/claude-501/-Users-davidtai-projects-OpenSourceWTF/8e9b6abf-6a38-4e6e-ade0-6b0f191bb256/scratchpad/moe-tail/scripts/deepseek_v4_moe_tail_arms.sh
+    /private/tmp/claude-501/-Users-davidtai-projects-OpenSourceWTF/8e9b6abf-6a38-4e6e-ade0-6b0f191bb256/scratchpad/moe-tail/scripts/deepseek_v4_moe_tail_guarded_bracket.py
 
-run_guarded owns Qwen teardown/restoration. Its exact plist restore is:
+The wrapper invokes `/Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py`
+with `/Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist`,
+`--lock-timeout-seconds 3600 --child-timeout-seconds 3600`, and this script as
+its only child. `run_guarded` owns Qwen teardown/restoration. Its exact plist
+restore is:
 
   launchctl bootstrap gui/501 \
     /Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist
@@ -52,6 +51,14 @@ PROMPT_SHA256=ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33
 CONFIG_SHA256=c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa6f
 INDEX_SHA256=c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8
 TAG="${1:-moe-tail-k3-$(date -u +%Y%m%dT%H%M%SZ)}"
+
+# The outer wrapper owns the mandatory read-only postflight after run_guarded
+# restores Quality and releases the lock. Refuse a direct guard invocation so
+# no execution path can silently skip that receipt.
+[[ "${MTPLX_DSV4_MOE_TAIL_POSTFLIGHT_WRAPPER:-}" == "1" ]] || {
+  print -u2 "[moe-tail-arms] invoke deepseek_v4_moe_tail_guarded_bracket.py, not this inner child"
+  exit 1
+}
 
 # Consume run_guarded's one-shot pipe before any MLX import. The issued private
 # receipt is reusable by the one benchmark and receipt-only validator while it
