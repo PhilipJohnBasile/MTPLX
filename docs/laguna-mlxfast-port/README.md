@@ -37,21 +37,24 @@ half-wired flag raise rather than fake the reference's numbers).
 | D1 residual+router | ✅ +1.0% | bit-exact fusion |
 | S1 async schedule | ✅ +4.0% | biggest lever; scheduling, not a kernel |
 | D6 SDPA-vector (group-3 gqa) | ⏭️ −1.6% | KV-reuse doesn't beat stock SDPA at N=512 |
-| D7–D9 affine MoE SwiGLU-QMV | ⏭️ −25%→−530% | bit-exact but weight-bandwidth-bound; loses at decode AND prefill |
+| D7–D9 affine MoE (decode per-token SwiGLU-QMV) | ⏭️ −25% decode | bit-exact but re-reads weights per token; loses to stock grouped `gather_qmm` |
 | D14 lm-head top-1 | ⏭️ −0.7% | EXACT (top-1==argmax all steps); head read dominates |
 | interval ladder | ⏭️ worse | async-every-step wins |
 | D4 qkvg / gate-up | ⏭️ ineligible | installer converts 0 layers on affine shapes |
 | D2/D3/D5/D10/D12 | ✅ active | via the installed reference kernels the alt lane reads |
 | D11 dense-0 / D13 embed | — | minor components, active via stock; D11 is the D7-class that loses |
-| P4 prefill MoE gather-GEMM | ⏭️ no lever | stock sorted grouped-GEMM amortizes weight reads ~40× |
+| P4 prefill MoE gather-GEMM (grouped, split-K) | ⚠️ **not directly ported** | decode per-token QMV benched at prefill loses; the grouped gather-GEMM ≈ stock `gather_qmm` — being tested to confirm |
 | P1/P2/P3/P5 prefill | ✅ integrated | alt prefill lane = reference parity (1582 vs 1579); D1-at-prefill −5% |
 
 ## Why the per-op hand kernels don't transfer
 
-The challenge's per-op wins were **NVFP4-specific** — a group-16 4-bit-float byte-math path
-that does not exist in affine oQ4e. Re-expressed for affine 4/5/8-bit, every hand kernel
-runs into MLX's stock primitives, which are already bandwidth/occupancy-optimal for this
-quant on M5:
+XS2.1 shipped as `poolside/Laguna-XS-2.1-NVFP4-mlx` — **NVFP4** (group-16 4-bit float, E4M3
+scales), which MLX has no native kernel for; the challenge vendored and hand-patched mlx-swift
+to add it. Crucially, that means the challenge's hand kernels had **no tuned stock competitor**
+— they were the only NVFP4 path. Re-expressed for S-2.1's affine oQ4e, every hand kernel now
+races MLX's **already-tuned** stock primitives (`gather_qmm` / SDPA / argmax), which are
+bandwidth/occupancy-optimal on M5. So the techniques aren't wrong — the bar is just far higher
+on affine than it was on NVFP4:
 
 - **MoE**: stock `SwitchGLU` uses `gather_qmm` with `sorted_indices` — reads each expert's
   weights once and amortizes across all tokens routed to it. A fused per-(token,expert)
@@ -81,9 +84,13 @@ GPU A/B at ctx 1024, first-token digest-matched:
 alt[stock] = reference parity (the lane is correct and the stock prefill ops are optimal). **D1
 at prefill LOSES 5%**: at prefill the router GEMV becomes a `[T,3072]@[3072,256]` GEMM, where
 the per-row fused kernel loses to stock's GEMM — D1's win is decode-specific (a GEMV, rows=1).
-The affine MoE (P4) was separately measured across T=1…1024 and loses at every T (root-caused
-above). **Net: no prefill lever exists on affine oQ4e; stock prefill is optimal.** The prefill
-port is complete — every component integrated in a runnable lane and measured.
+Caveat (being closed): the affine MoE kernel that was ported + swept T=1…1024 is the **decode
+per-token SwiGLU-QMV**; benched at prefill it loses because it re-reads weights per token. That
+is NOT the challenge's prefill MoE kernel, which is a **grouped gather-GEMM (split-K/RUNSKIP)**
+— the same class as stock `mx.gather_qmm`, and not yet directly ported. So "no prefill MoE
+lever" is expected (the grouped gather-GEMM ≈ tuned stock) but not yet proven; a port of the
+actual gather-GEMM is in progress to confirm. **The decode result (D1+S1, +5.8%) is unaffected.**
+The prefill lane itself is complete — every component integrated in a runnable lane and measured.
 
 ## Artifacts
 - Runtime: `mtplx/laguna_alt_step.py`; kernels `mtplx/kernels/{laguna_residual_router,laguna_sdpa_pair,laguna_moe_swiglu}.py`.
