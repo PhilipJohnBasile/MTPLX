@@ -1118,9 +1118,21 @@ class _DirectGatherOLoraWideM4:
 
     __slots__ = ("m4", "stock")
 
-    def __init__(self, attention: "DeepseekV4Attention", quant: tuple) -> None:
+    def __init__(
+        self,
+        attention: "DeepseekV4Attention",
+        quant: tuple,
+        *,
+        activation_dtype,
+    ) -> None:
+        if activation_dtype != mx.bfloat16:
+            raise ValueError(
+                "M4-wide gather o-LoRA activation/output dtype must be bfloat16"
+            )
         self.stock = _DirectGatherOLora(attention, quant)
-        self.m4 = _GatherQMMWideM4OLora(attention, quant)
+        self.m4 = _GatherQMMWideM4OLora(
+            attention, quant, activation_dtype=activation_dtype
+        )
 
     def __call__(self, o: mx.array) -> mx.array:
         batch, sequence, _ = o.shape
@@ -1155,8 +1167,24 @@ class _GatherQMMWideM4OLora:
         "wo_b",
     )
 
-    def __init__(self, attention: "DeepseekV4Attention", quant: tuple) -> None:
+    def __init__(
+        self,
+        attention: "DeepseekV4Attention",
+        quant: tuple,
+        *,
+        activation_dtype,
+    ) -> None:
         weight, scales, biases, group_size, bits, mode = quant
+        if activation_dtype != mx.bfloat16:
+            raise ValueError(
+                "M4-wide gather o-LoRA activation/output dtype must be bfloat16"
+            )
+        if getattr(weight, "dtype", None) != mx.uint32:
+            raise ValueError("M4-wide gather o-LoRA packed weight dtype must be uint32")
+        if getattr(scales, "dtype", None) != mx.bfloat16:
+            raise ValueError("M4-wide gather o-LoRA scales dtype must be bfloat16")
+        if biases is None or getattr(biases, "dtype", None) != mx.bfloat16:
+            raise ValueError("M4-wide gather o-LoRA biases dtype must be bfloat16")
         groups = int(attention.n_groups)
         rank = int(attention.o_lora_rank)
         per_group_input = int(
@@ -1171,11 +1199,11 @@ class _GatherQMMWideM4OLora:
             "affine",
         ):
             raise ValueError("M4-wide gather o-LoRA requires canonical body geometry")
-        if tuple(weight.shape) != (groups, rank, 512):
+        if tuple(weight.shape) != (groups * rank, 512):
             raise ValueError("M4-wide gather o-LoRA packed weight layout changed")
-        if tuple(scales.shape) != (groups, rank, 64):
+        if tuple(scales.shape) != (groups * rank, 64):
             raise ValueError("M4-wide gather o-LoRA scale layout changed")
-        if biases is None or tuple(biases.shape) != (groups, rank, 64):
+        if tuple(biases.shape) != (groups * rank, 64):
             raise ValueError("M4-wide gather o-LoRA bias layout changed")
         self.groups = groups
         self.rank = rank
@@ -1200,11 +1228,11 @@ class _GatherQMMWideM4OLora:
                 self.biases,
                 rhs_ids,
             ],
-            template=[("T", o_rows.dtype)],
+            template=[("T", mx.bfloat16)],
             grid=(32, 256, 8),
             threadgroup=(32, 2, 1),
             output_shapes=[(8, 4, 1024)],
-            output_dtypes=[o_rows.dtype],
+            output_dtypes=[mx.bfloat16],
         )
         return out
 
@@ -4021,6 +4049,33 @@ def _validate_canonical_o_lora_topology(trunk, mtp) -> tuple[list[tuple], mx.arr
     return body_quant, mtp_weight
 
 
+def _require_bf16_body_activation_output(model):
+    """Reify the actual trunk activation dtype before installing the M4 route."""
+    trunk = getattr(model, "model", None)
+    embedding = getattr(trunk, "embed_tokens", None)
+    if embedding is None or not callable(embedding):
+        raise ValueError(
+            "M4-wide gather o-LoRA requires a callable trunk embedding output"
+        )
+    try:
+        output = embedding(mx.zeros((1, 1), dtype=mx.int32))
+    except Exception as exc:
+        raise ValueError(
+            "M4-wide gather o-LoRA could not reify the trunk embedding output"
+        ) from exc
+    expected_shape = (1, 1, _O_LORA_ATTENTION_GEOMETRY["dim"])
+    if tuple(getattr(output, "shape", ())) != expected_shape:
+        raise ValueError(
+            "M4-wide gather o-LoRA embedding output shape "
+            f"{tuple(getattr(output, 'shape', ()))} does not match {expected_shape}"
+        )
+    if getattr(output, "dtype", None) != mx.bfloat16:
+        raise ValueError(
+            "M4-wide gather o-LoRA embedding output dtype must be bfloat16"
+        )
+    return mx.bfloat16
+
+
 def _validate_gather_qmm_wide_m4_body_routes(
     body_routes: list[_DirectGatherOLoraWideM4],
 ) -> None:
@@ -4042,7 +4097,7 @@ def _validate_gather_qmm_wide_m4_body_routes(
     for layer_index in (0, 3, 42):
         route = body_routes[layer_index].m4
         base = mx.arange(4 * 8 * 4096, dtype=mx.float32).reshape(4, 8, 4096)
-        probe = ((base % 29.0) - 14.0).astype(route.scales.dtype) / 8.0
+        probe = ((base % 29.0) - 14.0).astype(mx.bfloat16) / 8.0
         gathered_x = probe.swapaxes(0, 1)
         for case_name, ids in rhs_cases:
             rhs_ids = mx.array(ids, dtype=mx.uint32)
@@ -4064,6 +4119,8 @@ def _validate_gather_qmm_wide_m4_body_routes(
             if (
                 tuple(stock.shape) != (8, 4, 1024)
                 or tuple(wide.shape) != (8, 4, 1024)
+                or stock.dtype != mx.bfloat16
+                or wide.dtype != mx.bfloat16
                 or stock.dtype != wide.dtype
                 or not exact
             ):
@@ -4113,15 +4170,28 @@ def install_deepseek_v4_o_lora_routes(
             "storage; MTPLX_DSV4_FP32_ACTIVATIONS is an explicit stock A/B arm"
         )
     body_quant, mtp_weight = _validate_canonical_o_lora_topology(trunk, mtp)
+    activation_dtype = (
+        _require_bf16_body_activation_output(model)
+        if selected == "gather_qmm"
+        else None
+    )
     body_route_type = (
         _DirectGatherOLoraWideM4
         if selected == "gather_qmm"
         else _DirectCachedOLora
     )
-    body_impls = [
-        body_route_type(attention, quant)
-        for attention, quant in zip(trunk, body_quant)
-    ]
+    if selected == "gather_qmm":
+        body_impls = [
+            body_route_type(
+                attention, quant, activation_dtype=activation_dtype
+            )
+            for attention, quant in zip(trunk, body_quant)
+        ]
+    else:
+        body_impls = [
+            body_route_type(attention, quant)
+            for attention, quant in zip(trunk, body_quant)
+        ]
     if selected == "gather_qmm":
         _validate_gather_qmm_wide_m4_body_routes(body_impls)
     mtp_impls = [_DirectDenseMTPOLora(mtp[0], mtp_weight)]

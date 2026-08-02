@@ -472,6 +472,29 @@ class _O_LoraArrayMeta:
         self.shape = shape
         self.dtype = dtype
 
+    def reshape(self, *shape):
+        shape = tuple(shape)
+        if shape.count(-1) > 1:
+            raise ValueError("only one inferred reshape dimension is supported")
+        if -1 in shape:
+            known = int(
+                np.prod([dimension for dimension in shape if dimension != -1])
+            )
+            total = int(np.prod(self.shape))
+            shape = tuple(
+                total // known if dimension == -1 else dimension
+                for dimension in shape
+            )
+        return _O_LoraArrayMeta(shape, self.dtype)
+
+
+class _CanonicalEmbedding:
+    def __init__(self, output_dtype):
+        self.output_dtype = output_dtype
+
+    def __call__(self, input_ids):
+        return _O_LoraArrayMeta((*input_ids.shape, 4096), self.output_dtype)
+
 
 class _CanonicalQuantizedLinear:
     pass
@@ -533,16 +556,24 @@ class _RouteBox:
         self.attn = _RouteFakeAttention(wo_a, wo_b)
 
 
-def _canonical_route_model(*, body_count=43, mtp_count=1):
+def _canonical_route_model(
+    *, body_count=43, mtp_count=1, activation_dtype=mx.bfloat16
+):
     class FakeModel:
-        layers = [
-            _RouteBox(_CanonicalBodyWOA(), _CanonicalBodyWOB())
-            for _ in range(body_count)
-        ]
-        mtp_blocks = [
-            _RouteBox(_CanonicalMTPWOA(), _CanonicalMTPWOB())
-            for _ in range(mtp_count)
-        ]
+        def __init__(self):
+            self.model = type(
+                "_CanonicalTrunk",
+                (),
+                {"embed_tokens": _CanonicalEmbedding(activation_dtype)},
+            )()
+            self.layers = [
+                _RouteBox(_CanonicalBodyWOA(), _CanonicalBodyWOB())
+                for _ in range(body_count)
+            ]
+            self.mtp_blocks = [
+                _RouteBox(_CanonicalMTPWOA(), _CanonicalMTPWOB())
+                for _ in range(mtp_count)
+            ]
 
     return FakeModel()
 
@@ -574,9 +605,10 @@ _FakeDenseMTPRoute.__name__ = "_DirectDenseMTPOLora"
 
 
 class _FakeGatherWideM4BodyRoute:
-    def __init__(self, attention, quant):
+    def __init__(self, attention, quant, *, activation_dtype):
         self.attention = attention
         self.quant = quant
+        self.activation_dtype = activation_dtype
         self.wo_b = attention.wo_b
 
 
@@ -649,6 +681,105 @@ def test_m4_wide_installer_rejects_the_fp32_activation_ab_arm(monkeypatch):
         )
 
     assert all(box.attn._o_lora_impl is None for box in model.layers + model.mtp_blocks)
+
+
+def test_m4_wide_installer_rejects_non_bf16_body_activation_output(monkeypatch):
+    _patch_canonical_route_types(monkeypatch)
+    model = _canonical_route_model(activation_dtype=mx.float16)
+
+    with pytest.raises(ValueError, match="embedding output dtype.*bfloat16"):
+        D.install_deepseek_v4_o_lora_routes(
+            model, mode="gather_qmm", canonical_mixed_route=True
+        )
+
+    assert all(box.attn._o_lora_impl is None for box in model.layers + model.mtp_blocks)
+
+
+def _canonical_body_quant(attention):
+    wo_a = attention.wo_a
+    return (
+        wo_a.weight,
+        wo_a.scales,
+        wo_a.biases,
+        wo_a.group_size,
+        wo_a.bits,
+        wo_a.mode,
+    )
+
+
+def test_m4_wide_concrete_route_binds_bf16_kernel_aux_and_output(monkeypatch):
+    """The real route fixes one BF16 Metal type at construction, not from input."""
+    definition = {}
+    launch = {}
+
+    def fake_metal_kernel(**kwargs):
+        definition.update(kwargs)
+
+        def run(**kwargs):
+            launch.update(kwargs)
+            output = _O_LoraArrayMeta(
+                kwargs["output_shapes"][0], kwargs["output_dtypes"][0]
+            )
+            return (output,)
+
+        return run
+
+    monkeypatch.setattr(D.nn, "QuantizedLinear", _CanonicalQuantizedLinear)
+    monkeypatch.setattr(D.mx.fast, "metal_kernel", fake_metal_kernel)
+    kernel = D._gather_qmm_wide_m4_olora_kernel.__wrapped__()
+    monkeypatch.setattr(D, "_gather_qmm_wide_m4_olora_kernel", lambda: kernel)
+    monkeypatch.setattr(
+        D.mx,
+        "arange",
+        lambda size, *, dtype: _O_LoraArrayMeta((size,), dtype),
+    )
+    attention = _RouteFakeAttention(_CanonicalBodyWOA(), _CanonicalBodyWOB())
+
+    route = D._DirectGatherOLoraWideM4(
+        attention,
+        _canonical_body_quant(attention),
+        activation_dtype=mx.bfloat16,
+    )
+    output = route.m4.grouped(
+        _O_LoraArrayMeta((4, 8, 4096), mx.bfloat16),
+        _O_LoraArrayMeta((8,), mx.uint32),
+    )
+
+    assert type(route) is D._DirectGatherOLoraWideM4
+    assert "const device T* srow = scales" in definition["source"]
+    assert "const device T* brow = biases" in definition["source"]
+    assert launch["template"] == [("T", mx.bfloat16)]
+    assert launch["output_dtypes"] == [mx.bfloat16]
+    assert route.m4.weight.shape == (8, 1024, 512)
+    assert route.m4.scales.shape == (8, 1024, 64)
+    assert route.m4.biases.shape == (8, 1024, 64)
+    assert output.dtype == mx.bfloat16
+
+
+@pytest.mark.parametrize("field", ["scales", "biases"])
+def test_m4_wide_concrete_route_rejects_non_bf16_aux(monkeypatch, field):
+    monkeypatch.setattr(D.nn, "QuantizedLinear", _CanonicalQuantizedLinear)
+    attention = _RouteFakeAttention(_CanonicalBodyWOA(), _CanonicalBodyWOB())
+    setattr(attention.wo_a, field, _O_LoraArrayMeta((8192, 64), mx.float16))
+
+    with pytest.raises(ValueError, match=f"{field} dtype.*bfloat16"):
+        D._DirectGatherOLoraWideM4(
+            attention,
+            _canonical_body_quant(attention),
+            activation_dtype=mx.bfloat16,
+        )
+
+
+def test_m4_wide_concrete_route_rejects_non_bf16_activation_contract(monkeypatch):
+    monkeypatch.setattr(D.nn, "QuantizedLinear", _CanonicalQuantizedLinear)
+    attention = _RouteFakeAttention(_CanonicalBodyWOA(), _CanonicalBodyWOB())
+
+    with pytest.raises(ValueError, match="activation/output dtype.*bfloat16"):
+        D._DirectGatherOLoraWideM4(
+            attention,
+            _canonical_body_quant(attention),
+            activation_dtype=mx.float16,
+        )
 
 
 def test_m4_wide_route_dispatches_only_the_physical_four_row_body_shape():
