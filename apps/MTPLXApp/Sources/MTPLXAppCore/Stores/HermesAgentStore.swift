@@ -255,6 +255,12 @@ public final class HermesAgentStore: ObservableObject {
     private var client: HermesGatewayClient?
     private var shuttingDown = false
     private var gatewayGeneration = 0
+    /// Manual Terminal launches are owned by their receipt, not by a broad
+    /// process scan. Stop and a superseding manual launch invalidate this
+    /// generation before awaiting any external work.
+    private var terminalHandoffGeneration = 0
+    private var terminalHandoffLease: MTPLXTerminalHandoffLease?
+    private var terminalHandoffTask: Task<Void, Never>?
 
     public init(integration: HermesIntegration = HermesIntegration()) {
         self.integration = integration
@@ -296,8 +302,27 @@ public final class HermesAgentStore: ObservableObject {
     /// the handoff panel's "Open in Terminal" action so the user can get
     /// back to the live agent without restarting the daemon.
     public func openTerminal(configuration: MTPLXAppConfiguration) {
-        _ = integration.launchInTerminal(configuration: configuration)
-        terminalAgentRunning = integration.hasLaunchedTerminalAgent()
+        invalidateManualTerminalHandoff()
+        let generation = terminalHandoffGeneration
+        terminalHandoffTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.integration.launchInTerminal(
+                configuration: configuration,
+                isCurrent: { [weak self] in
+                    guard let self else { return false }
+                    return self.terminalHandoffGeneration == generation
+                }
+            )
+            guard self.terminalHandoffGeneration == generation else {
+                if let lease = result.terminalHandoffLease {
+                    _ = self.integration.cancelTerminalHandoff(lease)
+                }
+                return
+            }
+            self.terminalHandoffLease = result.terminalHandoffLease
+            self.terminalAgentRunning = result.action == .launched
+            self.terminalHandoffTask = nil
+        }
     }
 
     public func repairGateway() async {
@@ -474,6 +499,7 @@ public final class HermesAgentStore: ObservableObject {
 
     public func stop() async {
         shuttingDown = true
+        invalidateManualTerminalHandoff()
         gatewayGeneration += 1
         client?.close()
         client = nil
@@ -484,12 +510,35 @@ public final class HermesAgentStore: ObservableObject {
         gatewayReady = false
         isStreaming = false
         activeSessionID = nil
-        terminalAgentRunning = integration.hasLaunchedTerminalAgent()
+        terminalAgentRunning = false
         connectionState = .idle
     }
 
     public func refreshTerminalAgentState() {
         terminalAgentRunning = integration.hasLaunchedTerminalAgent()
+    }
+
+    /// Narrow package test seam for the Store-owned manual Terminal lease.
+    /// Production receipts arrive through `openTerminal(configuration:)`.
+    func recordManualTerminalHandoffLeaseForTesting(_ lease: MTPLXTerminalHandoffLease) {
+        invalidateManualTerminalHandoff()
+        terminalHandoffLease = lease
+        terminalAgentRunning = true
+    }
+
+    var manualTerminalHandoffLeaseIDForTesting: UUID? {
+        terminalHandoffLease?.handoffID
+    }
+
+    private func invalidateManualTerminalHandoff() {
+        terminalHandoffGeneration &+= 1
+        terminalHandoffTask?.cancel()
+        terminalHandoffTask = nil
+        if let lease = terminalHandoffLease {
+            _ = integration.cancelTerminalHandoff(lease)
+        }
+        terminalHandoffLease = nil
+        terminalAgentRunning = false
     }
 
     private func ensureGateway(

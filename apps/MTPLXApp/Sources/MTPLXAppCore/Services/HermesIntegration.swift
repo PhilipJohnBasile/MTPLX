@@ -4,6 +4,391 @@ import Foundation
 import AppKit
 #endif
 
+/// Ownership receipt for one Terminal client handoff. The UUID travels in the
+/// terminal process environment, so a later reap can fail closed unless the
+/// exact PID still belongs to this invocation.
+public struct MTPLXTerminalHandoffLease: Equatable, Sendable {
+    public let handoffID: UUID
+    public let processID: Int
+    public let cancellationMarkerURL: URL
+    /// The durable Terminal script that created this receipt. It lets a
+    /// failed marker write fail closed before a delayed Terminal launch reads
+    /// that one-use script.
+    public let commandURL: URL?
+    /// The receipt is retained only long enough to unlink it during explicit
+    /// cancellation if an earlier cleanup attempt did not complete.
+    public let receiptURL: URL?
+
+    public init(
+        handoffID: UUID,
+        processID: Int,
+        cancellationMarkerURL: URL,
+        commandURL: URL? = nil,
+        receiptURL: URL? = nil
+    ) {
+        self.handoffID = handoffID
+        self.processID = processID
+        self.cancellationMarkerURL = cancellationMarkerURL
+        self.commandURL = commandURL
+        self.receiptURL = receiptURL
+    }
+}
+
+/// Result of receipt collection. Once cancellation is marked, a receipt is
+/// useful only to reap a process that escaped the script's final marker check;
+/// it must never be reported as a successful handoff.
+struct MTPLXTerminalHandoffReceiptResult: Sendable {
+    let lease: MTPLXTerminalHandoffLease?
+    let cancellationMarked: Bool
+    /// A cancellation was requested even when the marker write failed.
+    /// Callers must never report this result as a live handoff.
+    let cancellationRequested: Bool
+}
+
+extension MTPLXTerminalHandoffLease {
+    static let environmentVariable = "MTPLX_APP_HANDOFF_ID"
+
+    @MainActor
+    static func awaitReceipt(
+        handoffID: UUID,
+        receiptURL: URL,
+        cancellationMarkerURL: URL,
+        commandURL: URL? = nil,
+        isCurrent: (() -> Bool)?,
+        timeoutSeconds: TimeInterval = 5,
+        delayedCancellationSeconds: TimeInterval = 1,
+        markerWriter: ((URL) -> Bool)? = nil
+    ) async -> MTPLXTerminalHandoffReceiptResult {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if let lease = lease(
+                handoffID: handoffID,
+                receiptURL: receiptURL,
+                cancellationMarkerURL: cancellationMarkerURL,
+                commandURL: commandURL
+            ) {
+                guard removeHandoffArtifacts(
+                    commandURL: commandURL,
+                    receiptURL: receiptURL
+                ) else {
+                    let cancellationMarked = markerWriter?(cancellationMarkerURL)
+                        ?? writeCancellationMarker(at: cancellationMarkerURL)
+                    if !cancellationMarked {
+                        _ = removeDurableCommandScript(at: commandURL)
+                    }
+                    return MTPLXTerminalHandoffReceiptResult(
+                        lease: lease,
+                        cancellationMarked: cancellationMarked,
+                        cancellationRequested: true
+                    )
+                }
+                return MTPLXTerminalHandoffReceiptResult(
+                    lease: lease,
+                    cancellationMarked: false,
+                    cancellationRequested: false
+                )
+            }
+            if !(isCurrent?() ?? true) {
+                let cancellationMarked = markerWriter?(cancellationMarkerURL)
+                    ?? writeCancellationMarker(at: cancellationMarkerURL)
+                if !cancellationMarked {
+                    _ = removeDurableCommandScript(at: commandURL)
+                }
+                return await delayedReceipt(
+                    handoffID: handoffID,
+                    receiptURL: receiptURL,
+                    cancellationMarkerURL: cancellationMarkerURL,
+                    commandURL: commandURL,
+                    timeoutSeconds: delayedCancellationSeconds,
+                    cancellationMarked: cancellationMarked
+                )
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let cancellationMarked = markerWriter?(cancellationMarkerURL)
+            ?? writeCancellationMarker(at: cancellationMarkerURL)
+        if !cancellationMarked {
+            _ = removeDurableCommandScript(at: commandURL)
+        }
+        return await delayedReceipt(
+            handoffID: handoffID,
+            receiptURL: receiptURL,
+            cancellationMarkerURL: cancellationMarkerURL,
+            commandURL: commandURL,
+            timeoutSeconds: delayedCancellationSeconds,
+            cancellationMarked: cancellationMarked
+        )
+    }
+
+    static func prepareArtifactDirectory(_ directory: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    }
+
+    static func writeSecureCommandScript(_ script: String, to destination: URL) throws {
+        let fileManager = FileManager.default
+        let directory = destination.deletingLastPathComponent()
+        try prepareArtifactDirectory(directory)
+        let temporary = directory.appendingPathComponent(
+            ".\(destination.lastPathComponent).\(UUID().uuidString.lowercased()).tmp"
+        )
+        guard fileManager.createFile(
+            atPath: temporary.path,
+            contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? fileManager.removeItem(at: temporary) }
+        let handle = try FileHandle(forWritingTo: temporary)
+        try handle.write(contentsOf: Data(script.utf8))
+        try handle.close()
+        try fileManager.moveItem(at: temporary, to: destination)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+    }
+
+    @discardableResult
+    static func writeCancellationMarker(at url: URL) -> Bool {
+        do {
+            try prepareArtifactDirectory(url.deletingLastPathComponent())
+            let fileManager = FileManager.default
+            if fileManager.fileExists(atPath: url.path) {
+                let attributes = try fileManager.attributesOfItem(atPath: url.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                    return false
+                }
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                return true
+            }
+            let temporary = url.deletingLastPathComponent().appendingPathComponent(
+                ".\(url.lastPathComponent).\(UUID().uuidString.lowercased()).tmp"
+            )
+            guard fileManager.createFile(
+                atPath: temporary.path,
+                contents: Data("cancelled\n".utf8),
+                attributes: [.posixPermissions: 0o600]
+            ) else { return false }
+            defer { try? fileManager.removeItem(at: temporary) }
+            let renameStatus = temporary.path.withCString { sourcePath in
+                url.path.withCString { destinationPath in
+                    rename(sourcePath, destinationPath)
+                }
+            }
+            guard renameStatus == 0 else { return false }
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A private marker is the primary cancellation mechanism. If creating it
+    /// fails, removing the one-use command artifact prevents a delayed
+    /// Terminal invocation from executing it. An already-absent artifact is
+    /// safe by definition.
+    @discardableResult
+    static func removeDurableCommandScript(at url: URL?) -> Bool {
+        guard let url else { return false }
+        return removeArtifact(at: url)
+    }
+
+    private static func removeHandoffArtifacts(
+        commandURL: URL?,
+        receiptURL: URL?
+    ) -> Bool {
+        let commandRemoved = commandURL.map { removeArtifact(at: $0) } ?? true
+        let receiptRemoved = receiptURL.map { removeArtifact(at: $0) } ?? true
+        return commandRemoved && receiptRemoved
+    }
+
+    private static func removeArtifact(at url: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: url.path) else { return true }
+        do {
+            try fileManager.removeItem(at: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func process(
+        pid: pid_t,
+        hasExactHandoffID handoffID: UUID,
+        timeoutSeconds: TimeInterval = 1
+    ) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-wwE", "-p", String(pid), "-o", "command="]
+        let output = Pipe()
+        process.standardOutput = output
+        let watchdog = SubprocessWatchdog(process)
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let drain = SubprocessPipeDrain(output)
+        guard watchdog.wait(
+            for: process,
+            timeout: timeoutSeconds,
+            terminateGrace: 0.1,
+            killGrace: 0.1
+        ), drain.join(timeout: 1), process.terminationStatus == 0
+        else { return false }
+        // `ps` is bounded and drained only as a liveness/readability check.
+        // Its command column merges argv and environment, so it must not
+        // decide ownership: an arbitrary argv token could impersonate this
+        // UUID. KERN_PROCARGS2 retains the boundary and fails closed. The
+        // Terminal script can be observed for a few milliseconds between its
+        // final marker check and `exec`, so retry the *same PID* briefly for
+        // the post-exec environment rather than abandoning that narrow race.
+        for attempt in 0..<6 {
+            if processHasExactHandoffID(pid, handoffID: handoffID) {
+                return true
+            }
+            if attempt < 5 {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+        return false
+    }
+
+    /// Darwin's KERN_PROCARGS2 stores argv and environment as distinct NUL
+    /// strings. This is deliberately not parsed from `ps -E`, whose display
+    /// column permits an argv token to look like an environment assignment.
+    private static func processHasExactHandoffID(
+        _ pid: pid_t,
+        handoffID: UUID
+    ) -> Bool {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var byteCount = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &byteCount, nil, 0) == 0,
+              byteCount > MemoryLayout<Int32>.size
+        else { return false }
+
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        guard bytes.withUnsafeMutableBytes({ buffer in
+            sysctl(&mib, UInt32(mib.count), buffer.baseAddress, &byteCount, nil, 0)
+        }) == 0,
+        byteCount <= bytes.count
+        else { return false }
+        bytes.removeSubrange(byteCount..<bytes.count)
+        guard bytes.count >= MemoryLayout<Int32>.size else { return false }
+
+        let argc = bytes.withUnsafeBytes {
+            Int($0.loadUnaligned(fromByteOffset: 0, as: Int32.self))
+        }
+        guard argc >= 0 else { return false }
+        var cursor = MemoryLayout<Int32>.size
+        guard skipCString(in: bytes, cursor: &cursor) else { return false }
+        while cursor < bytes.count, bytes[cursor] == 0 {
+            cursor += 1
+        }
+        for _ in 0..<argc {
+            guard skipCString(in: bytes, cursor: &cursor) else { return false }
+        }
+
+        let expected = Array(
+            "\(environmentVariable)=\(handoffID.uuidString.lowercased())".utf8
+        )
+        while cursor < bytes.count {
+            while cursor < bytes.count, bytes[cursor] == 0 {
+                cursor += 1
+            }
+            guard cursor < bytes.count else { break }
+            let start = cursor
+            guard skipCString(in: bytes, cursor: &cursor) else { return false }
+            let end = cursor - 1
+            if bytes[start..<end].elementsEqual(expected) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func skipCString(in bytes: [UInt8], cursor: inout Int) -> Bool {
+        guard cursor < bytes.count,
+              let terminator = bytes[cursor...].firstIndex(of: 0)
+        else { return false }
+        cursor = terminator + 1
+        return true
+    }
+
+    private static func lease(
+        handoffID: UUID,
+        receiptURL: URL,
+        cancellationMarkerURL: URL,
+        commandURL: URL?
+    ) -> MTPLXTerminalHandoffLease? {
+        guard let contents = try? String(contentsOf: receiptURL, encoding: .utf8),
+              let processID = Int(contents.trimmingCharacters(in: .whitespacesAndNewlines)),
+              processID > 1
+        else { return nil }
+        return MTPLXTerminalHandoffLease(
+            handoffID: handoffID,
+            processID: processID,
+            cancellationMarkerURL: cancellationMarkerURL,
+            commandURL: commandURL,
+            receiptURL: receiptURL
+        )
+    }
+
+    @MainActor
+    private static func delayedReceipt(
+        handoffID: UUID,
+        receiptURL: URL,
+        cancellationMarkerURL: URL,
+        commandURL: URL?,
+        timeoutSeconds: TimeInterval,
+        cancellationMarked: Bool
+    ) async -> MTPLXTerminalHandoffReceiptResult {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if let lease = lease(
+                handoffID: handoffID,
+                receiptURL: receiptURL,
+                cancellationMarkerURL: cancellationMarkerURL,
+                commandURL: commandURL
+            ) {
+                _ = removeHandoffArtifacts(
+                    commandURL: commandURL,
+                    receiptURL: receiptURL
+                )
+                return MTPLXTerminalHandoffReceiptResult(
+                    lease: lease,
+                    cancellationMarked: cancellationMarked,
+                    cancellationRequested: true
+                )
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        _ = removeHandoffArtifacts(commandURL: commandURL, receiptURL: receiptURL)
+        return MTPLXTerminalHandoffReceiptResult(
+            lease: nil,
+            cancellationMarked: cancellationMarked,
+            cancellationRequested: true
+        )
+    }
+}
+
+/// PID reuse protection for LaunchServices clients. A stale lifecycle may
+/// target an app only when both its PID and launch identity still match.
+public struct MTPLXDesktopHandoffIdentity: Equatable, Sendable {
+    public let processID: Int
+    public let launchDate: Date
+
+    public init(processID: Int, launchDate: Date) {
+        self.processID = processID
+        self.launchDate = launchDate
+    }
+
+    public func matches(processID: Int, launchDate: Date?) -> Bool {
+        self.processID == processID && self.launchDate == launchDate
+    }
+}
+
 public struct HermesProfile: Identifiable, Equatable, Sendable {
     public let name: String
     public let path: String
@@ -141,6 +526,33 @@ public struct HermesLaunchResult: Equatable, Sendable {
     public let action: HermesLaunchAction
     public let command: String
     public let detail: String
+    /// Exact processes opened by this handoff, when the platform can report
+    /// them.  The backend uses this to reap only a stale handoff, never a
+    /// client belonging to a newer daemon lifecycle.
+    public let launchedProcessIDs: [Int]
+    /// Terminal ownership is a UUID-backed lease rather than an inferred
+    /// process-list delta. Desktop launches leave this nil and use their
+    /// exact LaunchServices PID in `launchedProcessIDs`.
+    public let terminalHandoffLease: MTPLXTerminalHandoffLease?
+    /// LaunchServices identity for an app created by this invocation. PID
+    /// reuse must fail closed when a stale lifecycle later tries to reap it.
+    public let desktopHandoffIdentity: MTPLXDesktopHandoffIdentity?
+
+    public init(
+        action: HermesLaunchAction,
+        command: String,
+        detail: String,
+        launchedProcessIDs: [Int] = [],
+        terminalHandoffLease: MTPLXTerminalHandoffLease? = nil,
+        desktopHandoffIdentity: MTPLXDesktopHandoffIdentity? = nil
+    ) {
+        self.action = action
+        self.command = command
+        self.detail = detail
+        self.launchedProcessIDs = launchedProcessIDs
+        self.terminalHandoffLease = terminalHandoffLease
+        self.desktopHandoffIdentity = desktopHandoffIdentity
+    }
 }
 
 public enum HermesIntegrationError: Error, Equatable, LocalizedError {
@@ -495,6 +907,55 @@ public struct HermesIntegration: Sendable {
         return pids.count
     }
 
+    /// Reap only the LaunchServices app created by this invocation. Terminal
+    /// ownership uses `cancelTerminalHandoff(_:)`; a PID alone is never a
+    /// sufficient desktop ownership proof.
+    @MainActor
+    @discardableResult
+    public func cancelLaunchedDesktop(_ identity: MTPLXDesktopHandoffIdentity) -> Bool {
+        #if os(macOS)
+        guard identity.processID > 1,
+              let application = NSRunningApplication
+                .runningApplications(withBundleIdentifier: Self.desktopBundleIdentifier)
+                .first(where: {
+                    !$0.isTerminated
+                        && identity.matches(
+                            processID: Int($0.processIdentifier),
+                            launchDate: $0.launchDate
+                        )
+                })
+        else { return false }
+        application.terminate()
+        return true
+        #else
+        _ = identity
+        return false
+        #endif
+    }
+
+    /// Cancels one Terminal lease. The marker makes a delayed Terminal launch
+    /// self-cancel; the signal is sent only after proving the exact PID still
+    /// carries this invocation's UUID token.
+    @MainActor
+    @discardableResult
+    public func cancelTerminalHandoff(_ lease: MTPLXTerminalHandoffLease) -> Bool {
+        let cancellationMarked = MTPLXTerminalHandoffLease.writeCancellationMarker(
+            at: lease.cancellationMarkerURL
+        )
+        let commandRemoved = lease.commandURL.map {
+            MTPLXTerminalHandoffLease.removeDurableCommandScript(at: $0)
+        } ?? true
+        let receiptRemoved = lease.receiptURL.map {
+            MTPLXTerminalHandoffLease.removeDurableCommandScript(at: $0)
+        } ?? true
+        let pid = pid_t(lease.processID)
+        guard pid > 1,
+              MTPLXTerminalHandoffLease.process(pid: pid, hasExactHandoffID: lease.handoffID)
+        else { return false }
+        Self.terminate(pid: pid)
+        return cancellationMarked && commandRemoved && receiptRemoved
+    }
+
     public func hasLaunchedTerminalAgent() -> Bool {
         !Self.appLaunchedTerminalAgentPIDs().isEmpty
     }
@@ -561,9 +1022,13 @@ public struct HermesIntegration: Sendable {
     /// exists so the caller can fall back to the Terminal handoff.
     @MainActor
     public func launchDesktopApplication(
-        configuration: MTPLXAppConfiguration
+        configuration: MTPLXAppConfiguration,
+        isCurrent: (() -> Bool)? = nil
     ) async -> HermesLaunchResult? {
         guard let appURL = desktopApplicationURL() else { return nil }
+        guard isCurrent?() ?? true else {
+            return staleHandoffResult(command: "open \(appURL.path)")
+        }
         let command = "open \(appURL.path)"
         do {
             _ = try sync(configuration: configuration)
@@ -574,6 +1039,7 @@ public struct HermesIntegration: Sendable {
                 detail: "could not sync Hermes profile: \(error)"
             )
         }
+        guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
         let previous: String?
         do {
             previous = try writeActiveDesktopProfile()
@@ -584,17 +1050,51 @@ public struct HermesIntegration: Sendable {
                 detail: "could not pin Hermes Desktop to the MTPLX profile: \(error)"
             )
         }
+        guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
+        let preexistingDesktopPIDs = Set(
+            NSRunningApplication
+                .runningApplications(withBundleIdentifier: Self.desktopBundleIdentifier)
+                .filter { !$0.isTerminated }
+                .map(\.processIdentifier)
+        )
         let openConfiguration = NSWorkspace.OpenConfiguration()
         openConfiguration.activates = true
-        let opened = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        let opened = await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, Int?, Date?), Never>) in
             NSWorkspace.shared.openApplication(
                 at: appURL,
                 configuration: openConfiguration
-            ) { _, error in
-                continuation.resume(returning: error == nil)
+            ) { application, error in
+                continuation.resume(
+                    returning: (
+                        error == nil,
+                        application.map { Int($0.processIdentifier) },
+                        application?.launchDate
+                    )
+                )
             }
         }
-        guard opened else {
+        let desktopHandoffIdentity: MTPLXDesktopHandoffIdentity?
+        if opened.0,
+           let processID = opened.1,
+           let launchDate = opened.2,
+           !preexistingDesktopPIDs.contains(pid_t(processID)) {
+            desktopHandoffIdentity = MTPLXDesktopHandoffIdentity(
+                processID: processID,
+                launchDate: launchDate
+            )
+        } else {
+            desktopHandoffIdentity = nil
+        }
+        guard isCurrent?() ?? true else {
+            return HermesLaunchResult(
+                action: .unavailable,
+                command: command,
+                detail: "Hermes handoff cancelled because the daemon lifecycle changed.",
+                launchedProcessIDs: desktopHandoffIdentity.map { [$0.processID] } ?? [],
+                desktopHandoffIdentity: desktopHandoffIdentity
+            )
+        }
+        guard opened.0 else {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
@@ -610,7 +1110,9 @@ public struct HermesIntegration: Sendable {
         return HermesLaunchResult(
             action: .launched,
             command: command,
-            detail: "opened Hermes Desktop pinned to profile \(Self.profileName)\(previousNote)"
+            detail: "opened Hermes Desktop pinned to profile \(Self.profileName)\(previousNote)",
+            launchedProcessIDs: desktopHandoffIdentity.map { [$0.processID] } ?? [],
+            desktopHandoffIdentity: desktopHandoffIdentity
         )
     }
 
@@ -619,23 +1121,46 @@ public struct HermesIntegration: Sendable {
     /// broken Desktop bundle falls back to Terminal rather than stranding
     /// the user, carrying both details.
     @MainActor
-    public func launch(configuration: MTPLXAppConfiguration) async -> HermesLaunchResult {
-        guard let desktop = await launchDesktopApplication(configuration: configuration) else {
-            return launchInTerminal(configuration: configuration)
+    public func launch(
+        configuration: MTPLXAppConfiguration,
+        isCurrent: (() -> Bool)? = nil
+    ) async -> HermesLaunchResult {
+        guard isCurrent?() ?? true else {
+            return staleHandoffResult(command: Self.launchCommand(for: configuration.model))
         }
+        guard let desktop = await launchDesktopApplication(
+            configuration: configuration,
+            isCurrent: isCurrent
+        ) else {
+            guard isCurrent?() ?? true else {
+                return staleHandoffResult(command: Self.launchCommand(for: configuration.model))
+            }
+            return await launchInTerminal(configuration: configuration, isCurrent: isCurrent)
+        }
+        guard isCurrent?() ?? true else { return desktop }
         if desktop.action == .launched {
             return desktop
         }
-        let terminal = launchInTerminal(configuration: configuration)
+        guard isCurrent?() ?? true else { return desktop }
+        let terminal = await launchInTerminal(configuration: configuration, isCurrent: isCurrent)
         return HermesLaunchResult(
             action: terminal.action,
             command: terminal.command,
-            detail: "\(desktop.detail); fell back to Terminal: \(terminal.detail)"
+            detail: "\(desktop.detail); fell back to Terminal: \(terminal.detail)",
+            launchedProcessIDs: terminal.launchedProcessIDs,
+            terminalHandoffLease: terminal.terminalHandoffLease,
+            desktopHandoffIdentity: terminal.desktopHandoffIdentity
         )
     }
     #endif
 
-    public func launchInTerminal(configuration: MTPLXAppConfiguration) -> HermesLaunchResult {
+    @MainActor
+    public func launchInTerminal(
+        configuration: MTPLXAppConfiguration,
+        isCurrent: (() -> Bool)? = nil
+    ) async -> HermesLaunchResult {
+        let fallbackCommand = Self.launchCommand(for: configuration.model)
+        guard isCurrent?() ?? true else { return staleHandoffResult(command: fallbackCommand) }
         do {
             _ = try sync(configuration: configuration)
         } catch {
@@ -645,6 +1170,8 @@ public struct HermesIntegration: Sendable {
                 detail: "could not sync Hermes profile: \(error)"
             )
         }
+
+        guard isCurrent?() ?? true else { return staleHandoffResult(command: fallbackCommand) }
 
         guard let executable = resolveExecutable() else {
             return HermesLaunchResult(
@@ -661,12 +1188,14 @@ public struct HermesIntegration: Sendable {
             autoApprove: configuration.hermesAutoApprove
         )
         #if os(macOS)
-        let scriptURL: URL
+        let handoff = makeTerminalHandoffFiles()
         do {
-            scriptURL = try writeTerminalCommandFile(
+            guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
+            try writeTerminalCommandFile(
                 command: command,
                 hermesExecutablePath: executable.path,
-                configuration: configuration
+                configuration: configuration,
+                handoff: handoff
             )
         } catch {
             return HermesLaunchResult(
@@ -678,7 +1207,7 @@ public struct HermesIntegration: Sendable {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "Terminal", scriptURL.path]
+        process.arguments = ["-a", "Terminal", handoff.commandURL.path]
         let stderr = Pipe()
         process.standardError = stderr
         // The backend store calls this from the main actor, so a wedged
@@ -692,8 +1221,13 @@ public struct HermesIntegration: Sendable {
         defer { stderr.fileHandleForReading.readabilityHandler = nil }
         let watchdog = SubprocessWatchdog(process)
         do {
+            guard isCurrent?() ?? true else {
+                await cancelPendingTerminalHandoff(handoff)
+                return staleHandoffResult(command: command)
+            }
             try process.run()
             guard watchdog.wait(for: process, timeout: 30) else {
+                await cancelPendingTerminalHandoff(handoff)
                 return HermesLaunchResult(
                     action: .unavailable,
                     command: command,
@@ -701,6 +1235,7 @@ public struct HermesIntegration: Sendable {
                 )
             }
             guard process.terminationStatus == 0 else {
+                await cancelPendingTerminalHandoff(handoff)
                 let message = stderrTail.snapshot()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return HermesLaunchResult(
@@ -711,12 +1246,52 @@ public struct HermesIntegration: Sendable {
                         : "could not open Hermes automatically: \(message)"
                 )
             }
+            let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
+                handoffID: handoff.handoffID,
+                receiptURL: handoff.receiptURL,
+                cancellationMarkerURL: handoff.cancellationMarkerURL,
+                commandURL: handoff.commandURL,
+                isCurrent: isCurrent
+            )
+            if receipt.cancellationRequested {
+                if let lease = receipt.lease {
+                    _ = cancelTerminalHandoff(lease)
+                }
+                let stale = !(isCurrent?() ?? true)
+                return HermesLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: stale
+                        ? "Hermes handoff cancelled because the daemon lifecycle changed."
+                        : "Hermes Terminal did not report its launch receipt."
+                )
+            }
+            guard let lease = receipt.lease else {
+                return HermesLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "Hermes Terminal did not report its launch receipt."
+                )
+            }
+            guard isCurrent?() ?? true else {
+                _ = cancelTerminalHandoff(lease)
+                return HermesLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "Hermes handoff cancelled because the daemon lifecycle changed.",
+                    launchedProcessIDs: [lease.processID],
+                    terminalHandoffLease: lease
+                )
+            }
             return HermesLaunchResult(
                 action: .launched,
                 command: command,
-                detail: "opened Hermes in Terminal"
+                detail: "opened Hermes in Terminal",
+                launchedProcessIDs: [lease.processID],
+                terminalHandoffLease: lease
             )
         } catch {
+            await cancelPendingTerminalHandoff(handoff)
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
@@ -730,6 +1305,25 @@ public struct HermesIntegration: Sendable {
             detail: "automatic Hermes launch currently requires macOS Terminal"
         )
         #endif
+    }
+
+    /// Once a handoff script exists, every abandoned path marks it cancelled
+    /// and gives a delayed Terminal one short receipt window. That closes the
+    /// marker-after-final-check race without ever treating the lease as live.
+    @MainActor
+    private func cancelPendingTerminalHandoff(_ handoff: TerminalHandoffFiles) async {
+        let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
+            handoffID: handoff.handoffID,
+            receiptURL: handoff.receiptURL,
+            cancellationMarkerURL: handoff.cancellationMarkerURL,
+            commandURL: handoff.commandURL,
+            isCurrent: { false },
+            timeoutSeconds: 0,
+            delayedCancellationSeconds: 1
+        )
+        if let lease = receipt.lease {
+            _ = cancelTerminalHandoff(lease)
+        }
     }
 
     public func startDashboard(
@@ -1149,16 +1743,34 @@ public struct HermesIntegration: Sendable {
         return parts.joined(separator: " ")
     }
 
+    private struct TerminalHandoffFiles: Sendable {
+        let handoffID: UUID
+        let commandURL: URL
+        let receiptURL: URL
+        let cancellationMarkerURL: URL
+    }
+
+    private func makeTerminalHandoffFiles() -> TerminalHandoffFiles {
+        let handoffID = UUID()
+        let directory = terminalCommandURL.deletingLastPathComponent()
+        let basename = terminalCommandURL.deletingPathExtension().lastPathComponent
+        let suffix = handoffID.uuidString.lowercased()
+        return TerminalHandoffFiles(
+            handoffID: handoffID,
+            commandURL: directory.appendingPathComponent("\(basename)-\(suffix).command"),
+            receiptURL: directory.appendingPathComponent("\(basename)-\(suffix).pid"),
+            cancellationMarkerURL: directory.appendingPathComponent("\(basename)-\(suffix).cancelled")
+        )
+    }
+
     private func writeTerminalCommandFile(
         command: String,
         hermesExecutablePath: String,
-        configuration: MTPLXAppConfiguration
-    ) throws -> URL {
-        let directory = terminalCommandURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
+        configuration: MTPLXAppConfiguration,
+        handoff: TerminalHandoffFiles
+    ) throws {
+        let directory = handoff.commandURL.deletingLastPathComponent()
+        try MTPLXTerminalHandoffLease.prepareArtifactDirectory(directory)
         let profileURL = hermesHome
             .appendingPathComponent("profiles", isDirectory: true)
             .appendingPathComponent(Self.profileName, isDirectory: true)
@@ -1169,6 +1781,12 @@ public struct HermesIntegration: Sendable {
         )
         let script = """
         #!/bin/zsh
+        _mtplx_handoff_cancel=\(Self.shellQuote(handoff.cancellationMarkerURL.path))
+        _mtplx_handoff_receipt=\(Self.shellQuote(handoff.receiptURL.path))
+        export MTPLX_APP_HANDOFF_ID=\(Self.shellQuote(handoff.handoffID.uuidString.lowercased()))
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
         cd \(Self.shellQuote(workspacePath))
         print -r -- \(Self.shellQuote("MTPLX Hermes tools: \(Self.codingToolsets)"))
         print -r -- \(Self.shellQuote(Self.messagingSetupHint))
@@ -1215,14 +1833,18 @@ public struct HermesIntegration: Sendable {
         export HERMES_SESSION_PLATFORM=\(Self.shellQuote(env["HERMES_SESSION_PLATFORM"] ?? ""))
         export HERMES_WORKSPACE=\(Self.shellQuote(workspacePath))
         export TERMINAL_CWD=\(Self.shellQuote(workspacePath))
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
+        umask 077
+        print -r -- "$$" > "${_mtplx_handoff_receipt}.$$.tmp"
+        mv -f "${_mtplx_handoff_receipt}.$$.tmp" "$_mtplx_handoff_receipt"
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
         exec \(command)
         """ + "\n"
-        try script.write(to: terminalCommandURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: terminalCommandURL.path
-        )
-        return terminalCommandURL
+        try MTPLXTerminalHandoffLease.writeSecureCommandScript(script, to: handoff.commandURL)
     }
 
     private struct LocalMessagingStatus {
@@ -1613,6 +2235,14 @@ public struct HermesIntegration: Sendable {
             let command = String(text[firstSpace...])
             return isAppLaunchedTerminalAgentCommand(command) ? pid : nil
         }
+    }
+
+    private func staleHandoffResult(command: String) -> HermesLaunchResult {
+        HermesLaunchResult(
+            action: .unavailable,
+            command: command,
+            detail: "Hermes handoff cancelled because the daemon lifecycle changed."
+        )
     }
 
     private static func terminate(pid: pid_t) {
