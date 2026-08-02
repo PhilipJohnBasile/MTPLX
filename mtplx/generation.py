@@ -31,6 +31,9 @@ from .a3b_compiled_target_prefix import (
 from .a3b_whole_moe import validate_a3b_whole_moe_request
 from .adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from .attention_context import attention_phase
+from .deepseek_v4_adaptive_width import (
+    validate_installed_deepseek_v4_adaptive_width_policy,
+)
 from .progress_heartbeat import tick as _owner_progress_tick
 from .cache_state import (
     detach_array_leaf,
@@ -3713,6 +3716,83 @@ def _sample_draft_from_logits(
     return token, SparseDistribution.one_hot(token, int(logits.shape[-1]))
 
 
+def _fixed_width_draft_reader(
+    draft_logits: mx.array,
+    config: SamplerConfig,
+    rng: np.random.Generator,
+    *,
+    need_distribution: bool,
+) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+    token, distribution = _sample_draft_from_logits(
+        draft_logits[:, -1, :][0],
+        config,
+        rng,
+        need_distribution=need_distribution,
+    )
+    return token, distribution, False
+
+
+def _adaptive_tail_k1_draft_reader(
+    draft_logits: mx.array,
+    config: SamplerConfig,
+    rng: np.random.Generator,
+    *,
+    need_distribution: bool,
+) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+    token, distribution = _sample_draft_from_logits(
+        draft_logits[:, -1, :][0],
+        config,
+        rng,
+        need_distribution=need_distribution,
+    )
+    return token, distribution, False
+
+
+def _adaptive_tail_k2_draft_reader(
+    draft_logits: mx.array,
+    config: SamplerConfig,
+    rng: np.random.Generator,
+    *,
+    need_distribution: bool,
+) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+    token, distribution = _sample_draft_from_logits(
+        draft_logits[:, -1, :][0],
+        config,
+        rng,
+        need_distribution=need_distribution,
+    )
+    return token, distribution, False
+
+
+def _adaptive_full_k3_draft_reader(
+    draft_logits: mx.array,
+    config: SamplerConfig,
+    rng: np.random.Generator,
+    *,
+    depth_index: int,
+    need_distribution: bool,
+    decision_margins: list[float],
+    margin_stops: tuple[Callable[[float], bool], Callable[[float], bool]],
+) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+    if depth_index < 2:
+        token, top1, top2 = _greedy_draft_token_and_top2(draft_logits)
+        margin = float(top1 - top2)
+        decision_margins.append(margin)
+        distribution = (
+            SparseDistribution.one_hot(token, int(draft_logits.shape[-1]))
+            if need_distribution
+            else None
+        )
+        return token, distribution, margin_stops[depth_index](margin)
+    token, distribution = _sample_draft_from_logits(
+        draft_logits[:, -1, :][0],
+        config,
+        rng,
+        need_distribution=need_distribution,
+    )
+    return token, distribution, False
+
+
 def _env_scaled_draft_sampler(
     sampler: SamplerConfig,
     draft_sampler: SamplerConfig | None,
@@ -5942,7 +6022,8 @@ def generate_mtpk(
                 "adaptive width policy requires its fixed canonical lane; "
                 f"incompatible features: {selected_features}"
             )
-        adaptive_width_policy.validate_request(
+        validate_installed_deepseek_v4_adaptive_width_policy(
+            adaptive_width_policy,
             rt,
             sampler=sampler,
             draft_sampler=draft_sampler,
@@ -6001,25 +6082,25 @@ def generate_mtpk(
 
     rng = np.random.default_rng(seed)
 
-    def _fixed_width_draft_reader(
+    def _default_cycle_draft_reader(
         draft_logits: mx.array,
         *,
-        cycle_depth: int,
         depth_index: int,
         need_distribution: bool,
         decision_margins: list[float],
     ) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
-        del cycle_depth, depth_index, decision_margins
-        token, distribution = _sample_draft_from_logits(
-            draft_logits[:, -1, :][0],
+        del depth_index, decision_margins
+        return _fixed_width_draft_reader(
+            draft_logits,
             draft_sampler,
             rng,
             need_distribution=need_distribution,
         )
-        return token, distribution, False
 
     if adaptive_width_policy is None:
-        adaptive_width_draft_reader = _fixed_width_draft_reader
+        adaptive_width_cycle_readers = (_default_cycle_draft_reader,) * max(
+            1, int(speculative_depth)
+        )
         capture_forward_routes = (rt.forward_ar_capture,) * max(
             1, int(speculative_depth)
         )
@@ -6047,33 +6128,58 @@ def generate_mtpk(
         adaptive_width_max_depth = int(adaptive_width_policy.max_speculative_depth)
         capture_forward_routes = adaptive_width_policy.target_routes
 
-        def adaptive_width_draft_reader(
+        def adaptive_tail_k1_reader(
             draft_logits: mx.array,
             *,
-            cycle_depth: int,
             depth_index: int,
             need_distribution: bool,
             decision_margins: list[float],
         ) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
-            if cycle_depth != adaptive_width_max_depth or depth_index >= 2:
-                return _fixed_width_draft_reader(
-                    draft_logits,
-                    cycle_depth=cycle_depth,
-                    depth_index=depth_index,
-                    need_distribution=need_distribution,
-                    decision_margins=decision_margins,
-                )
-            token, top1, top2 = _greedy_draft_token_and_top2(draft_logits)
-            margin = float(top1 - top2)
-            decision_margins.append(margin)
-            distribution = (
-                SparseDistribution.one_hot(token, int(draft_logits.shape[-1]))
-                if need_distribution
-                else None
+            del depth_index, decision_margins
+            return _adaptive_tail_k1_draft_reader(
+                draft_logits,
+                draft_sampler,
+                rng,
+                need_distribution=need_distribution,
             )
-            return token, distribution, adaptive_width_margin_stops[depth_index](
-                margin
+
+        def adaptive_tail_k2_reader(
+            draft_logits: mx.array,
+            *,
+            depth_index: int,
+            need_distribution: bool,
+            decision_margins: list[float],
+        ) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+            del depth_index, decision_margins
+            return _adaptive_tail_k2_draft_reader(
+                draft_logits,
+                draft_sampler,
+                rng,
+                need_distribution=need_distribution,
             )
+
+        def adaptive_full_k3_reader(
+            draft_logits: mx.array,
+            *,
+            depth_index: int,
+            need_distribution: bool,
+            decision_margins: list[float],
+        ) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+            return _adaptive_full_k3_draft_reader(
+                draft_logits,
+                draft_sampler,
+                rng,
+                depth_index=depth_index,
+                need_distribution=need_distribution,
+                decision_margins=decision_margins,
+                margin_stops=adaptive_width_margin_stops,
+            )
+
+        adaptive_width_cycle_readers = (
+            adaptive_tail_k1_reader,
+            adaptive_tail_k2_reader,
+            adaptive_full_k3_reader,
+        )
 
         def record_adaptive_width_event(
             event: dict[str, Any],
@@ -7214,6 +7320,7 @@ def generate_mtpk(
             break
 
         cycle_depth = min(planned_depth, max_tokens - len(tokens))
+        cycle_draft_reader = adaptive_width_cycle_readers[cycle_depth - 1]
         adaptive_width_decision_margins: list[float] = []
         draft_tokens: list[int | None] = []
         draft_probs: list[np.ndarray | None] = []
@@ -7978,9 +8085,8 @@ def generate_mtpk(
                         sampler.temperature > 0 and not target_prefix_verify
                     )
                     draft_token, draft_q, adaptive_width_stop = (
-                        adaptive_width_draft_reader(
+                        cycle_draft_reader(
                             draft_logits,
-                            cycle_depth=cycle_depth,
                             depth_index=depth_index,
                             need_distribution=need_draft_distribution,
                             decision_margins=adaptive_width_decision_margins,
