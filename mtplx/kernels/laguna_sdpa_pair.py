@@ -247,15 +247,13 @@ def grouped_gqa_sdpa_decode(
     n = int(keys.shape[2])
     gqa = hq // hk
 
-    # metal_kernel copies to row-contiguous; pass the buffers as-is.
-    queries_c = mx.contiguous(queries)
-    keys_c = mx.contiguous(keys)
-    values_c = mx.contiguous(values)
-
+    # metal_kernel's ensure_row_contiguous (default) copies non-contiguous
+    # inputs itself; an explicit mx.contiguous here only adds graph nodes to
+    # the per-step decode path, so pass the buffers straight through.
     num_groups = b * (hq // _GROUP)
     kernel = _grouped_gqa_sdpa_kernel(d, _GROUP, gqa, hq, hk)
     (out,) = kernel(
-        inputs=[queries_c, keys_c, values_c, float(scale), int(n)],
+        inputs=[queries, keys, values, float(scale), int(n)],
         template=[("T", queries.dtype)],
         grid=(num_groups * 1024, 1, 1),
         threadgroup=(1024, 1, 1),
