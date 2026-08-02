@@ -11,6 +11,7 @@ that decide whether such a route may be installed at all.
 """
 import importlib.util
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,10 +46,12 @@ _gate_spec.loader.exec_module(G)
 def _args(**over):
     kwargs = dict(
         hidden_size=4096,
-        moe_intermediate_size=1536,
+        moe_intermediate_size=2048,
         n_routed_experts=256,
+        n_shared_experts=1,
         num_experts_per_tok=6,
         num_hash_layers=3,
+        num_nextn_predict_layers=1,
         compress_ratios=[0] * 44,
     )
     kwargs.update(over)
@@ -62,7 +65,9 @@ def _artifact_contract(*, body_bits=2, mtp=True):
         for proj in ("gate_proj", "up_proj", "down_proj"):
             stem = f"model.layers.{layer}.ffn.switch_mlp.{proj}"
             quantization[stem] = {
-                "group_size": 32 if proj == "gate_proj" else 64,
+                "group_size": (
+                    32 if proj == "gate_proj" and layer < 42 else 64
+                ),
                 "bits": body_bits,
                 "mode": "affine",
             }
@@ -91,6 +96,183 @@ def _artifact_contract(*, body_bits=2, mtp=True):
     return config, {"metadata": {"total_size": 1}, "weight_map": weight_map}
 
 
+def _fake_tensor(shape, dtype):
+    return SimpleNamespace(shape=tuple(shape), dtype=dtype)
+
+
+def _fake_quantized_projection(
+    *,
+    bits,
+    group_size,
+    mode,
+    weight_shape,
+    scales_shape,
+    biases=True,
+    scales_dtype=mx.bfloat16,
+):
+    return SimpleNamespace(
+        bits=bits,
+        group_size=group_size,
+        mode=mode,
+        weight=_fake_tensor(weight_shape, mx.uint32),
+        scales=_fake_tensor(scales_shape, scales_dtype),
+        biases=_fake_tensor(scales_shape, mx.bfloat16) if biases else None,
+    )
+
+
+def _fake_body_switch(layer_id):
+    gate_group_size = 32 if layer_id < 42 else 64
+    gate_scale_groups = 128 if layer_id < 42 else 64
+    return SimpleNamespace(
+        gate_proj=_fake_quantized_projection(
+            bits=2,
+            group_size=gate_group_size,
+            mode="affine",
+            weight_shape=(256, 2048, 256),
+            scales_shape=(256, 2048, gate_scale_groups),
+        ),
+        up_proj=_fake_quantized_projection(
+            bits=2,
+            group_size=64,
+            mode="affine",
+            weight_shape=(256, 2048, 256),
+            scales_shape=(256, 2048, 64),
+        ),
+        down_proj=_fake_quantized_projection(
+            bits=2,
+            group_size=64,
+            mode="affine",
+            weight_shape=(256, 4096, 128),
+            scales_shape=(256, 4096, 32),
+        ),
+    )
+
+
+def _fake_body_shared():
+    return SimpleNamespace(
+        gate_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=64,
+            mode="affine",
+            weight_shape=(2048, 512),
+            scales_shape=(2048, 64),
+        ),
+        up_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=64,
+            mode="affine",
+            weight_shape=(2048, 512),
+            scales_shape=(2048, 64),
+        ),
+        down_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=64,
+            mode="affine",
+            weight_shape=(4096, 256),
+            scales_shape=(4096, 32),
+        ),
+    )
+
+
+def _fake_gate(layer_id):
+    gate = SimpleNamespace(
+        dim=4096,
+        topk=6,
+        n_routed=256,
+        hash=layer_id < 3,
+        weight=_fake_tensor((256, 4096), mx.bfloat16),
+    )
+    if gate.hash:
+        gate.tid2eid = _fake_tensor((129280, 6), mx.int64)
+    else:
+        gate.e_score_correction_bias = _fake_tensor((256,), mx.float32)
+    return gate
+
+
+def _fake_mtp_switch():
+    return SimpleNamespace(
+        gate_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=32,
+            mode="mxfp4",
+            weight_shape=(256, 2048, 512),
+            scales_shape=(256, 2048, 128),
+            biases=False,
+            scales_dtype=mx.uint8,
+        ),
+        up_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=32,
+            mode="mxfp4",
+            weight_shape=(256, 2048, 512),
+            scales_shape=(256, 2048, 128),
+            biases=False,
+            scales_dtype=mx.uint8,
+        ),
+        down_proj=_fake_quantized_projection(
+            bits=4,
+            group_size=32,
+            mode="mxfp4",
+            weight_shape=(256, 4096, 256),
+            scales_shape=(256, 4096, 64),
+            biases=False,
+            scales_dtype=mx.uint8,
+        ),
+    )
+
+
+def _fake_dense_shared():
+    return SimpleNamespace(
+        gate_proj=SimpleNamespace(weight=_fake_tensor((2048, 4096), mx.bfloat16)),
+        up_proj=SimpleNamespace(weight=_fake_tensor((2048, 4096), mx.bfloat16)),
+        down_proj=SimpleNamespace(weight=_fake_tensor((4096, 2048), mx.bfloat16)),
+    )
+
+
+def _loaded_tail_model(*, body_layers=43):
+    args = _args(
+        num_hidden_layers=43,
+        num_nextn_predict_layers=1,
+        n_shared_experts=1,
+        vocab_size=129280,
+    )
+    layers = []
+    for layer_id in range(body_layers):
+        layers.append(
+            SimpleNamespace(
+                ffn=SimpleNamespace(
+                    gate=_fake_gate(layer_id),
+                    switch_mlp=_fake_body_switch(layer_id),
+                    shared_experts=_fake_body_shared(),
+                    _tail_combine=D._stock_moe_tail_combine,
+                )
+            )
+        )
+    mtp = SimpleNamespace(
+        ffn=SimpleNamespace(
+            gate=_fake_gate(43),
+            switch_mlp=_fake_mtp_switch(),
+            shared_experts=_fake_dense_shared(),
+            _tail_combine=object(),
+        )
+    )
+    model = SimpleNamespace(
+        model_type="deepseek_v4",
+        args=args,
+        layers=layers,
+        mtp_blocks=[mtp],
+    )
+    config, _index = _artifact_contract()
+    config.update(
+        {
+            "num_hash_layers": 3,
+            "n_shared_experts": 1,
+            "vocab_size": 129280,
+        }
+    )
+    return model, config
+
+
 def test_tail_default_is_off_and_stock_expression_remains_visible():
     """The opt-in cannot affect the ordinary model construction path."""
     assert D._MOE_TAIL is False
@@ -105,6 +287,175 @@ def test_tail_geometry_validation_accepts_only_shipped_body_contract():
         D._validate_moe_tail_config(_args(num_experts_per_tok=4))
     with pytest.raises(ValueError, match="hidden_size=4096"):
         D._validate_moe_tail_config(_args(hidden_size=2048))
+
+
+def test_tail_constructor_always_prebinds_stock_before_weights_load(monkeypatch):
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    monkeypatch.setattr(D, "MoEGate", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(D, "SwitchGLU", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        D, "DeepseekV4MLP", lambda *_args, **_kwargs: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        D,
+        "_install_moe_tail_combine",
+        lambda _args: pytest.fail("candidate installation ran before weight loading"),
+    )
+    args = _args(
+        hidden_size=32,
+        moe_intermediate_size=16,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+    )
+    moe = D.DeepseekV4MoE(args, layer_id=0)
+    assert moe._tail_combine is D._stock_moe_tail_combine
+
+
+def test_post_load_installer_validates_then_binds_body_candidate_and_mtp_stock(
+    monkeypatch,
+):
+    model, config = _loaded_tail_model()
+    candidate = object()
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    monkeypatch.setattr(D, "_install_moe_tail_combine", lambda _args: candidate)
+    report = D.configure_deepseek_v4_moe_tail(model, config)
+    assert report["body_layers_installed"] == 43
+    assert report["body_q2_routed_projections"] == 129
+    assert all(layer.ffn._tail_combine is candidate for layer in model.layers)
+    assert model.mtp_blocks[0].ffn._tail_combine is D._stock_moe_tail_combine
+
+
+@pytest.mark.parametrize("body_layers", (42, 44))
+def test_post_load_installer_rejects_wrong_body_layer_count(monkeypatch, body_layers):
+    model, config = _loaded_tail_model(body_layers=body_layers)
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    monkeypatch.setattr(
+        D,
+        "_install_moe_tail_combine",
+        lambda _args: pytest.fail("kernel built before topology validation"),
+    )
+    with pytest.raises(ValueError, match="exactly 43 body layers"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+@pytest.mark.parametrize("mtp_blocks", (0, 2))
+def test_post_load_installer_rejects_wrong_mtp_block_count(monkeypatch, mtp_blocks):
+    model, config = _loaded_tail_model()
+    model.mtp_blocks = model.mtp_blocks * mtp_blocks
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    monkeypatch.setattr(
+        D,
+        "_install_moe_tail_combine",
+        lambda _args: pytest.fail("kernel built before MTP topology validation"),
+    )
+    with pytest.raises(ValueError, match="exactly one MTP block"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("num_hash_layers", 2, "num_hash_layers=3"),
+        ("num_hash_layers", 4, "num_hash_layers=3"),
+        ("moe_intermediate_size", 1536, "moe_intermediate_size=2048"),
+        ("n_shared_experts", 2, "n_shared_experts=1"),
+    ),
+)
+def test_post_load_installer_rejects_wrong_shape_config(
+    monkeypatch, field, value, message
+):
+    model, config = _loaded_tail_model()
+    setattr(model.args, field, value)
+    config[field] = value
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    with pytest.raises(ValueError, match=message):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "message"),
+    (
+        ("bits", 4, "bits=2"),
+        ("group_size", 16, "group_size=32"),
+        ("mode", "mxfp4", "mode=affine"),
+    ),
+)
+def test_post_load_installer_rejects_non_q2_affine_body_storage(
+    monkeypatch, attribute, value, message
+):
+    model, config = _loaded_tail_model()
+    setattr(model.layers[3].ffn.switch_mlp.gate_proj, attribute, value)
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    with pytest.raises(ValueError, match=message):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+def test_post_load_installer_requires_layer42_gate_group64_exception(monkeypatch):
+    model, config = _loaded_tail_model()
+    projection = model.layers[42].ffn.switch_mlp.gate_proj
+    assert projection.group_size == 64
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    projection.group_size = 32
+    projection.scales.shape = (256, 2048, 128)
+    projection.biases.shape = (256, 2048, 128)
+    with pytest.raises(ValueError, match="group_size=64"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+def test_post_load_installer_rejects_config_storage_map_drift(monkeypatch):
+    model, config = _loaded_tail_model()
+    stem = "model.layers.3.ffn.switch_mlp.gate_proj"
+    config["quantization"][stem]["bits"] = 4
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    with pytest.raises(ValueError, match="config quantization"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+def test_post_load_installer_rejects_non_uint32_or_wrong_packed_geometry(monkeypatch):
+    model, config = _loaded_tail_model()
+    projection = model.layers[3].ffn.switch_mlp.gate_proj
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    projection.weight.dtype = mx.bfloat16
+    with pytest.raises(ValueError, match="uint32"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+    projection.weight.dtype = mx.uint32
+    projection.weight.shape = (256, 2048, 255)
+    with pytest.raises(ValueError, match="packed weight shape"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+    projection.weight.shape = (256, 2048, 256)
+    projection.scales.shape = (256, 2048, 127)
+    with pytest.raises(ValueError, match="scale/bias shape"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+@pytest.mark.parametrize("attribute", ("scales", "biases"))
+def test_post_load_installer_rejects_missing_q2_affine_storage(monkeypatch, attribute):
+    model, config = _loaded_tail_model()
+    setattr(model.layers[3].ffn.switch_mlp.gate_proj, attribute, None)
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    with pytest.raises(ValueError, match="scale/bias shape"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+def test_post_load_installer_rejects_wrong_shared_or_mtp_dense_geometry(monkeypatch):
+    model, config = _loaded_tail_model()
+    monkeypatch.setattr(D, "_MOE_TAIL", True)
+    model.layers[3].ffn.shared_experts.gate_proj.weight.shape = (2047, 512)
+    with pytest.raises(ValueError, match="body shared"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+    model.layers[3].ffn.shared_experts.gate_proj.weight.shape = (2048, 512)
+    model.mtp_blocks[0].ffn.shared_experts.down_proj.weight.shape = (4095, 2048)
+    with pytest.raises(ValueError, match="MTP dense shared"):
+        D.configure_deepseek_v4_moe_tail(model, config)
+
+
+def test_runtime_configures_tail_after_load_and_requant_before_mtp_publish():
+    runtime_source = (Path(_HERE).parent / "mtplx" / "runtime.py").read_text()
+    load = runtime_source.index("model, tokenizer = _load_base_model(path, config)")
+    requant = runtime_source.index("if proj_quant or proj_requant:", load)
+    configure = runtime_source.index("configure_deepseek_v4_moe_tail", requant)
+    publish = runtime_source.index("if mtp:", configure)
+    assert load < requant < configure < publish
 
 
 def test_tail_rejects_fp32_activation_arm_at_installation():
@@ -327,6 +678,49 @@ def test_guarded_tail_gate_is_one_load_and_synchronizes_each_sample():
     assert "promotion" not in source.lower()
 
 
+def test_legacy_gate_verifies_guard_before_first_mlx_import_and_records_it():
+    source = _GATE_PATH.read_text(encoding="utf-8")
+    main = source[source.index("def main()") :]
+    assert "import mlx.core as mx" not in source[: source.index("def main()")]
+    assert main.index("load_verified_guard_window()") < main.index(
+        "import mlx.core as mx"
+    )
+    assert '"guard_window": guard_window' in main
+
+
+def test_legacy_gate_refuses_unguarded_without_importing_mlx(tmp_path):
+    fake_package = tmp_path / "mlx"
+    fake_package.mkdir()
+    marker = tmp_path / "mlx-imported"
+    (fake_package / "__init__.py").write_text("")
+    (fake_package / "core.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+    )
+    environment = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    for key in tuple(environment):
+        if key.startswith("MTPLX_GUARD_ATTEST_") or key.startswith(
+            "MTPLX_DSV4_GUARD_WINDOW_"
+        ):
+            del environment[key]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_GATE_PATH),
+            "--prompt-file",
+            "missing.txt",
+            "--out",
+            str(tmp_path / "receipt.json"),
+        ],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "verified guard window environment is absent or malformed" in completed.stderr
+    assert not marker.exists()
+
+
 def test_gate_rejects_4bit_body_routed_experts():
     config, index = _artifact_contract(body_bits=4)
     with pytest.raises(ValueError, match="Q2 affine routed expert"):
@@ -364,6 +758,11 @@ def test_gate_pins_merged_2bit_dq_mtp_manifests_and_loaded_storage():
         up_proj=projection(2, 64, "affine"),
         down_proj=projection(2, 64, "affine"),
     )
+    body_switch_last = SimpleNamespace(
+        gate_proj=projection(2, 64, "affine"),
+        up_proj=projection(2, 64, "affine"),
+        down_proj=projection(2, 64, "affine"),
+    )
     mtp_switch = SimpleNamespace(
         gate_proj=projection(4, 32, "mxfp4", biases=False),
         up_proj=projection(4, 32, "mxfp4", biases=False),
@@ -371,8 +770,10 @@ def test_gate_pins_merged_2bit_dq_mtp_manifests_and_loaded_storage():
     )
     model = SimpleNamespace(
         model_type="deepseek_v4",
-        layers=[SimpleNamespace(ffn=SimpleNamespace(switch_mlp=body_switch))]
-        * 43,
+        layers=(
+            [SimpleNamespace(ffn=SimpleNamespace(switch_mlp=body_switch))] * 42
+            + [SimpleNamespace(ffn=SimpleNamespace(switch_mlp=body_switch_last))]
+        ),
         mtp_blocks=[SimpleNamespace(ffn=SimpleNamespace(switch_mlp=mtp_switch))],
     )
     runtime = SimpleNamespace(model=model, mtp_enabled=True)

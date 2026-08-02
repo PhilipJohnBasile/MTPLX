@@ -592,6 +592,10 @@ def load(
                 "[proj-quant] requantized %d trunk *_proj modules to %s",
                 len(touched), proj_requant,
             )
+    if str((config or {}).get("model_type") or "").lower() == "deepseek_v4":
+        from .models.deepseek_v4 import configure_deepseek_v4_moe_tail
+
+        configure_deepseek_v4_moe_tail(model, config)
     runtime_metadata = _load_runtime_metadata(path)
     contract = (
         (contract or MTPContract())

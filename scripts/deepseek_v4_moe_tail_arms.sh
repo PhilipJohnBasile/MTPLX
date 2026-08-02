@@ -3,6 +3,45 @@
 # attested GPU window. Invoke only through bench/laguna/run_guarded.py.
 set -euo pipefail
 
+usage() {
+  /bin/cat <<'EOF'
+Run this bracket only through the canonical guarded window:
+
+  /Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python \
+    /Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py \
+    --plist /Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist \
+    --timeout-seconds 300 \
+    --lock-timeout-seconds 3600 --child-timeout-seconds 3600 \
+    -- /bin/zsh \
+    /private/tmp/claude-501/-Users-davidtai-projects-OpenSourceWTF/8e9b6abf-6a38-4e6e-ade0-6b0f191bb256/scratchpad/moe-tail/scripts/deepseek_v4_moe_tail_arms.sh
+
+run_guarded owns Qwen teardown/restoration. Its exact plist restore is:
+
+  launchctl bootstrap gui/501 \
+    /Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist
+
+Only use that manual restore after run_guarded exits, the canonical GPU lock is
+free, and :8080 remains down. Never bootstrap Qwen while another owner holds the
+lock. After every window, require both the exact model identity and a real chat:
+
+  curl -sf --max-time 10 http://127.0.0.1:8080/v1/models | \
+    /usr/bin/python3 -c 'import json,sys; p=json.load(sys.stdin); assert [m["id"] for m in p["data"]] == ["mtplx-qwen36-27b-optimized-quality"]'
+
+  curl -sf --max-time 60 http://127.0.0.1:8080/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"mtplx-qwen36-27b-optimized-quality","messages":[{"role":"user","content":"Say READY"}],"max_tokens":8,"temperature":0}' | \
+    /usr/bin/python3 -c 'import json,sys; c=json.load(sys.stdin)["choices"][0]; assert c["finish_reason"] == "stop"; assert c["message"]["content"].strip() == "READY"'
+
+Required receipt: content == "READY" and finish_reason == "stop". A successful
+/v1/models response alone is not a serving restoration proof.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
 VENV=/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python
 WORKTREE=/private/tmp/claude-501/-Users-davidtai-projects-OpenSourceWTF/8e9b6abf-6a38-4e6e-ade0-6b0f191bb256/scratchpad/moe-tail
 BENCH=/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4

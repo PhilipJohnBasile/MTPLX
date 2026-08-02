@@ -295,6 +295,19 @@ def test_shell_captures_benchmark_failure_and_still_invokes_validator():
     assert '--benchmark-exit-code "$benchmark_rc"' in source
 
 
+def test_shell_help_documents_exact_guard_restore_and_real_ready_stop_check():
+    source = _ARMS.read_text()
+    assert "/Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py" in source
+    assert "/Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist" in source
+    assert "--lock-timeout-seconds 3600 --child-timeout-seconds 3600" in source
+    assert "launchctl bootstrap gui/501" in source
+    assert "mtplx-qwen36-27b-optimized-quality" in source
+    assert "/v1/models" in source
+    assert "/v1/chat/completions" in source
+    assert "Say READY" in source
+    assert 'finish_reason == "stop"' in source
+
+
 def test_single_process_source_is_clean_before_mlx_and_loads_once():
     source = _BENCHMARK.read_text()
     main = source[source.index("def main()") :]

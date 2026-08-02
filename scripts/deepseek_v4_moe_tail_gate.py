@@ -25,8 +25,6 @@ import sys
 import time
 from pathlib import Path
 
-import mlx.core as mx
-
 
 _REQUIRED_MLX_VERSION = "0.31.2"
 _REQUIRED_MLX_CORE_SHA256 = (
@@ -185,7 +183,8 @@ def _validate_projection_storage(module, spec: dict, stem: str, *, biases: bool)
     }
     if actual != expected:
         raise ValueError(f"loaded quantization mismatch for {stem}: {actual} != {expected}")
-    if getattr(getattr(module, "weight", None), "dtype", None) != mx.uint32:
+    weight_dtype = str(getattr(getattr(module, "weight", None), "dtype", "")).lower()
+    if weight_dtype.rsplit(".", 1)[-1] != "uint32":
         raise ValueError(f"loaded quantized weight for {stem} is not uint32 storage")
     if getattr(module, "scales", None) is None:
         raise ValueError(f"loaded quantized weight for {stem} has no scales")
@@ -282,6 +281,12 @@ def main() -> int:
     ap.add_argument("--cycles", type=int, default=8)
     ap.add_argument("--out", required=True, help="JSON receipt path")
     args = ap.parse_args()
+    from deepseek_v4_guard_window import load_verified_guard_window
+
+    guard_window = load_verified_guard_window()
+    global mx
+    import mlx.core as mx
+
     if not args.model:
         raise SystemExit("no 2-bit DeepSeek-V4 model found; pass --model")
     if args.cycles < 3:
@@ -452,6 +457,7 @@ def main() -> int:
         "harness": "scripts/deepseek_v4_moe_tail_gate.py",
         "purpose": "one-load real-capture exact-parity and compile safety gate; TPS verdict is external",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "guard_window": guard_window,
         "identity": {
             "harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "required_mlx_version": _REQUIRED_MLX_VERSION,

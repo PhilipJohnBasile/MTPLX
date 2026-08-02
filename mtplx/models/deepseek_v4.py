@@ -448,13 +448,19 @@ _FP32_ACTIVATIONS = _env_flag("MTPLX_DSV4_FP32_ACTIVATIONS", False)
 #: activation storage, hidden width 4096, and exactly six routed experts.  It does
 #: not alter gate/up/down projection ownership, their Q2 format, their clamp, or
 #: routing.  The flag is read once, and an enabled instance receives a prebound
-#: callable at construction; there is no environment or eligibility branch in the
-#: token path.  A forced lane on a non-GPU device fails at construction instead of
-#: silently falling through to stock.
+#: callable at the post-load construction boundary; there is no environment or
+#: eligibility branch in the token path.  A forced lane on a non-GPU device fails
+#: during installation instead of silently falling through to stock.
 _MOE_TAIL = _env_flag("MTPLX_DSV4_MOE_TAIL", False)
 _MOE_TAIL_TOPK = 6
 _MOE_TAIL_HIDDEN = 4096
 _MOE_TAIL_EXPERTS = 256
+_MOE_TAIL_BODY_LAYERS = 43
+_MOE_TAIL_MTP_BLOCKS = 1
+_MOE_TAIL_HASH_LAYERS = 3
+_MOE_TAIL_INTERMEDIATE = 2048
+_MOE_TAIL_SHARED_EXPERTS = 1
+_MOE_TAIL_VOCAB = 129280
 _MOE_TAIL_KERNEL = None
 _MOE_TAIL_SELF_CHECKED = False
 
@@ -506,10 +512,339 @@ def _validate_moe_tail_config(args: "ModelArgs") -> None:
             "MTPLX_DSV4_MOE_TAIL requires DeepSeek-V4-Flash n_routed_experts=256; got "
             f"n_routed_experts={args.n_routed_experts}"
         )
+    for field_name, expected in (
+        ("num_hidden_layers", _MOE_TAIL_BODY_LAYERS),
+        ("num_hash_layers", _MOE_TAIL_HASH_LAYERS),
+        ("moe_intermediate_size", _MOE_TAIL_INTERMEDIATE),
+        ("n_shared_experts", _MOE_TAIL_SHARED_EXPERTS),
+        ("vocab_size", _MOE_TAIL_VOCAB),
+        ("num_nextn_predict_layers", _MOE_TAIL_MTP_BLOCKS),
+    ):
+        actual = int(getattr(args, field_name))
+        if actual != expected:
+            raise ValueError(
+                f"MTPLX_DSV4_MOE_TAIL requires {field_name}={expected}; got {actual}"
+            )
+
+
+def _moe_tail_shape(value) -> tuple[int, ...] | None:
+    shape = getattr(value, "shape", None)
+    if shape is None:
+        return None
+    try:
+        return tuple(int(dimension) for dimension in shape)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_moe_tail_quantized_projection(
+    module,
+    *,
+    label: str,
+    bits: int,
+    group_size: int,
+    mode: str,
+    weight_shape: tuple[int, ...],
+    scale_shape: tuple[int, ...],
+    scale_dtype,
+    biases: bool,
+) -> None:
+    """Validate one already-loaded packed projection before route installation."""
+    actual_bits = getattr(module, "bits", None)
+    actual_group_size = getattr(module, "group_size", None)
+    actual_mode = str(getattr(module, "mode", "")).lower()
+    if actual_bits != bits:
+        raise ValueError(f"{label} requires bits={bits}; got {actual_bits!r}")
+    if actual_group_size != group_size:
+        raise ValueError(
+            f"{label} requires group_size={group_size}; got {actual_group_size!r}"
+        )
+    if actual_mode != mode:
+        raise ValueError(f"{label} requires mode={mode}; got {actual_mode!r}")
+    weight = getattr(module, "weight", None)
+    if getattr(weight, "dtype", None) != mx.uint32:
+        raise ValueError(f"{label} packed weight must use uint32 storage")
+    if _moe_tail_shape(weight) != weight_shape:
+        raise ValueError(
+            f"{label} packed weight shape must be {weight_shape}; "
+            f"got {_moe_tail_shape(weight)}"
+        )
+    scales = getattr(module, "scales", None)
+    if (
+        _moe_tail_shape(scales) != scale_shape
+        or getattr(scales, "dtype", None) != scale_dtype
+    ):
+        raise ValueError(
+            f"{label} scale/bias shape or scale dtype is invalid: "
+            f"shape={_moe_tail_shape(scales)} dtype={getattr(scales, 'dtype', None)}"
+        )
+    offsets = getattr(module, "biases", None)
+    if biases:
+        if (
+            _moe_tail_shape(offsets) != scale_shape
+            or getattr(offsets, "dtype", None) != mx.bfloat16
+        ):
+            raise ValueError(
+                f"{label} scale/bias shape or bias dtype is invalid: "
+                f"shape={_moe_tail_shape(offsets)} "
+                f"dtype={getattr(offsets, 'dtype', None)}"
+            )
+    elif offsets is not None:
+        raise ValueError(f"{label} must not carry affine biases")
+
+
+def _validate_moe_tail_dense_projection(
+    module, *, label: str, weight_shape: tuple[int, ...]
+) -> None:
+    weight = getattr(module, "weight", None)
+    if (
+        _moe_tail_shape(weight) != weight_shape
+        or getattr(weight, "dtype", None) != mx.bfloat16
+        or getattr(module, "scales", None) is not None
+        or getattr(module, "biases", None) is not None
+    ):
+        raise ValueError(
+            f"{label} MTP dense shared projection must be BF16 {weight_shape}; "
+            f"shape={_moe_tail_shape(weight)} dtype={getattr(weight, 'dtype', None)}"
+        )
+
+
+def _validate_moe_tail_gate(layer, *, layer_id: int, hash_layer: bool) -> None:
+    gate = getattr(getattr(layer, "ffn", None), "gate", None)
+    if gate is None:
+        raise ValueError(f"body layer {layer_id} has no MoE gate")
+    for field_name, expected in (
+        ("dim", _MOE_TAIL_HIDDEN),
+        ("topk", _MOE_TAIL_TOPK),
+        ("n_routed", _MOE_TAIL_EXPERTS),
+        ("hash", hash_layer),
+    ):
+        if getattr(gate, field_name, None) != expected:
+            raise ValueError(
+                f"body layer {layer_id} gate requires {field_name}={expected!r}; "
+                f"got {getattr(gate, field_name, None)!r}"
+            )
+    weight = getattr(gate, "weight", None)
+    if (
+        _moe_tail_shape(weight) != (_MOE_TAIL_EXPERTS, _MOE_TAIL_HIDDEN)
+        or getattr(weight, "dtype", None) != mx.bfloat16
+    ):
+        raise ValueError(f"body layer {layer_id} gate weight geometry is invalid")
+    if hash_layer:
+        table = getattr(gate, "tid2eid", None)
+        if (
+            _moe_tail_shape(table) != (_MOE_TAIL_VOCAB, _MOE_TAIL_TOPK)
+            or getattr(table, "dtype", None) != mx.int64
+        ):
+            raise ValueError(f"body layer {layer_id} hash routing table is invalid")
+    else:
+        correction = getattr(gate, "e_score_correction_bias", None)
+        if (
+            _moe_tail_shape(correction) != (_MOE_TAIL_EXPERTS,)
+            or getattr(correction, "dtype", None) != mx.float32
+        ):
+            raise ValueError(f"body layer {layer_id} score correction is invalid")
+
+
+def _validate_loaded_moe_tail_contract(model, config: dict) -> dict:
+    """Prove exact topology and loaded storage before compiling the candidate."""
+    if str(getattr(model, "model_type", "")).lower() != "deepseek_v4":
+        raise ValueError("MTPLX_DSV4_MOE_TAIL requires loaded model_type=deepseek_v4")
+    layers = list(getattr(model, "layers", ()))
+    if len(layers) != _MOE_TAIL_BODY_LAYERS:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires exactly 43 body layers; "
+            f"got {len(layers)}"
+        )
+    mtp_blocks = list(getattr(model, "mtp_blocks", ()))
+    if len(mtp_blocks) != _MOE_TAIL_MTP_BLOCKS:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires exactly one MTP block; "
+            f"got {len(mtp_blocks)}"
+        )
+    args = getattr(model, "args", None)
+    if args is None:
+        raise ValueError("MTPLX_DSV4_MOE_TAIL loaded model has no args")
+    _validate_moe_tail_config(args)
+    expected_config = {
+        "model_type": "deepseek_v4",
+        "num_hidden_layers": _MOE_TAIL_BODY_LAYERS,
+        "num_nextn_predict_layers": _MOE_TAIL_MTP_BLOCKS,
+        "num_hash_layers": _MOE_TAIL_HASH_LAYERS,
+        "n_routed_experts": _MOE_TAIL_EXPERTS,
+        "num_experts_per_tok": _MOE_TAIL_TOPK,
+        "hidden_size": _MOE_TAIL_HIDDEN,
+        "moe_intermediate_size": _MOE_TAIL_INTERMEDIATE,
+        "n_shared_experts": _MOE_TAIL_SHARED_EXPERTS,
+        "vocab_size": _MOE_TAIL_VOCAB,
+    }
+    mismatches = {
+        field: (config.get(field), expected)
+        for field, expected in expected_config.items()
+        if config.get(field) != expected
+    }
+    ratios = config.get("compress_ratios")
+    if not isinstance(ratios, list) or len(ratios) != 44:
+        mismatches["compress_ratios"] = (
+            len(ratios) if isinstance(ratios, list) else None,
+            44,
+        )
+    if mismatches:
+        raise ValueError(f"MTPLX_DSV4_MOE_TAIL config topology mismatch: {mismatches}")
+    quantization = config.get("quantization")
+    if not isinstance(quantization, dict) or any(
+        quantization.get(field) != expected
+        for field, expected in (
+            ("bits", 4),
+            ("group_size", 64),
+            ("mode", "affine"),
+        )
+    ):
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL config quantization default must be "
+            "4-bit affine group_size=64"
+        )
+
+    shared_contract = {
+        "gate_proj": ((2048, 512), (2048, 64)),
+        "up_proj": ((2048, 512), (2048, 64)),
+        "down_proj": ((4096, 256), (4096, 32)),
+    }
+    for layer_id, layer in enumerate(layers):
+        _validate_moe_tail_gate(
+            layer, layer_id=layer_id, hash_layer=layer_id < _MOE_TAIL_HASH_LAYERS
+        )
+        ffn = getattr(layer, "ffn", None)
+        switch = getattr(ffn, "switch_mlp", None)
+        shared = getattr(ffn, "shared_experts", None)
+        gate_group_size = 32 if layer_id < 42 else 64
+        gate_scale_groups = 128 if layer_id < 42 else 64
+        routed_contract = {
+            "gate_proj": (
+                (256, 2048, 256),
+                (256, 2048, gate_scale_groups),
+                gate_group_size,
+            ),
+            "up_proj": ((256, 2048, 256), (256, 2048, 64), 64),
+            "down_proj": ((256, 4096, 128), (256, 4096, 32), 64),
+        }
+        for projection, (weight_shape, scale_shape, group_size) in routed_contract.items():
+            stem = f"model.layers.{layer_id}.ffn.switch_mlp.{projection}"
+            expected_spec = {
+                "bits": 2,
+                "group_size": group_size,
+                "mode": "affine",
+            }
+            actual_spec = quantization.get(stem)
+            if not isinstance(actual_spec, dict) or any(
+                actual_spec.get(field_name) != expected
+                for field_name, expected in expected_spec.items()
+            ):
+                raise ValueError(
+                    f"MTPLX_DSV4_MOE_TAIL config quantization for {stem} "
+                    f"must be {expected_spec}; got {actual_spec!r}"
+                )
+            _validate_moe_tail_quantized_projection(
+                getattr(switch, projection, None),
+                label=f"body layer {layer_id} routed {projection}",
+                bits=2,
+                group_size=group_size,
+                mode="affine",
+                weight_shape=weight_shape,
+                scale_shape=scale_shape,
+                scale_dtype=mx.bfloat16,
+                biases=True,
+            )
+        for projection, (weight_shape, scale_shape) in shared_contract.items():
+            _validate_moe_tail_quantized_projection(
+                getattr(shared, projection, None),
+                label=f"body shared layer {layer_id} {projection}",
+                bits=4,
+                group_size=64,
+                mode="affine",
+                weight_shape=weight_shape,
+                scale_shape=scale_shape,
+                scale_dtype=mx.bfloat16,
+                biases=True,
+            )
+
+    mtp = mtp_blocks[0]
+    _validate_moe_tail_gate(mtp, layer_id=43, hash_layer=False)
+    mtp_switch = mtp.ffn.switch_mlp
+    mtp_routed_contract = {
+        "gate_proj": ((256, 2048, 512), (256, 2048, 128)),
+        "up_proj": ((256, 2048, 512), (256, 2048, 128)),
+        "down_proj": ((256, 4096, 256), (256, 4096, 64)),
+    }
+    for projection, (weight_shape, scale_shape) in mtp_routed_contract.items():
+        stem = f"mtp.0.ffn.switch_mlp.{projection}"
+        expected_spec = {"bits": 4, "group_size": 32, "mode": "mxfp4"}
+        actual_spec = quantization.get(stem)
+        if not isinstance(actual_spec, dict) or any(
+            actual_spec.get(field_name) != expected
+            for field_name, expected in expected_spec.items()
+        ):
+            raise ValueError(
+                f"MTPLX_DSV4_MOE_TAIL config quantization for {stem} "
+                f"must be {expected_spec}; got {actual_spec!r}"
+            )
+        _validate_moe_tail_quantized_projection(
+            getattr(mtp_switch, projection, None),
+            label=f"MTP routed {projection}",
+            bits=4,
+            group_size=32,
+            mode="mxfp4",
+            weight_shape=weight_shape,
+            scale_shape=scale_shape,
+            scale_dtype=mx.uint8,
+            biases=False,
+        )
+    mtp_shared = mtp.ffn.shared_experts
+    for projection, weight_shape in {
+        "gate_proj": (2048, 4096),
+        "up_proj": (2048, 4096),
+        "down_proj": (4096, 2048),
+    }.items():
+        _validate_moe_tail_dense_projection(
+            getattr(mtp_shared, projection, None),
+            label=f"MTP dense shared {projection}",
+            weight_shape=weight_shape,
+        )
+    return {
+        "body_layers": len(layers),
+        "mtp_blocks": len(mtp_blocks),
+        "body_q2_routed_projections": len(layers) * 3,
+        "body_q4_shared_projections": len(layers) * len(shared_contract),
+        "mtp_mxfp4_routed_projections": len(mtp_routed_contract),
+        "mtp_dense_shared_projections": 3,
+    }
+
+
+def configure_deepseek_v4_moe_tail(model, config: dict) -> dict | None:
+    """Install the fixed body route once, after loaded storage is fully known."""
+    if not _MOE_TAIL:
+        return None
+    validated = _validate_loaded_moe_tail_contract(model, config)
+    candidate = _install_moe_tail_combine(model.args)
+    for layer in model.layers:
+        layer.ffn._tail_combine = candidate
+    for block in model.mtp_blocks:
+        block.ffn._tail_combine = _stock_moe_tail_combine
+    return {
+        "route": "decode_verify_m4",
+        "body_layers_installed": len(model.layers),
+        "mtp_layers_stock": len(model.mtp_blocks),
+        "verify_rows": 4,
+        "repair_rows": 1,
+        "topk": _MOE_TAIL_TOPK,
+        "hidden_size": _MOE_TAIL_HIDDEN,
+        "kernel_selfcheck_exact": True,
+        **validated,
+    }
 
 
 def _moe_tail_metal_kernel():
-    """Build the one fixed BF16 tail kernel during MoE construction."""
+    """Build the one fixed BF16 tail kernel during post-load configuration."""
     global _MOE_TAIL_KERNEL
     if _MOE_TAIL_KERNEL is None:
         _MOE_TAIL_KERNEL = mx.fast.metal_kernel(
@@ -603,7 +938,7 @@ def _install_moe_tail_combine(args: "ModelArgs"):
     _validate_moe_tail_config(args)
     if not mx.metal.is_available() or mx.default_device() != mx.gpu:
         raise RuntimeError(
-            "MTPLX_DSV4_MOE_TAIL requires a Metal GPU at model construction; "
+            "MTPLX_DSV4_MOE_TAIL requires a Metal GPU at post-load installation; "
             "select the explicit stock route on CPU"
         )
     kernel = _moe_tail_metal_kernel()
@@ -2587,13 +2922,10 @@ class DeepseekV4MoE(nn.Module):
         self.shared_experts = DeepseekV4MLP(
             args, args.moe_intermediate_size * args.n_shared_experts
         )
-        # Choose once.  ``__call__`` deliberately invokes this prebound callable
-        # directly, so an enabled tail has no eligible/fallback branch per token.
-        self._tail_combine = (
-            _install_moe_tail_combine(args)
-            if _MOE_TAIL and layer_id < args.num_hidden_layers
-            else _stock_moe_tail_combine
-        )
+        # Weight storage does not exist yet.  Production keeps this explicit
+        # stock route until ``configure_deepseek_v4_moe_tail`` validates the
+        # fully loaded model and prebinds the candidate at the runtime boundary.
+        self._tail_combine = _stock_moe_tail_combine
 
     def __call__(self, x: mx.array, input_ids: Optional[mx.array] = None) -> mx.array:
         shape = x.shape
