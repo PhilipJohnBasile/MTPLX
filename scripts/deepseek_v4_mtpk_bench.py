@@ -78,6 +78,106 @@ from deepseek_v4_guard_window import load_verified_guard_window  # noqa: E402
 # throughput ~4x and the number would be garbage anyway.
 _PEAK_ABORT_GIB = 108.0
 
+_OFFICIAL_MLX_IDENTITY = {
+    "version": "0.31.2",
+    "core_sha256": "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6",
+    "lib_sha256": "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd",
+}
+_CANONICAL_PROMPT_SHA256 = (
+    "ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33"
+)
+_ADAPTIVE_WIDTH_STAGE4_ENV = {
+    "MTPLX_COMPILED_VERIFY": "off",
+    "MTPLX_DSV4_ATTN": "fused",
+    "MTPLX_DSV4_FP32_ACTIVATIONS": "0",
+    "MTPLX_DSV4_HC_COMPILE": "1",
+    "MTPLX_DSV4_MOE_TAIL": "1",
+    "MTPLX_DSV4_O_LORA": "gather_qmm",
+    "MTPLX_DSV4_SINKHORN_KERNEL": "1",
+}
+_ADAPTIVE_WIDTH_ARTIFACT_IDENTITY = {
+    "config_sha256": "c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa6f",
+    "index_sha256": "c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8",
+    "model_type": "deepseek_v4",
+    "num_hidden_layers": 43,
+    "num_nextn_predict_layers": 1,
+    "body_q2_routed_projections": 129,
+    "body_q2_manifest_tensors": 387,
+    "mtp_manifest_tensors": 35,
+    "index_weight_count": 2645,
+}
+_ADAPTIVE_WIDTH_LOADED_IDENTITY = {
+    "runtime_mtp_enabled": True,
+    "body_layers_loaded": 43,
+    "mtp_blocks_bound": 1,
+    "body_q2_routed_projections": 129,
+    "body_q2_weight_dtype": "uint32",
+    "mtp_mxfp4_routed_projections": 3,
+    "mtp_routed_weight_dtype": "uint32",
+}
+_ADAPTIVE_WIDTH_MOE_TAIL_ROUTE = {
+    "route": "decode_verify_m4",
+    "body_layers_installed": 43,
+    "mtp_layers_stock": 1,
+    "verify_rows": 4,
+    "repair_rows": 1,
+    "topk": 6,
+    "hidden_size": 4096,
+    "kernel_selfcheck_exact": True,
+}
+_ADAPTIVE_WIDTH_O_LORA_ROUTE = {
+    "mode": "gather_qmm",
+    "module_count": 44,
+    "trunk_module_count": 43,
+    "mtp_module_count": 1,
+    "body_direct": 43,
+    "mtp_stock": 1,
+    "body_all_mode_matches": True,
+    "route_plan_matches": True,
+}
+_ADAPTIVE_WIDTH_O_LORA_CENSUS = {
+    "body_route_objects": 43,
+    "body_route_kind": "gather_qmm_direct",
+    "body_callable_class": "_DirectGatherOLora",
+    "mtp_route_objects": 1,
+    "mtp_route_kind": "dense_bf16_stock_direct",
+    "mtp_callable_class": "_DirectDenseMTPOLora",
+    "total_route_objects": 44,
+    "unique_route_objects": 44,
+    "mtp_distinct_type": True,
+}
+_ADAPTIVE_WIDTH_BRACKET_ARMS = (
+    ("K3-PRIMER", False),
+    ("K3-C0", False),
+    ("ADAPTIVE-B", True),
+    ("K3-C1", False),
+)
+_ADAPTIVE_WIDTH_POLICY_RECEIPT = {
+    "kind": "deepseek_v4_preregistered_max_k3",
+    "immutable": True,
+    "d1_margin_threshold": 0.25,
+    "d2_margin_threshold": 1.0,
+    "max_speculative_depth": 3,
+    "target_routes": {"K1": "M2", "K2": "M3", "K3": "M4"},
+    "target_rows": [2, 3, 4],
+}
+_BEHAVIOR_SCALARS = (
+    "generated_tokens",
+    "accepted_drafts",
+    "rejected_drafts",
+    "drafted_tokens",
+    "skipped_drafts",
+    "bonus_tokens",
+    "correction_tokens",
+    "verify_calls",
+    "mtp_forward_calls",
+    "make_mtp_cache_calls",
+    "update_mtp_cache_calls",
+    "mtp_history_append_calls",
+    "forward_ar_hidden_calls",
+    "forward_ar_plain_calls",
+)
+
 
 def _gib(n: int) -> float:
     return n / (1024**3)
@@ -291,6 +391,7 @@ def _run_arm(
     mtp_history_policy: str,
     baseline_tokens: list[int] | None,
     enforce_exact: bool = True,
+    adaptive_width_policy=None,
 ) -> dict:
     from mtplx.generation import generate_ar, generate_mtpk
     from mtplx.sampling import SamplerConfig
@@ -327,6 +428,7 @@ def _run_arm(
                 verify_strategy=verify_strategy,
                 verify_core=verify_core,
                 stop_token_ids=set(),
+                adaptive_width_policy=adaptive_width_policy,
             )
     except Exception:
         error = traceback.format_exc()
@@ -346,6 +448,7 @@ def _run_arm(
         "peak_gib": _gib(peak),
         "active_end_gib": _gib(_active_bytes()),
         "error": error,
+        "adaptive_width_policy_enabled": adaptive_width_policy is not None,
     }
     if out is None:
         return arm
@@ -555,6 +658,417 @@ def _reset_benchmark_state(rt) -> None:
     _reset_peak()
 
 
+def _token_sha256(tokens: list[int]) -> str:
+    encoded = json.dumps(list(tokens), separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _valid_nonnegative_int(value) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _validate_behavior_stats(label: str, stats: object) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(stats, dict):
+        return [f"{label} stats_full is not an object"]
+    for key in _BEHAVIOR_SCALARS:
+        if not _valid_nonnegative_int(stats.get(key)):
+            errors.append(f"{label} has malformed counter {key}")
+    for key in ("accepted_by_depth", "drafted_by_depth"):
+        values = stats.get(key)
+        if (
+            not isinstance(values, list)
+            or len(values) != 3
+            or not all(_valid_nonnegative_int(value) for value in values)
+        ):
+            errors.append(f"{label} has malformed counter {key}")
+    drafted_by_depth = stats.get("drafted_by_depth")
+    if isinstance(drafted_by_depth, list) and all(
+        _valid_nonnegative_int(value) for value in drafted_by_depth
+    ):
+        if sum(drafted_by_depth) != stats.get("drafted_tokens"):
+            errors.append(f"{label} drafted counter sum is inconsistent")
+        if not all(
+            left >= right
+            for left, right in zip(drafted_by_depth, drafted_by_depth[1:])
+        ):
+            errors.append(f"{label} drafted depth histogram is not monotone")
+    if stats.get("generated_tokens") != 256:
+        errors.append(f"{label} did not generate the canonical 256 tokens")
+    if not isinstance(stats.get("events"), list):
+        errors.append(f"{label} events are missing")
+    return errors
+
+
+def _adaptive_width_engagement(arm: dict) -> tuple[dict, list[str]]:
+    errors: list[str] = []
+    stats = arm.get("stats_full")
+    events = stats.get("events", []) if isinstance(stats, dict) else []
+    histogram = {"K1_M2": 0, "K2_M3": 0, "K3_M4": 0}
+    policy_events = 0
+    eligible_events = 0
+    context_copy_events = 0
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            errors.append(f"ADAPTIVE-B event {index} is malformed")
+            continue
+        if "context_copy" in event:
+            context_copy_events += 1
+            if "adaptive_width_policy" in event:
+                errors.append("context-copy event carries adaptive policy metadata")
+            continue
+        policy = event.get("adaptive_width_policy")
+        if not isinstance(policy, dict):
+            if event.get("drafts"):
+                errors.append(f"ADAPTIVE-B event {index} lacks policy engagement")
+            continue
+        policy_events += 1
+        width = policy.get("selected_draft_depth")
+        target_rows = policy.get("target_rows")
+        margins = policy.get("decision_margins")
+        eligible = policy.get("eligible_full_k3")
+        if policy.get("kind") != "deepseek_v4_preregistered_max_k3":
+            errors.append(f"ADAPTIVE-B event {index} has the wrong policy kind")
+        if policy.get("d1_margin_threshold") != 0.25:
+            errors.append(f"ADAPTIVE-B event {index} changed D1")
+        if policy.get("d2_margin_threshold") != 1.0:
+            errors.append(f"ADAPTIVE-B event {index} changed D2")
+        if width not in {1, 2, 3} or target_rows != width + 1:
+            errors.append(f"ADAPTIVE-B event {index} has an invalid target width")
+            continue
+        histogram[("K1_M2", "K2_M3", "K3_M4")[width - 1]] += 1
+        if eligible is True:
+            eligible_events += 1
+            if not isinstance(margins, list) or len(margins) != min(width, 2):
+                errors.append(f"ADAPTIVE-B event {index} has incomplete margins")
+            elif not all(type(value) in {int, float} for value in margins):
+                errors.append(f"ADAPTIVE-B event {index} has malformed margins")
+            if width == 1 and not (float(margins[0]) < 0.25):
+                errors.append(f"ADAPTIVE-B event {index} violates the D1 decision")
+            if width >= 2 and not (float(margins[0]) >= 0.25):
+                errors.append(f"ADAPTIVE-B event {index} violates the D1 tie rule")
+            if width == 2 and not (float(margins[1]) < 1.0):
+                errors.append(f"ADAPTIVE-B event {index} violates the D2 decision")
+            if width == 3 and not (float(margins[1]) >= 1.0):
+                errors.append(f"ADAPTIVE-B event {index} violates the D2 tie rule")
+        elif eligible is not False:
+            errors.append(f"ADAPTIVE-B event {index} lacks an eligibility receipt")
+    if eligible_events <= 0:
+        errors.append("ADAPTIVE-B has no eligible full-K3 policy events")
+    if isinstance(stats, dict):
+        drafted_by_depth = stats.get("drafted_by_depth")
+        expected_drafted = [
+            sum(histogram.values()),
+            histogram["K2_M3"] + histogram["K3_M4"],
+            histogram["K3_M4"],
+        ]
+        if drafted_by_depth != expected_drafted:
+            errors.append("event-derived widths do not match drafted_by_depth")
+        if stats.get("verify_calls") != policy_events + context_copy_events:
+            errors.append("event-derived widths do not cover verify calls")
+    return {
+        "policy_events": policy_events,
+        "eligible_full_k3_events": eligible_events,
+        "context_copy_events": context_copy_events,
+        "event_derived_width_histogram": histogram,
+    }, errors
+
+
+def _token_quality(arms_by_label: dict[str, dict]) -> tuple[dict, list[str]]:
+    errors: list[str] = []
+    controls = [
+        arms_by_label.get("K3-PRIMER", {}).get("tokens"),
+        arms_by_label.get("K3-C0", {}).get("tokens"),
+        arms_by_label.get("K3-C1", {}).get("tokens"),
+    ]
+    candidate = arms_by_label.get("ADAPTIVE-B", {}).get("tokens")
+    if not all(isinstance(tokens, list) and len(tokens) == 256 for tokens in controls):
+        return {"accepted": False, "mode": "invalid_controls"}, [
+            "fixed-K3 controls lack canonical token sequences"
+        ]
+    if controls[0] != controls[1] or controls[1] != controls[2]:
+        return {"accepted": False, "mode": "control_mismatch"}, [
+            "fixed-K3 controls are not token-identical"
+        ]
+    if not isinstance(candidate, list) or len(candidate) != 256:
+        return {"accepted": False, "mode": "invalid_candidate"}, [
+            "adaptive candidate lacks a canonical token sequence"
+        ]
+    control = controls[1]
+    differing = [index for index, pair in enumerate(zip(control, candidate)) if pair[0] != pair[1]]
+    if not differing:
+        return {
+            "accepted": True,
+            "mode": "exact",
+            "control_token_sha256": _token_sha256(control),
+            "candidate_token_sha256": _token_sha256(candidate),
+            "divergent_tokens": 0,
+        }, errors
+    cause = {
+        "continuation_index": 221,
+        "absolute_position": 549,
+        "control_token_id": 14042,
+        "candidate_token_id": 12258,
+        "control_target_gap": 0.25,
+        "candidate_target_gap": 0.0,
+    }
+    approved = (
+        differing[0] == cause["continuation_index"]
+        and control[:221] == candidate[:221]
+        and control[221] == cause["control_token_id"]
+        and candidate[221] == cause["candidate_token_id"]
+    )
+    quality = {
+        "accepted": approved,
+        "mode": "approved_bf16_top2_cause" if approved else "unapproved_divergence",
+        "approved_cause": cause if approved else None,
+        "divergent_tokens": len(differing),
+        "first_divergence_index": differing[0],
+        "control_token_sha256": _token_sha256(control),
+        "candidate_token_sha256": _token_sha256(candidate),
+        "propagated_tail": {
+            "documented": approved,
+            "start_continuation_index": 222,
+            "compared_tokens": len(candidate) - 222,
+            "divergent_tokens": sum(
+                control[index] != candidate[index] for index in range(222, len(candidate))
+            ),
+            "control_tail_sha256": _token_sha256(control[222:]),
+            "candidate_tail_sha256": _token_sha256(candidate[222:]),
+            "human_eval": "deferred",
+        },
+    }
+    if not approved:
+        errors.append("adaptive candidate has an unapproved token divergence")
+    return quality, errors
+
+
+def _adaptive_width_common_errors(common: dict) -> list[str]:
+    errors: list[str] = []
+    source = common.get("source_commit")
+    if not isinstance(source, str) or len(source) != 40 or any(
+        character not in "0123456789abcdef" for character in source
+    ):
+        errors.append("source commit is malformed")
+    expected = {
+        "model_path": "/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp",
+        "model_type": "deepseek_v4",
+        "num_hidden_layers": 43,
+        "num_nextn_predict_layers": 1,
+        "prompt_tokens": 328,
+        "max_tokens": 256,
+        "depths": [3],
+        "verify_strategy": "capture_commit",
+        "verify_core": "stock",
+        "mtp_history_policy": "committed",
+        "sampling": {"greedy": True, "temperature": 0.0, "stop_token_ids": []},
+        "fp32_activations": False,
+    }
+    for key, value in expected.items():
+        if common.get(key) != value:
+            errors.append(f"{key} is not canonical")
+    prompt = common.get("prompt")
+    if not isinstance(prompt, dict) or prompt.get("sha256") != _CANONICAL_PROMPT_SHA256 or prompt.get("tokens") != 328:
+        errors.append("prompt identity is not canonical")
+    for key, expected_identity in (
+        ("mlx_identity", _OFFICIAL_MLX_IDENTITY),
+        ("artifact_identity", _ADAPTIVE_WIDTH_ARTIFACT_IDENTITY),
+        ("loaded_runtime_identity", _ADAPTIVE_WIDTH_LOADED_IDENTITY),
+        ("launch_mtplx_env", _ADAPTIVE_WIDTH_STAGE4_ENV),
+    ):
+        observed = common.get(key)
+        if not isinstance(observed, dict) or any(
+            observed.get(name) != value for name, value in expected_identity.items()
+        ) or (key == "launch_mtplx_env" and observed != expected_identity):
+            errors.append(f"{key} is not canonical")
+    if common.get("deepseek_v4_moe_tail") != _ADAPTIVE_WIDTH_MOE_TAIL_ROUTE:
+        errors.append("MoE-tail installed route is not canonical")
+    o_lora = common.get("deepseek_v4_o_lora")
+    if (
+        not isinstance(o_lora, dict)
+        or any(
+            o_lora.get(name) != value
+            for name, value in _ADAPTIVE_WIDTH_O_LORA_ROUTE.items()
+        )
+        or o_lora.get("callable_census") != _ADAPTIVE_WIDTH_O_LORA_CENSUS
+    ):
+        errors.append("o-LoRA installed route is not canonical")
+    guard = common.get("guard_window")
+    if not isinstance(guard, dict) or guard.get("verified") is not True:
+        errors.append("guard window is not verified")
+    return errors
+
+
+def _adaptive_width_bracket_receipt(
+    *,
+    common: dict,
+    arms: list[dict],
+    process_pid: int,
+    model_object_id: int,
+    policy_receipt: dict,
+) -> dict:
+    errors = _adaptive_width_common_errors(common)
+    expected_order = [label for label, _enabled in _ADAPTIVE_WIDTH_BRACKET_ARMS]
+    observed_order = [arm.get("label") for arm in arms if isinstance(arm, dict)]
+    if observed_order != expected_order:
+        errors.append("adaptive-width arm order is invalid")
+    if type(process_pid) is not int or process_pid <= 0:
+        errors.append("process identity is invalid")
+    if type(model_object_id) is not int or model_object_id <= 0:
+        errors.append("model object identity is invalid")
+    if policy_receipt != _ADAPTIVE_WIDTH_POLICY_RECEIPT:
+        errors.append("installed adaptive-width policy receipt is invalid")
+
+    arms_by_label = {
+        str(arm.get("label")): arm for arm in arms if isinstance(arm, dict)
+    }
+    for label in expected_order:
+        arm = arms_by_label.get(label)
+        if arm is None:
+            continue
+        if arm.get("error") is not None:
+            errors.append(f"{label} failed")
+        if arm.get("generated_tokens") != 256 or arm.get("finish_reason") != "length":
+            errors.append(f"{label} did not complete the canonical workload")
+        tokens = arm.get("tokens")
+        if not isinstance(tokens, list) or arm.get("token_sha256") != _token_sha256(tokens):
+            errors.append(f"{label} token identity is malformed")
+        errors.extend(_validate_behavior_stats(label, arm.get("stats_full")))
+
+    for label in ("K3-PRIMER", "K3-C0", "K3-C1"):
+        stats = arms_by_label.get(label, {}).get("stats_full", {})
+        events = stats.get("events", []) if isinstance(stats, dict) else []
+        if any(
+            isinstance(event, dict) and "adaptive_width_policy" in event
+            for event in events
+        ):
+            errors.append(f"{label} unexpectedly engaged adaptive width")
+
+    candidate = arms_by_label.get("ADAPTIVE-B", {})
+    engagement, engagement_errors = _adaptive_width_engagement(candidate)
+    errors.extend(engagement_errors)
+    quality, quality_errors = _token_quality(arms_by_label)
+    errors.extend(quality_errors)
+
+    def _tps(label: str) -> float:
+        value = arms_by_label.get(label, {}).get("decode_tokens_per_second")
+        return float(value) if type(value) in {int, float} and value > 0 else 0.0
+
+    c0_tps = _tps("K3-C0")
+    c1_tps = _tps("K3-C1")
+    candidate_tps = _tps("ADAPTIVE-B")
+    if not c0_tps or not c1_tps or not candidate_tps:
+        errors.append("performance cells are missing positive throughput")
+    control_mean = (c0_tps + c1_tps) / 2.0
+    drift_tps = abs(c1_tps - c0_tps)
+    promotion_floor = control_mean + drift_tps
+    performance = {
+        "control_c0_tps": c0_tps,
+        "control_c1_tps": c1_tps,
+        "control_mean_tps": control_mean,
+        "control_drift_tps": drift_tps,
+        "candidate_tps": candidate_tps,
+        "candidate_minus_control_mean_tps": candidate_tps - control_mean,
+        "promotion_floor_tps": promotion_floor,
+        "promotion_pass": candidate_tps > promotion_floor,
+        "reported_below_40_tps": candidate_tps < 40.0,
+    }
+    return {
+        **common,
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "receipt_role": "adaptive_width_performance_bracket",
+        "performance_eligible": True,
+        "single_process_bracket": {
+            "process_pid": process_pid,
+            "model_object_id": model_object_id,
+            "model_load_count": 1,
+            "execution_order": expected_order,
+            "discarded_primer": "K3-PRIMER",
+        },
+        "policy": policy_receipt,
+        "policy_engagement": engagement,
+        "token_quality": quality,
+        "performance": performance,
+        "arms": arms,
+        "validation_errors": errors,
+        "status": int(bool(errors)),
+    }
+
+
+def _installed_policy_receipt(policy) -> dict:
+    rows = [int(route.target_rows) for route in policy.target_routes]
+    return {
+        "kind": "deepseek_v4_preregistered_max_k3",
+        "immutable": bool(
+            getattr(getattr(type(policy), "__dataclass_params__", None), "frozen", False)
+        ),
+        "d1_margin_threshold": float(policy.d1_margin_threshold),
+        "d2_margin_threshold": float(policy.d2_margin_threshold),
+        "max_speculative_depth": int(policy.max_speculative_depth),
+        "target_routes": {"K1": "M2", "K2": "M3", "K3": "M4"},
+        "target_rows": rows,
+    }
+
+
+def _run_adaptive_width_bracket(
+    *,
+    rt,
+    prompt_ids: list[int],
+    args,
+    common_receipt: dict,
+    out_stem: Path,
+) -> int:
+    from mtplx.deepseek_v4_adaptive_width import (
+        install_deepseek_v4_adaptive_width_policy,
+    )
+    from mtplx.sampling import SamplerConfig
+
+    sampler = SamplerConfig(temperature=0.0)
+    policy = install_deepseek_v4_adaptive_width_policy(
+        rt,
+        sampler=sampler,
+        draft_sampler=None,
+        speculative_depth=3,
+        verify_strategy=args.verify_strategy,
+        verify_core=args.verify_core,
+        mtp_history_policy=args.mtp_history_policy,
+    )
+    policy_receipt = _installed_policy_receipt(policy)
+    arms: list[dict] = []
+    for label, enabled in _ADAPTIVE_WIDTH_BRACKET_ARMS:
+        _reset_benchmark_state(rt)
+        arm = _run_arm(
+            rt=rt,
+            label=label,
+            depth=3,
+            prompt_ids=prompt_ids,
+            max_tokens=args.max_tokens,
+            verify_strategy=args.verify_strategy,
+            verify_core=args.verify_core,
+            mtp_history_policy=args.mtp_history_policy,
+            baseline_tokens=None,
+            adaptive_width_policy=policy if enabled else None,
+        )
+        if isinstance(arm.get("tokens"), list):
+            arm["token_sha256"] = _token_sha256(arm["tokens"])
+        arms.append(arm)
+
+    receipt = _adaptive_width_bracket_receipt(
+        common=common_receipt,
+        arms=arms,
+        process_pid=os.getpid(),
+        model_object_id=id(rt.model),
+        policy_receipt=policy_receipt,
+    )
+    _write_pair_receipt(out_stem, receipt, prompt_ids, args.prompt_file)
+    print(f"[adaptive width] wrote {out_stem.with_suffix('.json')}")
+    print(json.dumps(receipt["policy_engagement"], sort_keys=True))
+    print(json.dumps(receipt["token_quality"], sort_keys=True))
+    print(json.dumps(receipt["performance"], sort_keys=True))
+    sys.stdout.flush()
+    return int(receipt["status"])
+
+
 def _write_pair_receipt(stem: Path, receipt: dict, prompt_ids: list[int], prompt_file: str) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     stem.with_suffix(".json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -693,11 +1207,7 @@ def main() -> int:
         "lib_path": str(mlx_lib_path),
         "lib_sha256": hashlib.sha256(mlx_lib_path.read_bytes()).hexdigest(),
     }
-    required_mlx_identity = {
-        "version": "0.31.2",
-        "core_sha256": "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6",
-        "lib_sha256": "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd",
-    }
+    required_mlx_identity = _OFFICIAL_MLX_IDENTITY
     if any(mlx_identity[key] != value for key, value in required_mlx_identity.items()):
         raise RuntimeError(
             f"requires official MLX 0.31.2 binary identity: {mlx_identity}"
@@ -731,6 +1241,11 @@ def main() -> int:
         help="one-load primer/C0/MoE-tail/C1 K3 bracket",
     )
     ap.add_argument(
+        "--adaptive-width-bracket",
+        action="store_true",
+        help="one-load fixed-C0/adaptive-B/fixed-C1 max-K3 bracket",
+    )
+    ap.add_argument(
         "--receipt-role",
         choices=("measurement", "discarded_control_primer"),
         default="measurement",
@@ -758,6 +1273,14 @@ def main() -> int:
         and not key.startswith("MTPLX_GUARD_ATTEST_")
         and not key.startswith("MTPLX_DSV4_GUARD_WINDOW_")
     }
+    if (
+        args.adaptive_width_bracket
+        and launch_mtplx_env != _ADAPTIVE_WIDTH_STAGE4_ENV
+    ):
+        sys.exit(
+            "--adaptive-width-bracket requires the exact seven-variable "
+            f"Stage-4 environment: {launch_mtplx_env}"
+        )
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -845,6 +1368,72 @@ def main() -> int:
         sys.stdout.flush()
 
     after_load_active = _active_bytes()
+
+    if args.adaptive_width_bracket:
+        if args.tiny:
+            sys.exit("--adaptive-width-bracket requires the canonical GPU model")
+        if args.moe_tail_bracket:
+            sys.exit("adaptive-width and MoE-tail bracket modes are exclusive")
+        if list(args.depths) != [3] or args.max_tokens != 256:
+            sys.exit("--adaptive-width-bracket requires --depths 3 --max-tokens 256")
+        if not args.out:
+            sys.exit("--adaptive-width-bracket requires --out")
+        if (
+            args.verify_strategy != "capture_commit"
+            or args.verify_core != "stock"
+            or args.mtp_history_policy != "committed"
+        ):
+            sys.exit(
+                "--adaptive-width-bracket requires capture_commit/stock/committed"
+            )
+        if prompt_identity != {
+            "path": str(prompt_path),
+            "sha256": _CANONICAL_PROMPT_SHA256,
+            "tokens": 328,
+        }:
+            sys.exit(f"canonical prompt identity mismatch: {prompt_identity}")
+        if str(model_path) != "/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp":
+            sys.exit(f"canonical model path mismatch: {model_path}")
+        common_receipt = {
+            "harness": "scripts/deepseek_v4_mtpk_bench.py",
+            "source_commit": source_commit,
+            "artifact_identity": artifact_identity,
+            "loaded_runtime_identity": loaded_runtime_identity,
+            "mlx_identity": mlx_identity,
+            "command": ["python", *sys.argv],
+            "host": {
+                "platform": platform.platform(),
+                "mlx_version": mx.__version__,
+                "python": sys.version.split()[0],
+            },
+            "launch_mtplx_env": launch_mtplx_env,
+            "guard_window": guard_window,
+            "model_path": str(model_path),
+            "model_type": config.get("model_type"),
+            "num_hidden_layers": config.get("num_hidden_layers"),
+            "num_nextn_predict_layers": config.get("num_nextn_predict_layers"),
+            "sampling": {"greedy": True, "temperature": 0.0, "stop_token_ids": []},
+            "prompt_file": str(prompt_path),
+            "prompt": prompt_identity,
+            "prompt_tokens": len(prompt_ids),
+            "max_tokens": args.max_tokens,
+            "depths": [3],
+            "verify_strategy": args.verify_strategy,
+            "verify_core": args.verify_core,
+            "mtp_history_policy": args.mtp_history_policy,
+            "fp32_activations": _fp32_activations_env(),
+            "load_seconds": load_seconds,
+            "active_after_load_gib": _gib(after_load_active),
+            "deepseek_v4_moe_tail": moe_tail_report,
+            "deepseek_v4_o_lora": rt.deepseek_v4_o_lora_report,
+        }
+        return _run_adaptive_width_bracket(
+            rt=rt,
+            prompt_ids=prompt_ids,
+            args=args,
+            common_receipt=common_receipt,
+            out_stem=Path(args.out),
+        )
 
     if args.moe_tail_bracket:
         if args.tiny:
