@@ -169,6 +169,16 @@ def test_trim_cache_to_offset_preflights_all_bounded_entries_atomically():
     assert [first.offset, second.offset] == [10, 10]
 
 
+def test_trim_cache_to_offset_rejects_zero_delta_entry_without_trim_atomically():
+    first = OffsetCache()
+    first.offset = 10
+    second = SimpleNamespace(offset=5, trim=None)
+
+    assert _trim_cache_to_offset([first, second], 5) is False
+    assert first.offset == 10
+    assert first.trimmed == []
+
+
 class RejectingTinyMTPModel(AcceptingTinyMTPModel):
     def __init__(self):
         super().__init__()

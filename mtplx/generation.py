@@ -2327,11 +2327,11 @@ def _trim_cache_to_offset(cache: Any, offset: int) -> bool:
         if current < target:
             return False
         delta = current - target
-        if delta <= 0:
-            continue
         trim = getattr(entry, "trim", None)
         if not callable(trim):
             return False
+        if delta <= 0:
+            continue
         max_rollback = getattr(entry, "max_rollback", None)
         if max_rollback is not None and delta > int(max_rollback):
             return False
