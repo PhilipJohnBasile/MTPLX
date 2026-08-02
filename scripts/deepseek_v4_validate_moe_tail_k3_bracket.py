@@ -24,7 +24,8 @@ _CONFIG_SHA256 = "c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa
 _INDEX_SHA256 = "c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8"
 _MLX_CORE_SHA256 = "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6"
 _MLX_LIB_SHA256 = "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd"
-_LOCK_PATH = "/tmp/mtplx-gpu-exclusive.lock"
+_LOCK_REQUESTED = "/tmp/mtplx-gpu-exclusive.lock"
+_LOCK_RESOLVED = str(Path(_LOCK_REQUESTED).resolve())
 _CONTRACT = {
     "prompt_tokens": 328,
     "max_tokens": 256,
@@ -87,16 +88,17 @@ _WINDOW_KEYS = {
     "verified_monotonic_ns",
     "window_id",
     "attestation",
+    "lock_identity",
 }
 
 
-def _stage4_env(candidate: bool) -> dict[str, str]:
+def _stage4_env(_candidate: bool) -> dict[str, str]:
     return {
         "MTPLX_COMPILED_VERIFY": "off",
         "MTPLX_DSV4_ATTN": "fused",
         "MTPLX_DSV4_FP32_ACTIVATIONS": "0",
         "MTPLX_DSV4_HC_COMPILE": "1",
-        "MTPLX_DSV4_MOE_TAIL": "1" if candidate else "0",
+        "MTPLX_DSV4_MOE_TAIL": "1",
         "MTPLX_DSV4_O_LORA": "cached",
         "MTPLX_DSV4_SINKHORN_KERNEL": "1",
     }
@@ -121,12 +123,22 @@ def _guard_errors(window: Any, label: str) -> list[str]:
     prefix = f"{label}.guard_window"
     if not isinstance(window, dict):
         return [f"{prefix} is absent or not an object"]
-    if set(window) != _WINDOW_KEYS | {"receipt_path", "receipt_sha256"}:
+    if set(window) != _WINDOW_KEYS | {
+        "receipt_path",
+        "receipt_sha256",
+        "consumer_verification",
+    }:
         return [f"{prefix} has an unexpected shape"]
     document = {key: window[key] for key in _WINDOW_KEYS}
     attestation = document.get("attestation")
     if not isinstance(attestation, dict):
         return [f"{prefix}.attestation is absent or not an object"]
+    lock_identity = document.get("lock_identity")
+    consumer = window.get("consumer_verification")
+    if not isinstance(lock_identity, dict):
+        return [f"{prefix}.lock_identity is absent or not an object"]
+    if not isinstance(consumer, dict):
+        return [f"{prefix}.consumer_verification is absent or not an object"]
     errors = []
     integers = (
         "guard_pid",
@@ -161,8 +173,21 @@ def _guard_errors(window: Any, label: str) -> list[str]:
             or expires - issued > 60_000_000_000
         ):
             errors.append(f"{prefix} verification is outside the attestation expiry")
-    if attestation.get("lock_path") != _LOCK_PATH:
-        errors.append(f"{prefix} did not attest the canonical GPU lock")
+    attested_path = attestation.get("lock_path")
+    try:
+        attested_resolved = str(Path(attested_path).resolve())
+    except TypeError:
+        attested_resolved = None
+    if attested_resolved != _LOCK_RESOLVED:
+        errors.append(f"{prefix} did not attest the canonical GPU lock realpath")
+    expected_lock_identity = {
+        "requested_path": _LOCK_REQUESTED,
+        "resolved_path": _LOCK_RESOLVED,
+        "device": attestation.get("lock_device"),
+        "inode": attestation.get("lock_inode"),
+    }
+    if lock_identity != expected_lock_identity:
+        errors.append(f"{prefix} lock requested/resolved path or device/inode is invalid")
     if not _valid_sha256(attestation.get("nonce_sha256")):
         errors.append(f"{prefix} nonce digest is malformed")
     if document.get("window_id") != _canonical_digest(attestation):
@@ -175,6 +200,37 @@ def _guard_errors(window: Any, label: str) -> list[str]:
         or window.get("receipt_sha256") != _canonical_digest(document)
     ):
         errors.append(f"{prefix}.receipt_sha256 does not bind the document")
+    ancestry = consumer.get("ancestry")
+    child_pid = attestation.get("child_pid")
+    guard_pid = attestation.get("guard_pid")
+    consumer_pid = consumer.get("consumer_pid")
+    if (
+        not isinstance(ancestry, list)
+        or not ancestry
+        or any(isinstance(pid, bool) or not isinstance(pid, int) for pid in ancestry)
+        or isinstance(consumer_pid, bool)
+        or not isinstance(consumer_pid, int)
+        or ancestry[0] != consumer_pid
+        or child_pid not in ancestry
+        or guard_pid not in ancestry
+    ):
+        errors.append(f"{prefix} consumer ancestry is invalid")
+    else:
+        child_index = ancestry.index(child_pid)
+        guard_index = ancestry.index(guard_pid)
+        if (
+            child_index != consumer.get("child_pid_index")
+            or guard_index != consumer.get("guard_pid_index")
+            or guard_index <= child_index
+        ):
+            errors.append(f"{prefix} consumer ancestry ordering is invalid")
+    if consumer.get("lock_held") is not True:
+        errors.append(f"{prefix} did not observe the GPU lock held")
+    if (
+        consumer.get("observed_lock_device") != attestation.get("lock_device")
+        or consumer.get("observed_lock_inode") != attestation.get("lock_inode")
+    ):
+        errors.append(f"{prefix} observed lock device/inode differs from attestation")
     return errors
 
 
@@ -257,18 +313,26 @@ def _receipt_errors(
     return errors
 
 
-def _k3_arm(receipt: dict[str, Any], label: str) -> tuple[dict[str, Any] | None, list[str]]:
+def _measured_arm(
+    receipt: dict[str, Any], label: str, depth: int | None
+) -> tuple[dict[str, Any] | None, list[str]]:
+    arm_name = "AR" if depth is None else f"K{depth}"
+    raw_arms = receipt.get("arms")
+    if not isinstance(raw_arms, list) or not all(
+        isinstance(arm, dict) for arm in raw_arms
+    ):
+        return None, [f"{label} arms are absent or malformed"]
     arms = [
         arm
-        for arm in receipt.get("arms", [])
-        if arm.get("speculative_depth") == 3
+        for arm in raw_arms
+        if arm.get("speculative_depth") == depth
     ]
     if len(arms) != 1:
-        return None, [f"{label} must contain exactly one K3 arm; found {len(arms)}"]
+        return None, [f"{label} must contain exactly one {arm_name} arm; found {len(arms)}"]
     arm = arms[0]
     errors = []
     if arm.get("error"):
-        errors.append(f"{label}.K3 reported error: {arm['error']}")
+        errors.append(f"{label}.{arm_name} reported error: {arm['error']}")
     tokens = arm.get("tokens")
     if (
         arm.get("generated_tokens") != 256
@@ -276,16 +340,16 @@ def _k3_arm(receipt: dict[str, Any], label: str) -> tuple[dict[str, Any] | None,
         or len(tokens) != 256
         or not all(isinstance(token, int) and not isinstance(token, bool) for token in tokens)
     ):
-        errors.append(f"{label}.K3 did not persist exactly 256 integer tokens")
+        errors.append(f"{label}.{arm_name} did not persist exactly 256 integer tokens")
     stats = arm.get("stats")
     if not isinstance(stats, dict):
-        errors.append(f"{label}.K3 stats are absent")
+        errors.append(f"{label}.{arm_name} stats are absent")
     else:
         missing = [key for key in _COUNTERS if key not in stats]
         if missing:
-            errors.append(f"{label}.K3 stats missing counters {missing}")
+            errors.append(f"{label}.{arm_name} stats missing counters {missing}")
         drafted = stats.get("drafted_by_depth")
-        if (
+        if depth == 3 and (
             not isinstance(drafted, list)
             or len(drafted) < 3
             or drafted[2] <= 0
@@ -302,6 +366,7 @@ def validate_moe_tail_k3_bracket(
     after: dict[str, Any],
     *,
     peak_ceiling_gib: float,
+    live_guard_window: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     receipts = {
         "primer": primer,
@@ -309,7 +374,7 @@ def validate_moe_tail_k3_bracket(
         "candidate": candidate,
         "C1": after,
     }
-    errors = []
+    errors: list[str] = []
     for label, receipt in receipts.items():
         errors.extend(
             _receipt_errors(
@@ -328,52 +393,120 @@ def validate_moe_tail_k3_bracket(
     same_guard = all(window == windows[0] for window in windows[1:])
     if not same_guard:
         errors.append("guard window differs across primer/C0/candidate/C1")
+    live_guard_errors: list[str] = []
+    if live_guard_window is not None:
+        live_guard_errors.extend(_guard_errors(live_guard_window, "validator_live"))
+        static_keys = _WINDOW_KEYS | {"receipt_path", "receipt_sha256"}
+        reference_window = windows[0] if isinstance(windows[0], dict) else {}
+        if any(
+            live_guard_window.get(key) != reference_window.get(key)
+            for key in static_keys
+        ):
+            live_guard_errors.append(
+                "validator live guard differs from measured guard window"
+            )
+        errors.extend(live_guard_errors)
 
-    arms = {}
-    tokens = {}
-    counters = {}
-    peaks = {}
-    measured_tps = {"C0": None, "candidate": None, "C1": None}
+    expected_indices = {"primer": 0, "C0": 1, "candidate": 2, "C1": 3}
+    process_identities = set()
     for label, receipt in receipts.items():
-        arm, arm_errors = _k3_arm(receipt, label)
-        errors.extend(arm_errors)
-        if arm is None:
+        single = receipt.get("single_process_bracket")
+        if not isinstance(single, dict):
+            errors.append(f"{label} has no single process bracket identity")
             continue
-        arms[label] = arm
-        persisted = arm.get("tokens")
-        if isinstance(persisted, list):
-            tokens[label] = hashlib.sha256(
-                json.dumps(persisted, separators=(",", ":")).encode()
-            ).hexdigest()
-        stats = arm.get("stats")
-        if isinstance(stats, dict) and all(key in stats for key in _COUNTERS):
-            counters[label] = {key: stats[key] for key in _COUNTERS}
-        try:
-            peak = float(arm["peak_gib"])
-            peaks[label] = peak
-            if not 0.0 < peak < peak_ceiling_gib:
-                errors.append(
-                    f"{label}.K3 peak_gib={peak:g} is outside (0, {peak_ceiling_gib:g})"
-                )
-        except (KeyError, TypeError, ValueError):
-            errors.append(f"{label}.K3 peak_gib is invalid")
-        if label != "primer":
+        if single.get("model_load_count") != 1:
+            errors.append(f"{label} single process bracket did not load exactly once")
+        if single.get("execution_order") != ["primer", "C0", "candidate", "C1"]:
+            errors.append(f"{label} single process bracket execution order is invalid")
+        if single.get("arm_index") != expected_indices[label]:
+            errors.append(f"{label} single process bracket arm index is invalid")
+        bracket_id = single.get("bracket_id")
+        process_pid = single.get("process_pid")
+        model_object_id = single.get("model_object_id")
+        if (
+            not _valid_sha256(bracket_id)
+            or isinstance(process_pid, bool)
+            or not isinstance(process_pid, int)
+            or process_pid <= 0
+            or isinstance(model_object_id, bool)
+            or not isinstance(model_object_id, int)
+            or model_object_id <= 0
+        ):
+            errors.append(f"{label} single process/model identity is malformed")
+        else:
+            process_identities.add((bracket_id, process_pid, model_object_id))
+        guard = receipt.get("guard_window")
+        consumer = guard.get("consumer_verification") if isinstance(guard, dict) else {}
+        if not isinstance(consumer, dict):
+            consumer = {}
+        if consumer.get("consumer_pid") != single.get("process_pid"):
+            errors.append(f"{label} single process pid differs from guard consumer")
+    if len(process_identities) != 1:
+        errors.append("single process/model identity differs across bracket")
+
+    expected_bindings = {
+        "primer": {"ar": "stock", "k3": "stock", "post": "stock"},
+        "C0": {"ar": "stock", "k3": "stock", "post": "stock"},
+        "candidate": {"ar": "stock", "k3": "candidate", "post": "stock"},
+        "C1": {"ar": "stock", "k3": "stock", "post": "stock"},
+    }
+    for label, receipt in receipts.items():
+        if receipt.get("route_binding") != expected_bindings[label]:
+            errors.append(f"{label} callable route was not reset exactly")
+
+    lane_data = {
+        "ar": {"tokens": {}, "counters": {}, "peaks": {}, "tps": {}},
+        "k3": {"tokens": {}, "counters": {}, "peaks": {}, "tps": {}},
+    }
+    for label, receipt in receipts.items():
+        for lane, depth in (("ar", None), ("k3", 3)):
+            arm, arm_errors = _measured_arm(receipt, label, depth)
+            errors.extend(arm_errors)
+            if arm is None:
+                continue
+            persisted = arm.get("tokens")
+            if isinstance(persisted, list):
+                lane_data[lane]["tokens"][label] = hashlib.sha256(
+                    json.dumps(persisted, separators=(",", ":")).encode()
+                ).hexdigest()
+            stats = arm.get("stats")
+            if isinstance(stats, dict) and all(key in stats for key in _COUNTERS):
+                lane_data[lane]["counters"][label] = {
+                    key: stats[key] for key in _COUNTERS
+                }
+            arm_name = "AR" if lane == "ar" else "K3"
+            try:
+                peak = float(arm["peak_gib"])
+                lane_data[lane]["peaks"][label] = peak
+                if not 0.0 < peak < peak_ceiling_gib:
+                    errors.append(
+                        f"{label}.{arm_name} peak_gib={peak:g} is outside "
+                        f"(0, {peak_ceiling_gib:g})"
+                    )
+            except (KeyError, TypeError, ValueError):
+                errors.append(f"{label}.{arm_name} peak_gib is invalid")
             try:
                 tps = float(arm["decode_tokens_per_second"])
                 if tps <= 0:
                     raise ValueError
-                measured_tps[label] = tps
+                lane_data[lane]["tps"][label] = tps
             except (KeyError, TypeError, ValueError):
-                errors.append(f"{label}.K3 decode_tokens_per_second is invalid")
+                errors.append(f"{label}.{arm_name} decode_tokens_per_second is invalid")
 
-    token_equal = len(tokens) == 4 and len(set(tokens.values())) == 1
-    if not token_equal:
-        errors.append("K3 token digest differs across primer/C0/candidate/C1")
-    counter_equal = len(counters) == 4 and all(
-        value == next(iter(counters.values())) for value in counters.values()
-    )
-    if not counter_equal:
-        errors.append("K3 counters differ across primer/C0/candidate/C1")
+    equality = {}
+    for lane, shown in (("ar", "AR"), ("k3", "K3")):
+        digests = lane_data[lane]["tokens"]
+        counters = lane_data[lane]["counters"]
+        token_equal = len(digests) == 4 and len(set(digests.values())) == 1
+        counter_values = list(counters.values())
+        counter_equal = len(counter_values) == 4 and all(
+            value == counter_values[0] for value in counter_values[1:]
+        )
+        equality[lane] = {"tokens": token_equal, "counters": counter_equal}
+        if not token_equal:
+            errors.append(f"{shown} token digest differs across primer/C0/candidate/C1")
+        if not counter_equal:
+            errors.append(f"{shown} counters differ across primer/C0/candidate/C1")
 
     if candidate.get("deepseek_v4_moe_tail") != _TAIL_REPORT:
         errors.append("candidate has no valid MoE-tail installation report")
@@ -384,16 +517,28 @@ def validate_moe_tail_k3_bracket(
     if len(commits) != 1 or None in commits:
         errors.append("source_commit differs across primer/C0/candidate/C1")
 
-    drift = None
-    candidate_delta = None
-    performance_pass = False
-    if all(value is not None for value in measured_tps.values()):
-        control_mean = (measured_tps["C0"] + measured_tps["C1"]) / 2.0
-        drift = abs(measured_tps["C1"] - measured_tps["C0"]) / control_mean
-        candidate_delta = (
-            measured_tps["candidate"] - control_mean
-        ) / control_mean
-        performance_pass = candidate_delta > drift
+    def comparison(values: dict[str, float]) -> tuple[float | None, float | None, float | None]:
+        if not all(label in values for label in ("C0", "candidate", "C1")):
+            return None, None, None
+        mean = (values["C0"] + values["C1"]) / 2.0
+        if mean <= 0:
+            return None, None, None
+        drift = abs(values["C1"] - values["C0"]) / mean
+        delta = (values["candidate"] - mean) / mean
+        return mean, drift, delta
+
+    k3_mean, k3_drift, k3_delta = comparison(lane_data["k3"]["tps"])
+    ar_mean, ar_drift, ar_delta = comparison(lane_data["ar"]["tps"])
+    k3_pass = (
+        k3_drift is not None and k3_delta is not None and k3_delta > k3_drift
+    )
+    ar_regression = None if ar_delta is None else max(0.0, -ar_delta)
+    ar_pass = (
+        ar_drift is not None
+        and ar_regression is not None
+        and ar_regression <= ar_drift
+    )
+    performance_pass = k3_pass and ar_pass
     integrity_pass = not errors
     status = (
         "INVALID_BRACKET"
@@ -410,9 +555,23 @@ def validate_moe_tail_k3_bracket(
         "performance_pass": performance_pass if integrity_pass else False,
         "errors": errors,
         "peak_ceiling_gib": peak_ceiling_gib,
-        "tokens": {"digests": tokens, "all_equal": token_equal},
-        "counters": {"values": counters, "all_equal": counter_equal},
-        "peak_gib": peaks,
+        "tokens": {
+            "digests": lane_data["k3"]["tokens"],
+            "all_equal": equality["ar"]["tokens"] and equality["k3"]["tokens"],
+            "ar": lane_data["ar"]["tokens"],
+            "k3": lane_data["k3"]["tokens"],
+        },
+        "counters": {
+            "values": lane_data["k3"]["counters"],
+            "all_equal": equality["ar"]["counters"]
+            and equality["k3"]["counters"],
+            "ar": lane_data["ar"]["counters"],
+            "k3": lane_data["k3"]["counters"],
+        },
+        "peak_gib": {
+            "ar": lane_data["ar"]["peaks"],
+            "k3": lane_data["k3"]["peaks"],
+        },
         "guard_window": {
             "window_id": (
                 primer.get("guard_window", {}).get("window_id")
@@ -421,20 +580,32 @@ def validate_moe_tail_k3_bracket(
             ),
             "all_equal_and_valid": same_guard
             and not any("guard_window" in error for error in errors),
+            "validator_live_recheck": live_guard_window is not None
+            and not live_guard_errors,
         },
         "primer": {
             "receipt_role": primer.get("receipt_role"),
             "performance_data_used": False,
         },
-        "k3_tps": measured_tps,
+        "ar_tps": lane_data["ar"]["tps"],
+        "k3_tps": lane_data["k3"]["tps"],
+        "ar_negative_control": {
+            "pass": ar_pass,
+            "mean_tps": ar_mean,
+            "drift_fraction": ar_drift,
+            "candidate_delta_fraction": ar_delta,
+            "candidate_regression_fraction": ar_regression,
+        },
+        "k3_performance": {
+            "pass": k3_pass,
+            "mean_tps": k3_mean,
+            "drift_fraction": k3_drift,
+            "candidate_delta_fraction": k3_delta,
+        },
         "control": {
-            "mean_tps": (
-                None
-                if drift is None
-                else (measured_tps["C0"] + measured_tps["C1"]) / 2.0
-            ),
-            "drift_fraction": drift,
-            "candidate_delta_fraction": candidate_delta,
+            "mean_tps": k3_mean,
+            "drift_fraction": k3_drift,
+            "candidate_delta_fraction": k3_delta,
         },
         "source_commit": next(iter(commits)) if len(commits) == 1 else None,
     }
@@ -448,15 +619,22 @@ def main() -> int:
     parser.add_argument("--after", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--peak-ceiling-gib", type=float, default=108.0)
+    parser.add_argument("--require-live-guard", action="store_true")
     args = parser.parse_args()
     if args.peak_ceiling_gib <= 0:
         parser.error("--peak-ceiling-gib must be positive")
+    live_guard_window = None
+    if args.require_live_guard:
+        from deepseek_v4_guard_window import load_verified_guard_window
+
+        live_guard_window = load_verified_guard_window()
     result = validate_moe_tail_k3_bracket(
         json.loads(args.primer.read_text()),
         json.loads(args.before.read_text()),
         json.loads(args.candidate.read_text()),
         json.loads(args.after.read_text()),
         peak_ceiling_gib=args.peak_ceiling_gib,
+        live_guard_window=live_guard_window,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n")

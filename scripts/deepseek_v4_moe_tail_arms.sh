@@ -12,13 +12,11 @@ VALIDATOR="$WORKTREE/scripts/deepseek_v4_validate_moe_tail_k3_bracket.py"
 PROMPT_SHA256=ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33
 CONFIG_SHA256=c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa6f
 INDEX_SHA256=c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8
-MLX_CORE_SHA256=d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6
-MLX_LIB_SHA256=2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd
 TAG="${1:-moe-tail-k3-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 # Consume run_guarded's one-shot pipe before any MLX import. The issued private
-# receipt is reusable by all four descendants and remains bound to this process
-# ancestry and the still-held canonical lock.
+# receipt is reusable by the one benchmark and receipt-only validator while it
+# remains bound to this process ancestry and the still-held canonical lock.
 GUARD_PIPE_FD=${MTPLX_GUARD_ATTEST_FD:-}
 GUARD_ISSUED=$("$VENV" -u "$WORKTREE/scripts/deepseek_v4_guard_window.py" issue)
 GUARD_RECEIPT=${GUARD_ISSUED%%$'\t'*}
@@ -54,32 +52,6 @@ actual_index_sha=$(shasum -a 256 "$MODEL/model.safetensors.index.json" | awk '{p
   print -u2 "[moe-tail-arms] canonical prompt/config/index identity mismatch"
   exit 1
 }
-mlx_identity=$(PYTHONPATH="$WORKTREE" "$VENV" -u - <<'PY'
-import hashlib
-from pathlib import Path
-import mlx.core as mx
-core = Path(mx.__file__).resolve()
-library = core.parent / "lib" / "libmlx.dylib"
-print(mx.__version__)
-print(hashlib.sha256(core.read_bytes()).hexdigest())
-print(hashlib.sha256(library.read_bytes()).hexdigest())
-PY
-)
-actual_mlx=${${(f)mlx_identity}[1]}
-actual_mlx_core_sha=${${(f)mlx_identity}[2]}
-actual_mlx_lib_sha=${${(f)mlx_identity}[3]}
-[[ "$actual_mlx" == 0.31.2 && "$actual_mlx_core_sha" == "$MLX_CORE_SHA256" \
-  && "$actual_mlx_lib_sha" == "$MLX_LIB_SHA256" ]] || {
-  print -u2 "[moe-tail-arms] official MLX 0.31.2 binary identity mismatch"
-  exit 1
-}
-MODEL_PATH="$MODEL" PYTHONPATH="$WORKTREE/scripts:$WORKTREE" "$VENV" -u - <<'PY'
-import os
-from pathlib import Path
-from deepseek_v4_moe_tail_gate import _validate_model_artifact
-_validate_model_artifact(Path(os.environ["MODEL_PATH"]))
-PY
-
 # Remove every inherited experiment selector, including future MTPLX knobs.
 # Re-export only the fixed Stage-4 arm below; the wired-memory knob is untouched.
 for entry in ${(f)"$(env)"}; do
@@ -95,32 +67,23 @@ export MTPLX_COMPILED_VERIFY=off
 export MTPLX_DSV4_ATTN=fused
 export MTPLX_DSV4_FP32_ACTIVATIONS=0
 export MTPLX_DSV4_HC_COMPILE=1
+export MTPLX_DSV4_MOE_TAIL=1
 export MTPLX_DSV4_O_LORA=cached
 export MTPLX_DSV4_SINKHORN_KERNEL=1
 export MTPLX_DSV4_GUARD_WINDOW_PATH="$GUARD_RECEIPT"
 export MTPLX_DSV4_GUARD_WINDOW_SHA256="$GUARD_DIGEST"
 
-run_arm() {
-  local label="$1" enabled="$2" stem="$3" role="$4"
-  print "\n################################################################"
-  print "### ARM $label: MTPLX_DSV4_MOE_TAIL=$enabled"
-  print "### canonical 328 prompt; 256 output; K3; started $(date +%H:%M:%S)"
-  print "################################################################"
-  env MTPLX_DSV4_MOE_TAIL="$enabled" "$VENV" -u \
-    "$WORKTREE/scripts/deepseek_v4_mtpk_bench.py" \
-    --model "$MODEL" --prompt-file "$PROMPT" --max-tokens 256 --depths 3 \
-    --verify-strategy capture_commit --verify-core stock \
-    --mtp-history-policy committed --warmup-tokens 8 \
-    --receipt-role "$role" --out "$BENCH/$TAG-$stem"
-}
-
-# The first complete K3 process pays the observed first-arm Metal/library cold
-# bias (23.773 -> 32.269 tok/s in the gate-cache bracket). Persist it as evidence
-# but mark it mechanically ineligible for verdict.
-run_arm "DISCARDED full K3 control primer" 0 primer discarded_control_primer
-run_arm "C0 Stage-4 control" 0 before measurement
-run_arm "MoE-tail M4 candidate" 1 candidate measurement
-run_arm "C1 Stage-4 control" 0 after measurement
+# Exactly one MLX process and one model load. It captures the construction-time
+# candidate callables, binds stock for the discarded_control_primer and C0,
+# binds the candidate only for B's K3 sub-arm (B's AR remains stock), and
+# restores stock before C1. Generation-local caches/counters are reset between
+# every sub-arm while compiled/model state stays married to this one process.
+"$VENV" -u "$WORKTREE/scripts/deepseek_v4_mtpk_bench.py" \
+  --moe-tail-bracket \
+  --model "$MODEL" --prompt-file "$PROMPT" --max-tokens 256 --depths 3 \
+  --verify-strategy capture_commit --verify-core stock \
+  --mtp-history-policy committed --warmup-tokens 0 \
+  --out "$BENCH/$TAG"
 
 VALIDATION="$BENCH/$TAG-validation.json"
 if "$VENV" -u "$VALIDATOR" \
@@ -128,7 +91,7 @@ if "$VENV" -u "$VALIDATOR" \
   --before "$BENCH/$TAG-before.json" \
   --candidate "$BENCH/$TAG-candidate.json" \
   --after "$BENCH/$TAG-after.json" \
-  --peak-ceiling-gib 108 --out "$VALIDATION"; then
+  --peak-ceiling-gib 108 --require-live-guard --out "$VALIDATION"; then
   print "[moe-tail-arms] PASS: $VALIDATION"
 else
   validation_rc=$?

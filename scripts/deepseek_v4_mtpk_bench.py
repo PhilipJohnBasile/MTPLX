@@ -53,6 +53,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import importlib.util
 import json
@@ -464,10 +465,189 @@ def _deepseek_v4_moe_tail_install_report(rt, backend) -> dict | None:
     }
 
 
+def _require_clean_source(repo: Path) -> str:
+    """Bind the measurement to one committed source tree before MLX import."""
+    status = subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain"], text=True
+    )
+    if status.strip():
+        raise RuntimeError("worktree is dirty; refusing an unrepeatable benchmark")
+    commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise RuntimeError(f"source commit is malformed: {commit!r}")
+    return commit
+
+
+def _capture_moe_tail_routes(rt, backend) -> tuple:
+    """Capture the once-selfchecked body callables before the stock primer."""
+    routes = tuple(layer.ffn._tail_combine for layer in rt.model.layers)
+    if len(routes) != 43 or not all(
+        isinstance(route, backend._InstalledMoETailRoute) for route in routes
+    ):
+        raise RuntimeError("single-load bracket requires 43 prevalidated tail routes")
+    mtp = tuple(block.ffn._tail_combine for block in rt.model.mtp_blocks)
+    if len(mtp) != 1 or mtp[0] is not backend._stock_moe_tail_combine:
+        raise RuntimeError("single-load bracket requires one stock MTP tail")
+    if not backend._MOE_TAIL_SELF_CHECKED or backend._MOE_TAIL_KERNEL is None:
+        raise RuntimeError("MoE-tail Metal construction self-check did not complete")
+    return routes
+
+
+def _bind_moe_tail_routes(rt, backend, routes: tuple, *, candidate: bool) -> dict | None:
+    """Bind one proven callable set between arms, never inside generation."""
+    if len(routes) != len(rt.model.layers) or len(routes) != 43:
+        raise RuntimeError("MoE-tail route capture does not match the loaded body")
+    selected = routes if candidate else (backend._stock_moe_tail_combine,) * len(routes)
+    for layer, route in zip(rt.model.layers, selected, strict=True):
+        layer.ffn._tail_combine = route
+    for block in rt.model.mtp_blocks:
+        block.ffn._tail_combine = backend._stock_moe_tail_combine
+    observed = tuple(layer.ffn._tail_combine for layer in rt.model.layers)
+    if observed != selected:
+        raise RuntimeError("MoE-tail callable bind did not take effect exactly")
+    if any(
+        block.ffn._tail_combine is not backend._stock_moe_tail_combine
+        for block in rt.model.mtp_blocks
+    ):
+        raise RuntimeError("MoE-tail bind changed the stock MTP callable")
+    if not candidate:
+        return None
+    return {
+        "route": "decode_verify_m4",
+        "body_layers_installed": 43,
+        "mtp_layers_stock": 1,
+        "verify_rows": 4,
+        "repair_rows": 1,
+        "topk": 6,
+        "hidden_size": 4096,
+        "kernel_selfcheck_exact": True,
+    }
+
+
+def _reset_benchmark_state(rt) -> None:
+    """Drop generation-local state while preserving the one loaded model."""
+    mx.synchronize()
+    counters = getattr(rt, "diagnostic_counters", None)
+    if isinstance(counters, dict):
+        counters.clear()
+    gc.collect()
+    _clear_cache()
+    _reset_peak()
+
+
+def _write_pair_receipt(stem: Path, receipt: dict, prompt_ids: list[int], prompt_file: str) -> None:
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    stem.with_suffix(".json").write_text(json.dumps(receipt, indent=2) + "\n")
+    blocks = []
+    for arm in receipt["arms"]:
+        if arm.get("error"):
+            blocks.append(
+                f"{'=' * 72}\nARM {arm['label']}: ERROR\n{'=' * 72}\n{arm['error']}\n"
+            )
+        else:
+            blocks.append(
+                f"{'=' * 72}\nARM {arm['label']} "
+                f"({arm['generated_tokens']} tokens, greedy, "
+                f"{arm['decode_tokens_per_second']:.3f} tok/s)\n"
+                f"{'=' * 72}\n{arm['text']}\n"
+            )
+    stem.with_suffix(".txt").write_text(
+        f"PROMPT ({len(prompt_ids)} tokens) from {prompt_file}\n" + "\n".join(blocks)
+    )
+
+
+def _run_single_process_moe_tail_bracket(
+    *,
+    rt,
+    backend,
+    routes: tuple,
+    prompt_ids: list[int],
+    args,
+    common_receipt: dict,
+    out_stem: Path,
+) -> int:
+    """Run primer/C0/B/C1 with one process, model, and construction self-check."""
+    order = ("primer", "C0", "candidate", "C1")
+    suffixes = ("primer", "before", "candidate", "after")
+    bracket_id = hashlib.sha256(
+        f"{common_receipt['guard_window']['window_id']}:{os.getpid()}:{time.monotonic_ns()}".encode()
+    ).hexdigest()
+    status = 0
+    for index, (label, suffix) in enumerate(zip(order, suffixes, strict=True)):
+        is_candidate = label == "candidate"
+        role = "discarded_control_primer" if label == "primer" else "measurement"
+        _bind_moe_tail_routes(rt, backend, routes, candidate=False)
+        _reset_benchmark_state(rt)
+        ar = _run_arm(
+            rt=rt,
+            label=f"{label} AR stock",
+            depth=None,
+            prompt_ids=prompt_ids,
+            max_tokens=args.max_tokens,
+            verify_strategy=args.verify_strategy,
+            verify_core=args.verify_core,
+            mtp_history_policy=args.mtp_history_policy,
+            baseline_tokens=None,
+        )
+        _reset_benchmark_state(rt)
+        install_report = _bind_moe_tail_routes(
+            rt, backend, routes, candidate=is_candidate
+        )
+        try:
+            k3 = _run_arm(
+                rt=rt,
+                label=f"{label} K=3 {'candidate' if is_candidate else 'stock'}",
+                depth=3,
+                prompt_ids=prompt_ids,
+                max_tokens=args.max_tokens,
+                verify_strategy=args.verify_strategy,
+                verify_core=args.verify_core,
+                mtp_history_policy=args.mtp_history_policy,
+                baseline_tokens=ar.get("tokens"),
+                enforce_exact=_exactness_is_enforced(args.require_exact),
+            )
+        finally:
+            _bind_moe_tail_routes(rt, backend, routes, candidate=False)
+        pair_status = int(bool(ar.get("error") or k3.get("error")))
+        status = max(status, pair_status)
+        receipt = {
+            **common_receipt,
+            "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "receipt_role": role,
+            "performance_eligible": role == "measurement",
+            "deepseek_v4_moe_tail": install_report,
+            "single_process_bracket": {
+                "bracket_id": bracket_id,
+                "process_pid": os.getpid(),
+                "model_object_id": id(rt.model),
+                "model_load_count": 1,
+                "execution_order": list(order),
+                "arm_index": index,
+            },
+            "route_binding": {
+                "ar": "stock",
+                "k3": "candidate" if is_candidate else "stock",
+                "post": "stock",
+            },
+            "arms": [ar, k3],
+            "status": pair_status,
+        }
+        _write_pair_receipt(
+            Path(f"{out_stem}-{suffix}"), receipt, prompt_ids, args.prompt_file
+        )
+        print(f"[single-load bracket] wrote {out_stem}-{suffix}.json")
+        sys.stdout.flush()
+    return status
+
+
 def main() -> int:
     # This must precede the first MLX import.  It binds this descendant to the
     # still-live run_guarded process and its still-held canonical GPU lock.
     guard_window = load_verified_guard_window()
+    repo = Path(__file__).resolve().parents[1]
+    source_commit = _require_clean_source(repo)
     global mx
     import mlx.core as mx
 
@@ -513,6 +693,11 @@ def main() -> int:
     )
     ap.add_argument("--out", help="receipt path stem; writes <stem>.json and <stem>.txt")
     ap.add_argument(
+        "--moe-tail-bracket",
+        action="store_true",
+        help="one-load primer/C0/MoE-tail/C1 K3 bracket",
+    )
+    ap.add_argument(
         "--receipt-role",
         choices=("measurement", "discarded_control_primer"),
         default="measurement",
@@ -544,7 +729,6 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
     load_seconds = 0.0
-    source_commit = None
     artifact_identity = None
     loaded_runtime_identity = None
     prompt_identity = None
@@ -594,19 +778,6 @@ def main() -> int:
             )
         except (AttributeError, RuntimeError, ValueError) as error:
             sys.exit(f"loaded runtime identity gate failed: {error}")
-        try:
-            source_commit = subprocess.check_output(
-                [
-                    "git",
-                    "-C",
-                    str(Path(__file__).resolve().parents[1]),
-                    "rev-parse",
-                    "HEAD",
-                ],
-                text=True,
-            ).strip()
-        except (OSError, subprocess.CalledProcessError):
-            source_commit = None
         print(f"[bench] loaded in {load_seconds:.1f}s  "
               f"active={_gib(_active_bytes()):.2f} GiB  "
               f"peak={_gib(_peak_bytes()):.2f} GiB  "
@@ -641,6 +812,72 @@ def main() -> int:
         sys.stdout.flush()
 
     after_load_active = _active_bytes()
+
+    if args.moe_tail_bracket:
+        if args.tiny:
+            sys.exit("--moe-tail-bracket requires the canonical GPU model")
+        if list(args.depths) != [3]:
+            sys.exit("--moe-tail-bracket requires exactly --depths 3")
+        if not args.out:
+            sys.exit("--moe-tail-bracket requires --out")
+        routes = _capture_moe_tail_routes(rt, deepseek_v4_backend)
+        _bind_moe_tail_routes(
+            rt, deepseek_v4_backend, routes, candidate=False
+        )
+        common_receipt = {
+            "harness": "scripts/deepseek_v4_mtpk_bench.py",
+            "source_commit": source_commit,
+            "artifact_identity": artifact_identity,
+            "loaded_runtime_identity": loaded_runtime_identity,
+            "mlx_identity": mlx_identity,
+            "command": ["python", *sys.argv],
+            "host": {
+                "platform": platform.platform(),
+                "mlx_version": mx.__version__,
+                "python": sys.version.split()[0],
+            },
+            "env": {
+                key: value
+                for key, value in sorted(os.environ.items())
+                if key.startswith("MTPLX_")
+                or key in ("HF_HUB_OFFLINE", "PYTHONPATH")
+            },
+            "launch_mtplx_env": launch_mtplx_env,
+            "guard_window": guard_window,
+            "tiny": False,
+            "model_path": str(model_path),
+            "model_type": config.get("model_type"),
+            "num_hidden_layers": config.get("num_hidden_layers"),
+            "num_nextn_predict_layers": config.get("num_nextn_predict_layers"),
+            "quantization": {
+                "default_bits": quant.get("bits"),
+                "default_group_size": quant.get("group_size"),
+                "default_mode": quant.get("mode"),
+            },
+            "sampling": {"greedy": True, "temperature": 0.0, "stop_token_ids": []},
+            "prompt_file": str(prompt_path),
+            "prompt": prompt_identity,
+            "prompt_tokens": len(prompt_ids),
+            "max_tokens": args.max_tokens,
+            "depths": [3],
+            "verify_strategy": args.verify_strategy,
+            "verify_core": args.verify_core,
+            "mtp_history_policy": args.mtp_history_policy,
+            "fp32_activations": _fp32_activations_env(),
+            "require_exact": bool(args.require_exact),
+            "spec_equals_ar_enforced": _exactness_is_enforced(args.require_exact),
+            "load_seconds": load_seconds,
+            "active_after_load_gib": _gib(after_load_active),
+        }
+        return _run_single_process_moe_tail_bracket(
+            rt=rt,
+            backend=deepseek_v4_backend,
+            routes=routes,
+            prompt_ids=prompt_ids,
+            args=args,
+            common_receipt=common_receipt,
+            out_stem=Path(args.out),
+        )
 
     # Unrecorded warmup so the AR control is not the arm that pays first-call
     # allocator and kernel-compile cost.  Decode tok/s on this backend is stable

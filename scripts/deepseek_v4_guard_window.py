@@ -84,7 +84,9 @@ def _load_repository_guard() -> ModuleType:
     return module
 
 
-def _checked_attestation(attestation: Mapping[str, Any], expected_lock: Path) -> None:
+def _checked_attestation(
+    attestation: Mapping[str, Any], expected_lock: Path
+) -> dict[str, Any]:
     integers = (
         attestation.get("guard_pid"),
         attestation.get("child_pid"),
@@ -104,10 +106,23 @@ def _checked_attestation(attestation: Mapping[str, Any], expected_lock: Path) ->
     if issued > expires or expires - issued > 60_000_000_000:
         raise RuntimeError("repository guard attestation expiry is malformed")
     lock_path = attestation.get("lock_path")
-    if not isinstance(lock_path, str) or Path(lock_path) != expected_lock.resolve(strict=True):
+    resolved_lock = expected_lock.resolve(strict=True)
+    if not isinstance(lock_path, str) or Path(lock_path).resolve(strict=True) != resolved_lock:
         raise RuntimeError(
             f"guard attested {lock_path!r}, expected lock {str(expected_lock)!r}"
         )
+    observed = resolved_lock.stat()
+    if (observed.st_dev, observed.st_ino) != (
+        attestation["lock_device"],
+        attestation["lock_inode"],
+    ):
+        raise RuntimeError("guard attestation lock device/inode no longer matches")
+    return {
+        "requested_path": str(expected_lock),
+        "resolved_path": str(resolved_lock),
+        "device": observed.st_dev,
+        "inode": observed.st_ino,
+    }
 
 
 def issue_guard_window(*, expected_lock: Path = DEFAULT_LOCK_PATH) -> tuple[Path, str]:
@@ -116,7 +131,7 @@ def issue_guard_window(*, expected_lock: Path = DEFAULT_LOCK_PATH) -> tuple[Path
     repository = _load_repository_guard()
     attestation = repository.verify_guard_attestation()
     verified = time.monotonic_ns()
-    _checked_attestation(attestation, expected_lock)
+    lock_identity = _checked_attestation(attestation, expected_lock)
     if not (
         attestation["issued_monotonic_ns"]
         <= verified
@@ -131,6 +146,7 @@ def issue_guard_window(*, expected_lock: Path = DEFAULT_LOCK_PATH) -> tuple[Path
         "verified_monotonic_ns": verified,
         "window_id": window_id,
         "attestation": attestation,
+        "lock_identity": lock_identity,
     }
     encoded = _canonical_json(document)
     directory = Path(tempfile.mkdtemp(prefix="mtplx-dsv4-guard-window-"))
@@ -215,8 +231,16 @@ def load_verified_guard_window(
     lock_path = attestation.get("lock_path")
     if not isinstance(lock_path, str):
         raise RuntimeError("verified guard window lock path is absent")
+    lock_identity = document.get("lock_identity")
+    if not isinstance(lock_identity, dict):
+        raise RuntimeError("verified guard window lock identity is absent")
+    requested_path = lock_identity.get("requested_path")
+    if not isinstance(requested_path, str):
+        raise RuntimeError("verified guard window requested lock path is absent")
     repository = _load_repository_guard()
-    _checked_attestation(attestation, Path(lock_path))
+    observed_lock_identity = _checked_attestation(attestation, Path(requested_path))
+    if observed_lock_identity != lock_identity:
+        raise RuntimeError("verified guard window lock identity changed")
     verified = document.get("verified_monotonic_ns")
     if (
         document.get("schema_version") != 1
@@ -239,17 +263,27 @@ def load_verified_guard_window(
         or ancestry.index(guard_pid) <= ancestry.index(child_pid)
     ):
         raise RuntimeError("verified guard window process ancestry check failed")
-    if not repository._lock_is_held_by_other_process(
+    lock_held = repository._lock_is_held_by_other_process(
         Path(attestation["lock_path"]),
         attestation["lock_device"],
         attestation["lock_inode"],
-    ):
+    )
+    if not lock_held:
         raise RuntimeError("verified guard window lock is not held")
     _assert_mlx_not_imported()
     return {
         **document,
         "receipt_path": str(path),
         "receipt_sha256": expected_digest,
+        "consumer_verification": {
+            "consumer_pid": os.getpid(),
+            "ancestry": ancestry,
+            "child_pid_index": ancestry.index(child_pid),
+            "guard_pid_index": ancestry.index(guard_pid),
+            "lock_held": lock_held,
+            "observed_lock_device": observed_lock_identity["device"],
+            "observed_lock_inode": observed_lock_identity["inode"],
+        },
     }
 
 
