@@ -217,6 +217,32 @@ def _receipt(
             "k3": "candidate" if candidate else "stock",
             "post": "stock",
         },
+        "route_census": {
+            "ar": {
+                "body_candidate": 0,
+                "body_stock": 43,
+                "body_other": 0,
+                "mtp_stock": 1,
+                "mtp_other": 0,
+            },
+            "k3": {
+                "body_candidate": 43 if candidate else 0,
+                "body_stock": 0 if candidate else 43,
+                "body_other": 0,
+                "mtp_stock": 1,
+                "mtp_other": 0,
+            },
+            "post": {
+                "body_candidate": 0,
+                "body_stock": 43,
+                "body_other": 0,
+                "mtp_stock": 1,
+                "mtp_other": 0,
+            },
+        },
+        "fp32_activations": False,
+        "require_exact": False,
+        "spec_equals_ar_enforced": False,
         "arms": [
             {
                 "speculative_depth": 3,
@@ -255,6 +281,18 @@ def test_shell_is_hermetic_and_orders_primer_c0_candidate_c1_validator():
     assert "if \"$VENV\" -u \"$VALIDATOR\"" in source
     assert "--require-live-guard" in source
     assert "receipts preserved" in source
+
+
+def test_shell_captures_benchmark_failure_and_still_invokes_validator():
+    source = _ARMS.read_text()
+    benchmark = source.index(
+        '"$VENV" -u "$WORKTREE/scripts/deepseek_v4_mtpk_bench.py"'
+    )
+    captured = source.index("benchmark_rc=$?", benchmark)
+    validator = source.index('if "$VENV" -u "$VALIDATOR"', captured)
+    assert source.rindex("set +e", 0, benchmark) < benchmark < captured < validator
+    assert source.index("set -e", captured) < validator
+    assert '--benchmark-exit-code "$benchmark_rc"' in source
 
 
 def test_single_process_source_is_clean_before_mlx_and_loads_once():
@@ -335,6 +373,37 @@ def test_route_binding_restores_stock_after_candidate():
     H._bind_moe_tail_routes(runtime, backend, captured, candidate=False)
     assert all(layer.ffn._tail_combine is stock for layer in model.layers)
     assert model.mtp_blocks[0].ffn._tail_combine is stock
+
+
+def test_route_census_proves_candidate_only_on_body_k3():
+    class Route:
+        pass
+
+    def stock(*_args):
+        return None
+
+    routes = tuple(Route() for _ in range(43))
+    backend = SimpleNamespace(_stock_moe_tail_combine=stock)
+    model = SimpleNamespace(
+        layers=[SimpleNamespace(ffn=SimpleNamespace(_tail_combine=route)) for route in routes],
+        mtp_blocks=[SimpleNamespace(ffn=SimpleNamespace(_tail_combine=stock))],
+    )
+    runtime = SimpleNamespace(model=model)
+    assert H._moe_tail_route_census(runtime, backend, routes) == {
+        "body_candidate": 43,
+        "body_stock": 0,
+        "body_other": 0,
+        "mtp_stock": 1,
+        "mtp_other": 0,
+    }
+    H._bind_moe_tail_routes(runtime, backend, routes, candidate=False)
+    assert H._moe_tail_route_census(runtime, backend, routes) == {
+        "body_candidate": 0,
+        "body_stock": 43,
+        "body_other": 0,
+        "mtp_stock": 1,
+        "mtp_other": 0,
+    }
 
 
 def test_generation_state_reset_clears_counters_and_metal_cache(monkeypatch):
@@ -430,6 +499,66 @@ def test_single_process_runner_binds_stock_ar_candidate_k3_then_restores(
         )
     assert len(set(identities)) == 1
     assert all(layer.ffn._tail_combine is stock for layer in model.layers)
+
+
+@pytest.mark.parametrize("gate", (None, {"enforced": True, "pass": False}))
+def test_single_process_runner_fails_false_or_missing_enforced_exactness(
+    tmp_path: Path, monkeypatch, gate: dict | None
+):
+    class Route:
+        pass
+
+    def stock(*_args):
+        return None
+
+    routes = tuple(Route() for _ in range(43))
+    backend = SimpleNamespace(_stock_moe_tail_combine=stock)
+    model = SimpleNamespace(
+        layers=[SimpleNamespace(ffn=SimpleNamespace(_tail_combine=route)) for route in routes],
+        mtp_blocks=[SimpleNamespace(ffn=SimpleNamespace(_tail_combine=stock))],
+    )
+    runtime = SimpleNamespace(model=model, diagnostic_counters={})
+
+    def fake_run_arm(**kwargs):
+        arm = {
+            "label": kwargs["label"],
+            "speculative_depth": kwargs["depth"],
+            "generated_tokens": 256,
+            "tokens": list(range(256)),
+            "text": "ok",
+            "decode_tokens_per_second": 30.0,
+            "error": None,
+        }
+        if kwargs["depth"] == 3 and gate is not None:
+            arm["spec_equals_ar"] = gate
+        return arm
+
+    monkeypatch.setattr(H, "_run_arm", fake_run_arm)
+    monkeypatch.setattr(H, "_reset_benchmark_state", lambda _runtime: None)
+    args = SimpleNamespace(
+        max_tokens=256,
+        verify_strategy="capture_commit",
+        verify_core="stock",
+        mtp_history_policy="committed",
+        require_exact=True,
+        prompt_file="prompt.txt",
+    )
+    out = tmp_path / "exact-failure"
+    assert H._run_single_process_moe_tail_bracket(
+        rt=runtime,
+        backend=backend,
+        routes=routes,
+        prompt_ids=[1] * 328,
+        args=args,
+        common_receipt={
+            "guard_window": {"window_id": "f" * 64},
+            "spec_equals_ar_enforced": True,
+        },
+        out_stem=out,
+    ) == 1
+    for suffix in ("primer", "before", "candidate", "after"):
+        receipt = json.loads(Path(f"{out}-{suffix}.json").read_text())
+        assert receipt["status"] == 1
 
 
 def test_direct_benchmark_refuses_before_importing_mlx(tmp_path: Path):
@@ -687,6 +816,132 @@ def test_validator_cli_writes_loss_receipt_before_returning_nonzero(tmp_path: Pa
     assert completed.returncode == 1
     assert verdict.is_file()
     assert json.loads(verdict.read_text())["status"] == "LOSS"
+
+
+def test_validator_cli_writes_invalid_receipt_when_benchmark_aborts(tmp_path: Path):
+    verdict = tmp_path / "validation.json"
+    missing = [tmp_path / f"{name}.json" for name in ("primer", "before", "candidate", "after")]
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_VALIDATOR),
+            "--primer",
+            str(missing[0]),
+            "--before",
+            str(missing[1]),
+            "--candidate",
+            str(missing[2]),
+            "--after",
+            str(missing[3]),
+            "--benchmark-exit-code",
+            "7",
+            "--out",
+            str(verdict),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    result = json.loads(verdict.read_text())
+    assert result["status"] == "INVALID_BRACKET"
+    assert result["integrity_pass"] is False
+    assert result["performance_pass"] is False
+    assert result["benchmark_exit_code"] == 7
+    assert any("benchmark aborted with exit code 7" in error for error in result["errors"])
+    assert any("missing benchmark receipts" in error for error in result["errors"])
+
+
+def test_validator_runs_full_validation_before_invalidating_nonzero_benchmark(
+    tmp_path: Path,
+):
+    inputs = {
+        "primer": _receipt(1000.0, role="discarded_control_primer"),
+        "before": _receipt(30.0),
+        "candidate": _receipt(32.0, candidate=True),
+        "after": _receipt(30.2, bracket_index=3),
+    }
+    paths = {}
+    for name, receipt in inputs.items():
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(receipt))
+    verdict = tmp_path / "validation.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_VALIDATOR),
+            "--primer",
+            str(paths["primer"]),
+            "--before",
+            str(paths["before"]),
+            "--candidate",
+            str(paths["candidate"]),
+            "--after",
+            str(paths["after"]),
+            "--benchmark-exit-code",
+            "7",
+            "--out",
+            str(verdict),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    result = json.loads(verdict.read_text())
+    assert result["status"] == "INVALID_BRACKET"
+    assert result["benchmark_exit_code"] == 7
+    assert result["k3_performance"]["pass"] is True
+    assert any("benchmark aborted with exit code 7" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("gate", (None, {"enforced": True, "pass": False}))
+def test_validator_rejects_false_or_missing_enforced_exactness(gate: dict | None):
+    primer = _receipt(1000.0, role="discarded_control_primer")
+    before = _receipt(30.0)
+    candidate = _receipt(32.0, candidate=True)
+    after = _receipt(30.2, bracket_index=3)
+    for receipt in (primer, before, candidate, after):
+        receipt["require_exact"] = True
+        receipt["spec_equals_ar_enforced"] = True
+        k3 = next(
+            arm for arm in receipt["arms"] if arm["speculative_depth"] == 3
+        )
+        if gate is not None:
+            k3["spec_equals_ar"] = gate
+    result = V.validate_moe_tail_k3_bracket(
+        primer, before, candidate, after, peak_ceiling_gib=108.0
+    )
+    assert result["status"] == "INVALID_BRACKET"
+    assert any("enforced exactness gate" in error for error in result["errors"])
+
+
+def test_validator_derives_enforcement_from_require_exact_receipt():
+    primer = _receipt(1000.0, role="discarded_control_primer")
+    before = _receipt(30.0)
+    candidate = _receipt(32.0, candidate=True)
+    after = _receipt(30.2, bracket_index=3)
+    for receipt in (primer, before, candidate, after):
+        receipt["require_exact"] = True
+    result = V.validate_moe_tail_k3_bracket(
+        primer, before, candidate, after, peak_ceiling_gib=108.0
+    )
+    assert result["status"] == "INVALID_BRACKET"
+    assert any("exactness enforcement receipt is inconsistent" in error for error in result["errors"])
+
+
+def test_validator_rejects_incorrect_non_hot_route_census():
+    primer = _receipt(1000.0, role="discarded_control_primer")
+    before = _receipt(30.0)
+    candidate = _receipt(32.0, candidate=True)
+    after = _receipt(30.2, bracket_index=3)
+    candidate["route_census"]["k3"]["body_candidate"] = 42
+    candidate["route_census"]["k3"]["body_other"] = 1
+    result = V.validate_moe_tail_k3_bracket(
+        primer, before, candidate, after, peak_ceiling_gib=108.0
+    )
+    assert result["status"] == "INVALID_BRACKET"
+    assert any("callable route census" in error for error in result["errors"])
 
 
 @pytest.mark.parametrize("mutation", ("tokens", "counters", "peak", "guard"))

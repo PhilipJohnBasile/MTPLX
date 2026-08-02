@@ -64,6 +64,20 @@ _TAIL_REPORT = {
     "hidden_size": 4096,
     "kernel_selfcheck_exact": True,
 }
+_STOCK_ROUTE_CENSUS = {
+    "body_candidate": 0,
+    "body_stock": 43,
+    "body_other": 0,
+    "mtp_stock": 1,
+    "mtp_other": 0,
+}
+_CANDIDATE_ROUTE_CENSUS = {
+    "body_candidate": 43,
+    "body_stock": 0,
+    "body_other": 0,
+    "mtp_stock": 1,
+    "mtp_other": 0,
+}
 _COUNTERS = (
     "accepted_by_depth",
     "drafted_by_depth",
@@ -389,6 +403,34 @@ def validate_moe_tail_k3_bracket(
             )
         )
         errors.extend(_guard_errors(receipt.get("guard_window"), label))
+        require_exact = receipt.get("require_exact")
+        fp32_activations = receipt.get("fp32_activations")
+        reported_enforcement = receipt.get("spec_equals_ar_enforced")
+        if not isinstance(require_exact, bool) or not isinstance(fp32_activations, bool):
+            errors.append(f"{label} exactness configuration is absent or malformed")
+        exact_enforced = require_exact is True or fp32_activations is True
+        if reported_enforcement is not exact_enforced:
+            errors.append(f"{label} exactness enforcement receipt is inconsistent")
+        if exact_enforced:
+            raw_arms = receipt.get("arms")
+            k3_arms = (
+                [
+                    arm
+                    for arm in raw_arms
+                    if isinstance(arm, dict) and arm.get("speculative_depth") == 3
+                ]
+                if isinstance(raw_arms, list)
+                else []
+            )
+            exact_gate = (
+                k3_arms[0].get("spec_equals_ar") if len(k3_arms) == 1 else None
+            )
+            if (
+                not isinstance(exact_gate, dict)
+                or exact_gate.get("enforced") is not True
+                or exact_gate.get("pass") is not True
+            ):
+                errors.append(f"{label}.K3 enforced exactness gate failed or is missing")
     windows = [receipt.get("guard_window") for receipt in receipts.values()]
     same_guard = all(window == windows[0] for window in windows[1:])
     if not same_guard:
@@ -453,6 +495,17 @@ def validate_moe_tail_k3_bracket(
     for label, receipt in receipts.items():
         if receipt.get("route_binding") != expected_bindings[label]:
             errors.append(f"{label} callable route was not reset exactly")
+        expected_census = {
+            "ar": _STOCK_ROUTE_CENSUS,
+            "k3": (
+                _CANDIDATE_ROUTE_CENSUS
+                if label == "candidate"
+                else _STOCK_ROUTE_CENSUS
+            ),
+            "post": _STOCK_ROUTE_CENSUS,
+        }
+        if receipt.get("route_census") != expected_census:
+            errors.append(f"{label} callable route census is invalid")
 
     lane_data = {
         "ar": {"tokens": {}, "counters": {}, "peaks": {}, "tps": {}},
@@ -620,22 +673,86 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--peak-ceiling-gib", type=float, default=108.0)
     parser.add_argument("--require-live-guard", action="store_true")
+    parser.add_argument("--benchmark-exit-code", type=int, default=0)
     args = parser.parse_args()
     if args.peak_ceiling_gib <= 0:
         parser.error("--peak-ceiling-gib must be positive")
+    if args.benchmark_exit_code < 0:
+        parser.error("--benchmark-exit-code must be nonnegative")
+    receipt_paths = {
+        "primer": args.primer,
+        "before": args.before,
+        "candidate": args.candidate,
+        "after": args.after,
+    }
+    errors: list[str] = []
     live_guard_window = None
     if args.require_live_guard:
         from deepseek_v4_guard_window import load_verified_guard_window
 
-        live_guard_window = load_verified_guard_window()
-    result = validate_moe_tail_k3_bracket(
-        json.loads(args.primer.read_text()),
-        json.loads(args.before.read_text()),
-        json.loads(args.candidate.read_text()),
-        json.loads(args.after.read_text()),
-        peak_ceiling_gib=args.peak_ceiling_gib,
-        live_guard_window=live_guard_window,
-    )
+        try:
+            live_guard_window = load_verified_guard_window()
+        except (OSError, RuntimeError, ValueError) as error:
+            errors.append(f"validator live guard verification failed: {error}")
+    receipts: dict[str, dict[str, Any]] = {}
+    for label, path in receipt_paths.items():
+        if not path.is_file():
+            continue
+        try:
+            receipt = json.loads(path.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            errors.append(f"{label} benchmark receipt is unreadable: {error}")
+            continue
+        if not isinstance(receipt, dict):
+            errors.append(f"{label} benchmark receipt is not an object")
+            continue
+        receipts[label] = receipt
+    missing = [label for label in receipt_paths if label not in receipts]
+    if missing:
+        errors.append(f"missing benchmark receipts: {missing}")
+        result: dict[str, Any] = {
+            "schema_version": 1,
+            "kind": "deepseek_v4_moe_tail_k3_bracket",
+            "status": "INVALID_BRACKET",
+            "integrity_pass": False,
+            "performance_pass": False,
+            "errors": errors,
+            "benchmark_exit_code": args.benchmark_exit_code,
+            "receipt_paths": {
+                label: str(path) for label, path in receipt_paths.items()
+            },
+            "receipts_present": sorted(receipts),
+            "guard_window": {
+                "validator_live_recheck": live_guard_window is not None,
+                "window_id": (
+                    live_guard_window.get("window_id")
+                    if isinstance(live_guard_window, dict)
+                    else None
+                ),
+            },
+        }
+    else:
+        result = validate_moe_tail_k3_bracket(
+            receipts["primer"],
+            receipts["before"],
+            receipts["candidate"],
+            receipts["after"],
+            peak_ceiling_gib=args.peak_ceiling_gib,
+            live_guard_window=live_guard_window,
+        )
+        result["benchmark_exit_code"] = args.benchmark_exit_code
+        if errors:
+            result["errors"].extend(errors)
+            result["status"] = "INVALID_BRACKET"
+            result["integrity_pass"] = False
+            result["performance_pass"] = False
+    if args.benchmark_exit_code:
+        error = f"benchmark aborted with exit code {args.benchmark_exit_code}"
+        if error not in result["errors"]:
+            result["errors"].append(error)
+        result["status"] = "INVALID_BRACKET"
+        result["integrity_pass"] = False
+        result["performance_pass"] = False
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))

@@ -78,12 +78,15 @@ export MTPLX_DSV4_GUARD_WINDOW_SHA256="$GUARD_DIGEST"
 # binds the candidate only for B's K3 sub-arm (B's AR remains stock), and
 # restores stock before C1. Generation-local caches/counters are reset between
 # every sub-arm while compiled/model state stays married to this one process.
+set +e
 "$VENV" -u "$WORKTREE/scripts/deepseek_v4_mtpk_bench.py" \
   --moe-tail-bracket \
   --model "$MODEL" --prompt-file "$PROMPT" --max-tokens 256 --depths 3 \
   --verify-strategy capture_commit --verify-core stock \
   --mtp-history-policy committed --warmup-tokens 0 \
   --out "$BENCH/$TAG"
+benchmark_rc=$?
+set -e
 
 VALIDATION="$BENCH/$TAG-validation.json"
 if "$VENV" -u "$VALIDATOR" \
@@ -91,6 +94,7 @@ if "$VENV" -u "$VALIDATOR" \
   --before "$BENCH/$TAG-before.json" \
   --candidate "$BENCH/$TAG-candidate.json" \
   --after "$BENCH/$TAG-after.json" \
+  --benchmark-exit-code "$benchmark_rc" \
   --peak-ceiling-gib 108 --require-live-guard --out "$VALIDATION"; then
   print "[moe-tail-arms] PASS: $VALIDATION"
 else

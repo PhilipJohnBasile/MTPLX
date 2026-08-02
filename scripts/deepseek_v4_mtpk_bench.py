@@ -526,6 +526,24 @@ def _bind_moe_tail_routes(rt, backend, routes: tuple, *, candidate: bool) -> dic
     }
 
 
+def _moe_tail_route_census(rt, backend, routes: tuple) -> dict[str, int]:
+    """Observe the bound callables between arms, outside measured generation."""
+    candidate_ids = {id(route) for route in routes}
+    stock = backend._stock_moe_tail_combine
+    body = tuple(layer.ffn._tail_combine for layer in rt.model.layers)
+    mtp = tuple(block.ffn._tail_combine for block in rt.model.mtp_blocks)
+    body_candidate = sum(id(route) in candidate_ids for route in body)
+    body_stock = sum(route is stock for route in body)
+    mtp_stock = sum(route is stock for route in mtp)
+    return {
+        "body_candidate": body_candidate,
+        "body_stock": body_stock,
+        "body_other": len(body) - body_candidate - body_stock,
+        "mtp_stock": mtp_stock,
+        "mtp_other": len(mtp) - mtp_stock,
+    }
+
+
 def _reset_benchmark_state(rt) -> None:
     """Drop generation-local state while preserving the one loaded model."""
     mx.synchronize()
@@ -580,6 +598,7 @@ def _run_single_process_moe_tail_bracket(
         role = "discarded_control_primer" if label == "primer" else "measurement"
         _bind_moe_tail_routes(rt, backend, routes, candidate=False)
         _reset_benchmark_state(rt)
+        ar_census = _moe_tail_route_census(rt, backend, routes)
         ar = _run_arm(
             rt=rt,
             label=f"{label} AR stock",
@@ -595,6 +614,7 @@ def _run_single_process_moe_tail_bracket(
         install_report = _bind_moe_tail_routes(
             rt, backend, routes, candidate=is_candidate
         )
+        k3_census = _moe_tail_route_census(rt, backend, routes)
         try:
             k3 = _run_arm(
                 rt=rt,
@@ -610,7 +630,15 @@ def _run_single_process_moe_tail_bracket(
             )
         finally:
             _bind_moe_tail_routes(rt, backend, routes, candidate=False)
-        pair_status = int(bool(ar.get("error") or k3.get("error")))
+        post_census = _moe_tail_route_census(rt, backend, routes)
+        exact_enforced = _exactness_is_enforced(args.require_exact)
+        exact_gate = k3.get("spec_equals_ar")
+        exact_failed = exact_enforced and (
+            not isinstance(exact_gate, dict)
+            or exact_gate.get("enforced") is not True
+            or exact_gate.get("pass") is not True
+        )
+        pair_status = int(bool(ar.get("error") or k3.get("error") or exact_failed))
         status = max(status, pair_status)
         receipt = {
             **common_receipt,
@@ -630,6 +658,11 @@ def _run_single_process_moe_tail_bracket(
                 "ar": "stock",
                 "k3": "candidate" if is_candidate else "stock",
                 "post": "stock",
+            },
+            "route_census": {
+                "ar": ar_census,
+                "k3": k3_census,
+                "post": post_census,
             },
             "arms": [ar, k3],
             "status": pair_status,
