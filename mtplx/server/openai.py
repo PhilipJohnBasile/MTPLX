@@ -26394,8 +26394,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--open-dashboard",
         action="store_true",
         help=(
-            "Open the live MTPLX dashboard (/dashboard) after startup "
-            "instead of the chat UI."
+            "Open the live MTPLX dashboard (/dashboard) after startup, "
+            "alongside any client UI selected by --open-browser."
         ),
     )
     parser.add_argument(

@@ -4677,7 +4677,14 @@ def test_public_profile_dispatch_without_trace_is_actionable(capsys):
     captured = capsys.readouterr().out
     assert code == 0
     assert '"implemented_capture": false' in captured
-    assert "--trace PATH" in captured
+    # The next-step hint must stay honest about the trace analyzer: point at
+    # --trace when the research-workspace script is present, and say plainly
+    # that it is not included when it is absent (the shipped package never
+    # carries it).
+    assert (
+        "--trace PATH" in captured
+        or "not included in this installation" in captured
+    )
 
 
 def test_reference_vllm_dry_run_includes_ssh_capture_command(capsys):
@@ -7507,12 +7514,23 @@ def test_eval_attribution_dry_run_is_real_command(capsys):
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert code == 0
     assert payload["action"] == "profile eval-attribution"
-    assert "probe_eval_attribution.py" in " ".join(payload["command"])
-    assert "--prefix-tokens" in payload["command"]
-    assert "outputs,recurrent;recurrent,outputs" in payload["command"]
-    assert "larger owned kernel boundary" in payload["purpose"]
+    from mtplx.commands.public import _research_script
+
+    if _research_script("probe_eval_attribution.py") is None:
+        # This repo does not ship the research-workspace probe script; the
+        # command must say so honestly instead of printing a command whose
+        # script path does not exist (dry-run included).
+        assert code == 2
+        assert payload["available"] is False
+        assert "probe_eval_attribution.py" in payload["reason"]
+        assert payload["hint"]
+    else:
+        assert code == 0
+        assert "probe_eval_attribution.py" in " ".join(payload["command"])
+        assert "--prefix-tokens" in payload["command"]
+        assert "outputs,recurrent;recurrent,outputs" in payload["command"]
+        assert "larger owned kernel boundary" in payload["purpose"]
 
 
 @pytest.mark.parametrize("action", ["compile-audit", "eval-attribution"])
