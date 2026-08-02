@@ -1693,7 +1693,7 @@ final class DaemonSupervisorTests: XCTestCase {
                 arguments: ["-c", script]
             ),
             healthBaseURL: URL(string: "http://127.0.0.1:9")!,
-            apiKey: "secret-that-must-not-outlive-the-session",
+            apiKey: "test-api-key",
             probeHealth: false
         )
         supervisor.setStatusObserver { snapshot in
