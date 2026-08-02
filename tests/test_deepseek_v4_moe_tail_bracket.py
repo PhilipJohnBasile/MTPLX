@@ -385,6 +385,116 @@ def test_outer_guarded_wrapper_source_keeps_run_guarded_as_service_owner():
     assert "bootstrap" not in source
 
 
+def test_postflight_holds_one_canonical_lock_across_every_probe(monkeypatch, tmp_path):
+    lock_path = tmp_path / "gpu.lock"
+    lock_path.touch()
+    monkeypatch.setattr(P, "LOCK_PATH", lock_path)
+    probe_names = []
+
+    def guarded_probe(name, result):
+        def probe():
+            with lock_path.open("rb") as competitor:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(competitor.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            probe_names.append(name)
+            return result
+
+        return probe
+
+    monkeypatch.setattr(
+        P,
+        "_check_wired_limit",
+        guarded_probe("wired", {"ok": True, "value": 114688}),
+    )
+    monkeypatch.setattr(
+        P,
+        "_check_quality_models",
+        guarded_probe("models", {"ok": True, "models": [P.QUALITY_MODEL]}),
+    )
+    monkeypatch.setattr(
+        P,
+        "_check_quality_ready_chat",
+        guarded_probe(
+            "chat", {"ok": True, "content": "READY", "finish_reason": "stop"}
+        ),
+    )
+
+    result = P.collect_postflight()
+
+    assert probe_names == ["wired", "models", "chat"]
+    assert result["lock_free"]["acquired_nonblocking"] is True
+    assert result["lock_free"]["held_through_probes"] is True
+    assert result["lock_free"]["released_after_probes"] is True
+    identity = result["lock_free"]["identity"]
+    observed = lock_path.stat()
+    assert identity["device"] == observed.st_dev
+    assert identity["inode"] == observed.st_ino
+    with lock_path.open("rb") as after:
+        fcntl.flock(after.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(after.fileno(), fcntl.LOCK_UN)
+
+
+def test_ready_chat_null_content_is_a_structured_failure(monkeypatch):
+    monkeypatch.setattr(
+        P,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "choices": [
+                {"message": {"content": None}, "finish_reason": "stop"}
+            ]
+        },
+    )
+
+    result = P._check_quality_ready_chat()
+
+    assert result["ok"] is False
+    assert "content" in result["error"]
+
+
+def test_unexpected_probe_error_is_structured_and_receipted(monkeypatch, tmp_path):
+    lock_path = tmp_path / "gpu.lock"
+    lock_path.touch()
+    monkeypatch.setattr(P, "LOCK_PATH", lock_path)
+    monkeypatch.setattr(
+        P.subprocess,
+        "run",
+        lambda _command, check=False, **_kwargs: SimpleNamespace(returncode=0),
+    )
+
+    def unexpected():
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(P, "_check_wired_limit", unexpected)
+    monkeypatch.setattr(P, "_check_quality_models", lambda: {"ok": True})
+    monkeypatch.setattr(P, "_check_quality_ready_chat", lambda: {"ok": True})
+
+    assert P.run("probe-error", bench_dir=tmp_path) == 1
+    receipt = json.loads((tmp_path / "probe-error-postflight.json").read_text())
+    assert receipt["postflight_ok"] is False
+    assert receipt["postflight"]["wired_limit_mb"]["ok"] is False
+    assert "probe exploded" in receipt["postflight"]["wired_limit_mb"]["error"]
+    assert receipt["postflight"]["lock_free"]["released_after_probes"] is True
+
+
+def test_unexpected_collector_error_still_persists_receipt(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        P.subprocess,
+        "run",
+        lambda _command, check=False, **_kwargs: SimpleNamespace(returncode=0),
+    )
+
+    def unexpected():
+        raise RuntimeError("collector exploded")
+
+    monkeypatch.setattr(P, "collect_postflight", unexpected)
+
+    assert P.run("collector-error", bench_dir=tmp_path) == 1
+    receipt = json.loads((tmp_path / "collector-error-postflight.json").read_text())
+    assert receipt["postflight_ok"] is False
+    assert receipt["postflight"]["collector"]["ok"] is False
+    assert "collector exploded" in receipt["postflight"]["collector"]["error"]
+
+
 def test_single_process_source_is_clean_before_mlx_and_loads_once():
     source = _BENCHMARK.read_text()
     main = source[source.index("def main()") :]

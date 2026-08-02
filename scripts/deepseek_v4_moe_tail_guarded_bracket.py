@@ -3,8 +3,8 @@
 
 ``run_guarded.py`` is deliberately the only process that owns the Quality
 service lifecycle.  This wrapper only waits for that canonical child to exit
-and performs read-only postflight checks; it never starts, stops, or repairs a
-service itself.
+and performs read-only postflight checks while holding the canonical GPU lock;
+it never starts, stops, or repairs a service itself.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import json
 import os
 import subprocess
 import tempfile
-import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,14 +32,29 @@ WIRED_LIMIT_MB = 114688
 WRAPPER_ENV = "MTPLX_DSV4_MOE_TAIL_POSTFLIGHT_WRAPPER"
 
 
-def _check_lock_free() -> dict[str, Any]:
+def _failed_check(error: BaseException, *, context: str | None = None) -> dict[str, Any]:
+    message = str(error)
+    if context is not None:
+        message = f"{context}: {message}"
+    return {
+        "ok": False,
+        "error": message,
+        "error_type": type(error).__name__,
+    }
+
+
+def _safe_check(check: Any) -> dict[str, Any]:
     try:
-        with LOCK_PATH.open("rb") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        return {"ok": True, "path": str(LOCK_PATH)}
-    except OSError as error:
-        return {"ok": False, "path": str(LOCK_PATH), "error": str(error)}
+        result = check()
+    except Exception as error:
+        return _failed_check(error)
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "error": f"probe returned {type(result).__name__}, expected an object",
+            "error_type": "MalformedProbeResult",
+        }
+    return result
 
 
 def _check_wired_limit() -> dict[str, Any]:
@@ -80,8 +94,8 @@ def _check_quality_models() -> dict[str, Any]:
         payload = _request_json("/v1/models", payload=None, timeout=10)
         models = [entry["id"] for entry in payload["data"]]
         return {"ok": models == [QUALITY_MODEL], "models": models}
-    except (KeyError, TypeError, ValueError, urllib.error.URLError, OSError) as error:
-        return {"ok": False, "error": str(error)}
+    except Exception as error:
+        return _failed_check(error, context="malformed /v1/models response")
 
 
 def _check_quality_ready_chat() -> dict[str, Any]:
@@ -97,26 +111,104 @@ def _check_quality_ready_chat() -> dict[str, Any]:
             timeout=60,
         )
         choice = payload["choices"][0]
-        content = choice["message"]["content"].strip()
+        content_value = choice["message"]["content"]
+        if not isinstance(content_value, str):
+            raise TypeError(
+                "chat choice message content must be a string, got "
+                f"{type(content_value).__name__}"
+            )
+        content = content_value.strip()
         finish_reason = choice["finish_reason"]
         return {
             "ok": content == "READY" and finish_reason == "stop",
             "content": content,
             "finish_reason": finish_reason,
         }
-    except (IndexError, KeyError, TypeError, ValueError, urllib.error.URLError, OSError) as error:
-        return {"ok": False, "error": str(error)}
+    except Exception as error:
+        return _failed_check(error, context="malformed READY chat response")
 
 
 def collect_postflight() -> dict[str, dict[str, Any]]:
-    """Read-only checks run after the guard process has already returned."""
+    """Hold the canonical lock across all read-only restoration probes."""
 
-    return {
-        "lock_free": _check_lock_free(),
-        "wired_limit_mb": _check_wired_limit(),
-        "quality_models": _check_quality_models(),
-        "quality_ready_chat": _check_quality_ready_chat(),
+    postflight: dict[str, dict[str, Any]] = {}
+    lock_file = None
+    try:
+        lock_file = LOCK_PATH.open("rb")
+        opened = os.fstat(lock_file.fileno())
+        resolved = LOCK_PATH.resolve(strict=True)
+        path_stat = resolved.stat()
+        if (opened.st_dev, opened.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+            raise RuntimeError("canonical lock identity changed while opening")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception as error:
+        if lock_file is not None:
+            lock_file.close()
+        postflight["lock_free"] = {
+            **_failed_check(error, context="canonical lock acquisition failed"),
+            "requested_path": str(LOCK_PATH),
+            "acquired_nonblocking": False,
+            "held_through_probes": False,
+            "released_after_probes": True,
+        }
+        skipped = {
+            "ok": False,
+            "skipped": True,
+            "error": "canonical lock was not held; restoration probe is unsafe",
+            "error_type": "LockNotHeld",
+        }
+        postflight["wired_limit_mb"] = dict(skipped)
+        postflight["quality_models"] = dict(skipped)
+        postflight["quality_ready_chat"] = dict(skipped)
+        return postflight
+
+    identity = {
+        "device": opened.st_dev,
+        "inode": opened.st_ino,
     }
+    lock_check = {
+        "ok": False,
+        "requested_path": str(LOCK_PATH),
+        "resolved_path": str(resolved),
+        "identity": identity,
+        "mode": "exclusive_nonblocking",
+        "acquired_nonblocking": True,
+        "held_through_probes": False,
+        "released_after_probes": False,
+    }
+    postflight["lock_free"] = lock_check
+    try:
+        postflight["wired_limit_mb"] = _safe_check(_check_wired_limit)
+        postflight["quality_models"] = _safe_check(_check_quality_models)
+        postflight["quality_ready_chat"] = _safe_check(_check_quality_ready_chat)
+        after = os.fstat(lock_file.fileno())
+        resolved_after = LOCK_PATH.resolve(strict=True)
+        current = resolved_after.stat()
+        lock_check["held_through_probes"] = (
+            (after.st_dev, after.st_ino) == (opened.st_dev, opened.st_ino)
+            and resolved_after == resolved
+            and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+        )
+    except Exception as error:
+        postflight["collector"] = _failed_check(
+            error, context="unexpected postflight collector failure"
+        )
+    finally:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except Exception as error:
+            lock_check["release_error"] = str(error)
+            lock_check["release_error_type"] = type(error).__name__
+        finally:
+            lock_file.close()
+            lock_check["released_after_probes"] = True
+        lock_check["ok"] = (
+            lock_check["acquired_nonblocking"]
+            and lock_check["held_through_probes"]
+            and lock_check["released_after_probes"]
+            and "release_error" not in lock_check
+        )
+    return postflight
 
 
 def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
@@ -167,7 +259,14 @@ def run(tag: str, *, bench_dir: Path = DEFAULT_BENCH_DIR) -> int:
         child_error: str | None = str(error)
     else:
         child_error = None
-    postflight = collect_postflight()
+    try:
+        postflight = collect_postflight()
+    except Exception as error:
+        postflight = {
+            "collector": _failed_check(
+                error, context="unexpected postflight collector failure"
+            )
+        }
     postflight_ok = all(result.get("ok") is True for result in postflight.values())
     exit_code = child_exit_code if child_exit_code != 0 else (0 if postflight_ok else 1)
     receipt = {
