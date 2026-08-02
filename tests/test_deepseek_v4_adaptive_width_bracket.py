@@ -155,8 +155,8 @@ def _o_lora_report():
         "route_plan_matches": True,
         "callable_census": {
             "body_route_objects": 43,
-            "body_route_kind": "gather_qmm_direct",
-            "body_callable_class": "_DirectGatherOLora",
+            "body_route_kind": "gather_qmm_m4_wide_direct",
+            "body_callable_class": "_DirectGatherOLoraWideM4",
             "mtp_route_objects": 1,
             "mtp_route_kind": "dense_bf16_stock_direct",
             "mtp_callable_class": "_DirectDenseMTPOLora",

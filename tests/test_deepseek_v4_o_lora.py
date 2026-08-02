@@ -573,12 +573,114 @@ _FakeGatherBodyRoute.__name__ = "_DirectGatherOLora"
 _FakeDenseMTPRoute.__name__ = "_DirectDenseMTPOLora"
 
 
+class _FakeGatherWideM4BodyRoute:
+    def __init__(self, attention, quant):
+        self.attention = attention
+        self.quant = quant
+        self.wo_b = attention.wo_b
+
+
+_FakeGatherWideM4BodyRoute.__name__ = "_DirectGatherOLoraWideM4"
+
+
 def _patch_canonical_route_types(monkeypatch):
     monkeypatch.setattr(D.nn, "QuantizedLinear", _CanonicalQuantizedLinear)
     monkeypatch.setattr(D.nn, "Linear", _CanonicalDenseLinear)
     monkeypatch.setattr(D, "_DirectCachedOLora", _FakeCachedBodyRoute)
     monkeypatch.setattr(D, "_DirectGatherOLora", _FakeGatherBodyRoute)
+    monkeypatch.setattr(D, "_DirectGatherOLoraWideM4", _FakeGatherWideM4BodyRoute)
     monkeypatch.setattr(D, "_DirectDenseMTPOLora", _FakeDenseMTPRoute)
+    monkeypatch.setattr(D, "_validate_gather_qmm_wide_m4_body_routes", lambda _body: None)
+
+
+def test_model_installer_prebinds_only_body_m4_wide_and_keeps_mtp_stock(monkeypatch):
+    """The M4-wide candidate is an authenticated body route, never MTP.
+
+    The production callable owns the fixed ``[8, 4, 4096]`` gathered input and
+    selects its direct wide entry point only for physical M4.  This construction
+    test locks the boundary: all 43 quantized body modules receive that route,
+    while the dense MTP module remains the explicitly prebound stock callable.
+    """
+    _patch_canonical_route_types(monkeypatch)
+    model = _canonical_route_model()
+
+    report = D.install_deepseek_v4_o_lora_routes(
+        model, mode="gather_qmm", canonical_mixed_route=True
+    )
+
+    assert all(
+        isinstance(box.attn._o_lora_impl, _FakeGatherWideM4BodyRoute)
+        for box in model.layers
+    )
+    assert isinstance(model.mtp_blocks[0].attn._o_lora_impl, _FakeDenseMTPRoute)
+    assert report["callable_census"]["body_route_kind"] == "gather_qmm_m4_wide_direct"
+    assert report["callable_census"]["body_callable_class"] == "_DirectGatherOLoraWideM4"
+    assert report["callable_census"]["mtp_route_kind"] == "dense_bf16_stock_direct"
+
+
+def test_model_installer_selfchecks_the_real_weight_sentinels_before_publish(monkeypatch):
+    """Layer 0/3/42 parity is a construction gate, not decode instrumentation."""
+    _patch_canonical_route_types(monkeypatch)
+    model = _canonical_route_model()
+    checked = []
+    monkeypatch.setattr(
+        D,
+        "_validate_gather_qmm_wide_m4_body_routes",
+        lambda body: checked.extend(body),
+        raising=False,
+    )
+
+    D.install_deepseek_v4_o_lora_routes(
+        model, mode="gather_qmm", canonical_mixed_route=True
+    )
+
+    assert len(checked) == 43
+    assert all(isinstance(route, _FakeGatherWideM4BodyRoute) for route in checked)
+
+
+def test_m4_wide_installer_rejects_the_fp32_activation_ab_arm(monkeypatch):
+    _patch_canonical_route_types(monkeypatch)
+    monkeypatch.setattr(D, "_FP32_ACTIVATIONS", True)
+    model = _canonical_route_model()
+
+    with pytest.raises(ValueError, match="BF16 activation storage"):
+        D.install_deepseek_v4_o_lora_routes(
+            model, mode="gather_qmm", canonical_mixed_route=True
+        )
+
+    assert all(box.attn._o_lora_impl is None for box in model.layers + model.mtp_blocks)
+
+
+def test_m4_wide_route_dispatches_only_the_physical_four_row_body_shape():
+    """M is runtime routing; AR/M1 and non-M4 verifies retain stock gather."""
+    calls = []
+
+    class _Input:
+        def __init__(self, batch, sequence):
+            self.shape = (batch, sequence, 32768)
+
+    def stock(value):
+        calls.append(("stock", value.shape[:2]))
+        return "stock"
+
+    def wide(value):
+        calls.append(("wide", value.shape[:2]))
+        return "wide"
+
+    route = object.__new__(D._DirectGatherOLoraWideM4)
+    route.stock = stock
+    route.m4 = wide
+
+    assert route(_Input(1, 1)) == "stock"
+    assert route(_Input(1, 3)) == "stock"
+    assert route(_Input(2, 2)) == "wide"
+    assert route(_Input(1, 5)) == "stock"
+    assert calls == [
+        ("stock", (1, 1)),
+        ("stock", (1, 3)),
+        ("wide", (2, 2)),
+        ("stock", (1, 5)),
+    ]
 
 
 def test_model_installer_prebinds_43_body_gathers_and_explicit_mtp_stock(monkeypatch):
@@ -596,7 +698,10 @@ def test_model_installer_prebinds_43_body_gathers_and_explicit_mtp_stock(monkeyp
     assert report["module_count"] == 44
     assert report["body_direct"] == 43
     assert report["mtp_stock"] == 1
-    assert all(isinstance(attention._o_lora_impl, _FakeGatherBodyRoute) for attention in body)
+    assert all(
+        isinstance(attention._o_lora_impl, _FakeGatherWideM4BodyRoute)
+        for attention in body
+    )
     assert isinstance(mtp._o_lora_impl, _FakeDenseMTPRoute)
     assert all(
         attention._o_lora_impl.wo_b is original
@@ -605,8 +710,8 @@ def test_model_installer_prebinds_43_body_gathers_and_explicit_mtp_stock(monkeyp
     assert mtp._o_lora_impl.wo_b is original_mtp_wo_b
     assert report["callable_census"] == {
         "body_route_objects": 43,
-        "body_route_kind": "gather_qmm_direct",
-        "body_callable_class": "_DirectGatherOLora",
+        "body_route_kind": "gather_qmm_m4_wide_direct",
+        "body_callable_class": "_DirectGatherOLoraWideM4",
         "mtp_route_objects": 1,
         "mtp_route_kind": "dense_bf16_stock_direct",
         "mtp_callable_class": "_DirectDenseMTPOLora",

@@ -272,6 +272,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import List, Optional
 
 import mlx.core as mx
@@ -1102,6 +1103,203 @@ class _DirectGatherOLora:
                 batch, sequence, self.groups * self.rank
             )
         )
+
+
+class _DirectGatherOLoraWideM4:
+    """Construction-bound M4-wide body route plus explicit stock-width routes.
+
+    The canonical body stores eight output-LoRA matrices.  At physical M4 the
+    wide entry point owns a threadgroup per stored group and streams one packed
+    weight / scale / bias row through all four verifier rows.  Other physical
+    widths are deliberately the already-qualified :class:`_DirectGatherOLora`
+    route; width is the only value that varies at execution and this is routing,
+    not an eligibility check or a fallback.
+    """
+
+    __slots__ = ("m4", "stock")
+
+    def __init__(self, attention: "DeepseekV4Attention", quant: tuple) -> None:
+        self.stock = _DirectGatherOLora(attention, quant)
+        self.m4 = _GatherQMMWideM4OLora(attention, quant)
+
+    def __call__(self, o: mx.array) -> mx.array:
+        batch, sequence, _ = o.shape
+        if batch * sequence == 4:
+            return self.m4(o)
+        return self.stock(o)
+
+
+class _GatherQMMWideM4OLora:
+    """Fixed ``[8, 4, 4096]`` gathered affine-Q4 projection.
+
+    The source is derived for the actual o-LoRA packing, not copied from a
+    topology match: logical group ``g`` reads activation ``[row, g, :]`` and
+    weight/scale/bias bank ``rhs_ids[g]``.  Every packed nibble is affine
+    dequantized once before accumulating all four rows, matching the stock Q4
+    association and its eight-lane K ownership.  A construction self-check
+    against ``mx.gather_qmm`` is required before this route is published.
+    """
+
+    __slots__ = (
+        "biases",
+        "bits",
+        "group_ids",
+        "group_size",
+        "groups",
+        "kernel",
+        "mode",
+        "per_group_input",
+        "rank",
+        "scales",
+        "weight",
+        "wo_b",
+    )
+
+    def __init__(self, attention: "DeepseekV4Attention", quant: tuple) -> None:
+        weight, scales, biases, group_size, bits, mode = quant
+        groups = int(attention.n_groups)
+        rank = int(attention.o_lora_rank)
+        per_group_input = int(
+            attention.n_heads * attention.head_dim // attention.n_groups
+        )
+        if (groups, rank, per_group_input, int(group_size), int(bits), mode) != (
+            8,
+            1024,
+            4096,
+            64,
+            4,
+            "affine",
+        ):
+            raise ValueError("M4-wide gather o-LoRA requires canonical body geometry")
+        if tuple(weight.shape) != (groups, rank, 512):
+            raise ValueError("M4-wide gather o-LoRA packed weight layout changed")
+        if tuple(scales.shape) != (groups, rank, 64):
+            raise ValueError("M4-wide gather o-LoRA scale layout changed")
+        if biases is None or tuple(biases.shape) != (groups, rank, 64):
+            raise ValueError("M4-wide gather o-LoRA bias layout changed")
+        self.groups = groups
+        self.rank = rank
+        self.per_group_input = per_group_input
+        self.weight = weight.reshape(groups, rank, -1)
+        self.scales = scales.reshape(groups, rank, -1)
+        self.biases = biases.reshape(groups, rank, -1)
+        self.group_size = int(group_size)
+        self.bits = int(bits)
+        self.mode = mode
+        self.group_ids = mx.arange(groups, dtype=mx.uint32)
+        self.wo_b = attention.wo_b
+        self.kernel = _gather_qmm_wide_m4_olora_kernel()
+
+    def grouped(self, o_rows: mx.array, rhs_ids: mx.array) -> mx.array:
+        """Project exactly four row-major o-LoRA rows with selected group banks."""
+        (out,) = self.kernel(
+            inputs=[
+                o_rows,
+                self.weight,
+                self.scales,
+                self.biases,
+                rhs_ids,
+            ],
+            template=[("T", o_rows.dtype)],
+            grid=(32, 256, 8),
+            threadgroup=(32, 2, 1),
+            output_shapes=[(8, 4, 1024)],
+            output_dtypes=[o_rows.dtype],
+        )
+        return out
+
+    def __call__(self, o: mx.array) -> mx.array:
+        batch, sequence, _ = o.shape
+        rows = o.reshape(4, self.groups, self.per_group_input)
+        out = self.grouped(rows, self.group_ids)
+        return self.wo_b(
+            out.swapaxes(0, 1).reshape(batch, sequence, self.groups * self.rank)
+        )
+
+
+@lru_cache(maxsize=1)
+def _gather_qmm_wide_m4_olora_kernel():
+    """Build the exact-shape gathered wide kernel at installation, never decode."""
+
+    source = """
+        using namespace metal;
+        constexpr int M = 4;
+        constexpr int GROUPS = 8;
+        constexpr int K = 4096;
+        constexpr int N = 1024;
+        constexpr int GS = 64;
+        constexpr int K_LANES = 8;
+        constexpr int RESULTS_PER_SIMDGROUP = 32 / K_LANES;
+        constexpr int NUM_SIMDGROUPS = 2;
+        constexpr int ROWS_PER_TG = RESULTS_PER_SIMDGROUP * NUM_SIMDGROUPS;
+        constexpr int SUB = 8;
+
+        uint lane = thread_index_in_simdgroup;
+        uint simd_gid = simdgroup_index_in_threadgroup;
+        uint tg_n = threadgroup_position_in_grid.y;
+        uint lhs_group = threadgroup_position_in_grid.z;
+        short k_lane = short(lane % K_LANES);
+        short sg_row = short(lane / K_LANES);
+        int out_row = int(tg_n) * ROWS_PER_TG
+            + RESULTS_PER_SIMDGROUP * int(simd_gid) + int(sg_row);
+        int row = min(out_row, N - 1);
+        int rhs_group = int(rhs_ids[lhs_group]);
+        int K_by_gs = K / GS;
+        int K_bytes = K / 2;
+        const device uint8_t* wrow = (const device uint8_t*)w
+            + (rhs_group * N + row) * K_bytes;
+        const device T* srow = scales + (rhs_group * N + row) * K_by_gs;
+        const device T* brow = biases + (rhs_group * N + row) * K_by_gs;
+
+        float result[M] = {0.0f};
+        for (int g = int(k_lane); g < K_by_gs; g += K_LANES) {
+            float scale = float(srow[g]);
+            float bias = float(brow[g]);
+            float scaled_hi = scale / 16.0f;
+            _Pragma("unroll")
+            for (int sc = 0; sc < GS / SUB; ++sc) {
+                int k0 = g * GS + sc * SUB;
+                const device uint8_t* wc = wrow + k0 / 2;
+                float w_dq[SUB];
+                w_dq[0] = scale * float(wc[0] & 0x0f) + bias;
+                w_dq[1] = scaled_hi * float(wc[0] & 0xf0) + bias;
+                w_dq[2] = scale * float(wc[1] & 0x0f) + bias;
+                w_dq[3] = scaled_hi * float(wc[1] & 0xf0) + bias;
+                w_dq[4] = scale * float(wc[2] & 0x0f) + bias;
+                w_dq[5] = scaled_hi * float(wc[2] & 0xf0) + bias;
+                w_dq[6] = scale * float(wc[3] & 0x0f) + bias;
+                w_dq[7] = scaled_hi * float(wc[3] & 0xf0) + bias;
+                _Pragma("unroll")
+                for (int v = 0; v < M; ++v) {
+                    const device T* xc = x + (v * GROUPS + int(lhs_group)) * K + k0;
+                    float acc = 0.0f;
+                    _Pragma("unroll")
+                    for (int i = 0; i < SUB; ++i) {
+                        acc += float(xc[i]) * w_dq[i];
+                    }
+                    result[v] += acc;
+                }
+            }
+        }
+        _Pragma("unroll")
+        for (int v = 0; v < M; ++v) {
+            result[v] += simd_shuffle_down(result[v], 4);
+            result[v] += simd_shuffle_down(result[v], 2);
+            result[v] += simd_shuffle_down(result[v], 1);
+        }
+        if (k_lane == 0 && out_row < N) {
+            _Pragma("unroll")
+            for (int v = 0; v < M; ++v) {
+                y[(int(lhs_group) * M + v) * N + out_row] = T(result[v]);
+            }
+        }
+    """
+    return mx.fast.metal_kernel(
+        name="mtplx_dsv4_olora_gather_qmv_wide_m4_q4_g64",
+        input_names=["x", "w", "scales", "biases", "rhs_ids"],
+        output_names=["y"],
+        source=source,
+    )
 
 
 class _DirectDenseOLora:
@@ -3823,6 +4021,58 @@ def _validate_canonical_o_lora_topology(trunk, mtp) -> tuple[list[tuple], mx.arr
     return body_quant, mtp_weight
 
 
+def _validate_gather_qmm_wide_m4_body_routes(
+    body_routes: list[_DirectGatherOLoraWideM4],
+) -> None:
+    """Prove exact M4 gathered algebra before binding any body route.
+
+    The sentinel layers span the first, a hash-layer boundary, and the final
+    body module.  Identity, reordered-distinct, and repeated RHS IDs prove the
+    custom group-bank lookup has the same meaning as ``gather_qmm``; production
+    uses the authenticated identity IDs held by each installed route.
+    """
+
+    if len(body_routes) != _O_LORA_BODY_COUNT:
+        raise ValueError("M4-wide gather self-check lacks the 43 body routes")
+    rhs_cases = (
+        ("identity", (0, 1, 2, 3, 4, 5, 6, 7)),
+        ("distinct_reordered", (7, 3, 5, 1, 6, 0, 4, 2)),
+        ("repeated", (7, 0, 7, 3, 3, 5, 1, 0)),
+    )
+    for layer_index in (0, 3, 42):
+        route = body_routes[layer_index].m4
+        base = mx.arange(4 * 8 * 4096, dtype=mx.float32).reshape(4, 8, 4096)
+        probe = ((base % 29.0) - 14.0).astype(route.scales.dtype) / 8.0
+        gathered_x = probe.swapaxes(0, 1)
+        for case_name, ids in rhs_cases:
+            rhs_ids = mx.array(ids, dtype=mx.uint32)
+            stock = mx.gather_qmm(
+                gathered_x,
+                route.weight,
+                route.scales,
+                route.biases,
+                lhs_indices=route.group_ids,
+                rhs_indices=rhs_ids,
+                transpose=True,
+                group_size=route.group_size,
+                bits=route.bits,
+                mode=route.mode,
+            )
+            wide = route.grouped(probe, rhs_ids)
+            mx.eval(stock, wide)
+            exact = bool(mx.array_equal(stock, wide).item())
+            if (
+                tuple(stock.shape) != (8, 4, 1024)
+                or tuple(wide.shape) != (8, 4, 1024)
+                or stock.dtype != wide.dtype
+                or not exact
+            ):
+                raise ValueError(
+                    "M4-wide gather self-check diverged at body "
+                    f"layer {layer_index} ({case_name})"
+                )
+
+
 def install_deepseek_v4_o_lora_routes(
     model, mode: str | None = None, *, canonical_mixed_route: bool = False
 ) -> dict:
@@ -3857,14 +4107,23 @@ def install_deepseek_v4_o_lora_routes(
         raise ValueError(
             "canonical mixed o-LoRA route supports only cached or gather_qmm"
         )
+    if selected == "gather_qmm" and _FP32_ACTIVATIONS:
+        raise ValueError(
+            "M4-wide gather o-LoRA requires DeepSeek-V4-Flash BF16 activation "
+            "storage; MTPLX_DSV4_FP32_ACTIVATIONS is an explicit stock A/B arm"
+        )
     body_quant, mtp_weight = _validate_canonical_o_lora_topology(trunk, mtp)
     body_route_type = (
-        _DirectGatherOLora if selected == "gather_qmm" else _DirectCachedOLora
+        _DirectGatherOLoraWideM4
+        if selected == "gather_qmm"
+        else _DirectCachedOLora
     )
     body_impls = [
         body_route_type(attention, quant)
         for attention, quant in zip(trunk, body_quant)
     ]
+    if selected == "gather_qmm":
+        _validate_gather_qmm_wide_m4_body_routes(body_impls)
     mtp_impls = [_DirectDenseMTPOLora(mtp[0], mtp_weight)]
     for attention, installed in zip(trunk, body_impls):
         attention.o_lora_mode = selected
@@ -3895,7 +4154,9 @@ def install_deepseek_v4_o_lora_routes(
     callable_census = {
         "body_route_objects": len(body_impls),
         "body_route_kind": (
-            "gather_qmm_direct" if selected == "gather_qmm" else "cached_direct"
+            "gather_qmm_m4_wide_direct"
+            if selected == "gather_qmm"
+            else "cached_direct"
         ),
         "body_callable_class": body_route_type.__name__,
         "mtp_route_objects": len(mtp_impls),

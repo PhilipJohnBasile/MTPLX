@@ -8,6 +8,7 @@ from tests.test_deepseek_v4_o_lora import (
     _FakeCachedBodyRoute,
     _FakeDenseMTPRoute,
     _FakeGatherBodyRoute,
+    _FakeGatherWideM4BodyRoute,
     _canonical_route_model,
     _patch_canonical_route_types,
 )
@@ -19,7 +20,9 @@ def test_runtime_load_installs_canonical_mixed_o_lora_route(monkeypatch, tmp_pat
     _patch_canonical_route_types(monkeypatch)
     monkeypatch.setattr(D, "_DirectCachedOLora", _FakeCachedBodyRoute)
     monkeypatch.setattr(D, "_DirectGatherOLora", _FakeGatherBodyRoute)
+    monkeypatch.setattr(D, "_DirectGatherOLoraWideM4", _FakeGatherWideM4BodyRoute)
     monkeypatch.setattr(D, "_DirectDenseMTPOLora", _FakeDenseMTPRoute)
+    monkeypatch.setattr(D, "_validate_gather_qmm_wide_m4_body_routes", lambda _body: None)
     monkeypatch.setenv("MTPLX_DSV4_O_LORA", "gather_qmm")
     model = _canonical_route_model()
     config = {"model_type": "deepseek_v4", "num_nextn_predict_layers": 1}
@@ -57,7 +60,8 @@ def test_runtime_load_installs_canonical_mixed_o_lora_route(monkeypatch, tmp_pat
     assert loaded.deepseek_v4_o_lora_report["body_direct"] == 43
     assert loaded.deepseek_v4_o_lora_report["mtp_stock"] == 1
     assert all(
-        isinstance(box.attn._o_lora_impl, _FakeGatherBodyRoute) for box in model.layers
+        isinstance(box.attn._o_lora_impl, _FakeGatherWideM4BodyRoute)
+        for box in model.layers
     )
     assert isinstance(model.mtp_blocks[0].attn._o_lora_impl, _FakeDenseMTPRoute)
     assert not any(
