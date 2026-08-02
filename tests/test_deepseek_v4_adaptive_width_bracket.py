@@ -70,7 +70,7 @@ def _candidate(tps=42.0, *, tokens=None):
     else:
         tokens = list(tokens)
     events = []
-    for width, margins in ((1, [0.1]), (2, [0.5, 0.5]), (3, [0.5, 1.5])):
+    for width, margins in ((1, [0.1]), (2, [0.5, 0.5]), (3, [0.5, 10.5])):
         events.append(
             {
                 "depth": 3,
@@ -80,7 +80,7 @@ def _candidate(tps=42.0, *, tokens=None):
                     "kind": "deepseek_v4_preregistered_max_k3",
                     "eligible_full_k3": True,
                     "d1_margin_threshold": 0.25,
-                    "d2_margin_threshold": 1.0,
+                    "d2_margin_threshold": 10.0,
                     "decision_margins": margins,
                     "selected_draft_depth": width,
                     "target_rows": width + 1,
@@ -123,7 +123,7 @@ def _policy_receipt():
         "kind": "deepseek_v4_preregistered_max_k3",
         "immutable": True,
         "d1_margin_threshold": 0.25,
-        "d2_margin_threshold": 1.0,
+        "d2_margin_threshold": 10.0,
         "max_speculative_depth": 3,
         "target_routes": {"K1": "M2", "K2": "M3", "K3": "M4"},
         "target_rows": [2, 3, 4],
@@ -244,6 +244,10 @@ def test_valid_bracket_derives_width_histogram_quality_and_promotion():
         "K2_M3": 1,
         "K3_M4": 1,
     }
+    assert receipt["policy_engagement"]["policy_thresholds"] == {
+        "d1_margin_threshold": 0.25,
+        "d2_margin_threshold": 10.0,
+    }
     assert receipt["token_quality"]["accepted"] is True
     assert receipt["token_quality"]["mode"] == "exact"
     assert receipt["performance"]["candidate_tps"] == 42.0
@@ -292,7 +296,7 @@ def test_only_the_approved_bf16_first_cause_can_justify_a_propagated_tail():
 
 @pytest.mark.parametrize(
     "mutation",
-    ("env", "mlx", "artifact", "runtime", "order", "policy", "events", "counter", "control", "quality"),
+    ("env", "mlx", "artifact", "runtime", "order", "policy", "policy_d2", "events", "counter", "control", "quality"),
 )
 def test_bracket_fails_closed_on_identity_engagement_counter_control_or_quality(mutation):
     bench = _module()
@@ -316,6 +320,8 @@ def test_bracket_fails_closed_on_identity_engagement_counter_control_or_quality(
         arms[1], arms[2] = arms[2], arms[1]
     elif mutation == "policy":
         policy["d1_margin_threshold"] = 0.5
+    elif mutation == "policy_d2":
+        policy["d2_margin_threshold"] = 1.0
     elif mutation == "events":
         arms[2]["stats_full"]["events"][0].pop("adaptive_width_policy")
     elif mutation == "counter":

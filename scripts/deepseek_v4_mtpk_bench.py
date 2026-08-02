@@ -156,7 +156,7 @@ _ADAPTIVE_WIDTH_POLICY_RECEIPT = {
     "kind": "deepseek_v4_preregistered_max_k3",
     "immutable": True,
     "d1_margin_threshold": 0.25,
-    "d2_margin_threshold": 1.0,
+    "d2_margin_threshold": 10.0,
     "max_speculative_depth": 3,
     "target_routes": {"K1": "M2", "K2": "M3", "K3": "M4"},
     "target_rows": [2, 3, 4],
@@ -731,7 +731,7 @@ def _adaptive_width_engagement(arm: dict) -> tuple[dict, list[str]]:
             errors.append(f"ADAPTIVE-B event {index} has the wrong policy kind")
         if policy.get("d1_margin_threshold") != 0.25:
             errors.append(f"ADAPTIVE-B event {index} changed D1")
-        if policy.get("d2_margin_threshold") != 1.0:
+        if policy.get("d2_margin_threshold") != 10.0:
             errors.append(f"ADAPTIVE-B event {index} changed D2")
         if width not in {1, 2, 3} or target_rows != width + 1:
             errors.append(f"ADAPTIVE-B event {index} has an invalid target width")
@@ -747,9 +747,9 @@ def _adaptive_width_engagement(arm: dict) -> tuple[dict, list[str]]:
                 errors.append(f"ADAPTIVE-B event {index} violates the D1 decision")
             if width >= 2 and not (float(margins[0]) >= 0.25):
                 errors.append(f"ADAPTIVE-B event {index} violates the D1 tie rule")
-            if width == 2 and not (float(margins[1]) < 1.0):
+            if width == 2 and not (float(margins[1]) < 10.0):
                 errors.append(f"ADAPTIVE-B event {index} violates the D2 decision")
-            if width == 3 and not (float(margins[1]) >= 1.0):
+            if width == 3 and not (float(margins[1]) >= 10.0):
                 errors.append(f"ADAPTIVE-B event {index} violates the D2 tie rule")
         elif eligible is not False:
             errors.append(f"ADAPTIVE-B event {index} lacks an eligibility receipt")
@@ -770,6 +770,10 @@ def _adaptive_width_engagement(arm: dict) -> tuple[dict, list[str]]:
         "policy_events": policy_events,
         "eligible_full_k3_events": eligible_events,
         "context_copy_events": context_copy_events,
+        "policy_thresholds": {
+            "d1_margin_threshold": 0.25,
+            "d2_margin_threshold": 10.0,
+        },
         "event_derived_width_histogram": histogram,
     }, errors
 

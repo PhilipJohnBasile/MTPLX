@@ -96,15 +96,15 @@ def test_policy_is_frozen_preregistered_and_ties_continue_deeper():
     policy = _install(rt)
 
     assert D1_MARGIN_THRESHOLD == 0.25
-    assert D2_MARGIN_THRESHOLD == 1.0
+    assert D2_MARGIN_THRESHOLD == 10.0
     assert MAX_SPECULATIVE_DEPTH == 3
     assert policy.d1_margin_threshold == 0.25
-    assert policy.d2_margin_threshold == 1.0
+    assert policy.d2_margin_threshold == 10.0
     assert policy.max_speculative_depth == 3
     assert policy.stop_after_d1(0.249999) is True
     assert policy.stop_after_d1(0.25) is False
-    assert policy.stop_after_d2(0.999999) is True
-    assert policy.stop_after_d2(1.0) is False
+    assert policy.stop_after_d2(9.999999) is True
+    assert policy.stop_after_d2(10.0) is False
     with pytest.raises(FrozenInstanceError):
         policy.d1_margin_threshold = 0.5
     parameters = inspect.signature(type(policy)).parameters
@@ -130,7 +130,7 @@ def test_hand_forged_policy_object_fails_before_prefill(monkeypatch):
 
     class ForgedPolicy:
         d1_margin_threshold = 0.25
-        d2_margin_threshold = 1.0
+        d2_margin_threshold = 10.0
         max_speculative_depth = 3
         target_routes = (lambda *_a, **_k: None,) * 3
 
@@ -141,7 +141,7 @@ def test_hand_forged_policy_object_fails_before_prefill(monkeypatch):
             return margin < 0.25
 
         def stop_after_d2(self, margin):
-            return margin < 1.0
+            return margin < 10.0
 
     monkeypatch.setattr(
         generation,
@@ -262,7 +262,7 @@ def test_selected_width_mix_uses_one_target_verify_per_cycle(monkeypatch):
     rt, prompt = _tiny_runtime_and_prompt()
     policy = _install(rt)
     original = generation._greedy_draft_token_and_top2
-    margins = iter((0.10, 0.50, 0.50, 0.50, 1.50) * 20)
+    margins = iter((0.10, 0.50, 0.50, 0.50, 10.50) * 20)
 
     def scripted_margin(logits):
         token, top1, _top2 = original(logits)
