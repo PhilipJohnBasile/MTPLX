@@ -100,6 +100,10 @@ def test_inspect_model_reads_qwen_mtp_config_without_weights(tmp_path):
     assert result.compatibility["unsafe_force_required"] is False
     assert "mtplx_runtime.json is optional metadata" in result.compatibility["message"]
     assert "missing MTP weights" in result.compatibility["message"]
+    assert "complete model" in result.compatibility["message"]
+    assert "original source with Forge" in result.compatibility["message"]
+    assert "cannot safely attach an arbitrary sidecar" in result.compatibility["message"]
+    assert "graft an MTP sidecar" not in result.compatibility["message"]
 
 
 def test_qwen3_5_text_subtype_can_pass_primary_gate_when_mtp_is_valid(monkeypatch, tmp_path):

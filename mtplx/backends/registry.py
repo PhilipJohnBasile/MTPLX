@@ -1318,9 +1318,11 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
                 message=(
                     f"{marker_text}, but this folder does not contain runnable "
                     "Qwen MTP tensors. mtplx_runtime.json is optional metadata; "
-                    "the blocker is missing MTP weights. Use a model with "
-                    "mtp.safetensors, embedded mtp.* / language_model.mtp.* "
-                    "weights, or graft an MTP sidecar into this base model."
+                    "the blocker is missing MTP weights. Use a complete model with "
+                    "mtp.safetensors or embedded mtp.* / language_model.mtp.* "
+                    "weights, or build and verify one from its original source with "
+                    "Forge. MTPLX cannot safely attach an arbitrary sidecar: matching "
+                    "tensor shapes do not prove it was trained for this trunk."
                 ),
                 recommended_backend="qwen3_next",
                 recommended_profile=DEFAULT_PROFILE_NAME,
