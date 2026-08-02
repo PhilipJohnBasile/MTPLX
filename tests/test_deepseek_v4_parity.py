@@ -24,10 +24,21 @@ import sys
 import numpy as np
 import pytest
 
-mx = pytest.importorskip("mlx.core")
+pytest.importorskip("mlx.core")
 import mlx.core as mx  # noqa: E402
 
-mx.set_default_device(mx.cpu)
+@pytest.fixture(autouse=True)
+def _cpu_default_device():
+    # CPU-pinned by design, but the pin must stay test-scoped: a module-level
+    # set_default_device leaks into every later-collected module (pytest
+    # imports all test modules before running any) and flips the engine's
+    # Metal bit-exactness suites onto CPU fallbacks process-wide.
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        yield
+    finally:
+        mx.set_default_device(previous)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _FIXTURE = os.path.join(_HERE, "fixtures", "deepseek_v4_parity_golden.npz")

@@ -25,7 +25,20 @@ from mtplx.attention_context import (  # noqa: E402
     current_attention_phase,
 )
 
-mx.set_default_device(mx.cpu)
+@pytest.fixture(autouse=True)
+def _cpu_default_device():
+    # These contract tests are CPU-deterministic by design, but the device pin
+    # must stay test-scoped: pytest imports every test module before running
+    # any, so a module-level set_default_device(mx.cpu) here leaked CPU into
+    # the whole process and flipped the engine's Metal bit-exactness suites
+    # onto CPU fallbacks (48 failures in a full run, none in isolation).
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        yield
+    finally:
+        mx.set_default_device(previous)
+
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MODEL = os.path.join(_HERE, "..", "mtplx", "models", "deepseek_v4.py")

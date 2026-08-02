@@ -42,6 +42,14 @@ _guard_spec = importlib.util.spec_from_file_location("dsv4_guard_window", _GUARD
 G = importlib.util.module_from_spec(_guard_spec)
 _guard_spec.loader.exec_module(G)
 
+if not G.LAGUNA_BENCH.is_file():
+    pytest.skip(
+        "machine-local DeepSeek-V4 bench-harness gates: repository guard "
+        f"verifier not present at {G.LAGUNA_BENCH} "
+        "(set MTPLX_DSV4_GUARD_VERIFIER to point at it)",
+        allow_module_level=True,
+    )
+
 
 def _stage4_env(_enabled: bool) -> dict[str, str]:
     return {

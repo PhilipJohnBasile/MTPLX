@@ -28,7 +28,10 @@ WINDOW_PATH_ENV = "MTPLX_DSV4_GUARD_WINDOW_PATH"
 WINDOW_SHA256_ENV = "MTPLX_DSV4_GUARD_WINDOW_SHA256"
 DEFAULT_LOCK_PATH = Path("/tmp/mtplx-gpu-exclusive.lock")
 LAGUNA_BENCH = Path(
-    "/Users/davidtai/projects/OpenSourceWTF/bench/laguna/laguna_fixed_m2_bench.py"
+    os.environ.get(
+        "MTPLX_DSV4_GUARD_VERIFIER",
+        "/Users/davidtai/projects/OpenSourceWTF/bench/laguna/laguna_fixed_m2_bench.py",
+    )
 )
 _MAX_RECEIPT_BYTES = 16 * 1024
 _HEX_DIGITS = frozenset("0123456789abcdef")
