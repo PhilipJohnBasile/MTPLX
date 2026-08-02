@@ -53,16 +53,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import platform
+import subprocess
 import sys
 import time
 import traceback
 from pathlib import Path
 
-import mlx.core as mx
+_SCRIPT_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from deepseek_v4_guard_window import load_verified_guard_window  # noqa: E402
 
 
 # Peak memory is read per arm, so the ceiling is a per-arm claim.  Kept as a
@@ -421,7 +426,70 @@ def _tiny_runtime_and_prompt(n_prompt: int):
     return module._runtime(vocab=8), module._prompt(n_prompt, vocab=8)
 
 
+def _deepseek_v4_moe_tail_install_report(rt, backend) -> dict | None:
+    """Construction-time receipt for the fixed body/MTP callable route."""
+    body = [layer.ffn._tail_combine for layer in rt.model.layers]
+    mtp = [block.ffn._tail_combine for block in rt.model.mtp_blocks]
+    installed = [
+        route for route in body if isinstance(route, backend._InstalledMoETailRoute)
+    ]
+    mtp_installed = [
+        route for route in mtp if isinstance(route, backend._InstalledMoETailRoute)
+    ]
+    if not backend._MOE_TAIL:
+        if installed or mtp_installed:
+            raise RuntimeError("stock arm unexpectedly installed the MoE-tail route")
+        if any(route is not backend._stock_moe_tail_combine for route in body + mtp):
+            raise RuntimeError("stock arm has a non-stock MoE-tail callable")
+        return None
+    if len(body) != 43 or len(installed) != 43:
+        raise RuntimeError(
+            f"MoE-tail candidate installed {len(installed)} of {len(body)} body layers"
+        )
+    if len(mtp) != 1 or mtp_installed:
+        raise RuntimeError("MoE-tail candidate must leave the one MTP block stock")
+    if any(route is not backend._stock_moe_tail_combine for route in mtp):
+        raise RuntimeError("MoE-tail candidate MTP callable is not stock")
+    if not backend._MOE_TAIL_SELF_CHECKED or backend._MOE_TAIL_KERNEL is None:
+        raise RuntimeError("MoE-tail Metal construction self-check did not complete")
+    return {
+        "route": "decode_verify_m4",
+        "body_layers_installed": len(installed),
+        "mtp_layers_stock": len(mtp),
+        "verify_rows": 4,
+        "repair_rows": 1,
+        "topk": 6,
+        "hidden_size": 4096,
+        "kernel_selfcheck_exact": True,
+    }
+
+
 def main() -> int:
+    # This must precede the first MLX import.  It binds this descendant to the
+    # still-live run_guarded process and its still-held canonical GPU lock.
+    guard_window = load_verified_guard_window()
+    global mx
+    import mlx.core as mx
+
+    mlx_core_path = Path(mx.__file__).resolve()
+    mlx_lib_path = mlx_core_path.parent / "lib" / "libmlx.dylib"
+    mlx_identity = {
+        "version": mx.__version__,
+        "core_path": str(mlx_core_path),
+        "core_sha256": hashlib.sha256(mlx_core_path.read_bytes()).hexdigest(),
+        "lib_path": str(mlx_lib_path),
+        "lib_sha256": hashlib.sha256(mlx_lib_path.read_bytes()).hexdigest(),
+    }
+    required_mlx_identity = {
+        "version": "0.31.2",
+        "core_sha256": "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6",
+        "lib_sha256": "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd",
+    }
+    if any(mlx_identity[key] != value for key, value in required_mlx_identity.items()):
+        raise RuntimeError(
+            f"requires official MLX 0.31.2 binary identity: {mlx_identity}"
+        )
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--model")
     ap.add_argument("--prompt-file")
@@ -445,6 +513,11 @@ def main() -> int:
     )
     ap.add_argument("--out", help="receipt path stem; writes <stem>.json and <stem>.txt")
     ap.add_argument(
+        "--receipt-role",
+        choices=("measurement", "discarded_control_primer"),
+        default="measurement",
+    )
+    ap.add_argument(
         "--require-exact",
         action="store_true",
         help="fail the run on any spec-vs-AR divergence, on any lane.  Implied by "
@@ -460,9 +533,23 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    launch_mtplx_env = {
+        key: value
+        for key, value in sorted(os.environ.items())
+        if key.startswith("MTPLX_")
+        and not key.startswith("MTPLX_GUARD_ATTEST_")
+        and not key.startswith("MTPLX_DSV4_GUARD_WINDOW_")
+    }
+
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
     load_seconds = 0.0
+    source_commit = None
+    artifact_identity = None
+    loaded_runtime_identity = None
+    prompt_identity = None
+    prompt_path = None
+    moe_tail_report = None
     config: dict = {}
     quant: dict = {}
     model_path = Path(args.tiny and "." or (args.model or "."))
@@ -474,11 +561,17 @@ def main() -> int:
         if not args.model:
             sys.exit("no model path; pass --model (or --tiny)")
         model_path = Path(os.path.expanduser(args.model)).resolve()
-        from mlx_lm.utils import load_config
-
+        from deepseek_v4_moe_tail_gate import (
+            _validate_loaded_runtime,
+            _validate_model_artifact,
+        )
         from mtplx import runtime as mtplx_runtime
+        from mtplx.models import deepseek_v4 as deepseek_v4_backend
 
-        config = load_config(model_path)
+        try:
+            config, artifact_identity = _validate_model_artifact(model_path)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            sys.exit(f"model identity gate failed: {error}")
         quant = config.get("quantization") or {}
         overrides = [k for k in quant if k not in ("group_size", "bits", "mode")]
         print(f"[bench] model      : {model_path}")
@@ -494,6 +587,26 @@ def main() -> int:
         rt = mtplx_runtime.load(model_path, mtp=True)
         mx.eval(rt.model.parameters())
         load_seconds = time.perf_counter() - t0
+        try:
+            loaded_runtime_identity = _validate_loaded_runtime(rt, config)
+            moe_tail_report = _deepseek_v4_moe_tail_install_report(
+                rt, deepseek_v4_backend
+            )
+        except (AttributeError, RuntimeError, ValueError) as error:
+            sys.exit(f"loaded runtime identity gate failed: {error}")
+        try:
+            source_commit = subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(Path(__file__).resolve().parents[1]),
+                    "rev-parse",
+                    "HEAD",
+                ],
+                text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            source_commit = None
         print(f"[bench] loaded in {load_seconds:.1f}s  "
               f"active={_gib(_active_bytes()):.2f} GiB  "
               f"peak={_gib(_peak_bytes()):.2f} GiB  "
@@ -505,10 +618,17 @@ def main() -> int:
                 "bind, so there is no speculative lane to benchmark"
             )
 
-        prompt_text = Path(args.prompt_file).read_text() if args.prompt_file else None
-        if prompt_text is None:
+        if not args.prompt_file:
             sys.exit("no prompt; pass --prompt-file")
+        prompt_path = Path(args.prompt_file).expanduser().resolve()
+        prompt_bytes = prompt_path.read_bytes()
+        prompt_text = prompt_bytes.decode("utf-8")
         prompt_ids = list(rt.tokenizer.encode(prompt_text))
+        prompt_identity = {
+            "path": str(prompt_path),
+            "sha256": hashlib.sha256(prompt_bytes).hexdigest(),
+            "tokens": len(prompt_ids),
+        }
         total_context = len(prompt_ids) + args.max_tokens
         print(f"[bench] prompt tokens: {len(prompt_ids)}  new: {args.max_tokens}  "
               f"total context: {total_context}")
@@ -633,6 +753,10 @@ def main() -> int:
 
     receipt = {
         "harness": "scripts/deepseek_v4_mtpk_bench.py",
+        "source_commit": source_commit,
+        "artifact_identity": artifact_identity,
+        "loaded_runtime_identity": loaded_runtime_identity,
+        "mlx_identity": mlx_identity,
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "command": ["python", *sys.argv],
         "host": {
@@ -644,6 +768,10 @@ def main() -> int:
             k: v for k, v in sorted(os.environ.items())
             if k.startswith("MTPLX_") or k in ("HF_HUB_OFFLINE", "PYTHONPATH")
         },
+        "launch_mtplx_env": launch_mtplx_env,
+        "guard_window": guard_window,
+        "receipt_role": args.receipt_role,
+        "performance_eligible": args.receipt_role == "measurement",
         "tiny": bool(args.tiny),
         "model_path": str(model_path),
         "model_type": config.get("model_type"),
@@ -655,9 +783,11 @@ def main() -> int:
             "default_mode": quant.get("mode"),
         },
         "sampling": {"greedy": True, "temperature": 0.0, "stop_token_ids": []},
-        "prompt_file": args.prompt_file,
+        "prompt_file": str(prompt_path) if prompt_path is not None else args.prompt_file,
+        "prompt": prompt_identity,
         "prompt_tokens": len(prompt_ids),
         "max_tokens": args.max_tokens,
+        "depths": list(args.depths),
         "verify_strategy": args.verify_strategy,
         "verify_core": args.verify_core,
         "mtp_history_policy": args.mtp_history_policy,
@@ -667,6 +797,7 @@ def main() -> int:
         "require_exact": bool(args.require_exact),
         "spec_equals_ar_enforced": enforce_exact,
         "load_seconds": load_seconds,
+        "deepseek_v4_moe_tail": moe_tail_report,
         "active_after_load_gib": _gib(after_load_active),
         "arms": arms,
         "status": status,
