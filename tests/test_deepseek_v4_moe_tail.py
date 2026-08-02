@@ -297,6 +297,9 @@ def test_guarded_tail_gate_is_one_load_and_synchronizes_each_sample():
     source = _GATE_PATH.read_text(encoding="utf-8")
     assert "mtplx_runtime.load(model_path, mtp=True)" in source
     assert "_load_base_model" not in source
+    reject = source.index("if D._MOE_TAIL:")
+    load = source.index("mtplx_runtime.load(model_path, mtp=True)")
+    assert reject < load, "reject an enabled candidate before the heavyweight load"
     assert '_REQUIRED_MLX_VERSION = "0.31.2"' in source
     assert "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6" in source
     assert "ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33" in source

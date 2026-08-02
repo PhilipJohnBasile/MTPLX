@@ -309,6 +309,12 @@ def main() -> int:
     sys.path.insert(0, str(repo))
     from mtplx.attention_context import attention_phase
     from mtplx.models import deepseek_v4 as D
+
+    if D._MOE_TAIL:
+        raise SystemExit(
+            "parity gate must load the stock arm with MTPLX_DSV4_MOE_TAIL=0; "
+            "the candidate is installed explicitly after the authentic capture"
+        )
     from mtplx import runtime as mtplx_runtime
 
     model_path = Path(args.model).expanduser().resolve()
@@ -336,11 +342,6 @@ def main() -> int:
         loaded_identity = _validate_loaded_runtime(runtime, config)
     except ValueError as exc:
         raise SystemExit(f"loaded runtime identity gate failed: {exc}") from exc
-    if D._MOE_TAIL:
-        raise SystemExit(
-            "parity gate must load the stock arm with MTPLX_DSV4_MOE_TAIL=0; "
-            "the candidate is installed explicitly after the authentic capture"
-        )
     model = runtime.model
     tokenizer = runtime.tokenizer
     mx.eval(runtime.model.parameters())
