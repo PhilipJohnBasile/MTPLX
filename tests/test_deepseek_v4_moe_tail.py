@@ -18,6 +18,7 @@ import pytest
 
 pytest.importorskip("mlx.core")
 import mlx.core as mx  # noqa: E402
+from mtplx.attention_context import attention_phase  # noqa: E402
 
 mx.set_default_device(mx.cpu)
 
@@ -79,8 +80,47 @@ def test_tail_kernel_uses_one_output_owner_and_real_metal_exact_selfcheck():
     implementation = open(_MODEL, encoding="utf-8").read()
     assert "_verify_moe_tail_exact(kernel)" in implementation
     assert "for rows in (1, 4):" in implementation
-    assert "routes = {" in implementation
+    assert "current_attention_phase()" in implementation
     assert "_stock_moe_tail_combine" in implementation
+
+
+@pytest.mark.parametrize("rows", [1, 4])
+def test_prefill_tiny_shapes_remain_stock(monkeypatch, rows):
+    """Flattened M alone cannot turn a tiny prefill into decode/verify."""
+    monkeypatch.setattr(D, "_moe_tail_apply", lambda *_: mx.array([-99.0]))
+    route = D._InstalledMoETailRoute(kernel=object())
+    routed = mx.zeros((rows, 6, 8), dtype=mx.bfloat16)
+    weights = mx.ones((rows, 6), dtype=mx.bfloat16)
+    shared = mx.ones((rows, 8), dtype=mx.bfloat16)
+    with attention_phase("prefill"):
+        got = route(routed, weights, shared)
+    assert tuple(got.shape) == (rows, 8)
+    assert bool(mx.all(got == 1))
+
+
+def test_decode_verify_m4_uses_custom(monkeypatch):
+    sentinel = mx.array([-99.0])
+    monkeypatch.setattr(D, "_moe_tail_apply", lambda *_: sentinel)
+    route = D._InstalledMoETailRoute(kernel=object())
+    with attention_phase("decode_verify"):
+        got = route(
+            mx.zeros((4, 6, 8)), mx.zeros((4, 6)), mx.zeros((4, 8))
+        )
+    assert got is sentinel
+
+
+@pytest.mark.parametrize("phase", ["ar_decode", "unknown"])
+def test_m1_stays_stock_outside_verify_route(monkeypatch, phase):
+    sentinel = mx.array([-99.0])
+    monkeypatch.setattr(D, "_moe_tail_apply", lambda *_: sentinel)
+    route = D._InstalledMoETailRoute(kernel=object())
+    routed = mx.zeros((1, 6, 8), dtype=mx.bfloat16)
+    weights = mx.zeros((1, 6), dtype=mx.bfloat16)
+    shared = mx.ones((1, 8), dtype=mx.bfloat16)
+    with attention_phase(phase):
+        got = route(routed, weights, shared)
+    assert tuple(got.shape) == (1, 8)
+    assert bool(mx.all(got == 1))
 
 
 def test_tail_is_not_a_cpu_silent_fallback_when_explicitly_enabled():
@@ -95,7 +135,12 @@ def test_guarded_tail_gate_is_one_load_and_synchronizes_each_sample():
         Path(_HERE).parent / "scripts" / "deepseek_v4_moe_tail_gate.py"
     ).read_text(encoding="utf-8")
     assert "_load_base_model" in source
-    assert "--prompt-tokens" in source
+    assert '_REQUIRED_MLX_VERSION = "0.31.2"' in source
+    assert "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6" in source
+    assert "ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33" in source
+    assert "smoke-2bitdq-20260731-prompt2.txt" in source
+    assert "_REQUIRED_PROMPT_TOKENS = 328" in source
+    assert "hashlib.sha256" in source
     assert "mx.eval(out)" in source
     assert "mx.synchronize()" in source
     assert "exact_parity" in source

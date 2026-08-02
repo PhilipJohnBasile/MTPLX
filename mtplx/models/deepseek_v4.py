@@ -279,6 +279,7 @@ import mlx.nn as nn
 
 from mlx_lm.models.base import BaseModelArgs
 from mlx_lm.models.switch_layers import SwiGLU, SwitchGLU
+from mtplx.attention_context import current_attention_phase
 
 
 # Default per-layer compress ratios for DeepSeek-V4-Flash (43 body layers; the
@@ -566,12 +567,36 @@ def _verify_moe_tail_exact(kernel) -> None:
     _MOE_TAIL_SELF_CHECKED = True
 
 
+class _InstalledMoETailRoute:
+    """Phase-and-M route over an already validated custom kernel.
+
+    ``current_attention_phase`` is the runtime-owned phase signal already set by
+    generation.  It is the only hot decision: no environment, topology, dtype,
+    or model metadata is re-read after installation.  Tiny M=1/M=4 prefills are
+    therefore explicitly stock despite sharing decode's flattened row count.
+    """
+
+    __slots__ = ("kernel",)
+
+    def __init__(self, kernel) -> None:
+        self.kernel = kernel
+
+    def __call__(
+        self, routed: mx.array, weights: mx.array, shared: mx.array
+    ) -> mx.array:
+        phase = current_attention_phase()
+        rows = int(routed.shape[0])
+        if phase == "decode_verify" and rows == 4:
+            return _moe_tail_apply(self.kernel, routed, weights, shared)
+        return _stock_moe_tail_combine(routed, weights, shared)
+
+
 def _install_moe_tail_combine(args: "ModelArgs"):
     """Return the fixed tail callable, or fail before an enabled generation lane.
 
-    The explicit phase route is M=1 AR / M=4 K3 verifier.  Prefill remains the
-    stock expression: it has different rows and has not passed this lane's exact
-    Metal self-check.  That logical-M selection is the sole runtime decision;
+    The explicit custom phase route is only M=4 K3 verification.  AR decode,
+    prefill (including tiny M=1/M=4 prefills), and every other phase remain the
+    stock expression.  Phase + logical M are the sole runtime decisions;
     topology, dtype mode, compilation, and all other routing are fixed here.
     """
     _validate_moe_tail_config(args)
@@ -583,16 +608,7 @@ def _install_moe_tail_combine(args: "ModelArgs"):
     kernel = _moe_tail_metal_kernel()
     _verify_moe_tail_exact(kernel)
 
-    routes = {
-        1: lambda routed, weights, shared: _moe_tail_apply(kernel, routed, weights, shared),
-        4: lambda routed, weights, shared: _moe_tail_apply(kernel, routed, weights, shared),
-    }
-
-    def combine(routed: mx.array, weights: mx.array, shared: mx.array) -> mx.array:
-        route = routes.get(int(routed.shape[0]), _stock_moe_tail_combine)
-        return route(routed, weights, shared)
-
-    return combine
+    return _InstalledMoETailRoute(kernel)
 
 
 def _store_dtype(dtype):
