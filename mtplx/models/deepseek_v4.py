@@ -272,7 +272,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field, replace
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -438,6 +438,161 @@ _SINKHORN_KERNEL = _env_flag("MTPLX_DSV4_SINKHORN_KERNEL", False)
 #: A/B control, not a supported serving mode.  Read from
 #: ``MTPLX_DSV4_FP32_ACTIVATIONS`` at import; tests set the module attribute.
 _FP32_ACTIVATIONS = _env_flag("MTPLX_DSV4_FP32_ACTIVATIONS", False)
+
+
+#: Fuse only the MoE *tail* after the stock quantised ``SwitchGLU`` projections:
+#: ``(routed * weights[..., None].astype(routed.dtype)).sum(axis=-2) + shared``.
+#:
+#: The kernel is deliberately a narrow DeepSeek-V4-Flash decode/verify lane: BF16
+#: activation storage, hidden width 4096, and exactly six routed experts.  It does
+#: not alter gate/up/down projection ownership, their Q2 format, their clamp, or
+#: routing.  The flag is read once, and an enabled instance receives a prebound
+#: callable at construction; there is no environment or eligibility branch in the
+#: token path.  A forced lane on a non-GPU device fails at construction instead of
+#: silently falling through to stock.
+_MOE_TAIL = _env_flag("MTPLX_DSV4_MOE_TAIL", False)
+_MOE_TAIL_TOPK = 6
+_MOE_TAIL_HIDDEN = 4096
+_MOE_TAIL_EXPERTS = 256
+_MOE_TAIL_KERNEL = None
+_MOE_TAIL_SELF_CHECKED = False
+
+
+# One output owner serially forms the six BF16 products then six BF16 additions.
+# MLX's strided reducer association is an implementation detail, so this is not
+# asserted equivalent by inspection: :func:`_verify_moe_tail_exact` runs the real
+# Metal kernel against the stock expression for M=1 and M=4 before the route can
+# be installed.  A mismatch fails construction; it can never become a hot-path
+# fallback.
+_MOE_TAIL_METAL_SOURCE = r"""
+    using namespace metal;
+    constexpr uint TOPK = 6;
+    constexpr uint HIDDEN = 4096;
+
+    uint i = thread_position_in_grid.x;
+    if (i >= n_elements) { return; }
+    uint row = i / HIDDEN;
+    uint column = i % HIDDEN;
+    T mixed = T(0.0f);
+    for (uint route = 0; route < TOPK; ++route) {
+        T product = T(routed[(row * TOPK + route) * HIDDEN + column]
+                      * weights[row * TOPK + route]);
+        mixed = T(product + mixed);
+    }
+    out[i] = T(mixed + shared[i]);
+"""
+
+
+def _validate_moe_tail_config(args: "ModelArgs") -> None:
+    """Validate the fixed Q2 tail lane before any generation graph is built."""
+    if _FP32_ACTIVATIONS:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires DeepSeek-V4-Flash BF16 activation "
+            "storage; MTPLX_DSV4_FP32_ACTIVATIONS is an explicit stock A/B arm"
+        )
+    if int(args.num_experts_per_tok) != _MOE_TAIL_TOPK:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires DeepSeek-V4-Flash top-k=6; got "
+            f"top-k={args.num_experts_per_tok}"
+        )
+    if int(args.hidden_size) != _MOE_TAIL_HIDDEN:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires DeepSeek-V4-Flash hidden_size=4096; got "
+            f"hidden_size={args.hidden_size}"
+        )
+    if int(args.n_routed_experts) != _MOE_TAIL_EXPERTS:
+        raise ValueError(
+            "MTPLX_DSV4_MOE_TAIL requires DeepSeek-V4-Flash n_routed_experts=256; got "
+            f"n_routed_experts={args.n_routed_experts}"
+        )
+
+
+def _moe_tail_metal_kernel():
+    """Build the one fixed BF16 tail kernel during MoE construction."""
+    global _MOE_TAIL_KERNEL
+    if _MOE_TAIL_KERNEL is None:
+        _MOE_TAIL_KERNEL = mx.fast.metal_kernel(
+            name="mtplx_dsv4_moe_tail_bf16_topk6_h4096",
+            input_names=["routed", "weights", "shared", "n_elements"],
+            output_names=["out"],
+            source=_MOE_TAIL_METAL_SOURCE,
+        )
+    return _MOE_TAIL_KERNEL
+
+
+def _moe_tail_apply(kernel, routed: mx.array, weights: mx.array, shared: mx.array) -> mx.array:
+    """Dispatch the precompiled fixed tail; ``rows`` is the only varying value."""
+    rows = int(routed.shape[0])
+    n_elements = rows * _MOE_TAIL_HIDDEN
+    (out,) = kernel(
+        inputs=[routed, weights.astype(mx.bfloat16), shared, n_elements],
+        grid=((n_elements + 31) // 32 * 32, 1, 1),
+        threadgroup=(32, 1, 1),
+        output_shapes=[(rows, _MOE_TAIL_HIDDEN)],
+        output_dtypes=[mx.bfloat16],
+    )
+    return out
+
+
+def _verify_moe_tail_exact(kernel) -> None:
+    """Prove the Metal association against stock on real M=1 and M=4 tensors.
+
+    The values are deterministic and deliberately span signs/exponents.  This is
+    an installation boundary self-check, not a per-token proof mechanism.
+    """
+    global _MOE_TAIL_SELF_CHECKED
+    if _MOE_TAIL_SELF_CHECKED:
+        return
+    for rows in (1, 4):
+        n = rows * _MOE_TAIL_TOPK * _MOE_TAIL_HIDDEN
+        routed = ((mx.arange(n, dtype=mx.float32) % 29 - 14) / 7).reshape(
+            rows, _MOE_TAIL_TOPK, _MOE_TAIL_HIDDEN
+        ).astype(mx.bfloat16)
+        weights = ((mx.arange(rows * _MOE_TAIL_TOPK, dtype=mx.float32) % 13 - 6) / 5)
+        weights = weights.reshape(rows, _MOE_TAIL_TOPK).astype(mx.bfloat16)
+        shared = ((mx.arange(rows * _MOE_TAIL_HIDDEN, dtype=mx.float32) % 31 - 15) / 11)
+        shared = shared.reshape(rows, _MOE_TAIL_HIDDEN).astype(mx.bfloat16)
+        stock = _stock_moe_tail_combine(routed, weights, shared)
+        fused = _moe_tail_apply(kernel, routed, weights, shared)
+        mx.eval(stock, fused)
+        if not mx.array_equal(stock, fused):
+            max_abs = float(
+                mx.max(mx.abs(stock.astype(mx.float32) - fused.astype(mx.float32))).item()
+            )
+            raise RuntimeError(
+                "MTPLX_DSV4_MOE_TAIL failed exact Metal self-check at "
+                f"M={rows}: max_abs={max_abs:g}"
+            )
+    _MOE_TAIL_SELF_CHECKED = True
+
+
+def _install_moe_tail_combine(args: "ModelArgs"):
+    """Return the fixed tail callable, or fail before an enabled generation lane.
+
+    The explicit phase route is M=1 AR / M=4 K3 verifier.  Prefill remains the
+    stock expression: it has different rows and has not passed this lane's exact
+    Metal self-check.  That logical-M selection is the sole runtime decision;
+    topology, dtype mode, compilation, and all other routing are fixed here.
+    """
+    _validate_moe_tail_config(args)
+    if not mx.metal.is_available() or mx.default_device() != mx.gpu:
+        raise RuntimeError(
+            "MTPLX_DSV4_MOE_TAIL requires a Metal GPU at model construction; "
+            "select the explicit stock route on CPU"
+        )
+    kernel = _moe_tail_metal_kernel()
+    _verify_moe_tail_exact(kernel)
+
+    routes = {
+        1: lambda routed, weights, shared: _moe_tail_apply(kernel, routed, weights, shared),
+        4: lambda routed, weights, shared: _moe_tail_apply(kernel, routed, weights, shared),
+    }
+
+    def combine(routed: mx.array, weights: mx.array, shared: mx.array) -> mx.array:
+        route = routes.get(int(routed.shape[0]), _stock_moe_tail_combine)
+        return route(routed, weights, shared)
+
+    return combine
 
 
 def _store_dtype(dtype):
@@ -2338,6 +2493,13 @@ class ClampedSwiGLU(SwiGLU):
         return super().__call__(x, gate)
 
 
+def _stock_moe_tail_combine(
+    routed: mx.array, weights: mx.array, shared: mx.array
+) -> mx.array:
+    """The unfused MoE tail, retained as the construction-time stock route."""
+    return (routed * weights[..., None].astype(routed.dtype)).sum(axis=-2) + shared
+
+
 class MoEGate(nn.Module):
     """Reference ``Gate`` (model.py L546-584): sqrtsoftplus scoring, bias-corrected
     (noaux_tc) top-k for score layers, or fixed tid2eid lookup for hash layers.
@@ -2408,6 +2570,13 @@ class DeepseekV4MoE(nn.Module):
         self.shared_experts = DeepseekV4MLP(
             args, args.moe_intermediate_size * args.n_shared_experts
         )
+        # Choose once.  ``__call__`` deliberately invokes this prebound callable
+        # directly, so an enabled tail has no eligible/fallback branch per token.
+        self._tail_combine = (
+            _install_moe_tail_combine(args)
+            if _MOE_TAIL and layer_id < args.num_hidden_layers
+            else _stock_moe_tail_combine
+        )
 
     def __call__(self, x: mx.array, input_ids: Optional[mx.array] = None) -> mx.array:
         shape = x.shape
@@ -2415,8 +2584,7 @@ class DeepseekV4MoE(nn.Module):
         ids = input_ids.reshape(-1) if input_ids is not None else None
         indices, weights = self.gate(xf, ids)
         y = self.switch_mlp(xf, indices)
-        y = (y * weights[..., None].astype(y.dtype)).sum(axis=-2)
-        y = y + self.shared_experts(xf)
+        y = self._tail_combine(y, weights, self.shared_experts(xf))
         return y.reshape(shape)
 
 
