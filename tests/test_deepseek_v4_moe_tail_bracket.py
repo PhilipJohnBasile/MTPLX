@@ -38,6 +38,10 @@ _postflight_spec = importlib.util.spec_from_file_location(
 P = importlib.util.module_from_spec(_postflight_spec)
 _postflight_spec.loader.exec_module(P)
 
+_guard_spec = importlib.util.spec_from_file_location("dsv4_guard_window", _GUARD)
+G = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(G)
+
 
 def _stage4_env(_enabled: bool) -> dict[str, str]:
     return {
@@ -432,6 +436,33 @@ def test_postflight_holds_one_canonical_lock_across_every_probe(monkeypatch, tmp
     with lock_path.open("rb") as after:
         fcntl.flock(after.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(after.fileno(), fcntl.LOCK_UN)
+
+
+def test_postflight_contention_skips_every_service_probe(monkeypatch, tmp_path):
+    lock_path = tmp_path / "gpu.lock"
+    lock_path.touch()
+    monkeypatch.setattr(P, "LOCK_PATH", lock_path)
+    calls = []
+
+    def should_not_run():
+        calls.append("probe")
+        return {"ok": True}
+
+    monkeypatch.setattr(P, "_check_wired_limit", should_not_run)
+    monkeypatch.setattr(P, "_check_quality_models", should_not_run)
+    monkeypatch.setattr(P, "_check_quality_ready_chat", should_not_run)
+    with lock_path.open("rb") as owner:
+        fcntl.flock(owner.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = P.collect_postflight()
+        fcntl.flock(owner.fileno(), fcntl.LOCK_UN)
+
+    assert calls == []
+    assert result["lock_free"]["ok"] is False
+    assert result["lock_free"]["acquired_nonblocking"] is False
+    for name in ("wired_limit_mb", "quality_models", "quality_ready_chat"):
+        assert result[name]["ok"] is False
+        assert result[name]["skipped"] is True
+        assert result[name]["error_type"] == "LockNotHeld"
 
 
 def test_ready_chat_null_content_is_a_structured_failure(monkeypatch):
@@ -865,6 +896,59 @@ def test_guard_attestation_survives_real_zsh_four_grandchild_hops(tmp_path: Path
     ]
     receipt_path.unlink()
     receipt_path.parent.rmdir()
+
+
+def test_live_tuple_ancestry_matches_json_roundtrip_validation(monkeypatch, tmp_path):
+    expected = _guard_window()
+    document = {key: expected[key] for key in V._WINDOW_KEYS}
+    encoded = json.dumps(
+        document, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode()
+    receipt_path = tmp_path / "window.json"
+    environment = {
+        G.WINDOW_PATH_ENV: str(receipt_path),
+        G.WINDOW_SHA256_ENV: hashlib.sha256(encoded).hexdigest(),
+    }
+    repository = SimpleNamespace(
+        _current_process_ancestry=lambda: (300, 200, 100),
+        _lock_is_held_by_other_process=lambda *_args: True,
+    )
+    monkeypatch.setattr(G, "_assert_mlx_not_imported", lambda: None)
+    monkeypatch.setattr(G, "_read_private_receipt", lambda _path: encoded)
+    monkeypatch.setattr(G, "_load_repository_guard", lambda: repository)
+    monkeypatch.setattr(
+        G,
+        "_checked_attestation",
+        lambda _attestation, _path: document["lock_identity"],
+    )
+    monkeypatch.setattr(G.os, "getpid", lambda: 300)
+
+    live = G.load_verified_guard_window(environment=environment)
+    serialized = json.loads(json.dumps(live))
+
+    assert isinstance(live["consumer_verification"]["ancestry"], list)
+    assert live == serialized
+    assert V._guard_errors(live, "validator_live") == []
+    assert V._guard_errors(serialized, "serialized") == []
+    receipts = (
+        _receipt(
+            1_000_000.0,
+            role="discarded_control_primer",
+            guard_window=serialized,
+        ),
+        _receipt(30.0, guard_window=serialized),
+        _receipt(32.0, candidate=True, guard_window=serialized),
+        _receipt(30.4, bracket_index=3, guard_window=serialized),
+    )
+    live_result = V.validate_moe_tail_k3_bracket(
+        *receipts, peak_ceiling_gib=108.0, live_guard_window=live
+    )
+    serialized_result = V.validate_moe_tail_k3_bracket(
+        *receipts, peak_ceiling_gib=108.0, live_guard_window=serialized
+    )
+    assert live_result == serialized_result
+    assert live_result["status"] == "PASS"
+    assert live_result["errors"] == []
 
 
 def test_validator_treats_tmp_and_private_tmp_as_one_lock_realpath():

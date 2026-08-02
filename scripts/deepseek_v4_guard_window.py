@@ -254,7 +254,10 @@ def load_verified_guard_window(
         or document.get("window_id") != _sha256(_canonical_json(attestation))
     ):
         raise RuntimeError("verified guard window identity or expiry is invalid")
-    ancestry = repository._current_process_ancestry()
+    # The repository verifier returns a tuple, but this object is both consumed
+    # live by the validator and persisted as JSON.  Canonicalize before either
+    # path sees it so live and serialized guard semantics are identical.
+    ancestry = list(repository._current_process_ancestry())
     child_pid = attestation["child_pid"]
     guard_pid = attestation["guard_pid"]
     if (
