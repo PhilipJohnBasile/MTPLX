@@ -86,6 +86,7 @@ class MTPLXRuntime:
     mtp_adapter_path: Path | None = None
     mtp_adapter_metadata: dict[str, Any] | None = None
     mtp_adapter_merge_report: dict[str, Any] | None = None
+    deepseek_v4_o_lora_report: dict[str, Any] | None = None
     a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
     a3b_whole_moe_installed: bool = False
     _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
@@ -754,6 +755,28 @@ def load(
             adapter_merge_report = merge_installed_mtp_lora_adapters(model)
     elif merge_mtp_adapter:
         raise RuntimeError("merge_mtp_adapter requires mtp_adapter")
+    deepseek_v4_o_lora_report = None
+    if str(config.get("model_type") or "").lower() == "deepseek_v4":
+        from .models.deepseek_v4 import (
+            _o_lora_mode_from_env,
+            install_deepseek_v4_o_lora_routes,
+        )
+
+        selected_o_lora_mode = _o_lora_mode_from_env()
+        canonical_mixed_route = bool(
+            mtp_enabled and selected_o_lora_mode in {"cached", "gather_qmm"}
+        )
+        if not mtp_enabled:
+            # An artifact that declared but did not ship MTP weights already
+            # degraded to AR above. It has no dense MTP module to validate or
+            # route, so bind the trunk's explicit stock/cached construction.
+            selected_o_lora_mode = "cached"
+        deepseek_v4_o_lora_report = install_deepseek_v4_o_lora_routes(
+            model,
+            mode=selected_o_lora_mode,
+            canonical_mixed_route=canonical_mixed_route,
+        )
+        logger.info("[deepseek-v4-o-lora] %s", deepseek_v4_o_lora_report)
     fused_report: list[dict[str, Any]] = []
     if _is_laguna_s_2_1_mlx_4bit_config(config):
         # Env-gated fused decode paths (MTPLX_LAGUNA_*): with no switches set
@@ -779,6 +802,7 @@ def load(
         mtp_adapter_path=adapter_path,
         mtp_adapter_metadata=adapter_metadata,
         mtp_adapter_merge_report=adapter_merge_report,
+        deepseek_v4_o_lora_report=deepseek_v4_o_lora_report,
         a3b_compiled_target_prefix_factory=compiled_target_factory,
         a3b_whole_moe_installed=False,
     )
