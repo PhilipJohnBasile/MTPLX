@@ -87,6 +87,7 @@ class MTPLXRuntime:
     mtp_adapter_metadata: dict[str, Any] | None = None
     mtp_adapter_merge_report: dict[str, Any] | None = None
     deepseek_v4_o_lora_report: dict[str, Any] | None = None
+    deepseek_v4_attn_proj_wide_m3_report: dict[str, Any] | None = None
     a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
     a3b_whole_moe_installed: bool = False
     _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
@@ -593,10 +594,27 @@ def load(
                 "[proj-quant] requantized %d trunk *_proj modules to %s",
                 len(touched), proj_requant,
             )
+    deepseek_v4_attn_proj_wide_m3_report = None
     if str((config or {}).get("model_type") or "").lower() == "deepseek_v4":
         from .models.deepseek_v4 import configure_deepseek_v4_moe_tail
 
         configure_deepseek_v4_moe_tail(model, config)
+        from .deepseek_v4_attn_proj_wide_m3 import (
+            deepseek_v4_attn_proj_wide_m3_enabled,
+        )
+
+        if deepseek_v4_attn_proj_wide_m3_enabled():
+            from .deepseek_v4_attn_proj_wide_m3 import (
+                install_deepseek_v4_attn_proj_wide_m3,
+            )
+
+            deepseek_v4_attn_proj_wide_m3_report = (
+                install_deepseek_v4_attn_proj_wide_m3(model, config)
+            )
+            logger.info(
+                "[deepseek-v4-attn-proj-wide-m3] %s",
+                deepseek_v4_attn_proj_wide_m3_report,
+            )
     runtime_metadata = _load_runtime_metadata(path)
     contract = (
         (contract or MTPContract())
@@ -803,6 +821,7 @@ def load(
         mtp_adapter_metadata=adapter_metadata,
         mtp_adapter_merge_report=adapter_merge_report,
         deepseek_v4_o_lora_report=deepseek_v4_o_lora_report,
+        deepseek_v4_attn_proj_wide_m3_report=deepseek_v4_attn_proj_wide_m3_report,
         a3b_compiled_target_prefix_factory=compiled_target_factory,
         a3b_whole_moe_installed=False,
     )

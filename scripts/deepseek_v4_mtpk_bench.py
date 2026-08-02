@@ -152,6 +152,53 @@ _ADAPTIVE_WIDTH_BRACKET_ARMS = (
     ("ADAPTIVE-B", True),
     ("K3-C1", False),
 )
+_ATTN_PROJ_WIDE_M3_STAGE4_ENV = {
+    **_ADAPTIVE_WIDTH_STAGE4_ENV,
+    "MTPLX_DSV4_ATTN_PROJ_WIDE_M3": "1",
+}
+_ATTN_PROJ_WIDE_M3_BRACKET_ARMS = (
+    ("CURRENT-PRIMER", False),
+    ("CURRENT-C0", False),
+    ("ATTN-PROJ-M3-B", True),
+    ("CURRENT-C1", False),
+)
+_ATTN_PROJ_WIDE_M3_EXPECTED_HISTOGRAM = {
+    "K1_M2": 3,
+    "K2_M3": 81,
+    "K3_M4": 9,
+}
+_ATTN_PROJ_WIDE_M3_PROFILER_EVIDENCE = {
+    "receipt": "bench/deepseek-v4/semantic-gather-k3-20260802T143027Z-receipt.json",
+    "receipt_sha256": "0ebe0048503ec9cd46a6bcef5be6ef82968a43969004fda6673c1d01841c4b90",
+    "qmv_wide_operation_count": 72058,
+    "q4_bf16_nv3_kernel_count": 690,
+    "timing_classification": "OVERLAP_INCLUSIVE_NONEXCLUSIVE_UPPER_BOUND",
+    "use": "structural_candidate_selection_only_not_performance_verdict",
+}
+_ATTN_PROJ_WIDE_M3_ROUTE_RECEIPT = {
+    "route": "target_verify_m3_original_q4_attention_projections",
+    "logical_input_shape": [1, 3, 1024],
+    "body_wq_b_prepared": 43,
+    "body_indexer_wq_b_prepared": 0,
+    "body_indexer_wq_b_stock": 21,
+    "total_q4_projections_prepared": 43,
+    "main_geometry": {"k": 1024, "n": 32768, "layers": 43},
+    "indexer_geometry_stock": {"k": 1024, "n": 8192, "layers": 21},
+    "indexer_activation_threshold_rows": 512,
+    "canonical_max_compressed_rows": 146,
+    "quantization": "affine_q4_g64",
+    "activation_dtype": "bfloat16",
+    "mtp_attention_dense_stock": 1,
+    "o_lora_stock": 86,
+    "small_attention_projections_stock": True,
+    "mla_sdpa_cache_stock": True,
+    "other_target_widths_stock": [2, 4],
+    "ar_prefill_repair_mtp_stock": True,
+    "kernel_selfcheck_exact": True,
+    "both_arms_preinstalled": True,
+    "arm_selection": "between_generations",
+    "in_generation_module_rewrites": False,
+}
 _ADAPTIVE_WIDTH_POLICY_RECEIPT = {
     "kind": "deepseek_v4_preregistered_max_k3",
     "immutable": True,
@@ -1072,6 +1119,253 @@ def _run_adaptive_width_bracket(
     return int(receipt["status"])
 
 
+def _attn_proj_wide_m3_arm_binding(rt) -> dict:
+    """Read the complete module arm outside measured generation."""
+
+    selector = getattr(rt.model, "_mtplx_dsv4_attn_proj_wide_m3_selector", None)
+    projections = tuple(getattr(selector, "projections", ()))
+    return {
+        "selected": bool(getattr(selector, "candidate_selected", False)),
+        "projections": len(projections),
+        "original_stock_modules": sum(
+            projection.owner.wq_b is projection.stock for projection in projections
+        ),
+        "candidate_modules": sum(
+            projection.owner.wq_b is projection.candidate for projection in projections
+        ),
+    }
+
+
+def _attn_proj_wide_m3_bracket_receipt(
+    *,
+    common: dict,
+    arms: list[dict],
+    process_pid: int,
+    model_object_id: int,
+    policy_receipt: dict,
+    route_report: dict,
+) -> dict:
+    """Fail closed on one-load stock/attention-M3 bracket drift."""
+
+    errors = _adaptive_width_common_errors(
+        {**common, "launch_mtplx_env": dict(_ADAPTIVE_WIDTH_STAGE4_ENV)}
+    )
+    if common.get("launch_mtplx_env") != _ATTN_PROJ_WIDE_M3_STAGE4_ENV:
+        errors.append("attention M3-wide launch environment is not canonical")
+    if common.get("diagnostic_profiler_evidence") != _ATTN_PROJ_WIDE_M3_PROFILER_EVIDENCE:
+        errors.append("attention M3-wide diagnostic profiler evidence changed")
+    if route_report != common.get("deepseek_v4_attn_proj_wide_m3"):
+        errors.append("attention M3-wide construction receipt changed")
+    if route_report != _ATTN_PROJ_WIDE_M3_ROUTE_RECEIPT:
+        errors.append("attention M3-wide construction receipt is not canonical")
+    if policy_receipt != _ADAPTIVE_WIDTH_POLICY_RECEIPT:
+        errors.append("installed D2=10/M4-wide policy receipt is invalid")
+    if type(process_pid) is not int or process_pid <= 0:
+        errors.append("process identity is invalid")
+    if type(model_object_id) is not int or model_object_id <= 0:
+        errors.append("model object identity is invalid")
+
+    expected_order = [label for label, _selected in _ATTN_PROJ_WIDE_M3_BRACKET_ARMS]
+    arms_by_label = {
+        str(arm.get("label")): arm for arm in arms if isinstance(arm, dict)
+    }
+    if list(arms_by_label) != expected_order:
+        errors.append("attention M3-wide arm order is invalid")
+    engagements: dict[str, dict] = {}
+    for label, expected_selected in _ATTN_PROJ_WIDE_M3_BRACKET_ARMS:
+        arm = arms_by_label.get(label, {})
+        if arm.get("error") is not None:
+            errors.append(f"{label} failed")
+        if arm.get("generated_tokens") != 256 or arm.get("finish_reason") != "length":
+            errors.append(f"{label} did not complete the canonical workload")
+        tokens = arm.get("tokens")
+        if not isinstance(tokens, list) or arm.get("token_sha256") != _token_sha256(tokens):
+            errors.append(f"{label} token identity is malformed")
+        errors.extend(_validate_behavior_stats(label, arm.get("stats_full")))
+        engagement, engagement_errors = _adaptive_width_engagement(
+            {**arm, "label": "ADAPTIVE-B"}
+        )
+        errors.extend(f"{label}: {error}" for error in engagement_errors)
+        binding = arm.get("attn_proj_wide_m3_binding")
+        expected_binding = {
+            "selected": expected_selected,
+            "projections": 43,
+            "original_stock_modules": 0 if expected_selected else 43,
+            "candidate_modules": 43 if expected_selected else 0,
+        }
+        if binding != expected_binding:
+            errors.append(f"{label} attention M3-wide binding is not the requested arm")
+        histogram = engagement.get("event_derived_width_histogram")
+        engagement["attn_proj_wide_m3_binding"] = binding
+        engagement["eligible_target_m3_projection_calls"] = (
+            histogram.get("K2_M3", 0) * 43
+            if expected_selected and isinstance(histogram, dict)
+            else 0
+        )
+        engagements[label] = engagement
+
+    for label in expected_order:
+        if (
+            engagements.get(label, {}).get("event_derived_width_histogram")
+            != _ATTN_PROJ_WIDE_M3_EXPECTED_HISTOGRAM
+        ):
+            errors.append(f"{label} changed the measured D2=10/M4-wide shape mix")
+    if (
+        engagements.get("ATTN-PROJ-M3-B", {}).get(
+            "eligible_target_m3_projection_calls"
+        )
+        != 3483
+    ):
+        errors.append("candidate did not expose exactly 81 M3 x 43 projection calls")
+
+    controls = [
+        arms_by_label.get(label, {}).get("tokens")
+        for label in ("CURRENT-PRIMER", "CURRENT-C0", "CURRENT-C1")
+    ]
+    controls_equal = (
+        all(isinstance(tokens, list) and len(tokens) == 256 for tokens in controls)
+        and controls[0] == controls[1] == controls[2]
+    )
+    if not controls_equal:
+        errors.append("current controls are not token-identical")
+    candidate_tokens = arms_by_label.get("ATTN-PROJ-M3-B", {}).get("tokens")
+    candidate_valid = isinstance(candidate_tokens, list) and len(candidate_tokens) == 256
+    if not candidate_valid:
+        errors.append("attention M3-wide candidate token sequence is malformed")
+    divergent = (
+        [
+            index
+            for index, pair in enumerate(zip(controls[1], candidate_tokens, strict=True))
+            if pair[0] != pair[1]
+        ]
+        if controls_equal and candidate_valid
+        else []
+    )
+    quality = {
+        "target_authority_preserved": controls_equal and candidate_valid,
+        "mode": "exact" if not divergent else "bf16_near_tie_reported",
+        "control_token_sha256": _token_sha256(controls[1]) if controls_equal else None,
+        "candidate_token_sha256": (
+            _token_sha256(candidate_tokens) if candidate_valid else None
+        ),
+        "divergent_tokens": len(divergent),
+        "first_divergence": None if not divergent else {
+            "continuation_index": divergent[0],
+            "control_token_id": int(controls[1][divergent[0]]),
+            "candidate_token_id": int(candidate_tokens[divergent[0]]),
+        },
+        "human_eval": "deferred_by_authorized_policy",
+    }
+
+    def tps(label: str) -> float:
+        value = arms_by_label.get(label, {}).get("decode_tokens_per_second")
+        return float(value) if type(value) in {int, float} and value > 0 else 0.0
+
+    c0_tps = tps("CURRENT-C0")
+    c1_tps = tps("CURRENT-C1")
+    candidate_tps = tps("ATTN-PROJ-M3-B")
+    if not c0_tps or not c1_tps or not candidate_tps:
+        errors.append("performance cells are missing positive throughput")
+    control_mean = (c0_tps + c1_tps) / 2.0
+    drift_tps = abs(c1_tps - c0_tps)
+    performance = {
+        "control_c0_tps": c0_tps,
+        "control_c1_tps": c1_tps,
+        "control_mean_tps": control_mean,
+        "control_drift_tps": drift_tps,
+        "candidate_tps": candidate_tps,
+        "candidate_minus_control_mean_tps": candidate_tps - control_mean,
+        "promotion_floor_tps": control_mean + drift_tps,
+        "promotion_pass": candidate_tps > control_mean + drift_tps,
+        "reported_below_40_tps": candidate_tps < 40.0,
+    }
+    return {
+        **common,
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "receipt_role": "attn_proj_wide_m3_performance_bracket",
+        "performance_eligible": True,
+        "single_process_bracket": {
+            "process_pid": process_pid,
+            "model_object_id": model_object_id,
+            "model_load_count": 1,
+            "execution_order": expected_order,
+            "discarded_primer": "CURRENT-PRIMER",
+        },
+        "policy": policy_receipt,
+        "policy_engagement": engagements,
+        "token_quality": quality,
+        "performance": performance,
+        "arms": arms,
+        "validation_errors": errors,
+        "status": int(bool(errors)),
+    }
+
+
+def _run_attn_proj_wide_m3_bracket(
+    *, rt, prompt_ids, args, common_receipt, out_stem
+) -> int:
+    """Run discarded primer, C0, candidate, and C1 on one loaded model."""
+
+    from mtplx.deepseek_v4_adaptive_width import (
+        install_deepseek_v4_adaptive_width_policy,
+    )
+    from mtplx.deepseek_v4_attn_proj_wide_m3 import (
+        select_deepseek_v4_attn_proj_wide_m3_arm,
+    )
+    from mtplx.sampling import SamplerConfig
+
+    policy = install_deepseek_v4_adaptive_width_policy(
+        rt,
+        sampler=SamplerConfig(temperature=0.0),
+        draft_sampler=None,
+        speculative_depth=3,
+        verify_strategy=args.verify_strategy,
+        verify_core=args.verify_core,
+        mtp_history_policy=args.mtp_history_policy,
+    )
+    policy_receipt = _installed_policy_receipt(policy)
+    route_report = rt.deepseek_v4_attn_proj_wide_m3_report
+    arms: list[dict] = []
+    try:
+        for label, enabled in _ATTN_PROJ_WIDE_M3_BRACKET_ARMS:
+            select_deepseek_v4_attn_proj_wide_m3_arm(rt.model, enabled)
+            binding = _attn_proj_wide_m3_arm_binding(rt)
+            _reset_benchmark_state(rt)
+            arm = _run_arm(
+                rt=rt,
+                label=label,
+                depth=3,
+                prompt_ids=prompt_ids,
+                max_tokens=args.max_tokens,
+                verify_strategy=args.verify_strategy,
+                verify_core=args.verify_core,
+                mtp_history_policy=args.mtp_history_policy,
+                baseline_tokens=None,
+                adaptive_width_policy=policy,
+            )
+            if isinstance(arm.get("tokens"), list):
+                arm["token_sha256"] = _token_sha256(arm["tokens"])
+            arm["attn_proj_wide_m3_binding"] = binding
+            arms.append(arm)
+    finally:
+        select_deepseek_v4_attn_proj_wide_m3_arm(rt.model, False)
+    receipt = _attn_proj_wide_m3_bracket_receipt(
+        common=common_receipt,
+        arms=arms,
+        process_pid=os.getpid(),
+        model_object_id=id(rt.model),
+        policy_receipt=policy_receipt,
+        route_report=route_report,
+    )
+    _write_pair_receipt(out_stem, receipt, prompt_ids, args.prompt_file)
+    print(f"[attention M3-wide] wrote {out_stem.with_suffix('.json')}")
+    print(json.dumps(receipt["policy_engagement"], sort_keys=True))
+    print(json.dumps(receipt["token_quality"], sort_keys=True))
+    print(json.dumps(receipt["performance"], sort_keys=True))
+    sys.stdout.flush()
+    return int(receipt["status"])
+
+
 def _write_pair_receipt(stem: Path, receipt: dict, prompt_ids: list[int], prompt_file: str) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     stem.with_suffix(".json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -1249,6 +1543,11 @@ def main() -> int:
         help="one-load fixed-C0/adaptive-B/fixed-C1 max-K3 bracket",
     )
     ap.add_argument(
+        "--attn-proj-wide-m3-bracket",
+        action="store_true",
+        help="one-load stock/attention-projection-M3/stock D2=10 bracket",
+    )
+    ap.add_argument(
         "--receipt-role",
         choices=("measurement", "discarded_control_primer"),
         default="measurement",
@@ -1276,6 +1575,10 @@ def main() -> int:
         and not key.startswith("MTPLX_GUARD_ATTEST_")
         and not key.startswith("MTPLX_DSV4_GUARD_WINDOW_")
     }
+    if sum(
+        (args.moe_tail_bracket, args.adaptive_width_bracket, args.attn_proj_wide_m3_bracket)
+    ) > 1:
+        sys.exit("bracket modes are mutually exclusive")
     if (
         args.adaptive_width_bracket
         and launch_mtplx_env != _ADAPTIVE_WIDTH_STAGE4_ENV
@@ -1283,6 +1586,14 @@ def main() -> int:
         sys.exit(
             "--adaptive-width-bracket requires the exact seven-variable "
             f"Stage-4 environment: {launch_mtplx_env}"
+        )
+    if (
+        args.attn_proj_wide_m3_bracket
+        and launch_mtplx_env != _ATTN_PROJ_WIDE_M3_STAGE4_ENV
+    ):
+        sys.exit(
+            "--attn-proj-wide-m3-bracket requires the exact Stage-4 environment: "
+            f"{launch_mtplx_env}"
         )
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1429,6 +1740,84 @@ def main() -> int:
             "deepseek_v4_o_lora": rt.deepseek_v4_o_lora_report,
         }
         return _run_adaptive_width_bracket(
+            rt=rt,
+            prompt_ids=prompt_ids,
+            args=args,
+            common_receipt=common_receipt,
+            out_stem=Path(args.out),
+        )
+
+    if args.attn_proj_wide_m3_bracket:
+        if args.tiny:
+            sys.exit("--attn-proj-wide-m3-bracket requires the canonical GPU model")
+        if list(args.depths) != [3] or args.max_tokens != 256 or not args.out:
+            sys.exit(
+                "--attn-proj-wide-m3-bracket requires --depths 3 "
+                "--max-tokens 256 --out"
+            )
+        if (
+            args.verify_strategy != "capture_commit"
+            or args.verify_core != "stock"
+            or args.mtp_history_policy != "committed"
+        ):
+            sys.exit(
+                "--attn-proj-wide-m3-bracket requires capture_commit/stock/committed"
+            )
+        if prompt_identity != {
+            "path": str(prompt_path),
+            "sha256": _CANONICAL_PROMPT_SHA256,
+            "tokens": 328,
+        }:
+            sys.exit(f"canonical prompt identity mismatch: {prompt_identity}")
+        route_report = rt.deepseek_v4_attn_proj_wide_m3_report
+        if route_report != _ATTN_PROJ_WIDE_M3_ROUTE_RECEIPT:
+            sys.exit(
+                "attention M3-wide construction gate did not install the "
+                f"canonical plan: {route_report}"
+            )
+        common_receipt = {
+            "harness": "scripts/deepseek_v4_mtpk_bench.py",
+            "source_commit": source_commit,
+            "artifact_identity": artifact_identity,
+            "loaded_runtime_identity": loaded_runtime_identity,
+            "mlx_identity": mlx_identity,
+            "command": ["python", *sys.argv],
+            "host": {
+                "platform": platform.platform(),
+                "mlx_version": mx.__version__,
+                "python": sys.version.split()[0],
+            },
+            "env": {
+                key: value
+                for key, value in sorted(os.environ.items())
+                if key.startswith("MTPLX_") or key in ("HF_HUB_OFFLINE", "PYTHONPATH")
+            },
+            "launch_mtplx_env": launch_mtplx_env,
+            "guard_window": guard_window,
+            "model_path": str(model_path),
+            "model_type": config.get("model_type"),
+            "num_hidden_layers": config.get("num_hidden_layers"),
+            "num_nextn_predict_layers": config.get("num_nextn_predict_layers"),
+            "sampling": {"greedy": True, "temperature": 0.0, "stop_token_ids": []},
+            "prompt_file": str(prompt_path),
+            "prompt": prompt_identity,
+            "prompt_tokens": len(prompt_ids),
+            "max_tokens": args.max_tokens,
+            "depths": [3],
+            "verify_strategy": args.verify_strategy,
+            "verify_core": args.verify_core,
+            "mtp_history_policy": args.mtp_history_policy,
+            "fp32_activations": _fp32_activations_env(),
+            "load_seconds": load_seconds,
+            "active_after_load_gib": _gib(after_load_active),
+            "deepseek_v4_moe_tail": moe_tail_report,
+            "deepseek_v4_o_lora": rt.deepseek_v4_o_lora_report,
+            "deepseek_v4_attn_proj_wide_m3": route_report,
+            "diagnostic_profiler_evidence": dict(
+                _ATTN_PROJ_WIDE_M3_PROFILER_EVIDENCE
+            ),
+        }
+        return _run_attn_proj_wide_m3_bracket(
             rt=rt,
             prompt_ids=prompt_ids,
             args=args,

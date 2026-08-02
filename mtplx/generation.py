@@ -30,7 +30,7 @@ from .a3b_compiled_target_prefix import (
 )
 from .a3b_whole_moe import validate_a3b_whole_moe_request
 from .adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
-from .attention_context import attention_phase
+from .attention_context import attention_phase, model_forward_kind
 from .deepseek_v4_adaptive_width import (
     validate_installed_deepseek_v4_adaptive_width_policy,
 )
@@ -5570,7 +5570,10 @@ def generate_mtp1(
             continue
 
         started = time.perf_counter()
-        with attention_phase("decode_verify"):
+        with (
+            attention_phase("decode_verify"),
+            model_forward_kind("target_verify"),
+        ):
             if graphbank is not None:
                 verify_logits, verify_hidden = graphbank.forward_ar(
                     mx.array([[primary, draft_token]]),
@@ -5661,7 +5664,10 @@ def generate_mtp1(
             rollback_time += elapsed_rollback
             _add_timing(event, "rollback", elapsed_rollback)
             started = time.perf_counter()
-            with attention_phase("decode_verify"):
+            with (
+                attention_phase("decode_verify"),
+                model_forward_kind("repair"),
+            ):
                 logits_next, hidden_next = rt.forward_ar(
                     mx.array([[primary]]),
                     cache=cache,
@@ -8307,7 +8313,10 @@ def generate_mtpk(
         set_native_mlp_context(len(tokens))
         started_forward = time.perf_counter()
         captures = None
-        with attention_phase("decode_verify"):
+        with (
+            attention_phase("decode_verify"),
+            model_forward_kind("target_verify"),
+        ):
             if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:
                 if compiled_verify_bank is not None:
                     verify_logits, verify_hidden, captures = (
@@ -9322,7 +9331,10 @@ def generate_mtpk(
             rollback_time += elapsed_rollback
             _add_timing(event, "rollback", elapsed_rollback)
             started = time.perf_counter()
-            with attention_phase("decode_verify"):
+            with (
+                attention_phase("decode_verify"),
+                model_forward_kind("repair"),
+            ):
                 if generic_compiled_target_prefix and compiled_verify_bank is not None:
                     repair_logits, repair_hidden, _repair_captures = (
                         compiled_verify_bank.forward_ar_capture(
