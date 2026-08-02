@@ -13,12 +13,16 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("mlx.core")
 import mlx.core as mx  # noqa: E402
-from mtplx.attention_context import attention_phase  # noqa: E402
+from mtplx.attention_context import (  # noqa: E402
+    attention_phase,
+    current_attention_phase,
+)
 
 mx.set_default_device(mx.cpu)
 
@@ -28,6 +32,14 @@ _spec = importlib.util.spec_from_file_location("dsv4_moe_tail_undertest", _MODEL
 D = importlib.util.module_from_spec(_spec)
 sys.modules["dsv4_moe_tail_undertest"] = D
 _spec.loader.exec_module(D)
+
+_GATE_PATH = Path(_HERE).parent / "scripts" / "deepseek_v4_moe_tail_gate.py"
+_gate_spec = importlib.util.spec_from_file_location(
+    "dsv4_moe_tail_gate_undertest", _GATE_PATH
+)
+G = importlib.util.module_from_spec(_gate_spec)
+sys.modules["dsv4_moe_tail_gate_undertest"] = G
+_gate_spec.loader.exec_module(G)
 
 
 def _args(**over):
@@ -41,6 +53,42 @@ def _args(**over):
     )
     kwargs.update(over)
     return D.ModelArgs(**kwargs)
+
+
+def _artifact_contract(*, body_bits=2, mtp=True):
+    quantization = {"group_size": 64, "bits": 4, "mode": "affine"}
+    weight_map = {}
+    for layer in range(43):
+        for proj in ("gate_proj", "up_proj", "down_proj"):
+            stem = f"model.layers.{layer}.ffn.switch_mlp.{proj}"
+            quantization[stem] = {
+                "group_size": 32 if proj == "gate_proj" else 64,
+                "bits": body_bits,
+                "mode": "affine",
+            }
+            for suffix in ("weight", "scales", "biases"):
+                weight_map[f"{stem}.{suffix}"] = "model.safetensors"
+    if mtp:
+        weight_map["mtp.0.h_proj.weight"] = "mtp.safetensors"
+        for proj in ("gate_proj", "up_proj", "down_proj"):
+            quantization[f"mtp.0.ffn.switch_mlp.{proj}"] = {
+                "group_size": 32,
+                "bits": 4,
+                "mode": "mxfp4",
+            }
+    config = {
+        "model_type": "deepseek_v4",
+        "architectures": ["DeepseekV4ForCausalLM"],
+        "num_hidden_layers": 43,
+        "num_nextn_predict_layers": 1 if mtp else 0,
+        "n_routed_experts": 256,
+        "num_experts_per_tok": 6,
+        "hidden_size": 4096,
+        "moe_intermediate_size": 2048,
+        "compress_ratios": [0] * (44 if mtp else 43),
+        "quantization": quantization,
+    }
+    return config, {"metadata": {"total_size": 1}, "weight_map": weight_map}
 
 
 def test_tail_default_is_off_and_stock_expression_remains_visible():
@@ -109,6 +157,121 @@ def test_decode_verify_m4_uses_custom(monkeypatch):
     assert got is sentinel
 
 
+def test_k3_verify_m4_is_custom_but_decode_verify_m1_repair_is_stock(monkeypatch):
+    """The generation phase is shared; K3's M=4, not the phase alone, selects."""
+    custom_rows = []
+
+    def custom(_kernel, routed, _weights, _shared):
+        custom_rows.append(int(routed.shape[0]))
+        return mx.full((routed.shape[0], routed.shape[-1]), -99.0)
+
+    monkeypatch.setattr(D, "_moe_tail_apply", custom)
+    route = D._InstalledMoETailRoute(kernel=object())
+    with attention_phase("decode_verify"):
+        verify = route(
+            mx.zeros((4, 6, 8), dtype=mx.bfloat16),
+            mx.zeros((4, 6), dtype=mx.bfloat16),
+            mx.zeros((4, 8), dtype=mx.bfloat16),
+        )
+        repair = route(
+            mx.zeros((1, 6, 8), dtype=mx.bfloat16),
+            mx.zeros((1, 6), dtype=mx.bfloat16),
+            mx.ones((1, 8), dtype=mx.bfloat16),
+        )
+    assert custom_rows == [4]
+    assert bool(mx.all(verify == -99))
+    assert bool(mx.all(repair == 1))
+
+
+def test_real_mtpk_engine_routes_k3_m4_custom_and_rejection_repair_m1_stock(
+    monkeypatch,
+):
+    """Exercise the production MTP loop, not a hand-written phase simulation."""
+    from mtplx.generation import generate_mtpk
+    from mtplx.mtp_patch import MTPContract
+    from mtplx.runtime import MTPLXRuntime
+    from mtplx.sampling import SamplerConfig
+
+    args = D.ModelArgs(
+        vocab_size=8,
+        hidden_size=32,
+        num_hidden_layers=1,
+        num_hash_layers=0,
+        num_attention_heads=4,
+        head_dim=16,
+        qk_rope_head_dim=8,
+        q_lora_rank=16,
+        o_lora_rank=8,
+        o_groups=2,
+        moe_intermediate_size=16,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        index_n_heads=4,
+        index_head_dim=16,
+        index_topk=4,
+        compress_ratios=[0, 0],
+        sliding_window=16,
+        num_nextn_predict_layers=1,
+    )
+    model = D.Model(args)
+    route = D._InstalledMoETailRoute(kernel=object())
+    model.layers[0].ffn._tail_combine = route
+    custom_rows = []
+    stock_rows = []
+    real_stock = D._stock_moe_tail_combine
+
+    def custom(_kernel, routed, weights, shared):
+        custom_rows.append(int(routed.shape[0]))
+        return real_stock(routed, weights, shared)
+
+    def stock(routed, weights, shared):
+        if current_attention_phase() == "decode_verify":
+            stock_rows.append(int(routed.shape[0]))
+        return real_stock(routed, weights, shared)
+
+    monkeypatch.setattr(D, "_moe_tail_apply", custom)
+    monkeypatch.setattr(D, "_stock_moe_tail_combine", stock)
+
+    tokenizer = SimpleNamespace(
+        eos_token_id=None,
+        eos_token_ids=set(),
+        decode=lambda tokens: " ".join(str(token) for token in tokens),
+    )
+    runtime = MTPLXRuntime(
+        model=model,
+        tokenizer=tokenizer,
+        model_path=Path("."),
+        mtp_enabled=True,
+        contract=MTPContract(),
+    )
+    real_draft = runtime.draft_mtp
+
+    def rejecting_draft(*args, **kwargs):
+        result = real_draft(*args, **kwargs)
+        logits, hidden = result if isinstance(result, tuple) else (result, None)
+        forced = mx.zeros_like(logits)
+        forced[..., 1] = 1
+        return (forced, hidden) if isinstance(result, tuple) else forced
+
+    monkeypatch.setattr(runtime, "draft_mtp", rejecting_draft)
+    out = generate_mtpk(
+        runtime,
+        [1, 2, 3, 4],
+        max_tokens=5,
+        sampler=SamplerConfig(temperature=0.0),
+        speculative_depth=3,
+        mtp_history_policy="committed",
+        stop_token_ids=set(),
+        verify_strategy="batched",
+    )
+    stats = out.stats.to_dict()
+    assert stats["requested_speculative_depth"] == 3
+    assert stats["rejected_drafts"] > 0
+    assert 4 in custom_rows, "K3 target verify must execute flattened M=K+1=4"
+    assert 1 in stock_rows, "a rejected K3 cycle must repair through stock M1"
+    assert 1 not in custom_rows
+
+
 @pytest.mark.parametrize("phase", ["ar_decode", "unknown"])
 def test_m1_stays_stock_outside_verify_route(monkeypatch, phase):
     sentinel = mx.array([-99.0])
@@ -131,10 +294,9 @@ def test_tail_is_not_a_cpu_silent_fallback_when_explicitly_enabled():
 
 def test_guarded_tail_gate_is_one_load_and_synchronizes_each_sample():
     """Its timings are diagnostics only; the later full TPS bracket is the verdict."""
-    source = (
-        Path(_HERE).parent / "scripts" / "deepseek_v4_moe_tail_gate.py"
-    ).read_text(encoding="utf-8")
-    assert "_load_base_model" in source
+    source = _GATE_PATH.read_text(encoding="utf-8")
+    assert "mtplx_runtime.load(model_path, mtp=True)" in source
+    assert "_load_base_model" not in source
     assert '_REQUIRED_MLX_VERSION = "0.31.2"' in source
     assert "d7bd29fc20b4a08318d21161c3dfb340889cc9454c5e554ad749eb0127cfa2d6" in source
     assert "ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33" in source
@@ -145,3 +307,58 @@ def test_guarded_tail_gate_is_one_load_and_synchronizes_each_sample():
     assert "mx.synchronize()" in source
     assert "exact_parity" in source
     assert "promotion" not in source.lower()
+
+
+def test_gate_rejects_4bit_body_routed_experts():
+    config, index = _artifact_contract(body_bits=4)
+    with pytest.raises(ValueError, match="Q2 affine routed expert"):
+        G._validate_model_contract(config, index)
+
+
+def test_gate_rejects_non_mtp_artifact():
+    config, index = _artifact_contract(mtp=False)
+    with pytest.raises(ValueError, match=r"43\+1 MTP topology"):
+        G._validate_model_contract(config, index)
+
+
+def test_gate_pins_merged_2bit_dq_mtp_manifests_and_loaded_storage():
+    assert G._REQUIRED_MODEL_CONFIG_SHA256 == (
+        "c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa6f"
+    )
+    assert G._REQUIRED_MODEL_INDEX_SHA256 == (
+        "c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8"
+    )
+
+    config, _index = _artifact_contract()
+
+    def projection(bits, group_size, mode, *, biases=True):
+        return SimpleNamespace(
+            bits=bits,
+            group_size=group_size,
+            mode=mode,
+            weight=mx.zeros((1,), dtype=mx.uint32),
+            scales=mx.zeros((1,), dtype=mx.float16),
+            biases=mx.zeros((1,), dtype=mx.float16) if biases else None,
+        )
+
+    body_switch = SimpleNamespace(
+        gate_proj=projection(2, 32, "affine"),
+        up_proj=projection(2, 64, "affine"),
+        down_proj=projection(2, 64, "affine"),
+    )
+    mtp_switch = SimpleNamespace(
+        gate_proj=projection(4, 32, "mxfp4", biases=False),
+        up_proj=projection(4, 32, "mxfp4", biases=False),
+        down_proj=projection(4, 32, "mxfp4", biases=False),
+    )
+    model = SimpleNamespace(
+        model_type="deepseek_v4",
+        layers=[SimpleNamespace(ffn=SimpleNamespace(switch_mlp=body_switch))]
+        * 43,
+        mtp_blocks=[SimpleNamespace(ffn=SimpleNamespace(switch_mlp=mtp_switch))],
+    )
+    runtime = SimpleNamespace(model=model, mtp_enabled=True)
+    identity = G._validate_loaded_runtime(runtime, config)
+    assert identity["body_q2_routed_projections"] == 129
+    assert identity["mtp_blocks_bound"] == 1
+    assert identity["mtp_mxfp4_routed_projections"] == 3
