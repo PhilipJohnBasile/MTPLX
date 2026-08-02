@@ -16,10 +16,13 @@ from pathlib import Path
 
 
 HERE = Path(__file__).resolve().parent
-VENV = Path("/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python")
-RUN_GUARDED = Path("/Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py")
-PLIST = Path("/Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist")
-BENCH = Path("/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4")
+# Guard deployment locations are supplied by the operator.  These defaults are
+# intentionally relative so an unconfigured checkout fails in the guarded
+# runner rather than encoding a particular developer machine.
+VENV = Path(os.environ.get("MTPLX_DSV4_PYTHON", "python3"))
+RUN_GUARDED = Path(os.environ.get("MTPLX_DSV4_GUARDED_RUNNER", "run_guarded.py"))
+PLIST = Path(os.environ.get("MTPLX_DSV4_QUALITY_PLIST", "com.tea.qwen.plist"))
+BENCH = Path(os.environ.get("MTPLX_DSV4_BENCH_DIR", "bench/deepseek-v4"))
 WRAPPER_ENV = "MTPLX_DSV4_ADAPTIVE_WIDTH_POSTFLIGHT_WRAPPER"
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_TAG_RECEIPT_PREFIX = "adaptive-width-invalid-tag-"

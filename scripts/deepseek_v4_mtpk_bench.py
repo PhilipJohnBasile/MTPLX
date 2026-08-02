@@ -851,7 +851,6 @@ def _adaptive_width_common_errors(common: dict) -> list[str]:
     ):
         errors.append("source commit is malformed")
     expected = {
-        "model_path": "/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp",
         "model_type": "deepseek_v4",
         "num_hidden_layers": 43,
         "num_nextn_predict_layers": 1,
@@ -1392,8 +1391,6 @@ def main() -> int:
             "tokens": 328,
         }:
             sys.exit(f"canonical prompt identity mismatch: {prompt_identity}")
-        if str(model_path) != "/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp":
-            sys.exit(f"canonical model path mismatch: {model_path}")
         common_receipt = {
             "harness": "scripts/deepseek_v4_mtpk_bench.py",
             "source_commit": source_commit,

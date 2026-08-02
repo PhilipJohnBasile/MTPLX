@@ -7,10 +7,13 @@ set -euo pipefail
   exit 1
 }
 WORKTREE=${0:A:h:h}
-VENV=/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python
-BENCH=/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4
-MODEL=/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp
-PROMPT="$BENCH/smoke-2bitdq-20260731-prompt2.txt"
+# The guard wrapper supplies these deployment-specific locations.  Keeping
+# them out of the source makes the exact artifact identity—not one developer's
+# filesystem—the reproducibility contract.
+VENV=${MTPLX_DSV4_PYTHON:-python3}
+BENCH=${MTPLX_DSV4_BENCH_DIR:?set MTPLX_DSV4_BENCH_DIR}
+MODEL=${MTPLX_DSV4_MODEL_PATH:?set MTPLX_DSV4_MODEL_PATH}
+PROMPT=${MTPLX_DSV4_PROMPT_FILE:?set MTPLX_DSV4_PROMPT_FILE}
 PROMPT_SHA256=ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33
 
 (( $# <= 1 )) || {

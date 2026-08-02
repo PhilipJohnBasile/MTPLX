@@ -170,7 +170,8 @@ def _o_lora_report():
 def _common(bench):
     return {
         "source_commit": "a" * 40,
-        "model_path": "/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp",
+        # The artifact identity—not the developer's checkout path—is canonical.
+        "model_path": "/models/DeepSeek-V4-Flash-2bit-DQ-mtp",
         "model_type": "deepseek_v4",
         "num_hidden_layers": 43,
         "num_nextn_predict_layers": 1,
@@ -360,6 +361,16 @@ def test_guard_child_has_exact_selector_cleanup_and_canonical_command():
     assert "--max-tokens 256 --depths 3" in child
     assert "--verify-strategy capture_commit --verify-core stock" in child
     assert "--mtp-history-policy committed" in child
+
+
+def test_published_adaptive_bracket_has_no_developer_absolute_paths():
+    paths = (
+        ROOT / "scripts" / "deepseek_v4_adaptive_width_arms.sh",
+        ROOT / "scripts" / "deepseek_v4_adaptive_width_guarded.py",
+        BENCH_PATH,
+    )
+    developer_home = f"/{'Users'}/{'davidtai'}"
+    assert all(developer_home not in path.read_text() for path in paths)
 
 
 def _wrapper_module():
