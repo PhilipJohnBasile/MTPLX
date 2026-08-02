@@ -527,6 +527,7 @@ def _moe_tail_apply(kernel, routed: mx.array, weights: mx.array, shared: mx.arra
     n_elements = rows * _MOE_TAIL_HIDDEN
     (out,) = kernel(
         inputs=[routed, weights.astype(mx.bfloat16), shared, n_elements],
+        template=[("T", routed.dtype)],
         grid=((n_elements + 31) // 32 * 32, 1, 1),
         threadgroup=(32, 1, 1),
         output_shapes=[(rows, _MOE_TAIL_HIDDEN)],

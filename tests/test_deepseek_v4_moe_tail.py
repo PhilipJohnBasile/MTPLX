@@ -132,6 +132,21 @@ def test_tail_kernel_uses_one_output_owner_and_real_metal_exact_selfcheck():
     assert "_stock_moe_tail_combine" in implementation
 
 
+def test_tail_dispatch_binds_the_metal_scalar_template():
+    """The source's ``T`` type must be specialized at every dispatch."""
+    captured = {}
+
+    def fake_kernel(**kwargs):
+        captured.update(kwargs)
+        return (mx.zeros((1, 4096), dtype=mx.bfloat16),)
+
+    routed = mx.zeros((1, 6, 4096), dtype=mx.bfloat16)
+    weights = mx.zeros((1, 6), dtype=mx.bfloat16)
+    shared = mx.zeros((1, 4096), dtype=mx.bfloat16)
+    D._moe_tail_apply(fake_kernel, routed, weights, shared)
+    assert captured["template"] == [("T", routed.dtype)]
+
+
 @pytest.mark.parametrize("rows", [1, 4])
 def test_prefill_tiny_shapes_remain_stock(monkeypatch, rows):
     """Flattened M alone cannot turn a tiny prefill into decode/verify."""
