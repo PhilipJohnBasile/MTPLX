@@ -12584,7 +12584,11 @@ def cmd_quickstart_public(args: Any) -> int:
             "target": target,
             "model": model,
             "cache_dir": cache_dir,
-            "profile": getattr(args, "profile", DEFAULT_PROFILE_NAME),
+            # Display the profile the launch will actually resolve (per-model
+            # turbo rewrite included) — the raw parser default here made the
+            # dry-run advertise "sustained" for the turbo-default flagships
+            # (the 2026-07-16 stale-display bug class, on one more surface).
+            "profile": _resolved_default_profile_name(args, model),
             "generation_mode": _generation_mode_from_args(args),
             "max": bool(getattr(args, "max", False)),
             "download_if_missing": download,
