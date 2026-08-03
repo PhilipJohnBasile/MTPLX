@@ -6,7 +6,9 @@ CPU-only venv; no GPU/flock needed.
 """
 
 import sys
-sys.path.insert(0, "/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.worktrees/laguna-s21-mlxfast-kernels")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
 
 import math
 import mlx.core as mx

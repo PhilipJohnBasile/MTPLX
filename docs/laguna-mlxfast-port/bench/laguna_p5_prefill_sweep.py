@@ -21,8 +21,10 @@ import sys
 import time
 from pathlib import Path
 
-WT = "/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.worktrees/laguna-s21-mlxfast-kernels"
-BENCH = "/Users/davidtai/projects/OpenSourceWTF/bench/laguna"
+WT = str(Path(__file__).resolve().parents[3])  # repo root
+BENCH = os.environ.get(
+    "MTPLX_LAGUNA_BENCH_DIR", str(Path(__file__).resolve().parent)
+)
 sys.path.insert(0, WT)
 sys.path.insert(0, BENCH)
 

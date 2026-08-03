@@ -138,23 +138,29 @@ def test_cpu_fallback_is_exactly_stock():
 @pytest.mark.parametrize("fam,hq,hk,window", FAMILIES)
 @pytest.mark.parametrize("seqlen", [40, 600])
 def test_metal_kernel_matches_reference(fam, hq, hk, window, seqlen):
+    previous = mx.default_device()
     mx.set_default_device(mx.gpu)
-    mx.random.seed(hq * 7 + seqlen)
-    q = mx.random.normal((1, hq, seqlen, HEAD_DIM)).astype(mx.bfloat16)
-    k = mx.random.normal((1, hk, seqlen, HEAD_DIM)).astype(mx.bfloat16)
-    v = mx.random.normal((1, hk, seqlen, HEAD_DIM)).astype(mx.bfloat16)
-    mx.eval(q, k, v)
+    try:
+        mx.random.seed(hq * 7 + seqlen)
+        q = mx.random.normal((1, hq, seqlen, HEAD_DIM)).astype(mx.bfloat16)
+        k = mx.random.normal((1, hk, seqlen, HEAD_DIM)).astype(mx.bfloat16)
+        v = mx.random.normal((1, hk, seqlen, HEAD_DIM)).astype(mx.bfloat16)
+        mx.eval(q, k, v)
 
-    out = steel_attention_prefill(q, k, v, scale=SCALE, causal=True, window=window)
-    assert out is not None
-    assert tuple(out.shape) == (1, hq, seqlen, HEAD_DIM)
+        out = steel_attention_prefill(
+            q, k, v, scale=SCALE, causal=True, window=window
+        )
+        assert out is not None
+        assert tuple(out.shape) == (1, hq, seqlen, HEAD_DIM)
 
-    ref = reference_masked_sdpa(q, k, v, scale=SCALE, causal=True, window=window)
-    keep = attention_mask_bool(seqlen, seqlen, causal=True, window=window)
-    st = _stock(q, k, v, keep[None, None])
-    mx.eval(out, ref, st)
+        ref = reference_masked_sdpa(q, k, v, scale=SCALE, causal=True, window=window)
+        keep = attention_mask_bool(seqlen, seqlen, causal=True, window=window)
+        st = _stock(q, k, v, keep[None, None])
+        mx.eval(out, ref, st)
 
-    # bf16 accumulation ordering: same numeric class as stock-vs-reference.
-    stock_gap = _maxabs(st, ref)
-    kernel_gap = _maxabs(out, ref)
-    assert kernel_gap <= max(5e-3, 4.0 * stock_gap), (kernel_gap, stock_gap)
+        # bf16 accumulation ordering: same numeric class as stock-vs-reference.
+        stock_gap = _maxabs(st, ref)
+        kernel_gap = _maxabs(out, ref)
+        assert kernel_gap <= max(5e-3, 4.0 * stock_gap), (kernel_gap, stock_gap)
+    finally:
+        mx.set_default_device(previous)

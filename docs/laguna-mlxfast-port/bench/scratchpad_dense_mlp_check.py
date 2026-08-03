@@ -28,10 +28,12 @@ Usage:
     python scratchpad_dense_mlp_check.py --iters 500
 """
 import argparse
+import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, "/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.worktrees/laguna-s21-mlxfast-kernels")
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -45,7 +47,10 @@ from mtplx.kernels.laguna_dense_mlp import (
 H, I = 3072, 12288
 GS = 64
 GATE_UP_BITS, DOWN_BITS = 5, 6
-MODEL_DIR = "/Users/davidtai/.mtplx/models/mlx-community--Laguna-S-2.1-oQ4e"
+MODEL_DIR = os.environ.get(
+    "MTPLX_LAGUNA_MODEL_DIR",
+    str(Path.home() / ".mtplx/models/mlx-community--Laguna-S-2.1-oQ4e"),
+)
 SHARD1 = MODEL_DIR + "/model-00001-of-00013.safetensors"
 
 

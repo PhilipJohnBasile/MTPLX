@@ -35,7 +35,7 @@ below and raise ``NotImplementedError`` only when their flag is turned on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
 import mlx.core as mx
@@ -45,9 +45,7 @@ import mlx.core as mx
 # would only risk drift between the two lanes' state, which must be identical for
 # an honest A/B.
 from .laguna_compiled_step import (
-    FULL,
     SLIDING,
-    StepGeometry,
     geometry_for,
     kv_plane_mask,
     kv_slot_write,
@@ -233,13 +231,32 @@ def alt_prefill_forward(
     qk-rope/attn-gate kernels), but for the sparse layers replaces the
     post-attention residual-add + RMSNorm + router-GEMV trio with D1's fused
     kernel when ``config.d1_residual_router`` is on — the one ported kernel that
-    is prefill-applicable. Attention stays on ``mx.fast.scaled_dot_product_attention``
+    is prefill-applicable.     Attention stays on ``mx.fast.scaled_dot_product_attention``
     (MLX's flash path, which beat the hand SDPA at decode) and the experts stay on
     stock ``SwitchGLU`` (whose sorted grouped-GEMM the affine hand kernel could not
     beat at any token count). Returns the final-norm hidden ``[B, T, H]``; the
     caller applies the head. Correct-by-construction: with ``STOCK`` it is the
     eager forward exactly.
     """
+
+    # Anti-fake-win contract (same as the decode lane): an enabled flag whose
+    # kernel is not wired here must fail loudly, never silently run stock —
+    # otherwise an A/B "win" can be measured against a no-op arm.
+    unwired_prefill = [
+        name
+        for name, enabled in (
+            ("p1_prefill_qk_rope", config.p1_prefill_qk_rope),
+            ("p2_steel_flash", config.p2_steel_flash),
+            ("p3_prefill_router_topk", config.p3_prefill_router_topk),
+            ("p4_prefill_gather_gemm", config.p4_prefill_gather_gemm),
+        )
+        if enabled
+    ]
+    if unwired_prefill:
+        raise NotImplementedError(
+            "alt_prefill_forward has no wired kernel for enabled flag(s): "
+            + ", ".join(unwired_prefill)
+        )
 
     inner = getattr(model, "model", model)
     hidden = inner.embed_tokens(inputs)
