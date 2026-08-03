@@ -9,14 +9,14 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+import mlx.core as mx
+import mlx.nn as nn
+
 logger = logging.getLogger(__name__)
 
 # One-time warning latch for an explicitly requested but unavailable
 # headquarter tape kernel (PR #209 review edit).
 _HEADQUARTER_IMPORT_WARNED = False
-
-import mlx.core as mx
-import mlx.nn as nn
 
 
 def _env_enabled(name: str, *, default: bool = False) -> bool:
