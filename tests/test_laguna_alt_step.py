@@ -234,13 +234,23 @@ def test_alt_prefill_forward_matches_reference(toy_model):
 
     STOCK is the eager forward exactly; the D1 variant falls back on the toy
     (ineligible shape) but flows through the fused-residual-router prefill wiring.
-    Both must yield the reference's post-prefill argmax token.
+    The P5 variants (D1-free and D1-coupled) exercise the MoE-combine tail wiring:
+    on the toy the metal combine is ineligible so it falls back to residual +
+    stock combine, which must still equal the reference. The real S-2.1 combine's
+    bit-exactness is proven by the GPU prefill sweep (digest-exact across ctx).
+    Every config must yield the reference's post-prefill argmax token.
     """
 
     c1 = toy_model.make_cache()
     ref_tok = int(_greedy_token(toy_model(PROMPT, cache=c1, logits_keep=1)).item())
 
-    for cfg in (STOCK, AltConfig(d1_residual_router=True)):
+    configs = (
+        STOCK,
+        AltConfig(d1_residual_router=True),
+        AltConfig(p5_prefill_moe_tail=True),  # D1-free P5 path (logits via moe.gate)
+        AltConfig(d1_residual_router=True, p5_prefill_moe_tail=True),
+    )
+    for cfg in configs:
         cache = toy_model.make_cache()
         hidden = alt_prefill_forward(toy_model, PROMPT, cache, config=cfg)
         tok = int(_greedy_token(toy_model.lm_head(hidden[:, -1:, :])).item())

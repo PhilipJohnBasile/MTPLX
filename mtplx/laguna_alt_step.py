@@ -516,7 +516,10 @@ def build_alt_step(
                     moe.gate.weight,
                     float(post_ln.eps),
                 )
-                hidden = hidden + _moe_from_precomputed(moe, normed, logits)
+                # _moe_from_precomputed now folds the residual add (so P5 can fuse
+                # it at prefill); at decode T=1 the P5 size gate never engages, so
+                # this is the same residual + combine as before.
+                hidden = _moe_from_precomputed(moe, normed, logits, hidden, config)
             else:
                 hidden = hidden + attention_out
                 hidden = hidden + _mlp(layer, hidden)
