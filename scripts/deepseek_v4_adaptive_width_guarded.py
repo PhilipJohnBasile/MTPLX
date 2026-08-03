@@ -24,6 +24,7 @@ RUN_GUARDED = Path(os.environ.get("MTPLX_DSV4_GUARDED_RUNNER", "run_guarded.py")
 PLIST = Path(os.environ.get("MTPLX_DSV4_QUALITY_PLIST", "com.tea.qwen.plist"))
 BENCH = Path(os.environ.get("MTPLX_DSV4_BENCH_DIR", "bench/deepseek-v4"))
 WRAPPER_ENV = "MTPLX_DSV4_ADAPTIVE_WIDTH_POSTFLIGHT_WRAPPER"
+RECEIPT_KIND = "deepseek_v4_adaptive_width_guarded_postflight"
 TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 INVALID_TAG_RECEIPT_PREFIX = "adaptive-width-invalid-tag-"
 REQUIRED_PROBES = (
@@ -191,7 +192,7 @@ def run(
         errors.append(primary_error)
     status = int(bool(errors))
     receipt = {
-        "kind": "deepseek_v4_adaptive_width_guarded_postflight",
+        "kind": RECEIPT_KIND,
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "tag": valid_tag,
         "tag_valid": valid_tag is not None,

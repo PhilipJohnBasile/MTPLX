@@ -162,6 +162,46 @@ _ATTN_PROJ_WIDE_M3_BRACKET_ARMS = (
     ("ATTN-PROJ-M3-B", True),
     ("CURRENT-C1", False),
 )
+_ATTENTION_ISLAND_STAGE4_ENV = {
+    **_ATTN_PROJ_WIDE_M3_STAGE4_ENV,
+    "MTPLX_DSV4_ATTENTION_ISLAND": "1",
+}
+_ATTENTION_ISLAND_BRACKET_ARMS = (
+    ("ATTENTION-ISLAND-PRIMER", True),
+    ("CURRENT-C0", False),
+    ("ATTENTION-ISLAND-B", True),
+    ("CURRENT-C1", False),
+)
+_ATTENTION_ISLAND_CONTROL_HISTOGRAM = {
+    "K1_M2": 6,
+    "K2_M3": 76,
+    "K3_M4": 10,
+}
+_ATTENTION_ISLAND_LAYOUTS = (
+    "hash-gs32",
+    "score-gs32",
+    "score-gs64",
+)
+_ATTENTION_ISLAND_PAIRED_QUALITY_FILENAME = (
+    "hc-olora-51b0f105-20260802T161346Z-quality.json"
+)
+_ATTENTION_ISLAND_PAIRED_QUALITY_SHA256 = (
+    "e8a3c1ed71aa9ac7024a457865c180c3aadafbf654f56066c750cf63e4a4bed2"
+)
+_ATTENTION_ISLAND_PAIRED_NEAR_TIE = {
+    "path": (
+        "bench/deepseek-v4/"
+        "hc-olora-51b0f105-20260802T161346Z-quality.json"
+    ),
+    "sha256": _ATTENTION_ISLAND_PAIRED_QUALITY_SHA256,
+    "quality_verdict": "ACCEPTED_SINGLE_IDENTICAL_BF16_TOP2_FLIP",
+    "continuation_index": 221,
+    "absolute_target_position": 549,
+    "control_token_id": 14042,
+    "candidate_token_id": 12258,
+    "control_gap": 0.25,
+    "candidate_gap": 0.0,
+}
 _ATTN_PROJ_WIDE_M3_EXPECTED_HISTOGRAM = {
     "K1_M2": 3,
     "K2_M3": 81,
@@ -1366,6 +1406,384 @@ def _run_attn_proj_wide_m3_bracket(
     return int(receipt["status"])
 
 
+def _attention_island_binding(rt) -> dict:
+    selector = getattr(
+        rt.model, "_mtplx_dsv4_attention_island_selector", None
+    )
+    route = getattr(rt.model, "_target_hc_hidden_route", None)
+    return {
+        "selected": bool(getattr(selector, "candidate_selected", False)),
+        "selector_present": selector is not None,
+        "route_is_stock": route is getattr(selector, "stock", None),
+        "route_is_candidate": route is getattr(selector, "candidate", None),
+    }
+
+
+def _attention_island_signatures(engagement: dict) -> list[str]:
+    histogram = engagement.get("event_derived_width_histogram")
+    if not isinstance(histogram, dict):
+        return []
+    widths = (
+        (2, histogram.get("K1_M2")),
+        (3, histogram.get("K2_M3")),
+        (4, histogram.get("K3_M4")),
+    )
+    return sorted(
+        f"M{width}:{layout}"
+        for width, count in widths
+        if type(count) is int and count > 0
+        for layout in _ATTENTION_ISLAND_LAYOUTS
+    )
+
+
+def _load_attention_island_paired_near_tie_evidence(
+    bench_dir: Path,
+    *,
+    expected_sha256: str = _ATTENTION_ISLAND_PAIRED_QUALITY_SHA256,
+) -> dict:
+    """Authenticate the paired teacher-forced evidence before timed arms."""
+
+    path = Path(bench_dir) / _ATTENTION_ISLAND_PAIRED_QUALITY_FILENAME
+    encoded = path.read_bytes()
+    observed_sha256 = hashlib.sha256(encoded).hexdigest()
+    if observed_sha256 != expected_sha256:
+        raise ValueError(
+            "paired near-tie receipt SHA mismatch: "
+            f"expected {expected_sha256}, got {observed_sha256}"
+        )
+    payload = json.loads(encoded)
+    acceptance = payload.get("quality_acceptance") or {}
+    flip = acceptance.get("single_flip") or {}
+    execution = payload.get("execution_contract") or {}
+    expected_schedule = {
+        "cached_gap_to_gather_selected": 0.25,
+        "gather_gap_to_cached_selected": 0.0,
+    }
+    checks = {
+        "complete": payload.get("status") == "COMPLETE",
+        "quality_gate": payload.get("quality_gate_pass") is True,
+        "verdict": (
+            payload.get("quality_verdict")
+            == _ATTENTION_ISLAND_PAIRED_NEAR_TIE["quality_verdict"]
+        ),
+        "errors": payload.get("errors") == [],
+        "strict_errors": payload.get("strict_validation_errors") == [],
+        "policy": (
+            acceptance.get("policy")
+            == "exact_or_single_identical_bf16_top2_flip"
+        ),
+        "mode": acceptance.get("accepted_mode") == "single_identical_bf16_top2_flip",
+        "continuation_index": flip.get("continuation_index") == 221,
+        "absolute_target_position": flip.get("absolute_target_position") == 549,
+        "control_token": flip.get("cached_selected_id") == 14042,
+        "candidate_token": flip.get("gather_selected_id") == 12258,
+        "ar_gap": flip.get("AR") == expected_schedule,
+        "k3_gap": flip.get("K3_TARGET_ROWS") == expected_schedule,
+        "teacher_forced": execution.get("teacher_forced") is True,
+        "no_hot_instrumentation": (
+            execution.get("production_hot_path_instrumentation") is False
+        ),
+        "one_model": execution.get("model_objects") == 1,
+        "one_load": execution.get("model_load_count") == 1,
+        "memory_safe": (
+            execution.get("memory_safe_sequential_evaluation") is True
+        ),
+        "ar_rows": execution.get("ar_rows") == 256,
+        "k3_rows": execution.get("k3_target_rows") == 256,
+        "k3_physical_m": execution.get("k3_physical_m") == 4,
+    }
+    failed = sorted(name for name, passed in checks.items() if not passed)
+    if failed:
+        raise ValueError(
+            "paired near-tie receipt failed authenticated contract: "
+            + ", ".join(failed)
+        )
+    return dict(_ATTENTION_ISLAND_PAIRED_NEAR_TIE)
+
+
+def _attention_island_token_quality(control, candidate, paired_evidence) -> dict:
+    valid = (
+        isinstance(control, list)
+        and isinstance(candidate, list)
+        and len(control) == len(candidate) == 256
+    )
+    divergent = (
+        [
+            index
+            for index, pair in enumerate(zip(control, candidate, strict=True))
+            if pair[0] != pair[1]
+        ]
+        if valid
+        else []
+    )
+    base = {
+        "policy": "exact_or_source_bound_paired_bf16_near_tie",
+        "valid_complete_sequences": valid,
+        "exact": valid and not divergent,
+        "divergent_tokens": len(divergent),
+        "first_divergence": (
+            None
+            if not divergent
+            else {
+                "continuation_index": divergent[0],
+                "control_token_id": int(control[divergent[0]]),
+                "candidate_token_id": int(candidate[divergent[0]]),
+            }
+        ),
+        "human_eval": "deferred_by_authorized_policy",
+    }
+    if not valid:
+        return {**base, "accepted": False, "mode": "incomplete_sequences"}
+    if not divergent:
+        return {**base, "accepted": True, "mode": "exact"}
+
+    evidence_valid = paired_evidence == _ATTENTION_ISLAND_PAIRED_NEAR_TIE
+    trigger = divergent[0]
+    source_bound_flip = (
+        evidence_valid
+        and trigger == paired_evidence["continuation_index"]
+        and control[trigger] == paired_evidence["control_token_id"]
+        and candidate[trigger] == paired_evidence["candidate_token_id"]
+    )
+    if source_bound_flip:
+        tail = [index for index in divergent if index > trigger]
+        return {
+            **base,
+            "accepted": True,
+            "mode": "source_bound_paired_bf16_near_tie",
+            "paired_evidence": paired_evidence,
+            "propagated_tail": {
+                "start_continuation_index": trigger + 1,
+                "divergent_tokens": len(tail),
+            },
+        }
+    return {
+        **base,
+        "accepted": False,
+        "mode": "unapproved_divergence",
+        "paired_evidence": paired_evidence if evidence_valid else None,
+    }
+
+
+def _run_attention_island_bracket(
+    *, rt, prompt_ids, args, common_receipt, out_stem
+) -> int:
+    """Candidate primer, current C0, candidate B, current C1 in one load."""
+
+    from mtplx import deepseek_v4_attention_island as island_module
+    from mtplx.deepseek_v4_adaptive_width import (
+        install_deepseek_v4_adaptive_width_policy,
+    )
+    from mtplx.deepseek_v4_attention_island import (
+        select_deepseek_v4_attention_island_arm,
+    )
+    from mtplx.sampling import SamplerConfig
+
+    policy = install_deepseek_v4_adaptive_width_policy(
+        rt,
+        sampler=SamplerConfig(temperature=0.0),
+        draft_sampler=None,
+        speculative_depth=3,
+        verify_strategy=args.verify_strategy,
+        verify_core=args.verify_core,
+        mtp_history_policy=args.mtp_history_policy,
+    )
+    policy_receipt = _installed_policy_receipt(policy)
+    route_report = rt.deepseek_v4_attention_island_report
+    arms: list[dict] = []
+    try:
+        for label, enabled in _ATTENTION_ISLAND_BRACKET_ARMS:
+            select_deepseek_v4_attention_island_arm(rt.model, enabled)
+            binding = _attention_island_binding(rt)
+            tape_count_before = len(island_module._TAPES)
+            _reset_benchmark_state(rt)
+            arm = _run_arm(
+                rt=rt,
+                label=label,
+                depth=3,
+                prompt_ids=prompt_ids,
+                max_tokens=args.max_tokens,
+                verify_strategy=args.verify_strategy,
+                verify_core=args.verify_core,
+                mtp_history_policy=args.mtp_history_policy,
+                baseline_tokens=None,
+                adaptive_width_policy=policy,
+            )
+            if isinstance(arm.get("tokens"), list):
+                arm["token_sha256"] = _token_sha256(arm["tokens"])
+            arm["attention_island_binding"] = binding
+            arm["attention_island_tape_count_before"] = tape_count_before
+            arm["attention_island_tape_count_after"] = len(island_module._TAPES)
+            arms.append(arm)
+    finally:
+        select_deepseek_v4_attention_island_arm(rt.model, False)
+
+    errors = _adaptive_width_common_errors(
+        {**common_receipt, "launch_mtplx_env": dict(_ADAPTIVE_WIDTH_STAGE4_ENV)}
+    )
+    if common_receipt.get("launch_mtplx_env") != _ATTENTION_ISLAND_STAGE4_ENV:
+        errors.append("attention-island launch environment is not canonical")
+    if not isinstance(route_report, dict):
+        errors.append("attention-island construction receipt is absent")
+    else:
+        for key, expected in (
+            ("installed", True),
+            ("widths", [2, 3, 4]),
+            ("body_layers", 43),
+            ("bound_layer_routes", 129),
+            ("shared_tapes", 9),
+            ("expected_shared_tapes", 9),
+            ("attention", "eager_exact_logical_cache"),
+            ("weight_binding", "explicit_array_inputs"),
+            ("runtime_fallback", False),
+            ("hot_environment_reads", False),
+            ("hot_counters", False),
+        ):
+            if route_report.get(key) != expected:
+                errors.append(
+                    f"attention-island construction {key} changed: "
+                    f"{route_report.get(key)!r}"
+                )
+    expected_order = [label for label, _enabled in _ATTENTION_ISLAND_BRACKET_ARMS]
+    by_label = {arm.get("label"): arm for arm in arms}
+    if list(by_label) != expected_order:
+        errors.append("attention-island arm order is invalid")
+    engagements: dict[str, dict] = {}
+    for label, enabled in _ATTENTION_ISLAND_BRACKET_ARMS:
+        arm = by_label.get(label, {})
+        if arm.get("error") is not None:
+            errors.append(f"{label} failed")
+        if arm.get("generated_tokens") != 256 or arm.get("finish_reason") != "length":
+            errors.append(f"{label} did not complete the canonical workload")
+        tokens = arm.get("tokens")
+        if not isinstance(tokens, list) or arm.get("token_sha256") != _token_sha256(tokens):
+            errors.append(f"{label} token identity is malformed")
+        errors.extend(_validate_behavior_stats(label, arm.get("stats_full")))
+        engagement, engagement_errors = _adaptive_width_engagement(arm)
+        errors.extend(f"{label}: {error}" for error in engagement_errors)
+        engagements[label] = engagement
+        expected_binding = {
+            "selected": enabled,
+            "selector_present": True,
+            "route_is_stock": not enabled,
+            "route_is_candidate": enabled,
+        }
+        if arm.get("attention_island_binding") != expected_binding:
+            errors.append(f"{label} did not bind its requested complete arm")
+
+    for label in ("CURRENT-C0", "CURRENT-C1"):
+        if (
+            engagements.get(label, {}).get("event_derived_width_histogram")
+            != _ATTENTION_ISLAND_CONTROL_HISTOGRAM
+        ):
+            errors.append(f"{label} changed the authoritative 6/76/10 control mix")
+
+    complete_signatures = sorted(
+        f"M{width}:{layout}"
+        for width in (2, 3, 4)
+        for layout in _ATTENTION_ISLAND_LAYOUTS
+    )
+    primer_signatures = _attention_island_signatures(
+        engagements.get("ATTENTION-ISLAND-PRIMER", {})
+    )
+    candidate_signatures = _attention_island_signatures(
+        engagements.get("ATTENTION-ISLAND-B", {})
+    )
+    unprimed = sorted(set(candidate_signatures) - set(primer_signatures))
+    if primer_signatures != complete_signatures:
+        errors.append("candidate primer did not exercise all nine tape classes")
+    if unprimed:
+        errors.append(f"candidate B reached unprimed tape classes: {unprimed}")
+    primer = by_label.get("ATTENTION-ISLAND-PRIMER", {})
+    candidate_arm = by_label.get("ATTENTION-ISLAND-B", {})
+    if primer.get("attention_island_tape_count_after") != 9:
+        errors.append("candidate primer did not materialize exactly nine tapes")
+    if (
+        candidate_arm.get("attention_island_tape_count_before") != 9
+        or candidate_arm.get("attention_island_tape_count_after") != 9
+    ):
+        errors.append("candidate B entered a new Python tape compilation class")
+
+    c0_tokens = by_label.get("CURRENT-C0", {}).get("tokens")
+    c1_tokens = by_label.get("CURRENT-C1", {}).get("tokens")
+    candidate_tokens = candidate_arm.get("tokens")
+    if c0_tokens != c1_tokens:
+        errors.append("current PR223 control token streams drifted")
+    quality = _attention_island_token_quality(
+        c0_tokens,
+        candidate_tokens,
+        common_receipt.get("paired_near_tie_evidence"),
+    )
+    if not quality["accepted"]:
+        errors.append(
+            "candidate/control token quality failed: " f"{quality['mode']}"
+        )
+
+    def tps(label: str) -> float:
+        value = by_label.get(label, {}).get("decode_tokens_per_second")
+        return float(value) if type(value) in {int, float} and value > 0 else 0.0
+
+    c0 = tps("CURRENT-C0")
+    candidate = tps("ATTENTION-ISLAND-B")
+    c1 = tps("CURRENT-C1")
+    if not c0 or not candidate or not c1:
+        errors.append("performance cells are missing positive throughput")
+    control_mean = (c0 + c1) / 2.0
+    drift = abs(c1 - c0)
+    performance = {
+        "control_c0_tps": c0,
+        "control_c1_tps": c1,
+        "control_mean_tps": control_mean,
+        "control_drift_tps": drift,
+        "candidate_tps": candidate,
+        "candidate_minus_control_mean_tps": candidate - control_mean,
+        "promotion_floor_tps": control_mean + drift,
+        "promotion_pass": candidate > control_mean + drift,
+        "above_40_tps": candidate >= 40.0,
+        "above_50_tps": candidate >= 50.0,
+    }
+    receipt = {
+        **common_receipt,
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "receipt_role": "attention_island_performance_bracket",
+        "performance_eligible": True,
+        "single_process_bracket": {
+            "process_pid": os.getpid(),
+            "model_object_id": id(rt.model),
+            "model_load_count": 1,
+            "execution_order": expected_order,
+            "discarded_primer": "ATTENTION-ISLAND-PRIMER",
+        },
+        "deepseek_v4_attention_island": route_report,
+        "policy": policy_receipt,
+        "policy_engagement": engagements,
+        "compiled_tape_warmth": {
+            "complete": complete_signatures,
+            "primer": primer_signatures,
+            "candidate": candidate_signatures,
+            "unprimed": unprimed,
+            "python_tapes_before_b": candidate_arm.get(
+                "attention_island_tape_count_before"
+            ),
+            "python_tapes_after_b": candidate_arm.get(
+                "attention_island_tape_count_after"
+            ),
+        },
+        "token_quality": quality,
+        "performance": performance,
+        "arms": arms,
+        "validation_errors": errors,
+        "status": int(bool(errors)),
+    }
+    _write_pair_receipt(out_stem, receipt, prompt_ids, args.prompt_file)
+    print(f"[attention island] wrote {out_stem.with_suffix('.json')}")
+    print(json.dumps(receipt["compiled_tape_warmth"], sort_keys=True))
+    print(json.dumps(quality, sort_keys=True))
+    print(json.dumps(performance, sort_keys=True))
+    sys.stdout.flush()
+    return int(receipt["status"])
+
+
 def _write_pair_receipt(stem: Path, receipt: dict, prompt_ids: list[int], prompt_file: str) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     stem.with_suffix(".json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -1548,6 +1966,12 @@ def main() -> int:
         help="one-load stock/attention-projection-M3/stock D2=10 bracket",
     )
     ap.add_argument(
+        "--attention-island-bracket",
+        action="store_true",
+        help="one-load candidate-primer/current/attention-island/current bracket",
+    )
+    ap.add_argument("--expected-source-commit")
+    ap.add_argument(
         "--receipt-role",
         choices=("measurement", "discarded_control_primer"),
         default="measurement",
@@ -1576,7 +2000,12 @@ def main() -> int:
         and not key.startswith("MTPLX_DSV4_GUARD_WINDOW_")
     }
     if sum(
-        (args.moe_tail_bracket, args.adaptive_width_bracket, args.attn_proj_wide_m3_bracket)
+        (
+            args.moe_tail_bracket,
+            args.adaptive_width_bracket,
+            args.attn_proj_wide_m3_bracket,
+            args.attention_island_bracket,
+        )
     ) > 1:
         sys.exit("bracket modes are mutually exclusive")
     if (
@@ -1594,6 +2023,19 @@ def main() -> int:
         sys.exit(
             "--attn-proj-wide-m3-bracket requires the exact Stage-4 environment: "
             f"{launch_mtplx_env}"
+        )
+    if (
+        args.attention_island_bracket
+        and launch_mtplx_env != _ATTENTION_ISLAND_STAGE4_ENV
+    ):
+        sys.exit(
+            "--attention-island-bracket requires the exact current "
+            f"Stage-4 environment: {launch_mtplx_env}"
+        )
+    if args.attention_island_bracket and args.expected_source_commit != source_commit:
+        sys.exit(
+            "--attention-island-bracket source commit attestation failed: "
+            f"expected={args.expected_source_commit!r} observed={source_commit!r}"
         )
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -1682,6 +2124,109 @@ def main() -> int:
         sys.stdout.flush()
 
     after_load_active = _active_bytes()
+
+    if args.attention_island_bracket:
+        if args.tiny:
+            sys.exit("--attention-island-bracket requires the canonical GPU model")
+        if list(args.depths) != [3] or args.max_tokens != 256 or not args.out:
+            sys.exit(
+                "--attention-island-bracket requires --depths 3 "
+                "--max-tokens 256 --out"
+            )
+        if (
+            args.verify_strategy != "capture_commit"
+            or args.verify_core != "stock"
+            or args.mtp_history_policy != "committed"
+        ):
+            sys.exit(
+                "--attention-island-bracket requires "
+                "capture_commit/stock/committed"
+            )
+        if prompt_identity != {
+            "path": str(prompt_path),
+            "sha256": _CANONICAL_PROMPT_SHA256,
+            "tokens": 328,
+        }:
+            sys.exit(f"canonical prompt identity mismatch: {prompt_identity}")
+        route_report = rt.deepseek_v4_attention_island_report
+        if not isinstance(route_report, dict) or route_report.get("shared_tapes") != 9:
+            sys.exit(
+                "attention-island construction gate did not install nine tapes: "
+                f"{route_report}"
+            )
+        attn_report = rt.deepseek_v4_attn_proj_wide_m3_report
+        if attn_report != _ATTN_PROJ_WIDE_M3_ROUTE_RECEIPT:
+            sys.exit(
+                "attention-island bracket requires the current PR223 M3-wide route: "
+                f"{attn_report}"
+            )
+        try:
+            paired_near_tie_evidence = (
+                _load_attention_island_paired_near_tie_evidence(
+                    Path(args.out).parent
+                )
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            sys.exit(f"paired near-tie evidence gate failed: {error}")
+        common_receipt = {
+            "harness": "scripts/deepseek_v4_mtpk_bench.py",
+            "source_commit": source_commit,
+            "source_commit_attestation": {
+                "expected": args.expected_source_commit,
+                "observed": source_commit,
+                "match": args.expected_source_commit == source_commit,
+                "clean": True,
+            },
+            "artifact_identity": artifact_identity,
+            "loaded_runtime_identity": loaded_runtime_identity,
+            "mlx_identity": mlx_identity,
+            "command": ["python", *sys.argv],
+            "host": {
+                "platform": platform.platform(),
+                "mlx_version": mx.__version__,
+                "python": sys.version.split()[0],
+            },
+            "env": {
+                key: value
+                for key, value in sorted(os.environ.items())
+                if key.startswith("MTPLX_")
+                or key in ("HF_HUB_OFFLINE", "PYTHONPATH")
+            },
+            "launch_mtplx_env": launch_mtplx_env,
+            "guard_window": guard_window,
+            "model_path": str(model_path),
+            "model_type": config.get("model_type"),
+            "num_hidden_layers": config.get("num_hidden_layers"),
+            "num_nextn_predict_layers": config.get("num_nextn_predict_layers"),
+            "sampling": {
+                "greedy": True,
+                "temperature": 0.0,
+                "stop_token_ids": [],
+            },
+            "prompt_file": str(prompt_path),
+            "prompt": prompt_identity,
+            "prompt_tokens": len(prompt_ids),
+            "max_tokens": args.max_tokens,
+            "depths": [3],
+            "verify_strategy": args.verify_strategy,
+            "verify_core": args.verify_core,
+            "mtp_history_policy": args.mtp_history_policy,
+            "fp32_activations": _fp32_activations_env(),
+            "load_seconds": load_seconds,
+            "active_after_load_gib": _gib(after_load_active),
+            "deepseek_v4_moe_tail": moe_tail_report,
+            "deepseek_v4_o_lora": rt.deepseek_v4_o_lora_report,
+            "deepseek_v4_attn_proj_wide_m3": attn_report,
+            "deepseek_v4_attention_island": route_report,
+            "paired_near_tie_evidence": paired_near_tie_evidence,
+        }
+        return _run_attention_island_bracket(
+            rt=rt,
+            prompt_ids=prompt_ids,
+            args=args,
+            common_receipt=common_receipt,
+            out_stem=Path(args.out),
+        )
 
     if args.adaptive_width_bracket:
         if args.tiny:

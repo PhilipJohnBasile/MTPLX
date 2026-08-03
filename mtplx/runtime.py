@@ -88,6 +88,7 @@ class MTPLXRuntime:
     mtp_adapter_merge_report: dict[str, Any] | None = None
     deepseek_v4_o_lora_report: dict[str, Any] | None = None
     deepseek_v4_attn_proj_wide_m3_report: dict[str, Any] | None = None
+    deepseek_v4_attention_island_report: dict[str, Any] | None = None
     a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
     a3b_whole_moe_installed: bool = False
     _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
@@ -774,6 +775,7 @@ def load(
     elif merge_mtp_adapter:
         raise RuntimeError("merge_mtp_adapter requires mtp_adapter")
     deepseek_v4_o_lora_report = None
+    deepseek_v4_attention_island_report = None
     if str(config.get("model_type") or "").lower() == "deepseek_v4":
         from .models.deepseek_v4 import (
             _o_lora_mode_from_env,
@@ -795,6 +797,19 @@ def load(
             canonical_mixed_route=canonical_mixed_route,
         )
         logger.info("[deepseek-v4-o-lora] %s", deepseek_v4_o_lora_report)
+        from .deepseek_v4_attention_island import (
+            deepseek_v4_attention_island_enabled,
+            install_deepseek_v4_attention_island,
+        )
+
+        if deepseek_v4_attention_island_enabled():
+            deepseek_v4_attention_island_report = (
+                install_deepseek_v4_attention_island(model, config)
+            )
+            logger.info(
+                "[deepseek-v4-attention-island] %s",
+                deepseek_v4_attention_island_report,
+            )
     fused_report: list[dict[str, Any]] = []
     if _is_laguna_s_2_1_mlx_4bit_config(config):
         # Env-gated fused decode paths (MTPLX_LAGUNA_*): with no switches set
@@ -822,6 +837,7 @@ def load(
         mtp_adapter_merge_report=adapter_merge_report,
         deepseek_v4_o_lora_report=deepseek_v4_o_lora_report,
         deepseek_v4_attn_proj_wide_m3_report=deepseek_v4_attn_proj_wide_m3_report,
+        deepseek_v4_attention_island_report=deepseek_v4_attention_island_report,
         a3b_compiled_target_prefix_factory=compiled_target_factory,
         a3b_whole_moe_installed=False,
     )

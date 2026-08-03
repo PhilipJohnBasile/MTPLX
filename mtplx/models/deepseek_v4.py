@@ -3507,6 +3507,10 @@ class Model(nn.Module):
             DeepseekV4MTP(args, args.num_hidden_layers + i)
             for i in range(max(int(args.num_nextn_predict_layers or 0), 0))
         ]
+        # Construction-time performance installers may replace this with a
+        # typed phase/width router.  The stock callable is explicit and direct;
+        # decoder layers never probe candidate eligibility or fall back.
+        self._target_hc_hidden_route = self.model.hc_hidden
 
     def __call__(
         self,
@@ -3546,7 +3550,7 @@ class Model(nn.Module):
                 "the DeepSeek-V4 backend does not support input_embeddings "
                 "(no vision splice path)"
             )
-        h = self.model.hc_hidden(inputs, cache)
+        h = self._target_hc_hidden_route(inputs, cache)
         logits = None
         if emit_logits:
             source = h
