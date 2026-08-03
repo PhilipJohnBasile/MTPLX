@@ -6210,12 +6210,91 @@ def _decode_tool_parameter_value(value: str, schema: Any | None = None) -> Any:
         return text
 
 
+def _repair_tool_argument_keys_for_schema(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Repair unambiguous near-miss argument keys against the tool schema.
+
+    Qwen3.6 intermittently corrupts an argument key (#197): ``offsets`` for
+    ``offset``, or ``offset `` / ``offset >`` with whitespace/template-close
+    bytes bled into the key. Such keys previously passed straight through
+    (schema validation only rejects unknown keys under
+    ``additionalProperties: false``), and the client silently dropped the
+    argument — every paginated ``read`` returned the top-of-file window.
+
+    A key is renamed only when the mapping is unambiguous:
+    - the raw key is not itself a schema property,
+    - the target resolves via trimming (whitespace / trailing ``>``), letter
+      case, or a single trailing ``s`` to exactly one schema property,
+    - the target is not already supplied, and no other raw key resolves to
+      the same target.
+    Anything else passes through verbatim (pass-through stays the client's
+    contract).
+    """
+    if not arguments:
+        return arguments
+    schema = _tool_schema_for_name(tools, tool_name=tool_name)
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(properties, dict) or not properties:
+        return arguments
+    by_casefold: dict[str, list[str]] = {}
+    for name in properties:
+        by_casefold.setdefault(str(name).casefold(), []).append(str(name))
+
+    def _unique(casefolded: str) -> str | None:
+        matches = by_casefold.get(casefolded)
+        return matches[0] if matches and len(matches) == 1 else None
+
+    def _resolve(key: str) -> str | None:
+        if key in properties:
+            return None
+        trimmed = key.strip().rstrip(">").strip()
+        if trimmed in properties:
+            return trimmed
+        target = _unique(trimmed.casefold())
+        if target is not None:
+            return target
+        if trimmed.casefold().endswith("s"):
+            target = _unique(trimmed.casefold()[:-1])
+            if target is not None:
+                return target
+        return _unique(trimmed.casefold() + "s")
+
+    renames: dict[str, str] = {}
+    for key in arguments:
+        target = _resolve(str(key))
+        if target is None or target in arguments:
+            continue
+        renames[str(key)] = target
+    # Two corrupted keys collapsing onto one property is ambiguous — repair
+    # neither rather than clobber one value with the other.
+    target_counts: dict[str, int] = {}
+    for target in renames.values():
+        target_counts[target] = target_counts.get(target, 0) + 1
+    renames = {
+        key: target
+        for key, target in renames.items()
+        if target_counts[target] == 1
+    }
+    if not renames:
+        return arguments
+    return {renames.get(str(key), key): value for key, value in arguments.items()}
+
+
 def _normalize_tool_arguments_for_schema(
     *,
     tool_name: str,
     arguments: dict[str, Any],
     tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    arguments = _repair_tool_argument_keys_for_schema(
+        tool_name=tool_name,
+        arguments=arguments,
+        tools=tools,
+    )
     normalized: dict[str, Any] = {}
     for key, value in arguments.items():
         if isinstance(value, str):
@@ -7132,11 +7211,21 @@ class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
 
     @property
     def in_known_tool_parameter(self) -> bool:
+        if not (self._started and self._name and self._name in self._known):
+            return False
+        if self._stage == "in_parameter":
+            return True
+        # A JSON-dialect function body (#170) is argument payload too. While
+        # the object streams, the parser waits in "find_parameter" for its
+        # closing </function>, so the hidden-tool guard must stand down here
+        # exactly as it does inside <parameter=> values — otherwise a large
+        # write body crosses the guard's token/time budget and generation is
+        # cancelled mid-call as "malformed tool_call: unterminated stream"
+        # (#196).
         return (
-            bool(self._started)
-            and bool(self._name)
-            and self._name in self._known
-            and self._stage == "in_parameter"
+            self._stage == "find_parameter"
+            and not self._params
+            and self._buf.lstrip().startswith("{")
         )
 
     def _finish_call(self, deltas: list[dict[str, Any]]) -> list[dict[str, Any]]:
