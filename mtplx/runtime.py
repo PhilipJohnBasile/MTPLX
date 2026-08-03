@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .artifacts import inspect_model, load_config, mtp_weights_present_on_disk
+from .artifacts import (
+    inspect_model,
+    load_config,
+    mtp_weights_present_on_disk,
+    text_config,
+)
 from .mtp_adapters import (
     install_saved_mtp_lora_adapter,
     merge_installed_mtp_lora_adapters,
@@ -486,6 +491,73 @@ class LagunaARRuntime(MTPLXRuntime):
         return False
 
 
+# HF class name (as declared in config ``architectures``) -> mlx-lm module
+# implementing it. Extend this table only with verified schema-compatible
+# pairs; an architecture absent here keeps the fail-loud unknown-model_type
+# behavior.
+_ARCHITECTURE_DECLARED_MODULES = {
+    "Qwen3_5ForConditionalGeneration": "qwen3_5",
+    "Qwen3_5ForCausalLM": "qwen3_5",
+    "Qwen3_5TextForCausalLM": "qwen3_5",
+    "Qwen3_5MoeForConditionalGeneration": "qwen3_5_moe",
+    "Qwen3_5MoeForCausalLM": "qwen3_5_moe",
+    "Qwen3_5MoeTextForCausalLM": "qwen3_5_moe",
+}
+
+
+def _install_architectures_declared_module_alias(config: dict[str, Any]) -> bool:
+    """Alias ``mlx_lm.models.<model_type>`` to the module implementing the
+    checkpoint's declared ``architectures`` class, when mlx-lm has no module
+    for the model_type itself.
+
+    ``mlx_lm.utils.load`` resolves the model class from ``model_type`` alone,
+    so a schema-compatible checkpoint under a fresh model_type string (the
+    Qwen3.6 -> "qwen3_5" precedent, expected again for Qwen3.8) would
+    hard-fail even though the checkpoint itself names the implementing class.
+    This honors that declaration — transformers' own class resolution works
+    the same way — and logs loudly so an alias load is never silent.
+    Returns True when an alias was installed.
+    """
+    import importlib
+    import importlib.util
+
+    tcfg = text_config(config)
+    model_type = str(config.get("model_type") or tcfg.get("model_type") or "").strip()
+    if not model_type:
+        return False
+    alias_name = f"mlx_lm.models.{model_type}"
+    if alias_name in sys.modules:
+        return False
+    try:
+        if importlib.util.find_spec(alias_name) is not None:
+            return False  # mlx-lm knows this model_type natively
+    except (ImportError, ValueError):
+        return False
+    architectures: list[str] = []
+    for source in (config, tcfg):
+        raw = source.get("architectures")
+        if isinstance(raw, list):
+            architectures.extend(str(item) for item in raw)
+    for arch in architectures:
+        target = _ARCHITECTURE_DECLARED_MODULES.get(arch)
+        if target is None:
+            continue
+        try:
+            module = importlib.import_module(f"mlx_lm.models.{target}")
+        except ImportError:
+            continue
+        sys.modules[alias_name] = module
+        logger.warning(
+            "[model-alias] model_type %r has no mlx-lm module; loading via the "
+            "checkpoint's declared architecture %s (mlx_lm.models.%s)",
+            model_type,
+            arch,
+            target,
+        )
+        return True
+    return False
+
+
 def load(
     model_path: Path | str,
     *,
@@ -575,6 +647,13 @@ def load(
 
     if is_hy_v3_config(config):
         install_hy_v3_model_shim()
+
+    # A checkpoint whose model_type has no mlx-lm module may still declare the
+    # implementing class in ``architectures`` — new Qwen generations reuse the
+    # qwen3_5 schema under fresh model_type strings (Qwen3.6 shipped as
+    # qwen3_5; vLLM loads Qwen3.8-Max FP8 through the same classes). Honor the
+    # checkpoint's own declaration instead of hard-failing the load.
+    _install_architectures_declared_module_alias(config)
 
     if is_step3p5_mtp_config(config):
         from mlx_lm.utils import load_model
