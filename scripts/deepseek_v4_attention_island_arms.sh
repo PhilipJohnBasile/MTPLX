@@ -7,15 +7,20 @@ set -euo pipefail
   exit 1
 }
 
-VENV=/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python
 WORKTREE=${0:A:h:h}
-BENCH=/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4
-MODEL=/Users/davidtai/models/DeepSeek-V4-Flash-2bit-DQ-mtp
-PROMPT="$BENCH/smoke-2bitdq-20260731-prompt2.txt"
+# The guard wrapper supplies these deployment-specific locations.  Keeping
+# them out of the source makes the exact artifact identity—not one developer's
+# filesystem—the reproducibility contract (mirrors the adaptive-width pair).
+VENV=${MTPLX_DSV4_PYTHON:-python3}
+BENCH=${MTPLX_DSV4_BENCH_DIR:?set MTPLX_DSV4_BENCH_DIR}
+MODEL=${MTPLX_DSV4_MODEL_PATH:?set MTPLX_DSV4_MODEL_PATH}
+PROMPT=${MTPLX_DSV4_PROMPT_FILE:?set MTPLX_DSV4_PROMPT_FILE}
 PROMPT_SHA256=ee94397faa812c91d5f1a0ee17c5bb6ca6032883653591dd33d4cfddb737ac33
 CONFIG_SHA256=c8ff87fd5ee5c9587d0c937e9bfd3193e1a1621141aa367848a9610b3291fa6f
 INDEX_SHA256=c84d2b369f5d5023d0f2d183fc36a935a3981751414996243b65f069983e43d8
-EXPECTED_WIRED_LIMIT_MB=114688
+# 0 disables the exact wired-limit gate (one operator's sysctl tuning, not a
+# portable invariant); set it to pin a deployment's canonical value.
+EXPECTED_WIRED_LIMIT_MB=${MTPLX_DSV4_EXPECTED_WIRED_LIMIT_MB:-114688}
 
 (( $# == 3 )) || {
   print -u2 'expected tag, authorized commit, and wrapper-observed commit'
@@ -81,27 +86,18 @@ actual_index_sha=$(shasum -a 256 "$MODEL/model.safetensors.index.json" | awk '{p
   exit 1
 }
 
-SOURCE_MANIFEST=(
-  'mtplx/deepseek_v4_attention_island.py:1da5028fa4ee0986cea91c5ec34f6c7b2e14ff1131f2679f97fa6da278482826'
-  'mtplx/models/deepseek_v4.py:ab63e1a619bdcb3f5c637c836713798a73e614822261b32db4893a68c4431cbc'
-  'mtplx/runtime.py:6d144e555a90520271e311734ff5d70424554450f45387a1ff1cd0abdb4fb24b'
-  'scripts/deepseek_v4_mtpk_bench.py:0d96380f2b1c0f7f644787452b8a476afda255aadb96d6d117b2f7570fcf57a5'
-)
-for row in $SOURCE_MANIFEST; do
-  source_path=${row%%:*}
-  wanted_sha=${row#*:}
-  observed_sha=$(shasum -a 256 "$WORKTREE/$source_path" | awk '{print $1}')
-  [[ "$observed_sha" == "$wanted_sha" ]] || {
-    print -u2 "attention-island source manifest mismatch: $source_path"
+# Source identity is already pinned by the exact-commit + clean-worktree
+# checks above (rev-parse HEAD equality and empty porcelain): a frozen SHA
+# manifest of individual files duplicated that guarantee and broke on every
+# legitimate commit to those files (PR #223 review edit).
+
+if (( EXPECTED_WIRED_LIMIT_MB > 0 )); then
+  observed_wired_limit=$(/usr/sbin/sysctl -n iogpu.wired_limit_mb)
+  [[ "$observed_wired_limit" == "$EXPECTED_WIRED_LIMIT_MB" ]] || {
+    print -u2 "wired limit changed: expected $EXPECTED_WIRED_LIMIT_MB, got $observed_wired_limit"
     exit 1
   }
-done
-
-observed_wired_limit=$(/usr/sbin/sysctl -n iogpu.wired_limit_mb)
-[[ "$observed_wired_limit" == "$EXPECTED_WIRED_LIMIT_MB" ]] || {
-  print -u2 "wired limit changed: expected $EXPECTED_WIRED_LIMIT_MB, got $observed_wired_limit"
-  exit 1
-}
+fi
 
 for entry in ${(f)"$(env)"}; do
   name=${entry%%=*}

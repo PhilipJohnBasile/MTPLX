@@ -783,8 +783,16 @@ def load(
         )
 
         selected_o_lora_mode = _o_lora_mode_from_env()
+        # The canonical mixed route hard-validates the exact DeepSeek-V4-Flash
+        # topology (43 body layers, rank-1024 Q4/g64 wo_a/wo_b, one dense-BF16
+        # MTP block) and refuses anything else. That strictness is correct for
+        # the explicit gather_qmm opt-in, but the default "cached" mode must
+        # keep loading every DSV4 MTP artifact (8-bit/bf16 user conversions,
+        # other group sizes) exactly as v2.4.2 did via the per-module dense
+        # route — which is bit-identical on the canonical artifact anyway
+        # (test_cached_dequant_is_bit_identical).
         canonical_mixed_route = bool(
-            mtp_enabled and selected_o_lora_mode in {"cached", "gather_qmm"}
+            mtp_enabled and selected_o_lora_mode == "gather_qmm"
         )
         if not mtp_enabled:
             # An artifact that declared but did not ship MTP weights already

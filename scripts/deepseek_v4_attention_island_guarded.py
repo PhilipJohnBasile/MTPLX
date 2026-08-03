@@ -20,25 +20,28 @@ from typing import Any, Callable
 
 HERE = Path(__file__).resolve().parent
 WORKTREE = HERE.parent
-VENV_PYTHON = Path(
-    "/Users/davidtai/projects/OpenSourceWTF/mtplx-hy3-ssd/.venv/bin/python"
+# Guard deployment locations are supplied by the operator.  These defaults are
+# intentionally relative so an unconfigured checkout fails in the guarded
+# runner rather than encoding a particular developer machine (mirrors the
+# adaptive-width pair; PR #223 review edit).
+VENV_PYTHON = Path(os.environ.get("MTPLX_DSV4_PYTHON", "python3"))
+RUN_GUARDED = Path(os.environ.get("MTPLX_DSV4_GUARDED_RUNNER", "run_guarded.py"))
+QUALITY_PLIST = Path(os.environ.get("MTPLX_DSV4_QUALITY_PLIST", "com.tea.qwen.plist"))
+QUALITY_PLIST_SHA256 = os.environ.get(
+    "MTPLX_DSV4_QUALITY_PLIST_SHA256",
+    "a504ddfc6893a2ac7cef3d6072bdc49e1626b926638169de151530e311281e10",
 )
-RUN_GUARDED = Path(
-    "/Users/davidtai/projects/OpenSourceWTF/bench/laguna/run_guarded.py"
-)
-QUALITY_PLIST = Path(
-    "/Users/davidtai/Library/LaunchAgents/com.tea.qwen.plist"
-)
-QUALITY_PLIST_SHA256 = (
-    "a504ddfc6893a2ac7cef3d6072bdc49e1626b926638169de151530e311281e10"
-)
-QUALITY_PLIST_SIZE = 888
-BENCH_DIR = Path("/Users/davidtai/projects/OpenSourceWTF/bench/deepseek-v4")
+QUALITY_PLIST_SIZE = int(os.environ.get("MTPLX_DSV4_QUALITY_PLIST_SIZE", "888"))
+BENCH_DIR = Path(os.environ.get("MTPLX_DSV4_BENCH_DIR", "bench/deepseek-v4"))
 LOCK_PATH = Path("/tmp/mtplx-gpu-exclusive.lock")
 ARMS = HERE / "deepseek_v4_attention_island_arms.sh"
 WRAPPER_ENV = "MTPLX_DSV4_ATTENTION_ISLAND_POSTFLIGHT_WRAPPER"
 QUALITY_MODEL = "mtplx-qwen36-27b-optimized-quality"
-EXPECTED_WIRED_LIMIT_MB = 114688
+# 0 disables the exact wired-limit gate (it encodes one operator's sysctl
+# tuning, not a portable invariant); set it to pin a deployment's value.
+EXPECTED_WIRED_LIMIT_MB = int(
+    os.environ.get("MTPLX_DSV4_EXPECTED_WIRED_LIMIT_MB", "114688")
+)
 PRIMARY_RECEIPT_ROLE = "attention_island_performance_bracket"
 POSTFLIGHT_KIND = "deepseek_v4_attention_island_guarded_postflight"
 CHILD_STATUS_KIND = "attention_island_child_status"
@@ -161,7 +164,8 @@ def _check_wired_limit() -> dict[str, Any]:
             "exit_code": int(completed.returncode),
         }
     value = int(completed.stdout.strip())
-    return {"ok": value == EXPECTED_WIRED_LIMIT_MB, "value": value}
+    ok = EXPECTED_WIRED_LIMIT_MB <= 0 or value == EXPECTED_WIRED_LIMIT_MB
+    return {"ok": ok, "value": value}
 
 
 def _request_json(path: str, *, payload: dict | None, timeout: float):
@@ -353,7 +357,10 @@ def _validate_probes(payload: object, *, phase: str) -> tuple[dict, list[str]]:
         or lock.get("released_after_probes") is not True
     ):
         errors.append(f"{phase} lock receipt is not canonical")
-    if normalized.get("wired_limit_mb", {}).get("value") != EXPECTED_WIRED_LIMIT_MB:
+    if (
+        EXPECTED_WIRED_LIMIT_MB > 0
+        and normalized.get("wired_limit_mb", {}).get("value") != EXPECTED_WIRED_LIMIT_MB
+    ):
         errors.append(f"{phase} wired limit changed")
     if normalized.get("quality_models", {}).get("models") != [QUALITY_MODEL]:
         errors.append(f"{phase} Quality model identity changed")

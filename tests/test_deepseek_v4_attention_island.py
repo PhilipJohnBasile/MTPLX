@@ -15,7 +15,18 @@ from mtplx import deepseek_v4_attention_island as AI  # noqa: E402
 from mtplx.models import deepseek_v4 as D  # noqa: E402
 
 
-mx.set_default_device(mx.cpu)
+@pytest.fixture(autouse=True)
+def _cpu_default_device():
+    # CPU-pinned by design, but the pin must stay test-scoped: a module-level
+    # set_default_device leaks into every later-collected module (pytest
+    # imports all test modules before running any) and flips the engine's
+    # Metal bit-exactness suites onto CPU fallbacks process-wide.
+    previous = mx.default_device()
+    mx.set_default_device(mx.cpu)
+    try:
+        yield
+    finally:
+        mx.set_default_device(previous)
 
 
 def _args(*, hash_layers: int = 0):

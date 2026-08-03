@@ -288,7 +288,6 @@ def test_arms_script_requires_clean_commit_and_exact_workload():
         "dsv4_attention_island_guard_source",
     )
     assert "TO_BE_FILLED" not in source
-    assert source.count('shasum -a 256 "$WORKTREE/$source_path"') == 1
     assert 'status --porcelain' in source
     assert 'CHILD_OBSERVED_SOURCE_COMMIT=$(git -C "$WORKTREE" rev-parse HEAD)' in source
     assert "--attention-island-bracket --expected-source-commit" in source
@@ -297,8 +296,15 @@ def test_arms_script_requires_clean_commit_and_exact_workload():
     assert "--mtp-history-policy committed" in source
     assert "MTPLX_DSV4_ATTENTION_ISLAND=1" in source
     assert "MTPLX_DSV4_ATTN_PROJ_WIDE_M3=1" in source
+    # Deployment locations come from the operator (portable pair contract).
+    assert "MTPLX_DSV4_BENCH_DIR:?" in source
+    assert "MTPLX_DSV4_MODEL_PATH:?" in source
+    assert "MTPLX_DSV4_PROMPT_FILE:?" in source
     assert "iogpu.wired_limit_mb=114688" not in source
-    assert "EXPECTED_WIRED_LIMIT_MB=114688" in source
+    assert "EXPECTED_WIRED_LIMIT_MB=${MTPLX_DSV4_EXPECTED_WIRED_LIMIT_MB:-" in source
+    # Source identity rides the exact-commit + clean-worktree gates; a frozen
+    # per-file SHA manifest broke on every legitimate commit (review edit).
+    assert "SOURCE_MANIFEST" not in source
     assert '/bin/chmod 600 "$CHILD_STATUS_TMP"' in source
     assert '/bin/chmod 600 -- "$CHILD_STATUS_TMP"' not in source
     assert '/bin/mv -f -- "$CHILD_STATUS_TMP" "$CHILD_STATUS"' in source
@@ -308,20 +314,6 @@ def test_arms_script_requires_clean_commit_and_exact_workload():
         commit,
         commit,
     ]
-
-    for relative in (
-        "mtplx/deepseek_v4_attention_island.py",
-        "mtplx/models/deepseek_v4.py",
-        "mtplx/runtime.py",
-        "scripts/deepseek_v4_mtpk_bench.py",
-    ):
-        prefix = f"  '{relative}:"
-        row = next(line for line in source.splitlines() if line.startswith(prefix))
-        expected_sha256 = row.removeprefix(prefix).removesuffix("'")
-        assert len(expected_sha256) == 64
-        assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == (
-            expected_sha256
-        )
 
 
 def _guarded():

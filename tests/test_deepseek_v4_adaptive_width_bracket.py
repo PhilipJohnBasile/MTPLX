@@ -370,13 +370,22 @@ def test_guard_child_has_exact_selector_cleanup_and_canonical_command():
 
 
 def test_published_adaptive_bracket_has_no_developer_absolute_paths():
+    # Hygiene gate for every published DSV4 bench lane, not just adaptive
+    # width: the one lane this test originally skipped (attention island) is
+    # exactly the one that shipped a developer home directory (PR #223
+    # review).
     paths = (
         ROOT / "scripts" / "deepseek_v4_adaptive_width_arms.sh",
         ROOT / "scripts" / "deepseek_v4_adaptive_width_guarded.py",
+        ROOT / "scripts" / "deepseek_v4_attention_island_arms.sh",
+        ROOT / "scripts" / "deepseek_v4_attention_island_guarded.py",
+        ROOT / "scripts" / "deepseek_v4_attn_proj_wide_m3_arms.sh",
+        ROOT / "scripts" / "deepseek_v4_attn_proj_wide_m3_guarded.py",
         BENCH_PATH,
     )
     developer_home = f"/{'Users'}/{'davidtai'}"
-    assert all(developer_home not in path.read_text() for path in paths)
+    offenders = [str(path) for path in paths if developer_home in path.read_text()]
+    assert not offenders, offenders
 
 
 def _wrapper_module():
