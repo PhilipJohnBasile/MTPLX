@@ -85,14 +85,14 @@ def _validate_projection(module, *, n: int, label: str) -> None:
 _METAL_HEADER = r"""
 using namespace metal;
 
-constexpr int M = 3;
-constexpr int K = 1024;
-constexpr int VALUES_PER_THREAD = 8;
-constexpr int BYTES_PER_PACK = 4;
-constexpr int BLOCK_SIZE = 256;
-constexpr int NUM_SIMDGROUPS = 2;
-constexpr int RESULTS_PER_SIMDGROUP = 4;
-constexpr int ROWS_PER_THREADGROUP = 8;
+constant constexpr int M = 3;
+constant constexpr int K = 1024;
+constant constexpr int VALUES_PER_THREAD = 8;
+constant constexpr int BYTES_PER_PACK = 4;
+constant constexpr int BLOCK_SIZE = 256;
+constant constexpr int NUM_SIMDGROUPS = 2;
+constant constexpr int RESULTS_PER_SIMDGROUP = 4;
+constant constexpr int ROWS_PER_THREADGROUP = 8;
 
 template <typename T>
 inline float load_vector4_exact(

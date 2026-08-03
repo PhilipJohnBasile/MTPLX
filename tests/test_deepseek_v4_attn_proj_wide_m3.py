@@ -124,11 +124,22 @@ def test_kernel_source_pins_stock_q4_association_and_three_row_weight_reuse(monk
     assert projection.scales is stock.scales
     assert projection.biases is stock.biases
     source = definition["header"] + definition["source"]
-    assert "constexpr int M = 3;" in source
-    assert "constexpr int K = 1024;" in source
+    header = definition["header"]
+    for declaration in (
+        "constant constexpr int M = 3;",
+        "constant constexpr int K = 1024;",
+        "constant constexpr int VALUES_PER_THREAD = 8;",
+        "constant constexpr int BYTES_PER_PACK = 4;",
+        "constant constexpr int BLOCK_SIZE = 256;",
+        "constant constexpr int NUM_SIMDGROUPS = 2;",
+        "constant constexpr int RESULTS_PER_SIMDGROUP = 4;",
+        "constant constexpr int ROWS_PER_THREADGROUP = 8;",
+    ):
+        assert declaration in header
+    assert not any(
+        line.strip().startswith("constexpr int") for line in header.splitlines()
+    )
     assert "constexpr int N = 32768;" in source
-    assert "constexpr int VALUES_PER_THREAD = 8;" in source
-    assert "constexpr int BLOCK_SIZE = 256;" in source
     assert "uint packed_weights" in source
     assert source.index("uint packed_weights") < source.index("for (int m = 0; m < M; ++m)")
     assert "result[m][row] += qdot4_exact" in source
