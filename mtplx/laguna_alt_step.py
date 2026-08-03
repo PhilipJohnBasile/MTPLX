@@ -36,7 +36,7 @@ below and raise ``NotImplementedError`` only when their flag is turned on.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 import mlx.core as mx
 
@@ -59,6 +59,10 @@ from .laguna_compiled_step import (
 from mlx_lm.models.base import create_attention_mask
 
 from .kernels.laguna_decode import fused_qk_norm_rope, is_qk_norm_rope_eligible
+from .kernels.laguna_prefill_moe_combine import (
+    fused_moe_combine_prefill,
+    is_moe_combine_prefill_eligible,
+)
 from .kernels.laguna_residual_router import fused_residual_norm_router
 from .kernels.laguna_sdpa_pair import grouped_gqa_sdpa_decode
 from .kernels.lm_head_topk import is_qmv8_topk_eligible, qmv8_lm_head_topk
@@ -100,6 +104,12 @@ class AltConfig:
     p3_prefill_router_topk: bool = False
     p4_prefill_gather_gemm: bool = False
     p5_prefill_moe_tail: bool = False
+    # Size gate: P5 engages only when the flattened token count (batch*length) is
+    # >= this. The MoE-combine fusion LOSES at small prefill (the [M,top_k,hidden]
+    # intermediate it removes is cheap there) and WINS above ~8k (measured
+    # crossover: 0.95x @4k -> 1.04x @16k -> 1.09x @32k, digest-exact). None = no
+    # gate (used to SWEEP the crossover); set to the crossover (e.g. 8192) to SHIP.
+    prefill_min_tokens: Optional[int] = None
 
     def any_prefill(self) -> bool:
         return any(
@@ -117,20 +127,38 @@ STOCK = AltConfig()  # the all-off config: reproduces the reference forward
 
 
 def _moe_from_precomputed(
-    moe: Any, normed: mx.array, logits: mx.array
+    moe: Any,
+    normed: mx.array,
+    logits: "mx.array | None",
+    residual: mx.array,
+    config: "AltConfig" = STOCK,
 ) -> mx.array:
-    """LagunaSparseMoeBlock forward from D1's precomputed (normed, router logits).
+    """LagunaSparseMoeBlock forward (optionally from D1's precomputed logits).
 
     Mirrors ``laguna_fused._fused_moe_call`` op-for-op — reusing its own
     ``_router_weights`` / ``_router_normalize`` so the router selection is
-    numerically identical — but skips the ``moe.gate`` GEMV, consuming the logits
-    D1 already produced. The expert path (``switch_mlp``) and combine
-    (``MOE_COMBINE_IMPL``) are the SAME objects the reference uses, so D1 changes
-    only the norm+router fusion and nothing downstream.
+    numerically identical. When ``logits`` is given (the D1 path) the ``moe.gate``
+    GEMV is skipped, consuming the logits D1 already produced; when ``logits`` is
+    ``None`` (the D1-free P5 path) the router logits are computed via ``moe.gate``
+    exactly as the stock block does. The expert path (``switch_mlp``) and combine
+    are the SAME objects the reference uses.
+
+    Returns the post-MoE residual stream ``residual + moe(normed)`` (the residual
+    add is folded in here so P5 can fuse it into the combine dispatch). With
+    ``config.p5_prefill_moe_tail`` on and the size gate satisfied,
+    ``fused_moe_combine_prefill`` replaces the weighted-reduce + routed_scaling +
+    shared-add + residual-add tail with one dispatch; it is bit-exact with the
+    stock combine (it consumes the UNSCALED normalized f32 weights and applies
+    ``routed_scaling`` in-kernel, matching ``_router_normalize(...).astype``), so
+    the fused and unfused branches are digest-identical. D1-free so P5 can be A/B'd
+    without D1's prefill penalty (D1 loses at prefill: the router becomes a GEMM).
     """
 
     batch, length, hidden = normed.shape
     flattened = normed.reshape(-1, hidden)
+    residual_flat = residual.reshape(-1, hidden)
+    if logits is None:
+        logits = moe.gate(flattened)
     logits = logits.reshape(-1, int(logits.shape[-1])).astype(mx.float32)
     if moe.softcap and moe.softcap > 0.0:
         logits = mx.tanh(logits / moe.softcap) * moe.softcap
@@ -141,15 +169,45 @@ def _moe_from_precomputed(
         -scores_for_choice, kth=moe.top_k - 1, axis=-1
     )[..., : moe.top_k]
     weights = mx.take_along_axis(scores, indices, axis=-1)
+    expert_out = moe.switch_mlp(flattened, indices)
+    shared = moe.shared_expert(flattened)
+
+    # LEDGER P5 — prefill MoE combine tail. Fuse weighted-reduce + routed_scaling
+    # + shared-add + residual-add into one dispatch. Only for the normalized-prob
+    # path (S-2.1), under the size gate, and when the shapes are covered.
+    m_tokens = batch * length
+    size_ok = (
+        config.prefill_min_tokens is None or m_tokens >= config.prefill_min_tokens
+    )
+    if (
+        config.p5_prefill_moe_tail
+        and size_ok
+        and moe.norm_topk_prob
+        and is_moe_combine_prefill_eligible(
+            expert_out,
+            (weights / weights.sum(axis=-1, keepdims=True)),
+            shared,
+            residual_flat,
+        )
+    ):
+        norm_weights = weights / weights.sum(axis=-1, keepdims=True)  # unscaled, f32
+        combined = fused_moe_combine_prefill(
+            expert_out,
+            norm_weights,
+            shared,
+            residual_flat,
+            float(moe.routed_scaling_factor),
+        )
+        return combined.reshape(batch, length, hidden)
+
     if moe.norm_topk_prob:
         weights = _router_normalize(
             weights, mx.array(moe.routed_scaling_factor, dtype=mx.float32)
         ).astype(normed.dtype)
     else:
         weights = (weights * moe.routed_scaling_factor).astype(normed.dtype)
-    output = moe.switch_mlp(flattened, indices)
-    output = laguna.MOE_COMBINE_IMPL(output, weights, moe.shared_expert(flattened))
-    return output.reshape(batch, length, hidden)
+    output = laguna.MOE_COMBINE_IMPL(expert_out, weights, shared)
+    return residual + output.reshape(batch, length, hidden)
 
 
 def _is_sparse_moe(mlp: Any) -> bool:
@@ -210,7 +268,14 @@ def alt_prefill_forward(
                 moe.gate.weight,
                 float(post_ln.eps),
             )
-            hidden = hidden + _moe_from_precomputed(moe, normed, logits)
+            hidden = _moe_from_precomputed(moe, normed, logits, hidden, config)
+        elif config.p5_prefill_moe_tail and _is_sparse_moe(moe):
+            # D1-free P5 path: stock attention residual + stock router (moe.gate),
+            # but the MoE combine/shared/residual tail fused by P5 (logits=None ->
+            # computed via moe.gate). Lets P5 be measured without D1's prefill hit.
+            hidden = hidden + attention_out
+            normed = layer.post_attention_layernorm(hidden)
+            hidden = _moe_from_precomputed(moe, normed, None, hidden, config)
         else:
             hidden = hidden + attention_out
             hidden = hidden + layer.mlp(layer.post_attention_layernorm(hidden))
