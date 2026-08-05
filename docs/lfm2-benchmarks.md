@@ -85,3 +85,25 @@ gives no change (289 both). q3/mixed/mxfp4/packing all regress. The `affine_qmv`
 is stock-optimal (~73% MBU of the 406 bandwidth ceiling), so single-stream q4
 caps at ~296 practical / ~307 idealized. Exceeding that needs speculative
 decoding (multiple tokens per target forward), not a faster single forward.
+
+## q4 context sweep — prefill AND decode (gs=128, conv fast-path)
+
+| context | prefill tok/s | decode tok/s | peak GB |
+|---:|---:|---:|---:|
+| 1,024 | 10,902 | 288.8 | 2.44 |
+| 32,768 | 9,293 | 209.7 | 2.99 |
+| 65,536 | 7,363 | 160.9 | 3.52 |
+| 98,304 | 6,069 | 131.0 | 4.12 |
+| 131,072 | 5,069 | 110.7 | 4.72 |
+
+q4 runs the full 128k context under 4.8 GB (vs bf16's 6.1–8.6 GB). Decode falls
+off faster with context than bf16: when the weights are only ~1.4 GB, the
+growing KV cache becomes a large share of the per-token read (at 128k the KV
+rivals the weights).
+
+## Summary — bf16 vs q4 (M5 Max, conv fast-path)
+
+| | short-ctx decode | peak GB @128k | notes |
+|---|---|---|---|
+| bf16 | 91 tok/s | 8.6 | bandwidth-bound, ceiling ~108 |
+| q4 gs=128 | 296 tok/s | 4.7 | dequant-ALU-bound, ceiling ~307 |
