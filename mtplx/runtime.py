@@ -777,6 +777,14 @@ def load(
 
         configure_split_full_attention(model)
         configure_native_mlp(model)
+        from .lfm2_fast import is_lfm2_config, install_lfm2_fast
+
+        # LFM2 (LiquidAI) dense hybrid: bit-exact decode fast-path that fuses
+        # the ShortConv sliding window (see mtplx/lfm2_fast.py). Decode-only;
+        # prefill and masked steps fall back to stock. Toggle: MTPLX_LFM2_FAST=0.
+        if is_lfm2_config(config) and os.environ.get("MTPLX_LFM2_FAST", "1") != "0":
+            lfm2_report = install_lfm2_fast(model)
+            logger.info("[lfm2-fast] %s", lfm2_report)
         # Construction-time only: replaces the MoE gate/up projections with one
         # packed matmul each. Must run after MTP injection so the draft block's
         # MoE layer is packed too, and after load-coverage validation so the
