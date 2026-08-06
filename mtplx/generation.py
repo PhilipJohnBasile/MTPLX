@@ -6366,6 +6366,11 @@ def generate_mtpk(
             capture_backend=verify_core_backend,
             parity=_compiled_verify_mode == "parity",
             parity2=_compiled_verify_mode == "parity2",
+            # Warm restores hand this generation exact-size KV buffers; the
+            # bank defers its first round(s) to eager so the O(context)
+            # promotion copy lands after TTFT, not inside it. cached_tokens
+            # is 0 on cold prompts and the restored prefix length on hits.
+            restored_tokens=int(getattr(prompt_state, "cached_tokens", 0) or 0),
         )
         if _compiled_verify_mode != "off"
         and (

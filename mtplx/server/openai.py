@@ -23,6 +23,7 @@ import html
 import json
 import threading
 import logging
+import math
 import os
 import re
 import secrets
@@ -32,11 +33,12 @@ import sys
 import time
 import urllib.parse
 import uuid
+import weakref
 import webbrowser
 from collections import Counter, OrderedDict
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
@@ -78,6 +80,7 @@ from mtplx.backends.descriptors import (
 )
 from mtplx.backends.registry import load_runtime_contract
 from mtplx.batching import BatchSchedulerConfig, SchedulerMode, SchedulerPreset
+from mtplx.chat_encode_cache import GLOBAL_CHAT_ENCODE_CACHE, ChatEncodeCache
 from mtplx.chat_encoding import encode_chat_messages, is_gemma4_tokenizer
 from mtplx.constrained import (
     ResponseFormatError,
@@ -10406,7 +10409,136 @@ def _encode_generation_compatible_tool_history(
     return _encode_rendered_chat_text_segmented(tokenizer, rendered, boundaries)
 
 
+_CHAT_ENCODE_TOKENIZER_IDS: "weakref.WeakKeyDictionary[Any, str]" = (
+    weakref.WeakKeyDictionary()
+)
+_CHAT_ENCODE_TOKENIZER_IDS_LOCK = threading.Lock()
+
+
+def _chat_encode_tokenizer_key(tokenizer: Any) -> str | None:
+    """Identity component of the encode-cache key.
+
+    Two parts, both required for correctness:
+    - a per-INSTANCE uuid (weakref registry): two tokenizers with identical
+      templates but different vocabs must never share entries;
+    - the current template hash, computed EVERY call: template swaps on a
+      live tokenizer (chat_template_profile application) must change the key
+      immediately — no memoized value to go stale.
+    Returns None (→ caller skips caching) for non-weakref-able tokenizers.
+    """
+    try:
+        with _CHAT_ENCODE_TOKENIZER_IDS_LOCK:
+            uid = _CHAT_ENCODE_TOKENIZER_IDS.get(tokenizer)
+            if uid is None:
+                uid = uuid.uuid4().hex[:12]
+                _CHAT_ENCODE_TOKENIZER_IDS[tokenizer] = uid
+    except TypeError:
+        return None
+    template = getattr(tokenizer, "chat_template", None) or ""
+    tmpl_sha = hashlib.sha256(
+        str(template).encode("utf-8", errors="surrogatepass")
+    ).hexdigest()[:16]
+    return f"{type(tokenizer).__name__}:{uid}:{tmpl_sha}"
+
+
 def _encode_messages(
+    tokenizer: Any,
+    messages: list[ChatMessage],
+    *,
+    enable_thinking: bool,
+    reasoning_effort: str | None = None,
+    strip_assistant_reasoning_history: bool = False,
+    scoped_reasoning_history: bool = False,
+    add_generation_prompt: bool = True,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
+    tool_prompt_mode: str = _TOOL_PROMPT_MODE_HYBRID,
+    template_observability: dict[str, Any] | None = None,
+) -> list[int]:
+    """Memoizing front for :func:`_encode_messages_uncached`.
+
+    Exact-match only: the key covers every argument that affects the rendered
+    prompt, so a hit is byte-identical by construction. Agent clients resend
+    the full transcript every turn — without this, the whole Jinja render +
+    BPE tokenize re-runs per request and lands in TTFT.
+    """
+    if not GLOBAL_CHAT_ENCODE_CACHE.enabled():
+        return _encode_messages_uncached(
+            tokenizer,
+            messages,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+            scoped_reasoning_history=scoped_reasoning_history,
+            add_generation_prompt=add_generation_prompt,
+            tools=tools,
+            tool_choice=tool_choice,
+            tool_prompt_mode=tool_prompt_mode,
+            template_observability=template_observability,
+        )
+    try:
+        tokenizer_key = _chat_encode_tokenizer_key(tokenizer)
+        if tokenizer_key is None:
+            key = None
+        else:
+            payload = {
+                "messages": [
+                    m.model_dump(exclude_none=True) if hasattr(m, "model_dump") else m
+                    for m in messages
+                ],
+                "enable_thinking": bool(enable_thinking),
+                "reasoning_effort": reasoning_effort,
+                "strip": bool(strip_assistant_reasoning_history),
+                "scoped": bool(scoped_reasoning_history),
+                "gen_prompt": bool(add_generation_prompt),
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "tool_prompt_mode": tool_prompt_mode,
+                # The rendered prompt embeds the current date (tool contract's
+                # _current_date_line; strftime_now-style templates). Without a
+                # date component, an exact repeat across local midnight would
+                # be served yesterday's render until eviction. Day granularity
+                # matches the render's own granularity: at worst the whole
+                # cache turns over once per day, which is the correct outcome.
+                "render_day": time.strftime("%Y-%m-%d"),
+            }
+            key = ChatEncodeCache.make_key(
+                tokenizer_key=tokenizer_key,
+                payload=payload,
+            )
+    except Exception:
+        key = None
+    if key is not None:
+        cached = GLOBAL_CHAT_ENCODE_CACHE.get(key)
+        if cached is not None:
+            ids, stored_observability = cached
+            if template_observability is not None:
+                template_observability.update(stored_observability)
+                template_observability["chat_encode_cache"] = "hit"
+            return ids
+    fresh_observability: dict[str, Any] = {}
+    ids = _encode_messages_uncached(
+        tokenizer,
+        messages,
+        enable_thinking=enable_thinking,
+        reasoning_effort=reasoning_effort,
+        strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+        scoped_reasoning_history=scoped_reasoning_history,
+        add_generation_prompt=add_generation_prompt,
+        tools=tools,
+        tool_choice=tool_choice,
+        tool_prompt_mode=tool_prompt_mode,
+        template_observability=fresh_observability,
+    )
+    if key is not None:
+        GLOBAL_CHAT_ENCODE_CACHE.put(key, ids, fresh_observability)
+    if template_observability is not None:
+        template_observability.update(fresh_observability)
+        template_observability["chat_encode_cache"] = "miss"
+    return ids
+
+
+def _encode_messages_uncached(
     tokenizer: Any,
     messages: list[ChatMessage],
     *,
@@ -11227,6 +11359,51 @@ def _app_managed_client_hint(
     return None
 
 
+def _client_controls_default() -> str:
+    """Policy for ANONYMOUS (non-managed) clients' request controls.
+
+    'honor'  — default since 2.5.3: OpenAI-API semantics. Explicit body
+               params (temperature/top_p/enable_thinking) from anonymous
+               clients are applied. Managed MTPLX surfaces (app/browser/
+               OpenCode hints) are ALWAYS server-owned either way — agent
+               lanes keep the curated sampler policy.
+    'hints'  — pre-2.5.3 behavior: anonymous body params are observability
+               hints unless the caller opts in per-request via
+               X-MTPLX-Allow-Client-Controls. MTPLX launch settings rule.
+               Restore with MTPLX_CLIENT_CONTROLS_DEFAULT=hints.
+
+    Why the flip (2026-08-05/06 receipts, issue #241): external tools send
+    temperature:0 expecting OpenAI semantics, were silently served the 0.6
+    coding sampler, and published 'MTPLX does not respect temp=0'. Honoring
+    explicit anonymous params is the API-contract behavior; server ownership
+    remains intact everywhere MTPLX manages the client.
+    """
+    value = str(os.environ.get("MTPLX_CLIENT_CONTROLS_DEFAULT", "honor")).strip().lower()
+    return "hints" if value == "hints" else "honor"
+
+
+def _reject_non_finite_sampler_controls(request: BaseModel) -> None:
+    """400 on NaN/Infinity sampler params instead of a deep per-request 500.
+
+    Honored-by-default body params (2.5.3) mean a JSON `NaN` temperature
+    would otherwise reach the softmax and die mid-generation. Only called
+    when controls are actually applied, so hints-mode requests keep their
+    old accept-and-ignore behavior.
+    """
+    for name in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+        value = getattr(request, name, None)
+        if value is None:
+            continue
+        try:
+            finite = math.isfinite(float(value))
+        except (TypeError, ValueError):
+            finite = False
+        if not finite:
+            raise HTTPException(
+                status_code=400, detail=f"{name} must be a finite number"
+            )
+
+
 def _client_controls_allowed(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
@@ -11239,7 +11416,9 @@ def _client_controls_allowed(
         or metadata.get("allow_client_controls")
         or metadata.get("mtplx_allow_client_controls")
     )
-    return _truthy_control_value(value)
+    if _truthy_control_value(value):
+        return True
+    return _client_controls_default() == "honor"
 
 
 def _ignored_client_control_fields(request: BaseModel) -> list[str]:
@@ -15393,6 +15572,22 @@ _IDLE_POSTCOMMIT_MAX_WAIT_S = 30.0
 _IDLE_POSTCOMMIT_POLL_INTERVAL_S = 0.25
 
 
+def _postcommit_cross_session_yield_enabled() -> bool:
+    """Abort OTHER sessions' pending idle postcommits at request admission.
+
+    The foreground grace below is a same-session bargain (wait <=grace for
+    a commit that saves THIS session a 2-4k salvage re-prefill). It was
+    silently taxing cross-session traffic too — a stranger's request paid
+    the commit's remaining runtime in TTFT plus its bandwidth residue in
+    decode (2026-08-05 showdown receipts). Default on; set
+    MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD=0 to restore the old behavior.
+    """
+    raw = str(
+        os.environ.get("MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD", "1")
+    ).strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
 def _idle_postcommit_foreground_grace_s() -> float:
     """Bounded window during which a running postcommit finishes despite a
     queued foreground request.
@@ -16394,6 +16589,43 @@ def _run_generation_dispatched(
     ).result()
 
 
+def _couple_draft_sampler_to_greedy_target(
+    draft_sampler: Any,
+    *,
+    explicit_draft_sampler: bool,
+    target_temperature: float | None,
+    request_observability: dict[str, Any] | None = None,
+) -> Any:
+    """Force greedy drafts when the target samples greedily.
+
+    Greedy target + sampled draft collapses acceptance to "did the sampled
+    draft hit argmax" (measured [79/65/42]% by depth on the 27B vs
+    [91/83/67]% at temp 0.6 — 2026-08-05 showdown receipts). A greedy
+    target's OUTPUT is draft-independent, so coupling the draft to greedy
+    only raises acceptance; it cannot change generated text. An explicitly
+    provided draft sampler is always respected. Env off-switch:
+    MTPLX_GREEDY_DRAFT_COUPLING=off.
+    """
+    if (
+        explicit_draft_sampler
+        or draft_sampler is None
+        or target_temperature is None
+        or float(target_temperature) > 0.0
+        or float(getattr(draft_sampler, "temperature", 0.0)) <= 0.0
+    ):
+        return draft_sampler
+    if str(os.environ.get("MTPLX_GREEDY_DRAFT_COUPLING", "on")).strip().lower() in (
+        "off",
+        "0",
+        "false",
+        "no",
+    ):
+        return draft_sampler
+    if request_observability is not None:
+        request_observability["draft_sampler_greedy_coupled"] = True
+    return replace(draft_sampler, temperature=0.0)
+
+
 def _run_generation(
     state: ServerState,
     prompt_ids: list[int],
@@ -16449,7 +16681,12 @@ def _run_generation(
         prompt_ids=prompt_ids,
         request_observability=request_observability,
     )
-    effective_draft_sampler = draft_sampler if draft_sampler is not None else state.draft_sampler
+    effective_draft_sampler = _couple_draft_sampler_to_greedy_target(
+        draft_sampler if draft_sampler is not None else state.draft_sampler,
+        explicit_draft_sampler=draft_sampler is not None,
+        target_temperature=temperature,
+        request_observability=request_observability,
+    )
     effective_mode = _normalize_generation_mode(
         generation_mode,
         default=getattr(state.args, "generation_mode", "mtp"),
@@ -17429,6 +17666,46 @@ def _decode_timing(stats: dict[str, Any]) -> tuple[float, float]:
     return generated_tokens / decode_elapsed_s, decode_elapsed_s
 
 
+_MTPLX_FOOTER_UI_HINTS = {
+    # Product UI surfaces where a human reads the chat directly. Managed
+    # AGENT clients (opencode, pi, hermes, openwebui) are deliberately NOT
+    # here: they parse assistant content programmatically, which is exactly
+    # the consumer class the footer scoping protects.
+    "chat",
+    "mtplx",
+    "mtplx_app",
+    "mtplxapp",
+}
+
+
+def _stats_footer_allowed(
+    state: ServerState,
+    headers: Mapping[str, str],
+    metadata: Mapping[str, Any],
+) -> bool:
+    """Visible TPS footer only on MTPLX product UI surfaces.
+
+    The footer is server-injected prose inside `content`. In the app and
+    browser chat it is a product feature a human reads. Everywhere else —
+    the OpenAI/Anthropic compat API and every agent client, managed or not —
+    it corrupts model output: agents parse it as answer text, temp-0
+    byte-equality breaks (the footer's own tok/s digits differ per run),
+    usage excludes its tokens (wire>usage mismatch), and its flush gap
+    deflates externally measured tok/s.
+
+    MTPLX_STATS_FOOTER_SCOPE=all restores the old always-on behavior.
+    """
+    if not getattr(state.args, "stats_footer", False):
+        return False
+    scope = str(os.environ.get("MTPLX_STATS_FOOTER_SCOPE", "owned")).strip().lower()
+    if scope == "all":
+        return True
+    hint = _app_managed_client_hint(headers, metadata)
+    if hint is None:
+        return False
+    return hint in _MTPLX_FOOTER_UI_HINTS or hint.startswith("mtplx_")
+
+
 def _stats_footer_text(state: ServerState, generated: dict[str, Any]) -> str:
     if not state.args.stats_footer:
         return ""
@@ -17464,6 +17741,15 @@ def _usage_payload(generated: dict[str, Any]) -> dict[str, Any]:
         # instead of parsing the mtplx_stats extension block.
         usage["prompt_tokens_details"] = {
             "cached_tokens": max(0, min(int(cached), prompt_tokens))
+        }
+    reasoning = stats.get("reasoning_tokens")
+    if reasoning is not None:
+        # OpenAI-standard split so external clients/benchmarks can separate
+        # thinking from visible output instead of guessing from the stream
+        # (external tools were dividing visible tokens by thinking+visible
+        # wall time and under-reading the decoder).
+        usage["completion_tokens_details"] = {
+            "reasoning_tokens": max(0, min(int(reasoning), completion_tokens))
         }
     return usage
 
@@ -18280,6 +18566,7 @@ def _display_text(
     generated: dict[str, Any],
     *,
     thinking_enabled: bool = False,
+    footer_allowed: bool | None = None,
 ) -> str:
     raw_text = str(generated["text"])
     text = (
@@ -18291,7 +18578,9 @@ def _display_text(
         if state.args.normalize_thinking_tags
         else raw_text
     )
-    if not state.args.stats_footer:
+    if footer_allowed is None:
+        footer_allowed = bool(state.args.stats_footer)
+    if not footer_allowed:
         return text
     footer = _stats_footer_text(state, generated)
     if not footer:
@@ -18306,6 +18595,7 @@ def _nonstream_chat_message_parts(
     *,
     thinking_enabled: bool,
     suppress_visible_reasoning: bool = False,
+    footer_allowed: bool | None = None,
 ) -> tuple[str, str]:
     raw_text = _strip_generated_chat_template_sentinels(
         str(generated.get("text") or "")
@@ -18390,7 +18680,9 @@ def _nonstream_chat_message_parts(
     display_text = _strip_mtplx_internal_continuation_markers(display_text)
     if suppress_visible_reasoning:
         reasoning_text = ""
-    if not getattr(state.args, "stats_footer", False):
+    if footer_allowed is None:
+        footer_allowed = bool(getattr(state.args, "stats_footer", False))
+    if not footer_allowed:
         return display_text, reasoning_text
     footer = _stats_footer_text(state, generated)
     if not footer:
@@ -22334,6 +22626,8 @@ def create_app(state: ServerState) -> FastAPI:
         request_observability["request_commit_prompt_prefix"] = bool(
             commit_prompt_prefix
         )
+        if client_controls_allowed:
+            _reject_non_finite_sampler_controls(request)
         sampler_temperature = request.temperature if client_controls_allowed else None
         sampler_top_p = request.top_p if client_controls_allowed else None
         sampler_top_k = request.top_k if client_controls_allowed else None
@@ -22702,6 +22996,38 @@ def create_app(state: ServerState) -> FastAPI:
         # the session lock is acquired. Set MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S
         # explicitly to restore the blocking wait.
         postcommit_wait_outcome: dict[str, Any] | None = None
+        _cross_session_sweep = getattr(
+            getattr(state, "sessions", None),
+            "abort_cross_session_postcommits",
+            None,
+        )
+        if _cross_session_sweep is not None and _postcommit_cross_session_yield_enabled():
+            # A foreign session's idle commit cannot help THIS request —
+            # only the same-session grace below has a payoff. Abort all
+            # cross-session pending commits so this request never pays a
+            # stranger's 0.5-3.5GB retokenized_history job (2026-08-05
+            # showdown: tight-cadence multi-session traffic lost 30-50%
+            # decode + the job's runtime in TTFT to exactly this).
+            cross_yield = await asyncio.to_thread(
+                _cross_session_sweep,
+                except_session_id=session_id,
+            )
+            if cross_yield is not None:
+                request_observability["postcommit_cross_session_yield"] = (
+                    cross_yield
+                )
+                if not _server_console_enabled(state):
+                    try:
+                        _safe_stdout_print(
+                            "[mtplx] postcommit cross-session yield "
+                            + json.dumps(
+                                {"admitting_session_id": session_id, **cross_yield},
+                                sort_keys=True,
+                                default=str,
+                            )
+                        )
+                    except BaseException:
+                        pass
         if session is not None:
             postcommit_wait_outcome = await asyncio.to_thread(
                 session.resolve_pending_postcommit_for_request
@@ -24962,7 +25288,11 @@ def create_app(state: ServerState) -> FastAPI:
                                 state.last_metrics[-1]["reasoning_reentries"] = (
                                     splitter.reentry_count
                                 )
-                            footer = _stats_footer_text(state, generated)
+                            footer = (
+                                _stats_footer_text(state, generated)
+                                if _stats_footer_allowed(state, headers, metadata)
+                                else ""
+                            )
                             if footer and not assistant_tool_calls:
                                 # The footer is server-injected, not model
                                 # output: bypass stop monitoring so a stop
@@ -25403,6 +25733,7 @@ def create_app(state: ServerState) -> FastAPI:
                     generated,
                     thinking_enabled=thinking_enabled,
                     suppress_visible_reasoning=suppress_visible_reasoning,
+                    footer_allowed=_stats_footer_allowed(state, headers, metadata),
                 )
                 if extraction is None:
                     # No tools were declared on this request, so any tool-call
@@ -25554,6 +25885,26 @@ def create_app(state: ServerState) -> FastAPI:
         metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
         client_controls_allowed = _client_controls_allowed(headers, metadata)
         prompt_ids = _encode_prompt(state.runtime.tokenizer, request.prompt)
+        if not prompt_ids:
+            # An empty body used to fall through into generation machinery and
+            # surface as a 500 with a Python exception string — external
+            # endpoint-discovery probes printed it as "python errors".
+            raise HTTPException(status_code=400, detail="prompt must not be empty")
+        # Same admission-time yield as chat: a completions request holds no
+        # session, so every pending idle commit is a stranger's — none can
+        # help this request and any can stall it. Failures surface exactly
+        # like the chat path's sweep: no swallowing.
+        completions_cross_yield: dict[str, Any] | None = None
+        _completions_sweep = getattr(
+            getattr(state, "sessions", None),
+            "abort_cross_session_postcommits",
+            None,
+        )
+        if _completions_sweep is not None and _postcommit_cross_session_yield_enabled():
+            completions_cross_yield = await asyncio.to_thread(
+                _completions_sweep,
+                except_session_id=None,
+            )
         request_generation_mode = _request_generation_mode_for_generation(
             state,
             request,
@@ -25571,6 +25922,8 @@ def create_app(state: ServerState) -> FastAPI:
             request_depth=request_depth,
             prompt_tokens=len(prompt_ids),
         )
+        if client_controls_allowed:
+            _reject_non_finite_sampler_controls(request)
         sampler_temperature = request.temperature if client_controls_allowed else None
         sampler_top_p = request.top_p if client_controls_allowed else None
         sampler_top_k = request.top_k if client_controls_allowed else None
@@ -25595,6 +25948,10 @@ def create_app(state: ServerState) -> FastAPI:
             ),
             "client_controls_allowed": bool(client_controls_allowed),
         }
+        if completions_cross_yield is not None:
+            request_observability["postcommit_cross_session_yield"] = (
+                completions_cross_yield
+            )
         if not client_controls_allowed:
             ignored_fields = _ignored_client_control_fields(request)
             if ignored_fields:
@@ -25849,7 +26206,7 @@ def create_app(state: ServerState) -> FastAPI:
                 else:
                     footer = (
                         _stats_footer_text(state, generated)
-                        if state.args.stats_footer
+                        if _stats_footer_allowed(state, headers, metadata)
                         else ""
                     )
                     if footer:
@@ -25960,7 +26317,11 @@ def create_app(state: ServerState) -> FastAPI:
                 generated.setdefault("stats", {})["stop_sequence_hit"] = True
                 generated["stats"]["stop_sequence_matched"] = matched_stop
         generated.setdefault("stats", {})["finish_reason"] = finish_reason
-        display_text = _display_text(state, generated)
+        display_text = _display_text(
+            state,
+            generated,
+            footer_allowed=_stats_footer_allowed(state, headers, metadata),
+        )
         return JSONResponse(
             {
                 "id": response_id,
@@ -26021,15 +26382,35 @@ def create_app(state: ServerState) -> FastAPI:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception(_request: Request, exc: Exception) -> JSONResponse:
+    async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
         _record_tool_parse_event(state, event="openai_error_response")
         request_id = uuid.uuid4().hex[:12]
+        # Full detail belongs in the server log, not the wire: exception
+        # class + repr in client bodies got quoted verbatim by external
+        # endpoint probes as "MTPLX python errors" (2026-08-05 showdown).
+        logging.getLogger("mtplx.server").exception(
+            "unhandled server error request_id=%s path=%s: %s",
+            request_id,
+            getattr(getattr(request, "url", None), "path", "?"),
+            exc,
+        )
+        if str(os.environ.get("MTPLX_DEBUG_ERRORS", "")).strip().lower() in (
+            "1",
+            "true",
+            "on",
+        ):
+            message = f"{type(exc).__name__}: {exc} (request_id={request_id})"
+        else:
+            message = (
+                "internal server error; see the MTPLX server log "
+                f"(request_id={request_id})"
+            )
         return JSONResponse(
             status_code=500,
             content=_openai_error_content(
-                f"{type(exc).__name__}: {exc} (request_id={request_id})",
+                message,
                 status_code=500,
-                code=type(exc).__name__,
+                code="internal_error",
             ),
         )
 

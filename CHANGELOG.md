@@ -4,6 +4,67 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.3] - 2026-08-06
+
+Small release. A day of head-to-head benchmarking against another engine
+turned up a set of real latency bugs in our agent lane and a few places
+where the API surface misled external tools. All of them are fixed here.
+
+### Fixed
+
+- Back-to-back agent requests no longer stall behind another session's
+  background cache maintenance. Between requests the server commits session
+  state to the reuse bank; since the 2.4 line that work could only be
+  interrupted by its own session, so a request from any other session (a
+  second chat, a subagent, an editor tool call) could wait out a
+  multi-gigabyte commit and then decode slower on top of it. Worst measured
+  hit on tight request cadences was a 44% slower follow-up turn and about
+  0.75s of added first-token latency. Commits now yield the moment any
+  request is admitted, whoever it belongs to. A session's own follow-up
+  keeps the short grace it always had, so streaming tool-call turns still
+  resolve their prefix instead of re-prefilling.
+  (`MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD=0` restores the old behavior.)
+- Repeat requests skip prompt re-encoding. Rendering and tokenizing a long
+  chat transcript costs 77-92ms per request; an exact-match cache now
+  returns it in under a millisecond. Combined with the yield fix above,
+  warm follow-up latency in our gate runs went from a 194-961ms band to a
+  steady 65-74ms, and clean-room warm restores measure 2-3ms server-side.
+  (A related opt-in knob,
+  `MTPLX_COMPILED_VERIFY_POST_RESTORE_EAGER_ROUNDS`, can route the first
+  verify round after a very large restore through the eager path; it ships
+  off by default.)
+- API responses no longer end with the "MTPLX TPS" stats footer. External
+  tools counted it as model output, which added ~430ms to their timing
+  windows, made token counts disagree with `usage`, and broke output
+  equality checks at temperature 0. The MTPLX app and browser chat keep
+  the footer. (`MTPLX_STATS_FOOTER_SCOPE=all` restores it everywhere.)
+- `usage` now reports `completion_tokens_details.reasoning_tokens`, so
+  clients can separate thinking tokens from visible output instead of
+  inferring it from stream timing.
+- Probing unknown endpoints or posting malformed bodies returns clean JSON
+  errors with the right status codes instead of Python exception text.
+
+### Changed
+
+- Anonymous API clients now get standard OpenAI semantics for explicit
+  request parameters: temperature, top_p, top_k, the thinking toggle,
+  penalties, and generation mode in the request body are applied instead
+  of being treated as hints. Requests that leave a field unset keep the
+  server's launch and live settings, and clients MTPLX manages itself (the
+  app, browser chat, configured OpenCode and editor lanes) stay
+  server-owned exactly as before, so curated agent sampling is untouched.
+  This closes the "temperature is ignored" class of report (#241).
+  (`MTPLX_CLIENT_CONTROLS_DEFAULT=hints` restores the old policy.)
+- Temperature-0 requests now run the draft sampler greedy as well, so the
+  speculative window matches the target's argmax choices more often:
+  depth-2 acceptance rose from .526 to .590 in our runs.
+
+### Compatibility
+
+- Model catalogs, model defaults, memory policy, and every managed-client
+  behavior are unchanged. Each behavior change above has an environment
+  switch that restores the previous policy.
+
 ## [2.5.2] - 2026-08-04
 
 Hotfix for a long-response slowdown that shipped in 2.5.1 with Optimized
