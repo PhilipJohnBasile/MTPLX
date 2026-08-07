@@ -61,13 +61,42 @@ class DecodedPayload:
     has_recurrent: bool = False
 
 
+class ColdEncodeInterrupted(RuntimeError):
+    """Raised between tensor evals when the encode's should_abort fires.
+
+    The SSD cold-tier encode runs on the single model-owner thread and a
+    16k-context entry is ~2.5 GB of eval+copy — long enough that an arriving
+    foreground request would queue behind it (surfacing as unattributed
+    prompt-state wall, 0.66-3.6 s in the 2026-08-06/07 receipts). Aborting at
+    a tensor boundary bounds that collision to one tensor's eval; the caller
+    re-dispatches the job for the next quiet window.
+    """
+
+
 class TreeCodec:
     """Flatten JSON-safe trees plus MLX arrays into raw tensor blobs."""
 
-    def __init__(self, *, block_size: int = 256) -> None:
+    def __init__(
+        self,
+        *,
+        block_size: int = 256,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> None:
         self._next_tensor_id = 0
         self.tensors: dict[str, bytes] = {}
         self.block_size = max(1, int(block_size))
+        self.should_abort = should_abort
+
+    def _check_abort(self) -> None:
+        check = self.should_abort
+        if check is None:
+            return
+        try:
+            interrupted = bool(check())
+        except Exception:
+            return
+        if interrupted:
+            raise ColdEncodeInterrupted()
 
     def encode(self, value: Any) -> Any:
         if value is None:
@@ -100,6 +129,7 @@ class TreeCodec:
         raise TypeError(f"unsupported SessionBank snapshot leaf: {type(value)!r}")
 
     def _encode_tensor(self, value: Any) -> dict[str, Any]:
+        self._check_abort()
         mx.eval(value)
         dtype = _dtype_name(value.dtype)
         shape = [int(dim) for dim in value.shape]
@@ -128,6 +158,7 @@ class TreeCodec:
         blocks: list[dict[str, Any]] = []
         total = 0
         for start in range(0, shape[axis], self.block_size):
+            self._check_abort()
             end = min(shape[axis], start + self.block_size)
             slices = [slice(None)] * len(shape)
             slices[axis] = slice(start, end)
@@ -195,8 +226,9 @@ def encode_payload(
     gdn_boundaries: tuple | list | None = None,
     has_recurrent: bool | None = None,
     block_size: int = 256,
+    should_abort: Callable[[], bool] | None = None,
 ) -> EncodedPayload:
-    codec = TreeCodec(block_size=block_size)
+    codec = TreeCodec(block_size=block_size, should_abort=should_abort)
     spec = {
         "cache_snapshot": {
             "states": codec.encode(cache_snapshot.states),

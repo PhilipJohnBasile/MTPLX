@@ -1860,7 +1860,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--reasoning", "auto"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--preserve-thinking", "auto"]))
         XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_ROUTE"], "async_per_head")
-        XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT"], "32768")
+        XCTAssertNil(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT"])
         XCTAssertEqual(command.environment["MTPLX_SESSION_BANK_MAX_ENTRIES"], "32")
         XCTAssertNil(command.environment["MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY"])
         XCTAssertNil(command.environment["MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD"])
@@ -2158,9 +2158,9 @@ final class MTPLXAppCoreTests: XCTestCase {
 
         XCTAssertEqual(command.environment["MTPLX_APP_LAUNCH_ID"], "opencode-launch")
         XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_ROUTE"], "async_per_head")
-        XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT"], "32768")
-        XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_Q"], "3")
-        XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MAX_Q"], "5")
+        XCTAssertNil(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT"])
+        XCTAssertNil(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_Q"])
+        XCTAssertNil(command.environment["MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MAX_Q"])
         XCTAssertEqual(command.environment["MTPLX_SESSION_BLOCK_PREFIX_RESTORE"], "1")
         XCTAssertEqual(command.environment["MTPLX_SESSION_BANK_MAX_ENTRIES"], "32")
         // "auto": the engine budgets half the post-model RAM surplus.

@@ -15,11 +15,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mtplx.cache_state import CacheSnapshot
 
-from .codec import decode_gdn_boundaries, decode_payload, encode_payload
+from .codec import (
+    ColdEncodeInterrupted,
+    decode_gdn_boundaries,
+    decode_payload,
+    encode_payload,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -178,6 +183,26 @@ def _env_size_bytes(name: str, default: int) -> int:
     return parse_size_bytes(os.environ.get(name), default)
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return float(default)
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return float(default)
+    if value != value or value in (float("inf"), float("-inf")) or value < 0.0:
+        return float(default)
+    return value
+
+
 def parse_size_bytes(value: str | int | None, default: int) -> int:
     if value is None:
         return int(default)
@@ -261,6 +286,13 @@ class SessionBankColdTier:
     thread only writes files and updates SQLite; it never sees live MLX arrays.
     """
 
+    # Capability marker for SessionBank: lookup_prefix_boundary accepts the
+    # resident_duplicates shadow kwarg. Explicit attribute so callers never
+    # need per-request signature inspection; duck-typed tiers without it get
+    # the pre-shadow call shape.
+    SUPPORTS_RESIDENT_DUPLICATE_SHADOW = True
+    SUPPORTS_MIN_USEFUL_MATCHED_TOKENS = True
+
     def __init__(
         self,
         *,
@@ -297,6 +329,25 @@ class SessionBankColdTier:
             "MTPLX_SSD_WRITE_BUDGET_PER_HOUR", 64 * 1024**3
         )
         self._written_window: deque[tuple[float, int]] = deque()
+        # Foreground-yield contract (2026-08-07): the server wires this to
+        # ModelWorkScheduler.foreground_busy so both halves of the SSD path
+        # stand down for latency-critical traffic — the encode aborts between
+        # tensor evals (it runs on the model-owner thread; a 16k entry is
+        # ~2.5 GB of eval+copy) and the writer thread pauses between entry
+        # writes (a 2.5 GB file write steals unified-memory bandwidth from
+        # decode: measured -30% decode with 0.66-0.75 s unattributed
+        # prompt-state wall, gate254-c4s receipts 2026-08-07). None (e.g.
+        # standalone/test construction) keeps legacy behavior.
+        self.foreground_busy: Callable[[], bool] | None = None
+        self._writer_pause_enabled = _env_flag(
+            "MTPLX_SSD_WRITER_FOREGROUND_PAUSE", default=True
+        )
+        self._writer_pause_max_s = _env_float(
+            "MTPLX_SSD_WRITER_FOREGROUND_PAUSE_MAX_S", 60.0
+        )
+        self._encode_yield_enabled = _env_flag(
+            "MTPLX_SSD_ENCODE_FOREGROUND_YIELD", default=True
+        )
         self._stop = threading.Event()
         self._base_lock = threading.RLock()
         self._disk_usage_lock = threading.Lock()
@@ -334,6 +385,9 @@ class SessionBankColdTier:
             "last_restore_s": None,
             "last_miss_reason": None,
             "last_archive_path": None,
+            "encode_yields_foreground": 0,
+            "writer_foreground_pauses": 0,
+            "writer_foreground_pause_s": 0.0,
         }
         self._ensure_store()
         self._writer = threading.Thread(
@@ -356,7 +410,16 @@ class SessionBankColdTier:
         entry: Any,
         *,
         capabilities: list[str] | tuple[str, ...] | None = None,
+        raise_on_yield: bool = False,
     ) -> bool:
+        """Encode an entry and enqueue it for the writer thread.
+
+        raise_on_yield: when True (the idle-lane cold_enqueue job), a
+        foreground arrival mid-encode raises ColdEncodeInterrupted so the
+        caller can re-dispatch for the next quiet window. Default False keeps
+        every legacy caller's contract: the interrupt is swallowed and the
+        write is simply skipped for this attempt.
+        """
         if self.mode == "off":
             return False
         token_ids = tuple(int(token) for token in getattr(entry, "token_ids"))
@@ -381,6 +444,9 @@ class SessionBankColdTier:
         # eventual serialization could capture mutated pages — silently
         # corrupt persisted sessions that degrade on every restore. Bytes are
         # captured at snapshot time; the writer thread is pure file IO.
+        should_abort: Callable[[], bool] | None = None
+        if self._encode_yield_enabled and self.foreground_busy is not None:
+            should_abort = self.foreground_busy
         try:
             encoded = encode_payload(
                 cache_snapshot=getattr(entry, "cache_snapshot"),
@@ -390,11 +456,35 @@ class SessionBankColdTier:
                 gdn_boundaries=boundaries,
                 has_recurrent=bool(getattr(entry, "has_recurrent", False)),
                 block_size=self.block_size,
+                should_abort=should_abort,
             )
+        except ColdEncodeInterrupted:
+            self._release_pending(estimated_nbytes)
+            self._inc("encode_yields_foreground")
+            if raise_on_yield:
+                raise
+            return False
         except Exception as exc:
+            self._release_pending(estimated_nbytes)
             self._inc("skipped_serialize_error")
             logger.warning("SessionBank SSD serialize skipped: %s: %s", type(exc).__name__, exc)
             return False
+        if should_abort is not None:
+            # Fence the encode's GPU work inside this idle item. The byte
+            # capture above schedules evals whose command buffers otherwise
+            # drain into whatever runs next — measured as 0.66-0.75 s of
+            # unattributed prompt-state wall plus a decode dip on the
+            # following request when an arrival landed on the tail
+            # (gate254-y1 vs gate254-y2, 2026-08-07). Synchronizing here
+            # keeps the tail in the idle window where the scheduler already
+            # accounts for it, and the per-tensor abort check above bounds
+            # how much work can pile up before an arrival is noticed.
+            try:
+                import mlx.core as _mx
+
+                _mx.synchronize()
+            except Exception:
+                pass
         metadata = self._metadata_for_entry(
             entry,
             capabilities=capabilities or (),
@@ -486,7 +576,24 @@ class SessionBankColdTier:
         block_size: int = DEFAULT_BLOCK_SIZE,
         block_min_matched_tokens: int = DEFAULT_COLD_TIER_MIN_PREFIX_TOKENS,
         allow_block_prefix: bool = True,
+        resident_duplicates: dict[str, dict[str, Any]] | None = None,
+        min_useful_matched_tokens: int = 0,
     ) -> ColdPrefixRestoreRecord | None:
+        # resident_duplicates: token_hash -> {prefix_len, has_mtp_history}
+        # for RAM entries the caller has ALREADY proven identity-compatible
+        # with this request, snapshot-capable (never live-ref-only), and
+        # recurrent-boundary-covered. The metadata scan below runs exactly
+        # as before, but when the best cold row IS one of those resident
+        # entries (same token hash and stored length, and the resident copy
+        # matches the row's committed-MTP coverage), the lookup returns
+        # no-candidate BEFORE _restore_row: fully hydrating a candidate the
+        # caller's stable sort would resolve to its RAM twin anyway is pure
+        # request-path waste (measured 0.66-1.17s per warm turn, probe pair
+        # 2026-08-06). A cold row with NO serve-equivalent resident twin —
+        # different tokens, longer prefix, missing coverage in RAM — always
+        # hydrates as before, so cold-only recovery and strictly-better-cold
+        # behavior are unchanged, and an ineligible RAM match can never
+        # shadow a valid cold candidate.
         if self.mode == "off":
             self._set_last_miss("ssd_cache_off")
             return None
@@ -513,7 +620,7 @@ class SessionBankColdTier:
                 draft_head_identity=draft_head_identity,
                 policy_fingerprint=policy_fingerprint,
             )
-            best: tuple[sqlite3.Row, int, str] | None = None
+            best: tuple[sqlite3.Row, int, str, int] | None = None
             best_key: tuple[int, int, int] | None = None
             for row in rows:
                 prefix = tuple(int(token) for token in json.loads(str(row["token_ids_json"])))
@@ -544,12 +651,52 @@ class SessionBankColdTier:
                     continue
                 candidate_key = (candidate_matched, int(matched), len(prefix))
                 if best_key is None or candidate_key > best_key:
-                    best = (row, candidate_matched, restore_kind)
+                    best = (row, candidate_matched, restore_kind, len(prefix))
                     best_key = candidate_key
             if best is None:
                 self._inc("restore_misses")
                 self._set_last_miss("ssd_prefix_miss")
                 return None
+            if int(min_useful_matched_tokens) > 0 and best[1] < int(
+                min_useful_matched_tokens
+            ):
+                # The caller's best RAM candidate already matches more
+                # tokens than this row possibly can — the stable sort would
+                # discard the hydrated result unread. Skip the multi-GB
+                # request-path hydration entirely. Equal-matched rows fall
+                # through to the resident-duplicate shadow (and may still
+                # legitimately hydrate when no twin covers them), so
+                # strictly-better-cold and cold-only recovery semantics are
+                # untouched.
+                self._inc("prefix_lookups_not_better_than_ram")
+                self._set_last_miss("ssd_prefix_not_better_than_ram")
+                return None
+            if resident_duplicates:
+                dup = resident_duplicates.get(str(best[0]["token_hash"]))
+                if dup is not None and int(dup.get("prefix_len") or -1) == int(
+                    best[3]
+                ):
+                    try:
+                        row_caps = {
+                            str(c)
+                            for c in json.loads(
+                                str(best[0]["capabilities_json"] or "[]")
+                            )
+                        }
+                    except Exception:
+                        # Unknown capabilities: assume the row is maximal so
+                        # only a fully-covered resident twin may shadow it.
+                        row_caps = {"mtp_full"}
+                    row_has_mtp = (
+                        "mtp_full" in row_caps
+                        or best[0]["mtp_snapshot_epoch"] is not None
+                    )
+                    if (not row_has_mtp) or bool(dup.get("has_mtp_history")):
+                        self._inc("prefix_lookups_shadowed_by_ram")
+                        self._set_last_miss(
+                            "ssd_prefix_shadowed_by_resident_duplicate"
+                        )
+                        return None
             record = self._restore_row(
                 best[0],
                 tokens,
@@ -794,6 +941,43 @@ class SessionBankColdTier:
             "deduped_nbytes": 0,
         }
 
+    def _pause_for_foreground(self) -> None:
+        """Hold the writer while latency-critical traffic is in flight.
+
+        A 2.5 GB entry write is CPU memcpy + page-cache churn on unified
+        memory — direct bandwidth competition with decode (measured -30%
+        decode with 0.66-0.75 s unattributed prompt-state wall when the write
+        overlapped the next turn, gate254-c4s 2026-08-07). Durability is
+        deferrable by seconds; the pause is bounded so a saturated server
+        still persists eventually.
+        """
+        if not self._writer_pause_enabled:
+            return
+        check = self.foreground_busy
+        if check is None:
+            return
+        waited = 0.0
+        deadline = time.monotonic() + max(0.0, self._writer_pause_max_s)
+        paused = False
+        while time.monotonic() < deadline and not self._stop.is_set():
+            try:
+                busy = bool(check())
+            except Exception:
+                break
+            if not busy:
+                break
+            paused = True
+            time.sleep(0.05)
+            waited += 0.05
+        if paused:
+            with self._stats_lock:
+                self._stats["writer_foreground_pauses"] = (
+                    int(self._stats.get("writer_foreground_pauses", 0) or 0) + 1
+                )
+                self._stats["writer_foreground_pause_s"] = float(
+                    self._stats.get("writer_foreground_pause_s", 0.0) or 0.0
+                ) + waited
+
     def _writer_loop(self) -> None:
         while not self._stop.is_set():
             pending = self._queue.get()
@@ -801,6 +985,7 @@ class SessionBankColdTier:
                 self._queue.task_done()
                 break
             try:
+                self._pause_for_foreground()
                 wrote = self._write_pending(pending)
                 if wrote:
                     self._inc("writes_completed")
@@ -872,15 +1057,30 @@ class SessionBankColdTier:
                 pending.entry_id,
             )
             return False
+        # Phase 0 (no lock): pause-aware digest planning. This is where the
+        # real per-entry cost lives once blob dedupe kicks in — hashing a
+        # ~2.5 GB payload is ~0.8 s of CPU/memory traffic even when every
+        # blob already exists on disk and nothing gets written. Running it
+        # under _base_lock blocked concurrent foreground SSD lookups for the
+        # whole hash (measured 0.66-0.87 s unattributed prompt-state wall,
+        # gate254-y1/y3/y4 — unchanged by write-side pauses because the
+        # writes were all dedupe-skipped), and the per-blob GIL churn
+        # degraded the live SSE decode stream ~30%. Per-blob pause checks
+        # bound the collision to one blob's hash.
+        entry_hash_prefix = pending.entry_id[:2]
+        final_dir = self.base_dir / "entries" / entry_hash_prefix / pending.entry_id
         with self._base_lock:
             self._ensure_store()
-            entry_hash_prefix = pending.entry_id[:2]
-            final_dir = self.base_dir / "entries" / entry_hash_prefix / pending.entry_id
             if final_dir.exists():
                 if self._entry_in_manifest(pending.entry_id):
                     self._touch_entry(pending.entry_id)
                     return True
                 self._archive_orphan_entry_dir(final_dir, pending.entry_id)
+        tensor_blobs, missing_blob_bytes = self._plan_tensor_blobs(
+            pending.tensors, pause_for_foreground=True
+        )
+        # Phase 1 (under lock): admission gates — no bulk IO, no hashing.
+        with self._base_lock:
             effective_cap, budget_block = self._effective_write_budget()
             if budget_block is not None:
                 self._inc("skipped_low_disk")
@@ -895,7 +1095,6 @@ class SessionBankColdTier:
             with self._stats_lock:
                 self._stats["low_disk_writes_disabled"] = False
                 self._stats["effective_max_bytes"] = int(effective_cap)
-            tensor_blobs, missing_blob_bytes = self._plan_tensor_blobs(pending.tensors)
             payload = {
                 "format_version": COLD_TIER_FORMAT_VERSION,
                 "metadata": pending.metadata,
@@ -921,6 +1120,28 @@ class SessionBankColdTier:
             if not self._evict_until_room(pending_bytes, cap_bytes=effective_cap):
                 self._inc("skipped_size_cap")
                 return False
+        # Phase 2 (no lock): pause-aware bulk blob writes. Blobs are
+        # content-addressed, atomic (tmp+rename), idempotent, and invisible
+        # to restores until the manifest row lands in phase 3 — a crash or a
+        # skip here leaves only orphan blobs, which the existing orphan
+        # cleanup already handles. Pausing per blob bounds the
+        # bandwidth-contention window to one blob write (gate254-c4s: an
+        # entry-granular pause left the 2.5 GB write straddling the arrival).
+        for name, raw in pending.tensors.items():
+            self._pause_for_foreground()
+            if self._stop.is_set():
+                return False
+            blob = tensor_blobs[name]
+            if self._write_blob(blob["sha256"], raw):
+                continue
+            self._inc("deduped_blob_hits")
+        # Phase 3 (under lock): entry payload + manifest finalize.
+        with self._base_lock:
+            if final_dir.exists():
+                if self._entry_in_manifest(pending.entry_id):
+                    self._touch_entry(pending.entry_id)
+                    return True
+                self._archive_orphan_entry_dir(final_dir, pending.entry_id)
             temp_parent = self.base_dir / "entries" / entry_hash_prefix
             temp_parent.mkdir(parents=True, exist_ok=True)
             temp_dir = Path(tempfile.mkdtemp(prefix=f".{pending.entry_id}.tmp-", dir=temp_parent))
@@ -928,11 +1149,6 @@ class SessionBankColdTier:
                 json.dumps(payload, sort_keys=True, separators=(",", ":")),
                 encoding="utf-8",
             )
-            for name, raw in pending.tensors.items():
-                blob = tensor_blobs[name]
-                if self._write_blob(blob["sha256"], raw):
-                    continue
-                self._inc("deduped_blob_hits")
             temp_dir.rename(final_dir)
             metadata = dict(pending.metadata)
             metadata["entry_dir"] = str(final_dir.relative_to(self.base_dir))
@@ -946,11 +1162,15 @@ class SessionBankColdTier:
     def _plan_tensor_blobs(
         self,
         tensors: dict[str, bytes],
+        *,
+        pause_for_foreground: bool = False,
     ) -> tuple[dict[str, dict[str, Any]], int]:
         blobs: dict[str, dict[str, Any]] = {}
         missing_bytes = 0
         planned_missing: set[str] = set()
         for name, raw in tensors.items():
+            if pause_for_foreground:
+                self._pause_for_foreground()
             digest = hashlib.sha256(raw).hexdigest()
             blobs[name] = {"sha256": digest, "nbytes": len(raw)}
             if digest in planned_missing:

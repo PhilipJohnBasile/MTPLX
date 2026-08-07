@@ -1887,10 +1887,37 @@ class ServerState:
         _bank = getattr(self.sessions, "bank", None)
         if _bank is not None and hasattr(_bank, "cold_enqueue_dispatch"):
             _scheduler = self.model_scheduler
-            _bank.cold_enqueue_dispatch = (
-                lambda job: _scheduler.submit_idle_postcommit(
-                    job, batch_key="ssd.cold_enqueue"
+            if getattr(_scheduler, "SUPPORTS_IDLE_PERSISTENCE", False):
+                # Durability band: cold encodes must never displace the
+                # canonical postcommit whose entry anchors the next turn's
+                # restore (2026-08-06 causal probe: FIFO idle ordering cost
+                # 0.66-1.17s per warm agent turn). Explicit capability
+                # check; legacy schedulers keep the idle-postcommit lane.
+                _bank.cold_enqueue_dispatch = (
+                    lambda job: _scheduler.submit_idle_persistence(
+                        job,
+                        batch_key="ssd.cold_enqueue",
+                        coalesce_key=getattr(job, "coalesce_key", None),
+                    )
                 )
+            else:
+                _bank.cold_enqueue_dispatch = (
+                    lambda job: _scheduler.submit_idle_postcommit(
+                        job, batch_key="ssd.cold_enqueue"
+                    )
+                )
+        # Foreground-yield wiring (2026-08-07): the cold tier's encode runs
+        # on the model-owner thread and its writer thread moves GBs through
+        # unified memory — both must stand down while a request is queued or
+        # running (encode aborts between tensor evals and re-dispatches;
+        # writer pauses between entry writes). Without this the SSD write of
+        # each fresh postcommit entry overlapped the next turn: -30% decode
+        # + 0.66-0.75 s unattributed prompt-state wall (gate254-c4s).
+        if self.session_bank_cold_tier is not None and hasattr(
+            self.model_scheduler, "foreground_busy"
+        ):
+            self.session_bank_cold_tier.foreground_busy = (
+                self.model_scheduler.foreground_busy
             )
         self.last_metrics: list[dict[str, Any]] = []
         self.tool_parse_counters = {key: 0 for key in _TOOL_PARSE_COUNTER_KEYS}
@@ -5417,20 +5444,28 @@ def _append_tool_result_continuation_hint(
     messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]],
-) -> None:
+) -> bool:
+    """Append the trailing continuation hint; True ONLY on a real append.
+
+    The return is the injection-only contract's source of truth: the
+    stable-boundary encoder must never treat a user-authored lookalike
+    final message as the internal hint (it would pass any content sniff
+    by construction), so downstream consumers key on this explicit
+    signal, not on message text.
+    """
     if not _anonymous_coding_agent_tool_request(_tool_names(tools)):
-        return
+        return False
     if not messages:
-        return
+        return False
     last = messages[-1]
     if last.get("role") != "tool":
-        return
+        return False
     if any(
         "Continue the active coding task using the tool result immediately above"
         in str(message.get("content") or "")
         for message in messages
     ):
-        return
+        return False
     hint = _mtplx_tool_result_continuation_hint_text()
     # Keep this out of the tool result itself. OpenCode displays model
     # reasoning, and a real app-path QA run showed the model treating an
@@ -5438,6 +5473,7 @@ def _append_tool_result_continuation_hint(
     # instruction is accepted by Qwen's chat template, preserves the
     # cache-friendly prefix, and keeps the evidence boundary clean.
     messages.append({"role": "user", "content": hint})
+    return True
 
 
 def _with_mtplx_tool_contract(
@@ -5445,6 +5481,7 @@ def _with_mtplx_tool_contract(
     *,
     tools: list[dict[str, Any]] | None,
     tool_choice: Any = None,
+    observability: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not tools:
         return normalized
@@ -5457,7 +5494,9 @@ def _with_mtplx_tool_contract(
     if not normalized:
         return [{"role": "system", "content": contract}]
     messages = [dict(item) for item in normalized]
-    _append_tool_result_continuation_hint(messages, tools=tools)
+    if _append_tool_result_continuation_hint(messages, tools=tools):
+        if observability is not None:
+            observability["tool_result_continuation_hint_injected"] = True
     first = messages[0]
     if first.get("role") == "system":
         content = str(first.get("content") or "")
@@ -5484,6 +5523,7 @@ def _with_mtplx_native_agent_tail(
     normalized: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None,
+    observability: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Keep native template tools, but add the coding-agent tool-start nudge.
 
@@ -5497,7 +5537,12 @@ def _with_mtplx_native_agent_tail(
         return normalized, False
     messages = [dict(item) for item in normalized]
     last_is_tool_result = bool(messages and messages[-1].get("role") == "tool")
-    _append_tool_result_continuation_hint(messages, tools=tools)
+    if _append_tool_result_continuation_hint(messages, tools=tools):
+        # Same injection-only contract as the hybrid path: the stable
+        # boundary encoder keys on this explicit signal so native mode
+        # keeps the aligned-boundary metadata too.
+        if observability is not None:
+            observability["tool_result_continuation_hint_injected"] = True
     if last_is_tool_result:
         return messages, False
     tail_contract = (
@@ -10359,6 +10404,8 @@ def _encode_rendered_chat_text_segmented(
     tokenizer: Any,
     rendered: str,
     boundaries: list[int],
+    *,
+    token_counts_at: dict[int, int] | None = None,
 ) -> list[int]:
     if not boundaries:
         return _encode_rendered_chat_text(tokenizer, rendered)
@@ -10371,6 +10418,10 @@ def _encode_rendered_chat_text_segmented(
             _encode_rendered_chat_text(tokenizer, rendered[start:boundary])
         )
         start = boundary
+        if token_counts_at is not None and boundary in token_counts_at:
+            # Cumulative token count at this char boundary — token-exact
+            # because the segment split IS the encode split.
+            token_counts_at[boundary] = len(token_ids)
     if start < len(rendered):
         token_ids.extend(_encode_rendered_chat_text(tokenizer, rendered[start:]))
     return token_ids
@@ -10406,7 +10457,110 @@ def _encode_generation_compatible_tool_history(
     boundaries = _qwen_assistant_generation_boundaries(rendered)
     if not boundaries:
         return None
-    return _encode_rendered_chat_text_segmented(tokenizer, rendered, boundaries)
+    hint_injected = bool(
+        template_observability is not None
+        and template_observability.get("tool_result_continuation_hint_injected")
+        is True
+    )
+    hint_boundary = (
+        _trailing_tool_hint_char_boundary(rendered) if hint_injected else None
+    )
+    if hint_boundary is None:
+        return _encode_rendered_chat_text_segmented(tokenizer, rendered, boundaries)
+    # Report where the transient trailing tool-continuation hint's user turn
+    # begins, in TOKENS. Splitting the segmented encode at the turn's
+    # <|im_start|> (a special token, so the split is merge-safe like every
+    # existing boundary here) makes the cumulative count token-exact. The
+    # rendered text, ids, and behavior are unchanged; downstream prefill
+    # span planning uses the count as a mandatory chunk edge so the
+    # gdn-boundary capture records recurrent state exactly at the stable
+    # prompt prefix (aligned-boundary design, 2026-08-06).
+    token_counts: dict[int, int] = {hint_boundary: -1}
+    token_ids = _encode_rendered_chat_text_segmented(
+        tokenizer,
+        rendered,
+        [*boundaries, hint_boundary],
+        token_counts_at=token_counts,
+    )
+    stable_prefix_len = int(token_counts.get(hint_boundary, -1))
+    if template_observability is not None and 0 < stable_prefix_len < len(token_ids):
+        template_observability["stable_prefix_len"] = stable_prefix_len
+    return token_ids
+
+
+def _encode_with_stable_hint_boundary(
+    tokenizer: Any,
+    normalized: list[dict[str, Any]],
+    *,
+    add_generation_prompt: bool,
+    enable_thinking: bool | None,
+    reasoning_effort: str | None,
+    preserve_thinking: bool,
+    tools: list[dict[str, Any]] | None,
+    template_observability: dict[str, Any],
+) -> list[int] | None:
+    """Plain-path stable-prefix reporting for the injected trailing hint.
+
+    Returns the full prompt ids with template_observability gaining
+    stable_prefix_len (tokens before the hint turn's <|im_start|>), or None
+    to fall through to the unchanged single-call encode.
+    """
+    rendered = _render_messages_with_chat_template(
+        tokenizer,
+        normalized,
+        add_generation_prompt=add_generation_prompt,
+        enable_thinking=enable_thinking,
+        reasoning_effort=reasoning_effort,
+        preserve_thinking=preserve_thinking,
+        tools=tools,
+        template_observability=template_observability,
+    )
+    if not rendered:
+        return None
+    boundary = _trailing_tool_hint_char_boundary(rendered)
+    if boundary is None:
+        return None
+    token_counts: dict[int, int] = {boundary: -1}
+    token_ids = _encode_rendered_chat_text_segmented(
+        tokenizer,
+        rendered,
+        [boundary],
+        token_counts_at=token_counts,
+    )
+    stable_prefix_len = int(token_counts.get(boundary, -1))
+    if 0 < stable_prefix_len < len(token_ids):
+        template_observability["stable_prefix_len"] = stable_prefix_len
+    return token_ids
+
+
+def _trailing_tool_hint_char_boundary(rendered: str) -> int | None:
+    """Char position where the transient trailing tool-continuation hint's
+    user turn begins, or None when the hint was not injected.
+
+    The injector appends the hint ONLY as the final message (after a
+    trailing tool result) and never when the hint text already appears
+    anywhere in the transcript, so a genuine injection is the LAST user
+    turn before the generation prompt. The tail guard rejects lookalikes
+    (an echoed hint would have suppressed injection and would not sit in
+    tail position with only the generation prompt after it).
+
+    SHARED-MARKER INCLUSION: the boundary sits immediately AFTER the
+    turn's <|im_start|> special token. Both this render and the next
+    turn's render share that token at the same position — they diverge
+    on the FOLLOWING role token (user vs assistant) — so including it
+    makes the captured boundary equal the live common prefix
+    (actual_restore_point == requested matched), leaving no valid
+    token behind. Splitting after a special token stays merge-safe on
+    both sides: specials never merge with neighbors.
+    """
+    turn_open = "<|im_start|>"
+    marker = turn_open + "user\n" + _mtplx_tool_result_continuation_hint_text()[:48]
+    pos = rendered.rfind(marker)
+    if pos <= 0:
+        return None
+    if rendered.count(turn_open, pos + len(marker)) != 1:
+        return None
+    return pos + len(turn_open)
 
 
 _CHAT_ENCODE_TOKENIZER_IDS: "weakref.WeakKeyDictionary[Any, str]" = (
@@ -10587,11 +10741,13 @@ def _encode_messages_uncached(
             normalized,
             tools=tools,
             tool_choice=tool_choice,
+            observability=template_observability,
         )
     elif effective_tool_prompt_mode == _TOOL_PROMPT_MODE_NATIVE and tools:
         normalized, native_tail_added = _with_mtplx_native_agent_tail(
             normalized,
             tools=tools,
+            observability=template_observability,
         )
         if template_observability is not None:
             template_observability["native_agent_tail_contract_active"] = bool(
@@ -10646,6 +10802,32 @@ def _encode_messages_uncached(
         )
         if rendered is not None:
             return _encode_rendered_chat_text(tokenizer, rendered)
+    if (
+        template_observability is not None
+        and template_observability.get("tool_result_continuation_hint_injected")
+        is True
+    ):
+        # Hybrid tool mode encodes through this plain single-call path, so
+        # the stable-prefix report for the injected trailing hint lives
+        # here: render once with identical kwargs, split the encode at the
+        # hint turn's <|im_start|> (a special token — merge-safe), record
+        # the cumulative count. Ids are identical; any irregularity falls
+        # through to the untouched single-call path. Gated on the
+        # injector's EXPLICIT append signal (never message-content
+        # sniffing): a user-authored lookalike final message must not
+        # perturb chunk layout or telemetry.
+        stable_ids = _encode_with_stable_hint_boundary(
+            tokenizer,
+            normalized,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            preserve_thinking=template_preserve_thinking,
+            tools=template_tools,
+            template_observability=template_observability,
+        )
+        if stable_ids is not None:
+            return stable_ids
     template_kwargs: dict[str, Any] = {
         "tokenize": True,
         "add_generation_prompt": add_generation_prompt,
@@ -11753,6 +11935,32 @@ def _metrics_envelope(
         "session_cache_hit": bool(session_cache_hit),
         "cache_miss_reason": cache_miss_reason,
         "session_restore_mode": session_restore_mode,
+        # Pre-first-token attribution (2026-08-06): these existed on
+        # GenerationStats (or are new additive timers) but never reached
+        # this envelope, so the request-log JSONL — the only trail for
+        # footerless agent clients like pi — could not attribute the
+        # restore-return -> first-token phase.
+        "session_prompt_prefix_bank_commit": (
+            stats.get("session_prompt_prefix_bank_commit") or {}
+        ),
+        "session_prefill_store": stats.get("session_prefill_store") or {},
+        "pre_first_token_setup_s": float(
+            stats.get("pre_first_token_setup_s") or 0.0
+        ),
+        # Passive probe (2026-08-06): served-entry truth vs resolution
+        # diagnostics, prompt-state wall decomposition, first-primary-sample
+        # latency, round-1 timer snapshot.
+        "session_restore_served": stats.get("session_restore_served") or {},
+        "prompt_state_total_time_s": float(
+            stats.get("prompt_state_total_time_s") or 0.0
+        ),
+        "prompt_state_unattributed_time_s": float(
+            stats.get("prompt_state_unattributed_time_s") or 0.0
+        ),
+        "first_primary_sample_time_s": float(
+            stats.get("first_primary_sample_time_s") or 0.0
+        ),
+        "first_round": stats.get("first_round") or {},
         "context_len": int(prompt_tokens + completion_tokens),
         "repetition_stop_triggered": bool(
             stats.get("repetition_stop_triggered") or False
@@ -13966,6 +14174,13 @@ PUBLIC_MTPLX_STATS_KEYS = (
     *MAINTENANCE_TIMING_STATS_KEYS,
     "session_cache_hit",
     "session_prompt_prefix_bank_commit",
+    "session_prefill_store",
+    "pre_first_token_setup_s",
+    "session_restore_served",
+    "prompt_state_total_time_s",
+    "prompt_state_unattributed_time_s",
+    "first_primary_sample_time_s",
+    "first_round",
     "cached_tokens",
     "new_prefill_tokens",
     "cache_source",
@@ -26815,6 +27030,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Read the API key from a local file instead of argv/env.",
     )
     parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help=(
+            "Serve without API-key auth even when MTPLX_API_KEY or a config "
+            "key is set. Localhost binds only — non-localhost still requires "
+            "a key (#235)."
+        ),
+    )
+    parser.add_argument(
         "--rate-limit",
         type=int,
         default=_env_int("MTPLX_RATE_LIMIT_PER_MINUTE", 0),
@@ -26977,8 +27201,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_comma_floats,
         default=(0.92, 0.64, 0.32),
     )
-    parser.add_argument("--adaptive-ev-draft-cost-s", type=float, default=0.0048)
-    parser.add_argument("--adaptive-ev-extra-verify-cost-s", type=float, default=0.0060)
+    # Recalibrated 2026-08-07: the original 4.8ms/6.0ms constants made the
+    # depth-3 bar max(0.18, 10.8ms*40tok/s*1.1) = 0.475 expected extra
+    # tokens — unreachable for live Pi acceptance (prefix ~0.50 x stale D3
+    # prior 0.32), so D3 fired on only 13% of rounds despite 64.6% realized
+    # acceptance when proposed. Measured on the gate254 arms + live request
+    # logs (M5 Max, 27B Speed-V2, 13-18k ctx): M=3 vs M=4 verify sits in
+    # the same 70-92 ms/call band (marginal ~1-2 ms — an extra verify row
+    # in a weight-bound matmul is nearly free) and chained draft time is
+    # ~2 ms per extra depth. Honest costs put the bar at the designed 0.18
+    # floor; the policy's EWMA + exploration own the rest.
+    parser.add_argument("--adaptive-ev-draft-cost-s", type=float, default=0.0020)
+    parser.add_argument("--adaptive-ev-extra-verify-cost-s", type=float, default=0.0015)
     parser.add_argument("--adaptive-ev-baseline-tok-s", type=float, default=40.0)
     parser.add_argument("--adaptive-ev-safety-margin", type=float, default=0.10)
     parser.add_argument("--adaptive-ev-margin-center", type=float, default=1.0)
@@ -27323,6 +27557,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(str(exc))
     args.api_key = resolved_key.value
     args.api_key_source = resolved_key.source
+    if getattr(args, "no_auth", False):
+        # #235: an explicit off-switch beats patching site-packages. The
+        # non-localhost guard downstream still refuses keyless remote binds,
+        # so this can only widen access on loopback.
+        args.api_key = None
+        args.api_key_source = "disabled_by_no_auth_flag"
     try:
         args.paged_kv_quantization = normalize_paged_kv_quantization(
             getattr(args, "paged_kv_quantization", "off")

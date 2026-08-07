@@ -936,7 +936,23 @@ struct ResolvedDaemonArgs {
         from configuration: MTPLXAppConfiguration
     ) -> [String: String] {
         guard configuration.ramSessionCachePolicy != "target-default" else {
-            return [:]
+            // #229: "target-default" means "let the preset/engine decide the
+            // policy" — but a user-entered explicit size in Settings was
+            // silently dropped here, which reads as the setting working
+            // while the bank runs at auto size. Pass explicit sizes through;
+            // "auto"/empty still defer entirely.
+            var explicit: [String: String] = [:]
+            let maxSize = configuration.ramSessionCacheMaxSize
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !maxSize.isEmpty, maxSize.lowercased() != "auto" {
+                explicit["MTPLX_SESSION_BANK_MAX_BYTES"] = maxSize
+            }
+            let perSession = configuration.ramSessionCachePerSessionMaxSize
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !perSession.isEmpty, perSession.lowercased() != "auto" {
+                explicit["MTPLX_SESSION_BANK_PER_SESSION_BYTES"] = perSession
+            }
+            return explicit
         }
         let entries = max(1, configuration.ramSessionCacheMaxEntries)
         var environment = [
@@ -1154,10 +1170,12 @@ private struct TargetPreset {
             processEnvironment: processEnvironment
         ) >= highMemoryThresholdBytes
         var environment = [
+            // Route only — the MIN_CONTEXT/MIN_Q/MAX_Q overrides (32768/3/5,
+            // unmeasured 1.0.0 launch values) are gone so the engine defaults
+            // (65536/4/5) govern. Issue #228: async_per_head below 64k
+            // measured 4-7x SLOWER decode at 43k ctx; restoring the engine
+            // threshold recovered 4-6.8x on the reporter's table.
             "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_ROUTE": "async_per_head",
-            "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT": "32768",
-            "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_Q": "3",
-            "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MAX_Q": "5",
             "MTPLX_SESSION_BLOCK_PREFIX_RESTORE": "1",
             "MTPLX_SESSION_BANK_MAX_ENTRIES": highMemory
                 ? highMemoryOpenCodeSessionBankMaxEntries

@@ -311,14 +311,12 @@ def _opencode_memory_env_defaults() -> dict[str, str]:
         else _OPENCODE_DEFAULT_MAX_ENTRIES
     )
     return {
-        # Long-context decode route (>=32k): same keys the app's
-        # codingAgentRuntimeEnvironment and the CLI hermes lane already set —
-        # the OpenCode CLI lane missing them was surface drift (2026-08-03
-        # parity audit), not intent.
+        # Long-context decode route: route only — the MIN_CONTEXT/MIN_Q/MAX_Q
+        # overrides (32768/3/5, unmeasured 1.0.0 launch values) are gone in
+        # lockstep with the app's codingAgentRuntimeEnvironment so the engine
+        # defaults (65536/4/5) govern. Issue #228 measured async_per_head
+        # below 64k at 4-7x SLOWER decode at 43k ctx.
         "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_ROUTE": "async_per_head",
-        "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT": "32768",
-        "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_Q": "3",
-        "MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MAX_Q": "5",
         "MTPLX_SESSION_BLOCK_PREFIX_RESTORE": "1",
         "MTPLX_SESSION_BANK_MAX_ENTRIES": max_entries,
         # "auto" = the engine budgets half the RAM surplus left after the
@@ -11501,10 +11499,9 @@ def _apply_hermes_memory_env_defaults(env: dict[str, str]) -> None:
         total_ram is not None
         and total_ram >= _OPENCODE_HIGH_MEMORY_THRESHOLD_BYTES
     )
+    # Route only; thresholds defer to engine defaults (65536/4/5) — see the
+    # OpenCode lane note and issue #228.
     env.setdefault("MTPLX_VLLM_METAL_PAGED_GQA_SDPA_ROUTE", "async_per_head")
-    env.setdefault("MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_CONTEXT", "32768")
-    env.setdefault("MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MIN_Q", "3")
-    env.setdefault("MTPLX_VLLM_METAL_PAGED_GQA_SDPA_MAX_Q", "5")
     env.setdefault("MTPLX_SESSION_BLOCK_PREFIX_RESTORE", "1")
     env.setdefault(
         "MTPLX_SESSION_BANK_MAX_ENTRIES",

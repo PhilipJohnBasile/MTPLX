@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import secrets
 import subprocess
@@ -51,9 +52,12 @@ _AUTO_BUDGET_CAP_BYTES = 48 * 1024**3
 def _bank_bytes_from_env(name: str, default: int) -> int:
     """Read a SessionBank byte-cap override from the environment.
 
-    Supports plain integers (interpreted as bytes) and the suffixes K, M, G,
-    T (powers of 1024). Returns the default if unset, unparseable, or
-    nonpositive.
+    Supports plain integers (bytes) and the suffixes K, M, G, T — bare
+    ("8G"), with B ("8GB"), or IEC ("8GiB"), case-insensitive; all are
+    powers of 1024. Unparseable or nonpositive values fall back to the
+    default WITH a warning: the silent fallback shipped before 2.5.4 made a
+    typo'd "8GB" behave exactly like success while the bank ran at the
+    default size (#229).
     """
     raw = os.environ.get(name)
     if raw is None:
@@ -61,15 +65,33 @@ def _bank_bytes_from_env(name: str, default: int) -> int:
     s = raw.strip().upper()
     if not s:
         return default
+    suffixes = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    body = s
+    if body.endswith("IB") and len(body) > 2:
+        body = body[:-2]
+    elif body.endswith("B") and len(body) > 1 and body[-2] in suffixes:
+        body = body[:-1]
     try:
-        suffixes = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-        if s and s[-1] in suffixes:
-            value = int(float(s[:-1]) * suffixes[s[-1]])
+        if body and body[-1] in suffixes:
+            value = int(float(body[:-1]) * suffixes[body[-1]])
         else:
-            value = int(s)
+            value = int(body)
     except (OverflowError, ValueError, IndexError):
+        logger.warning(
+            "Invalid %s=%r (expected bytes or K/M/G/T size, e.g. 8G or 8GiB); "
+            "falling back to default %d bytes",
+            name,
+            raw,
+            default,
+        )
         return default
     if value < 1:
+        logger.warning(
+            "Invalid %s=%r (must be positive); falling back to default %d bytes",
+            name,
+            raw,
+            default,
+        )
         return default
     return value
 
@@ -413,6 +435,31 @@ _DEFAULT_NEAR_PREFIX_MAX_TOKEN_GAP = 8
 _DEFAULT_NEAR_PREFIX_MIN_MATCH_TOKENS = 64
 _DEFAULT_PREFIX_BLOCK_SIZE = DEFAULT_PREFIX_BLOCK_SIZE
 _DEFAULT_BLOCK_PREFIX_MIN_MATCH_TOKENS = DEFAULT_BLOCK_PREFIX_MIN_MATCH_TOKENS
+
+
+_DEFAULT_POSTCOMMIT_ARRIVAL_WAIT_S = 0.6
+
+
+def _postcommit_arrival_wait_s() -> float:
+    """Read MTPLX_POSTCOMMIT_ARRIVAL_WAIT_S from the environment.
+
+    Bounded window a new same-session request grants an already-RUNNING
+    canonical postcommit before aborting it (B', 2026-08-06). Defaults to
+    0.6s. Values <= 0 restore the exact 2026-07-17 immediate-abort
+    behavior. Bad values fall back to the default.
+    """
+    raw = os.environ.get("MTPLX_POSTCOMMIT_ARRIVAL_WAIT_S")
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_POSTCOMMIT_ARRIVAL_WAIT_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_POSTCOMMIT_ARRIVAL_WAIT_S
+    if not math.isfinite(value):
+        # NaN would read as "disabled" and +inf would defeat the bounded
+        # policy entirely; both are configuration mistakes, not intents.
+        return _DEFAULT_POSTCOMMIT_ARRIVAL_WAIT_S
+    return value if value > 0.0 else 0.0
 
 
 def _postcommit_wait_timeout_s() -> float:
@@ -839,6 +886,19 @@ class EngineSession:
         re-encode needs longer than the bound), aborted the job anyway, and
         the user watched dead air before prefill even began.
 
+        B' amendment (2026-08-06, arrival-wait design note): the immediate
+        abort's "superseded anyway" premise is disproven by the causal
+        probes — the pending snapshot is the arriving request's own
+        exact-prefix restore anchor (SSD-off receipts: 8-16ms warm
+        residual vs 0.66-1.17s on degraded anchors). A pending job that
+        has NOT started still aborts immediately (it would run after this
+        request and commit a stale revision — zero value). A RUNNING job
+        is granted a bounded finish window,
+        MTPLX_POSTCOMMIT_ARRIVAL_WAIT_S (default 0.6s; <= 0 restores the
+        exact 2026-07-17 immediate abort), then aborts on timeout exactly
+        as before. This composes with — and does not replace — the
+        worker's own 2.0s foreground-pressure self-yield.
+
         Operators restore the old blocking behavior by setting
         MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S explicitly.
         """
@@ -865,16 +925,47 @@ class EngineSession:
                 "timeout_s": 0.0,
             }
         else:
-            future_cancelled = record.abort("foreground_preempted_postcommit")
-            outcome = {
-                "waited": False,
-                "elapsed_s": 0.0,
-                "outcome": "aborted_for_foreground",
-                "timeout_s": 0.0,
-                "abort_requested": True,
-                "future_cancelled": bool(future_cancelled),
-                "abort_reason": "foreground_preempted_postcommit",
-            }
+            arrival_wait_s = _postcommit_arrival_wait_s()
+            waited_s = 0.0
+            finished_within_window = False
+            if (
+                arrival_wait_s > 0.0
+                and record.started_at_s is not None
+                and hasattr(future, "result")
+            ):
+                wait_started = time.monotonic()
+                # BaseException guard mirrors wait_for_pending_postcommit:
+                # the postcommit is best-effort caching, never a
+                # correctness dependency of the arriving request.
+                try:
+                    future.result(timeout=arrival_wait_s)
+                    finished_within_window = True
+                except BaseException:
+                    finished_within_window = bool(
+                        getattr(future, "done", lambda: False)()
+                        and not getattr(future, "cancelled", lambda: False)()
+                    )
+                waited_s = time.monotonic() - wait_started
+            if finished_within_window:
+                outcome = {
+                    "waited": True,
+                    "elapsed_s": waited_s,
+                    "outcome": "completed",
+                    "timeout_s": arrival_wait_s,
+                    "arrival_wait_s": arrival_wait_s,
+                }
+            else:
+                future_cancelled = record.abort("foreground_preempted_postcommit")
+                outcome = {
+                    "waited": waited_s > 0.0,
+                    "elapsed_s": waited_s,
+                    "outcome": "aborted_for_foreground",
+                    "timeout_s": arrival_wait_s,
+                    "arrival_wait_s": arrival_wait_s,
+                    "abort_requested": True,
+                    "future_cancelled": bool(future_cancelled),
+                    "abort_reason": "foreground_preempted_postcommit",
+                }
         with self._postcommit_lock:
             if self._pending_postcommit is record:
                 self._pending_postcommit = None
@@ -1140,17 +1231,24 @@ class EngineSessionManager:
                 idle_ttl_s=idle_ttl_s,
                 cold_tier=cold_tier,
             )
-            logger.info(
-                "[session-bank] budget max_bytes=%.1fG per_session=%.1fG "
-                "entries=%d (model_weights=%s)",
-                bank.max_bytes / 1024**3,
-                bank.per_session_max_bytes / 1024**3,
-                bank.max_entries,
-                (
+            # Visible on the daemon console on purpose (#229/#230): the
+            # 2.4.2 notes promised this line but it shipped as logger.info,
+            # which default logging swallows — users debugging "the cache
+            # stopped working" had no way to see the resolved budgets.
+            print(
+                "[mtplx] session-bank budget: "
+                f"{bank.max_bytes / 1024**3:.1f}G total "
+                f"({'auto: half of post-model RAM surplus' if auto_active else 'explicit'}), "
+                f"{bank.per_session_max_bytes / 1024**3:.1f}G per-session cap, "
+                f"{bank.max_entries} entries max, model weights "
+                + (
                     f"{model_weights_bytes / 1024**3:.1f}G"
                     if model_weights_bytes
                     else "unknown"
-                ),
+                )
+                + ". Override: MTPLX_SESSION_BANK_MAX_BYTES / "
+                "MTPLX_SESSION_BANK_PER_SESSION_BYTES (sizes like 12G or 12GiB).",
+                flush=True,
             )
         self.bank = bank
         self.idle_ttl_s = float(idle_ttl_s)

@@ -70,6 +70,7 @@ class _WorkItem:
     batch_key: str | None = None
     queued_at_s: float = field(default_factory=time.monotonic)
     earliest_start_s: float = field(default_factory=time.monotonic)
+    coalesce_key: str | None = None
 
 
 def _batch_key_class(batch_key: str) -> str:
@@ -82,19 +83,64 @@ def _batch_key_class(batch_key: str) -> str:
 
 
 class ModelWorkScheduler:
-    """Priority admission scheduler for the single MLX/model owner thread."""
+    """Priority admission scheduler for the single MLX/model owner thread.
+
+    Three bands: foreground > idle_postcommit > idle_persistence. The
+    persistence band exists for durability work (SSD cold encodes) that a
+    latency-critical canonical postcommit must never queue behind — the
+    2026-08-06 causal probe showed FIFO idle ordering ran 1-2s encodes
+    ahead of the postcommit whose entry anchors the NEXT turn's restore,
+    degrading every warm agent turn. Persistence eligibility carries a
+    QUIET GRACE anchored to the most recent foreground/postcommit
+    COMPLETION (not its own submission time — a grace measured at
+    submission expires during a long generation and would release cold
+    work in the few-ms gap before the server tail submits its
+    postcommit). Running work is never preempted. There is deliberately NO
+    max-defer bypass: any age-based valve reopens the race for foregrounds
+    longer than the valve (the item is already "overdue" at completion and
+    would dequeue in the tail gap). Eventual drain means after a real
+    quiet window; continuous latency-critical work is allowed to defer
+    background durability — foreground load already makes absolute
+    eventuality impossible.
+    """
+
+    # Capability marker for server wiring: submit_idle_persistence exists.
+    SUPPORTS_IDLE_PERSISTENCE = True
 
     def __init__(
         self,
         *,
         name: str = "mtplx-model",
-        idle_grace_s: float = 0.025,
+        idle_grace_s: float | None = None,
+        persistence_quiet_grace_s: float = 0.25,
     ) -> None:
         self.name = str(name)
+        if idle_grace_s is None:
+            # A serve request is not one scheduler item: restore and
+            # prefill/generate arrive as separate foreground submissions
+            # with 100-200 ms of handler python (16k-prompt tokenize)
+            # between them. The original 25 ms grace let a pending
+            # multi-GB SSD encode START inside that micro-gap; its
+            # per-tensor abort fired as soon as the next item queued, but
+            # the already-submitted GPU evals still had to drain ahead of
+            # the request — a discrete ~0.8 s unattributed prompt-state
+            # wall on turns with pending encodes (gate254 y-series +
+            # native sample, 2026-08-07). 300 ms outlasts the inter-item
+            # gap; idle work is seconds-scale, so the added latency to
+            # background durability is noise.
+            raw = os.environ.get("MTPLX_SCHEDULER_IDLE_GRACE_S", "").strip()
+            try:
+                idle_grace_s = float(raw) if raw else 0.3
+            except ValueError:
+                idle_grace_s = 0.3
         self.idle_grace_s = max(0.0, float(idle_grace_s))
+        self.persistence_quiet_grace_s = max(0.0, float(persistence_quiet_grace_s))
         self._condition = Condition()
         self._foreground: deque[_WorkItem] = deque()
         self._idle: deque[_WorkItem] = deque()
+        self._persistence: deque[_WorkItem] = deque()
+        self._persistence_coalesced = 0
+        self._last_quiet_anchor_s = time.monotonic()
         self._sequence = 0
         self._shutdown = False
         self._active_kind: str | None = None
@@ -147,6 +193,7 @@ class ModelWorkScheduler:
             return (
                 bool(self._foreground)
                 or bool(self._idle)
+                or bool(self._persistence)
                 or self._active_kind is not None
             )
 
@@ -160,6 +207,8 @@ class ModelWorkScheduler:
             return {
                 "foreground_pending": len(self._foreground),
                 "idle_pending": len(self._idle),
+                "persistence_pending": len(self._persistence),
+                "persistence_coalesced": self._persistence_coalesced,
                 "active_kind": self._active_kind,
                 "active_sequence": self._active_sequence,
                 "active_batch_key": self._active_batch_key,
@@ -233,6 +282,17 @@ class ModelWorkScheduler:
             earliest_start_s=time.monotonic(),
         )
 
+    def foreground_busy(self) -> bool:
+        """True while a foreground item is queued or running.
+
+        Cooperative signal for idle-band work that runs long inside a single
+        work item (SSD cold-tier encode) or off-thread entirely (SSD writer
+        file IO): both must stand down while latency-critical traffic is in
+        flight. Cheap enough to poll per tensor / per blob write.
+        """
+        with self._condition:
+            return bool(self._foreground) or self._active_kind == "foreground"
+
     def submit_idle_postcommit(
         self,
         fn: Callable[..., Any],
@@ -249,11 +309,43 @@ class ModelWorkScheduler:
             earliest_start_s=time.monotonic() + self.idle_grace_s,
         )
 
+    def submit_idle_persistence(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        batch_key: str | None = None,
+        coalesce_key: str | None = None,
+        **kwargs: Any,
+    ) -> Future:
+        """Durability work: strictly below idle_postcommit, quiet-grace
+        gated from the most recent foreground/postcommit completion. Drains
+        after a real quiet window; deliberately no age-based bypass.
+
+        coalesce_key (optional): newest-wins bound on PENDING work. Each
+        queued persistence closure can pin GB-scale state (an SSD encode
+        job holds its bank entry's snapshot arrays), and under continuous
+        latency-critical load the quiet window may not arrive for many
+        turns — unbounded pending closures grew active memory ~19% in the
+        2026-08-06 product A/B. Submitting with a key cancels-and-releases
+        any PENDING item with the same key (a RUNNING item is never
+        cancelled), keeping at most one pending closure per key. The
+        superseded future is cancelled; different keys drain
+        independently."""
+        return self._submit(
+            "idle_persistence",
+            fn,
+            args=args,
+            kwargs=kwargs,
+            batch_key=batch_key,
+            earliest_start_s=time.monotonic() + self.idle_grace_s,
+            coalesce_key=coalesce_key,
+        )
+
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         with self._condition:
             self._shutdown = True
             if cancel_futures:
-                for queue in (self._foreground, self._idle):
+                for queue in (self._foreground, self._idle, self._persistence):
                     while queue:
                         item = queue.popleft()
                         item.future.cancel()
@@ -270,12 +362,25 @@ class ModelWorkScheduler:
         kwargs: dict[str, Any],
         batch_key: str | None,
         earliest_start_s: float,
+        coalesce_key: str | None = None,
     ) -> Future:
         future: Future = Future()
         with self._condition:
             if self._shutdown:
                 future.set_exception(RuntimeError("model scheduler is shut down"))
                 return future
+            if kind == "idle_persistence" and coalesce_key is not None:
+                # Newest-wins: cancel-and-release any PENDING same-key item
+                # before enqueueing. Only queued items are reachable here — a
+                # running item was popped from the deque and is never
+                # cancelled. Removing the item drops the closure (and the
+                # GB-scale entry it pins); the superseded future cancels so
+                # any waiter unblocks.
+                for stale in list(self._persistence):
+                    if stale.coalesce_key == coalesce_key:
+                        self._persistence.remove(stale)
+                        stale.future.cancel()
+                        self._persistence_coalesced += 1
             self._sequence += 1
             item = _WorkItem(
                 kind=kind,
@@ -286,9 +391,12 @@ class ModelWorkScheduler:
                 sequence=self._sequence,
                 batch_key=batch_key,
                 earliest_start_s=earliest_start_s,
+                coalesce_key=coalesce_key,
             )
             if kind == "foreground":
                 self._foreground.append(item)
+            elif kind == "idle_persistence":
+                self._persistence.append(item)
             else:
                 self._idle.append(item)
             self._condition.notify_all()
@@ -304,13 +412,15 @@ class ModelWorkScheduler:
             if not item.future.set_running_or_notify_cancel():
                 with self._condition:
                     self._cancelled_before_start += 1
+                # Same lifetime contract as the completed path below: the
+                # loop is about to park in _take_next, so the canceled
+                # item must not survive in this frame.
+                del item
                 continue
             now = time.monotonic()
             queue_wait_s = max(0.0, now - item.queued_at_s)
             with self._condition:
-                self._active_kind = (
-                    "foreground" if item.kind == "foreground" else "idle_postcommit"
-                )
+                self._active_kind = item.kind
                 self._active_sequence = item.sequence
                 self._active_batch_key = item.batch_key
                 self._active_started_at_s = now
@@ -332,26 +442,65 @@ class ModelWorkScheduler:
                     self._completed_by_kind[item.kind] += 1
                     self._batch_histogram[1] += 1
                     self._run_duration_samples_s.append(run_duration_s)
+                    if item.kind != "idle_persistence":
+                        # Foreground AND postcommit completions re-arm the
+                        # persistence quiet grace: cold work may only start
+                        # after a full quiet window with no latency-critical
+                        # completion — closing the race where a
+                        # submission-time grace expires during a long
+                        # generation and releases cold in the few-ms gap
+                        # before the tail postcommit arrives.
+                        self._last_quiet_anchor_s = time.monotonic()
                     self._active_kind = None
                     self._active_sequence = None
                     self._active_batch_key = None
                     self._active_started_at_s = None
                     self._active_queue_wait_s = None
                     self._condition.notify_all()
+                # Release the finished item before looping: _take_next can
+                # park this frame indefinitely, and a bound local would pin
+                # the completed closure (persistence items can reference
+                # GB-scale snapshot views) across the entire idle period.
+                del item
 
     def _take_next(self) -> _WorkItem | None:
         with self._condition:
             while True:
-                if self._shutdown and not self._foreground and not self._idle:
+                if (
+                    self._shutdown
+                    and not self._foreground
+                    and not self._idle
+                    and not self._persistence
+                ):
                     return None
                 if self._foreground:
                     return self._foreground.popleft()
+                now = time.monotonic()
+                wait_until: float | None = None
                 if self._idle:
-                    now = time.monotonic()
-                    delay = self._idle[0].earliest_start_s - now
-                    if delay <= 0:
+                    if self._idle[0].earliest_start_s - now <= 0:
                         return self._idle.popleft()
-                    self._condition.wait(timeout=delay)
+                    wait_until = self._idle[0].earliest_start_s
+                elif self._persistence:
+                    # Persistence runs only with NO queued postcommit, after
+                    # a quiet grace anchored to the last foreground/
+                    # postcommit COMPLETION. No age-based bypass: an item
+                    # queued during a foreground longer than any valve would
+                    # already be "overdue" at completion and would dequeue in
+                    # the few-ms gap before the tail postcommit arrives.
+                    # Peek as a subexpression: binding the head to a local
+                    # would keep a superseded item (and its snapshot
+                    # closure) pinned by this parked frame until the next
+                    # wake, making newest-wins release timing-dependent.
+                    ready_at = max(
+                        self._persistence[0].earliest_start_s,
+                        self._last_quiet_anchor_s + self.persistence_quiet_grace_s,
+                    )
+                    if now >= ready_at:
+                        return self._persistence.popleft()
+                    wait_until = ready_at
+                if wait_until is not None:
+                    self._condition.wait(timeout=max(0.0, wait_until - now))
                     continue
                 self._condition.wait()
 

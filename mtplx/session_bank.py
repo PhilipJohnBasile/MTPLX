@@ -28,8 +28,61 @@ from .cache_state import (
     snapshot_cache,
     snapshot_cache_lazy_hybrid,
 )
+from .cache_bank.codec import ColdEncodeInterrupted
 from .runtime import MTPLXRuntime
 from .runtime_options import block_prefix_restore_enabled
+
+
+def _policy_uses_committed_history(policy: str | None) -> bool:
+    """Mirror generation._mtp_history_uses_committed_cache exactly.
+
+    (Normalization mirrors generation._normalize_mtp_history_policy: lower,
+    strip, dashes to underscores, aliases full/lastwindow/window.)
+    """
+    normalized = (policy or "cycle").strip().lower().replace("-", "_")
+    normalized = {
+        "full": "committed",
+        "lastwindow": "last_window",
+        "window": "last_window",
+    }.get(normalized, normalized)
+    return normalized in {"committed", "last_window"}
+
+
+def _restore_identity_compatible(
+    entry: "SessionBankEntry",
+    *,
+    model_path: str | None,
+    mtp_enabled: bool | None,
+    hidden_variant: str | None,
+    template_hash: str | None,
+    mtp_history_policy: str | None,
+    draft_head_identity: str | None,
+    policy_fingerprint: str | None,
+) -> bool:
+    """Mirror restore()'s identity gates (None parameter = wildcard)."""
+    if model_path is not None and entry.model_path != str(model_path):
+        return False
+    if mtp_enabled is not None and bool(entry.mtp_enabled) != bool(mtp_enabled):
+        return False
+    if hidden_variant is not None and entry.hidden_variant != hidden_variant:
+        return False
+    if template_hash is not None and entry.template_hash != template_hash:
+        return False
+    if mtp_history_policy is not None and not _mtp_history_policy_compatible(
+        entry.mtp_history_policy, mtp_history_policy
+    ):
+        return False
+    if (
+        draft_head_identity is not None
+        and entry.draft_head_identity != draft_head_identity
+    ):
+        return False
+    if (
+        policy_fingerprint is not None
+        and entry.policy_fingerprint != policy_fingerprint
+    ):
+        return False
+    return True
 
 
 def _lazy_snapshot_enabled() -> bool:
@@ -210,6 +263,12 @@ class SessionBankEntry:
     cache_ref: list[Any] | None = None
     mtp_history_cache_ref: list[Any] | None = None
     live_ref_only: bool = False
+    # Passive probe: monotonic time this ENTRY OBJECT's cold-tier encode
+    # completed (the encode evals the entry's lazy roots in place), or None.
+    # Kept on the exact object — Site A and Site B can create distinct
+    # entries with the SAME token hash, and an old entry finishing its
+    # encode must never report a newer lazy replacement as settled.
+    cold_encode_completed_at: float | None = None
     created_at_s: float = field(default_factory=time.time)
     last_access_s: float = field(default_factory=time.time)
     hits: int = 0
@@ -384,6 +443,7 @@ class SessionBank:
         self.last_miss_reason: str | None = None
         self.last_put_nbytes: int = 0
         self.last_put_skipped_oversized_snapshot: bool = False
+        self._oversized_warned_sessions: set[str | None] = set()
         # Bounded: appended on every eviction/skip for the daemon's lifetime;
         # health snapshots only ever read the newest entries, so an unbounded
         # list is pure retention on long-running agent servers.
@@ -402,6 +462,11 @@ class SessionBank:
         self.last_restore_source: str | None = None
         self.last_ssd_restore_s: float = 0.0
         self.last_prefix_diagnostic: dict[str, Any] | None = None
+
+    # Capability marker for generation: near_prefix_candidates accepts
+    # min_restore_tokens so resident-duplicate eligibility mirrors the
+    # caller's serve gates. Explicit attribute; no signature inspection.
+    SUPPORTS_NEAR_PREFIX_MIN_RESTORE = True
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -453,7 +518,16 @@ class SessionBank:
         nbytes_override: int | None = None,
         extra_state: dict[str, Any] | None = None,
         gdn_boundaries: list[tuple[int, CacheSnapshot]] | None = None,
+        timing_out: dict[str, Any] | None = None,
     ) -> SessionBankEntry | None:
+        # timing_out: optional request-local dict the CALLER owns (never
+        # shared bank state — puts run concurrently across the foreground,
+        # postcommit, and batched lanes). Keys are written progressively as
+        # phases are reached: trunk_snapshot_s, entry_build_s, cold_enqueue
+        # {enabled, skip_reason, deferred, dispatch_elapsed_s,
+        # synchronous_serialize_elapsed_s}. Early returns leave later keys
+        # absent. Deferred cold-tier serialization is never charged here —
+        # only the dispatch span is; the job itself runs on the idle lane.
         tokens = tuple(int(token) for token in token_ids)
         if not tokens:
             raise ValueError("cannot store an empty prefix")
@@ -566,6 +640,25 @@ class SessionBank:
         if nbytes_override is not None and int(nbytes_override) > self.per_session_max_bytes:
             self.last_put_nbytes = int(nbytes_override)
             self.last_put_skipped_oversized_snapshot = True
+            if session_id not in self._oversized_warned_sessions:
+                # Loud once per session (#229): this is the point where a
+                # long conversation silently stops getting durable snapshots
+                # (a live-ref lease survives only until restart/displacement)
+                # and users read the resulting cold prefill as "the cache
+                # broke". Say exactly which knob raises the ceiling.
+                self._oversized_warned_sessions.add(session_id)
+                print(
+                    "[mtplx] session-bank snapshot skipped: session "
+                    f"{session_id or 'anon'} needs "
+                    f"{int(nbytes_override) / 2**30:.1f} GiB but the "
+                    "per-session cap is "
+                    f"{self.per_session_max_bytes / 2**30:.1f} GiB — longer "
+                    "contexts will re-prefill after restart/eviction. Raise "
+                    "MTPLX_SESSION_BANK_PER_SESSION_BYTES (e.g. "
+                    f"{max(1, int(nbytes_override * 1.5) >> 30)}G) to keep "
+                    "caching this session.",
+                    flush=True,
+                )
             live_entry = live_ref_entry(
                 "skipped_oversized_snapshot_live_ref",
                 int(nbytes_override),
@@ -584,6 +677,7 @@ class SessionBank:
             )
             return None
         lazy_kv = _lazy_snapshot_enabled()
+        trunk_snapshot_started = time.perf_counter()
         try:
             snapshot = (
                 snapshot_cache_lazy_hybrid(cache) if lazy_kv else snapshot_cache(cache)
@@ -610,6 +704,9 @@ class SessionBank:
                 }
             )
             return None
+        trunk_snapshot_done = time.perf_counter()
+        if timing_out is not None:
+            timing_out["trunk_snapshot_s"] = trunk_snapshot_done - trunk_snapshot_started
         computed_nbytes = (
             _snapshot_nbytes(snapshot)
             + _tree_nbytes(logits)
@@ -673,7 +770,9 @@ class SessionBank:
                 inherited_loader if not normalized_boundaries else None
             ),
         )
-        self._enqueue_cold_entry(entry)
+        if timing_out is not None:
+            timing_out["entry_build_s"] = time.perf_counter() - trunk_snapshot_done
+        self._enqueue_cold_entry(entry, timing_out=timing_out)
         self._entries[tokens] = entry
         self._supersede_contained_prefixes(tokens)
         self._evict_if_needed(protected_tokens=tokens)
@@ -791,6 +890,7 @@ class SessionBank:
         mtp_history_policy: str | None = None,
         draft_head_identity: str | None = None,
         policy_fingerprint: str | None = None,
+        min_restore_tokens: int = 0,
     ) -> list[tuple[SessionBankEntry, int]]:
         """Return entries whose divergence can be restored from a safe boundary.
 
@@ -875,6 +975,86 @@ class SessionBank:
                 continue
             matches.append((entry, candidate_len))
 
+        # Serve-equivalent RESIDENT twins of possible cold rows, built ONLY
+        # from the computed matches above and only from candidates that
+        # generation would ACTUALLY serve — mirroring its gates exactly:
+        # min_restore_tokens, matched range, identity, committed-MTP
+        # presence when the policy requires it, snapshot-epoch sync, and
+        # the recurrent achievable-boundary threshold. Raw RAM matches are
+        # NOT a floor: an entry generation would reject must never suppress
+        # a valid cold candidate or cold-only recovery. When no eligible
+        # twin exists the cold lookup runs exactly as before.
+        committed_required = _policy_uses_committed_history(mtp_history_policy)
+        floor = int(min_restore_tokens)
+        resident_duplicates: dict[str, dict[str, Any]] | None = None
+        serve_compatible_best_matched = 0
+        for _entry, _candidate_len in matches:
+            _cand = int(_candidate_len)
+            if _cand <= floor:
+                continue
+            if _cand < 2 or _cand >= int(_entry.prefix_len):
+                continue
+            if _entry.live_ref_only:
+                # Leases are single-use; only durable snapshot twins may
+                # suppress a cold hydration.
+                continue
+            if not _restore_identity_compatible(
+                _entry,
+                model_path=model_path,
+                mtp_enabled=mtp_enabled,
+                hidden_variant=hidden_variant,
+                template_hash=template_hash,
+                mtp_history_policy=mtp_history_policy,
+                draft_head_identity=draft_head_identity,
+                policy_fingerprint=policy_fingerprint,
+            ):
+                continue
+            _has_mtp = (
+                _entry.mtp_history_snapshot is not None
+                or getattr(_entry, "mtp_history_cache_ref", None) is not None
+            )
+            if committed_required and not _has_mtp:
+                continue
+            if (
+                _entry.mtp_snapshot_epoch is not None
+                and int(_entry.mtp_snapshot_epoch) != int(_entry.snapshot_epoch)
+            ):
+                continue
+            if _entry.has_recurrent:
+                _gap = int(_entry.prefix_len) - _cand
+                if _gap > gap_limit:
+                    _probe = getattr(
+                        _entry, "recurrent_boundary_at_or_below", None
+                    )
+                    _achievable = 0
+                    if callable(_probe):
+                        _boundary = _probe(_cand)
+                        if _boundary is not None:
+                            _achievable = int(_boundary[0])
+                    if _achievable <= floor:
+                        continue
+            if resident_duplicates is None:
+                resident_duplicates = {}
+            resident_duplicates[str(_entry.token_hash)] = {
+                "prefix_len": int(_entry.prefix_len),
+                "has_mtp_history": _has_mtp,
+            }
+            # Entries surviving every gate above are serve-usable for THIS
+            # request; only they may raise the bar a cold candidate must
+            # beat. A raw-higher but identity-incompatible RAM match must
+            # never suppress a valid cold hydration
+            # (test_identity_incompatible_higher_ram_match_does_not_shadow_valid_cold).
+            serve_compatible_best_matched = max(
+                serve_compatible_best_matched, _cand
+            )
+        # The best SERVE-COMPATIBLE RAM match is the bar a cold candidate
+        # must beat: the stable sort below picks max (matched, prefix_len),
+        # so a cold row with strictly smaller matched can never win against
+        # an entry that can actually serve this request — hydrating it (a
+        # multi-GB disk read + decode on the request thread) is pure waste.
+        # The bar deliberately ignores incompatible/lease-only RAM entries
+        # (they cannot serve, so they must not shadow a valid cold row).
+        ram_best_matched = int(serve_compatible_best_matched)
         cold_match = self._cold_near_prefix_candidate(
             tokens,
             max_token_gap=gap_limit,
@@ -882,6 +1062,8 @@ class SessionBank:
             block_size=block,
             block_min_matched_tokens=block_min_match,
             allow_block_prefix=allow_block_prefix,
+            resident_duplicates=resident_duplicates,
+            min_useful_matched_tokens=ram_best_matched,
             model_path=model_path,
             mtp_enabled=mtp_enabled,
             hidden_variant=hidden_variant,
@@ -943,6 +1125,8 @@ class SessionBank:
         mtp_history_policy: str | None,
         draft_head_identity: str | None,
         policy_fingerprint: str | None,
+        resident_duplicates: dict[str, dict[str, Any]] | None = None,
+        min_useful_matched_tokens: int = 0,
     ) -> tuple[SessionBankEntry, int] | None:
         if self.cold_tier is None:
             return None
@@ -953,6 +1137,21 @@ class SessionBank:
         lookup = getattr(self.cold_tier, "lookup_prefix_boundary", None)
         if not callable(lookup):
             return None
+        # Capability detection happens BEFORE the call via an explicit tier
+        # attribute (no per-request signature inspection, never an
+        # exception/retry probe after work): duck-typed tiers without the
+        # marker get the pre-shadow call shape and simply hydrate as before.
+        lookup_kwargs: dict[str, Any] = {}
+        if resident_duplicates and getattr(
+            self.cold_tier, "SUPPORTS_RESIDENT_DUPLICATE_SHADOW", False
+        ):
+            lookup_kwargs["resident_duplicates"] = resident_duplicates
+        if min_useful_matched_tokens > 0 and getattr(
+            self.cold_tier, "SUPPORTS_MIN_USEFUL_MATCHED_TOKENS", False
+        ):
+            lookup_kwargs["min_useful_matched_tokens"] = int(
+                min_useful_matched_tokens
+            )
         result = lookup(
             tokens,
             model_path=model_path,
@@ -967,6 +1166,7 @@ class SessionBank:
             block_size=block_size,
             block_min_matched_tokens=block_min_matched_tokens,
             allow_block_prefix=allow_block_prefix,
+            **lookup_kwargs,
         )
         if result is None:
             return None
@@ -1159,6 +1359,7 @@ class SessionBank:
         mode: str = "clone",
         cache_factory: Callable[[], list[Any]] | None = None,
         mtp_cache_factory: Callable[[], list[Any]] | None = None,
+        served_out: dict[str, Any] | None = None,
     ) -> tuple[list[Any], list[Any] | None, str] | None:
         """Restore a cached entry to an earlier safe prefix boundary.
 
@@ -1233,31 +1434,54 @@ class SessionBank:
             if boundary_snapshot is not None
             else (lambda c: _trim_cache_ref_to_prefix(c, restore_point))
         )
+        # Passive-probe maintenance splits: CPU-side perf_counter spans only,
+        # written into the caller-owned served_out dict (request-local, same
+        # non-shared contract as put's timing_out). No evaluation points are
+        # added or moved — the lazy graph is observed, never perturbed.
+        _mnt: dict[str, Any] | None = None
+        if served_out is not None:
+            _mnt = {}
+            served_out["maintenance"] = _mnt
         if mode == "reference" and entry.cache_ref is not None:
             cache = entry.cache_ref
             entry.cache_ref = None
+            _trim_started = time.perf_counter()
             if not trim_to_target(cache):
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return None
+            if _mnt is not None:
+                _mnt["trim_s"] = time.perf_counter() - _trim_started
             actual_restore_mode = "reference_lease"
         else:
             if entry.live_ref_only:
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return None
+            _factory_started = time.perf_counter()
             cache = cache_factory() if cache_factory is not None else runtime.make_cache()
+            _install_started = time.perf_counter()
             restore_cache(
                 cache,
                 entry.cache_snapshot,
                 restore_meta_state=cache_factory is None,
                 clone_states=not entry.lazy_kv,
             )
+            _trim_started = time.perf_counter()
             if not trim_to_target(cache):
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return None
+            if _mnt is not None:
+                _mnt["factory_s"] = _install_started - _factory_started
+                _mnt["install_s"] = _trim_started - _install_started
+                _mnt["trim_s"] = time.perf_counter() - _trim_started
         if boundary_snapshot is not None:
             # Overwrite recurrent (non-trimmable) states with the interior
             # boundary capture; trimmable entries are None in these snapshots.
+            _overwrite_started = time.perf_counter()
             restore_cache(cache, boundary_snapshot, restore_meta_state=False)
+            if _mnt is not None:
+                _mnt["recurrent_overwrite_s"] = (
+                    time.perf_counter() - _overwrite_started
+                )
 
         mtp_history_cache = None
         if mode == "reference" and entry.mtp_history_cache_ref is not None:
@@ -1270,6 +1494,7 @@ class SessionBank:
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return None
         elif entry.mtp_history_snapshot is not None:
+            _mtp_started = time.perf_counter()
             mtp_history_cache = (
                 mtp_cache_factory()
                 if mtp_cache_factory is not None
@@ -1282,10 +1507,16 @@ class SessionBank:
             ):
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return None
+            if _mnt is not None:
+                _mnt["mtp_install_s"] = time.perf_counter() - _mtp_started
         elif entry.live_ref_only and entry.mtp_snapshot_epoch is not None:
             self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
             return None
 
+        if served_out is not None:
+            served_out["restore_point"] = int(restore_point)
+            served_out["boundary_used"] = boundary_snapshot is not None
+            served_out["mode"] = actual_restore_mode
         return (
             cache,
             mtp_history_cache,
@@ -1377,14 +1608,33 @@ class SessionBank:
             "eviction_log": list(self.eviction_log)[-16:],
         }
 
-    def _enqueue_cold_entry(self, entry: SessionBankEntry) -> None:
+    def _enqueue_cold_entry(
+        self,
+        entry: SessionBankEntry,
+        timing_out: dict[str, Any] | None = None,
+    ) -> None:
+        cold: dict[str, Any] | None = None
+        if timing_out is not None:
+            cold = {}
+            timing_out["cold_enqueue"] = cold
         if entry.live_ref_only:
+            if cold is not None:
+                cold["enabled"] = False
+                cold["skip_reason"] = "live_ref_only"
             return
         if self.cold_tier is None:
+            if cold is not None:
+                cold["enabled"] = False
+                cold["skip_reason"] = "no_cold_tier"
             return
         put_entry = getattr(self.cold_tier, "put_entry", None)
         if not callable(put_entry):
+            if cold is not None:
+                cold["enabled"] = False
+                cold["skip_reason"] = "no_put_entry"
             return
+        if cold is not None:
+            cold["enabled"] = True
         dispatch = self.cold_enqueue_dispatch
         if dispatch is not None:
             # Idle-lane path: the job reads the immutable bank entry (its
@@ -1392,8 +1642,27 @@ class SessionBank:
             # live cache cannot corrupt what gets encoded) on the model
             # owner thread, keeping the full-KV byte encode out of the
             # request/stream tail.
+            dispatch_started = time.perf_counter()
             try:
-                dispatch(lambda: self._cold_enqueue_job(entry, put_entry))
+                job = lambda: self._cold_enqueue_job(entry, put_entry)  # noqa: E731
+                # Stable logical key for newest-wins coalescing of PENDING
+                # persistence work: each queued job pins its entry's
+                # GB-scale snapshot until it runs, and under continuous
+                # traffic the idle window may not arrive for many turns.
+                # Per-session, only the newest entry's encode stays queued.
+                # Attribute-carried so legacy dispatch wirings that ignore
+                # it keep their exact behavior.
+                job.coalesce_key = (
+                    f"ssd_cold:{entry.session_id}"
+                    if entry.session_id
+                    else f"ssd_cold:hash:{entry.token_hash}"
+                )
+                dispatch(job)
+                if cold is not None:
+                    cold["deferred"] = True
+                    cold["dispatch_elapsed_s"] = (
+                        time.perf_counter() - dispatch_started
+                    )
                 return
             except BaseException as exc:
                 self.eviction_log.append(
@@ -1405,8 +1674,19 @@ class SessionBank:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
+                if cold is not None:
+                    cold["dispatch_elapsed_s"] = (
+                        time.perf_counter() - dispatch_started
+                    )
+                    cold["dispatch_error"] = True
                 # Fall through to the synchronous path.
+        sync_started = time.perf_counter()
         self._cold_enqueue_job(entry, put_entry)
+        if cold is not None:
+            cold["deferred"] = False
+            cold["synchronous_serialize_elapsed_s"] = (
+                time.perf_counter() - sync_started
+            )
 
     def _cold_enqueue_job(
         self, entry: SessionBankEntry, put_entry: Callable[..., Any]
@@ -1422,7 +1702,38 @@ class SessionBank:
         if entry.logits is not None and entry.hidden is not None:
             capabilities.append("mtp_full")
         try:
-            put_entry(entry, capabilities=capabilities)
+            try:
+                stored = put_entry(
+                    entry, capabilities=capabilities, raise_on_yield=True
+                )
+            except TypeError:
+                # Cold tiers predating the foreground-yield contract (or test
+                # doubles) take no raise_on_yield kwarg.
+                stored = put_entry(entry, capabilities=capabilities)
+            if stored:
+                # On the exact entry object — never a hash-keyed map (a
+                # replaced entry with the same token hash must stay lazy).
+                entry.cold_encode_completed_at = time.monotonic()
+        except ColdEncodeInterrupted:
+            # A foreground request arrived mid-encode; the encode aborted at a
+            # tensor boundary. Re-dispatch the same job for the next quiet
+            # window — the coalesce key keeps at most one pending copy, and a
+            # newer commit for the same session supersedes it (newest-wins).
+            dispatch = self.cold_enqueue_dispatch
+            if dispatch is not None:
+                job = lambda: self._cold_enqueue_job(entry, put_entry)  # noqa: E731
+                # Same key expression as the original dispatch site so the
+                # retry coalesces with (and is superseded by) newer commits.
+                job.coalesce_key = (
+                    f"ssd_cold:{entry.session_id}"
+                    if entry.session_id
+                    else f"ssd_cold:hash:{entry.token_hash}"
+                )
+                try:
+                    dispatch(job)
+                except Exception:
+                    pass
+            return
         except Exception as exc:
             self.eviction_log.append(
                 {

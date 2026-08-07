@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+import inspect
 import json
 import os
 import sys
@@ -734,16 +735,48 @@ def _iter_prefill_chunks(token_ids: list[int]) -> list[list[int]]:
     ]
 
 
-def _iter_prefill_chunk_spans(token_count: int) -> list[tuple[int, int]]:
+def _split_spans_at(
+    spans: list[tuple[int, int]], edges: tuple[int, ...]
+) -> list[tuple[int, int]]:
+    """Split contiguous spans so every in-range edge is an exact span end.
+
+    Used to align a prefill chunk boundary with a stable prompt-prefix
+    position (the pre-injection boundary of the transient trailing tool
+    hint), so the existing gdn-boundary capture records recurrent state
+    exactly there. Chunked prefill is mathematically split-invariant; only
+    the chunk layout changes. Edges outside (0, total) or already on a
+    span end are no-ops.
+    """
+    if not spans or not edges:
+        return spans
+    out = spans
+    for edge in sorted(set(int(e) for e in edges)):
+        split: list[tuple[int, int]] = []
+        for start, end in out:
+            if start < edge < end:
+                split.append((start, edge))
+                split.append((edge, end))
+            else:
+                split.append((start, end))
+        out = split
+    return out
+
+
+def _iter_prefill_chunk_spans(
+    token_count: int, *, mandatory_edges: tuple[int, ...] = ()
+) -> list[tuple[int, int]]:
     if token_count <= 0:
         return []
     if not _sustained_prefill_enabled():
-        return [(0, token_count)]
+        return _split_spans_at([(0, token_count)], mandatory_edges)
     chunk_size = _prefill_chunk_size()
-    return [
-        (start, min(token_count, start + chunk_size))
-        for start in range(0, token_count, chunk_size)
-    ]
+    return _split_spans_at(
+        [
+            (start, min(token_count, start + chunk_size))
+            for start in range(0, token_count, chunk_size)
+        ],
+        mandatory_edges,
+    )
 
 
 def _sustained_prefill_layout() -> str:
@@ -1624,6 +1657,21 @@ class GenerationStats:
     sessionbank_snapshot_bytes: int = 0
     sessionbank_skipped_oversized_snapshot: bool = False
     session_prompt_prefix_bank_commit: dict[str, object] = field(default_factory=dict)
+    # Store-on-prefill telemetry ({} when the store did not run) and the
+    # restore-return -> first-decode-iteration span. The span includes the
+    # prompt-prefix bank commit plus graph/policy construction — it is setup
+    # wall time that decode_elapsed_s already contains, NOT pure decode.
+    session_prefill_store: dict[str, object] = field(default_factory=dict)
+    pre_first_token_setup_s: float = 0.0
+    # Passive probe (2026-08-06): served-entry truth, prompt-state wall
+    # decomposition, first-primary-sample latency, and round-1 snapshots of
+    # the existing cumulative timers. Observational only — no metric above
+    # is redefined and no evaluation point moves.
+    session_restore_served: dict[str, object] = field(default_factory=dict)
+    prompt_state_total_time_s: float = 0.0
+    prompt_state_unattributed_time_s: float = 0.0
+    first_primary_sample_time_s: float = 0.0
+    first_round: dict[str, object] = field(default_factory=dict)
     accepted_drafts: int = 0
     rejected_drafts: int = 0
     drafted_tokens: int = 0
@@ -1858,6 +1906,16 @@ class PromptState:
     # SessionBank.put so sub-prefix restores can land on a recurrent-true
     # boundary instead of reusing recurrent state from the stored end.
     gdn_boundaries: list = field(default_factory=list)
+    # Telemetry only: elapsed/split timings when the store-on-prefill
+    # snapshot ran for this prompt state ({} when it did not run). This
+    # store executes outside the prompt_eval_time_s window, so without a
+    # timer its wall time is unattributable in per-request telemetry.
+    prefill_store_snapshot: dict = field(default_factory=dict)
+    # Passive probe: the entry actually SERVED by a bank restore for this
+    # prompt state ({} on cold paths). Resolution diagnostics record
+    # matches[0] before generation may skip it on achievable-boundary
+    # checks, so served truth is recorded where the restore succeeds.
+    restore_served: dict = field(default_factory=dict)
 
 
 class PostcommitAbort(RuntimeError):
@@ -1964,6 +2022,7 @@ def _prefill_restored_prompt_suffix(
     chunk_started_s: float | None = None,
     gdn_boundary_sink: list[tuple[int, Any, Any]] | None = None,
     vision_splice: Any | None = None,
+    stable_prefix_len: int | None = None,
 ) -> tuple[Any, Any, float, float]:
     """Extend a restored SessionBank prefix without one giant suffix forward.
 
@@ -2104,8 +2163,20 @@ def _prefill_restored_prompt_suffix(
     # on 33-199-token suffixes at 4k-48k). One fused forward with final-only
     # logits does the same work with two eval barriers total. Large suffixes
     # keep the chunked path for abort responsiveness.
+    # A stable prompt-prefix edge inside the suffix must become a chunk
+    # boundary so the gdn capture records recurrent state exactly there —
+    # the fused single-forward cannot capture interior boundaries, so it
+    # defers to the chunked path in that case (same tokens, one extra
+    # launch; no re-evaluation).
+    _stable_edge_rel: int | None = None
+    if (
+        stable_prefix_len is not None
+        and gdn_boundary_sink is not None
+        and 0 < int(stable_prefix_len) - int(cached_tokens) < max(0, len(suffix) - 1)
+    ):
+        _stable_edge_rel = int(stable_prefix_len) - int(cached_tokens)
     fused_max = _small_suffix_fused_max()
-    if 0 < len(suffix) <= fused_max:
+    if 0 < len(suffix) <= fused_max and _stable_edge_rel is None:
         fused_array = mx.array([suffix])
         fused_embeddings = _suffix_chunk_embeddings(fused_array)
         started = time.perf_counter()
@@ -2156,7 +2227,11 @@ def _prefill_restored_prompt_suffix(
         body_array = mx.array([body])
         spans = (
             _prefill_spans_with_tail_grid(
-                len(body), tail_interval=_gdn_boundary_tail_interval()
+                len(body),
+                tail_interval=_gdn_boundary_tail_interval(),
+                mandatory_edges=(
+                    (_stable_edge_rel,) if _stable_edge_rel is not None else ()
+                ),
             )
             if capture_boundaries
             else _iter_prefill_chunk_spans(len(body))
@@ -2421,6 +2496,7 @@ def _restore_near_prefix_prompt_state(
     chunk_callback: Callable[[dict[str, Any]], None] | None = None,
     chunk_started_s: float | None = None,
     cache_factory: Callable[[], Any] | None = None,
+    stable_prefix_len: int | None = None,
 ) -> PromptState | None:
     if not _near_prefix_restore_enabled() or len(prompt_ids) < 2:
         return None
@@ -2439,10 +2515,22 @@ def _restore_near_prefix_prompt_state(
         block_size,
         _env_int("MTPLX_SESSION_BLOCK_PREFIX_MIN_MATCH_TOKENS", 512),
     )
+    candidates_seen = 0
+    _prefix_restore_fn = getattr(session_bank, "restore_entry_prefix_cache", None)
+    _prefix_restore_supports_served = callable(
+        _prefix_restore_fn
+    ) and _accepts_served_out(_prefix_restore_fn)
+    # Pass the serve floor so the bank's resident-duplicate shadow gate can
+    # mirror THIS caller's eligibility exactly (explicit capability
+    # attribute; duck-typed banks get the legacy call shape).
+    _candidates_kwargs: dict[str, Any] = {}
+    if getattr(session_bank, "SUPPORTS_NEAR_PREFIX_MIN_RESTORE", False):
+        _candidates_kwargs["min_restore_tokens"] = int(min_restore_tokens)
     for entry, matched in candidates(
         prompt_ids,
         max_token_gap=max_gap,
         min_matched_tokens=min_match,
+        **_candidates_kwargs,
         block_size=block_size,
         block_min_matched_tokens=block_min_match,
         allow_block_prefix=block_prefix_enabled,
@@ -2455,6 +2543,7 @@ def _restore_near_prefix_prompt_state(
         policy_fingerprint=policy_fingerprint,
     ):
         _check_postcommit_abort(abort_check)
+        candidates_seen += 1
         matched = int(matched)
 
         def _near_debug(reason: str) -> None:
@@ -2532,7 +2621,15 @@ def _restore_near_prefix_prompt_state(
                 if getattr(entry, "cache_ref", None) is not None
                 else ["clone"]
             )
+            bank_served: dict[str, Any] = {}
             for restore_mode in restore_modes:
+                # Fresh dict per attempt: a failed reference attempt must not
+                # pollute the successful clone attempt's telemetry. Only the
+                # winning attempt's dict is retained.
+                attempt_served: dict[str, Any] = {}
+                restore_kwargs: dict[str, Any] = {"served_out": attempt_served}
+                if not _prefix_restore_supports_served:
+                    restore_kwargs = {}
                 restore_started = time.perf_counter()
                 prefix_restore = restore_entry_prefix_cache(
                     rt,
@@ -2540,9 +2637,11 @@ def _restore_near_prefix_prompt_state(
                     matched,
                     mode=restore_mode,
                     cache_factory=cache_factory,
+                    **restore_kwargs,
                 )
                 cache_restore_time_s += time.perf_counter() - restore_started
                 if prefix_restore is not None:
+                    bank_served = attempt_served
                     break
         else:
             restore_started = time.perf_counter()
@@ -2588,6 +2687,23 @@ def _restore_near_prefix_prompt_state(
             restore_point = matched
         restore_point = int(restore_point)
         boundary_restore = boundary_hidden is not None or restore_point < matched
+        served_truth: dict[str, Any] = {
+            "entry_prefix_len": int(getattr(entry, "prefix_len", 0) or 0),
+            "entry_token_hash": str(getattr(entry, "token_hash", "") or ""),
+            "requested_matched": int(matched),
+            "actual_restore_point": int(restore_point),
+            "boundary_restore": bool(boundary_restore),
+            "storage_restore_mode": str(storage_restore_mode),
+            "lazy_kv": bool(getattr(entry, "lazy_kv", False)),
+            "candidate_index": int(candidates_seen),
+            "bank": bank_served,
+        }
+        _done_at = getattr(entry, "cold_encode_completed_at", None)
+        served_truth["encode_completed"] = _done_at is not None
+        if _done_at is not None:
+            served_truth["encode_completed_age_s"] = round(
+                max(0.0, time.monotonic() - float(_done_at)), 3
+            )
         if committed_history_required and mtp_history_cache is None:
             continue
         if (
@@ -2706,6 +2822,7 @@ def _restore_near_prefix_prompt_state(
                 ssd_restore_s=ssd_restore_s,
                 restore_mode=restore_kind,
                 gdn_boundaries=inherited_boundaries,
+                restore_served=served_truth,
             )
         suffix_boundary_sink: list[tuple[int, Any, Any]] | None = (
             list(inherited_boundaries)
@@ -2726,6 +2843,7 @@ def _restore_near_prefix_prompt_state(
                 cached_tokens=restore_point,
                 chunk_started_s=chunk_started_s,
                 gdn_boundary_sink=suffix_boundary_sink,
+                stable_prefix_len=stable_prefix_len,
             )
         )
         entry.hits += 1
@@ -2753,6 +2871,7 @@ def _restore_near_prefix_prompt_state(
                 if suffix_boundary_sink is not None
                 else inherited_boundaries
             ),
+            restore_served=served_truth,
         )
     return None
 
@@ -2901,20 +3020,23 @@ def _capture_gdn_boundary(
 
 
 def _prefill_spans_with_tail_grid(
-    token_count: int, *, tail_interval: int
+    token_count: int,
+    *,
+    tail_interval: int,
+    mandatory_edges: tuple[int, ...] = (),
 ) -> list[tuple[int, int]]:
     spans = list(_iter_prefill_chunk_spans(token_count))
     if not spans or tail_interval <= 0:
-        return spans
+        return _split_spans_at(spans, mandatory_edges)
     start, end = spans[-1]
     if end - start <= tail_interval:
-        return spans
+        return _split_spans_at(spans, mandatory_edges)
     refined = spans[:-1]
     cursor = start
     while cursor < end:
         refined.append((cursor, min(end, cursor + tail_interval)))
         cursor += tail_interval
-    return refined
+    return _split_spans_at(refined, mandatory_edges)
 
 
 def _inherited_gdn_boundaries(entry: Any, restore_point: int) -> list:
@@ -2940,6 +3062,46 @@ def _inherited_gdn_boundaries(entry: Any, restore_point: int) -> list:
         # hollowed out mid-prefix coverage on clone/lease chains.
         kept = _thin_gdn_boundary_records(kept, cap)
     return kept
+
+
+def _accepts_served_out(fn: Any) -> bool:
+    """Feature-detect the passive-probe ``served_out`` kwarg.
+
+    Detection happens ONCE, before any call — never a blanket
+    TypeError-retry around the restore itself, which could re-execute a
+    partially completed restore (for example after a consumed live lease)
+    and would mask internal TypeErrors.
+    """
+    try:
+        return "served_out" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _prefill_store_result(
+    entry: Any,
+    *,
+    suffix_tokens: int,
+    elapsed_s: float,
+    mtp_snapshot_elapsed_s: float,
+    put_elapsed_s: float,
+    put_timing: dict[str, object],
+) -> dict[str, object]:
+    # SessionBank.put legitimately returns None (oversized/skipped snapshot);
+    # "stored" must reflect that return, never assume success.
+    return {
+        "stored": entry is not None,
+        "reason": (
+            "committed_prefill_prefix"
+            if entry is not None
+            else "sessionbank_snapshot_skipped"
+        ),
+        "suffix_tokens": int(suffix_tokens),
+        "elapsed_s": float(elapsed_s),
+        "mtp_snapshot_elapsed_s": float(mtp_snapshot_elapsed_s),
+        "put_elapsed_s": float(put_elapsed_s),
+        "put_timing": put_timing,
+    }
 
 
 def _store_on_prefill_env_enabled() -> bool:
@@ -3025,6 +3187,7 @@ def restore_or_prefill_prompt_state(
     prefill_callback: Callable[[dict[str, Any]], None] | None = None,
     vision_splice: Any | None = None,
     store_prefix_snapshot: bool | None = None,
+    stable_prefix_len: int | None = None,
 ) -> PromptState:
     """Build the initial prompt state used by MTP-k decode.
 
@@ -3108,12 +3271,25 @@ def restore_or_prefill_prompt_state(
             else bool(store_prefix_snapshot)
         )
         if not enabled or session_bank is None:
+            state.prefill_store_snapshot = {
+                "stored": False,
+                "skip_reason": "disabled" if session_bank is not None else "no_bank",
+            }
             return
         if vision_splice is not None and bank_key_ids is None:
+            state.prefill_store_snapshot = {
+                "stored": False,
+                "skip_reason": "vision_no_bank_key",
+            }
             return
         if int(state.suffix_tokens or 0) < _store_on_prefill_min_suffix():
             # Warm restore or trivial extension: the existing postcommit
             # machinery owns those; storing again would just churn the bank.
+            state.prefill_store_snapshot = {
+                "stored": False,
+                "skip_reason": "min_suffix",
+                "suffix_tokens": int(state.suffix_tokens or 0),
+            }
             return
         if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
             print(
@@ -3123,13 +3299,17 @@ def restore_or_prefill_prompt_state(
                 file=sys.stderr,
                 flush=True,
             )
+        store_started = time.perf_counter()
+        snapshot_done = store_started
         try:
             mtp_snapshot = (
                 snapshot_cache(state.committed_mtp_cache)
                 if state.committed_mtp_cache is not None
                 else None
             )
-            session_bank.put(
+            snapshot_done = time.perf_counter()
+            put_timing: dict[str, object] = {}
+            entry = session_bank.put(
                 runtime=rt,
                 token_ids=list(bank_key_ids if bank_key_ids is not None else prompt_ids),
                 cache=state.trunk_cache,
@@ -3146,11 +3326,27 @@ def restore_or_prefill_prompt_state(
                 snapshot_epoch=len(prompt_ids),
                 mtp_snapshot_epoch=len(prompt_ids) if mtp_snapshot is not None else None,
                 gdn_boundaries=list(getattr(state, "gdn_boundaries", None) or []),
+                timing_out=put_timing,
             )
-        except Exception:
+            put_done = time.perf_counter()
+            state.prefill_store_snapshot = _prefill_store_result(
+                entry,
+                suffix_tokens=int(state.suffix_tokens),
+                elapsed_s=put_done - store_started,
+                mtp_snapshot_elapsed_s=snapshot_done - store_started,
+                put_elapsed_s=put_done - snapshot_done,
+                put_timing=put_timing,
+            )
+        except Exception as exc:
             # Cache priming must never break or slow the request path in a
             # user-visible way; a failed store just means a cold next turn.
-            pass
+            state.prefill_store_snapshot = {
+                "stored": False,
+                "reason": f"prefill_store_error:{type(exc).__name__}",
+                "suffix_tokens": int(state.suffix_tokens),
+                "elapsed_s": time.perf_counter() - store_started,
+                "mtp_snapshot_elapsed_s": max(0.0, snapshot_done - store_started),
+            }
 
     def _emit_prefill_complete(state: PromptState) -> PromptState:
         _maybe_store_prefix_snapshot(state)
@@ -3299,6 +3495,24 @@ def restore_or_prefill_prompt_state(
             inherited_boundaries = _inherited_gdn_boundaries(
                 restored.entry, restored.entry.prefix_len
             )
+            exact_served: dict[str, Any] = {
+                "entry_prefix_len": int(restored.entry.prefix_len),
+                "entry_token_hash": str(
+                    getattr(restored.entry, "token_hash", "") or ""
+                ),
+                "requested_matched": int(restored.entry.prefix_len),
+                "actual_restore_point": int(restored.entry.prefix_len),
+                "boundary_restore": False,
+                "storage_restore_mode": str(restored.restore_mode),
+                "lazy_kv": bool(getattr(restored.entry, "lazy_kv", False)),
+                "candidate_index": 0,
+            }
+            _done_at = getattr(restored.entry, "cold_encode_completed_at", None)
+            exact_served["encode_completed"] = _done_at is not None
+            if _done_at is not None:
+                exact_served["encode_completed_age_s"] = round(
+                    max(0.0, time.monotonic() - float(_done_at)), 3
+                )
             if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
                 print(
                     f"[mtplx] exact-restore: entry_len={restored.entry.prefix_len} "
@@ -3330,6 +3544,7 @@ def restore_or_prefill_prompt_state(
                     ssd_restore_s=float(getattr(restored, "ssd_restore_s", 0.0) or 0.0),
                     restore_mode=restored.restore_mode,
                     gdn_boundaries=inherited_boundaries,
+                    restore_served=exact_served,
                 ))
 
             _check_postcommit_abort(abort_check)
@@ -3379,6 +3594,7 @@ def restore_or_prefill_prompt_state(
                     chunk_started_s=prefill_started_s,
                     gdn_boundary_sink=suffix_boundary_sink,
                     vision_splice=vision_splice,
+                    stable_prefix_len=stable_prefix_len,
                 )
             )
             return _emit_prefill_complete(PromptState(
@@ -3405,6 +3621,7 @@ def restore_or_prefill_prompt_state(
                     if suffix_boundary_sink is not None
                     else inherited_boundaries
                 ),
+                restore_served=exact_served,
             ))
 
         near_prompt_state = _restore_near_prefix_prompt_state(
@@ -3422,6 +3639,7 @@ def restore_or_prefill_prompt_state(
             chunk_callback=prefill_callback,
             chunk_started_s=prefill_started_s,
             cache_factory=restore_cache_factory,
+            stable_prefix_len=stable_prefix_len,
         )
         if near_prompt_state is not None:
             return _emit_prefill_complete(near_prompt_state)
@@ -3465,6 +3683,7 @@ def restore_or_prefill_prompt_state(
                 cached_tokens=0,
                 chunk_started_s=prefill_started_s,
                 vision_splice=vision_splice,
+                stable_prefix_len=stable_prefix_len,
                 gdn_boundary_sink=gdn_boundary_sink,
             )
             prompt_eval_time = target_time + prompt_history_time
@@ -3544,6 +3763,7 @@ def restore_or_prefill_prompt_state(
             abort_check=abort_check,
             vision_splice=vision_splice,
             gdn_boundary_sink=gdn_boundary_sink,
+            stable_prefix_len=stable_prefix_len,
         )
         prompt_eval_time = target_time
     return _emit_prefill_complete(PromptState(
@@ -4252,6 +4472,7 @@ def _prefill(
     abort_check: Callable[[], bool] | None = None,
     vision_splice: Any | None = None,
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
+    stable_prefix_len: int | None = None,
 ):
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
@@ -4267,9 +4488,18 @@ def _prefill(
     if len(prompt_ids) > 1:
         body = prompt_ids[:-1]
         body_array = mx.array([body])
+        _cold_edges: tuple[int, ...] = ()
+        if (
+            stable_prefix_len is not None
+            and capture_boundaries
+            and 0 < int(stable_prefix_len) < len(body)
+        ):
+            _cold_edges = (int(stable_prefix_len),)
         spans = (
             _prefill_spans_with_tail_grid(
-                len(body), tail_interval=_gdn_boundary_tail_interval()
+                len(body),
+                tail_interval=_gdn_boundary_tail_interval(),
+                mandatory_edges=_cold_edges,
             )
             if capture_boundaries
             else _iter_prefill_chunk_spans(len(body))
@@ -4344,6 +4574,7 @@ def _prefill_committed_mtp_history_streaming(
     chunk_started_s: float | None = None,
     vision_splice: Any | None = None,
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
+    stable_prefix_len: int | None = None,
 ):
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
@@ -4383,9 +4614,18 @@ def _prefill_committed_mtp_history_streaming(
             pad_prefix_counts.append(
                 pad_prefix_counts[-1] + (1 if token == pad_id else 0)
             )
+    _cold_edges: tuple[int, ...] = ()
+    if (
+        stable_prefix_len is not None
+        and capture_boundaries
+        and 0 < int(stable_prefix_len) < len(body)
+    ):
+        _cold_edges = (int(stable_prefix_len),)
     mtp_streaming_spans = (
         _prefill_spans_with_tail_grid(
-            len(body), tail_interval=_gdn_boundary_tail_interval()
+            len(body),
+            tail_interval=_gdn_boundary_tail_interval(),
+            mandatory_edges=_cold_edges,
         )
         if capture_boundaries
         else _iter_prefill_chunk_spans(len(body))
@@ -6233,6 +6473,19 @@ def generate_mtpk(
     lazy_bonus_verify_calls = 0
     lazy_bonus_commit_time = 0.0
     verify_eval_unattributed_time = 0.0
+    # Stable prompt-prefix boundary (aligned-boundary design, 2026-08-06):
+    # the encoder reports where the transient trailing tool-continuation
+    # hint begins; prefill span planning makes that position a chunk edge so
+    # the existing gdn-boundary capture records recurrent state exactly
+    # there. Absent metadata leaves every span byte-identical to today.
+    _stable_prefix_len: int | None = None
+    try:
+        _raw_stable = (trace_metadata or {}).get("stable_prefix_len")
+        if _raw_stable is not None:
+            _stable_prefix_len = max(0, int(_raw_stable)) or None
+    except (TypeError, ValueError):
+        _stable_prefix_len = None
+    _prompt_state_started = time.perf_counter()
     prompt_state = restore_or_prefill_prompt_state(
         rt,
         prompt_ids,
@@ -6253,7 +6506,11 @@ def generate_mtpk(
         # (measured: an orphaned ~200k prefill blocked all sessions for
         # 10+ minutes, 2026-07-03).
         abort_check=abort_check,
+        stable_prefix_len=_stable_prefix_len,
     )
+    prompt_state_total_time_s = time.perf_counter() - _prompt_state_started
+    pre_first_token_setup_started = time.perf_counter()
+    pre_first_token_setup_s = 0.0
     prompt_prefix_bank_commit: dict[str, object] = {}
     bank_commit_ids = prompt_ids
     if vision_splice is not None and session_bank is not None:
@@ -6270,12 +6527,15 @@ def generate_mtpk(
         and int(prompt_state.suffix_tokens) > 0
     ):
         commit_started = time.perf_counter()
+        commit_snapshot_done = commit_started
         try:
             mtp_snapshot = (
                 snapshot_cache(prompt_state.committed_mtp_cache)
                 if prompt_state.committed_mtp_cache is not None
                 else None
             )
+            commit_snapshot_done = time.perf_counter()
+            commit_put_timing: dict[str, object] = {}
             entry = session_bank.put(
                 runtime=rt,
                 token_ids=list(bank_commit_ids),
@@ -6312,7 +6572,9 @@ def generate_mtpk(
                 gdn_boundaries=list(
                     getattr(prompt_state, "gdn_boundaries", None) or []
                 ),
+                timing_out=commit_put_timing,
             )
+            put_done = time.perf_counter()
             prompt_prefix_bank_commit = {
                 "stored": entry is not None,
                 "mode": "prompt_prefix",
@@ -6325,7 +6587,10 @@ def generate_mtpk(
                     entry.prefix_len if entry is not None else len(prompt_ids)
                 ),
                 "nbytes": int(entry.nbytes if entry is not None else 0),
-                "elapsed_s": time.perf_counter() - commit_started,
+                "elapsed_s": put_done - commit_started,
+                "mtp_snapshot_elapsed_s": commit_snapshot_done - commit_started,
+                "put_elapsed_s": put_done - commit_snapshot_done,
+                "put_timing": commit_put_timing,
                 "cached_tokens": int(prompt_state.cached_tokens),
                 "suffix_tokens": int(prompt_state.suffix_tokens),
             }
@@ -6335,6 +6600,9 @@ def generate_mtpk(
                 "mode": "prompt_prefix",
                 "reason": f"prompt_prefix_commit_error:{type(exc).__name__}",
                 "elapsed_s": time.perf_counter() - commit_started,
+                "mtp_snapshot_elapsed_s": max(
+                    0.0, commit_snapshot_done - commit_started
+                ),
             }
     cache = prompt_state.trunk_cache
     logits = prompt_state.logits
@@ -7163,11 +7431,31 @@ def generate_mtpk(
         # continuation predictiveness and can cost more to verify than they commit,
         # while grounded re-emission matches into the prompt (see the PR benchmarks).
         ccopy_index.sync(prompt_ids)
+    # Close the pre-first-token setup span here: everything from the
+    # restore/prefill return to this point (prompt-prefix bank commit,
+    # graphbank/policy/sampler construction) is setup wall time that
+    # decode_elapsed_s contains but the per-round timers never see.
+    pre_first_token_setup_s = time.perf_counter() - pre_first_token_setup_started
+    decode_loop_entered_s = time.perf_counter()
+    first_primary_sample_time_s = 0.0
+    first_round_snapshot: dict[str, object] | None = None
     # Cost-model depth policy: cycle wall-time measured by the loop itself
     # (first observe gets the span since loop entry, later ones the span
     # since the previous observe) — real cycle cost, not inter-request gaps.
     _policy_cycle_started = time.perf_counter()
     while len(tokens) < max_tokens:
+        if first_round_snapshot is None and step >= 1:
+            # Top of iteration 2: the cumulative timers now hold exactly
+            # round 1's totals. Pure bookkeeping — no evaluation forced.
+            first_round_snapshot = {
+                "wall_s": time.perf_counter() - decode_loop_entered_s,
+                "draft_time_s": float(draft_time),
+                "verify_time_s": float(verify_time),
+                "verify_forward_time_s": float(verify_forward_time),
+                "accept_time_s": float(accept_time),
+                "verify_calls": int(verify_calls),
+                "committed_tokens": len(tokens),
+            }
         repetition_result = _trim_repeated_suffix(tokens, repetition_config)
         if repetition_result is not None:
             events.append(
@@ -7245,6 +7533,12 @@ def generate_mtpk(
                     _steer_overlay(tokens) if _steer_active else None
                 ),
             )
+            if first_primary_sample_time_s == 0.0:
+                # First primary token sampled: any lazy tail forced by
+                # touching the seed logits has just been paid. Passive read.
+                first_primary_sample_time_s = (
+                    time.perf_counter() - decode_loop_entered_s
+                )
             tokens.append(primary)
             emit_new_tokens()
             if constraint is not None:
@@ -9397,6 +9691,20 @@ def generate_mtpk(
         emit_new_tokens()
         emit_trace()
 
+    if first_round_snapshot is None and int(verify_calls) >= 1:
+        # Single-cycle generation: the loop never reached iteration 2, so the
+        # cumulative timers ARE round 1's totals. Product telemetry stays
+        # complete; single_cycle marks the provenance.
+        first_round_snapshot = {
+            "wall_s": time.perf_counter() - decode_loop_entered_s,
+            "draft_time_s": float(draft_time),
+            "verify_time_s": float(verify_time),
+            "verify_forward_time_s": float(verify_forward_time),
+            "accept_time_s": float(accept_time),
+            "verify_calls": int(verify_calls),
+            "committed_tokens": len(tokens),
+            "single_cycle": True,
+        }
     final_state: GenerationFinalState | None = None
     if (
         capture_final_state
@@ -9567,6 +9875,30 @@ def generate_mtpk(
         cache_miss_reason=prompt_state.cache_miss_reason,
         session_restore_mode=prompt_state.restore_mode,
         session_prompt_prefix_bank_commit=prompt_prefix_bank_commit,
+        session_prefill_store=dict(
+            getattr(prompt_state, "prefill_store_snapshot", None) or {}
+        ),
+        pre_first_token_setup_s=float(pre_first_token_setup_s),
+        session_restore_served=dict(
+            getattr(prompt_state, "restore_served", None) or {}
+        ),
+        prompt_state_total_time_s=float(prompt_state_total_time_s),
+        prompt_state_unattributed_time_s=float(
+            max(
+                0.0,
+                prompt_state_total_time_s
+                - float(prompt_state.prompt_eval_time_s or 0.0)
+                - float(prompt_state.cache_restore_time_s or 0.0)
+                - float(
+                    (getattr(prompt_state, "prefill_store_snapshot", None) or {}).get(
+                        "elapsed_s"
+                    )
+                    or 0.0
+                ),
+            )
+        ),
+        first_primary_sample_time_s=float(first_primary_sample_time_s),
+        first_round=dict(first_round_snapshot or {}),
         snapshot_time_s=snapshot_time,
         accept_time_s=accept_time,
         rollback_time_s=rollback_time,
