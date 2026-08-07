@@ -320,6 +320,38 @@ def gate_long_output_decay(
     return ok
 
 
+def _probe_fan_rpm() -> int:
+    """Best-effort actual-fan-RPM receipt (max across fans), 0 if unknown.
+
+    Reads thermalforge's SMC-backed status — the only fan readout this
+    project trusts (bare `smc fans` has lied before). The 2.5.4 train ran
+    its gates under verified max fans yet recorded fan_rpm_verified=0
+    because the value was caller-supplied and the caller forgot; the gate
+    now measures its own receipt, and --fan-rpm-verified stays as an
+    explicit override.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    tool = shutil.which("thermalforge") or os.path.expanduser(
+        "~/.mtplx/bin/thermalforge"
+    )
+    if not os.path.exists(tool):
+        return 0
+    try:
+        out = subprocess.run(
+            [tool, "status"], capture_output=True, text=True, timeout=10
+        ).stdout
+        data = json.loads(out)
+        return max(
+            (int(fan.get("actual_rpm") or 0) for fan in data.get("fans") or []),
+            default=0,
+        )
+    except Exception:
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
@@ -334,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     client = Client(args.base_url)
     report: dict[str, Any] = {
         "base_url": args.base_url,
-        "fan_rpm_verified": args.fan_rpm_verified,
+        "fan_rpm_verified": args.fan_rpm_verified or _probe_fan_rpm(),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     results: dict[str, bool] = {}
