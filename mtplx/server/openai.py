@@ -22462,6 +22462,19 @@ def create_app(state: ServerState) -> FastAPI:
                 )
             except ValueError as vision_error:
                 raise HTTPException(status_code=400, detail=str(vision_error))
+            # Alias-boundary receipt for QA gates: positions before the first
+            # image pad carry no pixel influence (causal attention), so this
+            # is the exact bar a restore must stay under for a different
+            # image. Deliberately a direct id scan, not the restore guard's
+            # span bookkeeping — a gate comparing restores against this value
+            # must not be self-certified by the code path it is auditing.
+            _pad_id = int(vision_splice.image_pad_token_id)
+            _first_pad = next(
+                (pos for pos, tok in enumerate(prompt_ids) if tok == _pad_id),
+                None,
+            )
+            if _first_pad is not None:
+                template_observability["first_image_pad_position"] = int(_first_pad)
         if aime_visible_working:
             prompt_ids = [
                 *prompt_ids,

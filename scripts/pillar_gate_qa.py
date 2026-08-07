@@ -176,8 +176,31 @@ def gate_vision_cache(client: Client, report: dict[str, Any]) -> bool:
     prompt2 = int((snap2.get("latest") or {}).get("prompt_tokens") or 0)
     image_tokens = max(1, prompt2 - int((r1["usage"] or {}).get("prompt_tokens") or 0))
 
+    # "Never past the image" needs the first pad's position. The usage
+    # arithmetic (prompt2 - r1) overshoots the image leftward: it also counts
+    # r1's appended assistant answer, the user-turn framing, the pre-image
+    # text, and the vision-start marker — 250+ tokens of pixel-independent
+    # prefix whose KV is identical for any image. Restores in that region are
+    # correct; only reuse at or past the first pad can alias pixels. The
+    # engine reports the true first pad position (a direct pad-id scan at the
+    # server layer, independent of the restore guard's span logic); trust it
+    # only inside the bracket the arithmetic proves — conservative_bar <=
+    # first_pad < prompt2 — and fall back to the conservative bar otherwise
+    # (older build, or a misrouted report).
+    conservative_bar = prompt2 - image_tokens
+    reported_first_pad = (snap4.get("latest") or {}).get("first_image_pad_position")
+    if (
+        isinstance(reported_first_pad, int)
+        and conservative_bar <= reported_first_pad < prompt2
+    ):
+        alias_bar = reported_first_pad
+        alias_bar_source = "engine_first_pad"
+    else:
+        alias_bar = conservative_bar
+        alias_bar_source = "usage_arithmetic"
+
     post_image_cache_ok = cached3 >= prompt3 - 4096  # follow-up mostly warm
-    alias_blocked = cached4 <= (prompt2 - image_tokens)  # never past the image
+    alias_blocked = cached4 <= alias_bar  # never past the image
     report["vision_cache"] = {
         "post_image_followup": {
             "prompt_tokens": prompt3,
@@ -189,6 +212,9 @@ def gate_vision_cache(client: Client, report: dict[str, Any]) -> bool:
             "prompt_tokens": prompt2,
             "cached_tokens": cached4,
             "image_tokens_approx": image_tokens,
+            "first_image_pad_position": reported_first_pad,
+            "alias_bar": alias_bar,
+            "alias_bar_source": alias_bar_source,
             "pass": alias_blocked,
         },
     }

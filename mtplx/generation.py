@@ -2497,8 +2497,22 @@ def _restore_near_prefix_prompt_state(
     chunk_started_s: float | None = None,
     cache_factory: Callable[[], Any] | None = None,
     stable_prefix_len: int | None = None,
+    matched_ceiling: int | None = None,
 ) -> PromptState | None:
+    """matched_ceiling: hard cap on any candidate's matched length.
+
+    Vision requests pass the FIRST image-pad position: this lane matches on
+    raw token ids, where every pad equals every pad, so an uncapped match
+    can run INTO an image span and a boundary restore there resurrects KV
+    whose embeddings came from different pixels (2026-08-07 pillar
+    alias-leg regression — served restore_point 14704 vs content divergence
+    at the span start). Capping at the first pad keeps this lane text-only;
+    full-image warm reuse stays with the exact restore path, which matches
+    on content-keyed surrogate ids.
+    """
     if not _near_prefix_restore_enabled() or len(prompt_ids) < 2:
+        return None
+    if matched_ceiling is not None and int(matched_ceiling) < 2:
         return None
     candidates = getattr(session_bank, "near_prefix_candidates", None)
     if not callable(candidates):
@@ -2545,6 +2559,8 @@ def _restore_near_prefix_prompt_state(
         _check_postcommit_abort(abort_check)
         candidates_seen += 1
         matched = int(matched)
+        if matched_ceiling is not None and matched > int(matched_ceiling):
+            matched = int(matched_ceiling)
 
         def _near_debug(reason: str) -> None:
             if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
@@ -3206,6 +3222,7 @@ def restore_or_prefill_prompt_state(
     new-prefill suffix is large enough to have been a real miss.
     """
     bank_key_ids: list[int] | None = None
+    vision_restore_spans: list[tuple[int, int]] | None = None
     if vision_splice is not None and session_bank is not None:
         # Image content is not represented in token ids, so raw prefix reuse
         # would alias different images. The bank may only participate through
@@ -3213,7 +3230,7 @@ def restore_or_prefill_prompt_state(
         # derived from each image's byte digest, making the key sequence a
         # pure function of text + pixels. Without that identity the server
         # bypasses the bank; enforce the invariant here as well.
-        from mtplx.vision.splice import vision_bank_key_ids
+        from mtplx.vision.splice import vision_bank_key_ids, vision_image_spans
 
         bank_key_ids = vision_bank_key_ids(prompt_ids, vision_splice)
         if bank_key_ids is None:
@@ -3221,6 +3238,12 @@ def restore_or_prefill_prompt_state(
                 "vision requests must not use the session bank without "
                 "content-keyed ids"
             )
+        # Restore-safety spans: a prefix match may not END inside an image's
+        # pad run — id-equality there is not input-equality (embeddings ride
+        # out-of-band), so a partial-span restore resurrects another image's
+        # KV. Full-span matches (same pixels -> same surrogates through the
+        # span) stay fully warm. 2026-08-07 pillar alias-leg regression.
+        vision_restore_spans = vision_image_spans(bank_key_ids, vision_splice)
     base_hidden_variant = _resolve_runtime_base_hidden_variant(rt, base_hidden_variant)
     mtp_hidden_variant = _resolve_runtime_mtp_hidden_variant(rt, mtp_hidden_variant)
     mtp_position_mode = _resolve_runtime_mtp_position_mode(rt)
@@ -3467,6 +3490,11 @@ def restore_or_prefill_prompt_state(
                 abort_check=abort_check,
                 chunk_callback=prefill_callback,
                 chunk_started_s=prefill_started_s,
+                matched_ceiling=(
+                    vision_restore_spans[0][0]
+                    if vision_restore_spans
+                    else None
+                ),
                 cache_factory=restore_cache_factory,
             )
             if near_prompt_state is not None:
@@ -3640,6 +3668,9 @@ def restore_or_prefill_prompt_state(
             chunk_started_s=prefill_started_s,
             cache_factory=restore_cache_factory,
             stable_prefix_len=stable_prefix_len,
+            matched_ceiling=(
+                vision_restore_spans[0][0] if vision_restore_spans else None
+            ),
         )
         if near_prompt_state is not None:
             return _emit_prefill_complete(near_prompt_state)
