@@ -341,14 +341,25 @@ def _probe_fan_rpm() -> int:
         return 0
     try:
         out = subprocess.run(
-            [tool, "status"], capture_output=True, text=True, timeout=10
+            [tool, "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         ).stdout
         data = json.loads(out)
         return max(
             (int(fan.get("actual_rpm") or 0) for fan in data.get("fans") or []),
             default=0,
         )
-    except Exception:
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        AttributeError,
+        subprocess.TimeoutExpired,
+    ):
         return 0
 
 
