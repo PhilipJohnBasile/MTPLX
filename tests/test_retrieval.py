@@ -97,21 +97,23 @@ def test_a_qwen_checkpoint_is_not_mistaken_for_jina_reranker(tmp_path):
     assert _is_jina_reranker_checkpoint(tmp_path) is False
 
 
-def _jina_embedding_registry(tmp_path, monkeypatch):
+def _jina_embedding_registry(tmp_path, monkeypatch, *, trust_remote_code=True):
     (tmp_path / "utils.py").write_text("")
     (tmp_path / "model.py").write_text("")
     monkeypatch.setattr("mtplx.hf_loader.resolve_model_path", lambda ref, cache_dir=None: tmp_path)
-    registry = RetrievalRegistry()
+    # Dispatch tests presume the trust opt-in; the gate itself is covered in
+    # the "remote-code trust" section below.
+    registry = RetrievalRegistry(trust_remote_code=trust_remote_code)
     spec = RetrievalSpec("jina-embed", "org/jina-embed", "embedding")
     registry.register(spec)
     return registry, spec
 
 
-def _jina_reranker_registry(tmp_path, monkeypatch):
+def _jina_reranker_registry(tmp_path, monkeypatch, *, trust_remote_code=True):
     (tmp_path / "rerank.py").write_text("")
     (tmp_path / "projector.safetensors").write_bytes(b"")
     monkeypatch.setattr("mtplx.hf_loader.resolve_model_path", lambda ref, cache_dir=None: tmp_path)
-    registry = RetrievalRegistry()
+    registry = RetrievalRegistry(trust_remote_code=trust_remote_code)
     spec = RetrievalSpec("jina-rerank", "org/jina-rerank", "rerank")
     registry.register(spec)
     return registry, spec
@@ -177,6 +179,67 @@ def test_rerank_dispatches_to_the_jina_backend_without_touching_the_qwen_path(tm
     assert scores == [0.1, 0.9]
     assert tokens == 5
     assert spec.served_id == "jina-rerank"
+
+
+# ---- remote-code trust ----------------------------------------------------
+#
+# jina-style checkpoints ship their own Python (model.py / rerank.py) and
+# serving them executes it — de-facto trust_remote_code. Pointing a flag at a
+# repository must never be a code-execution grant on its own.
+
+
+def test_a_jina_embedding_checkpoint_is_refused_without_remote_code_trust(tmp_path, monkeypatch):
+    registry, _spec = _jina_embedding_registry(tmp_path, monkeypatch, trust_remote_code=False)
+
+    from mtplx.retrieval import RetrievalTrustError
+
+    with pytest.raises(RetrievalTrustError, match="--retrieval-trust-remote-code"):
+        registry.embed(["text"])
+
+    # The refusal is a served error, not a silent gap: the dashboard row
+    # shows why the model never answered.
+    entry = {e["id"]: e for e in registry.descriptors()}["jina-embed"]
+    assert entry["errors"] == 1
+    assert "RetrievalTrustError" in entry["lastError"]
+
+
+def test_a_jina_reranker_checkpoint_is_refused_without_remote_code_trust(tmp_path, monkeypatch):
+    registry, _spec = _jina_reranker_registry(tmp_path, monkeypatch, trust_remote_code=False)
+
+    from mtplx.retrieval import RetrievalTrustError
+
+    with pytest.raises(RetrievalTrustError, match="executing that code"):
+        registry.rerank("query", ["document"])
+
+
+def test_the_trust_opt_in_unlocks_the_jina_backends(tmp_path, monkeypatch):
+    registry, spec = _jina_embedding_registry(tmp_path, monkeypatch, trust_remote_code=True)
+    with registry._acquire(spec) as backend:
+        assert isinstance(backend, _JinaEmbedBackend)
+
+
+def test_a_generic_checkpoint_needs_no_remote_code_trust(monkeypatch):
+    """The gate is for checkpoint-shipped code only; mlx_lm models load MTPLX's
+    own code and must keep working with trust off (the default)."""
+    monkeypatch.setattr(
+        "mtplx.hf_loader.resolve_model_path",
+        lambda ref, cache_dir=None: Path("/models") / str(ref).rsplit("/", 1)[-1],
+    )
+    registry = RetrievalRegistry(trust_remote_code=False)
+    spec = RetrievalSpec("plain", "org/plain", "embedding")
+    registry.register(spec)
+    with registry._acquire(spec) as backend:
+        assert type(backend).__name__ == "_Backend"
+
+
+def test_registry_from_args_reads_the_trust_flag():
+    trusted = registry_from_args(
+        SimpleNamespace(embedding_model=["org/e"], retrieval_trust_remote_code=True)
+    )
+    assert trusted.trust_remote_code is True
+
+    default = registry_from_args(SimpleNamespace(embedding_model=["org/e"]))
+    assert default.trust_remote_code is False
 
 
 # ---- batch planning -------------------------------------------------------
@@ -968,6 +1031,36 @@ def test_unknown_retrieval_model_is_reported_as_not_found():
     response = _client(_Strict()).post("/v1/embeddings", json={"model": "nope", "input": "a"})
     assert response.status_code == 404
     assert "unknown embedding model" in response.json()["error"]["message"]
+
+
+def test_an_untrusted_checkpoint_is_a_403_not_a_404():
+    """403 tells the caller the model exists and what to change; 404 would
+    send them hunting for a typo in the model id."""
+    from mtplx.retrieval import RetrievalTrustError
+
+    message = (
+        "org/jina ships its own inference code inside the checkpoint; pass "
+        "--retrieval-trust-remote-code if you trust this repository."
+    )
+
+    class _Untrusted(_StubRegistry):
+        def embed(self, texts, *, model=None, instruction=None):
+            raise RetrievalTrustError(message)
+
+        def rerank(self, query, documents, *, model=None, instruction=None):
+            raise RetrievalTrustError(message)
+
+    embed_response = _client(_Untrusted()).post("/v1/embeddings", json={"input": "a"})
+    assert embed_response.status_code == 403
+    error = embed_response.json()["error"]
+    assert error["type"] == "permission_error"
+    assert "--retrieval-trust-remote-code" in error["message"]
+
+    rerank_response = _client(_Untrusted()).post(
+        "/v1/rerank", json={"query": "q", "documents": ["d"]}
+    )
+    assert rerank_response.status_code == 403
+    assert "--retrieval-trust-remote-code" in rerank_response.json()["error"]["message"]
 
 
 def test_snapshot_always_carries_a_retrieval_section():

@@ -8554,6 +8554,8 @@ def cmd_serve_public(args: Any) -> int:
         value = getattr(args, attr, None)
         if value:
             cmd.extend([flag, str(value)])
+    if bool(getattr(args, "retrieval_trust_remote_code", False)):
+        cmd.append("--retrieval-trust-remote-code")
     # The chat model is already an absolute path by this point, but retrieval
     # references are resolved inside the server, which has no cache directory
     # of its own — so a model pulled into a custom --cache-dir would not be
@@ -11461,6 +11463,7 @@ def _with_server_policy_args(target: Any, source: Any) -> Any:
         ("retrieval_max_resident", 2),
         ("retrieval_max_tokens", 0),
         ("retrieval_idle_timeout", 0.0),
+        ("retrieval_trust_remote_code", False),
         ("api_key_file", None),
         ("api_key_source", "none"),
         ("default_presence_penalty", 0.0),

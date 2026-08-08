@@ -139,6 +139,62 @@ def test_apply_user_config_fills_tune_model_defaults(tmp_path):
     assert args.profile == "performance-cold"
 
 
+def test_apply_user_config_fills_retrieval_defaults(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'embedding_models = ["org/embed"]\n'
+        'reranker_models = ["org/rank=fast-rank"]\n'
+        "retrieval_max_resident = 3\n"
+        "retrieval_trust_remote_code = true\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_user_config(config)
+    assert loaded.embedding_models == ("org/embed",)
+    assert loaded.retrieval_trust_remote_code is True
+
+    args = argparse.Namespace(
+        command="serve",
+        model=str(DEFAULT_RUNTIME_MODEL_DIR),
+        cache_dir=None,
+        profile=DEFAULT_PROFILE_NAME,
+        embedding_model=[],
+        reranker_model=[],
+        retrieval_max_resident=2,
+        retrieval_trust_remote_code=False,
+        _cli_flags=set(),
+    )
+    apply_user_config(args, config_path=config)
+
+    assert tuple(args.embedding_model) == ("org/embed",)
+    assert tuple(args.reranker_model) == ("org/rank=fast-rank",)
+    assert args.retrieval_max_resident == 3
+    assert args.retrieval_trust_remote_code is True
+
+
+def test_an_explicit_trust_flag_beats_the_config_file(tmp_path):
+    """Trust granted in config must not silently override an explicit CLI no.
+
+    A user who runs with the flag omitted after setting the config key gets
+    the config value — but one who explicitly typed the flag spelling into
+    _cli_flags keeps their command line.
+    """
+    config = tmp_path / "config.toml"
+    config.write_text("retrieval_trust_remote_code = true\n", encoding="utf-8")
+    args = argparse.Namespace(
+        command="serve",
+        model=str(DEFAULT_RUNTIME_MODEL_DIR),
+        cache_dir=None,
+        profile=DEFAULT_PROFILE_NAME,
+        retrieval_trust_remote_code=False,
+        _cli_flags={"retrieval-trust-remote-code"},
+    )
+
+    apply_user_config(args, config_path=config)
+
+    assert args.retrieval_trust_remote_code is False
+
+
 def test_apply_user_config_fills_bench_tune_model_defaults(tmp_path):
     config = tmp_path / "config.toml"
     model_dir = tmp_path / "models"

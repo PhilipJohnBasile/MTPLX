@@ -68,6 +68,16 @@ class RetrievalError(RuntimeError):
     """Raised when a retrieval request cannot be served."""
 
 
+class RetrievalTrustError(RetrievalError):
+    """Raised when a checkpoint needs its bundled code and trust was not given.
+
+    jina-style checkpoints ship their own Python (``model.py`` / ``rerank.py``)
+    and serving them means executing it — de-facto ``trust_remote_code``. A
+    model download must never gain code execution just by being pointed at, so
+    this is an explicit opt-in, not a default.
+    """
+
+
 @dataclass
 class RetrievalStats:
     """Live counters for one served retrieval model.
@@ -490,12 +500,17 @@ class RetrievalRegistry:
         max_resident: int = DEFAULT_MAX_RESIDENT,
         cache_dir: str | Path | None = None,
         idle_timeout_s: float = 0.0,
+        trust_remote_code: bool = False,
     ) -> None:
         self.max_resident = max(1, int(max_resident))
         self.cache_dir = cache_dir
         # 0 disables idle release entirely, which keeps a daemon that never
         # configured a timeout behaving exactly as before.
         self.idle_timeout_s = max(0.0, float(idle_timeout_s))
+        # Off by default: jina-style backends execute Python bundled inside
+        # the checkpoint, and a model reference must never be a code-execution
+        # grant on its own. --retrieval-trust-remote-code turns it on.
+        self.trust_remote_code = bool(trust_remote_code)
         self._specs: dict[tuple[Role, str], RetrievalSpec] = {}
         self._backends: dict[str, _Backend] = {}
         self._resident: OrderedDict[str, None] = OrderedDict()
@@ -597,6 +612,19 @@ class RetrievalRegistry:
         served = ", ".join(spec.served_id for spec in candidates)
         raise RetrievalError(f"unknown {role} model {requested!r}; served: {served}")
 
+    def _require_remote_code_trust(self, spec: RetrievalSpec) -> None:
+        """Refuse to execute checkpoint-bundled Python without explicit opt-in."""
+        if self.trust_remote_code:
+            return
+        raise RetrievalTrustError(
+            f"{spec.model_ref} ships its own inference code inside the "
+            "checkpoint (jina-style model.py/rerank.py), and serving it means "
+            "executing that code. MTPLX will not run code from a model "
+            "download without explicit opt-in: pass "
+            "--retrieval-trust-remote-code on serve/quickstart (config: "
+            "retrieval_trust_remote_code = true) if you trust this repository."
+        )
+
     def role_for_model_id(self, requested: Any) -> Role | None:
         """Return the retrieval role a requested model id names, else ``None``.
 
@@ -651,11 +679,17 @@ class RetrievalRegistry:
             if backend is None:
                 # Which loader a checkpoint needs is read from the checkpoint
                 # itself, so pointing a spec at a jina repository is all that
-                # is required — no separate flag or served-id convention.
+                # is required — no separate served-id convention. Executing
+                # the code such a checkpoint ships is a different matter: it
+                # is gated behind the explicit trust opt-in, checked here at
+                # load time so the daemon still starts and every other model
+                # keeps serving.
                 path = Path(key)
                 if spec.role == "embedding" and _is_jina_embedding_checkpoint(path):
+                    self._require_remote_code_trust(spec)
                     backend = _JinaEmbedBackend(spec.model_ref, path)
                 elif spec.role == "rerank" and _is_jina_reranker_checkpoint(path):
+                    self._require_remote_code_trust(spec)
                     backend = _JinaRerankBackend(spec.model_ref, path)
                 else:
                     backend = _Backend(spec.model_ref, path)
@@ -975,6 +1009,7 @@ def registry_from_args(args: Any) -> RetrievalRegistry:
         max_resident=int(getattr(args, "retrieval_max_resident", DEFAULT_MAX_RESIDENT) or DEFAULT_MAX_RESIDENT),
         cache_dir=cache_dir,
         idle_timeout_s=float(getattr(args, "retrieval_idle_timeout", 0) or 0),
+        trust_remote_code=bool(getattr(args, "retrieval_trust_remote_code", False)),
     )
     for role, attribute in (("embedding", "embedding_model"), ("rerank", "reranker_model")):
         for value in getattr(args, attribute, None) or []:

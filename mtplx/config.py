@@ -54,6 +54,7 @@ CONFIG_VALUE_KEYS = (
     "embedding_models",
     "reranker_models",
     "retrieval_max_resident",
+    "retrieval_trust_remote_code",
 )
 
 
@@ -92,6 +93,7 @@ class UserConfig:
     embedding_models: tuple[str, ...] = ()
     reranker_models: tuple[str, ...] = ()
     retrieval_max_resident: int | None = None
+    retrieval_trust_remote_code: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -167,6 +169,7 @@ def load_user_config(path: str | Path | None = None) -> UserConfig:
         embedding_models=_str_tuple(data.get("embedding_models")),
         reranker_models=_str_tuple(data.get("reranker_models")),
         retrieval_max_resident=_int_or_none(data.get("retrieval_max_resident")),
+        retrieval_trust_remote_code=_bool_or_none(data.get("retrieval_trust_remote_code")),
     )
 
 
@@ -248,6 +251,7 @@ _RUNTIME_DEFAULTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "embedding_models": ("embedding_model", ("embedding-model",)),
     "reranker_models": ("reranker_model", ("reranker-model",)),
     "retrieval_max_resident": ("retrieval_max_resident", ("retrieval-max-resident",)),
+    "retrieval_trust_remote_code": ("retrieval_trust_remote_code", ("retrieval-trust-remote-code",)),
     "ssd_session_cache": ("ssd_session_cache", ("ssd-session-cache",)),
     "ssd_session_cache_dir": ("ssd_session_cache_dir", ("ssd-session-cache-dir",)),
     "ssd_session_cache_max_size": ("ssd_session_cache_max_size", ("ssd-session-cache-max-size",)),

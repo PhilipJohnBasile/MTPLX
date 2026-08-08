@@ -2151,6 +2151,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Truncate retrieval inputs to this many tokens (0 = per-model default)",
     )
+    quickstart_server_p.add_argument(
+        "--retrieval-trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow retrieval checkpoints that ship their own Python "
+            "(jina-style model.py/rerank.py) to execute it; off by default"
+        ),
+    )
     quickstart_server_p.add_argument("--dry-run", action="store_true", help="Preview the server launch command without loading MLX")
     quickstart_server_p.add_argument("--json", action="store_true", help="Emit machine-readable JSON for --dry-run and errors")
     quickstart_server_p.add_argument("--depth", type=int, default=3)
@@ -2715,6 +2723,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Truncate retrieval inputs to this many tokens (0 = per-model default)",
+    )
+    serve_p.add_argument(
+        "--retrieval-trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow retrieval checkpoints that ship their own Python "
+            "(jina-style model.py/rerank.py) to execute it; off by default"
+        ),
     )
     serve_p.add_argument(
         "--no-stats-footer",

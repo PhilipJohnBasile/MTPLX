@@ -96,7 +96,7 @@ from mtplx.gemma4_pair import (
     resolve_gemma4_pair_paths,
 )
 from mtplx.model_scheduler import ModelWorkScheduler
-from mtplx.retrieval import RetrievalError
+from mtplx.retrieval import RetrievalError, RetrievalTrustError
 from mtplx.sampling import SamplerConfig
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
@@ -22293,6 +22293,10 @@ def create_app(state: ServerState) -> FastAPI:
                 model=request.model,
                 instruction=request.instruction,
             )
+        except RetrievalTrustError as exc:
+            # 403, not 404: the model is configured and present — serving it
+            # is refused until --retrieval-trust-remote-code grants it.
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except RetrievalError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         payload = {
@@ -22338,6 +22342,10 @@ def create_app(state: ServerState) -> FastAPI:
                 model=request.model,
                 instruction=request.instruction,
             )
+        except RetrievalTrustError as exc:
+            # 403, not 404: the model is configured and present — serving it
+            # is refused until --retrieval-trust-remote-code grants it.
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except RetrievalError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
@@ -27295,6 +27303,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--retrieval-cache-dir",
         default=None,
         help="Model cache directory used to resolve retrieval references",
+    )
+    parser.add_argument(
+        "--retrieval-trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow retrieval checkpoints that ship their own Python "
+            "(jina-style model.py/rerank.py) to execute it; off by default"
+        ),
     )
     parser.add_argument("--backend-id", default="qwen3_next", help=argparse.SUPPRESS)
     parser.add_argument(

@@ -1165,6 +1165,48 @@ def test_serve_explicit_profile_beats_turbo_default(monkeypatch, tmp_path, capsy
     assert payload["profile"] == "sustained"
 
 
+def test_serve_forwards_retrieval_flags_to_the_server_command(
+    monkeypatch, tmp_path, capsys
+):
+    """The server runs as a subprocess with a rebuilt argv; a retrieval flag
+    that is not forwarded silently configures nothing."""
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
+    model_dir = tmp_path / "example-model"
+    model_dir.mkdir()
+    payload = _serve_dry_run_payload_for_model(
+        monkeypatch,
+        capsys,
+        model_dir,
+        extra_args=(
+            "--embedding-model",
+            "org/embed=e1",
+            "--reranker-model",
+            "org/rank",
+            "--retrieval-trust-remote-code",
+        ),
+    )
+    command = payload["server_command"]
+    assert "--embedding-model org/embed=e1" in command
+    assert "--reranker-model org/rank" in command
+    assert "--retrieval-trust-remote-code" in command
+
+
+def test_serve_does_not_grant_remote_code_trust_by_default(
+    monkeypatch, tmp_path, capsys
+):
+    """Configuring an embedder must not quietly grant checkpoint code execution."""
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
+    model_dir = tmp_path / "example-model"
+    model_dir.mkdir()
+    payload = _serve_dry_run_payload_for_model(
+        monkeypatch,
+        capsys,
+        model_dir,
+        extra_args=("--embedding-model", "org/embed"),
+    )
+    assert "--retrieval-trust-remote-code" not in payload["server_command"]
+
+
 def test_start_opencode_dry_run_uses_step_descriptor_defaults(
     monkeypatch, tmp_path, capsys
 ):

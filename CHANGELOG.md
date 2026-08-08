@@ -39,6 +39,13 @@ All notable user-facing changes to MTPLX. The format is based on
   persist in `~/.mtplx/config.toml` as `embedding_models`, `reranker_models`,
   and `retrieval_max_resident`.
 
+  Checkpoints that ship their own Python inference code (the jina MLX
+  releases bundle `model.py`/`rerank.py`) are only executed after an explicit
+  opt-in: `--retrieval-trust-remote-code` on `serve`/`quickstart`, or
+  `retrieval_trust_remote_code = true` in the config file. Without it the
+  request is refused with a clear 403 naming the flag; models served by
+  MTPLX's own loaders are unaffected.
+
 ## [2.5.3] - 2026-08-06
 
 Small release. A day of head-to-head benchmarking against another engine
