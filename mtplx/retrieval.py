@@ -299,6 +299,10 @@ class _JinaEmbedBackend:
     def unload(self) -> None:
         with self.lock:
             self._model = None
+        # The one sanctioned clear_cache() on the retrieval path: after an
+        # unload the pool holds buffers sized for a model that no longer
+        # exists, so clearing once actually returns memory. Never clear in
+        # the per-batch hot loops — the pool is shared with the chat runtime.
         try:
             import mlx.core as mx
 
@@ -321,8 +325,15 @@ class _JinaEmbedBackend:
             normalised = pooled / mx.linalg.norm(pooled, axis=-1, keepdims=True)
             mx.eval(normalised)
             vectors = normalised.tolist()
+            # Dropping the references is enough: the buffers return to the
+            # process-global MLX pool for the next request — or for the chat
+            # model decoding beside us — to recycle. Do NOT mx.clear_cache()
+            # here: the pool is shared with the co-resident chat runtime, and
+            # tearing it down per request measurably taxes decode/prefill
+            # (5–21% prefill cost, 2026-07-05 receipts) for zero memory win.
+            # The cache is cleared where it belongs: on unload()/eviction and
+            # on the memory-pressure CRITICAL edge.
             del encoded, stacked, pooled, normalised
-            mx.clear_cache()
         return vectors, tokens
 
 
@@ -380,6 +391,10 @@ class _JinaRerankBackend:
     def unload(self) -> None:
         with self.lock:
             self._model = None
+        # The one sanctioned clear_cache() on the retrieval path: after an
+        # unload the pool holds buffers sized for a model that no longer
+        # exists, so clearing once actually returns memory. Never clear in
+        # the per-batch hot loops — the pool is shared with the chat runtime.
         try:
             import mlx.core as mx
 
@@ -443,6 +458,10 @@ class _Backend:
         with self.lock:
             self._model = None
             self._tokenizer = None
+        # The one sanctioned clear_cache() on the retrieval path: after an
+        # unload the pool holds buffers sized for a model that no longer
+        # exists, so clearing once actually returns memory. Never clear in
+        # the per-batch hot loops — the pool is shared with the chat runtime.
         try:
             import mlx.core as mx
 
@@ -785,8 +804,15 @@ class RetrievalRegistry:
                         # the caller's order is restored here.
                         for index, vector in zip(group, normalised.tolist()):
                             vectors[index] = vector
+                        # Free the references and stop there. mx.clear_cache()
+                        # drops the process-global buffer pool that the chat
+                        # model decoding beside us recycles every step; running
+                        # it per batch was measured at 5–21% prefill throughput
+                        # cost with zero memory benefit (2026-07-05 receipts,
+                        # same lesson as the v2.0.3 memory-pressure redesign).
+                        # The pool is cleared on unload()/eviction and on the
+                        # memory-pressure CRITICAL edge instead.
                         del hidden, pooled, normalised
-                        mx.clear_cache()
         except BaseException as error:
             stats.record_error(error)
             raise
@@ -876,8 +902,14 @@ class RetrievalRegistry:
                         # callers rank by index against their own document list.
                         for index, value in zip(group, probabilities.tolist()):
                             scores[index] = float(value)
+                        # No mx.clear_cache() here — same discipline as embed():
+                        # the MLX buffer pool is process-global and shared with
+                        # the decoding chat model; clearing it per batch costs
+                        # 5–21% prefill throughput (2026-07-05 receipts) and
+                        # frees nothing that dropping the references does not.
+                        # Clearing happens on unload()/eviction and the
+                        # memory-pressure CRITICAL edge.
                         del logits, pairs, probabilities
-                        mx.clear_cache()
         except BaseException as error:
             stats.record_error(error)
             raise

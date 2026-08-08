@@ -579,11 +579,7 @@ class _EchoReranker:
         return mx.stack([mx.zeros_like(values), values], axis=-1)
 
 
-def test_reranking_returns_scores_in_document_order_despite_reordered_batches(monkeypatch):
-    """The route ranks by index into the caller's list, so a swap is silent."""
-    pytest.importorskip("mlx.core")
-    import math
-
+def _echo_rerank_registry(monkeypatch) -> tuple[RetrievalRegistry, RetrievalSpec]:
     monkeypatch.setattr(
         "mtplx.hf_loader.resolve_model_path",
         lambda ref, cache_dir=None: Path("/models") / str(ref).rsplit("/", 1)[-1],
@@ -594,6 +590,15 @@ def test_reranking_returns_scores_in_document_order_despite_reordered_batches(mo
     backend = registry._backend(spec)
     backend._model = _EchoReranker()
     backend._tokenizer = _MarkerRerankTokenizer()
+    return registry, spec
+
+
+def test_reranking_returns_scores_in_document_order_despite_reordered_batches(monkeypatch):
+    """The route ranks by index into the caller's list, so a swap is silent."""
+    pytest.importorskip("mlx.core")
+    import math
+
+    registry, _spec = _echo_rerank_registry(monkeypatch)
 
     requested = [(2, 900), (5, 4), (1, 700), (4, 6), (3, 800), (6, 5)]
     documents = [f"{marker}x{count}" for marker, count in requested]
@@ -603,6 +608,89 @@ def test_reranking_returns_scores_in_document_order_despite_reordered_batches(mo
     assert len(scores) == len(documents)
     for score, (marker, _count) in zip(scores, requested):
         assert score == pytest.approx(1.0 / (1.0 + math.exp(-marker)), rel=1e-4)
+
+
+# ---- MLX buffer-pool discipline -------------------------------------------
+#
+# mx.clear_cache() drops the process-global buffer pool that the co-resident
+# chat model recycles on every decode step. Per-batch clears in the retrieval
+# hot loops were measured at 5-21% prefill throughput cost with zero memory
+# benefit (2026-07-05 receipts; the v2.0.3 memory-pressure redesign learned
+# the same lesson). The contract: inference never clears, unload always does.
+
+
+def _count_cache_clears(monkeypatch) -> dict[str, int]:
+    import mlx.core as mx
+
+    calls = {"count": 0}
+    real_clear = mx.clear_cache
+
+    def counting_clear():
+        calls["count"] += 1
+        real_clear()
+
+    monkeypatch.setattr(mx, "clear_cache", counting_clear)
+    return calls
+
+
+def test_embedding_batches_never_drop_the_shared_mlx_buffer_pool(monkeypatch):
+    """A multi-batch embed request must not clear the pool mid-flight."""
+    pytest.importorskip("mlx.core")
+    registry, _spec = _echo_registry(monkeypatch)
+    # Interleaved long and short texts force several planned batches, so a
+    # reintroduced per-batch clear would fire more than once, not zero times.
+    texts = [f"{marker}x{count}" for marker, count in [(1, 900), (2, 4), (3, 700), (4, 6)]]
+
+    calls = _count_cache_clears(monkeypatch)
+    registry.embed(texts)
+
+    assert calls["count"] == 0
+
+
+def test_rerank_batches_never_drop_the_shared_mlx_buffer_pool(monkeypatch):
+    """A multi-batch rerank request must not clear the pool mid-flight."""
+    pytest.importorskip("mlx.core")
+    registry, _spec = _echo_rerank_registry(monkeypatch)
+    documents = [f"{marker}x{count}" for marker, count in [(2, 900), (5, 4), (1, 700), (4, 6)]]
+
+    calls = _count_cache_clears(monkeypatch)
+    registry.rerank("does it match", documents)
+
+    assert calls["count"] == 0
+
+
+def test_unloading_a_backend_clears_the_mlx_cache_once(monkeypatch):
+    """After an unload the pool holds buffers for a dead model — clear then."""
+    pytest.importorskip("mlx.core")
+    registry, spec = _echo_registry(monkeypatch)
+    backend = registry._backend(spec)
+
+    calls = _count_cache_clears(monkeypatch)
+    backend.unload()
+
+    assert calls["count"] == 1
+    assert backend.loaded is False
+
+
+def test_eviction_beyond_the_cap_clears_the_mlx_cache(monkeypatch):
+    """LRU eviction unloads through the same path, so it clears the pool too."""
+    pytest.importorskip("mlx.core")
+    monkeypatch.setattr(
+        "mtplx.hf_loader.resolve_model_path",
+        lambda ref, cache_dir=None: Path("/models") / str(ref).rsplit("/", 1)[-1],
+    )
+    registry = RetrievalRegistry(max_resident=1)
+    registry.register(RetrievalSpec("a", "org/a", "embedding"))
+    registry.register(RetrievalSpec("b", "org/b", "embedding"))
+    first = registry._backend(registry._spec("embedding", "a"))
+    first._model = _EchoModel()
+    first._tokenizer = _IdentityTokenizer()
+
+    calls = _count_cache_clears(monkeypatch)
+    registry._backend(registry._spec("embedding", "b"))  # evicts "a"
+
+    assert first.loaded is False
+    assert calls["count"] == 1
 
 
 # ---- HTTP contract --------------------------------------------------------
