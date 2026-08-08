@@ -1061,6 +1061,11 @@ class EmbeddingsRequest(BaseModel):
     model: str | None = None
     input: str | list[str] | None = None
     encoding_format: str | None = None
+    # OpenAI's Matryoshka knob: truncate the vector to this many leading
+    # dimensions and re-normalise. Validated against the model's native width
+    # in the route — silently ignoring it would hand a client vectors that do
+    # not fit the index they sized.
+    dimensions: int | None = None
     # Qwen3-Embedding scores queries better when they carry a task instruction,
     # while stored documents must stay raw — so this is per request, not global.
     instruction: str | None = None
@@ -20834,6 +20839,23 @@ def _encoded_embedding(vector: list[float], encoding_format: str) -> Any:
     return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode("ascii")
 
 
+def _truncated_normalized(vector: list[float], dimensions: int) -> list[float]:
+    """Cut a vector to its leading ``dimensions`` and re-normalise.
+
+    The Matryoshka recipe: MRL-trained models (jina-embeddings-v5 trains
+    32→1024) pack meaning into leading dimensions, so the truncated prefix is
+    a valid embedding once its norm is restored to 1 — without the re-scale,
+    cosine against stored full-width vectors is silently wrong.
+    """
+    trimmed = vector[:dimensions]
+    norm = math.sqrt(sum(value * value for value in trimmed))
+    if norm <= 0.0:
+        # A zero prefix cannot be normalised; returning it unscaled beats
+        # manufacturing NaNs that poison every downstream similarity.
+        return trimmed
+    return [value / norm for value in trimmed]
+
+
 def _as_text_list(value: Any, *, field: str) -> list[str]:
     """Coerce an OpenAI-style text field into a list of strings."""
     if isinstance(value, str):
@@ -22286,6 +22308,12 @@ def create_app(state: ServerState) -> FastAPI:
                     "expected 'float' or 'base64'"
                 ),
             )
+        dimensions = request.dimensions
+        if dimensions is not None and int(dimensions) < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"dimensions must be a positive integer, got {dimensions}",
+            )
         try:
             vectors, spec, prompt_tokens = await asyncio.to_thread(
                 retrieval.embed,
@@ -22299,6 +22327,26 @@ def create_app(state: ServerState) -> FastAPI:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except RetrievalError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if dimensions is not None and vectors:
+            # The native width is a property of the loaded model, so the
+            # bound can only be enforced once the vectors exist. Anything
+            # beyond it would have to be zero-padded — an embedding the model
+            # never produced — so it is a 400, not a silent stretch.
+            dimensions = int(dimensions)
+            native_width = len(vectors[0])
+            if dimensions > native_width:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"dimensions must be between 1 and {native_width} "
+                        f"for {spec.served_id} (native width {native_width}), "
+                        f"got {dimensions}"
+                    ),
+                )
+            if dimensions < native_width:
+                vectors = [
+                    _truncated_normalized(vector, dimensions) for vector in vectors
+                ]
         payload = {
             "object": "list",
             "data": [

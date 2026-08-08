@@ -46,6 +46,13 @@ All notable user-facing changes to MTPLX. The format is based on
   request is refused with a clear 403 naming the flag; models served by
   MTPLX's own loaders are unaffected.
 
+  `/v1/embeddings` honours OpenAI's `dimensions` parameter with the
+  Matryoshka recipe — truncate to the leading dimensions and re-normalise —
+  matching how MRL-trained models like jina-embeddings-v5 (32→1024) are
+  meant to be shortened. A `dimensions` beyond the model's native width is a
+  clear 400 rather than a silently full-width vector that no longer fits the
+  index the client sized.
+
 ## [2.5.3] - 2026-08-06
 
 Small release. A day of head-to-head benchmarking against another engine

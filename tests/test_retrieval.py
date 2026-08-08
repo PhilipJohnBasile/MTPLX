@@ -972,6 +972,80 @@ def test_embeddings_reject_an_unknown_encoding_format():
     assert "encoding_format" in response.json()["error"]["message"]
 
 
+def test_embeddings_honour_the_dimensions_parameter():
+    """Truncate and re-normalise — the Matryoshka recipe, not silent ignoring.
+
+    The stub's native vector is [0.5, 0.5]; its leading dimension rescaled to
+    unit norm is exactly [1.0], so a pass-through or an unscaled cut both fail.
+    """
+    response = _client(_StubRegistry()).post(
+        "/v1/embeddings", json={"input": "a", "dimensions": 1}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"][0]["embedding"] == [1.0]
+
+
+def test_embeddings_at_the_native_width_are_untouched():
+    response = _client(_StubRegistry()).post(
+        "/v1/embeddings", json={"input": "a", "dimensions": 2}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"][0]["embedding"] == [0.5, 0.5]
+
+
+def test_embeddings_reject_dimensions_beyond_the_model_width():
+    """Padding out to an unproduced width would be a fabricated embedding."""
+    response = _client(_StubRegistry()).post(
+        "/v1/embeddings", json={"input": "a", "dimensions": 5}
+    )
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "between 1 and 2" in message
+    assert "e1" in message
+
+
+def test_embeddings_reject_a_non_positive_dimensions():
+    response = _client(_StubRegistry()).post(
+        "/v1/embeddings", json={"input": "a", "dimensions": 0}
+    )
+    assert response.status_code == 400
+    assert "positive" in response.json()["error"]["message"]
+
+
+def test_dimensions_apply_before_base64_encoding():
+    """The truncated width must be what the base64 buffer actually carries."""
+    import base64
+    import struct
+
+    response = _client(_StubRegistry()).post(
+        "/v1/embeddings",
+        json={"input": "a", "dimensions": 1, "encoding_format": "base64"},
+    )
+    assert response.status_code == 200
+    decoded = struct.unpack(
+        "<1f", base64.b64decode(response.json()["data"][0]["embedding"])
+    )
+    assert decoded[0] == pytest.approx(1.0)
+
+
+def test_truncated_normalized_restores_unit_norm():
+    from mtplx.server.openai import _truncated_normalized
+
+    # A prefix that is already unit norm passes through unchanged.
+    assert _truncated_normalized([0.6, 0.8, 0.0], 2) == pytest.approx([0.6, 0.8])
+    # One that is not gets rescaled to the unit sphere.
+    assert _truncated_normalized([0.5, 0.5, 0.5, 0.5], 2) == pytest.approx(
+        [0.7071068, 0.7071068], rel=1e-6
+    )
+
+
+def test_truncated_normalized_keeps_a_zero_prefix_finite():
+    """A zero prefix cannot be normalised; NaNs would poison every similarity."""
+    from mtplx.server.openai import _truncated_normalized
+
+    assert _truncated_normalized([0.0, 0.0, 1.0], 2) == [0.0, 0.0]
+
+
 def test_embeddings_accepts_a_bare_string_input():
     registry = _StubRegistry()
     response = _client(registry).post("/v1/embeddings", json={"input": "solo"})
