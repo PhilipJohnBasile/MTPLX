@@ -29,6 +29,7 @@ import re
 import secrets
 import socket
 import subprocess
+import struct
 import sys
 import time
 import urllib.parse
@@ -95,6 +96,7 @@ from mtplx.gemma4_pair import (
     resolve_gemma4_pair_paths,
 )
 from mtplx.model_scheduler import ModelWorkScheduler
+from mtplx.retrieval import RetrievalError
 from mtplx.sampling import SamplerConfig
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
@@ -1053,6 +1055,28 @@ class CompletionRequest(BaseModel):
     stream: bool = False
 
 
+class EmbeddingsRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str | None = None
+    input: str | list[str] | None = None
+    encoding_format: str | None = None
+    # Qwen3-Embedding scores queries better when they carry a task instruction,
+    # while stored documents must stay raw — so this is per request, not global.
+    instruction: str | None = None
+
+
+class RerankRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str | None = None
+    query: str | None = None
+    documents: list[str] | None = None
+    top_n: int | None = None
+    return_documents: bool = False
+    instruction: str | None = None
+
+
 class AnthropicMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -1634,6 +1658,11 @@ class ServerState:
             raise ValueError(str(exc)) from exc
         apply_paged_kv_quantization_env(args.paged_kv_quantization)
         self.model_id = args.model_id
+        # Retrieval models are independent of the MTP generation path: they are
+        # loaded on first use and may be absent entirely.
+        from mtplx.retrieval import registry_from_args
+
+        self.retrieval = registry_from_args(args)
         self.started_at_s = time.time()
         self.lock = Lock()
         self.foreground_lock = Lock()
@@ -13241,9 +13270,13 @@ def _mtplx_dashboard_snapshot(state: "ServerState") -> dict[str, Any]:
             "error": str(exc),
         }
         bank_dict = {}
+    retrieval = getattr(state, "retrieval", None)
     return {
         "ts": time.time(),
         "model_id": state.model_id,
+        # Always present, so a client can tell "no retrieval configured" apart
+        # from "this build has no retrieval support".
+        "retrieval": retrieval.status() if retrieval is not None else {"enabled": False, "models": []},
         "profile": state.profile.to_dict()
         if hasattr(state.profile, "to_dict")
         else {"name": getattr(state.profile, "name", "unknown")},
@@ -13377,6 +13410,40 @@ class _MemoryPressureGuard:
             self.prev_level = level
 
 
+async def _retrieval_idle_loop(
+    state: "ServerState", *, interval_s: float = 30.0
+) -> None:
+    """Release idle retrieval weights, then archive the session bank.
+
+    Started only when a timeout is configured. Never raises into the server:
+    a watcher that can kill the daemon is worse than one that misses a cycle.
+    """
+    retrieval = getattr(state, "retrieval", None)
+    if retrieval is None or retrieval.idle_timeout_s <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            released = await asyncio.to_thread(retrieval.unload_idle)
+            if released["unloaded"]:
+                _LOG.info(
+                    "retrieval idle release: %d model(s), %.2f GB",
+                    len(released["unloaded"]),
+                    released["freed_bytes"] / (1024**3),
+                )
+                # Only once nothing is resident: archiving while a retrieval
+                # model is still serving would trade one cost for another.
+                if not retrieval.status()["resident"]:
+                    try:
+                        await asyncio.to_thread(state.sessions.archive_cold_tier)
+                    except Exception as exc:
+                        _LOG.warning("session bank archive failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOG.warning("retrieval idle watcher: %s", exc)
+
+
 async def _memory_pressure_loop(
     state: "ServerState", *, interval_s: float = 10.0
 ) -> None:
@@ -13425,6 +13492,24 @@ async def _memory_pressure_loop(
                             else "memory_pressure_warning"
                         ),
                     )
+                if level >= 4:
+                    # Under CRITICAL, shedding the buffer pool is not enough:
+                    # retrieval weights are whole GB and reload in seconds, so
+                    # they are the cheapest large thing to give back. Idle-only
+                    # (threshold 0 means "not pinned"), so an in-flight request
+                    # never loses its model.
+                    retrieval = getattr(state, "retrieval", None)
+                    if retrieval is not None and retrieval.enabled:
+                        try:
+                            released = await asyncio.to_thread(retrieval.unload_idle, 0)
+                            if released["unloaded"]:
+                                _LOG.info(
+                                    "memory pressure released %d retrieval model(s), %.2f GB",
+                                    len(released["unloaded"]),
+                                    released["freed_bytes"] / (1024**3),
+                                )
+                        except Exception as exc:
+                            _LOG.warning("retrieval pressure release: %s", exc)
                 if evicted or level >= 4:
                     try:
                         import mlx.core as _mx
@@ -20738,6 +20823,28 @@ def _start_server_console(state: ServerState) -> None:
     thread.start()
 
 
+def _encoded_embedding(vector: list[float], encoding_format: str) -> Any:
+    """Return a vector in the representation the client asked for.
+
+    OpenAI's ``base64`` format is the raw float32 buffer, little-endian, which
+    is what clients decode with ``numpy.frombuffer(..., dtype="float32")``.
+    """
+    if encoding_format != "base64":
+        return vector
+    return base64.b64encode(struct.pack(f"<{len(vector)}f", *vector)).decode("ascii")
+
+
+def _as_text_list(value: Any, *, field: str) -> list[str]:
+    """Coerce an OpenAI-style text field into a list of strings."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise HTTPException(
+        status_code=400, detail=f"{field} must be a string or a list of strings"
+    )
+
+
 def create_app(state: ServerState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -20752,6 +20859,9 @@ def create_app(state: ServerState) -> FastAPI:
             bg_tasks.append(asyncio.create_task(_thermal_poll_loop(state)))
         if _memory_pressure_guard_enabled():
             bg_tasks.append(asyncio.create_task(_memory_pressure_loop(state)))
+        retrieval = getattr(state, "retrieval", None)
+        if retrieval is not None and retrieval.idle_timeout_s > 0:
+            bg_tasks.append(asyncio.create_task(_retrieval_idle_loop(state)))
         try:
             yield
         finally:
@@ -22110,19 +22220,120 @@ def create_app(state: ServerState) -> FastAPI:
     @app.get("/v1/models")
     def list_models() -> dict[str, Any]:
         now = int(time.time())
-        return {
+        entries: list[dict[str, Any]] = [
+            {
+                "id": state.model_id,
+                "object": "model",
+                "created": now,
+                "owned_by": "mtplx",
+                "capability": "chat",
+                "context_length": state.context_window,
+                "max_context_length": state.context_window,
+                "max_model_len": state.context_window,
+            }
+        ]
+        retrieval = getattr(state, "retrieval", None)
+        if retrieval is not None:
+            for descriptor in retrieval.descriptors():
+                entries.append(
+                    {
+                        "id": descriptor["id"],
+                        "object": "model",
+                        "created": now,
+                        "owned_by": "mtplx",
+                        "capability": descriptor["role"],
+                        "root": descriptor["model_ref"],
+                        "max_model_len": descriptor["max_tokens"],
+                    }
+                )
+        return {"object": "list", "data": entries}
+
+    @app.post("/v1/embeddings")
+    async def embeddings(request: EmbeddingsRequest) -> Response:
+        retrieval = getattr(state, "retrieval", None)
+        if retrieval is None or not retrieval.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="no embedding model is configured; start MTPLX with --embedding-model",
+            )
+        texts = _as_text_list(request.input, field="input")
+        encoding_format = str(request.encoding_format or "float").lower()
+        if encoding_format not in {"float", "base64"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unsupported encoding_format {request.encoding_format!r}; "
+                    "expected 'float' or 'base64'"
+                ),
+            )
+        try:
+            vectors, spec, prompt_tokens = await asyncio.to_thread(
+                retrieval.embed,
+                texts,
+                model=request.model,
+                instruction=request.instruction,
+            )
+        except RetrievalError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        payload = {
             "object": "list",
             "data": [
                 {
-                    "id": state.model_id,
-                    "object": "model",
-                    "created": now,
-                    "owned_by": "mtplx",
-                    "context_length": state.context_window,
-                    "max_context_length": state.context_window,
-                    "max_model_len": state.context_window,
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": _encoded_embedding(vector, encoding_format),
                 }
+                for index, vector in enumerate(vectors)
             ],
+            "model": spec.served_id,
+            # Real counts: clients use these for accounting and rate limits, so
+            # a fixed zero silently corrupts every retrieval total.
+            "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+        }
+        # Serialise here rather than returning the dict. FastAPI would run
+        # jsonable_encoder over every float individually in Python, which costs
+        # roughly 30x the actual inference for a 4096-dim vector — measured at
+        # ~870 ms of encoding for ~31 ms of forward pass.
+        return Response(
+            content=json.dumps(payload, separators=(",", ":")),
+            media_type="application/json",
+        )
+
+    @app.post("/v1/rerank")
+    async def rerank(request: RerankRequest) -> dict[str, Any]:
+        retrieval = getattr(state, "retrieval", None)
+        if retrieval is None or not retrieval.enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="no reranking model is configured; start MTPLX with --reranker-model",
+            )
+        if not request.query or not str(request.query).strip():
+            raise HTTPException(status_code=400, detail="query must be a non-empty string")
+        documents = _as_text_list(request.documents, field="documents")
+        try:
+            scores, spec, prompt_tokens = await asyncio.to_thread(
+                retrieval.rerank,
+                str(request.query),
+                documents,
+                model=request.model,
+                instruction=request.instruction,
+            )
+        except RetrievalError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        ranked = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
+        if request.top_n is not None and int(request.top_n) > 0:
+            ranked = ranked[: int(request.top_n)]
+        results: list[dict[str, Any]] = []
+        for index, score in ranked:
+            entry: dict[str, Any] = {"index": index, "relevance_score": score}
+            if request.return_documents:
+                entry["document"] = {"text": documents[index]}
+            results.append(entry)
+        return {
+            "id": f"rerank-{int(time.time() * 1000)}",
+            "model": spec.served_id,
+            "results": results,
+            "usage": {"total_tokens": prompt_tokens},
         }
 
     @app.post("/v1/chat/completions")
@@ -27005,6 +27216,43 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         postcommit_default = "async"
     parser.add_argument("--model", default=DEFAULT_HF_MODEL_ID)
     parser.add_argument("--model-id", default="mtplx-qwen36-27b-native-mtp")
+    parser.add_argument(
+        "--embedding-model",
+        action="append",
+        default=[],
+        metavar="REF[=SERVED_ID]",
+        help="Serve REF on /v1/embeddings (repeatable); loaded on first request",
+    )
+    parser.add_argument(
+        "--reranker-model",
+        action="append",
+        default=[],
+        metavar="REF[=SERVED_ID]",
+        help="Serve REF on /v1/rerank (repeatable); the same REF in both roles loads once",
+    )
+    parser.add_argument(
+        "--retrieval-max-resident",
+        type=int,
+        default=2,
+        help="How many retrieval models stay in memory; least-recently-used are unloaded",
+    )
+    parser.add_argument(
+        "--retrieval-max-tokens",
+        type=int,
+        default=0,
+        help="Truncate retrieval inputs to this many tokens (0 = per-model default)",
+    )
+    parser.add_argument(
+        "--retrieval-idle-timeout",
+        type=float,
+        default=0.0,
+        help="Unload retrieval models after this many idle seconds (0 = never)",
+    )
+    parser.add_argument(
+        "--retrieval-cache-dir",
+        default=None,
+        help="Model cache directory used to resolve retrieval references",
+    )
     parser.add_argument("--backend-id", default="qwen3_next", help=argparse.SUPPRESS)
     parser.add_argument(
         "--assistant-model",

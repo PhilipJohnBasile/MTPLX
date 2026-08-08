@@ -1146,6 +1146,163 @@ public struct HealthPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct RetrievalModelStatus: Codable, Equatable, Sendable, Identifiable {
+    /// The id clients pass as `"model"`. Not unique on its own: one reference
+    /// serving both roles is the supported shared-backend case and appears
+    /// twice under the same served id.
+    public var servedId: String
+    public var role: String
+    public var modelRef: String
+    public var loaded: Bool
+    public var resident: Bool
+    public var maxTokens: Int
+    public var batchSize: Int
+    /// Shard size on disk. MLX holds weights in unified memory that never
+    /// shows up in process RSS, so this is the only honest attribution.
+    public var weightBytes: Int
+    public var requests: Int
+    public var items: Int
+    public var tokens: Int
+    public var errors: Int
+    public var computeSeconds: Double
+    public var loadSeconds: Double
+    public var lastUsedS: Double?
+    public var lastError: String?
+    public var itemsPerSecond: Double?
+    public var avgLatencyMs: Double?
+
+    /// Retrieval models load on first request, so "configured" and "ready" are
+    /// different states a user needs to tell apart at a glance.
+    /// Composite identity, so a reference registered as both embedder and
+    /// reranker yields two distinct rows instead of colliding in a ForEach.
+    public var id: String { "\(role):\(servedId)" }
+
+    public var isEmbedding: Bool { role == "embedding" }
+    public var hasBeenUsed: Bool { requests > 0 }
+    /// A model that only ever failed must not read as merely idle.
+    public var hasFailed: Bool { errors > 0 }
+
+    enum CodingKeys: String, CodingKey {
+        case servedId = "id"
+        case role
+        case modelRef = "model_ref"
+        case loaded
+        case resident
+        case maxTokens = "max_tokens"
+        case batchSize = "batch_size"
+        case weightBytes = "weightBytes"
+        case requests
+        case items
+        case tokens
+        case errors
+        case computeSeconds = "computeSeconds"
+        case loadSeconds = "loadSeconds"
+        case lastUsedS = "lastUsedS"
+        case lastError = "lastError"
+        case itemsPerSecond = "itemsPerSecond"
+        case avgLatencyMs = "avgLatencyMs"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        servedId = try container.decode(String.self, forKey: .servedId)
+        role = try container.decodeIfPresent(String.self, forKey: .role) ?? "embedding"
+        modelRef = try container.decodeIfPresent(String.self, forKey: .modelRef) ?? servedId
+        loaded = try container.decodeIfPresent(Bool.self, forKey: .loaded) ?? false
+        resident = try container.decodeIfPresent(Bool.self, forKey: .resident) ?? false
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens) ?? 0
+        batchSize = try container.decodeIfPresent(Int.self, forKey: .batchSize) ?? 0
+        weightBytes = try container.decodeIfPresent(Int.self, forKey: .weightBytes) ?? 0
+        requests = try container.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+        items = try container.decodeIfPresent(Int.self, forKey: .items) ?? 0
+        tokens = try container.decodeIfPresent(Int.self, forKey: .tokens) ?? 0
+        errors = try container.decodeIfPresent(Int.self, forKey: .errors) ?? 0
+        computeSeconds = try container.decodeIfPresent(Double.self, forKey: .computeSeconds) ?? 0
+        loadSeconds = try container.decodeIfPresent(Double.self, forKey: .loadSeconds) ?? 0
+        lastUsedS = try container.decodeIfPresent(Double.self, forKey: .lastUsedS)
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        itemsPerSecond = try container.decodeIfPresent(Double.self, forKey: .itemsPerSecond)
+        avgLatencyMs = try container.decodeIfPresent(Double.self, forKey: .avgLatencyMs)
+    }
+
+    public init(
+        servedId: String,
+        role: String,
+        modelRef: String = "",
+        loaded: Bool = false,
+        resident: Bool = false,
+        maxTokens: Int = 0,
+        batchSize: Int = 0,
+        weightBytes: Int = 0,
+        requests: Int = 0,
+        items: Int = 0,
+        tokens: Int = 0,
+        errors: Int = 0,
+        computeSeconds: Double = 0,
+        loadSeconds: Double = 0,
+        lastUsedS: Double? = nil,
+        lastError: String? = nil,
+        itemsPerSecond: Double? = nil,
+        avgLatencyMs: Double? = nil
+    ) {
+        self.servedId = servedId
+        self.role = role
+        self.modelRef = modelRef
+        self.loaded = loaded
+        self.resident = resident
+        self.maxTokens = maxTokens
+        self.batchSize = batchSize
+        self.weightBytes = weightBytes
+        self.requests = requests
+        self.items = items
+        self.tokens = tokens
+        self.errors = errors
+        self.computeSeconds = computeSeconds
+        self.loadSeconds = loadSeconds
+        self.lastUsedS = lastUsedS
+        self.lastError = lastError
+        self.itemsPerSecond = itemsPerSecond
+        self.avgLatencyMs = avgLatencyMs
+    }
+}
+
+public struct RetrievalStatus: Codable, Equatable, Sendable {
+    public var enabled: Bool
+    public var maxResident: Int
+    public var resident: [String]
+    /// Weights currently held by retrieval models, counted once per backend.
+    public var residentBytes: Int
+    public var models: [RetrievalModelStatus]
+
+    public var embedders: [RetrievalModelStatus] { models.filter { $0.role == "embedding" } }
+    public var rerankers: [RetrievalModelStatus] { models.filter { $0.role == "rerank" } }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case maxResident = "max_resident"
+        case resident
+        case residentBytes = "resident_bytes"
+        case models
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        maxResident = try container.decodeIfPresent(Int.self, forKey: .maxResident) ?? 0
+        resident = try container.decodeIfPresent([String].self, forKey: .resident) ?? []
+        residentBytes = try container.decodeIfPresent(Int.self, forKey: .residentBytes) ?? 0
+        models = try container.decodeIfPresent([RetrievalModelStatus].self, forKey: .models) ?? []
+    }
+
+    public init(enabled: Bool = false, maxResident: Int = 0, resident: [String] = [], residentBytes: Int = 0, models: [RetrievalModelStatus] = []) {
+        self.enabled = enabled
+        self.maxResident = maxResident
+        self.resident = resident
+        self.residentBytes = residentBytes
+        self.models = models
+    }
+}
+
 public struct DashboardSnapshot: Codable, Equatable, Sendable {
     public var ts: Double
     public var modelId: String
@@ -1166,6 +1323,9 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
     public var scheduler: DynamicObject?
     public var machine: MachineInfo
     public var uptimeS: Double
+    /// Absent on daemons built before retrieval shipped, so it decodes to a
+    /// disabled status rather than failing the whole snapshot.
+    public var retrieval: RetrievalStatus?
 
     enum CodingKeys: String, CodingKey {
         case ts
@@ -1187,6 +1347,7 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
         case scheduler
         case machine
         case uptimeS = "uptime_s"
+        case retrieval
     }
 }
 
