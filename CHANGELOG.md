@@ -29,10 +29,15 @@ All notable user-facing changes to MTPLX. The format is based on
   in memory; beyond it the least recently used one is unloaded. Models load on
   first request, so an unused endpoint costs nothing.
 
-  `/v1/models` now reports a `capability` field (`chat`, `embedding`, `rerank`)
-  for every served model, and the settings are configurable from the macOS app
-  and persist in `~/.mtplx/config.toml` as `embedding_models`,
-  `reranker_models`, and `retrieval_max_resident`.
+  `/v1/models` keeps its default listing chat-only, so clients that enumerate
+  models to build a chat picker (OpenCode, Cline, Continue, ...) are never
+  offered an embedder as a conversation target. Retrieval models are listed
+  via `?capability=embedding` or `?capability=rerank`, every entry carries a
+  `capability` field, and a chat completion that requests a retrieval-only id
+  is rejected with a clear 400 instead of being silently answered by the
+  loaded chat model. The settings are configurable from the macOS app and
+  persist in `~/.mtplx/config.toml` as `embedding_models`, `reranker_models`,
+  and `retrieval_max_resident`.
 
 ## [2.5.3] - 2026-08-06
 

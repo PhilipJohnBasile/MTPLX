@@ -597,6 +597,25 @@ class RetrievalRegistry:
         served = ", ".join(spec.served_id for spec in candidates)
         raise RetrievalError(f"unknown {role} model {requested!r}; served: {served}")
 
+    def role_for_model_id(self, requested: Any) -> Role | None:
+        """Return the retrieval role a requested model id names, else ``None``.
+
+        Exact served-id / model-reference matches only — none of the basename
+        fuzz ``_spec`` allows — so the chat endpoint can reject a request for
+        an embedder with confidence, while stale-but-chat-shaped ids keep
+        falling through to the served chat model exactly as before.
+        """
+        if not requested:
+            return None
+        wanted = str(requested).strip()
+        if not wanted:
+            return None
+        with self._lock:
+            for (role, served_id), spec in sorted(self._specs.items()):
+                if wanted in {served_id, spec.model_ref}:
+                    return role
+        return None
+
     def _backend_key(self, spec: RetrievalSpec) -> str:
         """Return the canonical residency key for a spec: its resolved path.
 

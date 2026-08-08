@@ -275,6 +275,22 @@ def test_registry_reports_a_missing_role_rather_than_falling_back():
         registry._spec("rerank", None)
 
 
+def test_role_for_model_id_matches_exact_ids_only():
+    """The chat gate rejects on certainty, not on the resolver's basename fuzz.
+
+    ``_spec`` may fuzzy-match "other/embed-a" to the embedder when serving an
+    embeddings request, but the chat endpoint must only 400 an id that
+    provably names a retrieval model — anything else stays a stale chat id.
+    """
+    registry = _registry()
+    assert registry.role_for_model_id("embed-a") == "embedding"
+    assert registry.role_for_model_id("org/rank-a") == "rerank"
+    assert registry.role_for_model_id("mtplx-qwen36-27b") is None
+    assert registry.role_for_model_id(None) is None
+    assert registry.role_for_model_id("  ") is None
+    assert registry.role_for_model_id("other/embed-a") is None
+
+
 def test_one_reference_in_both_roles_shares_a_single_backend(monkeypatch):
     """The point of the shared cache: one set of weights, two endpoints."""
     monkeypatch.setattr(
@@ -721,6 +737,13 @@ class _StubRegistry:
         scores = [float(len(document)) for document in documents]
         return scores, RetrievalSpec("r1", "org/r1", "rerank"), 11 * len(documents)
 
+    def role_for_model_id(self, requested):
+        wanted = str(requested or "").strip()
+        for entry in self.descriptors():
+            if wanted in {entry["id"], entry["model_ref"]}:
+                return entry["role"]
+        return None
+
 
 def _client(registry=None) -> TestClient:
     state = _fake_state()
@@ -750,12 +773,97 @@ def test_models_listing_stays_chat_only_without_retrieval():
     assert payload["data"][0]["capability"] == "chat"
 
 
-def test_models_listing_includes_retrieval_models():
+def test_models_listing_defaults_to_chat_even_with_retrieval_configured():
+    """Chat clients enumerate /v1/models to build a model picker.
+
+    An embedder in that list becomes a selectable — and unusable — chat
+    target in OpenCode/Cline/Continue, so the default listing must stay
+    exactly what a chat client can actually talk to.
+    """
     payload = _client(_StubRegistry()).get("/v1/models").json()
-    entries = {entry["id"]: entry for entry in payload["data"]}
-    assert entries["e1"]["capability"] == "embedding"
-    assert entries["r1"]["capability"] == "rerank"
-    assert entries["mtplx-test-model"]["capability"] == "chat"
+    assert [entry["id"] for entry in payload["data"]] == ["mtplx-test-model"]
+    assert payload["data"][0]["capability"] == "chat"
+
+
+def test_models_listing_filters_by_capability():
+    client = _client(_StubRegistry())
+
+    embedding = client.get("/v1/models", params={"capability": "embedding"}).json()
+    assert [entry["id"] for entry in embedding["data"]] == ["e1"]
+    assert embedding["data"][0]["capability"] == "embedding"
+    assert embedding["data"][0]["root"] == "org/e1"
+
+    rerank = client.get("/v1/models", params={"capability": "rerank"}).json()
+    assert [entry["id"] for entry in rerank["data"]] == ["r1"]
+    assert rerank["data"][0]["capability"] == "rerank"
+
+    chat = client.get("/v1/models", params={"capability": "chat"}).json()
+    assert [entry["id"] for entry in chat["data"]] == ["mtplx-test-model"]
+
+
+def test_models_listing_rejects_an_unknown_capability():
+    response = _client(_StubRegistry()).get("/v1/models", params={"capability": "vision"})
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "capability" in error["message"]
+
+
+def test_a_capability_filter_without_retrieval_lists_nothing():
+    """Filtering a chat-only daemon is a valid question with an empty answer."""
+    payload = _client().get("/v1/models", params={"capability": "embedding"}).json()
+    assert payload["data"] == []
+
+
+def test_chat_completions_reject_an_embedding_model_id():
+    """Silently answering an embedder request with chat prose helps nobody."""
+    response = _client(_StubRegistry()).post(
+        "/v1/chat/completions",
+        json={"model": "e1", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "embedding" in error["message"]
+    assert "/v1/embeddings" in error["message"]
+
+
+def test_chat_completions_reject_a_reranker_model_id_by_reference_too():
+    response = _client(_StubRegistry()).post(
+        "/v1/chat/completions",
+        json={"model": "org/r1", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 400
+    assert "rerank" in response.json()["error"]["message"]
+
+
+def test_chat_completions_still_serve_a_stale_chat_id_with_retrieval_configured(monkeypatch):
+    """The capability gate must not break the stale-chat-id tolerance.
+
+    Clients with an outdated chat model id keep getting served by the loaded
+    model (with the mismatch recorded in observability); only ids that name a
+    configured retrieval model are rejected.
+    """
+    from mtplx.server import openai as openai_module
+    from test_server_openai import _fake_generation
+
+    monkeypatch.setattr(openai_module, "_encode_messages", lambda *_a, **_k: [1, 2, 3])
+    monkeypatch.setattr(
+        openai_module, "_run_generation", lambda *_a, **_k: _fake_generation("OK")
+    )
+
+    response = _client(_StubRegistry()).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": "gemma4-mtplx-optimized-speed",
+            "messages": [{"role": "user", "content": "Reply OK only."}],
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "mtplx-test-model"
 
 
 def test_embeddings_returns_openai_shape_in_input_order():

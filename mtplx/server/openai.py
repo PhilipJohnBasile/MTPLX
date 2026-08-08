@@ -22218,23 +22218,43 @@ def create_app(state: ServerState) -> FastAPI:
         return archived
 
     @app.get("/v1/models")
-    def list_models() -> dict[str, Any]:
+    def list_models(capability: str | None = None) -> dict[str, Any]:
+        # The default listing is chat-only. Every OpenAI-compatible client
+        # (OpenCode, Cline, Continue, ...) enumerates /v1/models to offer a
+        # chat model picker; mixing embedders and rerankers into that list
+        # gets them selected as chat targets, which can only end in a 400 or
+        # — worse — a silent answer from the wrong model. Retrieval models
+        # are listed on request via ?capability=embedding|rerank, and every
+        # entry carries its `capability` so callers never have to guess.
+        wanted = str(capability).strip().lower() if capability is not None else None
+        if wanted is not None and wanted not in {"chat", "embedding", "rerank"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown capability {capability!r}; "
+                    "expected 'chat', 'embedding', or 'rerank'"
+                ),
+            )
         now = int(time.time())
-        entries: list[dict[str, Any]] = [
-            {
-                "id": state.model_id,
-                "object": "model",
-                "created": now,
-                "owned_by": "mtplx",
-                "capability": "chat",
-                "context_length": state.context_window,
-                "max_context_length": state.context_window,
-                "max_model_len": state.context_window,
-            }
-        ]
+        entries: list[dict[str, Any]] = []
+        if wanted in (None, "chat"):
+            entries.append(
+                {
+                    "id": state.model_id,
+                    "object": "model",
+                    "created": now,
+                    "owned_by": "mtplx",
+                    "capability": "chat",
+                    "context_length": state.context_window,
+                    "max_context_length": state.context_window,
+                    "max_model_len": state.context_window,
+                }
+            )
         retrieval = getattr(state, "retrieval", None)
-        if retrieval is not None:
+        if retrieval is not None and wanted in ("embedding", "rerank"):
             for descriptor in retrieval.descriptors():
+                if descriptor["role"] != wanted:
+                    continue
                 entries.append(
                     {
                         "id": descriptor["id"],
@@ -22346,6 +22366,29 @@ def create_app(state: ServerState) -> FastAPI:
         metadata = _request_metadata(request)
         request_max_tokens = _request_max_tokens(request)
         requested_model = request.model
+        # A request that names a configured embedder or reranker is a
+        # capability mismatch, not a stale id: silently answering it with the
+        # loaded chat model returns prose where the caller expected retrieval
+        # behaviour. Reject it clearly. Ids that are merely stale chat ids
+        # keep falling through to the served model exactly as before —
+        # request_model observability records the mismatch for those.
+        retrieval_registry = getattr(state, "retrieval", None)
+        if (
+            requested_model
+            and requested_model != state.model_id
+            and retrieval_registry is not None
+            and getattr(retrieval_registry, "enabled", False)
+        ):
+            retrieval_role = retrieval_registry.role_for_model_id(requested_model)
+            if retrieval_role is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"model {requested_model!r} is served for {retrieval_role}, "
+                        "not chat. Use it via /v1/embeddings or /v1/rerank; "
+                        "chat models are listed at /v1/models."
+                    ),
+                )
         model = state.model_id
         response_id = _response_id_from_client_hint(
             prefix="chatcmpl",
