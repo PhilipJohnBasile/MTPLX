@@ -13426,7 +13426,7 @@ async def _retrieval_idle_loop(
         try:
             released = await asyncio.to_thread(retrieval.unload_idle)
             if released["unloaded"]:
-                _LOG.info(
+                LOGGER.info(
                     "retrieval idle release: %d model(s), %.2f GB",
                     len(released["unloaded"]),
                     released["freed_bytes"] / (1024**3),
@@ -13437,11 +13437,11 @@ async def _retrieval_idle_loop(
                     try:
                         await asyncio.to_thread(state.sessions.archive_cold_tier)
                     except Exception as exc:
-                        _LOG.warning("session bank archive failed: %s", exc)
+                        LOGGER.warning("session bank archive failed: %s", exc)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            _LOG.warning("retrieval idle watcher: %s", exc)
+            LOGGER.warning("retrieval idle watcher: %s", exc)
 
 
 async def _memory_pressure_loop(
@@ -13503,13 +13503,13 @@ async def _memory_pressure_loop(
                         try:
                             released = await asyncio.to_thread(retrieval.unload_idle, 0)
                             if released["unloaded"]:
-                                _LOG.info(
+                                LOGGER.info(
                                     "memory pressure released %d retrieval model(s), %.2f GB",
                                     len(released["unloaded"]),
                                     released["freed_bytes"] / (1024**3),
                                 )
                         except Exception as exc:
-                            _LOG.warning("retrieval pressure release: %s", exc)
+                            LOGGER.warning("retrieval pressure release: %s", exc)
                 if evicted or level >= 4:
                     try:
                         import mlx.core as _mx

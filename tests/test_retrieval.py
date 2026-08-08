@@ -1235,3 +1235,48 @@ def test_pressure_release_still_spares_a_pinned_model(monkeypatch):
         backend._model = object()
         assert registry.unload_idle(0)["unloaded"] == []
         assert backend.loaded is True
+
+
+def test_idle_watcher_survives_logging_a_release_and_archives_the_bank(caplog):
+    """The watcher's happy path must survive its own logging.
+
+    As imported, PR #212 logged these paths through an undefined name, so the
+    first *successful* release raised NameError, the NameError-handling log
+    call raised again, and the watcher task died exactly when it first worked.
+    """
+    import asyncio
+
+    from mtplx.server import openai as openai_module
+
+    class _ReleasingRegistry:
+        idle_timeout_s = 60.0
+
+        def unload_idle(self):
+            return {"unloaded": ["/models/a"], "freed_bytes": 2 * 1024**3}
+
+        def status(self):
+            return {"resident": []}
+
+    archived: list[bool] = []
+    state = SimpleNamespace(
+        retrieval=_ReleasingRegistry(),
+        sessions=SimpleNamespace(archive_cold_tier=lambda: archived.append(True)),
+    )
+
+    async def run_a_few_cycles():
+        task = asyncio.create_task(
+            openai_module._retrieval_idle_loop(state, interval_s=0.01)
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    with caplog.at_level("INFO", logger="mtplx.server.openai"):
+        asyncio.run(run_a_few_cycles())
+
+    assert any("retrieval idle release" in record.message for record in caplog.records)
+    assert not any("idle watcher" in record.message for record in caplog.records)
+    assert archived
