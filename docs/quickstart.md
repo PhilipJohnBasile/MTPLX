@@ -39,42 +39,9 @@ MTP runtime stays loaded, so terminal chat can use `/mtp off`, `/mtp on`, and
 `mlx-community/Laguna-S-2.1-oQ4e` instead install an unloaded AR route at
 construction because there is no MTP head to retain.
 
-## Choose the Qwen 35B concurrent-MTP numerics profile
-
-Qwen 35B's `mtp_batch` scheduler accepts
-`--mtp-batch-numerics throughput|balanced|b1-exact`. The fastest profile is
-named `throughput` (there is no `performance` value):
-
-```bash
-# Fast B8 MTP; default.
-mtplx serve --model <qwen-35b-model-or-path> \
-  --scheduler-mode mtp_batch \
-  --mtp-batch-numerics throughput
-
-# B8 MTP with selected B1 arithmetic; closer, but not token-exact with B1.
-mtplx serve --model <qwen-35b-model-or-path> \
-  --scheduler-mode mtp_batch \
-  --mtp-batch-numerics balanced
-
-# Exact unchanged B1 behavior; serialized, so this is not B8 throughput.
-mtplx serve --model <qwen-35b-model-or-path> \
-  --scheduler-mode mtp_batch \
-  --mtp-batch-numerics b1-exact
-```
-
-To make the choice persistent:
-
-```bash
-mtplx config set scheduler_mode mtp_batch
-mtplx config set mtp_batch_numerics throughput  # or balanced / b1-exact
-mtplx config show --json
-```
-
-This is a construction-time setting, not a per-request or live setting. Stop
-and restart the server after changing the saved profile. A CLI value overrides
-the saved value for that launch. The option applies only to the Qwen 35B
-`mtp_batch` route; incompatible scheduler/model combinations fail during
-startup instead of falling back silently.
+For concurrent serving, see [Concurrency modes](concurrency.md). That guide
+includes the complete Qwen 35B B8 MTP launch contract, supported request types,
+numerics choices, and health checks.
 
 The Laguna download is pinned automatically. It needs about 64.13 GB of disk
 space, and the runtime's admission gate requires ≈85.3 GiB of unified memory

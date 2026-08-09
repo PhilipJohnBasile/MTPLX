@@ -83,41 +83,9 @@ Sessions survive: a warm-prefix session bank keeps multi-turn chats fast, and a 
 
 Sampler controls cover `temperature`, `top_p`, `top_k`, and the OpenAI penalty pair `presence_penalty` / `frequency_penalty` — per request, as server defaults (`--default-presence-penalty` / `--default-frequency-penalty` on `start`/`serve`/`quickstart`), or live via `mtplx settings set` and the app's Presence Penalty dial. Penalties default to 0, which is an exact no-op that preserves MTP exactness. Qwen's guidance: leave them at 0 for coding and agent work; ~0.5–1.5 presence penalty helps creative writing or when a model loops on itself.
 
-### Qwen 35B concurrent-MTP numerics
-
-The Qwen 35B `mtp_batch` scheduler has three construction-time numerics
-profiles. The performance profile is spelled `throughput` on the CLI:
-
-| Value | Execution | Use it when |
-|---|---|---|
-| `throughput` | Fast B8 MTP; the default | You want maximum aggregate throughput |
-| `balanced` | B8 MTP with selected B1 projection arithmetic | You accept lower throughput for results closer to B1; this is not token-exact |
-| `b1-exact` | Unchanged B1 MTP, serialized through the same queue | B1 token and cache behavior matter more than B8 throughput |
-
-Select one for a single server launch:
-
-```bash
-# Replace the placeholder with the Qwen 35B model repo or local path.
-mtplx serve --model <qwen-35b-model-or-path> \
-  --scheduler-mode mtp_batch \
-  --mtp-batch-numerics throughput
-
-# Change only the final value to balanced or b1-exact.
-```
-
-Or save it as the default for later launches:
-
-```bash
-mtplx config set scheduler_mode mtp_batch
-mtplx config set mtp_batch_numerics balanced
-mtplx config show --json
-```
-
-The route is installed when the model loads; it cannot be switched per request
-or through live settings. Stop and restart the server after changing the saved
-value. An explicit `--mtp-batch-numerics` value overrides the saved value for
-that launch. The option is Qwen 35B-specific and requires
-`--scheduler-mode mtp_batch`; incompatible combinations fail at startup.
+Concurrent serving, including the fixed Qwen 35B B8 MTP runner and its
+throughput, balanced, and B1-exact routes, is documented in
+[Concurrency modes](docs/concurrency.md).
 
 ## CLI quick reference
 
