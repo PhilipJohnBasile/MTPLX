@@ -44,6 +44,7 @@ class MTPBatchJob:
     future: Future = field(default_factory=Future, init=False)
     tokens: list[int] = field(default_factory=list, init=False)
     token_times: list[float] = field(default_factory=list, init=False)
+    callback_error: BaseException | None = field(default=None, init=False)
     created_s: float = field(default_factory=time.perf_counter, init=False)
     admitted_s: float | None = field(default=None, init=False)
 
@@ -63,13 +64,20 @@ class MTPBatchJob:
         value = int(token)
         self.tokens.append(value)
         if value not in self.stop_token_ids and self.token_callback is not None:
-            self.token_callback([value])
+            try:
+                self.token_callback([value])
+            except Exception as exc:
+                self.callback_error = exc
+                self.cancel_event.set()
         self.token_times.append(time.perf_counter())
 
     def emit_prefill(self, payload: dict[str, Any]) -> None:
         if self.prefill_callback is None:
             return
-        self.prefill_callback(dict(payload))
+        try:
+            self.prefill_callback(dict(payload))
+        except Exception:
+            pass
 
 
 class MTPBatchGenerationService:
@@ -250,7 +258,8 @@ class MTPBatchGenerationService:
             raise RuntimeError("MTP batch solo request has no solo MTP runner")
         with self._condition:
             self._solo_runs += 1
-        result = job.solo_runner(job)
+        result = dict(job.solo_runner(job))
+        result["_mtp_batch_solo"] = True
         if not job.future.done():
             job.future.set_result(result)
 
@@ -293,6 +302,10 @@ class MTPBatchGenerationService:
             )
         for job in jobs:
             stream = streams[job.request_id]
+            if job.callback_error is not None:
+                if not job.future.done():
+                    job.future.set_exception(job.callback_error)
+                continue
             if stream.finish_reason == "cancelled" or job.cancel_requested():
                 if not job.future.done():
                     job.future.set_exception(self._cancelled_exception(job))
@@ -303,15 +316,19 @@ class MTPBatchGenerationService:
                 elapsed_s=elapsed,
                 result=result,
                 real_width=len(jobs),
+                request_cycles=stream.cycles,
+                request_accepted_drafts=stream.accepted_drafts,
+                request_rejected_drafts=stream.rejected_drafts,
             )
 
-    def _decode(self, tokens: list[int]) -> str:
+    def _decode(self, tokens: list[int], stop_token_ids: set[int]) -> str:
         tokenizer = getattr(getattr(self.state, "runtime", None), "tokenizer", None)
         decode = getattr(tokenizer, "decode", None)
         if not callable(decode):
             return ""
-        terminal = set()
-        return str(decode([token for token in tokens if token not in terminal]))
+        return str(
+            decode([token for token in tokens if token not in stop_token_ids])
+        )
 
     def _complete_cohort_job(
         self,
@@ -321,12 +338,15 @@ class MTPBatchGenerationService:
         elapsed_s: float,
         result: A3BMTPBatchResult,
         real_width: int,
+        request_cycles: int,
+        request_accepted_drafts: int,
+        request_rejected_drafts: int,
     ) -> None:
         if job.future.done():
             return
         completion_tokens = len(job.tokens)
         decode_tok_s = completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
-        drafted = int(result.accepted_drafts) + int(result.rejected_drafts)
+        drafted = int(request_accepted_drafts) + int(request_rejected_drafts)
         stats = {
             "mode": "mtp",
             "generation_mode": "mtp",
@@ -340,12 +360,15 @@ class MTPBatchGenerationService:
             "requested_mtp_depth": 1,
             "speculative_depth": 1,
             "requested_speculative_depth": 1,
-            "verify_calls": int(result.cycles),
-            "target_verify_cycles": int(result.cycles),
-            "accepted_by_depth": [int(result.accepted_drafts)],
+            "verify_calls": int(request_cycles),
+            "target_verify_cycles": int(request_cycles),
+            "accepted_drafts": int(request_accepted_drafts),
+            "rejected_drafts": int(request_rejected_drafts),
+            "drafted_tokens": drafted,
+            "accepted_by_depth": [int(request_accepted_drafts)],
             "drafted_by_depth": [drafted],
             "mean_accept_probability_by_depth": [
-                float(result.accepted_drafts) / drafted if drafted else None
+                float(request_accepted_drafts) / drafted if drafted else None
             ],
             "scheduler_lane": "mtp_batch",
             "scheduler_mode": "mtp_batch",
@@ -375,7 +398,7 @@ class MTPBatchGenerationService:
         job.future.set_result(
             {
                 "request_id": job.request_id,
-                "text": self._decode(job.tokens),
+                "text": self._decode(job.tokens, job.stop_token_ids),
                 "tokens": list(job.tokens),
                 "stats": stats,
                 "prompt_tokens": len(job.prompt_ids),

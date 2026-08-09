@@ -82,6 +82,9 @@ class A3BMTPBatchStreamResult:
     request_id: str
     tokens: tuple[int, ...]
     finish_reason: str
+    cycles: int = 0
+    accepted_drafts: int = 0
+    rejected_drafts: int = 0
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,41 @@ def _validate_config(runtime: Any) -> tuple[dict[str, Any], str]:
 
 def _validate_runtime(runtime: Any) -> None:
     _require_equal("runtime mtp_enabled", bool(runtime.mtp_enabled), True)
+    router_report = getattr(runtime, "qwen_row_owned_router_report", None)
+    if not isinstance(router_report, Mapping):
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B mtp_batch requires a row-owned router install receipt"
+        )
+    _require_equal(
+        "runtime row-owned router installed",
+        bool(router_report.get("installed")),
+        True,
+    )
+    _require_equal(
+        "runtime row-owned target routers", router_report.get("target_routers"), 40
+    )
+    _require_equal(
+        "runtime row-owned MTP routers", router_report.get("mtp_routers"), 1
+    )
+    router_contract = router_report.get("validated_contract")
+    if not isinstance(router_contract, Mapping):
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B mtp_batch requires the row-owned router contract"
+        )
+    routes = router_contract.get("routes")
+    combine_tail = router_contract.get("combine_tail")
+    _require_equal(
+        "runtime row-owned M1-M16 decode route",
+        routes.get("decode_verify") if isinstance(routes, Mapping) else None,
+        list(range(1, 17)),
+    )
+    _require_equal(
+        "runtime combine-tail M1-M2 route",
+        combine_tail.get("decode_verify")
+        if isinstance(combine_tail, Mapping)
+        else None,
+        [1, 2],
+    )
     contract = getattr(runtime, "contract", None)
     if contract is None:
         raise A3BMTPBatchInstallError("Qwen 35B mtp_batch requires MTP contract")
@@ -270,29 +308,34 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     import mlx.core as mx
     import numpy as np
 
+    from .attention_context import attention_phase
+
     token = int(getattr(getattr(runtime, "tokenizer", None), "eos_token_id", 1) or 1)
 
     def run(batch: int):
         cache = lane.make_cache()
         prompt = mx.full((batch, 1), token, dtype=mx.int32)
-        logits, hidden = lane.target_forward(
-            prompt,
-            cache=cache,
-            return_hidden=True,
-        )
+        with attention_phase("prefill"):
+            logits, hidden = lane.target_forward(
+                prompt,
+                cache=cache,
+                return_hidden=True,
+            )
         primary = mx.argmax(logits[:, -1, :], axis=-1)
-        draft_logits = lane.draft_forward(
-            hidden[:, -1:, :],
-            primary[:, None],
-            mtp_cache=lane.make_mtp_cache(),
-            mtp_depth=1,
-        )
+        with attention_phase("ar_decode"):
+            draft_logits = lane.draft_forward(
+                hidden[:, -1:, :],
+                primary[:, None],
+                mtp_cache=lane.make_mtp_cache(),
+                mtp_depth=1,
+            )
         draft = mx.argmax(draft_logits[:, -1, :], axis=-1)
         verify_input = mx.stack((primary, draft), axis=1)
-        verify_logits, verify_hidden, captures = lane.capture_forward(
-            verify_input,
-            cache=cache,
-        )
+        with attention_phase("decode_verify"):
+            verify_logits, verify_hidden, captures = lane.capture_forward(
+                verify_input,
+                cache=cache,
+            )
         from .gdn_capture import commit_captured_rows
 
         row_commit = commit_captured_rows(
@@ -502,6 +545,9 @@ def generate_a3b_mtp_batch(
     pending: list[int | None] = [None for _ in real]
     accepted_drafts = 0
     rejected_drafts = 0
+    row_cycles = [0 for _ in real]
+    row_accepted_drafts = [0 for _ in real]
+    row_rejected_drafts = [0 for _ in real]
     cycles = 0
     max_cycles = max(int(request.max_tokens) for request in real) + 2
 
@@ -516,6 +562,7 @@ def generate_a3b_mtp_batch(
                 finish[row] = "cancelled"
         if not any(reason is None for reason in finish):
             break
+        cycle_active = [active(row) for row in range(len(real))]
 
         primary_rows = np.asarray(logits_last, dtype=np.float32)
         primary_ids = [0] * width
@@ -546,12 +593,13 @@ def generate_a3b_mtp_batch(
             )
 
         primary_array = mx.array(primary_ids, dtype=mx.int32)
-        draft_logits = lane.draft_forward(
-            hidden_last,
-            primary_array[:, None],
-            mtp_cache=lane.make_mtp_cache(),
-            mtp_depth=1,
-        )
+        with attention_phase("ar_decode"):
+            draft_logits = lane.draft_forward(
+                hidden_last,
+                primary_array[:, None],
+                mtp_cache=lane.make_mtp_cache(),
+                mtp_depth=1,
+            )
         mx.eval(draft_logits)
         draft_rows = np.asarray(draft_logits[:, -1, :], dtype=np.float32)
         proposals: list[Any | None] = [None] * width
@@ -621,6 +669,8 @@ def generate_a3b_mtp_batch(
             keeps[row] = 2 if decision.accepted else 1
             accepted_drafts += int(decision.accepted)
             rejected_drafts += int(not decision.accepted)
+            row_accepted_drafts[row] += int(decision.accepted)
+            row_rejected_drafts[row] += int(not decision.accepted)
             cycle_tokens[row].append(decision.second_token)
             if decision.bonus_token is not None:
                 cycle_tokens[row].append(decision.bonus_token)
@@ -645,6 +695,8 @@ def generate_a3b_mtp_batch(
         )
 
         for row, request in enumerate(real):
+            if cycle_active[row]:
+                row_cycles[row] += 1
             if finish[row] is not None:
                 continue
             if request.cancelled():
@@ -676,6 +728,9 @@ def generate_a3b_mtp_batch(
                 request_id=request.request_id,
                 tokens=tuple(tokens[row]),
                 finish_reason=str(finish[row]),
+                cycles=row_cycles[row],
+                accepted_drafts=row_accepted_drafts[row],
+                rejected_drafts=row_rejected_drafts[row],
             )
             for row, request in enumerate(real)
         ),

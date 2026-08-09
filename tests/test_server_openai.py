@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import re
 import time
-from threading import Lock
+from threading import Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -106,6 +106,167 @@ def test_mtp_batch_policy_never_routes_through_live_ar_batch():
 
     assert openai._scheduler_policy_label(config) == "fixed_mtp_batch_width_8"
     assert openai._use_live_ar_batch(state, effective_mode="mtp") == (False, None)
+
+
+def _mtp_batch_dispatch_state():
+    state = _fake_state()
+    state.args.scheduler_mode = "mtp_batch"
+    state.args.batching_preset = "throughput"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.max_active_requests = 8
+    state.args.decode_batch_max = 8
+    state.draft_sampler = openai.SamplerConfig(temperature=0.6, top_p=0.95, top_k=20)
+    state.mtp_batch_lane = SimpleNamespace(route_id="qwen35b-b8-t2-m16")
+    state.begin_foreground = lambda: None
+    state.end_foreground = lambda: None
+    return state
+
+
+def test_mtp_batch_dispatch_submits_mtp_job_and_never_calls_ar(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    captured = {}
+
+    class Service:
+        def submit(self, job):
+            captured["job"] = job
+            job.future.set_result(
+                {
+                    "request_id": job.request_id,
+                    "text": "ok",
+                    "tokens": [7],
+                    "stats": {"generation_mode": "mtp", "scheduler_lane": "mtp_batch"},
+                    "elapsed_s": 0.1,
+                    "_token_times": [],
+                    "_generation_limits": job.generation_limits,
+                    "finish_reason": "length",
+                }
+            )
+            return job.future
+
+    state.mtp_batch_service = Service()
+    state.ar_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("mtp_batch must never call the AR service")
+    )
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: pytest.fail("default MTP must use mtp_batch service"),
+    )
+    monkeypatch.setattr(
+        openai,
+        "_finalize_mtp_batch_generation",
+        lambda _state, _prompt_ids, generated, **_kwargs: generated,
+        raising=False,
+    )
+
+    generated = openai._run_generation_dispatched(
+        state,
+        [1, 2, 3],
+        batch_key="test.mtp_batch",
+        response_id="request-1",
+        max_tokens=4,
+        temperature=0.0,
+        top_p=1.0,
+        top_k=0,
+        seed=17,
+        generation_mode="mtp",
+        depth=1,
+        cancel_event=Event(),
+        request_observability={},
+    )
+
+    assert generated["stats"]["generation_mode"] == "mtp"
+    assert captured["job"].request_id == "request-1"
+    assert captured["job"].seed == 17
+    assert captured["job"].sampler.temperature == 0.0
+    assert captured["job"].draft_sampler.temperature == 0.0
+
+
+def test_mtp_batch_explicit_ar_stays_on_serial_ar(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    state.mtp_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("explicit AR must not use MTP batching")
+    )
+    state.ar_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("mtp_batch mode must not use live AR batching")
+    )
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **kwargs: {"route": kwargs["generation_mode"]},
+    )
+
+    generated = openai._run_generation_dispatched(
+        state,
+        [1],
+        batch_key="test.explicit_ar",
+        generation_mode="ar",
+    )
+
+    assert generated == {"route": "ar"}
+
+
+def test_mtp_batch_rejects_constraint_graph_without_solo_fallback(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    state.mtp_batch_service = SimpleNamespace(submit=lambda _job: pytest.fail("no submit"))
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: pytest.fail("incompatible MTP batch cannot go solo"),
+    )
+
+    with pytest.raises(RuntimeError, match="does not support constraint_spec"):
+        openai._run_generation_dispatched(
+            state,
+            [1],
+            batch_key="test.constraint",
+            generation_mode="mtp",
+            constraint_spec=object(),
+        )
+
+
+def test_mtp_batch_scheduler_health_reports_real_width_and_acceptance():
+    state = _mtp_batch_dispatch_state()
+    state.mtp_batch_service = SimpleNamespace(
+        snapshot=lambda: {
+            "pending": 0,
+            "active": 0,
+            "last_real_width": 8,
+            "last_route_id": "qwen35b-b8-t2-m16",
+            "batch_histogram": {"8": 2},
+            "fixed_width_histogram": {"8": 64},
+            "target_verify_cycles": 64,
+            "accepted_draft_tokens": 455,
+            "rejected_draft_tokens": 57,
+        }
+    )
+
+    payload = openai._mtplx_scheduler_state(state)
+
+    assert payload["active_lane"] == "mtp_batch_width_8"
+    assert payload["telemetry"]["batch_histogram"]["8"] == 2
+    assert payload["telemetry"]["target_verify_cycles"] == 64
+    assert payload["telemetry"]["accepted_draft_tokens"] == 455
+    assert payload["mtp_disabled_reason"] is None
+
+
+def test_mtp_batch_scheduler_health_never_labels_gathering_as_ar():
+    state = _mtp_batch_dispatch_state()
+    state.foreground_count = lambda: 2
+    state.mtp_batch_service = SimpleNamespace(
+        snapshot=lambda: {
+            "pending": 2,
+            "active": 0,
+            "last_real_width": 0,
+            "batch_histogram": {},
+        }
+    )
+
+    payload = openai._mtplx_scheduler_state(state)
+
+    assert payload["active_lane"] == "mtp_batch_gathering"
+    assert payload["mtp_disabled_reason"] is None
 
 
 def test_server_parser_resolves_api_key_file_before_env(monkeypatch, tmp_path):
@@ -267,6 +428,24 @@ def test_capture_commit_keeps_fast_snapshot_skip_override():
     )
 
     assert overrides["MTPLX_SKIP_VERIFY_SNAPSHOT"] == "1"
+
+
+def test_mtp_batch_installs_qwen35b_optimized_kernel_routes_at_construction():
+    args = SimpleNamespace(
+        generation_mode="mtp",
+        scheduler_mode="mtp_batch",
+        verify_strategy="capture_commit",
+    )
+
+    overrides = openai._server_runtime_env_overrides(args, {})
+
+    assert overrides == {
+        "MTPLX_A3B_WHOLE_MOE_FUSION": "0",
+        "MTPLX_COMPILED_TARGET_PREFIX": "1",
+        "MTPLX_FUSE_GDN_POST_CONV": "1",
+        "MTPLX_QWEN_COMBINE_TAIL": "1",
+        "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
+    }
 
 
 def test_server_parser_accepts_tool_prompt_and_template_profile():

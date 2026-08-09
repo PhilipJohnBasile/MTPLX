@@ -64,6 +64,7 @@ from fastapi.responses import (
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from mtplx import progress_heartbeat
+from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
 from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from mtplx.attention_context import attention_phase
 from mtplx.cache_state import snapshot_cache
@@ -135,6 +136,7 @@ from mtplx.reasoning_codecs import (
     stream_splitter_for_parser,
 )
 from mtplx.server.dashboard_state import DashboardState, InFlightHandle
+from mtplx.server.mtp_batch import MTPBatchGenerationService, MTPBatchJob
 from mtplx.server.omlx_bridge import (
     ToolCallStreamFilter as OMLXToolCallStreamFilter,
     extract_thinking as omlx_extract_thinking,
@@ -573,6 +575,18 @@ def _server_runtime_env_overrides(
         .lower()
         .replace("-", "_")
     )
+    scheduler_mode = getattr(args, "scheduler_mode", "serial")
+    scheduler_mode = str(getattr(scheduler_mode, "value", scheduler_mode))
+    if scheduler_mode == SchedulerMode.MTP_BATCH.value:
+        overrides.update(
+            {
+                "MTPLX_A3B_WHOLE_MOE_FUSION": "0",
+                "MTPLX_COMPILED_TARGET_PREFIX": "1",
+                "MTPLX_FUSE_GDN_POST_CONV": "1",
+                "MTPLX_QWEN_COMBINE_TAIL": "1",
+                "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
+            }
+        )
     if (
         generation_mode == "mtp"
         and verify_strategy not in VERIFY_SNAPSHOT_OPTIONAL_STRATEGIES
@@ -1841,6 +1855,18 @@ class ServerState:
             )
         else:
             self.draft_head_identity = None
+        scheduler_config = _scheduler_config_from_args(args)
+        self.mtp_batch_lane = None
+        self.mtp_batch_omit_speculative_bonus = False
+        if scheduler_config.mode == SchedulerMode.MTP_BATCH:
+            self.mtp_batch_omit_speculative_bonus = str(
+                os.environ.get("MTPLX_OMIT_SPECULATIVE_BONUS", "")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            self.mtp_batch_lane = self.model_scheduler.submit_foreground(
+                install_a3b_mtp_batch_lane,
+                self.runtime,
+                batch_key="startup.mtp_batch_lane",
+            ).result()
         self.chat_template_profile = _normalize_chat_template_profile(
             getattr(args, "chat_template_profile", None)
         )
@@ -1970,6 +1996,17 @@ class ServerState:
         # surface as user requests.
         self.dashboard = DashboardState()
         self.ar_batch_service = _BatchedARGenerationService(self)
+        self.mtp_batch_service = (
+            MTPBatchGenerationService(
+                self,
+                lane=self.mtp_batch_lane,
+                batch_wait_s=(
+                    float(scheduler_config.to_dict()["batch_wait_ms"]) / 1000.0
+                ),
+            )
+            if self.mtp_batch_lane is not None
+            else None
+        )
         self.warmup_status = _run_startup_warmup(self)
 
     def _smart_fan_activity_probe(self) -> bool:
@@ -13194,6 +13231,13 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             ar_batch_stats = dict(ar_batch_service.snapshot())
         except Exception as exc:
             ar_batch_stats = {"error": str(exc)}
+    mtp_batch_stats: dict[str, Any] = {}
+    mtp_batch_service = getattr(state, "mtp_batch_service", None)
+    if mtp_batch_service is not None and hasattr(mtp_batch_service, "snapshot"):
+        try:
+            mtp_batch_stats = dict(mtp_batch_service.snapshot())
+        except Exception as exc:
+            mtp_batch_stats = {"error": str(exc)}
     try:
         active_requests = int(state.dashboard.in_flight.count())
     except Exception:
@@ -13207,7 +13251,24 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         getattr(getattr(state, "runtime", None), "mtp_enabled", False)
         and str(getattr(state.args, "generation_mode", "mtp")) == "mtp"
     )
-    if active_requests <= 1 and mtp_available:
+    mtp_batch_has_cohort = bool(
+        config.mode == SchedulerMode.MTP_BATCH
+        and (
+            int(mtp_batch_stats.get("active") or 0) > 1
+            or int(mtp_batch_stats.get("last_real_width") or 0) > 1
+        )
+    )
+    if mtp_batch_has_cohort and mtp_available:
+        active_lane = "mtp_batch_width_8"
+        mtp_disabled_reason = None
+    elif config.mode == SchedulerMode.MTP_BATCH and mtp_available:
+        active_lane = (
+            "mtp_batch_gathering"
+            if active_requests > 1 or int(mtp_batch_stats.get("pending") or 0) > 1
+            else "solo_mtp"
+        )
+        mtp_disabled_reason = None
+    elif active_requests <= 1 and mtp_available:
         active_lane = "solo_mtp"
         mtp_disabled_reason = None
     elif active_requests > 1 and mtp_available:
@@ -13224,6 +13285,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
     else:
         active_lane = "serial_ar" if not mtp_available else "serial_mtp"
         mtp_disabled_reason = None if mtp_available else "generation_mode_ar"
+    telemetry = dict(scheduler_stats)
+    if config.mode == SchedulerMode.MTP_BATCH:
+        telemetry.update(mtp_batch_stats)
     return {
         "config": config.to_dict(),
         "mode": config.mode.value,
@@ -13233,7 +13297,7 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         "active_requests": active_requests,
         "mtp_available": mtp_available,
         "mtp_disabled_reason": mtp_disabled_reason,
-        "path": "path_a",
+        "path": "mtp_batch" if config.mode == SchedulerMode.MTP_BATCH else "path_a",
         "path_a": {
             "solo_mtp_protected": True,
             "concurrent_strategy": "cooperative_ar_batch",
@@ -13243,8 +13307,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             "experimental_mtp_cohorts": bool(config.experimental_mtp_cohorts),
             "default_enabled": False,
         },
-        "telemetry": scheduler_stats,
+        "telemetry": telemetry,
         "ar_batch": ar_batch_stats,
+        "mtp_batch": mtp_batch_stats,
     }
 
 
@@ -14298,6 +14363,11 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "queue_wait_s",
     "active_batch_size",
     "ar_batch_max_observed",
+    "mtp_batch_real_width",
+    "mtp_batch_fixed_width",
+    "mtp_batch_route_id",
+    "target_verify_cycles",
+    "mtp_batch_session_cache_bypass",
     "mtp_disabled_reason",
     "mtp_depth",
     "speculative_depth",
@@ -16356,6 +16426,11 @@ def _use_live_ar_batch(
     return True, fallback_reason
 
 
+def _use_live_mtp_batch(state: ServerState, *, effective_mode: str) -> bool:
+    config = _scheduler_config_from_args(state.args)
+    return config.mode == SchedulerMode.MTP_BATCH and effective_mode == "mtp"
+
+
 def _ar_batch_history_bypass_reason(
     request_observability: dict[str, Any] | None,
 ) -> str | None:
@@ -16541,6 +16616,239 @@ def _finalize_batched_ar_generation(
     return generated
 
 
+def _finalize_mtp_batch_generation(
+    state: ServerState,
+    prompt_ids: list[int],
+    generated: dict[str, Any],
+    *,
+    session_id: str | None,
+    request_observability: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish one request from a completed multi-request MTP cohort."""
+
+    token_times = [float(value) for value in generated.pop("_token_times", [])]
+    generation_limits = dict(generated.pop("_generation_limits", {}) or {})
+    completion_tokens = _effective_completion_tokens(
+        generated_tokens=list(generated.get("tokens") or []),
+        streamed_token_times=token_times,
+    )
+    elapsed_s = float(generated.get("elapsed_s") or 0.0)
+    stats = _repair_streamed_generation_stats(
+        dict(generated.get("stats") or {}),
+        completion_tokens=completion_tokens,
+        elapsed_s=elapsed_s,
+    )
+    envelope = _metrics_envelope(
+        stats=stats,
+        prompt_tokens=len(prompt_ids),
+        completion_tokens=completion_tokens,
+        request_elapsed_s=elapsed_s,
+        token_times=token_times,
+        request_started_s=float(stats.get("request_started_s") or time.perf_counter()),
+        lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
+        session_id=session_id,
+        session_cache_hit=False,
+        cache_miss_reason="mtp_batch_cold_prefill",
+        session_restore_mode="mtp_batch_cold",
+        mtp_depth=1,
+        generation_limits=generation_limits,
+    )
+    envelope.update(
+        {
+            key: stats[key]
+            for key in (
+                "scheduler_lane",
+                "scheduler_mode",
+                "scheduler_policy",
+                "request_id",
+                "queue_wait_s",
+                "active_batch_size",
+                "mtp_batch_real_width",
+                "mtp_batch_fixed_width",
+                "mtp_batch_route_id",
+                "target_verify_cycles",
+                "mtp_disabled_reason",
+                "server_seed",
+            )
+            if key in stats
+        }
+    )
+    envelope["generation_mode"] = "mtp"
+    envelope["requested_mtp_depth"] = 1
+    envelope["requested_speculative_depth"] = 1
+    envelope["speculative_depth"] = 1
+    envelope["long_context_mtp_depth_policy"] = {}
+    if request_observability:
+        envelope.update(request_observability)
+    cleanup = _auto_clear_mlx_cache_after_completed_request(
+        state,
+        session_id=session_id,
+        request_observability=request_observability,
+    )
+    if cleanup is not None:
+        envelope["mlx_cache_cleanup"] = cleanup
+    envelope.update(_mlx_allocator_public_stats())
+    stats.update(envelope)
+    stats.update(_generation_truth_stats(state, "mtp"))
+    stats["server_elapsed_s"] = elapsed_s
+    stats["server_tok_s"] = (
+        completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
+    )
+    state.last_metrics.append(dict(envelope))
+    state.last_metrics = state.last_metrics[-100:]
+    state.last_request_at = time.time()
+    state.requests_completed += 1
+    _dashboard_record_completion(state, envelope=envelope, stats=stats)
+    generated["stats"] = _json_safe(stats)
+    generated["completion_tokens"] = completion_tokens
+    generated["tok_s"] = stats.get("decode_tok_s") or generated.get("tok_s") or 0.0
+    generated["end_to_end_tok_s"] = stats["server_tok_s"]
+    if not bool((request_observability or {}).get("warmup")) and not _server_console_enabled(state):
+        _safe_stdout_print(
+            json.dumps(
+                {
+                    "event": "mtplx_openai_generation",
+                    "scheduler_lane": "mtp_batch",
+                    "prompt_tokens": len(prompt_ids),
+                    "completion_tokens": completion_tokens,
+                    "elapsed_s": round(elapsed_s, 6),
+                    "tok_s": round(float(generated.get("tok_s") or 0.0), 6),
+                    "end_to_end_tok_s": round(float(generated["end_to_end_tok_s"]), 6),
+                    "seed": stats.get("server_seed"),
+                    "mtp_batch_real_width": stats.get("mtp_batch_real_width"),
+                    "text_preview": str(generated.get("text") or "")[:120],
+                },
+                ensure_ascii=False,
+            )
+        )
+    if request_capture.capture_dir():
+        request_capture.capture_outcome(
+            (request_observability or {}).get("request_id"),
+            {
+                "scheduler_lane": "mtp_batch",
+                "completion_tokens": completion_tokens,
+                "finish_reason": generated.get("finish_reason"),
+                "resolved_seed": stats.get("server_seed"),
+                "tok_s": round(float(generated.get("tok_s") or 0.0), 3),
+                **request_capture.clip_text_head_tail(generated.get("text") or ""),
+            },
+        )
+    return generated
+
+
+def _run_mtp_batch_generation_dispatched(
+    state: ServerState,
+    prompt_ids: list[int],
+    *,
+    response_id: str | None,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    for field in ("constraint_spec", "vision_splice"):
+        if kwargs.get(field) is not None:
+            raise RuntimeError(f"mtp_batch does not support {field}")
+    if bool(kwargs.get("background_request")):
+        raise RuntimeError("mtp_batch does not support background_request")
+    for field in ("depth", "resolved_mtp_depth"):
+        value = kwargs.get(field)
+        if value is not None and int(value) != 1:
+            raise RuntimeError(f"mtp_batch requires {field}=1")
+
+    service = getattr(state, "mtp_batch_service", None)
+    lane = getattr(state, "mtp_batch_lane", None)
+    if service is None or lane is None:
+        raise RuntimeError("mtp_batch service was not installed at construction")
+    response_max, sampler, generation_limits = _generation_params(
+        state,
+        prompt_token_count=len(prompt_ids),
+        max_tokens=kwargs.get("max_tokens"),
+        temperature=kwargs.get("temperature"),
+        top_p=kwargs.get("top_p"),
+        top_k=kwargs.get("top_k"),
+        presence_penalty=kwargs.get("presence_penalty"),
+        frequency_penalty=kwargs.get("frequency_penalty"),
+    )
+    generation_seed, _seed_is_explicit = _resolve_seed(state, kwargs.get("seed"))
+    request_observability = dict(kwargs.get("request_observability") or {})
+    solo_kwargs = dict(kwargs)
+    solo_kwargs["seed"] = generation_seed
+    solo_kwargs["request_observability"] = dict(request_observability)
+    request_observability.update(
+        {
+            "scheduler_lane": "mtp_batch",
+            "scheduler_mode": "mtp_batch",
+            "scheduler_policy": "fixed_mtp_batch_width_8",
+            "mtp_disabled_reason": None,
+            "mtp_batch_session_cache_bypass": kwargs.get("session_bank") is not None,
+        }
+    )
+    explicit_draft_sampler = kwargs.get("draft_sampler") is not None
+    draft_sampler = _couple_draft_sampler_to_greedy_target(
+        kwargs.get("draft_sampler")
+        if explicit_draft_sampler
+        else getattr(state, "draft_sampler", None),
+        explicit_draft_sampler=explicit_draft_sampler,
+        target_temperature=kwargs.get("temperature"),
+        request_observability=request_observability,
+    )
+    if draft_sampler is None:
+        draft_sampler = sampler
+    cancel_event = kwargs.get("cancel_event") or Event()
+    omit_bonus = bool(getattr(state, "mtp_batch_omit_speculative_bonus", False))
+    job = MTPBatchJob(
+        request_id=response_id or f"mtpbatch-{uuid.uuid4().hex}",
+        prompt_ids=prompt_ids,
+        max_tokens=response_max,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        seed=generation_seed,
+        stop_token_ids=_default_stop_tokens(state.runtime.tokenizer),
+        token_callback=kwargs.get("token_callback"),
+        prefill_callback=kwargs.get("prefill_callback"),
+        compatibility_key=(
+            str(getattr(lane, "route_id", "")),
+            omit_bonus,
+            "cold_full_prompt",
+        ),
+        generation_limits=generation_limits,
+        solo_runner=lambda _job: _run_generation(state, prompt_ids, **solo_kwargs),
+        cancel_error=lambda item: _StreamCancelled(
+            f"request {item.request_id} cancelled"
+        ),
+        cancel_event=cancel_event,
+        request_observability=request_observability,
+        omit_speculative_bonus=omit_bonus,
+    )
+    smart_fan_lease = _begin_smart_fan_request(
+        state,
+        request_id=_smart_fan_request_id(job.request_id, "mtpbatch"),
+        request_observability=request_observability,
+    )
+    state.begin_foreground()
+    try:
+        future = service.submit(job)
+        scheduler = getattr(state, "model_scheduler", None)
+        if (
+            scheduler is not None
+            and hasattr(scheduler, "is_owner_thread")
+            and scheduler.is_owner_thread()
+            and hasattr(service, "pump_once")
+        ):
+            service.pump_once()
+        generated = future.result()
+    finally:
+        state.end_foreground()
+        _end_smart_fan_request(state, smart_fan_lease)
+    if bool(generated.pop("_mtp_batch_solo", False)):
+        return generated
+    return _finalize_mtp_batch_generation(
+        state,
+        prompt_ids,
+        generated,
+        session_id=kwargs.get("session_id"),
+        request_observability=request_observability,
+    )
+
+
 def _smart_fan_request_id(response_id: str | None, fallback_prefix: str) -> str:
     return response_id or f"{fallback_prefix}-{uuid.uuid4().hex}"
 
@@ -16693,6 +17001,13 @@ def _run_generation_dispatched(
                     if isinstance(v, (str, int, float, bool))
                 },
             },
+        )
+    if _use_live_mtp_batch(state, effective_mode=effective_mode):
+        return _run_mtp_batch_generation_dispatched(
+            state,
+            prompt_ids,
+            response_id=response_id,
+            kwargs=kwargs,
         )
     history_bypass_reason = _ar_batch_history_bypass_reason(
         request_observability_for_lane

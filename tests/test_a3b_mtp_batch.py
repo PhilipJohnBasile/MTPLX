@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import inspect
 import json
 from types import SimpleNamespace
 
@@ -46,6 +47,19 @@ class _Runtime:
     def __init__(self, model_path):
         self.model_path = model_path
         self.mtp_enabled = True
+        self.a3b_whole_moe_installed = False
+        self.qwen_row_owned_router_report = {
+            "installed": True,
+            "target_routers": 40,
+            "mtp_routers": 1,
+            "validated_contract": {
+                "routes": {"decode_verify": list(range(1, 17))},
+                "combine_tail": {
+                    "decode_verify": [1, 2],
+                    "other_rows": "stock_weighted_reduction",
+                },
+            },
+        }
         self.contract = SimpleNamespace(
             hidden_variant="post_norm",
             mtp_quant_bits=4,
@@ -130,6 +144,24 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
         lane.route_id = "changed"
 
 
+def test_installer_selfcheck_exercises_decode_verify_kernel_phase():
+    from mtplx import a3b_mtp_batch
+
+    source = inspect.getsource(a3b_mtp_batch._default_selfcheck)
+
+    assert 'with attention_phase("decode_verify")' in source
+    assert 'with attention_phase("ar_decode")' in source
+
+
+def test_batch_driver_executes_draft_and_verify_in_installed_kernel_phases():
+    from mtplx import a3b_mtp_batch
+
+    source = inspect.getsource(a3b_mtp_batch.generate_a3b_mtp_batch)
+
+    assert 'with attention_phase("ar_decode")' in source
+    assert 'with attention_phase("decode_verify")' in source
+
+
 @pytest.mark.parametrize(
     ("path", "value", "reason"),
     [
@@ -169,6 +201,19 @@ def test_installer_rejects_missing_prebound_callable(tmp_path):
     runtime.draft_mtp = None
 
     with pytest.raises(A3BMTPBatchInstallError, match="draft_mtp"):
+        install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
+
+
+def test_installer_rejects_missing_row_owned_m1_m16_router(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    runtime = _runtime(tmp_path)
+    runtime.qwen_row_owned_router_report["installed"] = False
+
+    with pytest.raises(A3BMTPBatchInstallError, match="row-owned"):
         install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
 
 

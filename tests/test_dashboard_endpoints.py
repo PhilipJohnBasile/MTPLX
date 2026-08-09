@@ -127,6 +127,16 @@ def test_public_stats_keys_keep_previously_exposed_keys():
     assert not missing, f"public stats keys regressed; lost: {sorted(missing)}"
 
 
+def test_public_stats_keys_expose_mtp_batch_execution_truth():
+    assert {
+        "mtp_batch_real_width",
+        "mtp_batch_fixed_width",
+        "mtp_batch_route_id",
+        "target_verify_cycles",
+        "mtp_batch_session_cache_bypass",
+    } <= set(PUBLIC_MTPLX_STATS_KEYS)
+
+
 def test_public_stats_keys_includes_verify_decomposition():
     new_keys = {
         "target_forward_time_s",

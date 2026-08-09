@@ -37,6 +37,9 @@ class _Driver:
                     request_id=request.request_id,
                     tokens=output if not request.cancelled() else (),
                     finish_reason="length" if not request.cancelled() else "cancelled",
+                    cycles=2,
+                    accepted_drafts=1,
+                    rejected_drafts=0,
                 )
             )
         return A3BMTPBatchResult(
@@ -95,6 +98,10 @@ def test_eight_requests_stream_only_their_own_tokens_and_close_once():
         assert job.test_emitted == expected
         assert result["tokens"] == expected
         assert result["stats"]["generation_mode"] == "mtp"
+        assert result["stats"]["accepted_by_depth"] == [1]
+        assert result["stats"]["accepted_drafts"] == 1
+        assert result["stats"]["rejected_drafts"] == 0
+        assert result["stats"]["drafted_tokens"] == 1
     assert service.snapshot()["batch_histogram"] == {"8": 1}
     assert service.snapshot()["fixed_width_histogram"] == {"8": 2}
 
@@ -118,6 +125,26 @@ def test_cancelled_rows_close_as_errors_without_changing_survivors():
         ]
 
 
+def test_callback_stop_error_closes_only_its_request():
+    service = _service(_Driver())
+    jobs = [_job(index) for index in range(8)]
+
+    def stop_row(_tokens):
+        raise RuntimeError("row-local stop")
+
+    jobs[3].token_callback = stop_row
+    futures = [service.submit(job) for job in jobs]
+
+    service.pump_once()
+
+    assert "row-local stop" in str(futures[3].exception(timeout=1))
+    for index in (0, 1, 2, 4, 5, 6, 7):
+        assert futures[index].result(timeout=1)["tokens"] == [
+            index + 10,
+            index + 1010,
+        ]
+
+
 def test_one_request_uses_unchanged_solo_runner():
     driver = _Driver()
     service = _service(driver)
@@ -132,10 +159,27 @@ def test_one_request_uses_unchanged_solo_runner():
 
     service.pump_once()
 
-    assert future.result(timeout=1)["tokens"] == [77]
+    result = future.result(timeout=1)
+    assert result["tokens"] == [77]
+    assert result["_mtp_batch_solo"] is True
     assert calls == [job.request_id]
     assert driver.widths == []
     assert service.snapshot()["solo_runs"] == 1
+
+
+def test_cohort_text_strips_terminal_stop_tokens():
+    service = _service(_Driver())
+    service.state.runtime.tokenizer = SimpleNamespace(
+        decode=lambda tokens: ",".join(str(token) for token in tokens)
+    )
+    jobs = [_job(0), _job(1)]
+    jobs[0].stop_token_ids = {1010}
+    for job in jobs:
+        service.submit(job)
+
+    service.pump_once()
+
+    assert jobs[0].future.result(timeout=1)["text"] == "10"
 
 
 def test_cohort_seals_at_eight_and_later_request_waits_for_next_pump():

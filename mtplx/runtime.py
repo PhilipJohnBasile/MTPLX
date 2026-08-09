@@ -96,6 +96,7 @@ class MTPLXRuntime:
     deepseek_v4_attention_island_report: dict[str, Any] | None = None
     a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
     a3b_whole_moe_installed: bool = False
+    qwen_row_owned_router_report: dict[str, Any] = field(default_factory=dict)
     _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
         default_factory=dict,
         init=False,
@@ -765,6 +766,7 @@ def load(
     compiled_target_factory = None
     whole_moe_plan = None
     selfcheck_report = None
+    router_report: dict[str, Any] = {}
     # Laguna skips the qwen3-next kernel stack entirely; its own env-gated
     # fused lanes install right before runtime construction below.
     if not _is_laguna_s_2_1_mlx_4bit_config(config):
@@ -934,6 +936,7 @@ def load(
         deepseek_v4_attention_island_report=deepseek_v4_attention_island_report,
         a3b_compiled_target_prefix_factory=compiled_target_factory,
         a3b_whole_moe_installed=False,
+        qwen_row_owned_router_report=router_report,
     )
     if whole_moe_plan is not None:
         if compiled_target_factory is None:
