@@ -1,181 +1,97 @@
 # Concurrency modes
 
+Concurrency is a server scheduling capability. It is not tied to one model,
+one batch width, or one kernel geometry. Each model backend declares which
+scheduler routes it can install and validates its own shapes and limits when
+the model loads.
+
 MTPLX keeps model execution on one owner thread. A scheduler decides whether
-requests run alone or share a model forward. Requests never share prompt
-history, sampler state, or logical KV state.
+requests run alone or share model work. Even when requests share a batched
+allocation or forward pass, they keep separate prompt history, sampler state,
+random-number state, stop state, and logical KV ownership.
 
-The public scheduler values are:
+## Scheduler modes
 
-| Value | Concurrent decode |
+| Value | Behavior |
 |---|---|
-| `serial` | One request at a time on the normal model route; this is the default |
-| `cooperative` | Cooperative request scheduling with concurrent work kept off the fixed MTP runner |
-| `ar_batch` | Batched target-only autoregressive decode |
-| `mtp_batch` | Fixed Qwen 35B depth-one MTP cohorts described below |
-| `mtp_cohort_experimental` | Experimental cohort scheduler; it is not the fixed Qwen 35B runner |
+| `serial` | Run one request at a time on the backend's normal generation route; this is the default |
+| `cooperative` | Interleave independently owned request work where the backend supports it |
+| `ar_batch` | Batch target-only autoregressive decode on a compatible backend |
+| `mtp_batch` | Batch native-MTP decode using a model-specific installed MTP lane |
+| `mtp_cohort_experimental` | Opt into experimental native-MTP cohort scheduling |
 
-Select a scheduler when the server starts:
+The mode name is generic. It does not define a batch width, speculative depth,
+context limit, tensor shape, or numerical policy. Those are properties of the
+installed model/backend implementation.
 
-```bash
-mtplx serve --scheduler-mode serial
-mtplx serve --scheduler-mode ar_batch
-```
+## Ownership contract
 
-Scheduler and kernel routes are construction-time settings. They cannot be
-changed per request or through live settings.
-
-## Qwen 35B fixed B8 MTP runner
-
-`--scheduler-mode mtp_batch` installs a runner made specifically for the
-Qwen3.6-35B-A3B MTPLX model contract. It is native MTP, not batched AR.
-
-One request uses the unchanged solo B1 MTP route. Two through eight compatible
-requests are placed in one physical B8 cohort. Empty rows are padded and remain
-inactive. The eight rows execute each model cycle in lockstep because they
-share one fixed-shape forward, but every row owns its own:
+Every admitted request owns its own:
 
 - prompt and generated tokens;
-- target and MTP KV offsets and contents;
-- recurrent GDN state;
-- target and draft samplers;
+- logical KV and recurrent state;
+- target and draft sampler settings;
 - seeded random-number stream;
-- token budget, stop state, cancellation event, and result stream.
+- token budget, stop state, cancellation event, and output stream.
 
-Sharing batched allocations does not mean sharing context. Row-specific masks,
-offsets, commits, and rewinds keep one request from reading or changing another
-request's history.
+A backend may place those values in shared batched buffers. Row-specific masks,
+offsets, commits, and rewinds must still prevent one request from reading or
+changing another request's context. Fixed-shape lanes may run in lockstep; that
+is shared scheduling, not shared context.
 
-### Geometry
+An optimized lane is installed only after its backend validates the model,
+geometry, dtype, cache layout, kernels, and construction self-checks. An
+unsupported combination fails clearly instead of silently changing to AR or a
+different kernel.
 
-The runner uses depth-one MTP, also called K1:
+## Select a mode
 
-- `B1` means one request row. `B8` means eight physical request rows.
-- The MTP head drafts one token per active row with shape `B8 x T1`, flattened
-  to `M8` for projections and MoE work.
-- The target verifies the current target token plus that draft with shape
-  `B8 x T2`, flattened to `M16`.
-- Acceptance, correction sampling, and commit decisions are independent for
-  every row.
-
-This is why the runner appears synchronized while still providing eight
-separate contexts.
-
-### Request capabilities
-
-The B8 route supports streaming and non-streaming text generation, independent
-request seeds and sampler settings, greedy device-side token selection,
-stochastic sampling, penalties, stopping, and per-row cancellation.
-
-The installed route fails closed. It never changes a concurrent request to AR
-or silently falls back to another kernel. The current fixed contract requires:
-
-- Qwen3.6-35B-A3B with the expected MTPLX target and MTP weights;
-- native MTP generation with depth 1;
-- `max_active_requests=8` and `decode_batch_max=8`;
-- a 131,072-token context window;
-- the stock verify-core selection used by the installed B8 graph;
-- `prompt_tokens + max_tokens <= 131072` for every request.
-
-The route does not accept `response_format`, vision splice input, background
-requests, or a request-level MTP depth other than 1. Invalid server settings
-fail before model construction. Invalid request settings return an OpenAI-style
-400 error before cohort admission.
-
-## Numerics profiles
-
-Choose one route with
-`--mtp-batch-numerics throughput|balanced|b1-exact`. The performance value is
-spelled `throughput`; `performance` is not an accepted value.
-
-| Value | Execution | Numerical contract |
-|---|---|---|
-| `throughput` | Fixed B8/T2 target and B8/T1 draft; default | Fastest aggregate route; bounded BF16 geometry drift from B1 is allowed |
-| `balanced` | B8 scheduling with selected layer-zero projections using B1 arithmetic | Closer to B1, but later B8 reductions mean it is not bit- or token-exact with B1 |
-| `b1-exact` | Every request uses the unchanged B1 implementation serially | B1 token and cache behavior; it does not claim B8 execution or aggregate B8 throughput |
-
-The device-resident greedy optimization is token-exact with the earlier B8
-route. It does not make B8 bit-exact with B1. On the measured legacy greedy
-workload, `throughput` reached 349.064 aggregate TPS and `balanced` reached
-259.650 TPS. The balanced result missed its 300 TPS promotion floor, so
-`throughput` remains the default. See the
-[numerics design and receipts](specs/2026-08-09-qwen35b-mtp-batch-numerics-profiles-design.md)
-for the full benchmark and EvalPlus results.
-
-## Start the Qwen 35B runner
-
-Use the full construction contract. Change only the final numerics value when
-switching among the three routes:
+Choose the mode when the server starts. Backend-specific modes may require
+additional flags:
 
 ```bash
 mtplx serve \
-  --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed \
-  --scheduler-mode mtp_batch \
-  --batching-preset throughput \
-  --generation-mode mtp \
-  --load-mtp \
-  --depth 1 \
-  --max-active-requests 8 \
-  --decode-batch-max 8 \
-  --context-window 131072 \
-  --verify-core stock \
-  --mtp-batch-numerics throughput
+  --model <model-or-path> \
+  --scheduler-mode <serial|cooperative|ar_batch|mtp_batch|mtp_cohort_experimental>
 ```
 
-To use another numerics route, replace the last value with `balanced` or
-`b1-exact` and restart the server.
-
-### Persistent configuration
-
-The scheduler, width, context, and numerics choice can be saved in the user
-config:
+Or save the scheduler choice:
 
 ```bash
 mtplx config set scheduler_mode mtp_batch
-mtplx config set batching_preset throughput
-mtplx config set max_active_requests 8
-mtplx config set decode_batch_max 8
-mtplx config set context_window 131072
-mtplx config set mtp_batch_numerics throughput
 mtplx config show --json
 ```
 
-Depth, generation mode, MTP loading, and verify core remain explicit launch
-arguments:
+Scheduler and kernel routes are construction-time settings. Stop and restart
+the server after changing them. A CLI value overrides the saved value for that
+launch. Other required flags depend on the selected backend; use its linked
+implementation guide instead of copying geometry from another model.
 
-```bash
-mtplx serve \
-  --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed \
-  --generation-mode mtp \
-  --load-mtp \
-  --depth 1 \
-  --verify-core stock
-```
+## Backend implementations
 
-An explicit CLI value overrides the saved value for that launch. To change a
-running service, stop it, change the config or launch arguments, and start it
-again. If launchd or another service manager owns the process, update that
-service's arguments and restart the same service; do not start a second model
-process beside it.
+Model-specific guides record the exact supported features, required launch
+contract, batch geometry, numerical choices, limitations, and benchmark
+receipts for each installed lane:
 
-## Confirm the route is active
+- [Qwen3.6 35B A3B fixed B8/K1 MTP lane](concurrency/qwen35b-mtp-batch.md)
 
-The health payload reports the installed profile and route. After sending at
-least two requests concurrently, it also provides behavioral evidence that a
-real multi-row cohort ran:
+This list describes available implementations. It does not redefine the
+generic concurrency modes or imply that future MTP lanes must use the same
+width, depth, context limit, or kernels.
+
+## Confirm concurrent behavior
+
+The health payload reports the selected scheduler and observed execution:
 
 ```bash
 curl -s http://127.0.0.1:8000/health | jq '.scheduler | {
   mode,
   active_lane,
-  numerics: .mtp_batch_numerics,
-  route: .mtp_batch_route_id,
-  last_real_width: .telemetry.last_real_width,
-  batch_histogram: .telemetry.batch_histogram
+  config,
+  telemetry
 }'
 ```
 
-For `throughput` or `balanced`, `last_real_width` must be between 2 and 8 to
-prove the B8 runner handled concurrent requests. A configured mode or route ID
-alone does not prove that a cohort ran. A single request correctly reports the
-solo MTP lane. `b1-exact` reports `mtp_batch_b1_exact_serial` and never claims a
-fixed-width B8 execution.
+The configured mode proves only what was selected. To prove concurrent work
+actually ran, use the backend guide's behavioral receipt, such as an observed
+multi-row width or batch histogram after sending simultaneous requests.

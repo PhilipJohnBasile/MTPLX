@@ -39,9 +39,8 @@ MTP runtime stays loaded, so terminal chat can use `/mtp off`, `/mtp on`, and
 `mlx-community/Laguna-S-2.1-oQ4e` instead install an unloaded AR route at
 construction because there is no MTP head to retain.
 
-For concurrent serving, see [Concurrency modes](concurrency.md). That guide
-includes the complete Qwen 35B B8 MTP launch contract, supported request types,
-numerics choices, and health checks.
+For scheduler selection and backend-specific concurrent implementations, see
+[Concurrency modes](concurrency.md).
 
 The Laguna download is pinned automatically. It needs about 64.13 GB of disk
 space, and the runtime's admission gate requires ≈85.3 GiB of unified memory

@@ -83,9 +83,8 @@ Sessions survive: a warm-prefix session bank keeps multi-turn chats fast, and a 
 
 Sampler controls cover `temperature`, `top_p`, `top_k`, and the OpenAI penalty pair `presence_penalty` / `frequency_penalty` — per request, as server defaults (`--default-presence-penalty` / `--default-frequency-penalty` on `start`/`serve`/`quickstart`), or live via `mtplx settings set` and the app's Presence Penalty dial. Penalties default to 0, which is an exact no-op that preserves MTP exactness. Qwen's guidance: leave them at 0 for coding and agent work; ~0.5–1.5 presence penalty helps creative writing or when a model loops on itself.
 
-Concurrent serving, including the fixed Qwen 35B B8 MTP runner and its
-throughput, balanced, and B1-exact routes, is documented in
-[Concurrency modes](docs/concurrency.md).
+Concurrent scheduler modes, ownership guarantees, and backend-specific
+implementations are documented in [Concurrency modes](docs/concurrency.md).
 
 ## CLI quick reference
 
