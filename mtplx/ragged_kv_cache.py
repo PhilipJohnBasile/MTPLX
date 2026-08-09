@@ -105,8 +105,6 @@ class RaggedBatchKVCache:
         else:
             self.offsets = None
         # telemetry
-        self.ragged_updates = 0
-        self.ragged_grows = 0
         # HOST-side monotone capacity upper bound (fable-main review, item 3).
         # When set, ``update_and_fetch`` grows the physical buffer off this Python
         # int and NEVER reads the device ``offsets`` for capacity -- so once
@@ -199,7 +197,6 @@ class RaggedBatchKVCache:
         else:
             self.keys = mx.concatenate([self.keys, pad_k], axis=2)
             self.values = mx.concatenate([self.values, pad_v], axis=2)
-        self.ragged_grows += 1
 
     def update_and_fetch(
         self,
@@ -277,7 +274,6 @@ class RaggedBatchKVCache:
         self.values = mx.put_along_axis(self.values, idx_v, values, axis=2)
 
         self.offsets = resulting.astype(mx.int32)
-        self.ragged_updates += 1
         return self.keys, self.values
 
     def make_mask(

@@ -64,6 +64,7 @@ class A3BGDNPostconvFactory:
     m1_implementations: tuple[Callable[..., Any], ...]
     m2_implementations: tuple[Callable[..., Any], ...]
     m3_implementations: tuple[Callable[..., Any], ...] = ()
+    b8_t2_implementations: tuple[Callable[..., Any], ...] = ()
 
 
 def _a3b_gdn_postconv_contract() -> dict[str, Any]:
@@ -313,11 +314,13 @@ def install_a3b_gdn_postconv(
         m1_apply = _apply_enabled_a3b_gdn_postconv_m1_headquarter
         m2_apply = _apply_enabled_a3b_gdn_postconv_m2_headquarter
         m3_apply = _apply_enabled_a3b_gdn_postconv_m3_headquarter
+        b8_t2_apply = _apply_enabled_a3b_gdn_postconv_b8_t2_headquarter
     else:
         required_lane = "gdn_postconv_inline_g"
         m1_apply = _apply_enabled_a3b_gdn_postconv_m1_tgy4
         m2_apply = _apply_enabled_a3b_gdn_postconv_m2_tgy4
         m3_apply = _apply_enabled_a3b_gdn_postconv_m3_tgy4
+        b8_t2_apply = _apply_enabled_a3b_gdn_postconv_b8_t2_tgy4
     if lanes.get(required_lane) != "ok":
         _fail_a3b_gdn_postconv_configuration(
             "A3B GDN postconv selfcheck did not validate the exact M1/M2 kernels"
@@ -347,6 +350,14 @@ def install_a3b_gdn_postconv(
         m3_implementations=tuple(
             partial(
                 m3_apply,
+                A_log=gdn.A_log,
+                dt_bias=gdn.dt_bias,
+            )
+            for gdn in plan.gdns
+        ),
+        b8_t2_implementations=tuple(
+            partial(
+                b8_t2_apply,
                 A_log=gdn.A_log,
                 dt_bias=gdn.dt_bias,
             )
@@ -2034,6 +2045,35 @@ def _a3b_compiled_target_gdn_postconv_m2_tgy4(
     )
 
 
+def _a3b_compiled_target_gdn_postconv_b8_t2_tgy4(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Launch the fixed eight-row A3B M2 recurrence with TGY4."""
+    return _linear_gated_delta_from_conv_inline_g_kernel(
+        inputs=[conv_out, a, b, A_log, dt_bias, state, 2],
+        template=[
+            ("InT", mx.bfloat16),
+            ("StT", mx.float32),
+            ("Dk", 128),
+            ("Dv", 128),
+            ("Hk", 16),
+            ("Hv", 32),
+            ("KeyDim", 2048),
+            ("ConvDim", 8192),
+        ],
+        grid=(32, 128, 256),
+        threadgroup=(32, 4, 1),
+        output_shapes=[(8, 2, 32, 128), (8, 2, 32, 128, 128)],
+        output_dtypes=[mx.bfloat16, mx.float32],
+    )
+
+
 def _apply_enabled_a3b_gdn_postconv_m1_tgy4(
     conv_out: mx.array,
     a: mx.array,
@@ -2065,6 +2105,26 @@ def _apply_enabled_a3b_gdn_postconv_m2_tgy4(
 ):
     """Execute the construction-installed exact A3B M2/TGY4 route."""
     return _a3b_compiled_target_gdn_postconv_m2_tgy4(
+        conv_out,
+        a,
+        b,
+        state,
+        A_log=A_log,
+        dt_bias=dt_bias,
+    )
+
+
+def _apply_enabled_a3b_gdn_postconv_b8_t2_tgy4(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Execute the construction-installed eight-row A3B M2/TGY4 route."""
+    return _a3b_compiled_target_gdn_postconv_b8_t2_tgy4(
         conv_out,
         a,
         b,
@@ -2136,6 +2196,37 @@ def _a3b_compiled_target_gdn_postconv_m2_headquarter(
     )
 
 
+def _a3b_compiled_target_gdn_postconv_b8_t2_headquarter(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Launch the fixed eight-row A3B M2 recurrence with headquarter."""
+    return _linear_gated_delta_from_conv_headquarter_kernel(
+        inputs=[conv_out, a, b, A_log, dt_bias, state, 2],
+        template=[
+            ("InT", mx.bfloat16),
+            ("StT", mx.float32),
+            ("Dk", 128),
+            ("Dv", 128),
+            ("Hk", 16),
+            ("Hv", 32),
+            ("KeyDim", 2048),
+            ("ConvDim", 8192),
+            ("Quarters", 4),
+            ("Simds", 8),
+        ],
+        grid=(256, 4, 256),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(8, 2, 32, 128), (8, 2, 32, 128, 128)],
+        output_dtypes=[mx.bfloat16, mx.float32],
+    )
+
+
 def _apply_enabled_a3b_gdn_postconv_m1_headquarter(
     conv_out: mx.array,
     a: mx.array,
@@ -2167,6 +2258,26 @@ def _apply_enabled_a3b_gdn_postconv_m2_headquarter(
 ):
     """Execute the construction-installed exact A3B M2 headquarter route."""
     return _a3b_compiled_target_gdn_postconv_m2_headquarter(
+        conv_out,
+        a,
+        b,
+        state,
+        A_log=A_log,
+        dt_bias=dt_bias,
+    )
+
+
+def _apply_enabled_a3b_gdn_postconv_b8_t2_headquarter(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Execute the construction-installed eight-row A3B M2 headquarter route."""
+    return _a3b_compiled_target_gdn_postconv_b8_t2_headquarter(
         conv_out,
         a,
         b,

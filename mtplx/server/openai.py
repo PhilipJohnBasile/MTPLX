@@ -65,6 +65,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from mtplx import progress_heartbeat
 from mtplx.a3b_mtp_batch import (
+    A3B_MTP_BATCH_MAX_CONTEXT_TOKENS,
     A3BMTPBatchCapacityError,
     install_a3b_mtp_batch_lane,
 )
@@ -139,7 +140,11 @@ from mtplx.reasoning_codecs import (
     stream_splitter_for_parser,
 )
 from mtplx.server.dashboard_state import DashboardState, InFlightHandle
-from mtplx.server.mtp_batch import MTPBatchGenerationService, MTPBatchJob
+from mtplx.server.mtp_batch import (
+    MTPBatchFinalizeOwnership,
+    MTPBatchGenerationService,
+    MTPBatchJob,
+)
 from mtplx.server.omlx_bridge import (
     ToolCallStreamFilter as OMLXToolCallStreamFilter,
     extract_thinking as omlx_extract_thinking,
@@ -1661,6 +1666,15 @@ def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
             int(getattr(args, "decode_batch_max", 0) or 0) == 8,
             "decode_batch_max=8",
         ),
+        (
+            int(getattr(args, "context_window", 0) or 0)
+            == A3B_MTP_BATCH_MAX_CONTEXT_TOKENS,
+            f"context_window={A3B_MTP_BATCH_MAX_CONTEXT_TOKENS}",
+        ),
+        (
+            str(getattr(args, "verify_core", "")).strip().lower() == "stock",
+            "verify_core=stock",
+        ),
     )
     for valid, contract in required:
         if not valid:
@@ -2017,6 +2031,9 @@ class ServerState:
             MTPBatchGenerationService(
                 self,
                 lane=self.mtp_batch_lane,
+                owner_finalize=lambda jobs: _finalize_mtp_batch_cohort_owner(
+                    self, jobs
+                ),
                 batch_wait_s=(
                     float(scheduler_config.to_dict()["batch_wait_ms"]) / 1000.0
                 ),
@@ -14394,6 +14411,7 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "mtp_batch_route_id",
     "target_verify_cycles",
     "verify_timing_scope",
+    "mlx_finalize_scope",
     "mtp_batch_session_cache_bypass",
     "mtp_disabled_reason",
     "mtp_depth",
@@ -14630,6 +14648,7 @@ def _record_stream_cancellation_metric(
     reason: str,
     request_observability: dict[str, Any],
     client_disconnected: bool,
+    mlx_finalize_scope: str | None = None,
 ) -> None:
     elapsed_s = max(0.0, time.perf_counter() - stream_started_s)
     streamed_tokens = int(streamed_completion_tokens)
@@ -14659,14 +14678,17 @@ def _record_stream_cancellation_metric(
         "session_cache_hit": False,
         "cache_miss_reason": None,
     }
-    cleanup = _auto_clear_mlx_cache_after_completed_request(
-        state,
-        session_id=session_id,
-        request_observability=request_observability,
-    )
-    if cleanup is not None:
-        envelope["mlx_cache_cleanup"] = cleanup
-    envelope.update(_mlx_allocator_public_stats())
+    if mlx_finalize_scope is not None:
+        envelope["mlx_finalize_scope"] = str(mlx_finalize_scope)
+    else:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=session_id,
+            request_observability=request_observability,
+        )
+        if cleanup is not None:
+            envelope["mlx_cache_cleanup"] = cleanup
+        envelope.update(_mlx_allocator_public_stats())
     envelope.update(request_observability)
     _record_request_metrics(state, envelope)
     state.last_request_at = time.time()
@@ -16658,25 +16680,73 @@ def _finalize_mtp_batch_generation(
 ) -> dict[str, Any]:
     """Publish one request from a completed multi-request MTP cohort."""
 
+    defer_mlx_finalize = bool(
+        generated.pop("_mtp_batch_defer_mlx_finalize", False)
+    )
+    raw_stats = dict(generated.get("stats") or {})
+    generation_elapsed_s = float(generated.get("elapsed_s") or 0.0)
+    carried_request_elapsed_s = float(
+        generated.get("request_elapsed_s")
+        or raw_stats.get("request_elapsed_s")
+        or generation_elapsed_s
+    )
+    request_started_value = raw_stats.get("request_started_s")
+    request_started_s = (
+        float(request_started_value)
+        if request_started_value is not None
+        else time.perf_counter() - carried_request_elapsed_s
+    )
+    if bool(generated.pop("_mtp_batch_decode_on_request", False)):
+        stop_token_ids = {
+            int(value)
+            for value in generated.pop("_mtp_batch_stop_token_ids", [])
+        }
+        decode = getattr(state.runtime.tokenizer, "decode", None)
+        generated["text"] = (
+            str(
+                decode(
+                    [
+                        int(token)
+                        for token in generated.get("tokens") or []
+                        if int(token) not in stop_token_ids
+                    ]
+                )
+            )
+            if callable(decode)
+            else ""
+        )
+    prefill_callback = generated.pop("_mtp_batch_prefill_callback", None)
+    prefill_completion = generated.pop("_mtp_batch_prefill_completion", None)
+    if callable(prefill_callback) and isinstance(prefill_completion, dict):
+        try:
+            prefill_callback(dict(prefill_completion))
+        except Exception:
+            pass
     token_times = [float(value) for value in generated.pop("_token_times", [])]
     generation_limits = dict(generated.pop("_generation_limits", {}) or {})
     completion_tokens = _effective_completion_tokens(
         generated_tokens=list(generated.get("tokens") or []),
         streamed_token_times=token_times,
     )
-    elapsed_s = float(generated.get("elapsed_s") or 0.0)
+    request_elapsed_s = max(
+        carried_request_elapsed_s,
+        time.perf_counter() - request_started_s,
+    )
+    generated["request_elapsed_s"] = request_elapsed_s
+    raw_stats["request_elapsed_s"] = request_elapsed_s
+    raw_stats.setdefault("elapsed_s", generation_elapsed_s)
     stats = _repair_streamed_generation_stats(
-        dict(generated.get("stats") or {}),
+        raw_stats,
         completion_tokens=completion_tokens,
-        elapsed_s=elapsed_s,
+        elapsed_s=generation_elapsed_s,
     )
     envelope = _metrics_envelope(
         stats=stats,
         prompt_tokens=len(prompt_ids),
         completion_tokens=completion_tokens,
-        request_elapsed_s=elapsed_s,
+        request_elapsed_s=request_elapsed_s,
         token_times=token_times,
-        request_started_s=float(stats.get("request_started_s") or time.perf_counter()),
+        request_started_s=request_started_s,
         lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
         session_id=session_id,
         session_cache_hit=False,
@@ -16726,19 +16796,22 @@ def _finalize_mtp_batch_generation(
     envelope["verify_timing_scope"] = "external_profile_only"
     if request_observability:
         envelope.update(request_observability)
-    cleanup = _auto_clear_mlx_cache_after_completed_request(
-        state,
-        session_id=session_id,
-        request_observability=request_observability,
-    )
-    if cleanup is not None:
-        envelope["mlx_cache_cleanup"] = cleanup
-    envelope.update(_mlx_allocator_public_stats())
+    if defer_mlx_finalize:
+        envelope["mlx_finalize_scope"] = "cohort_owner_after_decode"
+    else:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=session_id,
+            request_observability=request_observability,
+        )
+        if cleanup is not None:
+            envelope["mlx_cache_cleanup"] = cleanup
+        envelope.update(_mlx_allocator_public_stats())
     stats.update(envelope)
     stats.update(_generation_truth_stats(state, "mtp"))
-    stats["server_elapsed_s"] = elapsed_s
+    stats["server_elapsed_s"] = request_elapsed_s
     stats["server_tok_s"] = (
-        completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
+        completion_tokens / request_elapsed_s if request_elapsed_s > 0 else 0.0
     )
     state.last_metrics.append(dict(envelope))
     state.last_metrics = state.last_metrics[-100:]
@@ -16757,7 +16830,7 @@ def _finalize_mtp_batch_generation(
                     "scheduler_lane": "mtp_batch",
                     "prompt_tokens": len(prompt_ids),
                     "completion_tokens": completion_tokens,
-                    "elapsed_s": round(elapsed_s, 6),
+                    "elapsed_s": round(request_elapsed_s, 6),
                     "tok_s": round(float(generated.get("tok_s") or 0.0), 6),
                     "end_to_end_tok_s": round(float(generated["end_to_end_tok_s"]), 6),
                     "seed": stats.get("server_seed"),
@@ -16782,6 +16855,76 @@ def _finalize_mtp_batch_generation(
     return generated
 
 
+def _claim_mtp_batch_cancellation_finalize(
+    *,
+    route_selected: bool,
+    ownership: MTPBatchFinalizeOwnership,
+) -> str | None:
+    if not route_selected:
+        return None
+    return ownership.claim_cancellation_finalize()
+
+
+def _finalize_mtp_batch_cohort_owner(
+    state: ServerState,
+    jobs: list[MTPBatchJob],
+) -> dict[str, Any]:
+    """Run MLX completion work after the fixed cohort leaves model execution."""
+
+    receipt: dict[str, Any] = {
+        "mlx_finalize_scope": "cohort_owner_after_decode",
+    }
+    for job in jobs:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=job.session_id,
+            request_observability=job.request_observability,
+        )
+        if cleanup is not None:
+            receipt["mlx_cache_cleanup"] = cleanup
+            break
+    receipt.update(_mlx_allocator_public_stats())
+    return receipt
+
+
+def _validate_mtp_batch_request_contract(
+    state: ServerState,
+    prompt_ids: list[int],
+    *,
+    response_max: int,
+    constraint_spec: Any | None,
+    vision_splice: Any | None,
+    background_request: bool,
+    depth: int | None,
+    resolved_mtp_depth: int | None,
+) -> None:
+    if constraint_spec is not None:
+        raise MTPBatchRequestError("mtp_batch does not support constraint_spec")
+    if vision_splice is not None:
+        raise MTPBatchRequestError("mtp_batch does not support vision_splice")
+    if background_request:
+        raise MTPBatchRequestError("mtp_batch does not support background_request")
+    for field, value in (
+        ("depth", depth),
+        ("resolved_mtp_depth", resolved_mtp_depth),
+    ):
+        if value is not None and int(value) != 1:
+            raise MTPBatchRequestError(f"mtp_batch requires {field}=1")
+    service = getattr(state, "mtp_batch_service", None)
+    lane = getattr(state, "mtp_batch_lane", None)
+    if service is None or lane is None:
+        raise MTPBatchRequestError(
+            "mtp_batch service was not installed at construction"
+        )
+    if len(prompt_ids) + int(response_max) > int(
+        lane.geometry.max_context_tokens
+    ):
+        raise A3BMTPBatchCapacityError(
+            "mtp_batch requires prompt_tokens + max_tokens <= "
+            f"{lane.geometry.max_context_tokens}"
+        )
+
+
 def _run_mtp_batch_generation_dispatched(
     state: ServerState,
     prompt_ids: list[int],
@@ -16789,16 +16932,6 @@ def _run_mtp_batch_generation_dispatched(
     response_id: str | None,
     kwargs: dict[str, Any],
 ) -> dict[str, Any]:
-    for field in ("constraint_spec", "vision_splice"):
-        if kwargs.get(field) is not None:
-            raise MTPBatchRequestError(f"mtp_batch does not support {field}")
-    if bool(kwargs.get("background_request")):
-        raise MTPBatchRequestError("mtp_batch does not support background_request")
-    for field in ("depth", "resolved_mtp_depth"):
-        value = kwargs.get(field)
-        if value is not None and int(value) != 1:
-            raise MTPBatchRequestError(f"mtp_batch requires {field}=1")
-
     service = getattr(state, "mtp_batch_service", None)
     lane = getattr(state, "mtp_batch_lane", None)
     if service is None or lane is None:
@@ -16815,9 +16948,22 @@ def _run_mtp_batch_generation_dispatched(
         presence_penalty=kwargs.get("presence_penalty"),
         frequency_penalty=kwargs.get("frequency_penalty"),
     )
+    _validate_mtp_batch_request_contract(
+        state,
+        prompt_ids,
+        response_max=response_max,
+        constraint_spec=kwargs.get("constraint_spec"),
+        vision_splice=kwargs.get("vision_splice"),
+        background_request=bool(kwargs.get("background_request")),
+        depth=kwargs.get("depth"),
+        resolved_mtp_depth=kwargs.get("resolved_mtp_depth"),
+    )
     generation_seed, _seed_is_explicit = _resolve_seed(state, kwargs.get("seed"))
     request_observability = dict(kwargs.get("request_observability") or {})
     solo_kwargs = dict(kwargs)
+    finalize_ownership = solo_kwargs.pop(
+        "mtp_batch_finalize_ownership", MTPBatchFinalizeOwnership()
+    )
     solo_kwargs["seed"] = generation_seed
     solo_kwargs["request_observability"] = dict(request_observability)
     request_observability.update(
@@ -16863,8 +17009,10 @@ def _run_mtp_batch_generation_dispatched(
             f"request {item.request_id} cancelled"
         ),
         cancel_event=cancel_event,
+        finalize_ownership=finalize_ownership,
         request_observability=request_observability,
         omit_speculative_bonus=omit_bonus,
+        session_id=kwargs.get("session_id"),
     )
     smart_fan_lease = _begin_smart_fan_request(
         state,
@@ -22770,6 +22918,10 @@ def create_app(state: ServerState) -> FastAPI:
             request,
             allow_client_controls=client_controls_allowed,
         )
+        defer_mtp_batch_mlx_finalize = _use_live_mtp_batch(
+            state, effective_mode=request_generation_mode
+        )
+        mtp_batch_finalize_ownership = MTPBatchFinalizeOwnership()
         try:
             constraint_spec = constraint_spec_from_response_format(
                 request.response_format,
@@ -22891,6 +23043,25 @@ def create_app(state: ServerState) -> FastAPI:
                 prompt_tokens=len(prompt_ids),
             )
         )
+        if defer_mtp_batch_mlx_finalize:
+            response_max, _sampler, _generation_limits = _generation_params(
+                state,
+                prompt_token_count=len(prompt_ids),
+                max_tokens=request_max_tokens,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+            )
+            _validate_mtp_batch_request_contract(
+                state,
+                prompt_ids,
+                response_max=response_max,
+                constraint_spec=constraint_spec,
+                vision_splice=vision_splice,
+                background_request=background,
+                depth=request_depth,
+                resolved_mtp_depth=effective_request_depth,
+            )
         current_system_hash = system_prompt_hash(messages_for_generation)
         if current_system_hash is not None and not background:
             state.main_system_prompt_hash = current_system_hash
@@ -23505,6 +23676,7 @@ def create_app(state: ServerState) -> FastAPI:
                         token_callback=_nonstream_on_tokens,
                         prefill_callback=_nonstream_on_prefill,
                         cancel_event=nonstream_cancel_event,
+                        mtp_batch_finalize_ownership=mtp_batch_finalize_ownership,
                         streaming_response=False,
                     )
                 )
@@ -23543,6 +23715,7 @@ def create_app(state: ServerState) -> FastAPI:
                     token_callback=_nonstream_on_tokens,
                     prefill_callback=_nonstream_on_prefill,
                     cancel_event=nonstream_cancel_event,
+                    mtp_batch_finalize_ownership=mtp_batch_finalize_ownership,
                     streaming_response=False,
                 )
                 generated_result = attach_response_observability(generated_result)
@@ -24621,6 +24794,9 @@ def create_app(state: ServerState) -> FastAPI:
                                 request_observability=request_observability,
                                 prefill_callback=on_prefill,
                                 cancel_event=cancel_event,
+                                mtp_batch_finalize_ownership=(
+                                    mtp_batch_finalize_ownership
+                                ),
                             )
                             generated = maybe_retry_degenerate_read_only_inspection(
                                 generated
@@ -24672,6 +24848,9 @@ def create_app(state: ServerState) -> FastAPI:
                                     request_observability=request_observability,
                                     prefill_callback=on_prefill,
                                     cancel_event=cancel_event,
+                                    mtp_batch_finalize_ownership=(
+                                        mtp_batch_finalize_ownership
+                                    ),
                                 )
                                 generated = maybe_retry_degenerate_read_only_inspection(
                                     generated
@@ -26171,6 +26350,14 @@ def create_app(state: ServerState) -> FastAPI:
                                 reason=nonlocal_cancel_reason,
                                 request_observability=request_observability,
                                 client_disconnected=stream_cancelled_by_client,
+                                mlx_finalize_scope=(
+                                    _claim_mtp_batch_cancellation_finalize(
+                                        route_selected=(
+                                            defer_mtp_batch_mlx_finalize
+                                        ),
+                                        ownership=mtp_batch_finalize_ownership,
+                                    )
+                                ),
                             )
                             cancelled_metric_recorded = True
                     state.dashboard.in_flight.deregister(response_id)
@@ -26310,6 +26497,10 @@ def create_app(state: ServerState) -> FastAPI:
                 reason=nonstream_cancel_reason,
                 request_observability=request_observability,
                 client_disconnected=nonstream_client_disconnected,
+                mlx_finalize_scope=_claim_mtp_batch_cancellation_finalize(
+                    route_selected=defer_mtp_batch_mlx_finalize,
+                    ownership=mtp_batch_finalize_ownership,
+                ),
             )
             return JSONResponse(
                 status_code=499,

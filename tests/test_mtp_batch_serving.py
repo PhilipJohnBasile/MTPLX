@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -10,7 +10,11 @@ from mtplx.a3b_mtp_batch import (
     A3BMTPBatchStreamResult,
 )
 from mtplx.sampling import SamplerConfig
-from mtplx.server.mtp_batch import MTPBatchGenerationService, MTPBatchJob
+from mtplx.server.mtp_batch import (
+    MTPBatchFinalizeOwnership,
+    MTPBatchGenerationService,
+    MTPBatchJob,
+)
 
 
 class _Driver:
@@ -165,6 +169,122 @@ def test_one_request_uses_unchanged_solo_runner():
     assert service.snapshot()["solo_runs"] == 1
 
 
+def test_cancellation_before_admission_keeps_finalize_ownership_local():
+    ownership = MTPBatchFinalizeOwnership()
+    service = _service(_Driver())
+    job = _job(0)
+    job.finalize_ownership = ownership
+
+    assert (
+        ownership.claim_cancellation_finalize()
+        == "not_required_before_admission"
+    )
+    future = service.submit(job)
+
+    with pytest.raises(RuntimeError, match="cancelled request-0"):
+        future.result(timeout=1)
+    assert service.snapshot()["pending"] == 0
+
+
+def test_admission_transfers_cancellation_finalize_ownership_to_model_owner():
+    ownership = MTPBatchFinalizeOwnership()
+    assert ownership.accept_owner() is True
+    ownership.mark_admitted()
+
+    assert ownership.claim_cancellation_finalize() == "cohort_owner_after_decode"
+
+
+def test_cancellation_claim_wins_selection_to_admission_race():
+    ownership = MTPBatchFinalizeOwnership()
+    entered_mark = Event()
+    release_mark = Event()
+    owner_finalize_calls = []
+    solo_calls = []
+    original_mark_admitted = ownership.mark_admitted
+
+    def blocked_mark_admitted():
+        entered_mark.set()
+        assert release_mark.wait(timeout=2)
+        return original_mark_admitted()
+
+    ownership.mark_admitted = blocked_mark_admitted
+    service = MTPBatchGenerationService(
+        SimpleNamespace(runtime=SimpleNamespace(tokenizer=None)),
+        lane=object(),
+        driver=_Driver(),
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda jobs: owner_finalize_calls.append(list(jobs)),
+    )
+    job = _job(
+        0,
+        solo_runner=lambda job: solo_calls.append(job.request_id) or {},
+    )
+    job.finalize_ownership = ownership
+    service.submit(job)
+    pump = Thread(target=service.pump_once)
+    pump.start()
+    assert entered_mark.wait(timeout=1)
+
+    job.cancel_event.set()
+    assert (
+        ownership.claim_cancellation_finalize()
+        == "not_required_before_admission"
+    )
+    release_mark.set()
+    pump.join(timeout=2)
+
+    assert not pump.is_alive()
+    assert solo_calls == []
+    assert owner_finalize_calls == []
+    with pytest.raises(RuntimeError, match="cancelled request-0"):
+        job.future.result(timeout=1)
+
+
+@pytest.mark.parametrize("cancel_before_start", [True, False])
+def test_cancelled_solo_request_uses_truthful_finalize_ownership(
+    cancel_before_start,
+):
+    events = []
+
+    def solo(job):
+        events.append("solo")
+        job.cancel_event.set()
+        raise job.cancel_error(job)
+
+    state = SimpleNamespace(runtime=SimpleNamespace(tokenizer=None))
+    service = MTPBatchGenerationService(
+        state,
+        lane=object(),
+        driver=_Driver(),
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda jobs: events.append(
+            ("owner_finalize", [job.request_id for job in jobs])
+        ),
+    )
+    job = _job(0, solo_runner=solo)
+    if cancel_before_start:
+        job.cancel_event.set()
+    service.submit(job)
+
+    service.pump_once()
+
+    with pytest.raises(RuntimeError, match="cancelled request-0"):
+        job.future.result(timeout=1)
+    if cancel_before_start:
+        assert events == []
+        assert (
+            job.finalize_ownership.claim_cancellation_finalize()
+            == "not_required_before_admission"
+        )
+    else:
+        assert events == [
+            "solo",
+            ("owner_finalize", [job.request_id]),
+        ]
+
+
 def test_cohort_text_strips_terminal_stop_tokens():
     service = _service(_Driver())
     service.state.runtime.tokenizer = SimpleNamespace(
@@ -177,7 +297,10 @@ def test_cohort_text_strips_terminal_stop_tokens():
 
     service.pump_once()
 
-    assert jobs[0].future.result(timeout=1)["text"] == "10"
+    result = jobs[0].future.result(timeout=1)
+    assert "text" not in result
+    assert result["_mtp_batch_decode_on_request"] is True
+    assert result["_mtp_batch_stop_token_ids"] == [1010]
 
 
 def test_cohort_seals_at_eight_and_later_request_waits_for_next_pump():
@@ -248,18 +371,40 @@ def test_shutdown_closes_queued_requests():
 
 
 def test_shutdown_closes_active_requests_before_scheduler_cancellation():
-    service = _service(_Driver())
-    job = _job(0)
-    service.submit(job)
-    with service._condition:
-        service._pending.clear()
-        service._active = [job]
+    started = Event()
+    owner_finalize = []
 
-    service.shutdown()
+    def solo(job):
+        started.set()
+        assert job.cancel_event.wait(timeout=2)
+        raise job.cancel_error(job)
+
+    state = SimpleNamespace(runtime=SimpleNamespace(tokenizer=None))
+    service = MTPBatchGenerationService(
+        state,
+        lane=object(),
+        driver=_Driver(),
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda jobs: owner_finalize.append(
+            (get_ident(), [item.request_id for item in jobs])
+        ),
+    )
+    job = _job(0, solo_runner=solo)
+    service.submit(job)
+    pump = Thread(target=service.pump_once)
+    pump.start()
+    assert started.wait(timeout=1)
+    shutdown_thread = get_ident()
+
+    service.shutdown(timeout_s=2)
+    pump.join(timeout=1)
 
     assert job.cancel_requested()
-    with pytest.raises(RuntimeError, match="shut down"):
+    with pytest.raises(RuntimeError, match="cancelled request-0"):
         job.future.result(timeout=1)
+    assert owner_finalize == [(pump.ident, [job.request_id])]
+    assert owner_finalize[0][0] != shutdown_thread
 
 
 def test_duplicate_public_request_ids_keep_distinct_cohort_rows():
@@ -326,6 +471,140 @@ def test_cancelled_terminal_future_closes_before_long_peer_finishes():
     finally:
         release_peer.set()
         pump.join(timeout=2)
+
+
+def test_successful_future_waits_for_owner_finalize_after_every_row_stops():
+    first_terminal = Event()
+    release_peer = Event()
+    owner_finalize_calls = []
+
+    def blocking_driver(_lane, requests):
+        requests[0].on_terminal("length", 1)
+        first_terminal.set()
+        assert release_peer.wait(timeout=2)
+        return A3BMTPBatchResult(
+            streams=(
+                A3BMTPBatchStreamResult("0", (), "length"),
+                A3BMTPBatchStreamResult("1", (), "length"),
+            ),
+            cycles=1,
+            accepted_drafts=0,
+            rejected_drafts=1,
+            route_id="fake-b8-t2",
+            width_histogram=MappingProxyType({8: 1}),
+        )
+
+    state = SimpleNamespace(runtime=SimpleNamespace(tokenizer=None))
+    service = MTPBatchGenerationService(
+        state,
+        lane=SimpleNamespace(route_id="fake-b8-t2"),
+        driver=blocking_driver,
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda jobs: owner_finalize_calls.append(list(jobs)),
+    )
+    first = _job(0)
+    second = _job(1)
+    service.submit(first)
+    service.submit(second)
+    pump = Thread(target=service.pump_once)
+    pump.start()
+    try:
+        assert first_terminal.wait(timeout=1)
+        assert not first.future.done()
+        assert owner_finalize_calls == []
+    finally:
+        release_peer.set()
+        pump.join(timeout=2)
+
+    assert owner_finalize_calls == [[first, second]]
+    assert first.future.result(timeout=1)["_mtp_batch_defer_mlx_finalize"] is True
+
+
+@pytest.mark.parametrize("failure", ["exception", "uncleared"])
+def test_owner_finalize_failure_poisons_service_without_claiming_success(failure):
+    def owner_finalize(_jobs):
+        if failure == "exception":
+            raise RuntimeError("clear exploded")
+        return {
+            "mlx_cache_cleanup": {
+                "cleared": False,
+                "reason": "clear_cache_error",
+            }
+        }
+
+    state = SimpleNamespace(runtime=SimpleNamespace(tokenizer=None))
+    service = MTPBatchGenerationService(
+        state,
+        lane=SimpleNamespace(route_id="fake-b8-t2"),
+        driver=_Driver(),
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=owner_finalize,
+    )
+    first = _job(0)
+    second = _job(1)
+    service.submit(first)
+    service.submit(second)
+
+    service.pump_once()
+
+    assert "finalize" in str(service.snapshot()["last_error"]).lower()
+    with pytest.raises(RuntimeError, match="owner finalize failed"):
+        first.future.result(timeout=1)
+    with pytest.raises(RuntimeError, match="owner finalize failed"):
+        second.future.result(timeout=1)
+    assert (
+        first.finalize_ownership.claim_cancellation_finalize()
+        == "cohort_owner_finalize_failed"
+    )
+    later = _job(2)
+    with pytest.raises(RuntimeError, match="shut down"):
+        service.submit(later).result(timeout=1)
+
+
+def test_owner_finalize_failure_drains_requests_queued_behind_active_cohort():
+    entered = Event()
+    release = Event()
+    solo_calls = []
+
+    def blocking_driver(lane, requests):
+        entered.set()
+        assert release.wait(timeout=2)
+        return _Driver()(lane, requests)
+
+    def owner_finalize(_jobs):
+        raise RuntimeError("clear exploded")
+
+    service = MTPBatchGenerationService(
+        SimpleNamespace(runtime=SimpleNamespace(tokenizer=None)),
+        lane=SimpleNamespace(route_id="fake-b8-t2"),
+        driver=blocking_driver,
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=owner_finalize,
+    )
+    first = _job(0)
+    second = _job(1)
+    service.submit(first)
+    service.submit(second)
+    pump = Thread(target=service.pump_once)
+    pump.start()
+    assert entered.wait(timeout=1)
+
+    queued = _job(
+        2,
+        solo_runner=lambda job: solo_calls.append(job.request_id) or {},
+    )
+    service.submit(queued)
+    release.set()
+    pump.join(timeout=2)
+
+    assert not pump.is_alive()
+    assert solo_calls == []
+    assert service.snapshot()["pending"] == 0
+    with pytest.raises(RuntimeError, match="owner finalize failed"):
+        queued.future.result(timeout=1)
 
 
 def test_real_model_owner_scheduler_gathers_eight_requests():

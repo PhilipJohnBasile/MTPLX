@@ -45,6 +45,10 @@ def test_mtp_batch_server_settings_accept_exact_contract():
             "8",
             "--decode-batch-max",
             "8",
+            "--context-window",
+            "131072",
+            "--verify-core",
+            "stock",
         ]
     )
 
@@ -59,6 +63,8 @@ def test_mtp_batch_server_settings_accept_exact_contract():
         (["--depth", "2"], "depth=1"),
         (["--max-active-requests", "4"], "max_active_requests=8"),
         (["--decode-batch-max", "4"], "decode_batch_max=8"),
+        (["--context-window", "262144"], "context_window=131072"),
+        (["--verify-core", "linear-gdn-from-conv-tape"], "verify_core=stock"),
     ],
 )
 def test_mtp_batch_server_settings_fail_closed(extra, reason):
@@ -75,6 +81,10 @@ def test_mtp_batch_server_settings_fail_closed(extra, reason):
         "8",
         "--decode-batch-max",
         "8",
+        "--context-window",
+        "131072",
+        "--verify-core",
+        "stock",
     ]
     args = parse_args([*base, *extra])
 
@@ -117,7 +127,10 @@ def _mtp_batch_dispatch_state():
     state.args.max_active_requests = 8
     state.args.decode_batch_max = 8
     state.draft_sampler = openai.SamplerConfig(temperature=0.6, top_p=0.95, top_k=20)
-    state.mtp_batch_lane = SimpleNamespace(route_id="qwen35b-b8-t2-m16")
+    state.mtp_batch_lane = SimpleNamespace(
+        route_id="qwen35b-b8-t2-m16",
+        geometry=SimpleNamespace(max_context_tokens=131_072),
+    )
     state.begin_foreground = lambda: None
     state.end_foreground = lambda: None
     return state
@@ -181,6 +194,123 @@ def test_mtp_batch_dispatch_submits_mtp_job_and_never_calls_ar(monkeypatch):
     assert captured["job"].seed == 17
     assert captured["job"].sampler.temperature == 0.0
     assert captured["job"].draft_sampler.temperature == 0.0
+
+
+def test_mtp_batch_finalize_uses_request_elapsed_and_never_touches_mlx(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    state.last_metrics = []
+    state.requests_completed = 0
+    state.last_request_at = 0.0
+    mlx_calls = []
+    monkeypatch.setattr(
+        openai,
+        "_auto_clear_mlx_cache_after_completed_request",
+        lambda *_args, **_kwargs: mlx_calls.append("clear"),
+    )
+    monkeypatch.setattr(
+        openai,
+        "_mlx_allocator_public_stats",
+        lambda: mlx_calls.append("stats") or {"active_memory_bytes": 99},
+    )
+    clock = {"now": 13.0}
+    completion_events = []
+
+    def decode_on_request(_tokens):
+        clock["now"] = 14.0
+        return "A"
+
+    def completion_callback(payload):
+        completion_events.append(dict(payload))
+        clock["now"] = 15.0
+
+    state.runtime.tokenizer = SimpleNamespace(decode=decode_on_request)
+    monkeypatch.setattr(openai.time, "perf_counter", lambda: clock["now"])
+    generated = {
+        "request_id": "request-1",
+        "tokens": [65],
+        "stats": {
+            "generation_mode": "mtp",
+            "scheduler_lane": "mtp_batch",
+            "decode_elapsed_s": 1.0,
+            "request_elapsed_s": 3.0,
+            "request_started_s": 10.0,
+        },
+        "elapsed_s": 1.0,
+        "request_elapsed_s": 3.0,
+        "_mtp_batch_defer_mlx_finalize": True,
+        "_mtp_batch_decode_on_request": True,
+        "_mtp_batch_stop_token_ids": [],
+        "_mtp_batch_prefill_callback": completion_callback,
+        "_mtp_batch_prefill_completion": {
+            "phase": "completed",
+            "elapsed_s": 1.0,
+            "prompt_eval_time_s": 1.0,
+        },
+        "_token_times": [],
+        "_generation_limits": {},
+        "finish_reason": "length",
+    }
+
+    result = openai._finalize_mtp_batch_generation(
+        state,
+        [1, 2],
+        generated,
+        session_id=None,
+        request_observability={"warmup": True},
+    )
+
+    assert mlx_calls == []
+    assert result["text"] == "A"
+    assert result["stats"]["decode_elapsed_s"] == pytest.approx(1.0)
+    assert completion_events == [
+        {
+            "phase": "completed",
+            "elapsed_s": 1.0,
+            "prompt_eval_time_s": 1.0,
+        }
+    ]
+    assert result["stats"]["request_elapsed_s"] == pytest.approx(5.0)
+    assert result["stats"]["server_elapsed_s"] == pytest.approx(5.0)
+    assert result["stats"]["server_tok_s"] == pytest.approx(1 / 5)
+    assert result["stats"]["mlx_finalize_scope"] == "cohort_owner_after_decode"
+    assert "active_memory_bytes" not in result["stats"]
+
+
+def test_mtp_batch_owner_finalize_runs_cleanup_and_stats_once(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    jobs = [
+        SimpleNamespace(session_id=None, request_observability={}),
+        SimpleNamespace(
+            session_id=None,
+            request_observability={"request_client_hint": "aime"},
+        ),
+    ]
+    cleanup_calls = []
+
+    def auto_clear(_state, *, session_id, request_observability):
+        cleanup_calls.append((session_id, dict(request_observability)))
+        if request_observability.get("request_client_hint") == "aime":
+            return {"cleared": True, "reason": "aime_stateless_question"}
+        return None
+
+    monkeypatch.setattr(openai, "_auto_clear_mlx_cache_after_completed_request", auto_clear)
+    monkeypatch.setattr(
+        openai,
+        "_mlx_allocator_public_stats",
+        lambda: {"active_memory_bytes": 123},
+    )
+
+    receipt = openai._finalize_mtp_batch_cohort_owner(state, jobs)
+
+    assert len(cleanup_calls) == 2
+    assert receipt == {
+        "mlx_finalize_scope": "cohort_owner_after_decode",
+        "mlx_cache_cleanup": {
+            "cleared": True,
+            "reason": "aime_stateless_question",
+        },
+        "active_memory_bytes": 123,
+    }
 
 
 def test_mtp_batch_explicit_ar_stays_on_serial_ar(monkeypatch):
@@ -264,6 +394,54 @@ def test_mtp_batch_constraint_error_is_openai_compatible_400(monkeypatch):
 
     assert response.status_code == 400
     assert "response_format" in response.json()["error"]["message"]
+
+
+def test_streaming_mtp_batch_depth_error_is_http_400_before_sse(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.mtp_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("invalid stream must fail before submit")
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: pytest.fail("invalid stream must not use solo"),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={
+            "x-mtplx-allow-client-controls": "1",
+            "x-mtplx-cache-mode": "bypass",
+        },
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 4,
+            "depth": 2,
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "mtp_batch_request_error"
+
+
+def test_mtp_batch_over_context_request_fails_before_cohort_admission():
+    state = _mtp_batch_dispatch_state()
+    state.mtp_batch_lane.geometry = SimpleNamespace(max_context_tokens=3)
+    state.mtp_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("invalid row must not poison a cohort")
+    )
+
+    with pytest.raises(openai.A3BMTPBatchCapacityError, match="prompt_tokens"):
+        openai._run_generation_dispatched(
+            state,
+            [1, 2, 3],
+            batch_key="test.over_context",
+            generation_mode="mtp",
+            max_tokens=1,
+        )
 
 
 def test_mtp_batch_scheduler_health_reports_real_width_and_acceptance():
@@ -4208,6 +4386,94 @@ def test_stream_cancellation_metric_keeps_partial_throughput():
     assert latest["server_tok_s"] > 0.0
     assert latest["partial_decode_tok_s"] == latest["decode_tok_s"]
     assert latest["partial_request_tok_s"] == latest["request_tok_s"]
+
+
+@pytest.mark.parametrize(
+    ("owner_admitted", "expected_calls", "expected_scope"),
+    [
+        (False, [], "not_required_before_admission"),
+        (True, [], "cohort_owner_after_decode"),
+    ],
+)
+def test_mtp_batch_cancellation_metric_matches_finalize_ownership(
+    monkeypatch,
+    owner_admitted,
+    expected_calls,
+    expected_scope,
+):
+    state = _fake_streaming_session_state()
+    mlx_calls = []
+    monkeypatch.setattr(
+        openai,
+        "_auto_clear_mlx_cache_after_completed_request",
+        lambda *_args, **_kwargs: mlx_calls.append("clear"),
+    )
+    monkeypatch.setattr(
+        openai,
+        "_mlx_allocator_public_stats",
+        lambda: mlx_calls.append("stats") or {},
+    )
+
+    ownership = openai.MTPBatchFinalizeOwnership()
+    if owner_admitted:
+        assert ownership.accept_owner() is True
+        ownership.mark_admitted()
+    mlx_finalize_scope = openai._claim_mtp_batch_cancellation_finalize(
+        route_selected=True,
+        ownership=ownership,
+    )
+
+    openai._record_stream_cancellation_metric(
+        state,
+        response_id="chatcmpl_mtp_cancel",
+        session_id=None,
+        prompt_tokens=100,
+        streamed_completion_tokens=1,
+        stream_started_s=time.perf_counter() - 1.0,
+        reason="stream_cancelled",
+        request_observability={"scheduler_lane": "mtp_batch"},
+        client_disconnected=False,
+        mlx_finalize_scope=mlx_finalize_scope,
+    )
+
+    assert mlx_calls == expected_calls
+    assert state.last_metrics[-1].get("mlx_finalize_scope") == expected_scope
+
+
+def test_non_mtp_cancellation_keeps_request_thread_mlx_cleanup(monkeypatch):
+    state = _fake_streaming_session_state()
+    mlx_calls = []
+    monkeypatch.setattr(
+        openai,
+        "_auto_clear_mlx_cache_after_completed_request",
+        lambda *_args, **_kwargs: mlx_calls.append("clear") or {"cleared": True},
+    )
+    monkeypatch.setattr(
+        openai,
+        "_mlx_allocator_public_stats",
+        lambda: mlx_calls.append("stats") or {},
+    )
+
+    mlx_finalize_scope = openai._claim_mtp_batch_cancellation_finalize(
+        route_selected=False,
+        ownership=openai.MTPBatchFinalizeOwnership(),
+    )
+    openai._record_stream_cancellation_metric(
+        state,
+        response_id="chatcmpl_serial_cancel",
+        session_id=None,
+        prompt_tokens=10,
+        streamed_completion_tokens=1,
+        stream_started_s=time.perf_counter() - 1.0,
+        reason="stream_cancelled",
+        request_observability={"scheduler_lane": "solo_mtp"},
+        client_disconnected=False,
+        mlx_finalize_scope=mlx_finalize_scope,
+    )
+
+    assert mlx_finalize_scope is None
+    assert mlx_calls == ["clear", "stats"]
+    assert "mlx_finalize_scope" not in state.last_metrics[-1]
 
 
 def test_tool_requests_enable_prompt_prefix_bank_commit(monkeypatch):

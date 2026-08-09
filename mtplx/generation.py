@@ -763,17 +763,22 @@ def _split_spans_at(
 
 
 def _iter_prefill_chunk_spans(
-    token_count: int, *, mandatory_edges: tuple[int, ...] = ()
+    token_count: int,
+    *,
+    mandatory_edges: tuple[int, ...] = (),
+    chunk_size: int | None = None,
 ) -> list[tuple[int, int]]:
     if token_count <= 0:
         return []
-    if not _sustained_prefill_enabled():
+    if chunk_size is None and not _sustained_prefill_enabled():
         return _split_spans_at([(0, token_count)], mandatory_edges)
-    chunk_size = _prefill_chunk_size()
+    resolved_chunk_size = (
+        _prefill_chunk_size() if chunk_size is None else max(1, int(chunk_size))
+    )
     return _split_spans_at(
         [
-            (start, min(token_count, start + chunk_size))
-            for start in range(0, token_count, chunk_size)
+            (start, min(token_count, start + resolved_chunk_size))
+            for start in range(0, token_count, resolved_chunk_size)
         ],
         mandatory_edges,
     )
@@ -3040,8 +3045,9 @@ def _prefill_spans_with_tail_grid(
     *,
     tail_interval: int,
     mandatory_edges: tuple[int, ...] = (),
+    chunk_size: int | None = None,
 ) -> list[tuple[int, int]]:
-    spans = list(_iter_prefill_chunk_spans(token_count))
+    spans = list(_iter_prefill_chunk_spans(token_count, chunk_size=chunk_size))
     if not spans or tail_interval <= 0:
         return _split_spans_at(spans, mandatory_edges)
     start, end = spans[-1]
@@ -4606,6 +4612,7 @@ def _prefill_committed_mtp_history_streaming(
     vision_splice: Any | None = None,
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
     stable_prefix_len: int | None = None,
+    prefill_chunk_size: int | None = None,
 ):
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
@@ -4657,9 +4664,12 @@ def _prefill_committed_mtp_history_streaming(
             len(body),
             tail_interval=_gdn_boundary_tail_interval(),
             mandatory_edges=_cold_edges,
+            chunk_size=prefill_chunk_size,
         )
         if capture_boundaries
-        else _iter_prefill_chunk_spans(len(body))
+        else _iter_prefill_chunk_spans(
+            len(body), chunk_size=prefill_chunk_size
+        )
     )
     for start, end in mtp_streaming_spans:
         _check_postcommit_abort(abort_check)

@@ -7,12 +7,21 @@ import numpy as np
 import pytest
 from mlx_lm.models.cache import ArraysCache, KVCache
 
-from mtplx.a3b_mtp_batch import A3BMTPBatchRequest, generate_a3b_mtp_batch
+from mtplx.a3b_mtp_batch import (
+    A3BMTPBatchRequest,
+    _merge_qwen35b_mtp_caches,
+    _merge_qwen35b_target_caches,
+    generate_a3b_mtp_batch,
+)
 from mtplx.ragged_kv_cache import RaggedBatchKVCache
 from mtplx.sampling import SamplerConfig
 
 
 VOCAB = 16
+LAYER_TYPES = tuple(
+    "full_attention" if (index + 1) % 4 == 0 else "linear_attention"
+    for index in range(40)
+)
 
 
 def _logits(token: int) -> np.ndarray:
@@ -22,17 +31,23 @@ def _logits(token: int) -> np.ndarray:
 
 
 class _FakeLane:
-    def __init__(self, *, fail_verify: bool = False):
+    def __init__(self, *, fail_verify: bool = False, logits_dtype=mx.float32):
         self.geometry = SimpleNamespace(
             cohort_slots=8,
             verify_tokens=2,
             max_context_tokens=131072,
+            num_kv_heads=2,
+            head_dim=256,
         )
         self.route_id = "fake_qwen35b_b8_t2"
         self.fail_verify = fail_verify
+        self.logits_dtype = logits_dtype
         self.last_cache = None
         self.last_mtp_cache = None
         self.prefill_calls = 0
+
+    merge_target_caches = staticmethod(_merge_qwen35b_target_caches)
+    merge_mtp_caches = staticmethod(_merge_qwen35b_mtp_caches)
 
     def prefill_request(self, prompt, *, abort_check=None):
         self.prefill_calls += 1
@@ -40,30 +55,46 @@ class _FakeLane:
             from mtplx.generation import PostcommitAbort
 
             raise PostcommitAbort("cancelled")
-        kv = KVCache()
         length = len(prompt)
-        values = mx.array(np.asarray(prompt, dtype=np.float32)).reshape(1, 1, length, 1)
-        kv.update_and_fetch(values, values)
-        recurrent = ArraysCache(2)
-        recurrent[0] = mx.array([[[float(prompt[-1])]]])
-        recurrent[1] = mx.array([[[[float(prompt[-1])]]]])
-        logits = mx.array(_logits(prompt[-1] + 1))[None, :]
+        values = mx.broadcast_to(
+            mx.array(np.asarray(prompt, dtype=np.float32)).reshape(1, 1, length, 1),
+            (1, 2, length, 256),
+        )
+        cache = []
+        for layer_type in LAYER_TYPES:
+            if layer_type == "full_attention":
+                entry = KVCache()
+                entry.update_and_fetch(values, values)
+            else:
+                entry = ArraysCache(2)
+                entry[0] = mx.array([[[float(prompt[-1])]]])
+                entry[1] = mx.array([[[[float(prompt[-1])]]]])
+            cache.append(entry)
+        logits = mx.array(_logits(prompt[-1] + 1))[None, :].astype(
+            self.logits_dtype
+        )
         hidden = mx.array([[[float(prompt[-1])]]])
         mtp = KVCache()
         history = list(prompt[1:])
         if history:
-            history_values = mx.array(np.asarray(history, dtype=np.float32)).reshape(
-                1, 1, len(history), 1
+            history_values = mx.broadcast_to(
+                mx.array(np.asarray(history, dtype=np.float32)).reshape(
+                    1, 1, len(history), 1
+                ),
+                (1, 2, len(history), 256),
             )
             mtp.update_and_fetch(history_values, history_values)
-        return [kv, recurrent], logits, hidden, [mtp], 0.0
+        return cache, logits, hidden, [mtp], 0.0
 
     def draft_forward(self, hidden, primary, **kwargs):
         del hidden
         mtp_cache = kwargs["mtp_cache"]
         self.last_mtp_cache = mtp_cache
         ids = np.asarray(primary).reshape(-1)
-        values = mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1)
+        values = mx.broadcast_to(
+            mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1),
+            (len(ids), 2, 1, 256),
+        )
         mtp_cache[0].update_and_fetch(values, values)
         rows = []
         for row, token in enumerate(ids):
@@ -71,23 +102,34 @@ class _FakeLane:
             if row % 2:
                 target += 3
             rows.append(_logits(target))
-        return mx.array(np.stack(rows))[:, None, :]
+        return mx.array(np.stack(rows)).astype(self.logits_dtype)[:, None, :]
 
     def update_mtp_cache(self, hidden, token_ids, *, mtp_cache):
         del hidden
         ids = np.asarray(token_ids).reshape(-1)
-        values = mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1)
+        values = mx.broadcast_to(
+            mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1),
+            (len(ids), 2, 1, 256),
+        )
         mtp_cache[0].update_and_fetch(values, values)
 
-    def commit_rows(self, cache, captures, keeps):
+    def commit_rows(self, cache, captures, keeps, base_recurrent):
+        del base_recurrent
         from mtplx.gdn_capture import commit_captured_rows
 
+        safe_keeps = [max(1, int(value)) for value in keeps]
         assert commit_captured_rows(
             cache,
             captures,
-            keep_tokens_by_row=keeps,
+            keep_tokens_by_row=safe_keeps,
             verified_tokens=2,
         )
+        inactive = mx.array(
+            [1 if int(value) == 0 else 0 for value in keeps], dtype=mx.int32
+        )
+        for entry in cache:
+            if isinstance(entry, RaggedBatchKVCache):
+                entry.offsets = entry.offsets - inactive
 
     def capture_forward(self, verify_input, *, cache):
         if self.fail_verify:
@@ -104,10 +146,18 @@ class _FakeLane:
         for entry in cache:
             if isinstance(entry, RaggedBatchKVCache):
                 entry.offsets = entry.offsets + 2
+                entry._capacity_bound += 2
         conv = ids.astype(np.float32)[:, :, None, None]
         states = ids.astype(np.float32)[:, :, None, None, None]
-        captures = {1: {"conv_states": mx.array(conv), "states": mx.array(states)}}
-        return mx.array(logits), mx.array(hidden), captures
+        captures = {
+            layer_idx: {
+                "conv_states": mx.array(conv),
+                "states": mx.array(states),
+            }
+            for layer_idx, layer_type in enumerate(LAYER_TYPES)
+            if layer_type == "linear_attention"
+        }
+        return mx.array(logits).astype(self.logits_dtype), mx.array(hidden), captures
 
 
 def _request(
@@ -154,6 +204,16 @@ def test_driver_runs_fixed_b8_t2_and_commits_one_or_two_positions_per_row():
     assert np.asarray(lane.last_mtp_cache[0].offsets)[:2].tolist() == [4, 1]
 
 
+def test_driver_reads_real_bfloat16_logits_without_numpy_buffer_errors():
+    result = generate_a3b_mtp_batch(
+        _FakeLane(logits_dtype=mx.bfloat16),
+        [_request(f"row-{row}", [row + 1], max_tokens=2) for row in range(8)],
+    )
+
+    assert len(result.streams) == 8
+    assert all(len(stream.tokens) == 2 for stream in result.streams)
+
+
 def test_driver_keeps_request_rng_and_output_independent_of_neighbor():
     sampler_runs = []
     for neighbor in ([4], [11, 12, 13, 14]):
@@ -167,6 +227,75 @@ def test_driver_keeps_request_rng_and_output_independent_of_neighbor():
         sampler_runs.append(result.streams[0].tokens)
 
     assert sampler_runs[0] == sampler_runs[1]
+
+
+def test_driver_resets_host_capacity_bounds_to_logical_progress():
+    lane = _FakeLane()
+    generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("accept", [1, 2, 3], max_tokens=32),
+            _request("reject", [7], max_tokens=32),
+        ],
+    )
+
+    target_ragged = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    assert target_ragged._capacity_bound == max(
+        np.asarray(target_ragged.offsets).tolist()
+    )
+    assert lane.last_mtp_cache[0]._capacity_bound == max(
+        np.asarray(lane.last_mtp_cache[0].offsets).tolist()
+    )
+
+
+def test_finished_long_prompt_row_stays_frozen_while_short_peer_decodes():
+    lane = _FakeLane()
+    generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("long-finished", list(range(100)), max_tokens=1),
+            _request("short-running", [7], max_tokens=32),
+        ],
+    )
+
+    target_ragged = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    assert int(np.asarray(target_ragged.offsets)[0]) == 101
+    assert int(np.asarray(lane.last_mtp_cache[0].offsets)[0]) == 100
+
+
+def test_merge_prefilled_caches_materializes_and_releases_scalar_sources():
+    caches = []
+    for length in (2, 5, 1, 1, 1, 1, 1, 1):
+        entry = KVCache()
+        values = mx.arange(length, dtype=mx.float32).reshape(1, 1, length, 1)
+        entry.update_and_fetch(values, values)
+        caches.append([entry])
+
+    merged = _merge_qwen35b_mtp_caches(caches)
+
+    assert isinstance(merged[0], RaggedBatchKVCache)
+    assert np.asarray(merged[0].offsets).tolist() == [2, 5, 1, 1, 1, 1, 1, 1]
+    assert all(cache[0] is None for cache in caches)
+    assert np.asarray(merged[0].keys[:, :, :2, :]).shape == (8, 1, 2, 1)
+
+
+def test_empty_mtp_history_merge_reserves_matching_first_draft_mask():
+    caches = [[KVCache()] for _ in range(8)]
+
+    merged = _merge_qwen35b_mtp_caches(caches)[0]
+    merged._capacity_bound = 0
+    merged.reserve(1)
+    mask = merged.make_mask(1)
+    keys = mx.zeros((8, 2, 1, 256), dtype=mx.bfloat16)
+    values = mx.zeros((8, 2, 1, 256), dtype=mx.bfloat16)
+    written_keys, _written_values = merged.update_and_fetch(keys, values)
+
+    assert tuple(mask.shape) == (8, 1, 1, int(written_keys.shape[2]))
+    assert np.asarray(merged.offsets).tolist() == [1] * 8
 
 
 def test_driver_cancellation_stops_future_streaming_without_affecting_peer():
@@ -231,15 +360,17 @@ def test_driver_interrupts_cancelled_prefill_and_keeps_peer_alive():
     cancelled = {"value": False}
     terminals = []
 
+    long_prompt = list(range(100))
+
     class CancellingLane(_FakeLane):
         def prefill_request(self, prompt, *, abort_check=None):
-            if prompt == [1, 2, 3] and not cancelled["value"]:
+            if prompt == long_prompt and not cancelled["value"]:
                 cancelled["value"] = True
             return super().prefill_request(prompt, abort_check=abort_check)
 
     first = _request(
         "cancel",
-        [1, 2, 3],
+        long_prompt,
         cancelled=lambda: cancelled["value"],
     )
     first = A3BMTPBatchRequest(
@@ -248,11 +379,110 @@ def test_driver_interrupts_cancelled_prefill_and_keeps_peer_alive():
             "on_terminal": lambda reason, cycles: terminals.append((reason, cycles)),
         }
     )
+    lane = CancellingLane()
     result = generate_a3b_mtp_batch(
-        CancellingLane(),
+        lane,
         [first, _request("peer", [4], max_tokens=3)],
     )
 
     assert terminals == [("cancelled", 0)]
     assert result.streams[0].finish_reason == "cancelled"
     assert len(result.streams[1].tokens) == 3
+    target = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    assert int(np.asarray(target.offsets)[0]) == 1
+    assert int(np.asarray(lane.last_mtp_cache[0].offsets)[0]) == 0
+    assert target._capacity_bound == max(np.asarray(target.offsets).tolist())
+    assert lane.last_mtp_cache[0]._capacity_bound == max(
+        np.asarray(lane.last_mtp_cache[0].offsets).tolist()
+    )
+
+
+def test_later_prefill_poll_closes_an_already_prefilled_cancelled_peer():
+    cancelled = {"value": False}
+    terminals = []
+
+    class PollingLane(_FakeLane):
+        def prefill_request(self, prompt, *, abort_check=None):
+            if prompt == [9, 10]:
+                cancelled["value"] = True
+                assert abort_check is not None
+                assert abort_check() is False
+                assert terminals == [("cancelled", 0)]
+            return super().prefill_request(prompt, abort_check=abort_check)
+
+    long_prompt = list(range(100))
+    first = _request(
+        "first",
+        long_prompt,
+        cancelled=lambda: cancelled["value"],
+    )
+    first = A3BMTPBatchRequest(
+        **{
+            **first.__dict__,
+            "on_terminal": lambda reason, cycles: terminals.append((reason, cycles)),
+        }
+    )
+
+    lane = PollingLane()
+    result = generate_a3b_mtp_batch(
+        lane,
+        [first, _request("second", [9, 10], max_tokens=2)],
+    )
+
+    assert terminals == [("cancelled", 0)]
+    assert result.streams[0].finish_reason == "cancelled"
+    assert result.streams[1].finish_reason == "length"
+    target = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    assert int(np.asarray(target.offsets)[0]) == 1
+    assert int(np.asarray(lane.last_mtp_cache[0].offsets)[0]) == 0
+    assert target._capacity_bound == max(np.asarray(target.offsets).tolist())
+    assert lane.last_mtp_cache[0]._capacity_bound == max(
+        np.asarray(lane.last_mtp_cache[0].offsets).tolist()
+    )
+
+
+def test_final_prefill_boundary_replaces_newly_cancelled_long_row():
+    cancelled = {"value": False}
+    terminals = []
+
+    class FinalBoundaryLane(_FakeLane):
+        def prefill_request(self, prompt, *, abort_check=None):
+            result = super().prefill_request(prompt, abort_check=abort_check)
+            if self.prefill_calls == self.geometry.cohort_slots:
+                cancelled["value"] = True
+            return result
+
+    long_prompt = list(range(100))
+    first = _request(
+        "first",
+        long_prompt,
+        cancelled=lambda: cancelled["value"],
+    )
+    first = A3BMTPBatchRequest(
+        **{
+            **first.__dict__,
+            "on_terminal": lambda reason, cycles: terminals.append((reason, cycles)),
+        }
+    )
+    lane = FinalBoundaryLane()
+
+    result = generate_a3b_mtp_batch(
+        lane,
+        [first, _request("second", [9, 10], max_tokens=2)],
+    )
+
+    assert terminals == [("cancelled", 0)]
+    assert result.streams[0].finish_reason == "cancelled"
+    target = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    assert int(np.asarray(target.offsets)[0]) == 1
+    assert int(np.asarray(lane.last_mtp_cache[0].offsets)[0]) == 0
+    assert target._capacity_bound == max(np.asarray(target.offsets).tolist())
+    assert lane.last_mtp_cache[0]._capacity_bound == max(
+        np.asarray(lane.last_mtp_cache[0].offsets).tolist()
+    )

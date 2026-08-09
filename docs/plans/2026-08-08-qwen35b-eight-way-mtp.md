@@ -529,6 +529,7 @@ Launch the current Qwen command manually with:
 --decode-batch-max 8
 --batching-preset throughput
 --depth 1
+--context-window 131072
 ```
 
 Do not launch DeepSeek. Confirm `/health` reports the installed Qwen 35B route,
@@ -583,3 +584,28 @@ gh pr view 245 --repo youssofal/MTPLX --json url,headRefName,checks
 Update the existing PR body with plain-English correctness and benchmark
 receipts. Do not create another PR. Report whether the local persistent launcher
 was promoted or left on solo MTP and why.
+
+## Execution receipt (2026-08-09)
+
+- The Qwen-only construction gate installed the fixed B8/T2 lane. It compared
+  compiled B8, eager B8, stock B8, and B1 references. Shapes, cache offsets,
+  commit ownership, row isolation, and token decisions passed. BF16 tensors
+  stayed inside the declared 9/128 cross-geometry bound.
+- The served marker gate returned eight HTTP 200 responses with eight distinct
+  IDs and exact `MARKER_0` through `MARKER_7` text. Health recorded real width
+  8 on `qwen35b_a3b_mtp_batch_b8_t2_m16`.
+- The cancellation gate observed `active=8`, disconnected two rows, counted two
+  cancellations, and completed the other six rows with their own markers only.
+  The cohort ended with no pending or active work and one owner cleanup.
+- The long-context gate used eight 13,228-token prompts. All eight requests
+  returned their own `LONGCTX_0` through `LONGCTX_7` markers. There were no
+  foreign markers, scheduler errors, negative scheduler values, or Metal
+  resource failures. Peak MLX memory was 32,557,292,816 bytes.
+- The final three-round performance comparison measured 147.903 aggregate
+  token/s for serialized solo MTP and 140.479 token/s for fixed B8 MTP. The
+  ratio was 0.9498x, below the required 1.20x promotion gate.
+- The changed-area suite passed 724 tests. The repository-wide suite passed
+  with four skips after deselecting two unchanged cached Metal-extension ABI
+  tests whose binary lacks the current MLX symbol.
+- The persistent launcher therefore stays on solo MTP. It is not changed to AR,
+  and it is not changed to `mtp_batch` by this work.

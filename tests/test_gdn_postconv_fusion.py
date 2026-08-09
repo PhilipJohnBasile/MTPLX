@@ -132,6 +132,7 @@ def test_exact_a3b_contract_installs_all_30_prebound_routes_after_selfcheck(
     assert len(factory.m1_implementations) == 30
     assert len(factory.m2_implementations) == 30
     assert len(factory.m3_implementations) == 30
+    assert len(factory.b8_t2_implementations) == 30
     assert report["installed"] is True
     assert report["installation_status"] == "installed"
     assert report["gdn_layers"] == 30
@@ -172,19 +173,71 @@ def test_exact_a3b_contract_installs_all_30_prebound_routes_after_selfcheck(
         for layer in model.language_model.model.layers
         if layer.is_linear
     )
-    for gdn, m1_impl, m2_impl, m3_impl in zip(
+    for gdn, m1_impl, m2_impl, m3_impl, b8_t2_impl in zip(
         gdns,
         factory.m1_implementations,
         factory.m2_implementations,
         factory.m3_implementations,
+        factory.b8_t2_implementations,
     ):
-        for implementation in (m1_impl, m2_impl, m3_impl):
+        for implementation in (m1_impl, m2_impl, m3_impl, b8_t2_impl):
             assert implementation.keywords == {
                 "A_log": gdn.A_log,
                 "dt_bias": gdn.dt_bias,
             }
         assert not hasattr(gdn, "_mtplx_a3b_gdn_postconv_m1_impl")
         assert not hasattr(gdn, "_mtplx_a3b_gdn_postconv_m2_impl")
+
+
+@pytest.mark.parametrize(
+    ("launcher", "expected_grid", "expected_threadgroup"),
+    [
+        (
+            "_a3b_compiled_target_gdn_postconv_b8_t2_tgy4",
+            (32, 128, 256),
+            (32, 4, 1),
+        ),
+        (
+            "_a3b_compiled_target_gdn_postconv_b8_t2_headquarter",
+            (256, 4, 256),
+            (256, 1, 1),
+        ),
+    ],
+)
+def test_b8_t2_launchers_install_eight_owned_rows(
+    monkeypatch, launcher, expected_grid, expected_threadgroup
+) -> None:
+    captured = {}
+
+    def kernel(**kwargs):
+        captured.update(kwargs)
+        return "outputs"
+
+    if launcher.endswith("tgy4"):
+        monkeypatch.setattr(
+            gdn_capture, "_linear_gated_delta_from_conv_inline_g_kernel", kernel
+        )
+    else:
+        monkeypatch.setattr(
+            gdn_capture, "_linear_gated_delta_from_conv_headquarter_kernel", kernel
+        )
+    result = getattr(gdn_capture, launcher)(
+        "conv",
+        "a",
+        "b",
+        "state",
+        A_log="A_log",
+        dt_bias="dt_bias",
+    )
+
+    assert result == "outputs"
+    assert captured["grid"] == expected_grid
+    assert captured["threadgroup"] == expected_threadgroup
+    assert captured["output_shapes"] == [
+        (8, 2, 32, 128),
+        (8, 2, 32, 128, 128),
+    ]
+    assert captured["inputs"][-1] == 2
 
 
 @pytest.mark.parametrize(

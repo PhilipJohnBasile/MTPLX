@@ -170,16 +170,23 @@ def _check_qwen_row_owned_router(mx, dtype) -> float:
 
 
 def _check_qwen_combine_tail_m1_m2(mx, dtype) -> float:
-    """Require bitwise stock arithmetic for the installed K1 shapes."""
+    """Require bitwise stock arithmetic for every installed combine shape."""
 
     if dtype != mx.bfloat16:
         return float("inf")
     from .qwen_row_owned_router import (
         qwen_combine_tail_m1,
+        qwen_combine_tail_m16,
         qwen_combine_tail_m2,
+        qwen_combine_tail_m8,
     )
 
-    for rows, entrypoint in ((1, qwen_combine_tail_m1), (2, qwen_combine_tail_m2)):
+    for rows, entrypoint in (
+        (1, qwen_combine_tail_m1),
+        (2, qwen_combine_tail_m2),
+        (8, qwen_combine_tail_m8),
+        (16, qwen_combine_tail_m16),
+    ):
         routed_fixture = mx.arange(
             rows * 8 * 2048, dtype=mx.float32
         ).reshape(1, rows, 8, 2048)
