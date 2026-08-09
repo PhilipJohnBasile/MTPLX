@@ -129,11 +129,17 @@ def test_contract_runtime_env_overrides_are_normalized_and_restricted() -> None:
 def test_qwen_mtp_batch_construction_flags_are_validated_runtime_overrides() -> None:
     assert normalize_runtime_env_overrides(
         {
+            "MTPLX_A3B_GDN_POSTCONV_IMPL": "headquarter",
+            "MTPLX_LINEAR_GDN_FROM_CONV_TGY": 4,
             "MTPLX_QWEN_COMBINE_TAIL": True,
+            "MTPLX_QWEN_MOE_PACK_GATE_UP": True,
             "MTPLX_QWEN_ROW_OWNED_ROUTER": 1,
         }
     ) == {
+        "MTPLX_A3B_GDN_POSTCONV_IMPL": "headquarter",
+        "MTPLX_LINEAR_GDN_FROM_CONV_TGY": "4",
         "MTPLX_QWEN_COMBINE_TAIL": "1",
+        "MTPLX_QWEN_MOE_PACK_GATE_UP": "1",
         "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
     }
 

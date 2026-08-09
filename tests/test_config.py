@@ -26,6 +26,52 @@ def test_load_user_config_reads_runtime_defaults(tmp_path):
     assert loaded.thermal_control == "none"
 
 
+def test_load_user_config_reads_mtp_batch_numerics(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'mtp_batch_numerics = "balanced"\n',
+        encoding="utf-8",
+    )
+
+    loaded = load_user_config(config)
+
+    assert loaded.mtp_batch_numerics == "balanced"
+
+
+def test_apply_user_config_respects_explicit_mtp_batch_numerics(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'mtp_batch_numerics = "balanced"\n',
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        command="serve",
+        mtp_batch_numerics="throughput",
+        _cli_flags={"mtp-batch-numerics"},
+    )
+
+    apply_user_config(args, config_path=config)
+
+    assert args.mtp_batch_numerics == "throughput"
+
+
+def test_apply_user_config_fills_mtp_batch_numerics_default(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'mtp_batch_numerics = "balanced"\n',
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        command="serve",
+        mtp_batch_numerics="throughput",
+        _cli_flags=set(),
+    )
+
+    apply_user_config(args, config_path=config)
+
+    assert args.mtp_batch_numerics == "balanced"
+
+
 def test_apply_user_config_fills_runtime_defaults(tmp_path):
     config = tmp_path / "config.toml"
     model_dir = tmp_path / "models"

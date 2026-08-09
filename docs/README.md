@@ -6,6 +6,7 @@
 - [Profiles](profiles.md)
 - [Benchmarks](benchmarks.md)
 - [Server](server.md)
+- [Concurrency modes](concurrency.md)
 - [API](api.md)
 - [Dashboard](dashboard.md)
 - [Architecture](architecture.md)

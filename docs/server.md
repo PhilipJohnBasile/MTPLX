@@ -7,6 +7,9 @@ Messages compatibility available for coding harness smoke tests.
 mtplx serve --host 127.0.0.1 --port 8000 --no-stats-footer
 ```
 
+See [Concurrency modes](concurrency.md) for scheduler selection, ownership
+rules, and model/backend-specific implementations.
+
 Endpoints:
 
 - `GET /health`

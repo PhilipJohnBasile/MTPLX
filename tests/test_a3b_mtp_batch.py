@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import inspect
 import json
 from types import SimpleNamespace
@@ -67,6 +67,7 @@ class _Runtime:
             mtp_quant_group_size=32,
             mtp_quant_mode="affine",
         )
+
         class Model(SimpleNamespace):
             def __call__(self, *args, **kwargs):
                 return args, kwargs
@@ -89,9 +90,7 @@ class _Runtime:
                 model=SimpleNamespace(layers=layers),
                 make_cache=self.make_cache,
             ),
-            mtp=SimpleNamespace(
-                layers=[SimpleNamespace(self_attn=FakeAttention())]
-            ),
+            mtp=SimpleNamespace(layers=[SimpleNamespace(self_attn=FakeAttention())]),
             mtp_forward=self.draft_mtp,
             mtp_update_cache=self.update_mtp_cache,
             make_mtp_cache=self.make_mtp_cache,
@@ -107,9 +106,7 @@ class _Runtime:
             quantization="affine_q4_group64",
             gdn_postconv=SimpleNamespace(
                 m2_implementations=tuple((lambda *args: args) for _ in range(30)),
-                b8_t2_implementations=tuple(
-                    (lambda *args: args) for _ in range(30)
-                ),
+                b8_t2_implementations=tuple((lambda *args: args) for _ in range(30)),
             ),
         )
 
@@ -169,7 +166,161 @@ def _passing_selfcheck(lane):
         "empty_mtp_draft_argmax_parity": True,
         "empty_mtp_row_isolation_parity": True,
         "row_isolation_parity": True,
+        "balanced_l0_qkv_z_b_b1_bitwise": True,
     }
+
+
+def _fake_profile_factories():
+    from mtplx.mtp_batch_numerics import MTPBatchNumerics
+
+    return {
+        MTPBatchNumerics.BALANCED: lambda base: replace(
+            base,
+            numerics=MTPBatchNumerics.BALANCED,
+            route_id="qwen35b_a3b_mtp_batch_b8_t2_balanced",
+        ),
+        MTPBatchNumerics.B1_EXACT: lambda base: replace(
+            base,
+            numerics=MTPBatchNumerics.B1_EXACT,
+            route_id="qwen35b_a3b_mtp_batch_b8_t2_b1_exact",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("profile", "suffix"),
+    [
+        ("throughput", "m16_throughput"),
+        ("balanced", "balanced"),
+        ("b1-exact", "b1_exact_serial"),
+    ],
+)
+def test_installer_route_identity_includes_numerics_profile(tmp_path, profile, suffix):
+    from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+
+    lane = install_a3b_mtp_batch_lane(
+        _runtime(tmp_path),
+        numerics=profile,
+        selfcheck=_passing_selfcheck,
+        profile_factories=_fake_profile_factories(),
+    )
+
+    assert lane.numerics_profile == profile
+    assert lane.route_id.endswith(suffix)
+    assert profile in lane.config_fingerprint
+
+
+def test_balanced_profile_is_construction_bound_without_external_factory(
+    tmp_path, monkeypatch
+):
+    import mtplx.a3b_mtp_batch as module
+
+    sentinel = object()
+    monkeypatch.setattr(
+        module,
+        "_bind_balanced_capture_forward",
+        lambda _runtime: sentinel,
+        raising=False,
+    )
+
+    lane = module.install_a3b_mtp_batch_lane(
+        _runtime(tmp_path),
+        numerics="balanced",
+        selfcheck=_passing_selfcheck,
+    )
+
+    assert lane.route_id == ("qwen35b_a3b_mtp_batch_b8_t2_l0_b1_qkv_z_b_balanced")
+    assert lane.capture_forward.keywords["call"] is sentinel
+
+
+def test_b1_exact_profile_is_builtin_and_names_serial_b1_execution(tmp_path):
+    from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+
+    lane = install_a3b_mtp_batch_lane(
+        _runtime(tmp_path),
+        numerics="b1-exact",
+        selfcheck=_passing_selfcheck,
+    )
+
+    assert lane.numerics_profile == "b1-exact"
+    assert lane.route_id == "qwen35b_mtp_batch_b1_exact_serial"
+    assert lane.selfcheck["solo_parity"] is True
+    assert lane.selfcheck["b1_exact_bitwise"] is True
+    assert lane.selfcheck["b1_exact_failed_boundaries"] == []
+    assert lane.selfcheck["b1_exact_execution"] == "unchanged_solo_runner"
+
+
+def test_balanced_contract_uses_b1_and_own_eager_receipts_not_throughput_b8():
+    from mtplx.a3b_mtp_batch import (
+        _balanced_selfcheck_contract,
+        _throughput_selfcheck_contract,
+    )
+
+    report = _passing_selfcheck(
+        SimpleNamespace(
+            geometry=SimpleNamespace(
+                cohort_slots=8,
+                verify_tokens=2,
+                projection_rows=16,
+            )
+        )
+    )
+    report["same_geometry_numerical_parity"] = False
+
+    assert _throughput_selfcheck_contract(report) is False
+    assert _balanced_selfcheck_contract(report) is True
+
+    report["balanced_l0_qkv_z_b_b1_bitwise"] = False
+    assert _balanced_selfcheck_contract(report) is False
+
+
+def test_balanced_full_graph_bound_is_profile_specific_and_construction_fixed():
+    from mtplx.a3b_mtp_batch import _geometry_relative_limit
+
+    assert _geometry_relative_limit("throughput") == 9.0 / 128.0
+    assert _geometry_relative_limit("balanced") == 9.0 / 128.0
+    assert _geometry_relative_limit("b1-exact") == 9.0 / 128.0
+
+
+def test_balanced_binds_b1_qkv_z_b_only_at_the_first_divergent_gdn():
+    import mlx.core as mx
+
+    from mtplx.a3b_mtp_batch import _bind_balanced_projection_implementations
+
+    calls = []
+    gdns = []
+    for layer in range(30):
+        projections = {}
+        for name in ("qkv", "z", "b", "a"):
+            projections[f"in_proj_{name}"] = lambda value, layer=layer, name=name: (
+                calls.append(("throughput", layer, name, tuple(value.shape))) or value
+            )
+        gdns.append(SimpleNamespace(**projections))
+    gdns = tuple(gdns)
+
+    def stock_qlinear(module, value):
+        calls.append(("b1", module, tuple(value.shape)))
+        return value
+
+    qkv, z, b, a = _bind_balanced_projection_implementations(gdns, stock_qlinear)
+    inputs = mx.zeros((8, 2, 1), dtype=mx.bfloat16)
+
+    first = [implementations[0](inputs) for implementations in (qkv, z, b, a)]
+    second = [implementations[1](inputs) for implementations in (qkv, z, b, a)]
+    mx.eval(*first, *second)
+
+    assert all(len(implementations) == 30 for implementations in (qkv, z, b, a))
+    b1_calls = [item for item in calls if item[0] == "b1"]
+    throughput_calls = [item for item in calls if item[0] == "throughput"]
+    assert [item[2] for item in b1_calls] == [(1, 2, 1)] * 24
+    assert [(item[1], item[2]) for item in throughput_calls] == [
+        (0, "a"),
+        (1, "qkv"),
+        (1, "z"),
+        (1, "b"),
+        (1, "a"),
+    ]
+    assert [item[3] for item in throughput_calls] == [(8, 2, 1)] * 5
 
 
 def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
@@ -187,7 +338,8 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     assert lane.geometry.projection_rows == 16
     assert lane.geometry.hidden_size == 2048
     assert lane.geometry.vocab_size == 248320
-    assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16"
+    assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16_throughput"
+    assert lane.numerics_profile == "throughput"
     assert lane.attention_route_id == "qwen35b_b8_t2_stock_fused_sdpa"
     assert lane.target_forward.keywords["call"] is runtime.model
     assert lane.draft_forward.keywords["call"].func.__self__ is runtime
@@ -220,6 +372,28 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
         lane.route_id = "changed"
 
 
+def test_installer_rejects_mlx_lm_without_arrays_cache_fix(tmp_path, monkeypatch):
+    import mtplx.a3b_mtp_batch as module
+
+    class ReleasedArraysCache:
+        def __init__(self, _size):
+            pass
+
+    monkeypatch.setattr(module, "ArraysCache", ReleasedArraysCache)
+
+    with pytest.raises(module.A3BMTPBatchInstallError) as exc_info:
+        module.install_a3b_mtp_batch_lane(
+            _runtime(tmp_path),
+            selfcheck=_passing_selfcheck,
+        )
+
+    message = str(exc_info.value)
+    assert "mlx-lm PR #1642" in message
+    assert "985af30df768a6f4dd2d0c7969d1868ca5dc3e1a" in message
+    assert "uv pip install --python" in message
+    assert " -m pip install --no-deps" in message
+
+
 def test_installer_selfcheck_exercises_decode_verify_kernel_phase():
     from mtplx import a3b_mtp_batch
 
@@ -237,6 +411,15 @@ def test_batch_driver_executes_draft_and_verify_in_installed_kernel_phases():
     assert 'with attention_phase("ar_decode")' in source
     assert 'with attention_phase("decode_verify")' in source
     assert "solo prefill did not preserve" not in source
+
+
+def test_batch_driver_does_not_call_numerics_attribution():
+    from mtplx import a3b_mtp_batch
+
+    source = inspect.getsource(a3b_mtp_batch.generate_a3b_mtp_batch)
+
+    assert "attribution" not in source
+    assert "first_material_divergence" not in source
 
 
 @pytest.mark.parametrize(
@@ -422,7 +605,8 @@ def test_fixed_b8_commit_selects_real_conv_and_gdn_state_ranks():
         base_recurrent,
     )
     first_linear = next(
-        index for index, layer_type in enumerate(_LAYER_TYPES)
+        index
+        for index, layer_type in enumerate(_LAYER_TYPES)
         if layer_type == "linear_attention"
     )
     np.testing.assert_array_equal(cache[first_linear][0][0], -1)
@@ -444,9 +628,7 @@ def test_installer_rejects_uncancellable_mtp_batch_prefill_chunk(monkeypatch, tm
     monkeypatch.setenv("MTPLX_PREFILL_CHUNK_SIZE", "32768")
 
     with pytest.raises(A3BMTPBatchInstallError, match="prefill chunk"):
-        install_a3b_mtp_batch_lane(
-            _runtime(tmp_path), selfcheck=_passing_selfcheck
-        )
+        install_a3b_mtp_batch_lane(_runtime(tmp_path), selfcheck=_passing_selfcheck)
 
 
 @pytest.mark.parametrize(
@@ -468,9 +650,7 @@ def test_installer_rejects_uncancellable_mtp_batch_prefill_chunk(monkeypatch, tm
         "row_isolation_parity",
     ],
 )
-def test_installer_rejects_missing_exact_batch_numerical_receipt(
-    tmp_path, receipt
-):
+def test_installer_rejects_missing_exact_batch_numerical_receipt(tmp_path, receipt):
     from mtplx.a3b_mtp_batch import (
         A3BMTPBatchInstallError,
         install_a3b_mtp_batch_lane,
@@ -482,9 +662,7 @@ def test_installer_rejects_missing_exact_batch_numerical_receipt(
         return report
 
     with pytest.raises(A3BMTPBatchInstallError, match="numerical self-check"):
-        install_a3b_mtp_batch_lane(
-            _runtime(tmp_path), selfcheck=failed_selfcheck
-        )
+        install_a3b_mtp_batch_lane(_runtime(tmp_path), selfcheck=failed_selfcheck)
 
 
 def test_batch_prefill_uses_only_prebound_routes_without_runtime_counters(
@@ -555,8 +733,6 @@ def test_batch_prefill_freezes_dense_cleanup_cadence_at_construction(
     monkeypatch.setenv("MTPLX_SUSTAINED_PREFILL_LAYOUT", "auto")
     monkeypatch.delenv("MTPLX_CURRENT_PREFILL_CONTEXT_TOKENS", raising=False)
 
-    lane = install_a3b_mtp_batch_lane(
-        _runtime(tmp_path), selfcheck=_passing_selfcheck
-    )
+    lane = install_a3b_mtp_batch_lane(_runtime(tmp_path), selfcheck=_passing_selfcheck)
 
     assert lane.prefill_request.keywords["cleanup_every"] == 4

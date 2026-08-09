@@ -7,6 +7,7 @@ Metal shaders through MLX's own command encoder.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import subprocess
 import sysconfig
@@ -23,7 +24,6 @@ _CONSTANTS = _THIS_DIR / "constants.py"
 _EXT_SUFFIX = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
 _CACHE_DIR = Path.home() / ".cache" / "vllm-metal"
 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-_OUT = _CACHE_DIR / f"_paged_ops{_EXT_SUFFIX}"
 
 
 def _find_package_path(name: str) -> Path:
@@ -38,6 +38,24 @@ def _find_package_path(name: str) -> Path:
     if f:
         return Path(f).parent
     raise RuntimeError(f"Cannot locate package '{name}'")
+
+
+def _mlx_abi_fingerprint() -> str:
+    """Identify the exact MLX native library this extension links against."""
+
+    mlx_lib = _find_package_path("mlx") / "lib" / "libmlx.dylib"
+    digest = hashlib.sha256()
+    with mlx_lib.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
+# The cache is shared across virtual environments. MLX does not promise a
+# stable C++ ABI between wheels, so a Python-ABI-only filename can load a
+# binary linked against another environment's libmlx. Keep each MLX ABI in a
+# separate immutable cache slot instead.
+_OUT = _CACHE_DIR / f"_paged_ops-{_mlx_abi_fingerprint()}{_EXT_SUFFIX}"
 
 
 def needs_rebuild() -> bool:

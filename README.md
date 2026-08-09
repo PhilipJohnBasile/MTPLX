@@ -107,6 +107,9 @@ These models do not go through the MTP path, and that is deliberate: multi-token
 
 Sampler controls cover `temperature`, `top_p`, `top_k`, and the OpenAI penalty pair `presence_penalty` / `frequency_penalty` — per request, as server defaults (`--default-presence-penalty` / `--default-frequency-penalty` on `start`/`serve`/`quickstart`), or live via `mtplx settings set` and the app's Presence Penalty dial. Penalties default to 0, which is an exact no-op that preserves MTP exactness. Qwen's guidance: leave them at 0 for coding and agent work; ~0.5–1.5 presence penalty helps creative writing or when a model loops on itself.
 
+Concurrent scheduler modes, ownership guarantees, and backend-specific
+implementations are documented in [Concurrency modes](docs/concurrency.md).
+
 ## CLI quick reference
 
 ```bash

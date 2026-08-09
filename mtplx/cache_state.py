@@ -1508,7 +1508,11 @@ class VllmMetalPagedKVCache:
                     ) * float(scale)
                 else:
                     scores = mx.matmul(q, k.transpose(0, 1, 3, 2)) * float(scale)
-                if mask == "causal":
+                # The native paged kernels are causal when no explicit mask is
+                # supplied. Preserve that contract in the in-tree fallback;
+                # treating ``None`` as unmasked would let a multi-token query
+                # read later keys from the same update.
+                if mask is None or mask == "causal":
                     key_positions = mx.arange(k_start, k_end)
                     allowed = q_positions[:, None] >= key_positions[None, :]
                     valid = mx.any(allowed, axis=-1, keepdims=True)

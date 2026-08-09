@@ -1365,6 +1365,25 @@ def test_vllm_metal_paged_attention_matches_stock_attention_with_tolerance():
     assert float(diff.item()) <= 2e-2
 
 
+def test_vllm_metal_native_cache_key_tracks_mlx_library_bytes(
+    tmp_path, monkeypatch
+):
+    import vllm_metal.metal.build as native_build
+
+    assert native_build._mlx_abi_fingerprint() in native_build._OUT.name
+    package = tmp_path / "mlx"
+    library = package / "lib" / "libmlx.dylib"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"first ABI")
+    monkeypatch.setattr(native_build, "_find_package_path", lambda _name: package)
+
+    first = native_build._mlx_abi_fingerprint()
+    library.write_bytes(b"second ABI")
+    second = native_build._mlx_abi_fingerprint()
+
+    assert first != second
+
+
 def test_vllm_metal_partitioned_paged_attention_matches_stock_attention(monkeypatch):
     if not mx.metal.is_available():
         pytest.skip("Metal is unavailable")

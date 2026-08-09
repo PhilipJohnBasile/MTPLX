@@ -74,9 +74,7 @@ class _FakeLane:
                 entry[0] = mx.array([[[float(prompt[-1])]]])
                 entry[1] = mx.array([[[[float(prompt[-1])]]]])
             cache.append(entry)
-        logits = mx.array(_logits(prompt[-1] + 1))[None, :].astype(
-            self.logits_dtype
-        )
+        logits = mx.array(_logits(prompt[-1] + 1))[None, :].astype(self.logits_dtype)
         hidden = mx.array([[[float(prompt[-1])]]])
         mtp = KVCache()
         history = list(prompt[1:])
@@ -180,9 +178,7 @@ def _request(
         request_id=request_id,
         prompt_ids=tuple(prompt),
         sampler=SamplerConfig(temperature=temperature, top_p=top_p, top_k=top_k),
-        draft_sampler=SamplerConfig(
-            temperature=temperature, top_p=top_p, top_k=top_k
-        ),
+        draft_sampler=SamplerConfig(temperature=temperature, top_p=top_p, top_k=top_k),
         seed=seed,
         max_tokens=max_tokens,
         on_token=callback,
@@ -206,7 +202,9 @@ def test_driver_runs_fixed_b8_t2_and_commits_one_or_two_positions_per_row():
     assert result.accepted_drafts == 1
     assert result.rejected_drafts == 1
     assert dict(result.width_histogram) == {8: 1}
-    ragged = next(entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache))
+    ragged = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
     assert np.asarray(ragged.offsets)[:2].tolist() == [5, 2]
     assert isinstance(lane.last_mtp_cache[0], RaggedBatchKVCache)
     assert np.asarray(lane.last_mtp_cache[0].offsets)[:2].tolist() == [4, 1]
@@ -215,6 +213,27 @@ def test_driver_runs_fixed_b8_t2_and_commits_one_or_two_positions_per_row():
 def test_driver_reads_real_bfloat16_logits_without_numpy_buffer_errors():
     result = generate_a3b_mtp_batch(
         _FakeLane(logits_dtype=mx.bfloat16),
+        [_request(f"row-{row}", [row + 1], max_tokens=2) for row in range(8)],
+    )
+
+    assert len(result.streams) == 8
+    assert all(len(stream.tokens) == 2 for stream in result.streams)
+
+
+def test_driver_keeps_greedy_draft_and_verify_logits_on_device(monkeypatch):
+    original_asarray = np.asarray
+
+    def reject_full_vocab_transfer(value, *args, **kwargs):
+        shape = tuple(int(item) for item in getattr(value, "shape", ()))
+        if len(shape) >= 2 and shape[-1] == VOCAB:
+            raise AssertionError(
+                f"greedy B8 transferred full-vocabulary logits to host: {shape}"
+            )
+        return original_asarray(value, *args, **kwargs)
+
+    monkeypatch.setattr(np, "asarray", reject_full_vocab_transfer)
+    result = generate_a3b_mtp_batch(
+        _FakeLane(),
         [_request(f"row-{row}", [row + 1], max_tokens=2) for row in range(8)],
     )
 
@@ -324,9 +343,7 @@ def test_sparse_route_matches_dense_fixed_seed_for_every_sampling_phase(accepted
         sparse_rng,
     )
     target_row = (
-        [0.0, 2.0, -1.0, -2.0, 3.0]
-        if accepted
-        else [3.0, -2.0, 2.0, -1.0, 0.0]
+        [0.0, 2.0, -1.0, -2.0, 3.0] if accepted else [3.0, -2.0, 2.0, -1.0, 0.0]
     )
     bonus_row = [0.0, 3.0, -1.0, -2.0, 2.0]
     verify_logits = mx.array(

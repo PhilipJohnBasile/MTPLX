@@ -36,8 +36,7 @@ _GDN_POSTCONV_STATS: dict[str, Any] = {
     "implementation": "inline_g",
 }
 _A3B_GDN_POSTCONV_LAYER_TYPES = tuple(
-    "linear_attention" if index % 4 != 3 else "full_attention"
-    for index in range(40)
+    "linear_attention" if index % 4 != 3 else "full_attention" for index in range(40)
 )
 
 
@@ -238,10 +237,13 @@ def prepare_a3b_gdn_postconv(
         "linear_value_head_dim": 128,
         "linear_conv_kernel_dim": 4,
     }
-    if any(
-        int(text_config.get(name, -1)) != expected
-        for name, expected in config_geometry.items()
-    ) or float(text_config.get("rms_norm_eps", -1.0)) != 1e-6:
+    if (
+        any(
+            int(text_config.get(name, -1)) != expected
+            for name, expected in config_geometry.items()
+        )
+        or float(text_config.get("rms_norm_eps", -1.0)) != 1e-6
+    ):
         _fail_a3b_gdn_postconv_configuration(
             "A3B GDN postconv head_geometry mismatch in model config"
         )
@@ -374,7 +376,9 @@ def gdn_postconv_stats() -> dict[str, Any]:
     """Report the immutable installation contract, never hot-path counters."""
     report = dict(_GDN_POSTCONV_STATS)
     contract = report.get("validated_contract")
-    report["validated_contract"] = dict(contract) if isinstance(contract, dict) else None
+    report["validated_contract"] = (
+        dict(contract) if isinstance(contract, dict) else None
+    )
     return report
 
 
@@ -1403,6 +1407,8 @@ _DEMOTED_GDN_ALIASES = {
     "linear_gdn_len6",
     "linear_gdn_mlp_gateup",
 }
+
+
 def _contiguous_recurrent_leaf(value: mx.array) -> mx.array:
     # Mirrors mlx-lm #1077's cache ownership fix: the authoritative recurrent
     # leaf must not retain the larger per-position capture buffer.
@@ -1493,7 +1499,9 @@ def resolve_gdn_capture_backend(backend: str | None = None) -> str:
     )
 
 
-def _linear_conv1d_capture(qkv: mx.array, base_conv_state: mx.array, conv_weight: mx.array):
+def _linear_conv1d_capture(
+    qkv: mx.array, base_conv_state: mx.array, conv_weight: mx.array
+):
     if _linear_conv1d_kernel is None:
         return None
     B, T, conv_dim = qkv.shape
@@ -1518,7 +1526,9 @@ def _linear_conv1d_capture(qkv: mx.array, base_conv_state: mx.array, conv_weight
 
 
 def _matching_quantized_linears(left: Any, right: Any) -> bool:
-    if not isinstance(left, nn.QuantizedLinear) or not isinstance(right, nn.QuantizedLinear):
+    if not isinstance(left, nn.QuantizedLinear) or not isinstance(
+        right, nn.QuantizedLinear
+    ):
         return False
     if "bias" in left or "bias" in right:
         return False
@@ -1605,7 +1615,9 @@ def _fused_quantized_many(
     return tuple(mx.split(out, list(split_points), axis=-1))
 
 
-def _gdn_input_projections(gdn: Any, inputs: mx.array) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+def _gdn_input_projections(
+    gdn: Any, inputs: mx.array
+) -> tuple[mx.array, mx.array, mx.array, mx.array]:
     fuse_mode = os.environ.get("MTPLX_FUSE_GDN_PROJECTIONS", "").lower()
     if fuse_mode in {"all", "4to1", "one"}:
         fused = _fused_quantized_many(
@@ -1832,7 +1844,10 @@ def _linear_gated_delta_from_conv_tape_capture(
     # Alternative execution layout for the same contract (A3B C1 lineage).
     # Fail-closed: any ineligibility returns None from the wrapper and we
     # fall through to the incumbent TGY kernel below.
-    if os.environ.get("MTPLX_LINEAR_GDN_TAPE_IMPL", "").strip().lower() == "headquarter":
+    if (
+        os.environ.get("MTPLX_LINEAR_GDN_TAPE_IMPL", "").strip().lower()
+        == "headquarter"
+    ):
         try:
             from .kernels.gdn_tape_headquarter import headquarter_tape_capture
         except ImportError as exc:
@@ -2465,7 +2480,9 @@ def gdn_forward_with_capture(
 
     state = cache[1] if cache and cache[1] is not None else None
     if state is None:
-        state = mx.zeros((B, gdn.num_v_heads, gdn.head_v_dim, gdn.head_k_dim), dtype=mx.float32)
+        state = mx.zeros(
+            (B, gdn.num_v_heads, gdn.head_v_dim, gdn.head_k_dim), dtype=mx.float32
+        )
 
     final_only_capture = False
     capture_start = 0
@@ -2494,7 +2511,10 @@ def gdn_forward_with_capture(
             return gdn(inputs, mask=mask, cache=cache), None
         out, final_state, tape = delta_result
         states = final_state[:, None, :, :, :]
-    elif backend in {"linear_gdn_from_conv_stream", "linear_gdn_from_conv_stream_skip0"}:
+    elif backend in {
+        "linear_gdn_from_conv_stream",
+        "linear_gdn_from_conv_stream_skip0",
+    }:
         beta = mx.sigmoid(b)
         g = compute_g(gdn.A_log, a, gdn.dt_bias)
         capture_start = 1 if backend == "linear_gdn_from_conv_stream_skip0" else 0
@@ -2521,7 +2541,9 @@ def gdn_forward_with_capture(
         beta = mx.sigmoid(b)
         g = compute_g(gdn.A_log, a, gdn.dt_bias)
         if use_from_conv:
-            delta_result = _linear_gated_delta_from_conv_capture(conv_out, g, beta, state, gdn)
+            delta_result = _linear_gated_delta_from_conv_capture(
+                conv_out, g, beta, state, gdn
+            )
         else:
             q, k, v = [
                 t.reshape(B, S, h, d)
@@ -2665,6 +2687,45 @@ def _a3b_gdn_forward_with_fixed_postconv(
     return out, {"conv_states": conv_states, "states": states}
 
 
+def _b8_t2_rowwise_b1_qlinear(
+    inputs: mx.array,
+    implementation: Callable[[mx.array], mx.array],
+) -> mx.array:
+    """Run the fixed B8/T2 input as eight unchanged B1/T2 projections."""
+
+    return mx.concatenate(
+        tuple(implementation(inputs[row : row + 1]) for row in range(8)),
+        axis=0,
+    )
+
+
+def _a3b_gdn_forward_with_fixed_postconv_bound_projections(
+    gdn: Any,
+    inputs: mx.array,
+    cache: Any,
+    postconv_implementation: Callable[..., Any],
+    b1_qkv_implementation: Callable[[mx.array], mx.array],
+    z_implementation: Callable[[mx.array], mx.array],
+    b_implementation: Callable[[mx.array], mx.array],
+    a_implementation: Callable[[mx.array], mx.array],
+):
+    """Build the balanced B8 graph with construction-bound projections."""
+
+    B, S, _ = inputs.shape
+    qkv = b1_qkv_implementation(inputs)
+    z = z_implementation(inputs).reshape(B, S, 32, 128)
+    b = b_implementation(inputs)
+    a = a_implementation(inputs)
+    conv_state = cache[0]
+    conv_out, conv_states = _stock_conv1d_capture(qkv, conv_state, gdn)
+    out, states = postconv_implementation(conv_out, a, b, cache[1])
+    cache[0] = mx.contiguous(conv_states[:, -1, :, :])
+    cache[1] = states[:, -1, :, :, :]
+    out = gdn.norm(out, z)
+    out = gdn.out_proj(out.reshape(B, S, -1))
+    return out, {"conv_states": conv_states, "states": states}
+
+
 def forward_with_a3b_gdn_postconv_capture(
     model: Any,
     inputs: mx.array,
@@ -2693,6 +2754,66 @@ def forward_with_a3b_gdn_postconv_capture(
                 normed,
                 layer_cache,
                 next(implementation_iter),
+            )
+            captures[layer_idx] = capture
+        else:
+            r = layer.self_attn(normed, mask=attention_mask, cache=layer_cache)
+        h = hidden_states + r
+        mlp_input = layer.post_attention_layernorm(h)
+        hidden_states = h + layer.mlp(mlp_input)
+
+    pre_norm = hidden_states
+    post_norm = inner.norm(hidden_states)
+    logits = (
+        inner.embed_tokens.as_linear(post_norm)
+        if text_model.args.tie_word_embeddings
+        else text_model.lm_head(post_norm)
+    )
+    hidden = pre_norm if hidden_variant == "pre_norm" else post_norm
+    return logits, hidden, captures
+
+
+def forward_with_a3b_gdn_postconv_capture_bound_projections(
+    model: Any,
+    inputs: mx.array,
+    cache: list[Any],
+    *,
+    hidden_variant: str | None,
+    postconv_implementations: tuple[Callable[..., Any], ...],
+    qkv_implementations: tuple[Callable[[mx.array], mx.array], ...],
+    z_implementations: tuple[Callable[[mx.array], mx.array], ...],
+    b_implementations: tuple[Callable[[mx.array], mx.array], ...],
+    a_implementations: tuple[Callable[[mx.array], mx.array], ...],
+):
+    """Build the unchecked layer-zero-B1-QKV/Z/B balanced B8/T2 trace."""
+
+    text_model = model.language_model
+    inner = text_model.model
+    hidden_states = inner.embed_tokens(inputs)
+
+    from mlx_lm.models.base import create_attention_mask
+
+    attention_mask = create_attention_mask(hidden_states, cache[3])
+    captures: dict[int, dict[str, mx.array]] = {}
+    postconv_iter = iter(postconv_implementations)
+    qkv_iter = iter(qkv_implementations)
+    z_iter = iter(z_implementations)
+    b_iter = iter(b_implementations)
+    a_iter = iter(a_implementations)
+    for layer_idx, (layer, layer_cache, kind) in enumerate(
+        zip(inner.layers, cache, _A3B_GDN_POSTCONV_LAYER_TYPES)
+    ):
+        normed = layer.input_layernorm(hidden_states)
+        if kind == "linear_attention":
+            r, capture = _a3b_gdn_forward_with_fixed_postconv_bound_projections(
+                layer.linear_attn,
+                normed,
+                layer_cache,
+                next(postconv_iter),
+                next(qkv_iter),
+                next(z_iter),
+                next(b_iter),
+                next(a_iter),
             )
             captures[layer_idx] = capture
         else:
@@ -2800,7 +2921,11 @@ def forward_with_gdn_capture(
 
     pre_norm = hidden_states
     post_norm = inner.norm(hidden_states)
-    logits = inner.embed_tokens.as_linear(post_norm) if text_model.args.tie_word_embeddings else text_model.lm_head(post_norm)
+    logits = (
+        inner.embed_tokens.as_linear(post_norm)
+        if text_model.args.tie_word_embeddings
+        else text_model.lm_head(post_norm)
+    )
     if return_hidden:
         hidden = pre_norm if hidden_variant == "pre_norm" else post_norm
         return logits, hidden, captures
@@ -2845,7 +2970,9 @@ def commit_captured_prefix(
                 conv_state = detach_array_leaf(conv_state, mode=detach_mode)
                 if detach_stats is not None:
                     detach_stats["arrays"] = int(detach_stats.get("arrays", 0)) + 1
-                    detach_stats["bytes"] = int(detach_stats.get("bytes", 0)) + int(conv_state.nbytes)
+                    detach_stats["bytes"] = int(detach_stats.get("bytes", 0)) + int(
+                        conv_state.nbytes
+                    )
             if "tape" in capture:
                 replayed_state = _linear_gated_delta_from_conv_tape_replay(
                     capture["tape"],
@@ -2868,7 +2995,9 @@ def commit_captured_prefix(
                 gdn_state = detach_array_leaf(gdn_state, mode=detach_mode)
                 if detach_stats is not None:
                     detach_stats["arrays"] = int(detach_stats.get("arrays", 0)) + 1
-                    detach_stats["bytes"] = int(detach_stats.get("bytes", 0)) + int(gdn_state.nbytes)
+                    detach_stats["bytes"] = int(detach_stats.get("bytes", 0)) + int(
+                        gdn_state.nbytes
+                    )
             from .cache_state import replace_recurrent_cache_state
 
             replace_recurrent_cache_state(entry, [conv_state, gdn_state])
@@ -2959,9 +3088,7 @@ def commit_captured_rows(
                 entry.state = [conv_state, gdn_state]
         elif isinstance(entry, RaggedBatchKVCache):
             entry.offsets = (
-                entry.offsets
-                - verified
-                + mx.array(keeps, dtype=mx.int32)
+                entry.offsets - verified + mx.array(keeps, dtype=mx.int32)
             ).astype(mx.int32)
         elif _is_trimmable(entry):
             trim = verified - keeps[0]
