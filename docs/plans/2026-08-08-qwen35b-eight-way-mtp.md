@@ -587,6 +587,10 @@ was promoted or left on solo MTP and why.
 
 ## Execution receipt (2026-08-09)
 
+- The upstream `mlx-lm` overflow fix already exists as PR #1642. The local
+  service uses that PR at commit `985af30`; its launcher checks for the fixed
+  `ArraysCache` bookkeeping and refuses to start if a later environment sync
+  replaces it with stock 0.31.3. No duplicate upstream PR was opened.
 - The Qwen-only construction gate installed the fixed B8/T2 lane. It compared
   compiled B8, eager B8, stock B8, and B1 references. Shapes, cache offsets,
   commit ownership, row isolation, and token decisions passed. BF16 tensors
@@ -596,16 +600,39 @@ was promoted or left on solo MTP and why.
   8 on `qwen35b_a3b_mtp_batch_b8_t2_m16`.
 - The cancellation gate observed `active=8`, disconnected two rows, counted two
   cancellations, and completed the other six rows with their own markers only.
-  The cohort ended with no pending or active work and one owner cleanup.
-- The long-context gate used eight 13,228-token prompts. All eight requests
-  returned their own `LONGCTX_0` through `LONGCTX_7` markers. There were no
-  foreign markers, scheduler errors, negative scheduler values, or Metal
-  resource failures. Peak MLX memory was 32,557,292,816 bytes.
-- The final three-round performance comparison measured 147.903 aggregate
-  token/s for serialized solo MTP and 140.479 token/s for fixed B8 MTP. The
-  ratio was 0.9498x, below the required 1.20x promotion gate.
-- The changed-area suite passed 724 tests. The repository-wide suite passed
-  with four skips after deselecting two unchanged cached Metal-extension ABI
-  tests whose binary lacks the current MLX symbol.
-- The persistent launcher therefore stays on solo MTP. It is not changed to AR,
-  and it is not changed to `mtp_batch` by this work.
+  The cohort ended with no pending or active work and one owner cleanup. The
+  same short gate passed again after persistent deployment.
+- The final long-context gate used eight 13,239-token prompts. All eight
+  requests returned their own `LONGCTX_ROW_0_ONLY` through
+  `LONGCTX_ROW_7_ONLY` markers with
+  distinct request IDs. There were no foreign markers, scheduler errors,
+  negative scheduler values, or Metal resource failures. Peak MLX memory was
+  32,557,292,816 bytes.
+- The dispatch census showed that fixed B8 already cut GPU work from about
+  8.58 seconds to 4.31 seconds for the measured 2,048-token window. A host
+  sample then found full-vocabulary NumPy sorting and cumulative sums on every
+  row and phase dominating the remaining wall time, including greedy sampling.
+  The installed route now uses direct argmax for greedy and a construction-bound
+  batched top-k route for stochastic sampling. The default top-p path keeps the
+  reference NumPy float64 nucleus arithmetic after one batched materialization,
+  but avoids every per-row full-vocabulary sort. Exact BF16 ties now use one
+  serial-and-batch contract: higher score, then lower vocabulary ID. Device
+  target and draft samplers reject unsupported large top-k requests before
+  prompt work. Unsupported or penalized cohort samplers bind the unchanged
+  dense route once; there is no enabled hot-loop eligibility check or silent
+  fallback.
+- The final three-round default-sampler comparison measured 120.337 aggregate
+  token/s for serialized solo MTP and 161.500 token/s for fixed B8 MTP, a
+  1.342x speedup. Greedy measured 137.172 versus 321.070 token/s, a 2.341x
+  speedup. Both runs preserved all eight request markers with no foreign text.
+  Full output hashes are not identical across B1 and B8: the fixed-width kernel
+  has the bounded BF16 cross-geometry differences recorded by the construction
+  self-check. Sampler support, sampled token, and next-RNG parity are exact when
+  the input logits are identical.
+- The changed-area suite passed. The repository-wide suite passed with four
+  skips after deselecting the same two unchanged cached `vllm-metal` extension
+  ABI tests whose binary lacks the current MLX symbol.
+- The persistent Qwen launcher now defaults to `mtp_batch`,
+  `--generation-mode mtp`, and capacity 8 from the PR #245 source worktree.
+  The deployed service passed marker parity and cancellation gates on port
+  8080. It does not use AR, and DeepSeek remains disabled.

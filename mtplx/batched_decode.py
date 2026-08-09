@@ -64,7 +64,10 @@ from typing import Any
 import numpy as np
 
 from mtplx.sampling import (
+    Distribution,
     SamplerConfig,
+    SparseDistribution,
+    apply_penalties,
     distribution_from_logits,
     sample_from_distribution,
     verify_one_token,
@@ -206,12 +209,27 @@ class MTPK1RowCycle:
 class _MTPK1RowProposal:
     primary_token: int
     draft_token: int
-    draft_distribution: np.ndarray
+    draft_distribution: Distribution
 
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (no MLX — unit-drivable)
 # --------------------------------------------------------------------------- #
+def _greedy_token_from_logits(
+    logits: np.ndarray,
+    sampler: SamplerConfig,
+    *,
+    token_counts: Counter[int] | None = None,
+) -> int:
+    adjusted = apply_penalties(
+        np.asarray(logits),
+        token_counts,
+        sampler.presence_penalty,
+        sampler.frequency_penalty,
+    )
+    return int(np.argmax(adjusted))
+
+
 def token_sha(tokens: list[int]) -> str:
     """Stable 16-hex digest of a committed token sequence (per-stream gate key)."""
     payload = json.dumps([int(t) for t in tokens], separators=(",", ":"))
@@ -229,16 +247,17 @@ def _sample_mtp_k1_primary(
     """Sample one request-owned primary, or reuse its emitted pending token."""
     counts = Counter(int(token) for token in history_tokens)
     if pending_primary is None:
-        primary_p = distribution_from_logits(
-            np.asarray(primary_logits, dtype=np.float64),
-            sampler,
-            token_counts=counts,
-        )
-        primary = (
-            int(np.argmax(primary_p))
-            if sampler.temperature <= 0
-            else sample_from_distribution(primary_p, rng)
-        )
+        if sampler.temperature <= 0:
+            primary = _greedy_token_from_logits(
+                primary_logits, sampler, token_counts=counts
+            )
+        else:
+            primary_p = distribution_from_logits(
+                np.asarray(primary_logits, dtype=np.float64),
+                sampler,
+                token_counts=counts,
+            )
+            primary = sample_from_distribution(primary_p, rng)
     else:
         primary = int(pending_primary)
     return primary
@@ -253,15 +272,17 @@ def _sample_mtp_k1_draft(
 ) -> _MTPK1RowProposal:
     """Sample the row-owned draft after its primary has shaped the MTP forward."""
 
-    draft_q = distribution_from_logits(
-        np.asarray(draft_logits, dtype=np.float64),
-        draft_sampler,
-    )
-    draft = (
-        int(np.argmax(draft_q))
-        if draft_sampler.temperature <= 0
-        else sample_from_distribution(draft_q, rng)
-    )
+    if draft_sampler.temperature <= 0:
+        draft = _greedy_token_from_logits(draft_logits, draft_sampler)
+        draft_q: Distribution = SparseDistribution.one_hot(
+            draft, int(np.asarray(draft_logits).shape[0])
+        )
+    else:
+        draft_q = distribution_from_logits(
+            np.asarray(draft_logits, dtype=np.float64),
+            draft_sampler,
+        )
+        draft = sample_from_distribution(draft_q, rng)
     return _MTPK1RowProposal(
         primary_token=int(primary_token),
         draft_token=draft,
@@ -311,17 +332,19 @@ def _finish_mtp_k1_row_cycle(
     draft_q = proposal.draft_distribution
     counts = Counter(int(token) for token in history_tokens)
 
-    target_p = distribution_from_logits(
-        np.asarray(verify_logits, dtype=np.float64),
-        sampler,
-        token_counts=counts,
-    )
     if sampler.temperature <= 0:
-        target = int(np.argmax(target_p))
+        target = _greedy_token_from_logits(
+            verify_logits, sampler, token_counts=counts
+        )
         accepted = draft == target
         second = draft if accepted else target
         accept_probability = 1.0 if accepted else 0.0
     else:
+        target_p = distribution_from_logits(
+            np.asarray(verify_logits, dtype=np.float64),
+            sampler,
+            token_counts=counts,
+        )
         decision = verify_one_token(target_p, draft_q, draft, rng)
         accepted = bool(decision.accepted)
         second = int(decision.token_id)
@@ -330,16 +353,17 @@ def _finish_mtp_k1_row_cycle(
 
     bonus = None
     if accepted and not omit_speculative_bonus and bonus_logits is not None:
-        bonus_p = distribution_from_logits(
-            np.asarray(bonus_logits, dtype=np.float64),
-            sampler,
-            token_counts=counts,
-        )
-        bonus = (
-            int(np.argmax(bonus_p))
-            if sampler.temperature <= 0
-            else sample_from_distribution(bonus_p, rng)
-        )
+        if sampler.temperature <= 0:
+            bonus = _greedy_token_from_logits(
+                bonus_logits, sampler, token_counts=counts
+            )
+        else:
+            bonus_p = distribution_from_logits(
+                np.asarray(bonus_logits, dtype=np.float64),
+                sampler,
+                token_counts=counts,
+            )
+            bonus = sample_from_distribution(bonus_p, rng)
 
     return MTPK1RowCycle(
         primary_token=primary,

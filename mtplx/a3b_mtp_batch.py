@@ -17,8 +17,19 @@ from mlx_lm.models.base import scaled_dot_product_attention
 from mlx_lm.models.cache import ArraysCache
 
 from mtplx.artifacts import load_config
+from mtplx.batched_decode import (
+    MTPK1RowCycle,
+    _MTPK1RowProposal,
+    _finish_mtp_k1_row_cycle,
+    _sample_mtp_k1_draft,
+    _sample_mtp_k1_primary,
+)
+from mtplx.fast_sampling import (
+    BatchedSparseDistributions,
+    bind_batched_top_k_distributions,
+)
 from mtplx.ragged_kv_cache import RaggedBatchKVCache
-from mtplx.sampling import SamplerConfig
+from mtplx.sampling import SamplerConfig, sample_from_distribution, verify_one_token
 
 
 _LAYER_TYPES = tuple(
@@ -2021,6 +2032,202 @@ def _merge_qwen35b_mtp_caches(caches: list[list[Any]]) -> list[Any]:
     return [_merge_qwen35b_kv_rows(caches, 0, allow_empty=True)]
 
 
+class _DenseMTPK1SamplingRoute:
+    """Exact per-row NumPy route for unsupported or penalized samplers."""
+
+    @staticmethod
+    def primary_source(logits: Any) -> np.ndarray:
+        return np.asarray(logits.astype(mx.float32))
+
+    @staticmethod
+    def sample_primary(
+        source: np.ndarray,
+        row: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        pending_primary: int | None,
+    ) -> int:
+        return _sample_mtp_k1_primary(
+            source[row],
+            sampler=request.sampler,
+            rng=rng,
+            history_tokens=history_tokens,
+            pending_primary=pending_primary,
+        )
+
+    @staticmethod
+    def draft_source(logits: Any) -> np.ndarray:
+        return np.asarray(logits[:, -1, :].astype(mx.float32))
+
+    @staticmethod
+    def sample_draft(
+        source: np.ndarray,
+        row: int,
+        primary: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+    ) -> _MTPK1RowProposal:
+        return _sample_mtp_k1_draft(
+            primary,
+            source[row],
+            draft_sampler=request.draft_sampler,
+            rng=rng,
+        )
+
+    @staticmethod
+    def inactive_draft(source: np.ndarray, row: int) -> int:
+        return int(np.argmax(source[row]))
+
+    @staticmethod
+    def verify_source(logits: Any) -> np.ndarray:
+        return np.asarray(logits.astype(mx.float32))
+
+    @staticmethod
+    def finish(
+        source: np.ndarray,
+        row: int,
+        proposal: _MTPK1RowProposal,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        bonus_allowed: bool,
+    ) -> MTPK1RowCycle:
+        return _finish_mtp_k1_row_cycle(
+            proposal,
+            source[row, 0],
+            source[row, 1] if bonus_allowed else None,
+            sampler=request.sampler,
+            rng=rng,
+            history_tokens=history_tokens,
+            omit_speculative_bonus=not bonus_allowed,
+        )
+
+
+class _BatchedSparseMTPK1SamplingRoute:
+    """Exact fixed-B8 top-k route with one small host transfer per phase."""
+
+    def __init__(
+        self,
+        sampler: SamplerConfig,
+        draft_sampler: SamplerConfig,
+        *,
+        vocab_size: int,
+    ) -> None:
+        self.target_distributions = bind_batched_top_k_distributions(
+            sampler, vocab_size=vocab_size
+        )
+        self.draft_distributions = bind_batched_top_k_distributions(
+            draft_sampler, vocab_size=vocab_size
+        )
+
+    def primary_source(self, logits: Any) -> BatchedSparseDistributions:
+        return self.target_distributions(logits)
+
+    @staticmethod
+    def sample_primary(
+        source: BatchedSparseDistributions,
+        row: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        pending_primary: int | None,
+    ) -> int:
+        del request, history_tokens
+        if pending_primary is not None:
+            return int(pending_primary)
+        return source.sample(row, rng)
+
+    def draft_source(self, logits: Any) -> BatchedSparseDistributions:
+        return self.draft_distributions(logits[:, -1, :])
+
+    @staticmethod
+    def sample_draft(
+        source: BatchedSparseDistributions,
+        row: int,
+        primary: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+    ) -> _MTPK1RowProposal:
+        del request
+        distribution = source.to_distribution(row)
+        return _MTPK1RowProposal(
+            primary_token=int(primary),
+            draft_token=sample_from_distribution(distribution, rng),
+            draft_distribution=distribution,
+        )
+
+    @staticmethod
+    def inactive_draft(source: BatchedSparseDistributions, row: int) -> int:
+        return int(source.token_ids[row, 0])
+
+    def verify_source(self, logits: Any) -> BatchedSparseDistributions:
+        return self.target_distributions(logits)
+
+    @staticmethod
+    def finish(
+        source: BatchedSparseDistributions,
+        row: int,
+        proposal: _MTPK1RowProposal,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        bonus_allowed: bool,
+    ) -> MTPK1RowCycle:
+        del request, history_tokens
+        target = source.to_distribution(row * 2)
+        decision = verify_one_token(
+            target,
+            proposal.draft_distribution,
+            proposal.draft_token,
+            rng,
+        )
+        bonus = None
+        if decision.accepted and bonus_allowed:
+            bonus = sample_from_distribution(
+                source.to_distribution(row * 2 + 1), rng
+            )
+        return MTPK1RowCycle(
+            primary_token=int(proposal.primary_token),
+            draft_token=int(proposal.draft_token),
+            accepted=bool(decision.accepted),
+            second_token=int(decision.token_id),
+            bonus_token=bonus,
+            accept_probability=float(decision.accept_probability),
+            next_primary=bonus if decision.accepted else int(decision.token_id),
+        )
+
+
+def _supports_batched_sparse_sampling(config: SamplerConfig) -> bool:
+    return bool(
+        config.temperature > 0
+        and int(config.top_k) > 0
+        and float(config.presence_penalty) == 0.0
+        and float(config.frequency_penalty) == 0.0
+    )
+
+
+def _bind_mtp_k1_sampling_route(
+    requests: list[A3BMTPBatchRequest],
+    *,
+    vocab_size: int,
+) -> _DenseMTPK1SamplingRoute | _BatchedSparseMTPK1SamplingRoute:
+    sampler = requests[0].sampler
+    draft_sampler = requests[0].draft_sampler
+    if (
+        _supports_batched_sparse_sampling(sampler)
+        and _supports_batched_sparse_sampling(draft_sampler)
+        and all(
+            request.sampler == sampler and request.draft_sampler == draft_sampler
+            for request in requests[1:]
+        )
+    ):
+        return _BatchedSparseMTPK1SamplingRoute(
+            sampler, draft_sampler, vocab_size=vocab_size
+        )
+    return _DenseMTPK1SamplingRoute()
+
+
 def generate_a3b_mtp_batch(
     lane: InstalledA3BMTPBatchLane,
     requests: list[A3BMTPBatchRequest] | tuple[A3BMTPBatchRequest, ...],
@@ -2029,11 +2236,6 @@ def generate_a3b_mtp_batch(
     import mlx.core as mx
 
     from .attention_context import attention_phase
-    from .batched_decode import (
-        _finish_mtp_k1_row_cycle,
-        _sample_mtp_k1_draft,
-        _sample_mtp_k1_primary,
-    )
     from .ragged_kv_cache import RaggedBatchKVCache
 
     real = list(requests)
@@ -2131,6 +2333,9 @@ def generate_a3b_mtp_batch(
             request.on_decode_start()
 
     rngs = [np.random.default_rng(request.seed) for request in real]
+    sampling_route = _bind_mtp_k1_sampling_route(
+        real, vocab_size=int(logits_last.shape[-1])
+    )
     tokens: list[list[int]] = [[] for _ in real]
     pending: list[int | None] = [None for _ in real]
     accepted_drafts = 0
@@ -2172,7 +2377,7 @@ def generate_a3b_mtp_batch(
                 notify_terminal(row, cycles)
         if not any(reason is None for reason in finish):
             break
-        primary_rows = np.asarray(logits_last.astype(mx.float32))
+        primary_source = sampling_route.primary_source(logits_last)
         primary_ids = [0] * width
         primary_was_pending = [False] * width
         may_finish_cycle = [False] * width
@@ -2182,12 +2387,13 @@ def generate_a3b_mtp_batch(
                 continue
             request = real[row]
             was_pending = pending[row] is not None
-            primary = _sample_mtp_k1_primary(
-                primary_rows[row],
-                sampler=request.sampler,
-                rng=rngs[row],
-                history_tokens=tokens[row],
-                pending_primary=pending[row],
+            primary = sampling_route.sample_primary(
+                primary_source,
+                row,
+                request,
+                rngs[row],
+                tokens[row],
+                pending[row],
             )
             primary_ids[row] = primary
             primary_was_pending[row] = was_pending
@@ -2229,23 +2435,25 @@ def generate_a3b_mtp_batch(
             )
         ]
         install_host_bounds(mtp_ragged_entries, mtp_row_bounds)
-        mx.eval(draft_logits)
-        draft_rows = np.asarray(draft_logits[:, -1, :].astype(mx.float32))
+        draft_source = sampling_route.draft_source(draft_logits)
         proposals: list[Any | None] = [None] * width
         draft_ids = [0] * width
         for row in range(width):
             if active(row) and may_finish_cycle[row]:
                 request = real[row]
-                proposal = _sample_mtp_k1_draft(
+                proposal = sampling_route.sample_draft(
+                    draft_source,
+                    row,
                     primary_ids[row],
-                    draft_rows[row],
-                    draft_sampler=request.draft_sampler,
-                    rng=rngs[row],
+                    request,
+                    rngs[row],
                 )
                 proposals[row] = proposal
                 draft_ids[row] = proposal.draft_token
             else:
-                draft_ids[row] = int(np.argmax(draft_rows[row]))
+                draft_ids[row] = sampling_route.inactive_draft(
+                    draft_source, row
+                )
 
         verify_input = mx.stack(
             (primary_array, mx.array(draft_ids, dtype=mx.int32)), axis=1
@@ -2260,8 +2468,7 @@ def generate_a3b_mtp_batch(
             verify_logits, verify_hidden, captures = lane.capture_forward(
                 verify_input, cache=cache
             )
-        mx.eval(verify_logits)
-        verify_rows = np.asarray(verify_logits.astype(mx.float32))
+        verify_source = sampling_route.verify_source(verify_logits)
         keeps = [0] * width
         accepted_mask = [False] * width
         next_pending: list[int | None] = [None] * len(real)
@@ -2281,14 +2488,14 @@ def generate_a3b_mtp_batch(
                 and len(history_after_primary) + 1 < int(request.max_tokens)
                 and proposal.draft_token not in request.stop_token_ids
             )
-            decision = _finish_mtp_k1_row_cycle(
+            decision = sampling_route.finish(
+                verify_source,
+                row,
                 proposal,
-                verify_rows[row, 0],
-                verify_rows[row, 1] if bonus_allowed else None,
-                sampler=request.sampler,
-                rng=rngs[row],
-                history_tokens=history_after_primary,
-                omit_speculative_bonus=not bonus_allowed,
+                request,
+                rngs[row],
+                history_after_primary,
+                bonus_allowed,
             )
             accepted_mask[row] = decision.accepted
             keeps[row] = 2 if decision.accepted else 1

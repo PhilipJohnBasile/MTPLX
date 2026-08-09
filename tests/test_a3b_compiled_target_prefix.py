@@ -267,6 +267,13 @@ def test_exact_request_rejects_unsupported_sampler_before_prompt_construction() 
         a3b_target.validate_a3b_k1_target_prefix_sampler(
             SamplerConfig(temperature=0.6, top_p=0.95, top_k=0)
         )
+    with pytest.raises(
+        a3b_target.A3BCompiledTargetPrefixConfigError,
+        match="requires top_k <= 32",
+    ):
+        a3b_target.validate_a3b_k1_target_prefix_sampler(
+            SamplerConfig(temperature=0.6, top_p=0.95, top_k=33)
+        )
 
 
 @pytest.mark.parametrize(
@@ -283,6 +290,26 @@ def test_exact_request_accepts_greedy_as_deterministic_argmax_contract(
     # Greedy is the AR-exactness gate lane: every route sample site
     # degenerates to argmax, so the request is deterministic end-to-end.
     a3b_target.validate_a3b_k1_target_prefix_sampler(sampler)
+
+
+def test_exact_request_rejects_oversized_device_draft_before_prompt() -> None:
+    with pytest.raises(
+        a3b_target.A3BCompiledTargetPrefixConfigError,
+        match="requires top_k <= 32",
+    ):
+        a3b_target.validate_a3b_k1_device_draft_request(
+            SamplerConfig(temperature=0.6, top_p=0.95, top_k=33),
+            draft_margin_threshold=None,
+            adaptive_policy=None,
+            draft_core="stock",
+            online_correction_cache=False,
+            prompt_correction_cache=False,
+            adapter_ensemble_q=False,
+            mtp_topk_reranker=None,
+            loop_guard=False,
+            presence_penalty=0.0,
+            frequency_penalty=0.0,
+        )
 
 
 def test_takeover_lane_uses_draft_source_not_block_rounds() -> None:
@@ -359,6 +386,10 @@ def test_generic_target_prefix_sampler_contract_is_proven_without_sampling() -> 
     generation._validate_target_prefix_sampler_request(
         SamplerConfig(temperature=0.6, top_p=0.95, top_k=20)
     )
+    with pytest.raises(RuntimeError, match="requires top_k <= 32"):
+        generation._validate_target_prefix_sampler_request(
+            SamplerConfig(temperature=0.6, top_p=0.95, top_k=33)
+        )
 
 
 def test_generation_routes_on_direct_runtime_factory_ownership() -> None:

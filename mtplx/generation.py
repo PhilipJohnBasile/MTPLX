@@ -49,6 +49,7 @@ from .cache_state import (
     trim_verified_window_to_prefix,
 )
 from .fast_sampling import (
+    MAX_DEVICE_TOP_K_ORDER,
     BatchedSparseDistributions,
     apply_penalties_mlx,
     batched_sparse_distributions_from_mlx_logits,
@@ -3911,6 +3912,15 @@ def _validate_target_prefix_sampler_request(config: SamplerConfig) -> None:
     ):
         raise RuntimeError(
             "target_prefix verification requires top-k sampling or top_p=1"
+        )
+    if (
+        config.temperature > 0
+        and 0 < config.top_p < 1.0
+        and int(config.top_k or 0) > MAX_DEVICE_TOP_K_ORDER
+    ):
+        raise RuntimeError(
+            "target_prefix verification requires top_k <= "
+            f"{MAX_DEVICE_TOP_K_ORDER} when top_p < 1"
         )
 
 

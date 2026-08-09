@@ -7,8 +7,12 @@ import numpy as np
 import pytest
 from mlx_lm.models.cache import ArraysCache, KVCache
 
+import mtplx.batched_decode as bd
+import mtplx.fast_sampling as fs
 from mtplx.a3b_mtp_batch import (
     A3BMTPBatchRequest,
+    _BatchedSparseMTPK1SamplingRoute,
+    _DenseMTPK1SamplingRoute,
     _merge_qwen35b_mtp_caches,
     _merge_qwen35b_target_caches,
     generate_a3b_mtp_batch,
@@ -169,12 +173,16 @@ def _request(
     callback=None,
     cancelled=lambda: False,
     temperature=0.0,
+    top_p=1.0,
+    top_k=0,
 ):
     return A3BMTPBatchRequest(
         request_id=request_id,
         prompt_ids=tuple(prompt),
-        sampler=SamplerConfig(temperature=temperature, top_p=1.0, top_k=0),
-        draft_sampler=SamplerConfig(temperature=temperature, top_p=1.0, top_k=0),
+        sampler=SamplerConfig(temperature=temperature, top_p=top_p, top_k=top_k),
+        draft_sampler=SamplerConfig(
+            temperature=temperature, top_p=top_p, top_k=top_k
+        ),
         seed=seed,
         max_tokens=max_tokens,
         on_token=callback,
@@ -227,6 +235,128 @@ def test_driver_keeps_request_rng_and_output_independent_of_neighbor():
         sampler_runs.append(result.streams[0].tokens)
 
     assert sampler_runs[0] == sampler_runs[1]
+
+
+def test_driver_uses_batched_sparse_route_for_default_stochastic_sampler(
+    monkeypatch,
+):
+    def fail_dense_distribution(*_args, **_kwargs):
+        raise AssertionError("default top-k sampling must stay sparse and batched")
+
+    monkeypatch.setattr(bd, "distribution_from_logits", fail_dense_distribution)
+    monkeypatch.setattr(
+        fs,
+        "batched_sparse_distributions_from_mlx_logits",
+        fail_dense_distribution,
+    )
+    result = generate_a3b_mtp_batch(
+        _FakeLane(),
+        [
+            _request(
+                f"row-{row}",
+                [row + 1],
+                max_tokens=4,
+                seed=500 + row,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=4,
+            )
+            for row in range(8)
+        ],
+    )
+
+    assert len(result.streams) == 8
+    assert all(len(stream.tokens) == 4 for stream in result.streams)
+
+
+@pytest.mark.parametrize("accepted", [True, False])
+def test_sparse_route_matches_dense_fixed_seed_for_every_sampling_phase(accepted):
+    request = _request(
+        "row-0",
+        [1],
+        seed=2,
+        temperature=1.0,
+        top_p=1.0,
+        top_k=2,
+    )
+    dense = _DenseMTPK1SamplingRoute()
+    sparse = _BatchedSparseMTPK1SamplingRoute(
+        request.sampler,
+        request.draft_sampler,
+        vocab_size=5,
+    )
+    dense_rng = np.random.default_rng(2)
+    sparse_rng = np.random.default_rng(2)
+    primary_logits = mx.array(
+        np.tile([0.0, 2.0, -1.0, -2.0, 3.0], (8, 1)),
+        dtype=mx.float32,
+    )
+    draft_logits = primary_logits[:, None, :]
+
+    dense_primary = dense.sample_primary(
+        dense.primary_source(primary_logits),
+        0,
+        request,
+        dense_rng,
+        [],
+        None,
+    )
+    sparse_primary = sparse.sample_primary(
+        sparse.primary_source(primary_logits),
+        0,
+        request,
+        sparse_rng,
+        [],
+        None,
+    )
+    dense_proposal = dense.sample_draft(
+        dense.draft_source(draft_logits),
+        0,
+        dense_primary,
+        request,
+        dense_rng,
+    )
+    sparse_proposal = sparse.sample_draft(
+        sparse.draft_source(draft_logits),
+        0,
+        sparse_primary,
+        request,
+        sparse_rng,
+    )
+    target_row = (
+        [0.0, 2.0, -1.0, -2.0, 3.0]
+        if accepted
+        else [3.0, -2.0, 2.0, -1.0, 0.0]
+    )
+    bonus_row = [0.0, 3.0, -1.0, -2.0, 2.0]
+    verify_logits = mx.array(
+        np.tile([target_row, bonus_row], (8, 1, 1)),
+        dtype=mx.float32,
+    )
+    dense_result = dense.finish(
+        dense.verify_source(verify_logits),
+        0,
+        dense_proposal,
+        request,
+        dense_rng,
+        [dense_primary],
+        True,
+    )
+    sparse_result = sparse.finish(
+        sparse.verify_source(verify_logits),
+        0,
+        sparse_proposal,
+        request,
+        sparse_rng,
+        [sparse_primary],
+        True,
+    )
+
+    assert sparse_primary == dense_primary
+    assert sparse_proposal.draft_token == dense_proposal.draft_token
+    assert sparse_result == dense_result
+    assert sparse_result.accepted is accepted
+    assert sparse_rng.random() == dense_rng.random()
 
 
 def test_driver_resets_host_capacity_bounds_to_logical_progress():

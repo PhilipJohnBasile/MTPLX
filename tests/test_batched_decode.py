@@ -800,6 +800,52 @@ def test_sampled_k1_pending_primary_is_not_double_counted_for_penalties(monkeypa
     assert observed[-1] == Counter({2: 1, 1: 1})
 
 
+def test_greedy_k1_sampling_skips_full_distribution_construction(monkeypatch):
+    sampler = SamplerConfig(
+        temperature=0.0,
+        top_p=0.95,
+        top_k=2,
+        presence_penalty=0.4,
+        frequency_penalty=0.2,
+    )
+    draft_sampler = SamplerConfig(temperature=0.0, top_p=0.95, top_k=2)
+    rng = np.random.default_rng(123)
+    expected_next_random = np.random.default_rng(123).random()
+
+    def fail_distribution(*_args, **_kwargs):
+        raise AssertionError("greedy sampling must not build a full distribution")
+
+    monkeypatch.setattr(bd, "distribution_from_logits", fail_distribution)
+    primary = bd._sample_mtp_k1_primary(
+        np.array([0.0, 1.0, 0.9]),
+        sampler=sampler,
+        rng=rng,
+        history_tokens=[1, 1],
+    )
+    proposal = bd._sample_mtp_k1_draft(
+        primary,
+        np.array([0.0, 0.2, 2.0]),
+        draft_sampler=draft_sampler,
+        rng=rng,
+    )
+    result = bd._finish_mtp_k1_row_cycle(
+        proposal,
+        np.array([0.0, 0.2, 2.0]),
+        np.array([0.0, 3.0, 1.0]),
+        sampler=sampler,
+        rng=rng,
+        history_tokens=[1, 1, primary],
+        omit_speculative_bonus=False,
+    )
+
+    assert primary == 2
+    assert proposal.draft_token == 2
+    assert result.accepted is True
+    assert result.second_token == 2
+    assert result.bonus_token == 1
+    assert rng.random() == expected_next_random
+
+
 def test_left_pad_prompts() -> None:
     padded, lengths = left_pad_prompts([[5, 6, 7], [8], [9, 10]], pad_id=0)
     assert lengths == [3, 1, 2]

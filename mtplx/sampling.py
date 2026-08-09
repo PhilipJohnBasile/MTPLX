@@ -92,7 +92,29 @@ def softmax(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     return exp / total
 
 
-def apply_top_p_top_k(probs: np.ndarray, top_p: float = 1.0, top_k: int = 0) -> np.ndarray:
+def deterministic_top_k_order(values: np.ndarray, top_k: int) -> np.ndarray:
+    """Return the highest-value ids, breaking exact ties by vocabulary id."""
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("Expected a 1D value vector")
+    size = int(values.shape[0])
+    count = min(max(int(top_k), 0), size)
+    if count == 0:
+        return np.empty(0, dtype=np.int64)
+    token_ids = np.arange(size, dtype=np.int64)
+    if count == size:
+        return np.lexsort((token_ids, -values)).astype(np.int64, copy=False)
+    cutoff = np.partition(values, size - count)[size - count]
+    higher = np.flatnonzero(values > cutoff)
+    tied = np.flatnonzero(values == cutoff)
+    chosen = np.concatenate((higher, tied[: count - higher.size]))
+    order = np.lexsort((chosen, -values[chosen]))
+    return chosen[order].astype(np.int64, copy=False)
+
+
+def apply_top_p_top_k(
+    probs: np.ndarray, top_p: float = 1.0, top_k: int = 0
+) -> np.ndarray:
     """Apply the same top-p then top-k order used by local `mlx_lm`.
 
     Proper speculative sampling requires target and draft probabilities to be
@@ -102,24 +124,26 @@ def apply_top_p_top_k(probs: np.ndarray, top_p: float = 1.0, top_k: int = 0) -> 
     probs = np.asarray(probs, dtype=np.float64)
     if probs.ndim != 1:
         raise ValueError("Expected a 1D probability vector")
-    mask = np.ones(probs.shape[0], dtype=bool)
+    size = int(probs.shape[0])
+    bounded_top_k = int(top_k) if top_k and 0 < int(top_k) < size else 0
+    mask = np.ones(size, dtype=bool)
+    ranked: np.ndarray | None = None
+    if bounded_top_k:
+        ranked = deterministic_top_k_order(probs, bounded_top_k)
     if 0 < top_p < 1.0:
-        order = np.argsort(-probs)
+        order = ranked
+        if order is None:
+            order = deterministic_top_k_order(probs, size)
         sorted_probs = probs[order]
         cumulative = np.cumsum(sorted_probs)
-        keep_sorted = cumulative <= top_p
-        if keep_sorted.size:
-            keep_sorted[0] = True
-            first_over = np.argmax(cumulative >= top_p)
-            keep_sorted[: first_over + 1] = True
+        cumulative_before = np.concatenate(([0.0], cumulative[:-1]))
+        keep_sorted = cumulative_before < top_p
         nucleus_mask = np.zeros_like(mask)
         nucleus_mask[order[keep_sorted]] = True
         mask &= nucleus_mask
-    if top_k and 0 < top_k < probs.shape[0]:
-        scoped_probs = np.where(mask, probs, 0.0)
-        keep = np.argpartition(-scoped_probs, top_k - 1)[:top_k]
+    if bounded_top_k:
         top_mask = np.zeros_like(mask)
-        top_mask[keep] = True
+        top_mask[ranked] = True
         mask &= top_mask
     filtered = np.where(mask, probs, 0.0)
     total = filtered.sum()
