@@ -2703,6 +2703,57 @@ class _BatchedARGenerationService:
                 self._active[int(uid)] = job
             self._condition.notify_all()
 
+    def _commit_prompt_boundary(self, job: _BatchedARJob, generator: Any, uid: int) -> None:
+        """Store a batched row's PROMPT-ONLY state at its first generation step.
+
+        At the first response, the step that produced token 1 has just
+        consumed the final prompt token, so the row's cache covers exactly the
+        prompt — and MLX array immutability makes the extracted slices a
+        coherent snapshot that `put` clones before the next decode step. The
+        entry keys on the prompt alone, so it is a strict prefix of EVERY
+        follow-up round's prompt: restores survive reasoning-history scoping,
+        which drops prior thinking and made finish-time keys (prompt + raw
+        generation) diverge mid-entry with no recurrent-safe restore point
+        (live receipt 2026-08-09: 10 entries banked, every app worker round
+        ssd_prefix_miss). Same fail-safe contract as the finish commit."""
+        bank = getattr(job, "session_bank", None)
+        if bank is None or job.session_cache_hit:
+            return  # a restored row's prompt state is already banked
+        prompt_ids = [int(token) for token in job.prompt_ids]
+        if len(prompt_ids) < 512:
+            return
+        if any(token >= (1 << 40) for token in prompt_ids):
+            return
+        started = time.perf_counter()
+        try:
+            extracted = generator.extract_cache([uid])
+            row = extracted.get(uid)
+            if row is None:
+                return
+            cache = row[0] if isinstance(row, tuple) else row
+            entry = bank.put(
+                runtime=self.state.runtime,
+                token_ids=prompt_ids,
+                cache=cache,
+                logits=None,
+                hidden=None,
+                session_id=job.session_id,
+                template_hash=job.session_template_hash,
+                policy_fingerprint=job.session_policy_fingerprint,
+                snapshot_epoch=len(prompt_ids),
+            )
+            job.request_observability["ar_batch_prompt_boundary_bank_stored"] = (
+                entry is not None
+            )
+        except Exception as exc:
+            job.request_observability["ar_batch_prompt_boundary_bank_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            job.request_observability["ar_batch_prompt_boundary_bank_put_s"] = round(
+                time.perf_counter() - started, 6
+            )
+
     def _commit_finished_row(self, job: _BatchedARJob, response: Any) -> None:
         """Store a finished batched row's state in the session bank.
 
@@ -3018,6 +3069,8 @@ class _BatchedARGenerationService:
                         if not job.future.done():
                             job.future.set_exception(exc)
                         continue
+                    if len(job.tokens) == 1:
+                        self._commit_prompt_boundary(job, generator, uid)
                     finish_reason = getattr(response, "finish_reason", None)
                     if finish_reason is not None:
                         with self._condition:
