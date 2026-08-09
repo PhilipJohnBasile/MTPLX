@@ -347,7 +347,7 @@ def test_mtp_batch_rejects_constraint_graph_without_solo_fallback(monkeypatch):
     )
 
     with pytest.raises(
-        openai.MTPBatchRequestError, match="does not support constraint_spec"
+        openai.MTPBatchRequestError, match="does not support response_format"
     ):
         openai._run_generation_dispatched(
             state,

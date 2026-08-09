@@ -16899,7 +16899,7 @@ def _validate_mtp_batch_request_contract(
     resolved_mtp_depth: int | None,
 ) -> None:
     if constraint_spec is not None:
-        raise MTPBatchRequestError("mtp_batch does not support constraint_spec")
+        raise MTPBatchRequestError("mtp_batch does not support response_format")
     if vision_splice is not None:
         raise MTPBatchRequestError("mtp_batch does not support vision_splice")
     if background_request:
