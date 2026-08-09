@@ -58,6 +58,19 @@ class _Runtime:
             ),
             mtp=SimpleNamespace(layers=[object()]),
         )
+        self.a3b_compiled_target_prefix_factory = SimpleNamespace(
+            layer_types=tuple(
+                "full_attention" if (index + 1) % 4 == 0 else "linear_attention"
+                for index in range(40)
+            ),
+            gdn_layers=30,
+            full_attention_layers=10,
+            hidden_size=2048,
+            quantization="affine_q4_group64",
+            gdn_postconv=SimpleNamespace(
+                m2_implementations=tuple((lambda *args: args) for _ in range(30))
+            ),
+        )
 
     def forward_ar(self, *args, **kwargs):
         return args, kwargs
@@ -70,6 +83,9 @@ class _Runtime:
 
     def make_mtp_cache(self):
         return []
+
+    def _forward_ar_capture_a3b_postconv(self, *args, **kwargs):
+        return args, kwargs
 
 
 def _runtime(tmp_path, config=None):
@@ -87,6 +103,8 @@ def _passing_selfcheck(lane):
         "target_shape": [lane.geometry.cohort_slots, lane.geometry.verify_tokens],
         "projection_rows": lane.geometry.projection_rows,
         "solo_parity": True,
+        "captured_gdn_layers": 30,
+        "row_commit": True,
     }
 
 
@@ -105,6 +123,8 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16"
     assert lane.target_forward.__self__ is runtime
     assert lane.draft_forward.__self__ is runtime
+    assert lane.capture_forward.func.__self__ is runtime
+    assert lane.prefill_request.func is not None
     assert lane.selfcheck["solo_parity"] is True
     with pytest.raises(FrozenInstanceError):
         lane.route_id = "changed"
@@ -149,6 +169,34 @@ def test_installer_rejects_missing_prebound_callable(tmp_path):
     runtime.draft_mtp = None
 
     with pytest.raises(A3BMTPBatchInstallError, match="draft_mtp"):
+        install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
+
+
+def test_installer_rejects_missing_compiled_capture_factory(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    runtime = _runtime(tmp_path)
+    runtime.a3b_compiled_target_prefix_factory = None
+
+    with pytest.raises(A3BMTPBatchInstallError, match="compiled target-prefix"):
+        install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
+
+
+def test_installer_rejects_incomplete_postconv_capture_factory(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    runtime = _runtime(tmp_path)
+    runtime.a3b_compiled_target_prefix_factory.gdn_postconv.m2_implementations = (
+        object(),
+    )
+
+    with pytest.raises(A3BMTPBatchInstallError, match="30 M2 post-conv"):
         install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
 
 

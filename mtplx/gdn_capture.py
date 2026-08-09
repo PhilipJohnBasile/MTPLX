@@ -2764,3 +2764,96 @@ def commit_captured_prefix(
         elif trim_tokens and hasattr(entry, "is_trimmable") and entry.is_trimmable():
             entry.trim(trim_tokens)
     return True
+
+
+def _select_captured_rows(value: mx.array, indices: list[int]) -> mx.array:
+    """Select one captured time position per batch row without a host round trip."""
+    batch = int(value.shape[0])
+    if batch != len(indices):
+        raise ValueError(
+            f"capture batch has {batch} rows, but {len(indices)} positions were given"
+        )
+    selector = mx.array(indices, dtype=mx.int32).reshape(
+        (batch, 1) + (1,) * (int(value.ndim) - 2)
+    )
+    selector = mx.broadcast_to(selector, (batch, 1) + tuple(value.shape[2:]))
+    return mx.contiguous(mx.take_along_axis(value, selector, axis=1)[:, 0])
+
+
+def commit_captured_rows(
+    cache: list[Any],
+    captures: dict[int, dict[str, mx.array]],
+    keep_tokens_by_row: list[int] | tuple[int, ...],
+    verified_tokens: int,
+) -> bool:
+    """Commit a different verified prefix length for every fixed cohort row.
+
+    This is the Qwen 35B A3B ``[B, 2]`` MTP commit boundary.  Full-attention
+    entries must already be :class:`RaggedBatchKVCache` instances so their
+    logical offsets can move independently.  Recurrent entries are rebound to
+    the captured state at each row's authoritative position.  The installed
+    post-conv capture path supplies both states directly; tape replay is not a
+    supported hot-path fallback.
+    """
+    verified = int(verified_tokens)
+    keeps = [int(value) for value in keep_tokens_by_row]
+    if not keeps or any(value <= 0 or value > verified for value in keeps):
+        return False
+    if captures.get("__final_only__"):
+        return False
+
+    from .cache_state import _is_trimmable
+    from .ragged_kv_cache import RaggedBatchKVCache
+
+    adjusted_by_layer: dict[int, list[int]] = {}
+    for layer_idx, entry in enumerate(cache):
+        capture = captures.get(layer_idx)
+        if capture is not None:
+            if "tape" in capture:
+                return False
+            if "conv_states" not in capture or "states" not in capture:
+                return False
+            capture_start = int(capture.get("capture_start", 0))
+            adjusted = [value - 1 - capture_start for value in keeps]
+            if any(value < 0 for value in adjusted):
+                return False
+            if len(keeps) != int(capture["conv_states"].shape[0]):
+                return False
+            adjusted_by_layer[layer_idx] = adjusted
+        elif _is_trimmable(entry):
+            if isinstance(entry, RaggedBatchKVCache):
+                if entry.offsets is not None and int(entry.offsets.size) != len(keeps):
+                    return False
+            elif len(set(keeps)) != 1:
+                return False
+        elif entry is not None and hasattr(entry, "state"):
+            # The installed A3B layout has exactly 30 recurrent entries and
+            # every one must have a post-conv capture.  Missing ownership is a
+            # cohort failure, never permission to keep speculative final state.
+            return False
+
+    for layer_idx, entry in enumerate(cache):
+        capture = captures.get(layer_idx)
+        if capture is not None:
+            adjusted = adjusted_by_layer[layer_idx]
+            conv_state = _select_captured_rows(capture["conv_states"], adjusted)
+            gdn_state = _select_captured_rows(capture["states"], adjusted)
+            # Rebind the two leaves directly.  OwnedRecurrentStateCache's
+            # item assignment is deliberately lazy; replace_state would add a
+            # per-cycle synchronization and copy to this enabled hot path.
+            if hasattr(entry, "__setitem__"):
+                entry[0] = conv_state
+                entry[1] = gdn_state
+            else:
+                entry.state = [conv_state, gdn_state]
+        elif isinstance(entry, RaggedBatchKVCache):
+            entry.offsets = (
+                entry.offsets
+                - verified
+                + mx.array(keeps, dtype=mx.int32)
+            ).astype(mx.int32)
+        elif _is_trimmable(entry):
+            trim = verified - keeps[0]
+            if trim:
+                entry.trim(trim)
+    return True

@@ -71,9 +71,9 @@ def _reference_sampled_k1_cycle(
             if sampler.temperature <= 0
             else sample_from_distribution(primary_p, rng)
         )
+        counts[primary] += 1
     else:
         primary = int(pending_primary)
-    counts[primary] += 1
     draft_q = distribution_from_logits(draft_logits, draft_sampler)
     draft = (
         int(np.argmax(draft_logits))
@@ -651,6 +651,48 @@ def test_sampled_k1_rows_keep_independent_rng_streams():
     assert forward_next == reverse_next
 
 
+def test_sampled_k1_split_propose_and_finish_matches_combined_rng_order():
+    sampler = SamplerConfig(temperature=0.85, top_p=0.9, top_k=4)
+    draft_sampler = SamplerConfig(temperature=0.65, top_p=1.0, top_k=4)
+    rows = (
+        np.array([0.4, -0.1, 0.8, 0.2]),
+        np.array([0.3, 0.7, -0.2, 0.1]),
+        np.array([-0.1, 0.5, 0.2, 0.9]),
+        np.array([0.6, 0.1, 0.4, -0.2]),
+    )
+    combined_rng = np.random.default_rng(44)
+    split_rng = np.random.default_rng(44)
+
+    combined = bd._sample_mtp_k1_row_cycle(
+        *rows,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=combined_rng,
+        history_tokens=[3, 1],
+        omit_speculative_bonus=False,
+    )
+    proposal = bd._sample_mtp_k1_row_proposal(
+        rows[0],
+        rows[1],
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=split_rng,
+        history_tokens=[3, 1],
+    )
+    split = bd._finish_mtp_k1_row_cycle(
+        proposal,
+        rows[2],
+        rows[3],
+        sampler=sampler,
+        rng=split_rng,
+        history_tokens=[3, 1, proposal.primary_token],
+        omit_speculative_bonus=False,
+    )
+
+    assert astuple(split) == astuple(combined)
+    assert split_rng.random() == combined_rng.random()
+
+
 def test_sampled_k1_bonus_policy_does_not_consume_bonus_rng_when_omitted():
     sampler = SamplerConfig(temperature=1.0, top_p=1.0, top_k=0)
     draft_sampler = SamplerConfig(temperature=0.0, top_p=1.0, top_k=0)
@@ -724,6 +766,38 @@ def test_sampled_k1_pending_primary_skips_target_sample_rng_draw():
 
     assert astuple(actual) == expected
     assert actual_rng.random() == expected_rng.random()
+
+
+def test_sampled_k1_pending_primary_is_not_double_counted_for_penalties(monkeypatch):
+    sampler = SamplerConfig(
+        temperature=0.8,
+        top_p=1.0,
+        top_k=0,
+        presence_penalty=0.4,
+        frequency_penalty=0.2,
+    )
+    observed = []
+    original = bd.distribution_from_logits
+
+    def recording_distribution(logits, config, *, token_counts=None):
+        observed.append(None if token_counts is None else Counter(token_counts))
+        return original(logits, config, token_counts=token_counts)
+
+    monkeypatch.setattr(bd, "distribution_from_logits", recording_distribution)
+    bd._sample_mtp_k1_row_cycle(
+        np.array([0.1, 0.2, 0.3]),
+        np.array([0.3, 0.2, 0.1]),
+        np.array([0.2, 0.4, 0.1]),
+        None,
+        sampler=sampler,
+        draft_sampler=SamplerConfig(temperature=0.0),
+        rng=np.random.default_rng(7),
+        history_tokens=[2, 1],
+        omit_speculative_bonus=True,
+        pending_primary=2,
+    )
+
+    assert observed[-1] == Counter({2: 1, 1: 1})
 
 
 def test_left_pad_prompts() -> None:

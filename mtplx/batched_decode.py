@@ -202,6 +202,13 @@ class MTPK1RowCycle:
     next_primary: int | None
 
 
+@dataclass(frozen=True)
+class _MTPK1RowProposal:
+    primary_token: int
+    draft_token: int
+    draft_distribution: np.ndarray
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers (no MLX — unit-drivable)
 # --------------------------------------------------------------------------- #
@@ -211,28 +218,15 @@ def token_sha(tokens: list[int]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _sample_mtp_k1_row_cycle(
+def _sample_mtp_k1_primary(
     primary_logits: np.ndarray,
-    draft_logits: np.ndarray,
-    verify_logits: np.ndarray,
-    bonus_logits: np.ndarray | None,
     *,
     sampler: SamplerConfig,
-    draft_sampler: SamplerConfig,
     rng: np.random.Generator,
     history_tokens: list[int],
-    omit_speculative_bonus: bool,
     pending_primary: int | None = None,
-) -> MTPK1RowCycle:
-    """Apply the single-request ``generate_mtpk`` K1 RNG order to one row.
-
-    All inputs are already materialized row logits. The caller owns ``rng``;
-    sharing or reordering other rows therefore cannot advance this request's
-    random stream. Completion penalties cover committed output only, matching
-    the solo path. Draft sampling intentionally does not consume completion
-    counts.
-    """
-
+) -> int:
+    """Sample one request-owned primary, or reuse its emitted pending token."""
     counts = Counter(int(token) for token in history_tokens)
     if pending_primary is None:
         primary_p = distribution_from_logits(
@@ -247,7 +241,17 @@ def _sample_mtp_k1_row_cycle(
         )
     else:
         primary = int(pending_primary)
-    counts[primary] += 1
+    return primary
+
+
+def _sample_mtp_k1_draft(
+    primary_token: int,
+    draft_logits: np.ndarray,
+    *,
+    draft_sampler: SamplerConfig,
+    rng: np.random.Generator,
+) -> _MTPK1RowProposal:
+    """Sample the row-owned draft after its primary has shaped the MTP forward."""
 
     draft_q = distribution_from_logits(
         np.asarray(draft_logits, dtype=np.float64),
@@ -258,6 +262,54 @@ def _sample_mtp_k1_row_cycle(
         if draft_sampler.temperature <= 0
         else sample_from_distribution(draft_q, rng)
     )
+    return _MTPK1RowProposal(
+        primary_token=int(primary_token),
+        draft_token=draft,
+        draft_distribution=draft_q,
+    )
+
+
+def _sample_mtp_k1_row_proposal(
+    primary_logits: np.ndarray,
+    draft_logits: np.ndarray,
+    *,
+    sampler: SamplerConfig,
+    draft_sampler: SamplerConfig,
+    rng: np.random.Generator,
+    history_tokens: list[int],
+    pending_primary: int | None = None,
+) -> _MTPK1RowProposal:
+    """Sample the primary and draft needed to construct a target verify row."""
+    primary = _sample_mtp_k1_primary(
+        primary_logits,
+        sampler=sampler,
+        rng=rng,
+        history_tokens=history_tokens,
+        pending_primary=pending_primary,
+    )
+    return _sample_mtp_k1_draft(
+        primary,
+        draft_logits,
+        draft_sampler=draft_sampler,
+        rng=rng,
+    )
+
+
+def _finish_mtp_k1_row_cycle(
+    proposal: _MTPK1RowProposal,
+    verify_logits: np.ndarray,
+    bonus_logits: np.ndarray | None,
+    *,
+    sampler: SamplerConfig,
+    rng: np.random.Generator,
+    history_tokens: list[int],
+    omit_speculative_bonus: bool,
+) -> MTPK1RowCycle:
+    """Finish p/q verification after the fixed ``[B, 2]`` target forward."""
+    primary = int(proposal.primary_token)
+    draft = int(proposal.draft_token)
+    draft_q = proposal.draft_distribution
+    counts = Counter(int(token) for token in history_tokens)
 
     target_p = distribution_from_logits(
         np.asarray(verify_logits, dtype=np.float64),
@@ -297,6 +349,50 @@ def _sample_mtp_k1_row_cycle(
         bonus_token=bonus,
         accept_probability=accept_probability,
         next_primary=bonus if accepted else second,
+    )
+
+
+def _sample_mtp_k1_row_cycle(
+    primary_logits: np.ndarray,
+    draft_logits: np.ndarray,
+    verify_logits: np.ndarray,
+    bonus_logits: np.ndarray | None,
+    *,
+    sampler: SamplerConfig,
+    draft_sampler: SamplerConfig,
+    rng: np.random.Generator,
+    history_tokens: list[int],
+    omit_speculative_bonus: bool,
+    pending_primary: int | None = None,
+) -> MTPK1RowCycle:
+    """Apply the single-request ``generate_mtpk`` K1 RNG order to one row.
+
+    All inputs are already materialized row logits. The caller owns ``rng``;
+    sharing or reordering other rows therefore cannot advance this request's
+    random stream. Completion penalties cover committed output only, matching
+    the solo path. A pending primary is already present in ``history_tokens``.
+    Draft sampling intentionally does not consume completion counts.
+    """
+    proposal = _sample_mtp_k1_row_proposal(
+        primary_logits,
+        draft_logits,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=rng,
+        history_tokens=history_tokens,
+        pending_primary=pending_primary,
+    )
+    committed_history = list(history_tokens)
+    if pending_primary is None:
+        committed_history.append(proposal.primary_token)
+    return _finish_mtp_k1_row_cycle(
+        proposal,
+        verify_logits,
+        bonus_logits,
+        sampler=sampler,
+        rng=rng,
+        history_tokens=committed_history,
+        omit_speculative_bonus=omit_speculative_bonus,
     )
 
 
