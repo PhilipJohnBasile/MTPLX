@@ -2447,3 +2447,83 @@ def test_served_public_ids_resolve_to_first_party_repos():
     )
     assert _hf_repo_id_from_ref("mtplx-qwopus-madeup-id") is None
     assert _hf_repo_id_from_ref("some-random-model-name") is None
+
+
+def test_lfm2_moe_trunk_serves_target_only_ar(tmp_path):
+    """LFM2.5 (no MTP head by design) runs AR through the mlx-lm loader."""
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Lfm2MoeForCausalLM"],
+                "model_type": "lfm2_moe",
+                "quantization": {"group_size": 64, "bits": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["arch_id"] == "lfm2-moe-ar"
+    assert result.compatibility["runtime_compatibility"] == "native-ar-only"
+    assert result.compatibility["can_run"] is True
+    assert result.compatibility["recommended_backend"] == "mlx_lm_ar"
+
+
+def test_iquestcoder_trunk_serves_target_only_ar(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["IQuestCoderForCausalLM"],
+                "model_type": "iquestcoder",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["arch_id"] == "iquestcoder-ar"
+    assert result.compatibility["runtime_compatibility"] == "native-ar-only"
+    assert result.compatibility["can_run"] is True
+    assert result.compatibility["recommended_backend"] == "mlx_lm_ar"
+
+
+def test_unsupported_quant_bits_refuse_cleanly(tmp_path):
+    """A 1-bit export cannot construct QuantizedLinear on this mlx build."""
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Qwen3_5ForConditionalGeneration"],
+                "model_type": "qwen3_5",
+                "quantization": {"group_size": 128, "bits": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["runtime_compatibility"] == "unsupported-quant-bits"
+    assert result.compatibility["can_run"] is False
+    assert "1-bit" in result.compatibility["message"]
+    assert "supported widths" in result.compatibility["message"]
+
+
+def test_lfm2_moe_without_trunk_weights_still_refuses(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Lfm2MoeForCausalLM"],
+                "model_type": "lfm2_moe",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["can_run"] is False

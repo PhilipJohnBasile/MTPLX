@@ -137,6 +137,48 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "with mtp=False."
         ),
     ),
+    "lfm2-moe-ar": ArchitectureSupport(
+        arch_id="lfm2-moe-ar",
+        display_name="LiquidAI LFM2.5 MoE (MLX)",
+        family="lfm2",
+        backend="mlx_lm_ar",
+        support_level="experimental-mlx-lm-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        aliases=("lfm2_moe", "Lfm2MoeForCausalLM"),
+        config_markers=(),
+        family_gate="mlx-lm-loader-plus-trunk-weights",
+        references=(
+            "https://huggingface.co/LiquidAI/LFM2.5-8B-A1B-MLX-8bit",
+            "REFERENCES:TOOLS/mlx-lm/mlx_lm/models/lfm2_moe.py",
+        ),
+        notes=(
+            "Hybrid ShortConv+GQA MoE without an MTP head; loads through the "
+            "bundled mlx-lm lfm2_moe module and serves target-only AR (the "
+            "lfm2_fast ShortConv decode path installs post-load when "
+            "eligible)."
+        ),
+    ),
+    "iquestcoder-ar": ArchitectureSupport(
+        arch_id="iquestcoder-ar",
+        display_name="IQuest Coder V1 (MLX)",
+        family="iquest",
+        backend="mlx_lm_ar",
+        support_level="experimental-mlx-lm-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        aliases=("iquestcoder", "IQuestCoderForCausalLM"),
+        config_markers=(),
+        family_gate="mlx-lm-loader-plus-trunk-weights",
+        references=(
+            "https://huggingface.co/mlx-community/IQuest-Coder-V1-7B-Instruct-8bit",
+            "https://github.com/IQuestLab/IQuest-Coder-V1",
+        ),
+        notes=(
+            "Llama-architecture coder without an MTP head (mlx-lm remaps "
+            "iquestcoder -> llama); serves target-only AR."
+        ),
+    ),
     "qwen3-next-mtp": ArchitectureSupport(
         arch_id="qwen3-next-mtp",
         display_name="Qwen3.6 / Qwen3-Next / Qwen3.5 MTP",
@@ -1042,7 +1084,54 @@ def _passes_deepseek_v4_gate(inspection: Any) -> bool:
     return model_type == "deepseek_v4" or "deepseekv4forcausallm" in architecture
 
 
+def _passes_mlx_lm_ar_gate(inspection: Any) -> bool:
+    """Trunk weights exist and the declared quantization is constructible."""
+    model_dir = getattr(inspection, "model_dir", None)
+    if not model_dir:
+        return False
+    try:
+        has_trunk = any(
+            path.name != "mtp.safetensors"
+            for path in Path(str(model_dir)).glob("*.safetensors")
+        )
+    except OSError:
+        return False
+    if not has_trunk:
+        return False
+    return _unsupported_quant_bits(model_dir) is None
+
+
+# mlx.core.quantize supports exactly these widths; a config declaring any
+# other bit width (e.g. the 1-bit Bonsai export) cannot construct its
+# QuantizedLinear layers on this runtime, whatever the architecture says.
+_MLX_SUPPORTED_QUANT_BITS = frozenset({2, 3, 4, 5, 6, 8})
+
+
+def _unsupported_quant_bits(model_dir: Any) -> int | None:
+    """Return the declared quant bit width when this MLX build cannot load it."""
+    try:
+        config = json.loads(
+            (Path(str(model_dir)) / "config.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    quantization = config.get("quantization")
+    if not isinstance(quantization, dict):
+        return None
+    candidates = [quantization.get("bits")]
+    for value in quantization.values():
+        if isinstance(value, dict):
+            candidates.append(value.get("bits"))
+    for bits in candidates:
+        if isinstance(bits, int) and not isinstance(bits, bool):
+            if bits not in _MLX_SUPPORTED_QUANT_BITS:
+                return bits
+    return None
+
+
 def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
+    if arch_id in {"lfm2-moe-ar", "iquestcoder-ar"}:
+        return _passes_mlx_lm_ar_gate(inspection)
     if arch_id == "deepseek-v4":
         return _passes_deepseek_v4_gate(inspection)
     if arch_id == "laguna-s-2.1-ar":
@@ -1103,6 +1192,30 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
     contract_path = getattr(inspection, "runtime_contract_path", None)
     if not contract_path:
         contract_path = str(_contract_path(model_dir)) if _contract_path(model_dir).exists() else None
+    bad_bits = _unsupported_quant_bits(model_dir)
+    if bad_bits is not None:
+        support = architecture_support_for(detected_arch_id)
+        return CompatibilityVerdict(
+            tier=TIER_ARCH_COMPATIBLE_UNVERIFIED,
+            arch_id=detected_arch_id,
+            supported=False,
+            recognized=support is not None,
+            can_run=False,
+            exit_code=EXIT_UNVERIFIED,
+            message=(
+                f"config declares {bad_bits}-bit quantization, which this MLX "
+                "runtime cannot construct (supported widths: 2, 3, 4, 5, 6, "
+                "8). Use a variant exported at a supported bit width."
+            ),
+            recommended_backend=(support.backend if support else None),
+            recommended_profile=DEFAULT_PROFILE_NAME,
+            unsafe_force_required=False,
+            unverified_model=True,
+            mtp_supported="no",
+            runtime_compatibility="unsupported-quant-bits",
+            support_level="unsupported-quantization",
+            support_notes=(support.notes if support else None),
+        )
     body_blocker = _runtime_body_layout_blocker(detected_arch_id, inspection)
     if body_blocker:
         support = architecture_support_for(detected_arch_id)

@@ -717,11 +717,14 @@ def _apply_runtime_compatibility_mode(
     if runtime_compatibility != "native-ar-only":
         return None
     if _generation_mode_from_args(args) != GENERATION_MODE_AR:
-        printer("error: this model is target-only AR and has no native MTP head")
-        printer("try: rerun with --no-mtp")
-        return 2
-    # The mode choice is already fixed above; install the matching runtime
-    # route once so no MTP discovery or fallback reaches model execution.
+        # Same founder directive as the missing-head case: target-only AR
+        # architectures degrade loudly instead of blocking on --no-mtp.
+        printer(
+            "target-only AR architecture -> mtp_off: serving autoregressive "
+            "(this checkpoint family has no native MTP head)."
+        )
+        _set_generation_mode_on_args(args, GENERATION_MODE_AR)
+        setattr(args, "depth", 0)
     setattr(args, "load_mtp", False)
     return None
 

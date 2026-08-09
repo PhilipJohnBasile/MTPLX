@@ -382,7 +382,7 @@ def test_serve_parser_accepts_auto_generation_mode_as_engine_default():
     assert _generation_mode_from_args(args) == "mtp"
 
 
-def test_native_ar_only_runtime_requires_ar_and_disables_mtp_loading():
+def test_native_ar_only_runtime_degrades_to_ar_and_disables_mtp_loading():
     inspection = {
         "compatibility": {
             "runtime_compatibility": "native-ar-only",
@@ -390,7 +390,7 @@ def test_native_ar_only_runtime_requires_ar_and_disables_mtp_loading():
         }
     }
     lines: list[str] = []
-    mtp_args = SimpleNamespace(generation_mode="mtp", load_mtp=True)
+    mtp_args = SimpleNamespace(generation_mode="mtp", load_mtp=True, depth=3)
 
     assert (
         public._apply_runtime_compatibility_mode(
@@ -398,12 +398,15 @@ def test_native_ar_only_runtime_requires_ar_and_disables_mtp_loading():
             inspection,
             printer=lines.append,
         )
-        == 2
+        is None
     )
     assert lines == [
-        "error: this model is target-only AR and has no native MTP head",
-        "try: rerun with --no-mtp",
+        "target-only AR architecture -> mtp_off: serving autoregressive "
+        "(this checkpoint family has no native MTP head).",
     ]
+    assert mtp_args.generation_mode == "ar"
+    assert mtp_args.depth == 0
+    assert mtp_args.load_mtp is False
 
     ar_args = SimpleNamespace(generation_mode="ar", load_mtp=True)
     assert public._apply_runtime_compatibility_mode(ar_args, inspection) is None
@@ -6525,10 +6528,15 @@ def test_serve_native_ar_only_requires_no_mtp_and_unloads_runtime(
         lambda *_args, **_kwargs: (inspection, None),
     )
 
-    rejected = build_parser().parse_args(["serve", "--model", str(tmp_path), "--yes"])
-    rejected.dry_run = True
-    assert public.cmd_serve_public(rejected) == 2
-    assert "rerun with --no-mtp" in capsys.readouterr().out
+    degraded = build_parser().parse_args(["serve", "--model", str(tmp_path), "--yes"])
+    degraded.dry_run = True
+    degraded.json = True
+    assert public.cmd_serve_public(degraded) == 0
+    degraded_out = capsys.readouterr().out
+    assert "target-only AR architecture -> mtp_off" in degraded_out
+    degraded_payload = json.loads(degraded_out[degraded_out.index("{") :])
+    assert "--generation-mode ar" in degraded_payload["server_command"]
+    assert "--no-load-mtp" in degraded_payload["server_command"]
 
     accepted = build_parser().parse_args(
         ["serve", "--model", str(tmp_path), "--yes", "--no-mtp"]

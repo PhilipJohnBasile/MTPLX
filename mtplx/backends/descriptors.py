@@ -429,6 +429,59 @@ LAGUNA_AR_DESCRIPTOR = BackendDescriptor(
 )
 
 
+MLX_LM_AR_DESCRIPTOR = BackendDescriptor(
+    backend_id="mlx_lm_ar",
+    architecture_id="mlx-lm-ar-family",
+    model_family="mlx-lm",
+    display_name="mlx-lm target-only AR",
+    artifact_layout="single_mlx_folder_target_only_ar",
+    runtime_capabilities=("target_logits", "target_only_ar"),
+    sampler_defaults=SamplerDefaults(temperature=0.6, top_p=0.95, top_k=20),
+    reasoning_codec=ReasoningCodec(
+        parser="none",
+        display_name="No verified reasoning parser",
+        default_mode="off",
+        supported=False,
+        modes=(),
+        history_policy="visible_content_only",
+    ),
+    draft_semantics=DraftSemantics(
+        request_field="depth",
+        display_label="Draft depth",
+        default=1,
+        minimum=1,
+        maximum=1,
+        unit="depth",
+    ),
+    uses_external_assistant=False,
+    uses_draft_lm_head=False,
+    tune_policy=TunePolicy(
+        supported=False,
+        supported_families=(),
+        unsupported_reason=(
+            "mlx-lm AR-only checkpoints have no MTPLX tune path."
+        ),
+    ),
+    kv_quant_policy=KVQuantPolicy(supported=False),
+    context_window_policy=ContextWindowPolicy(
+        maximum=1_048_576,
+        default=131_072,
+        source="model_config",
+    ),
+    default_max_response_tokens=32_768,
+    default_tool_prompt_mode="native",
+    required_chat_template_profile="tokenizer",
+    validation_status="experimental_mlx_lm_ar",
+    status="experimental_mlx_lm_ar",
+    notes=(
+        "Recognized no-MTP architectures served through the bundled mlx-lm "
+        "loader in target-only AR mode.",
+        "No exactness baseline: runs report as unverified until a "
+        "per-artifact contract is recorded.",
+    ),
+)
+
+
 NATIVE_CONTRACT_DESCRIPTOR = BackendDescriptor(
     backend_id="native_mtp",
     architecture_id="native-contract-mtp",
@@ -732,6 +785,7 @@ GEMMA4_ASSISTANT_DESCRIPTOR = BackendDescriptor(
 DESCRIPTORS_BY_BACKEND_ID: dict[str, BackendDescriptor] = {
     QWEN3_NEXT_DESCRIPTOR.backend_id: QWEN3_NEXT_DESCRIPTOR,
     LAGUNA_AR_DESCRIPTOR.backend_id: LAGUNA_AR_DESCRIPTOR,
+    MLX_LM_AR_DESCRIPTOR.backend_id: MLX_LM_AR_DESCRIPTOR,
     NATIVE_CONTRACT_DESCRIPTOR.backend_id: NATIVE_CONTRACT_DESCRIPTOR,
     GEMMA4_ASSISTANT_DESCRIPTOR.backend_id: GEMMA4_ASSISTANT_DESCRIPTOR,
     STEP3P5_MTP_DESCRIPTOR.backend_id: STEP3P5_MTP_DESCRIPTOR,
