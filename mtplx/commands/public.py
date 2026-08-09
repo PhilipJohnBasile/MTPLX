@@ -701,6 +701,19 @@ def _apply_runtime_compatibility_mode(
         # inspect's four-tier contract returns ``compatibility`` as a plain
         # string tier; the runtime-lane marker then lives at top level.
         runtime_compatibility = inspection.get("runtime_compatibility")
+    if runtime_compatibility == "native-ar-only-missing-mtp":
+        # Founder directive 2026-08-09: a missing MTP head degrades, never
+        # blocks. Announce loudly, then serve the trunk autoregressive.
+        if _generation_mode_from_args(args) != GENERATION_MODE_AR:
+            printer(
+                "mtp_heads not found -> mtp_off: serving autoregressive "
+                "(no speculative decode acceleration; build an MTP artifact "
+                "with Forge for full speed)."
+            )
+            _set_generation_mode_on_args(args, GENERATION_MODE_AR)
+            setattr(args, "depth", 0)
+        setattr(args, "load_mtp", False)
+        return None
     if runtime_compatibility != "native-ar-only":
         return None
     if _generation_mode_from_args(args) != GENERATION_MODE_AR:

@@ -1308,28 +1308,65 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
                 support_notes=(support.notes if support else None),
             )
         if not mtp_artifact_exists:
+            # No MTP head is a SPEED downgrade, not a blocker: the trunk is a
+            # recognized architecture and serves correctly autoregressive.
+            # Refusing here forced users to Forge before they could even try a
+            # model (founder directive 2026-08-09: "mtp_heads not found ->
+            # mtp_off, run AR"). The serve path auto-degrades on this marker;
+            # attaching an arbitrary sidecar remains forbidden as before.
+            # A dir with no TRUNK weights at all is a different failure — no
+            # model, not a missing head — and keeps a clean human refusal
+            # instead of a FileNotFoundError deep in the loader.
+            try:
+                trunk_weights_exist = any(
+                    path.name != "mtp.safetensors"
+                    for path in Path(model_dir).glob("*.safetensors")
+                )
+            except OSError:
+                trunk_weights_exist = False
+            if not trunk_weights_exist:
+                return CompatibilityVerdict(
+                    tier=TIER_ARCH_COMPATIBLE_UNVERIFIED,
+                    arch_id=detected_arch_id,
+                    supported=False,
+                    recognized=True,
+                    can_run=False,
+                    exit_code=EXIT_UNVERIFIED,
+                    message=(
+                        f"{marker_text}, but this folder contains no model "
+                        "weights (*.safetensors). Download or restore the full "
+                        "model before serving."
+                    ),
+                    recommended_backend="qwen3_next",
+                    recommended_profile=DEFAULT_PROFILE_NAME,
+                    unsafe_force_required=False,
+                    unverified_model=True,
+                    mtp_supported="no",
+                    runtime_compatibility="missing-model-weights",
+                    support_level="native-backend-missing-model-weights",
+                    support_notes=(support.notes if support else None),
+                )
             return CompatibilityVerdict(
                 tier=TIER_ARCH_COMPATIBLE_UNVERIFIED,
                 arch_id=detected_arch_id,
                 supported=False,
                 recognized=True,
-                can_run=False,
+                can_run=True,
                 exit_code=EXIT_UNVERIFIED,
                 message=(
-                    f"{marker_text}, but this folder does not contain runnable "
-                    "Qwen MTP tensors. mtplx_runtime.json is optional metadata; "
-                    "the blocker is missing MTP weights. Use a complete model with "
-                    "mtp.safetensors or embedded mtp.* / language_model.mtp.* "
-                    "weights, or build and verify one from its original source with "
-                    "Forge. MTPLX cannot safely attach an arbitrary sidecar: matching "
-                    "tensor shapes do not prove it was trained for this trunk."
+                    f"{marker_text}, but this folder contains no Qwen MTP "
+                    "tensors (mtp.safetensors or embedded mtp.* / "
+                    "language_model.mtp.* weights). mtp_heads not found -> "
+                    "mtp_off: MTPLX will serve this model autoregressive, "
+                    "without speculative decode acceleration. Build and verify "
+                    "an MTP artifact with Forge for full speed."
                 ),
                 recommended_backend="qwen3_next",
                 recommended_profile=DEFAULT_PROFILE_NAME,
                 unsafe_force_required=False,
                 unverified_model=True,
                 mtp_supported="no",
-                runtime_compatibility="missing-mtp-weights",
+                runtime_compatibility="native-ar-only-missing-mtp",
                 support_level="native-backend-missing-mtp-weights",
                 support_notes=(support.notes if support else None),
             )

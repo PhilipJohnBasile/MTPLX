@@ -96,13 +96,12 @@ def test_inspect_model_reads_qwen_mtp_config_without_weights(tmp_path):
     assert result.mtp.exists is False
     assert result.compatibility["tier"] == "architecture-compatible-but-unverified"
     assert result.compatibility["exit_code"] == 3
-    assert result.compatibility["runtime_compatibility"] == "missing-mtp-weights"
+    # Config-only dirs have no model at all — that stays a clean refusal
+    # (the mtp_off AR degradation applies only when trunk weights exist).
+    assert result.compatibility["runtime_compatibility"] == "missing-model-weights"
+    assert result.compatibility["can_run"] is False
     assert result.compatibility["unsafe_force_required"] is False
-    assert "mtplx_runtime.json is optional metadata" in result.compatibility["message"]
-    assert "missing MTP weights" in result.compatibility["message"]
-    assert "complete model" in result.compatibility["message"]
-    assert "original source with Forge" in result.compatibility["message"]
-    assert "cannot safely attach an arbitrary sidecar" in result.compatibility["message"]
+    assert "no model weights" in result.compatibility["message"]
     assert "graft an MTP sidecar" not in result.compatibility["message"]
 
 
@@ -909,7 +908,30 @@ def test_qwen3_next_architecture_without_mtp_sidecar_is_unverified(tmp_path):
 
     assert result.compatibility["tier"] == "architecture-compatible-but-unverified"
     assert result.compatibility["exit_code"] == 3
-    assert result.compatibility["runtime_compatibility"] == "missing-mtp-weights"
+    assert result.compatibility["runtime_compatibility"] == "missing-model-weights"
+    assert result.compatibility["can_run"] is False
+
+
+def test_qwen3_next_trunk_without_mtp_head_degrades_to_ar(tmp_path):
+    """mtp_heads missing on a real trunk -> mtp_off AR serving, not refusal."""
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Qwen3NextForCausalLM"],
+                "model_type": "qwen3_next",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["tier"] == "architecture-compatible-but-unverified"
+    assert result.compatibility["runtime_compatibility"] == "native-ar-only-missing-mtp"
+    assert result.compatibility["can_run"] is True
+    assert "mtp_heads not found -> mtp_off" in result.compatibility["message"]
+    assert "autoregressive" in result.compatibility["message"]
 
 
 def test_architecture_catalog_tracks_main_mtp_families():
