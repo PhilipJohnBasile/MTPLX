@@ -2320,7 +2320,16 @@ def _merge_qwen35b_kv_rows(
         values = mx.zeros((len(entries), 2, 0, 256), dtype=mx.bfloat16)
     else:
         template = populated[0]
-        capacity = max(int(entry.keys.shape[2]) for entry in populated)
+        # Destination capacity comes from the rows' LOGICAL committed
+        # offsets, not their physical allocations: a restored clone can
+        # carry a bank entry's stale allocation (and a cancelled long row
+        # its full prefill), and one oversized source would otherwise pad
+        # every destination row to it — at 131k that is ~2.7 GB per row
+        # per full-attention layer, times eight. Round once to the cache's
+        # 256 step so merged shapes stay on the grid chunked prefill uses.
+        step = 256
+        max_logical = max(int(entry.offset) for entry in populated)
+        capacity = max(step, ((max_logical + step - 1) // step) * step)
         key_rows = []
         value_rows = []
         for entry in entries:
@@ -2329,15 +2338,21 @@ def _merge_qwen35b_kv_rows(
             if keys is None:
                 keys = mx.zeros((1, 2, capacity, 256), dtype=template.keys.dtype)
                 values = mx.zeros((1, 2, capacity, 256), dtype=template.values.dtype)
-            elif int(keys.shape[2]) < capacity:
-                pad = capacity - int(keys.shape[2])
-                keys = mx.concatenate(
-                    (keys, mx.zeros((1, 2, pad, 256), dtype=keys.dtype)), axis=2
-                )
-                values = mx.concatenate(
-                    (values, mx.zeros((1, 2, pad, 256), dtype=values.dtype)),
-                    axis=2,
-                )
+            else:
+                physical = int(keys.shape[2])
+                if physical > capacity:
+                    keys = keys[:, :, :capacity, :]
+                    values = values[:, :, :capacity, :]
+                elif physical < capacity:
+                    pad = capacity - physical
+                    keys = mx.concatenate(
+                        (keys, mx.zeros((1, 2, pad, 256), dtype=keys.dtype)),
+                        axis=2,
+                    )
+                    values = mx.concatenate(
+                        (values, mx.zeros((1, 2, pad, 256), dtype=values.dtype)),
+                        axis=2,
+                    )
             key_rows.append(keys)
             value_rows.append(values)
         keys = mx.concatenate(key_rows, axis=0)

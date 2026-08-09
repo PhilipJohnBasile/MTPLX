@@ -840,3 +840,32 @@ def test_per_row_stats_reflect_each_rows_own_active_window():
     assert early.accepted_drafts + late.accepted_drafts == result.accepted_drafts
     assert early.rejected_drafts + late.rejected_drafts == result.rejected_drafts
     assert early.accepted_drafts + early.rejected_drafts <= early.cycles
+
+
+def test_merge_capacity_follows_logical_offsets_not_stale_allocation():
+    """A restored clone's oversized allocation must not inflate the cohort.
+
+    Destination capacity previously came from max physical keys.shape[2]:
+    one boundary-trimmed restore keeping its bank entry's 2048-slot
+    allocation padded every row of the merged B8 cache to 2048.
+    """
+    big = KVCache()
+    grown = mx.arange(2000, dtype=mx.float32).reshape(1, 1, 2000, 1)
+    big.update_and_fetch(grown, grown)
+    big.offset = 100  # boundary-trimmed restore: committed 100, allocated 2048
+
+    caches = [[big]]
+    for _ in range(7):
+        entry = KVCache()
+        small = mx.ones((1, 1, 5, 1), dtype=mx.float32)
+        entry.update_and_fetch(small, small)
+        caches.append([entry])
+
+    merged = _merge_qwen35b_mtp_caches(caches)[0]
+
+    assert int(merged.keys.shape[2]) == 256
+    assert np.asarray(merged.offsets).tolist() == [100, 5, 5, 5, 5, 5, 5, 5]
+    assert (
+        np.asarray(merged.keys[0, :, :100, :]).tolist()
+        == np.asarray(grown[0, :, :100, :]).tolist()
+    )

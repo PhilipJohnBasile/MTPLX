@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from threading import Event, Thread, get_ident
 from types import MappingProxyType, SimpleNamespace
 
@@ -750,3 +751,49 @@ def test_real_model_owner_scheduler_gathers_eight_requests():
     finally:
         service.shutdown()
         scheduler.shutdown(wait=True, cancel_futures=True)
+
+
+def test_per_row_stream_truth_reaches_the_envelope():
+    """Envelope stats use each row's own cycles/drafts/terminal stamp."""
+
+    class _PerRowDriver:
+        def __call__(self, lane, requests):
+            del lane
+            streams = []
+            for row, request in enumerate(requests):
+                if request.on_token is not None:
+                    request.on_token(row)
+                streams.append(
+                    A3BMTPBatchStreamResult(
+                        request_id=request.request_id,
+                        tokens=(row,),
+                        finish_reason="length",
+                        cycles=row + 1,
+                        accepted_drafts=row,
+                        rejected_drafts=1,
+                        terminal_perf_s=time.perf_counter(),
+                    )
+                )
+            return A3BMTPBatchResult(
+                streams=tuple(streams),
+                cycles=99,
+                accepted_drafts=sum(range(len(requests))),
+                rejected_drafts=len(requests),
+                route_id="fake-b8-t2",
+                width_histogram=MappingProxyType({8: 99}),
+            )
+
+    service = _service(_PerRowDriver())
+    jobs = [_job(index) for index in range(3)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    for row, result in enumerate(results):
+        stats = result["stats"]
+        assert stats["verify_calls"] == row + 1
+        assert stats["target_verify_cycles"] == row + 1
+        assert stats["row_accepted_drafts"] == row
+        assert stats["row_rejected_drafts"] == 1
+        assert stats["row_terminal_to_cohort_end_s"] >= 0.0
