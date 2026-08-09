@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
+import sys
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -43,6 +45,11 @@ _LAYER_TYPES = tuple(
     for index in range(40)
 )
 A3B_MTP_BATCH_MAX_CONTEXT_TOKENS = 131072
+_MLX_LM_ARRAYS_CACHE_FIX_COMMIT = "985af30df768a6f4dd2d0c7969d1868ca5dc3e1a"
+_MLX_LM_ARRAYS_CACHE_FIX_REQUIREMENT = (
+    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@"
+    + _MLX_LM_ARRAYS_CACHE_FIX_COMMIT
+)
 # B8 and B1 use different BF16 reduction geometries.  Nine BF16 rounding
 # units is the construction-time semantic-parity bound; token decisions and
 # cross-row isolation are still required to match exactly.
@@ -184,6 +191,23 @@ def _require_callable(runtime: Any, name: str) -> Callable[..., Any]:
             f"Qwen 35B mtp_batch requires callable runtime.{name}"
         )
     return value
+
+
+def _require_mlx_lm_arrays_cache_fix() -> None:
+    """Fail before model work when the Qwen cache-leak fix is absent."""
+
+    cache = ArraysCache(1)
+    if hasattr(cache, "_lp_advance") and hasattr(cache, "_len_advance"):
+        return
+    python = shlex.quote(sys.executable)
+    requirement = shlex.quote(_MLX_LM_ARRAYS_CACHE_FIX_REQUIREMENT)
+    raise A3BMTPBatchInstallError(
+        "Qwen 35B mtp_batch requires mlx-lm PR #1642. Install the fixed "
+        "commit in the same Python environment as mtplx:\n"
+        f"uv pip install --python {python} --no-deps {requirement}\n"
+        "Or, if that environment has pip:\n"
+        f"{python} -m pip install --no-deps {requirement}"
+    )
 
 
 def _model_layers(runtime: Any) -> tuple[list[Any], list[Any]]:
@@ -2028,6 +2052,7 @@ def install_a3b_mtp_batch_lane(
     """Validate and freeze the exact Qwen 35B B8/T2 route once at startup."""
 
     selected_numerics = normalize_mtp_batch_numerics(numerics)
+    _require_mlx_lm_arrays_cache_fix()
     _config, fingerprint = _validate_config(runtime)
     _validate_runtime(runtime)
     model_target_forward = _require_callable(runtime, "model")

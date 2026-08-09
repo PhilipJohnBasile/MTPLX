@@ -372,6 +372,28 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
         lane.route_id = "changed"
 
 
+def test_installer_rejects_mlx_lm_without_arrays_cache_fix(tmp_path, monkeypatch):
+    import mtplx.a3b_mtp_batch as module
+
+    class ReleasedArraysCache:
+        def __init__(self, _size):
+            pass
+
+    monkeypatch.setattr(module, "ArraysCache", ReleasedArraysCache)
+
+    with pytest.raises(module.A3BMTPBatchInstallError) as exc_info:
+        module.install_a3b_mtp_batch_lane(
+            _runtime(tmp_path),
+            selfcheck=_passing_selfcheck,
+        )
+
+    message = str(exc_info.value)
+    assert "mlx-lm PR #1642" in message
+    assert "985af30df768a6f4dd2d0c7969d1868ca5dc3e1a" in message
+    assert "uv pip install --python" in message
+    assert " -m pip install --no-deps" in message
+
+
 def test_installer_selfcheck_exercises_decode_verify_kernel_phase():
     from mtplx import a3b_mtp_batch
 

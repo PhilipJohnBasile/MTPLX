@@ -51,8 +51,15 @@ or silently falls back to another kernel. This backend requires:
 - native MTP generation with depth 1;
 - `max_active_requests=8` and `decode_batch_max=8`;
 - a 131,072-token context window;
+- the `turbo` runtime profile and `target_prefix` verify strategy;
 - the stock verify-core selection used by the installed B8 graph;
 - `prompt_tokens + max_tokens <= 131072` for every request.
+
+The server binds the measured Qwen packed projections, row-owned router,
+combine tail, and B8 GDN geometry once during construction. Users do not need
+the private launcher's `MTPLX_*` environment exports. An incomplete contract
+fails before model weights load; a numerical self-check failure also prevents
+the route from being installed.
 
 The route does not accept `response_format`, vision splice input, background
 requests, or a request-level MTP depth other than 1. Invalid server settings
@@ -83,17 +90,22 @@ for the full benchmark and EvalPlus results.
 
 This lane currently depends on the open
 [mlx-lm ArraysCache fix](https://github.com/ml-explore/mlx-lm/pull/1642).
-Until that fix appears in a released `mlx-lm`, confirm that the environment
-used by `mtplx` contains it before loading the model:
+A normal MTPLX install still resolves released `mlx-lm 0.31.3`, which does not
+contain the fix. Until it appears in a release, install the reviewed commit
+into the same environment that runs `mtplx`. For a source checkout:
 
 ```bash
-python -c 'from mlx_lm.models.cache import ArraysCache; c=ArraysCache(1); assert hasattr(c, "_lp_advance") and hasattr(c, "_len_advance")'
+uv pip install --python .venv/bin/python --no-deps \
+  "mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@985af30df768a6f4dd2d0c7969d1868ca5dc3e1a"
+.venv/bin/python -c 'from mlx_lm.models.cache import ArraysCache; c=ArraysCache(1); assert hasattr(c, "_lp_advance") and hasattr(c, "_len_advance")'
 ```
 
 The check prevents a known per-token Metal buffer-object leak during long
-Qwen batch decode. Dependency resync commands can replace a local PR checkout
-with the released PyPI package, so run the check again after changing the
-environment.
+Qwen batch decode. The server also runs this check before loading model
+weights and prints an install command for its exact Python interpreter if the
+fix is missing. `uv sync` and similar dependency resync commands can replace
+the fixed checkout with the released package, so repeat the install after a
+resync until PR #1642 is released.
 
 Use the full construction contract. Change only the final numerics value when
 switching among the three routes:
@@ -101,6 +113,7 @@ switching among the three routes:
 ```bash
 mtplx serve \
   --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed \
+  --download \
   --scheduler-mode mtp_batch \
   --batching-preset throughput \
   --generation-mode mtp \
@@ -109,6 +122,8 @@ mtplx serve \
   --max-active-requests 8 \
   --decode-batch-max 8 \
   --context-window 131072 \
+  --profile turbo \
+  --verify-strategy target_prefix \
   --verify-core stock \
   --mtp-batch-numerics throughput
 ```
@@ -137,9 +152,12 @@ arguments:
 ```bash
 mtplx serve \
   --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed \
+  --download \
   --generation-mode mtp \
   --load-mtp \
   --depth 1 \
+  --profile turbo \
+  --verify-strategy target_prefix \
   --verify-core stock
 ```
 
@@ -174,7 +192,7 @@ fixed-width B8 execution.
 
 ## Live serving receipt
 
-These modes were loaded against the real
+These modes were loaded from a clean installed wheel against the real
 `Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed` model on 2026-08-09. Each
 test submitted eight simultaneous OpenAI requests and completed all eight with
 eight unique response IDs:

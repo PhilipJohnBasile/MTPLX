@@ -45,7 +45,13 @@ def test_non_default_numerics_requires_mtp_batch():
         openai._validate_mtp_batch_settings(args)
 
 
-def test_mtp_batch_server_settings_accept_exact_contract():
+def test_mtp_batch_server_settings_accept_exact_contract(monkeypatch):
+    monkeypatch.setattr(
+        openai,
+        "_require_mlx_lm_arrays_cache_fix",
+        lambda: None,
+        raising=False,
+    )
     args = parse_args(
         [
             "--warmup-tokens",
@@ -62,12 +68,82 @@ def test_mtp_batch_server_settings_accept_exact_contract():
             "8",
             "--context-window",
             "131072",
+            "--profile",
+            "turbo",
+            "--verify-strategy",
+            "target_prefix",
             "--verify-core",
             "stock",
         ]
     )
 
     openai._validate_mtp_batch_settings(args)
+
+
+def test_mtp_batch_rejects_missing_arrays_cache_fix_before_model_load(monkeypatch):
+    calls = []
+
+    def missing_fix():
+        calls.append("dependency-check")
+        raise RuntimeError("mlx-lm PR #1642 is missing")
+
+    monkeypatch.setattr(
+        openai,
+        "_require_mlx_lm_arrays_cache_fix",
+        missing_fix,
+        raising=False,
+    )
+    args = parse_args(
+        [
+            "--warmup-tokens",
+            "0",
+            "--scheduler-mode",
+            "mtp_batch",
+            "--generation-mode",
+            "mtp",
+            "--depth",
+            "1",
+            "--max-active-requests",
+            "8",
+            "--decode-batch-max",
+            "8",
+            "--context-window",
+            "131072",
+            "--profile",
+            "turbo",
+            "--verify-strategy",
+            "target_prefix",
+            "--verify-core",
+            "stock",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="mlx-lm PR #1642"):
+        openai._validate_mtp_batch_settings(args)
+
+    assert calls == ["dependency-check"]
+
+
+def test_main_reports_mtp_batch_install_error_without_traceback(monkeypatch, capsys):
+    from mtplx.a3b_mtp_batch import A3BMTPBatchInstallError
+
+    args = SimpleNamespace()
+    monkeypatch.setattr(openai, "parse_args", lambda _argv: args)
+    monkeypatch.setattr(openai, "validate_server_security_args", lambda _args: None)
+    monkeypatch.setattr(openai, "_start_aime_parent_watchdog_from_env", lambda: None)
+
+    def fail_before_load(_args):
+        raise A3BMTPBatchInstallError("install mlx-lm PR #1642")
+
+    monkeypatch.setattr(openai, "ServerState", fail_before_load)
+
+    with pytest.raises(SystemExit) as exc_info:
+        openai.main([])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "error: install mlx-lm PR #1642" in captured.err
+    assert "Traceback" not in captured.err
 
 
 @pytest.mark.parametrize(
@@ -79,6 +155,8 @@ def test_mtp_batch_server_settings_accept_exact_contract():
         (["--max-active-requests", "4"], "max_active_requests=8"),
         (["--decode-batch-max", "4"], "decode_batch_max=8"),
         (["--context-window", "262144"], "context_window=131072"),
+        (["--profile", "sustained"], "profile=turbo"),
+        (["--verify-strategy", "capture_commit"], "verify_strategy=target_prefix"),
         (["--verify-core", "linear-gdn-from-conv-tape"], "verify_core=stock"),
     ],
 )
@@ -98,12 +176,16 @@ def test_mtp_batch_server_settings_fail_closed(extra, reason):
         "8",
         "--context-window",
         "131072",
+        "--profile",
+        "turbo",
+        "--verify-strategy",
+        "target_prefix",
         "--verify-core",
         "stock",
     ]
     args = parse_args([*base, *extra])
 
-    with pytest.raises(RuntimeError, match=reason):
+    with pytest.raises(openai.A3BMTPBatchInstallError, match=reason):
         openai._validate_mtp_batch_settings(args)
 
 
@@ -764,10 +846,13 @@ def test_mtp_batch_installs_qwen35b_optimized_kernel_routes_at_construction():
     overrides = openai._server_runtime_env_overrides(args, {})
 
     assert overrides == {
+        "MTPLX_A3B_GDN_POSTCONV_IMPL": "headquarter",
         "MTPLX_A3B_WHOLE_MOE_FUSION": "0",
         "MTPLX_COMPILED_TARGET_PREFIX": "1",
         "MTPLX_FUSE_GDN_POST_CONV": "1",
+        "MTPLX_LINEAR_GDN_FROM_CONV_TGY": "4",
         "MTPLX_QWEN_COMBINE_TAIL": "1",
+        "MTPLX_QWEN_MOE_PACK_GATE_UP": "1",
         "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
     }
 

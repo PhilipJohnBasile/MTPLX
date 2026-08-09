@@ -67,6 +67,8 @@ from mtplx import progress_heartbeat
 from mtplx.a3b_mtp_batch import (
     A3B_MTP_BATCH_MAX_CONTEXT_TOKENS,
     A3BMTPBatchCapacityError,
+    A3BMTPBatchInstallError,
+    _require_mlx_lm_arrays_cache_fix,
     install_a3b_mtp_batch_lane,
 )
 from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
@@ -598,10 +600,13 @@ def _server_runtime_env_overrides(
     if scheduler_mode == SchedulerMode.MTP_BATCH.value:
         overrides.update(
             {
+                "MTPLX_A3B_GDN_POSTCONV_IMPL": "headquarter",
                 "MTPLX_A3B_WHOLE_MOE_FUSION": "0",
                 "MTPLX_COMPILED_TARGET_PREFIX": "1",
                 "MTPLX_FUSE_GDN_POST_CONV": "1",
+                "MTPLX_LINEAR_GDN_FROM_CONV_TGY": "4",
                 "MTPLX_QWEN_COMBINE_TAIL": "1",
+                "MTPLX_QWEN_MOE_PACK_GATE_UP": "1",
                 "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
             }
         )
@@ -1669,7 +1674,7 @@ def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
     args.mtp_batch_numerics = numerics.value
     if str(getattr(args, "scheduler_mode", "serial")) != SchedulerMode.MTP_BATCH:
         if numerics is not MTPBatchNumerics.THROUGHPUT:
-            raise RuntimeError(
+            raise A3BMTPBatchInstallError(
                 f"mtp_batch numerics profile {numerics.value} "
                 "requires scheduler_mode=mtp_batch"
             )
@@ -1692,13 +1697,23 @@ def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
             f"context_window={A3B_MTP_BATCH_MAX_CONTEXT_TOKENS}",
         ),
         (
+            str(getattr(args, "profile", "")).strip().lower() == "turbo",
+            "profile=turbo",
+        ),
+        (
+            str(getattr(args, "verify_strategy", "")).strip().lower()
+            == "target_prefix",
+            "verify_strategy=target_prefix",
+        ),
+        (
             str(getattr(args, "verify_core", "")).strip().lower() == "stock",
             "verify_core=stock",
         ),
     )
     for valid, contract in required:
         if not valid:
-            raise RuntimeError(f"mtp_batch requires {contract}")
+            raise A3BMTPBatchInstallError(f"mtp_batch requires {contract}")
+    _require_mlx_lm_arrays_cache_fix()
 
 
 class ServerState:
@@ -28353,7 +28368,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     validate_server_security_args(args)
     _start_aime_parent_watchdog_from_env()
-    state = ServerState(args)
+    try:
+        state = ServerState(args)
+    except A3BMTPBatchInstallError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
     app = create_app(state)
     import uvicorn
 
