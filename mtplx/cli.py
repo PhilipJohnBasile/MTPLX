@@ -622,6 +622,7 @@ SCHEDULER_MODE_CHOICES = (
     "serial",
     "cooperative",
     "ar_batch",
+    "mtp_batch",
     "mtp_cohort_experimental",
 )
 BATCHING_PRESET_CHOICES = ("solo", "latency", "agent", "throughput")

@@ -6134,6 +6134,32 @@ def test_config_set_show_supports_app_era_runtime_keys(tmp_path, capsys):
     assert payload["paged_kv_quantization"] == "q8"
 
 
+def test_public_cli_accepts_mtp_batch_scheduler_mode(tmp_path, capsys):
+    serve = build_parser().parse_args(
+        ["serve", "--scheduler-mode", "mtp_batch"]
+    )
+    assert serve.scheduler_mode == "mtp_batch"
+
+    config_path = tmp_path / "config.toml"
+    code = main(
+        [
+            "config",
+            "set",
+            "scheduler_mode",
+            "mtp_batch",
+            "--config",
+            str(config_path),
+        ]
+    )
+    assert code == 0
+    capsys.readouterr()
+
+    code = main(["config", "show", "--config", str(config_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["scheduler_mode"] == "mtp_batch"
+
+
 def test_serve_threads_api_key_file_and_kv_quant_to_daemon(monkeypatch, tmp_path):
     calls: dict[str, object] = {}
     api_key_file = tmp_path / "api-key"

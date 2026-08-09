@@ -597,6 +597,7 @@ def test_app_capabilities_returns_stable_native_backend_contract():
         "serial",
         "cooperative",
         "ar_batch",
+        "mtp_batch",
         "mtp_cohort_experimental",
     ]
     assert body["scheduler"]["default_ux"] == "coding_agents"

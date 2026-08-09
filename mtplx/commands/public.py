@@ -13928,9 +13928,13 @@ def cmd_config_public(args: Any) -> int:
         "serial",
         "cooperative",
         "ar_batch",
+        "mtp_batch",
         "mtp_cohort_experimental",
     }:
-        raise SystemExit("scheduler_mode must be serial, cooperative, ar_batch, or mtp_cohort_experimental")
+        raise SystemExit(
+            "scheduler_mode must be serial, cooperative, ar_batch, mtp_batch, "
+            "or mtp_cohort_experimental"
+        )
     if key == "batching_preset" and value not in {"solo", "latency", "agent", "throughput"}:
         raise SystemExit("batching_preset must be solo, latency, agent, or throughput")
     if key == "ssd_session_cache" and value not in {"off", "on", "write-only"}:

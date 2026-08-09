@@ -1623,8 +1623,32 @@ def _select_backend_context_window(
     )
 
 
+def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
+    """Reject an invalid fixed-width MTP service before model construction."""
+
+    if str(getattr(args, "scheduler_mode", "serial")) != SchedulerMode.MTP_BATCH:
+        return
+    required = (
+        (str(getattr(args, "generation_mode", "")) == "mtp", "generation_mode=mtp"),
+        (bool(getattr(args, "load_mtp", False)), "load_mtp=true"),
+        (int(getattr(args, "depth", 0) or 0) == 1, "depth=1"),
+        (
+            int(getattr(args, "max_active_requests", 0) or 0) == 8,
+            "max_active_requests=8",
+        ),
+        (
+            int(getattr(args, "decode_batch_max", 0) or 0) == 8,
+            "decode_batch_max=8",
+        ),
+    )
+    for valid, contract in required:
+        if not valid:
+            raise RuntimeError(f"mtp_batch requires {contract}")
+
+
 class ServerState:
     def __init__(self, args: argparse.Namespace) -> None:
+        _validate_mtp_batch_settings(args)
         self.args = args
         try:
             args.paged_kv_quantization = normalize_paged_kv_quantization(
@@ -13137,6 +13161,8 @@ def _scheduler_config_from_args(args: Any) -> BatchSchedulerConfig:
 
 
 def _scheduler_policy_label(config: BatchSchedulerConfig) -> str:
+    if config.mode == SchedulerMode.MTP_BATCH:
+        return "fixed_mtp_batch_width_8"
     if (
         config.mode
         in {SchedulerMode.AR_BATCH, SchedulerMode.MTP_COHORT_EXPERIMENTAL}

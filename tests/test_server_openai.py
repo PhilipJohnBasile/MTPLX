@@ -30,6 +30,84 @@ def test_server_parser_accepts_native_app_launch_id():
     assert args.app_launch_id == "native-123"
 
 
+def test_mtp_batch_server_settings_accept_exact_contract():
+    args = parse_args(
+        [
+            "--warmup-tokens",
+            "0",
+            "--scheduler-mode",
+            "mtp_batch",
+            "--generation-mode",
+            "mtp",
+            "--depth",
+            "1",
+            "--max-active-requests",
+            "8",
+            "--decode-batch-max",
+            "8",
+        ]
+    )
+
+    openai._validate_mtp_batch_settings(args)
+
+
+@pytest.mark.parametrize(
+    ("extra", "reason"),
+    [
+        (["--generation-mode", "ar"], "generation_mode=mtp"),
+        (["--no-load-mtp"], "load_mtp=true"),
+        (["--depth", "2"], "depth=1"),
+        (["--max-active-requests", "4"], "max_active_requests=8"),
+        (["--decode-batch-max", "4"], "decode_batch_max=8"),
+    ],
+)
+def test_mtp_batch_server_settings_fail_closed(extra, reason):
+    base = [
+        "--warmup-tokens",
+        "0",
+        "--scheduler-mode",
+        "mtp_batch",
+        "--generation-mode",
+        "mtp",
+        "--depth",
+        "1",
+        "--max-active-requests",
+        "8",
+        "--decode-batch-max",
+        "8",
+    ]
+    args = parse_args([*base, *extra])
+
+    with pytest.raises(RuntimeError, match=reason):
+        openai._validate_mtp_batch_settings(args)
+
+
+def test_mtp_batch_policy_never_routes_through_live_ar_batch():
+    args = parse_args(
+        [
+            "--warmup-tokens",
+            "0",
+            "--scheduler-mode",
+            "mtp_batch",
+            "--batching-preset",
+            "throughput",
+            "--generation-mode",
+            "mtp",
+            "--depth",
+            "1",
+            "--max-active-requests",
+            "8",
+            "--decode-batch-max",
+            "8",
+        ]
+    )
+    config = openai._scheduler_config_from_args(args)
+    state = SimpleNamespace(args=args)
+
+    assert openai._scheduler_policy_label(config) == "fixed_mtp_batch_width_8"
+    assert openai._use_live_ar_batch(state, effective_mode="mtp") == (False, None)
+
+
 def test_server_parser_resolves_api_key_file_before_env(monkeypatch, tmp_path):
     api_key_file = tmp_path / "api-key"
     api_key_file.write_text("file-secret\n", encoding="utf-8")
