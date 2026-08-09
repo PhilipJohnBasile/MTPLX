@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class MTPBatchNumerics(str, Enum):
-    """Closed public names for construction-installed B8 arithmetic routes."""
+    """Closed public names for construction-installed MTP concurrency routes."""
 
     THROUGHPUT = "throughput"
     BALANCED = "balanced"
@@ -27,7 +27,5 @@ def normalize_mtp_batch_numerics(
     except ValueError as exc:
         choices = ", ".join(MTP_BATCH_NUMERICS_CHOICES)
         raise ValueError(
-            f"unknown mtp_batch numerics profile {raw!r}; "
-            f"expected one of: {choices}"
+            f"unknown mtp_batch numerics profile {raw!r}; expected one of: {choices}"
         ) from exc
-

@@ -57,8 +57,7 @@ class MTPBatchFinalizeOwnership:
             self._owner_jobs -= 1
             self._owner_finalized = self._owner_finalized or bool(finalized)
             self._owner_finalize_failed = bool(
-                self._owner_finalize_failed
-                or (self._owner_admitted and not finalized)
+                self._owner_finalize_failed or (self._owner_admitted and not finalized)
             )
 
     def claim_cancellation_finalize(self) -> str:
@@ -176,6 +175,10 @@ class MTPBatchGenerationService:
         self.batch_wait_s = max(0.0, float(batch_wait_s))
         self.auto_schedule = bool(auto_schedule)
         self.owner_finalize = owner_finalize
+        self._serial_b1_exact = str(getattr(lane, "numerics_profile", "")) == "b1-exact"
+        self._run_multiple = (
+            self._run_b1_exact_serial if self._serial_b1_exact else self._run_cohort
+        )
         self._condition = Condition()
         self._pending: list[MTPBatchJob] = []
         self._active: list[MTPBatchJob] = []
@@ -274,9 +277,7 @@ class MTPBatchGenerationService:
             cancelled.extend(self._drain_cancelled_locked())
             if self._pending:
                 key = self._pending[0].compatibility_key
-                deadline = time.perf_counter() + (
-                    self.batch_wait_s if wait else 0.0
-                )
+                deadline = time.perf_counter() + (self.batch_wait_s if wait else 0.0)
                 selected = self._compatible_pending_locked(key)
                 while wait and len(selected) < 8:
                     remaining = deadline - time.perf_counter()
@@ -343,7 +344,7 @@ class MTPBatchGenerationService:
             if len(jobs) == 1:
                 self._run_solo(jobs[0])
             else:
-                self._run_cohort(jobs)
+                self._run_multiple(jobs)
         except BaseException as exc:
             with self._condition:
                 self._last_error = f"{type(exc).__name__}: {exc}"
@@ -373,9 +374,38 @@ class MTPBatchGenerationService:
                 job.finish_finalize_ownership(finalized=finalized)
             raise
         result["_mtp_batch_solo"] = True
+        if self._serial_b1_exact:
+            stats = dict(result.get("stats") or {})
+            stats.update(
+                {
+                    "scheduler_lane": "mtp_batch_b1_exact",
+                    "scheduler_policy": "serial_b1_exact",
+                    "mtp_batch_numerics": "b1-exact",
+                    "mtp_batch_route_id": str(self.lane.route_id),
+                    "mtp_batch_real_width": 1,
+                    "mtp_batch_fixed_width": 1,
+                }
+            )
+            result["stats"] = stats
         job.finish_finalize_ownership(finalized=True)
         if not job.future.done():
             job.future.set_result(result)
+
+    def _run_b1_exact_serial(self, jobs: list[MTPBatchJob]) -> None:
+        """Run a sealed group as unchanged request-local B1 MTP generations."""
+
+        with self._condition:
+            self._last_route_id = str(self.lane.route_id)
+        for job in jobs:
+            try:
+                self._run_solo(job)
+            except BaseException as exc:
+                with self._condition:
+                    owner_poisoned = self._shutdown
+                if owner_poisoned:
+                    raise
+                if not job.future.done():
+                    job.future.set_exception(exc)
 
     def _run_cohort(self, jobs: list[MTPBatchJob]) -> None:
         started = time.perf_counter()
@@ -468,8 +498,7 @@ class MTPBatchGenerationService:
             receipt = dict(self.owner_finalize(jobs) or {})
         except Exception as exc:
             error = RuntimeError(
-                "MTP batch owner finalize failed: "
-                f"{type(exc).__name__}: {exc}"
+                f"MTP batch owner finalize failed: {type(exc).__name__}: {exc}"
             )
             receipt = {"error": str(error)}
             self._poison_owner_finalize(error, receipt)
@@ -478,9 +507,7 @@ class MTPBatchGenerationService:
         cleanup = receipt.get("mlx_cache_cleanup")
         if isinstance(cleanup, dict) and cleanup.get("cleared") is False:
             reason = str(cleanup.get("reason") or "cleanup_not_cleared")
-            error = RuntimeError(
-                f"MTP batch owner finalize failed: {reason}"
-            )
+            error = RuntimeError(f"MTP batch owner finalize failed: {reason}")
             self._poison_owner_finalize(error, receipt)
             raise error
 
@@ -568,9 +595,7 @@ class MTPBatchGenerationService:
             "mtp_batch_fixed_width": 8,
             "mtp_batch_route_id": route_id,
             "mtp_disabled_reason": None,
-            "queue_wait_s": max(
-                0.0, (job.admitted_s or job.created_s) - job.created_s
-            ),
+            "queue_wait_s": max(0.0, (job.admitted_s or job.created_s) - job.created_s),
             "request_started_s": job.created_s,
             "server_seed": job.seed,
         }

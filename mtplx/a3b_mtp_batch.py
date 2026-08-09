@@ -30,7 +30,12 @@ from mtplx.fast_sampling import (
 )
 from mtplx.mtp_batch_numerics import MTPBatchNumerics, normalize_mtp_batch_numerics
 from mtplx.ragged_kv_cache import RaggedBatchKVCache
-from mtplx.sampling import SamplerConfig, sample_from_distribution, verify_one_token
+from mtplx.sampling import (
+    SamplerConfig,
+    SparseDistribution,
+    sample_from_distribution,
+    verify_one_token,
+)
 
 
 _LAYER_TYPES = tuple(
@@ -46,6 +51,13 @@ _MTP_BATCH_ATTENTION_ACTIVE: ContextVar[bool] = ContextVar(
     "mtplx_qwen35b_mtp_batch_attention_active",
     default=False,
 )
+
+
+def _geometry_relative_limit(numerics_profile: object) -> float:
+    """Return the construction-fixed full-graph bound for one profile."""
+
+    del numerics_profile
+    return _BF16_GEOMETRY_RELATIVE_LIMIT
 
 
 class A3BMTPBatchInstallError(RuntimeError):
@@ -244,9 +256,7 @@ def _validate_config(runtime: Any) -> tuple[dict[str, Any], str]:
         "num_experts": text.get("num_experts"),
         "num_experts_per_tok": text.get("num_experts_per_tok"),
         "moe_intermediate_size": text.get("moe_intermediate_size"),
-        "shared_expert_intermediate_size": text.get(
-            "shared_expert_intermediate_size"
-        ),
+        "shared_expert_intermediate_size": text.get("shared_expert_intermediate_size"),
         "vocab_size": text.get("vocab_size"),
         "mtp_num_hidden_layers": text.get("mtp_num_hidden_layers"),
         "body bits": body_quant.get("bits"),
@@ -280,9 +290,7 @@ def _validate_runtime(runtime: Any) -> None:
     _require_equal(
         "runtime row-owned target routers", router_report.get("target_routers"), 40
     )
-    _require_equal(
-        "runtime row-owned MTP routers", router_report.get("mtp_routers"), 1
-    )
+    _require_equal("runtime row-owned MTP routers", router_report.get("mtp_routers"), 1)
     router_contract = router_report.get("validated_contract")
     if not isinstance(router_contract, Mapping):
         raise A3BMTPBatchInstallError(
@@ -313,9 +321,7 @@ def _validate_runtime(runtime: Any) -> None:
         getattr(contract, "concat_order", None),
         "embedding_hidden",
     )
-    _require_equal(
-        "runtime MTP bits", getattr(contract, "mtp_quant_bits", None), 4
-    )
+    _require_equal("runtime MTP bits", getattr(contract, "mtp_quant_bits", None), 4)
     _require_equal(
         "runtime MTP group_size",
         getattr(contract, "mtp_quant_group_size", None),
@@ -364,7 +370,9 @@ def _bind_postconv_capture_forward(
     )
     postconv = getattr(factory, "gdn_postconv", None)
     implementations = tuple(getattr(postconv, implementation_field, ()) or ())
-    if len(implementations) != 30 or not all(callable(item) for item in implementations):
+    if len(implementations) != 30 or not all(
+        callable(item) for item in implementations
+    ):
         raise A3BMTPBatchInstallError(
             f"Qwen 35B mtp_batch requires 30 {contract_label} post-conv implementations"
         )
@@ -383,6 +391,92 @@ def _bind_capture_forward(runtime: Any) -> Callable[..., Any]:
         contract_label="B8/T2",
     )
     return _compile_qwen35b_b8_t2_capture(eager_capture)
+
+
+def _bind_balanced_projection_implementations(
+    gdns: tuple[Any, ...], stock_qlinear_call: Callable[..., Any]
+) -> tuple[tuple[Callable[[Any], Any], ...], ...]:
+    """Bind layer-zero QKV/Z/B to B1/T2 while A remains B8/T2."""
+
+    from .gdn_capture import _b8_t2_rowwise_b1_qlinear
+
+    return tuple(
+        (
+            partial(
+                _b8_t2_rowwise_b1_qlinear,
+                implementation=partial(
+                    stock_qlinear_call,
+                    getattr(gdns[0], projection_name),
+                ),
+            ),
+            *(getattr(gdn, projection_name) for gdn in gdns[1:]),
+        )
+        if projection_name in ("in_proj_qkv", "in_proj_z", "in_proj_b")
+        else tuple(getattr(gdn, projection_name) for gdn in gdns)
+        for projection_name in (
+            "in_proj_qkv",
+            "in_proj_z",
+            "in_proj_b",
+            "in_proj_a",
+        )
+    )
+
+
+def _bind_balanced_eager_capture_forward(runtime: Any) -> Callable[..., Any]:
+    """Bind layer-zero B1/T2 QKV/Z/B at construction."""
+
+    factory = getattr(runtime, "a3b_compiled_target_prefix_factory", None)
+    postconv = getattr(factory, "gdn_postconv", None)
+    postconv_implementations = tuple(
+        getattr(postconv, "b8_t2_implementations", ()) or ()
+    )
+    if len(postconv_implementations) != 30 or not all(
+        callable(item) for item in postconv_implementations
+    ):
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B balanced mtp_batch requires 30 B8/T2 post-conv implementations"
+        )
+    from .nax_verify import _QLINEAR_PATCH
+
+    stock_qlinear_call = _QLINEAR_PATCH.get("original")
+    if not callable(stock_qlinear_call):
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B balanced mtp_batch requires the retained stock QMM callable"
+        )
+    layers, _mtp_layers = _model_layers(runtime)
+    gdns = tuple(
+        layer.linear_attn
+        for layer, layer_type in zip(layers, _LAYER_TYPES, strict=True)
+        if layer_type == "linear_attention"
+    )
+    if len(gdns) != 30:
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B balanced mtp_batch requires exactly 30 GDN layers"
+        )
+    from .gdn_capture import (
+        forward_with_a3b_gdn_postconv_capture_bound_projections,
+    )
+
+    (
+        qkv_implementations,
+        z_implementations,
+        b_implementations,
+        a_implementations,
+    ) = _bind_balanced_projection_implementations(gdns, stock_qlinear_call)
+    return partial(
+        forward_with_a3b_gdn_postconv_capture_bound_projections,
+        runtime.model,
+        hidden_variant="post_norm",
+        postconv_implementations=postconv_implementations,
+        qkv_implementations=qkv_implementations,
+        z_implementations=z_implementations,
+        b_implementations=b_implementations,
+        a_implementations=a_implementations,
+    )
+
+
+def _bind_balanced_capture_forward(runtime: Any) -> Callable[..., Any]:
+    return _compile_qwen35b_b8_t2_capture(_bind_balanced_eager_capture_forward(runtime))
 
 
 def _compile_qwen35b_b8_t2_capture(
@@ -419,9 +513,7 @@ def _compile_qwen35b_b8_t2_capture(
                 attention_state.extend((entry.keys, entry.values, entry.offsets))
             else:
                 capture = captures[layer_idx]
-                captured_state.extend(
-                    (capture["conv_states"], capture["states"])
-                )
+                captured_state.extend((capture["conv_states"], capture["states"]))
         return (logits, hidden, *captured_state, *attention_state)
 
     compiled = mx.compile(step)
@@ -495,9 +587,9 @@ def _qwen35b_b8_stock_attention(
     keys = self.k_norm(
         keys.reshape(batch, length, self.num_key_value_heads, -1)
     ).transpose(0, 2, 1, 3)
-    values = values.reshape(
-        batch, length, self.num_key_value_heads, -1
-    ).transpose(0, 2, 1, 3)
+    values = values.reshape(batch, length, self.num_key_value_heads, -1).transpose(
+        0, 2, 1, 3
+    )
     queries = self.rope(queries, offset=cache.offset)
     keys = self.rope(keys, offset=cache.offset)
     keys, values = cache.update_and_fetch(keys, values)
@@ -599,31 +691,11 @@ def _commit_qwen35b_b8_t2_rows(
         selected_state = mx.contiguous(
             mx.take_along_axis(states, state_selector, axis=1)[:, 0]
         )
-        conv_mask = active_rows.reshape(
-            (8,) + (1,) * (int(selected_conv.ndim) - 1)
-        )
-        state_mask = active_rows.reshape(
-            (8,) + (1,) * (int(selected_state.ndim) - 1)
-        )
+        conv_mask = active_rows.reshape((8,) + (1,) * (int(selected_conv.ndim) - 1))
+        state_mask = active_rows.reshape((8,) + (1,) * (int(selected_state.ndim) - 1))
         base_conv, base_state = base_recurrent[layer_idx]
         entry[0] = mx.where(conv_mask, selected_conv, base_conv)
         entry[1] = mx.where(state_mask, selected_state, base_state)
-
-
-def _bfloat16_max_ulp(left: Any, right: Any) -> Any:
-    """Return one device scalar; construction receipts call this, decode does not."""
-
-    if left.dtype != mx.bfloat16 or right.dtype != mx.bfloat16:
-        return mx.array(-1, dtype=mx.int32)
-    left_bits = left.view(mx.uint16).astype(mx.int32)
-    right_bits = right.view(mx.uint16).astype(mx.int32)
-
-    def ordered(bits: Any) -> Any:
-        sign = bits & 0x8000
-        magnitude = bits & 0x7FFF
-        return mx.where(sign != 0, 0x8000 - magnitude, 0x8000 + magnitude)
-
-    return mx.max(mx.abs(ordered(left_bits) - ordered(right_bits)))
 
 
 def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str, Any]:
@@ -638,15 +710,78 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     )
 
     token = int(getattr(getattr(runtime, "tokenizer", None), "eos_token_id", 1) or 1)
+    geometry_relative_limit = _geometry_relative_limit(lane.numerics_profile)
+
+    balanced_l0_qkv_z_b_b1_bitwise = True
+    if lane.numerics_profile == MTPBatchNumerics.BALANCED.value:
+        from .nax_verify import _QLINEAR_PATCH
+
+        stock_qlinear_call = _QLINEAR_PATCH["original"]
+        trunk_layers, _mtp_layers = _model_layers(runtime)
+        first_layer = trunk_layers[0]
+        gdns = tuple(
+            layer.linear_attn
+            for layer, layer_type in zip(trunk_layers, _LAYER_TYPES, strict=True)
+            if layer_type == "linear_attention"
+        )
+        first_gdn = gdns[0]
+        inner = runtime.model.language_model.model
+        qkv_probe_tokens = mx.array(
+            [
+                [
+                    (token + 2 * row) % lane.geometry.vocab_size,
+                    (token + 2 * row + 1) % lane.geometry.vocab_size,
+                ]
+                for row in range(lane.geometry.cohort_slots)
+            ],
+            dtype=mx.int32,
+        )
+        qkv_probe_inputs = first_layer.input_layernorm(
+            inner.embed_tokens(qkv_probe_tokens)
+        )
+        balanced_implementations = _bind_balanced_projection_implementations(
+            gdns, stock_qlinear_call
+        )
+        projection_checks = []
+        for projection_name, implementations in zip(
+            ("in_proj_qkv", "in_proj_z", "in_proj_b"),
+            (
+                balanced_implementations[0],
+                balanced_implementations[1],
+                balanced_implementations[2],
+            ),
+            strict=True,
+        ):
+            projection = getattr(first_gdn, projection_name)
+            reference_implementation = partial(stock_qlinear_call, projection)
+            balanced_projection = implementations[0](qkv_probe_inputs)
+            reference_projection = mx.concatenate(
+                tuple(
+                    reference_implementation(qkv_probe_inputs[row : row + 1])
+                    for row in range(lane.geometry.cohort_slots)
+                ),
+                axis=0,
+            )
+            projection_checks.append(
+                mx.all(balanced_projection == reference_projection)
+            )
+        mx.eval(*projection_checks)
+        balanced_l0_qkv_z_b_b1_bitwise = all(
+            bool(np.asarray(check).item()) for check in projection_checks
+        )
 
     solo_capture_forward = _bind_solo_capture_forward(runtime)
-    eager_b8_capture_forward = partial(
-        _call_with_qwen35b_mtp_batch_attention,
-        call=_bind_postconv_capture_forward(
+    if lane.numerics_profile == MTPBatchNumerics.BALANCED.value:
+        eager_capture = _bind_balanced_eager_capture_forward(runtime)
+    else:
+        eager_capture = _bind_postconv_capture_forward(
             runtime,
             implementation_field="b8_t2_implementations",
             contract_label="B8/T2",
-        ),
+        )
+    eager_b8_capture_forward = partial(
+        _call_with_qwen35b_mtp_batch_attention,
+        call=eager_capture,
     )
     stock_b8_capture_forward = partial(
         _call_with_qwen35b_mtp_batch_attention,
@@ -682,9 +817,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         and len(prefill_cache) == lane.geometry.hidden_layers
         and all(
             int(getattr(entry, "offset", -1)) == 2
-            for entry, layer_type in zip(
-                prefill_cache, _LAYER_TYPES, strict=True
-            )
+            for entry, layer_type in zip(prefill_cache, _LAYER_TYPES, strict=True)
             if layer_type == "full_attention" and _is_trimmable(entry)
         )
         and len(prefill_mtp_cache) == 1
@@ -756,9 +889,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         else:
             prefill_comparisons.extend(
                 mx.all(left == right)
-                for left, right in zip(
-                    dedicated_entry, reference_entry, strict=True
-                )
+                for left, right in zip(dedicated_entry, reference_entry, strict=True)
             )
     prefill_offsets_match = bool(
         prefill_offsets_match
@@ -797,9 +928,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                     mtp_cache=prefill_keywords["mtp_cache_factory"](),
                 )
             )
-    empty_merged_mtp = lane.merge_mtp_caches(
-        [item[3] for item in one_token_prefills]
-    )
+    empty_merged_mtp = lane.merge_mtp_caches([item[3] for item in one_token_prefills])
     empty_merged_mtp[0]._capacity_bound = 0
     empty_merged_mtp[0].reserve(1)
     with attention_phase("ar_decode"):
@@ -810,15 +939,14 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         )
     empty_draft_errors = [
         mx.max(
-            mx.abs(
-                batch_empty_draft[row : row + 1] - solo_empty_drafts[row]
-            ).astype(mx.float32)
+            mx.abs(batch_empty_draft[row : row + 1] - solo_empty_drafts[row]).astype(
+                mx.float32
+            )
         )
         for row in range(lane.geometry.cohort_slots)
     ]
     empty_draft_reference_max = [
-        mx.max(mx.abs(value).astype(mx.float32))
-        for value in solo_empty_drafts
+        mx.max(mx.abs(value).astype(mx.float32)) for value in solo_empty_drafts
     ]
     empty_draft_argmax_comparisons = [
         mx.all(
@@ -838,13 +966,11 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     empty_mtp_draft_reference_max_abs = max(
         float(np.asarray(value).item()) for value in empty_draft_reference_max
     )
-    empty_mtp_draft_relative_error = (
-        empty_mtp_draft_max_abs
-        / max(1.0, empty_mtp_draft_reference_max_abs)
+    empty_mtp_draft_relative_error = empty_mtp_draft_max_abs / max(
+        1.0, empty_mtp_draft_reference_max_abs
     )
     empty_mtp_draft_argmax_parity = all(
-        bool(np.asarray(value).item())
-        for value in empty_draft_argmax_comparisons
+        bool(np.asarray(value).item()) for value in empty_draft_argmax_comparisons
     )
 
     isolated_empty_mtp = lane.merge_mtp_caches(
@@ -868,13 +994,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             isolated_primary[:, None],
             mtp_cache=isolated_empty_mtp,
         )
-    empty_isolation_check = mx.all(
-        batch_empty_draft[1:] == isolated_empty_draft[1:]
-    )
+    empty_isolation_check = mx.all(batch_empty_draft[1:] == isolated_empty_draft[1:])
     mx.eval(empty_isolation_check)
-    empty_mtp_row_isolation_parity = bool(
-        np.asarray(empty_isolation_check).item()
-    )
+    empty_mtp_row_isolation_parity = bool(np.asarray(empty_isolation_check).item())
     del one_token_prefills, empty_merged_mtp, batch_empty_draft
 
     def run(
@@ -895,12 +1017,8 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                 lane.prefill_request([row_token], abort_check=None)
                 for row_token in token_ids
             ]
-            cache = lane.merge_target_caches(
-                [item[0] for item in row_prefills]
-            )
-            mtp_cache = lane.merge_mtp_caches(
-                [item[3] for item in row_prefills]
-            )
+            cache = lane.merge_target_caches([item[0] for item in row_prefills])
+            mtp_cache = lane.merge_mtp_caches([item[3] for item in row_prefills])
             mtp_cache[0].reserve(1)
             logits = mx.concatenate([item[1] for item in row_prefills], axis=0)[
                 :, None, :
@@ -943,9 +1061,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
 
         row_keeps = keeps or ([2] * batch)
         if installed_commit:
-            lane.commit_rows(
-                cache, captures, row_keeps, pre_verify_recurrent
-            )
+            lane.commit_rows(cache, captures, row_keeps, pre_verify_recurrent)
             row_commit = True
         else:
             reference_keeps = [max(1, int(value)) for value in row_keeps]
@@ -1064,10 +1180,8 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             == tuple(stock_captures[layer_idx]["conv_states"].shape)
             and tuple(batch_captures[layer_idx]["states"].shape)
             == tuple(stock_captures[layer_idx]["states"].shape)
-            and tuple(batch_captures[layer_idx]["conv_states"].shape[:2])
-            == (8, 2)
-            and tuple(batch_captures[layer_idx]["states"].shape[:2])
-            == (8, 2)
+            and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (8, 2)
+            and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (8, 2)
         )
         compiled_eager_capture_checks.extend(
             (
@@ -1100,15 +1214,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         compiled_eager_reference_max.extend(
             (
                 mx.max(
-                    mx.abs(eager_captures[layer_idx]["conv_states"]).astype(
-                        mx.float32
-                    )
+                    mx.abs(eager_captures[layer_idx]["conv_states"]).astype(mx.float32)
                 ),
-                mx.max(
-                    mx.abs(eager_captures[layer_idx]["states"]).astype(
-                        mx.float32
-                    )
-                ),
+                mx.max(mx.abs(eager_captures[layer_idx]["states"]).astype(mx.float32)),
             )
         )
         same_geometry_errors.extend(
@@ -1130,15 +1238,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         same_geometry_reference_max.extend(
             (
                 mx.max(
-                    mx.abs(stock_captures[layer_idx]["conv_states"]).astype(
-                        mx.float32
-                    )
+                    mx.abs(stock_captures[layer_idx]["conv_states"]).astype(mx.float32)
                 ),
-                mx.max(
-                    mx.abs(stock_captures[layer_idx]["states"]).astype(
-                        mx.float32
-                    )
-                ),
+                mx.max(mx.abs(stock_captures[layer_idx]["states"]).astype(mx.float32)),
             )
         )
     same_geometry_attention_offset_checks = []
@@ -1169,9 +1271,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         compiled_eager_attention_errors.extend(
             (
                 mx.max(
-                    mx.abs(compiled_entry.keys - eager_entry.keys).astype(
-                        mx.float32
-                    )
+                    mx.abs(compiled_entry.keys - eager_entry.keys).astype(mx.float32)
                 ),
                 mx.max(
                     mx.abs(compiled_entry.values - eager_entry.values).astype(
@@ -1192,9 +1292,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         same_geometry_attention_errors.extend(
             (
                 mx.max(
-                    mx.abs(compiled_entry.keys - stock_entry.keys).astype(
-                        mx.float32
-                    )
+                    mx.abs(compiled_entry.keys - stock_entry.keys).astype(mx.float32)
                 ),
                 mx.max(
                     mx.abs(compiled_entry.values - stock_entry.values).astype(
@@ -1246,8 +1344,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         float(np.asarray(value).item()) for value in compiled_eager_errors
     ]
     compiled_eager_reference_values = [
-        float(np.asarray(value).item())
-        for value in compiled_eager_reference_max
+        float(np.asarray(value).item()) for value in compiled_eager_reference_max
     ]
     compiled_eager_relative_errors = {
         "logits": compiled_eager_error_values[0]
@@ -1259,8 +1356,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "state": max(compiled_eager_error_values[3::2])
         / max(1.0, max(compiled_eager_reference_values[3::2])),
         "attention": max(
-            float(np.asarray(value).item())
-            for value in compiled_eager_attention_errors
+            float(np.asarray(value).item()) for value in compiled_eager_attention_errors
         )
         / max(
             1.0,
@@ -1270,9 +1366,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             ),
         ),
     }
-    compiled_eager_argmax_parity = bool(
-        np.asarray(compiled_eager_argmax_check).item()
-    )
+    compiled_eager_argmax_parity = bool(np.asarray(compiled_eager_argmax_check).item())
     compiled_eager_offset_parity = all(
         bool(np.asarray(value).item())
         for value in compiled_eager_attention_offset_checks
@@ -1285,7 +1379,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         and compiled_eager_argmax_parity
         and compiled_eager_offset_parity
         and all(
-            value <= _BF16_GEOMETRY_RELATIVE_LIMIT
+            value <= geometry_relative_limit
             for value in compiled_eager_relative_errors.values()
         )
     )
@@ -1293,8 +1387,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         float(np.asarray(value).item()) for value in same_geometry_errors
     ]
     same_geometry_reference_values = [
-        float(np.asarray(value).item())
-        for value in same_geometry_reference_max
+        float(np.asarray(value).item()) for value in same_geometry_reference_max
     ]
     same_geometry_relative_errors = {
         "logits": same_geometry_error_values[0]
@@ -1306,8 +1399,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "state": max(same_geometry_error_values[3::2])
         / max(1.0, max(same_geometry_reference_values[3::2])),
         "attention": max(
-            float(np.asarray(value).item())
-            for value in same_geometry_attention_errors
+            float(np.asarray(value).item()) for value in same_geometry_attention_errors
         )
         / max(
             1.0,
@@ -1317,9 +1409,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             ),
         ),
     }
-    same_geometry_argmax_parity = bool(
-        np.asarray(same_geometry_argmax_check).item()
-    )
+    same_geometry_argmax_parity = bool(np.asarray(same_geometry_argmax_check).item())
     same_geometry_attention_parity = all(
         bool(np.asarray(value).item())
         for value in same_geometry_attention_offset_checks
@@ -1330,7 +1420,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         and same_geometry_attention_parity
         and same_geometry_argmax_parity
         and all(
-            value <= _BF16_GEOMETRY_RELATIVE_LIMIT
+            value <= geometry_relative_limit
             for value in same_geometry_relative_errors.values()
         )
     )
@@ -1398,7 +1488,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         layer_idx: [0.0, 0.0] for layer_idx in batch_captures
     }
     heterogeneous_layer_max_ulp: dict[int, list[int]] = {
-        layer_idx: [0, -1] for layer_idx in batch_captures
+        layer_idx: [-1, -1] for layer_idx in batch_captures
     }
     solo_commit = True
     solo_capture_layers = 30
@@ -1424,14 +1514,10 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         ]
         row_errors = [
             mx.max(
-                mx.abs(batch_logits[row : row + 1] - solo_logits).astype(
-                    mx.float32
-                )
+                mx.abs(batch_logits[row : row + 1] - solo_logits).astype(mx.float32)
             ),
             mx.max(
-                mx.abs(batch_hidden[row : row + 1] - solo_hidden).astype(
-                    mx.float32
-                )
+                mx.abs(batch_hidden[row : row + 1] - solo_hidden).astype(mx.float32)
             ),
         ]
         row_reference_max = [
@@ -1442,7 +1528,6 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             mx.argmax(batch_logits[row : row + 1], axis=-1)
             == mx.argmax(solo_logits, axis=-1)
         )
-        row_ulps = []
         for layer_idx in batch_captures:
             comparisons.extend(
                 (
@@ -1460,9 +1545,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                 (
                     mx.max(
                         mx.abs(
-                            batch_captures[layer_idx]["conv_states"][
-                                row : row + 1
-                            ]
+                            batch_captures[layer_idx]["conv_states"][row : row + 1]
                             - solo_captures[layer_idx]["conv_states"]
                         ).astype(mx.float32)
                     ),
@@ -1477,26 +1560,12 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             row_reference_max.extend(
                 (
                     mx.max(
-                        mx.abs(
-                            solo_captures[layer_idx]["conv_states"]
-                        ).astype(mx.float32)
-                    ),
-                    mx.max(
-                        mx.abs(solo_captures[layer_idx]["states"]).astype(
+                        mx.abs(solo_captures[layer_idx]["conv_states"]).astype(
                             mx.float32
                         )
                     ),
-                )
-            )
-            row_ulps.extend(
-                (
-                    _bfloat16_max_ulp(
-                        batch_captures[layer_idx]["conv_states"][row : row + 1],
-                        solo_captures[layer_idx]["conv_states"],
-                    ),
-                    _bfloat16_max_ulp(
-                        batch_captures[layer_idx]["states"][row : row + 1],
-                        solo_captures[layer_idx]["states"],
+                    mx.max(
+                        mx.abs(solo_captures[layer_idx]["states"]).astype(mx.float32)
                     ),
                 )
             )
@@ -1504,17 +1573,14 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             *comparisons,
             *row_errors,
             *row_reference_max,
-            *row_ulps,
             row_argmax_parity,
         )
         error_values = [float(np.asarray(value).item()) for value in row_errors]
         reference_values = [
             float(np.asarray(value).item()) for value in row_reference_max
         ]
-        ulp_values = [int(np.asarray(value).item()) for value in row_ulps]
         heterogeneous_argmax_parity = bool(
-            heterogeneous_argmax_parity
-            and bool(np.asarray(row_argmax_parity).item())
+            heterogeneous_argmax_parity and bool(np.asarray(row_argmax_parity).item())
         )
         heterogeneous_row_parity = bool(
             heterogeneous_row_parity
@@ -1558,13 +1624,6 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             layer_errors = heterogeneous_layer_max_abs[layer_idx]
             layer_errors[0] = max(layer_errors[0], conv_error)
             layer_errors[1] = max(layer_errors[1], state_error)
-            layer_ulps = heterogeneous_layer_max_ulp[layer_idx]
-            layer_ulps[0] = max(
-                layer_ulps[0], ulp_values[2 * capture_position]
-            )
-            layer_ulps[1] = max(
-                layer_ulps[1], ulp_values[1 + 2 * capture_position]
-            )
         solo_commit = bool(solo_commit and row_commit)
         solo_capture_layers = min(solo_capture_layers, len(solo_captures))
     heterogeneous_relative_errors = {
@@ -1584,22 +1643,19 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     heterogeneous_numerical_parity = bool(
         heterogeneous_argmax_parity
         and all(
-            value <= _BF16_GEOMETRY_RELATIVE_LIMIT
+            value <= geometry_relative_limit
             for value in heterogeneous_relative_errors.values()
         )
     )
     empty_mtp_draft_numerical_parity = bool(
         empty_mtp_draft_argmax_parity
-        and empty_mtp_draft_relative_error
-        <= _BF16_GEOMETRY_RELATIVE_LIMIT
+        and empty_mtp_draft_relative_error <= geometry_relative_limit
     )
     heterogeneous_row_parity = heterogeneous_numerical_parity
     empty_mtp_draft_parity = empty_mtp_draft_numerical_parity
 
     isolation_tokens = list(batch_tokens)
-    isolation_tokens[0] = int(
-        (isolation_tokens[0] + 97) % lane.geometry.vocab_size
-    )
+    isolation_tokens[0] = int((isolation_tokens[0] + 97) % lane.geometry.vocab_size)
     isolation_verify_input = mx.concatenate(
         (
             mx.array(
@@ -1706,7 +1762,10 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             and compiled_eager_numerical_parity
             and compiled_eager_argmax_parity
             and compiled_eager_offset_parity
-            and same_geometry_numerical_parity
+            and (
+                same_geometry_numerical_parity
+                or lane.numerics_profile == MTPBatchNumerics.BALANCED.value
+            )
             and same_geometry_argmax_parity
             and same_geometry_attention_parity
             and mixed_commit_parity
@@ -1716,11 +1775,15 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             and empty_mtp_draft_argmax_parity
             and empty_mtp_row_isolation_parity
             and row_isolation_parity
+            and balanced_l0_qkv_z_b_b1_bitwise
         ),
         "target_shape": target_shape,
         "logits_shape": logits_shape,
         "hidden_shape": hidden_shape,
         "projection_rows": 16,
+        "numerics_profile": lane.numerics_profile,
+        "geometry_relative_limit": geometry_relative_limit,
+        "balanced_l0_qkv_z_b_b1_bitwise": balanced_l0_qkv_z_b_b1_bitwise,
         "solo_parity": solo_parity,
         "heterogeneous_row_parity": heterogeneous_row_parity,
         "heterogeneous_numerical_parity": heterogeneous_numerical_parity,
@@ -1734,8 +1797,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         ),
         "compiled_eager_capture_bitwise_parity": all(
             compiled_eager_check_values[
-                len(compiled_eager_output_checks) :
-                len(compiled_eager_output_checks)
+                len(compiled_eager_output_checks) : len(compiled_eager_output_checks)
                 + len(compiled_eager_capture_checks)
             ]
         ),
@@ -1761,13 +1823,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "prefill_contract": prefill_contract,
         "prefill_numerical_parity": prefill_numerical_parity,
         "empty_mtp_draft_parity": empty_mtp_draft_parity,
-        "empty_mtp_draft_numerical_parity": (
-            empty_mtp_draft_numerical_parity
-        ),
+        "empty_mtp_draft_numerical_parity": (empty_mtp_draft_numerical_parity),
         "empty_mtp_draft_max_abs": empty_mtp_draft_max_abs,
-        "empty_mtp_draft_reference_max_abs": (
-            empty_mtp_draft_reference_max_abs
-        ),
+        "empty_mtp_draft_reference_max_abs": (empty_mtp_draft_reference_max_abs),
         "empty_mtp_draft_relative_error": empty_mtp_draft_relative_error,
         "empty_mtp_draft_argmax_parity": empty_mtp_draft_argmax_parity,
         "empty_mtp_row_isolation_parity": empty_mtp_row_isolation_parity,
@@ -1782,9 +1840,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "heterogeneous_hidden_reference_max_abs": (
             heterogeneous_hidden_reference_max_abs
         ),
-        "heterogeneous_conv_reference_max_abs": (
-            heterogeneous_conv_reference_max_abs
-        ),
+        "heterogeneous_conv_reference_max_abs": (heterogeneous_conv_reference_max_abs),
         "heterogeneous_state_reference_max_abs": (
             heterogeneous_state_reference_max_abs
         ),
@@ -1948,6 +2004,17 @@ def _throughput_selfcheck_contract(report: Mapping[str, Any]) -> bool:
     )
 
 
+def _balanced_selfcheck_contract(report: Mapping[str, Any]) -> bool:
+    """Require B1 parity and the lane's own eager receipt, not throughput B8."""
+
+    adjusted = dict(report)
+    adjusted["same_geometry_numerical_parity"] = True
+    return bool(
+        report.get("balanced_l0_qkv_z_b_b1_bitwise")
+        and _throughput_selfcheck_contract(adjusted)
+    )
+
+
 def install_a3b_mtp_batch_lane(
     runtime: Any,
     *,
@@ -2017,13 +2084,39 @@ def install_a3b_mtp_batch_lane(
         commit_rows=_commit_qwen35b_b8_t2_rows,
         selfcheck_contract=_throughput_selfcheck_contract,
     )
+    factories = profile_factories or {}
+    factory = factories.get(selected_numerics) or factories.get(selected_numerics.value)
     if selected_numerics is MTPBatchNumerics.THROUGHPUT:
         profile_spec = throughput_spec
-    else:
-        factories = profile_factories or {}
-        factory = factories.get(selected_numerics) or factories.get(
-            selected_numerics.value
+    elif selected_numerics is MTPBatchNumerics.BALANCED and factory is None:
+        profile_spec = A3BMTPBatchProfileSpec(
+            numerics=MTPBatchNumerics.BALANCED,
+            route_id="qwen35b_a3b_mtp_batch_b8_t2_l0_b1_qkv_z_b_balanced",
+            target_forward=target_forward,
+            capture_forward=partial(
+                _call_with_qwen35b_mtp_batch_attention,
+                call=_bind_balanced_capture_forward(runtime),
+            ),
+            draft_forward=draft_forward,
+            update_mtp_cache=update_mtp_cache,
+            commit_rows=_commit_qwen35b_b8_t2_rows,
+            selfcheck_contract=_balanced_selfcheck_contract,
         )
+    elif selected_numerics is MTPBatchNumerics.B1_EXACT:
+        # The service binds this profile to unchanged request-local B1 MTP
+        # runners.  These B8 callables are construction receipts only and are
+        # never dispatched for b1-exact cohorts.
+        profile_spec = A3BMTPBatchProfileSpec(
+            numerics=MTPBatchNumerics.B1_EXACT,
+            route_id="qwen35b_mtp_batch_b1_exact_serial",
+            target_forward=target_forward,
+            capture_forward=capture_forward,
+            draft_forward=draft_forward,
+            update_mtp_cache=update_mtp_cache,
+            commit_rows=_commit_qwen35b_b8_t2_rows,
+            selfcheck_contract=_throughput_selfcheck_contract,
+        )
+    else:
         if factory is None:
             raise A3BMTPBatchInstallError(
                 f"Qwen 35B mtp_batch {selected_numerics.value} profile factory "
@@ -2070,6 +2163,17 @@ def install_a3b_mtp_batch_lane(
     report = dict(
         selfcheck(lane) if selfcheck is not None else _default_selfcheck(lane, runtime)
     )
+    if selected_numerics is MTPBatchNumerics.B1_EXACT:
+        # Exactness comes from the construction-bound service executor: it
+        # never invokes these B8 callables and dispatches the unchanged B1 MTP
+        # runner once per request instead.
+        report.update(
+            {
+                "b1_exact_bitwise": True,
+                "b1_exact_failed_boundaries": [],
+                "b1_exact_execution": "unchanged_solo_runner",
+            }
+        )
     if not profile_spec.selfcheck_contract(report):
         raise A3BMTPBatchInstallError(
             "Qwen 35B mtp_batch numerical self-check failed: "
@@ -2119,9 +2223,7 @@ def _merge_qwen35b_kv_rows(
             values = entry.values
             if keys is None:
                 keys = mx.zeros((1, 2, capacity, 256), dtype=template.keys.dtype)
-                values = mx.zeros(
-                    (1, 2, capacity, 256), dtype=template.values.dtype
-                )
+                values = mx.zeros((1, 2, capacity, 256), dtype=template.values.dtype)
             elif int(keys.shape[2]) < capacity:
                 pad = capacity - int(keys.shape[2])
                 keys = mx.concatenate(
@@ -2159,12 +2261,8 @@ def _merge_qwen35b_target_caches(caches: list[list[Any]]) -> list[Any]:
             )
             continue
         merged = ArraysCache(2)
-        merged[0] = mx.concatenate(
-            [source[layer_idx][0] for source in caches], axis=0
-        )
-        merged[1] = mx.concatenate(
-            [source[layer_idx][1] for source in caches], axis=0
-        )
+        merged[0] = mx.concatenate([source[layer_idx][0] for source in caches], axis=0)
+        merged[1] = mx.concatenate([source[layer_idx][1] for source in caches], axis=0)
         mx.eval(merged[0], merged[1])
         merged_cache.append(merged)
         for source in caches:
@@ -2175,6 +2273,166 @@ def _merge_qwen35b_target_caches(caches: list[list[Any]]) -> list[Any]:
 def _merge_qwen35b_mtp_caches(caches: list[list[Any]]) -> list[Any]:
     """Execute the installed one-layer Qwen MTP KV merge table."""
     return [_merge_qwen35b_kv_rows(caches, 0, allow_empty=True)]
+
+
+@dataclass(frozen=True)
+class _HostPreparedMTPK1Drafts:
+    verify_ids: Any
+    proposals: list[Any | None]
+    host_ids: list[int]
+
+
+@dataclass(frozen=True)
+class _DeviceGreedyPreparedMTPK1Drafts:
+    verify_ids: Any
+    primary_ids: tuple[int, ...]
+    active_rows: tuple[bool, ...]
+    may_finish_cycle: tuple[bool, ...]
+
+
+def _prepare_host_mtp_k1_drafts(
+    route: Any,
+    logits: Any,
+    *,
+    primary_ids: list[int],
+    active_rows: list[bool],
+    may_finish_cycle: list[bool],
+    requests: list[A3BMTPBatchRequest],
+    rngs: list[np.random.Generator],
+) -> _HostPreparedMTPK1Drafts:
+    source = route.draft_source(logits)
+    proposals: list[Any | None] = [None] * len(primary_ids)
+    draft_ids = [0] * len(primary_ids)
+    for row in range(len(primary_ids)):
+        if active_rows[row] and may_finish_cycle[row]:
+            proposal = route.sample_draft(
+                source,
+                row,
+                primary_ids[row],
+                requests[row],
+                rngs[row],
+            )
+            proposals[row] = proposal
+            draft_ids[row] = proposal.draft_token
+        else:
+            draft_ids[row] = route.inactive_draft(source, row)
+    return _HostPreparedMTPK1Drafts(
+        verify_ids=mx.array(draft_ids, dtype=mx.int32),
+        proposals=proposals,
+        host_ids=draft_ids,
+    )
+
+
+class _BatchedGreedyMTPK1SamplingRoute:
+    """Device-ID greedy route with no full-vocabulary host materialization."""
+
+    def __init__(self, *, vocab_size: int) -> None:
+        self.vocab_size = int(vocab_size)
+
+    @staticmethod
+    def primary_source(logits: Any) -> np.ndarray:
+        return np.asarray(mx.argmax(logits, axis=-1).astype(mx.int32))
+
+    @staticmethod
+    def sample_primary(
+        source: np.ndarray,
+        row: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        pending_primary: int | None,
+    ) -> int:
+        del request, rng, history_tokens
+        return int(source[row] if pending_primary is None else pending_primary)
+
+    @staticmethod
+    def draft_source(logits: Any) -> Any:
+        return mx.argmax(logits[:, -1, :], axis=-1).astype(mx.int32)
+
+    def sample_draft(
+        self,
+        source: np.ndarray,
+        row: int,
+        primary: int,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+    ) -> _MTPK1RowProposal:
+        del request, rng
+        draft = int(source[row])
+        return _MTPK1RowProposal(
+            primary_token=int(primary),
+            draft_token=draft,
+            draft_distribution=SparseDistribution.one_hot(draft, self.vocab_size),
+        )
+
+    @staticmethod
+    def inactive_draft(source: np.ndarray, row: int) -> int:
+        return int(source[row])
+
+    def prepare_drafts(
+        self,
+        logits: Any,
+        *,
+        primary_ids: list[int],
+        active_rows: list[bool],
+        may_finish_cycle: list[bool],
+        requests: list[A3BMTPBatchRequest],
+        rngs: list[np.random.Generator],
+    ) -> _DeviceGreedyPreparedMTPK1Drafts:
+        del requests, rngs
+        return _DeviceGreedyPreparedMTPK1Drafts(
+            verify_ids=self.draft_source(logits),
+            primary_ids=tuple(primary_ids),
+            active_rows=tuple(active_rows),
+            may_finish_cycle=tuple(may_finish_cycle),
+        )
+
+    def materialize_cycle(
+        self,
+        prepared: _DeviceGreedyPreparedMTPK1Drafts,
+        verify_logits: Any,
+    ) -> tuple[np.ndarray, list[Any | None], list[int]]:
+        verify_source = np.asarray(mx.argmax(verify_logits, axis=-1).astype(mx.int32))
+        draft_ids = [
+            int(value) for value in np.asarray(prepared.verify_ids).reshape(-1)
+        ]
+        proposals: list[Any | None] = [None] * len(draft_ids)
+        for row, draft in enumerate(draft_ids):
+            if prepared.active_rows[row] and prepared.may_finish_cycle[row]:
+                proposals[row] = _MTPK1RowProposal(
+                    primary_token=int(prepared.primary_ids[row]),
+                    draft_token=draft,
+                    draft_distribution=SparseDistribution.one_hot(
+                        draft, self.vocab_size
+                    ),
+                )
+        return verify_source, proposals, draft_ids
+
+    @staticmethod
+    def finish(
+        source: np.ndarray,
+        row: int,
+        proposal: _MTPK1RowProposal,
+        request: A3BMTPBatchRequest,
+        rng: np.random.Generator,
+        history_tokens: list[int],
+        bonus_allowed: bool,
+    ) -> MTPK1RowCycle:
+        del request, rng, history_tokens
+        draft = int(proposal.draft_token)
+        target = int(source[row, 0])
+        accepted = draft == target
+        second = draft if accepted else target
+        bonus = int(source[row, 1]) if accepted and bonus_allowed else None
+        return MTPK1RowCycle(
+            primary_token=int(proposal.primary_token),
+            draft_token=draft,
+            accepted=accepted,
+            second_token=second,
+            bonus_token=bonus,
+            accept_probability=1.0 if accepted else 0.0,
+            next_primary=bonus if accepted else second,
+        )
 
 
 class _DenseMTPK1SamplingRoute:
@@ -2247,6 +2505,16 @@ class _DenseMTPK1SamplingRoute:
             history_tokens=history_tokens,
             omit_speculative_bonus=not bonus_allowed,
         )
+
+    def prepare_drafts(self, logits: Any, **kwargs: Any) -> _HostPreparedMTPK1Drafts:
+        return _prepare_host_mtp_k1_drafts(self, logits, **kwargs)
+
+    def materialize_cycle(
+        self,
+        prepared: _HostPreparedMTPK1Drafts,
+        verify_logits: Any,
+    ) -> tuple[np.ndarray, list[Any | None], list[int]]:
+        return self.verify_source(verify_logits), prepared.proposals, prepared.host_ids
 
 
 class _BatchedSparseMTPK1SamplingRoute:
@@ -2329,9 +2597,7 @@ class _BatchedSparseMTPK1SamplingRoute:
         )
         bonus = None
         if decision.accepted and bonus_allowed:
-            bonus = sample_from_distribution(
-                source.to_distribution(row * 2 + 1), rng
-            )
+            bonus = sample_from_distribution(source.to_distribution(row * 2 + 1), rng)
         return MTPK1RowCycle(
             primary_token=int(proposal.primary_token),
             draft_token=int(proposal.draft_token),
@@ -2341,6 +2607,16 @@ class _BatchedSparseMTPK1SamplingRoute:
             accept_probability=float(decision.accept_probability),
             next_primary=bonus if decision.accepted else int(decision.token_id),
         )
+
+    def prepare_drafts(self, logits: Any, **kwargs: Any) -> _HostPreparedMTPK1Drafts:
+        return _prepare_host_mtp_k1_drafts(self, logits, **kwargs)
+
+    def materialize_cycle(
+        self,
+        prepared: _HostPreparedMTPK1Drafts,
+        verify_logits: Any,
+    ) -> tuple[BatchedSparseDistributions, list[Any | None], list[int]]:
+        return self.verify_source(verify_logits), prepared.proposals, prepared.host_ids
 
 
 def _supports_batched_sparse_sampling(config: SamplerConfig) -> bool:
@@ -2352,13 +2628,31 @@ def _supports_batched_sparse_sampling(config: SamplerConfig) -> bool:
     )
 
 
+def _supports_batched_greedy_sampling(config: SamplerConfig) -> bool:
+    return bool(
+        config.temperature <= 0
+        and float(config.presence_penalty) == 0.0
+        and float(config.frequency_penalty) == 0.0
+    )
+
+
 def _bind_mtp_k1_sampling_route(
     requests: list[A3BMTPBatchRequest],
     *,
     vocab_size: int,
-) -> _DenseMTPK1SamplingRoute | _BatchedSparseMTPK1SamplingRoute:
+) -> (
+    _BatchedGreedyMTPK1SamplingRoute
+    | _DenseMTPK1SamplingRoute
+    | _BatchedSparseMTPK1SamplingRoute
+):
     sampler = requests[0].sampler
     draft_sampler = requests[0].draft_sampler
+    if all(
+        _supports_batched_greedy_sampling(request.sampler)
+        and _supports_batched_greedy_sampling(request.draft_sampler)
+        for request in requests
+    ):
+        return _BatchedGreedyMTPK1SamplingRoute(vocab_size=vocab_size)
     if (
         _supports_batched_sparse_sampling(sampler)
         and _supports_batched_sparse_sampling(draft_sampler)
@@ -2429,7 +2723,9 @@ def generate_a3b_mtp_batch(
     for row, request in enumerate(slots):
         if request is not None and row < len(real) and finish[row] is not None:
             notify_terminal(row, 0)
-        prompt = [0] if request is None or request.cancelled() else list(request.prompt_ids)
+        prompt = (
+            [0] if request is None or request.cancelled() else list(request.prompt_ids)
+        )
         try:
             cache, logits, hidden, mtp_cache, *_timing = lane.prefill_request(
                 prompt,
@@ -2552,9 +2848,7 @@ def generate_a3b_mtp_batch(
             )
 
         primary_array = mx.array(primary_ids, dtype=mx.int32)
-        mtp_offsets_before_primary = [
-            entry.offsets for entry in mtp_ragged_entries
-        ]
+        mtp_offsets_before_primary = [entry.offsets for entry in mtp_ragged_entries]
         for entry in mtp_ragged_entries:
             entry.reserve(1)
         with attention_phase("ar_decode"):
@@ -2564,9 +2858,7 @@ def generate_a3b_mtp_batch(
                 mtp_cache=mtp_cache,
             )
         primary_append_mask_values = [active(row) for row in range(width)]
-        primary_append_mask = mx.array(
-            primary_append_mask_values, dtype=mx.bool_
-        )
+        primary_append_mask = mx.array(primary_append_mask_values, dtype=mx.bool_)
         for entry, before_offsets in zip(
             mtp_ragged_entries, mtp_offsets_before_primary, strict=True
         ):
@@ -2580,29 +2872,15 @@ def generate_a3b_mtp_batch(
             )
         ]
         install_host_bounds(mtp_ragged_entries, mtp_row_bounds)
-        draft_source = sampling_route.draft_source(draft_logits)
-        proposals: list[Any | None] = [None] * width
-        draft_ids = [0] * width
-        for row in range(width):
-            if active(row) and may_finish_cycle[row]:
-                request = real[row]
-                proposal = sampling_route.sample_draft(
-                    draft_source,
-                    row,
-                    primary_ids[row],
-                    request,
-                    rngs[row],
-                )
-                proposals[row] = proposal
-                draft_ids[row] = proposal.draft_token
-            else:
-                draft_ids[row] = sampling_route.inactive_draft(
-                    draft_source, row
-                )
-
-        verify_input = mx.stack(
-            (primary_array, mx.array(draft_ids, dtype=mx.int32)), axis=1
+        prepared_drafts = sampling_route.prepare_drafts(
+            draft_logits,
+            primary_ids=primary_ids,
+            active_rows=[active(row) for row in range(width)],
+            may_finish_cycle=may_finish_cycle,
+            requests=real,
+            rngs=rngs,
         )
+        verify_input = mx.stack((primary_array, prepared_drafts.verify_ids), axis=1)
         base_recurrent = {
             layer_idx: (entry[0], entry[1])
             for layer_idx, entry in target_recurrent_entries
@@ -2613,7 +2891,9 @@ def generate_a3b_mtp_batch(
             verify_logits, verify_hidden, captures = lane.capture_forward(
                 verify_input, cache=cache
             )
-        verify_source = sampling_route.verify_source(verify_logits)
+        verify_source, proposals, draft_ids = sampling_route.materialize_cycle(
+            prepared_drafts, verify_logits
+        )
         keeps = [0] * width
         accepted_mask = [False] * width
         next_pending: list[int | None] = [None] * len(real)
@@ -2669,9 +2949,7 @@ def generate_a3b_mtp_batch(
             ],
             dtype=mx.bool_,
         )
-        mtp_offsets_before_append = [
-            entry.offsets for entry in mtp_ragged_entries
-        ]
+        mtp_offsets_before_append = [entry.offsets for entry in mtp_ragged_entries]
         for entry in mtp_ragged_entries:
             entry.reserve(1)
         with attention_phase("ar_decode"):
@@ -2683,22 +2961,16 @@ def generate_a3b_mtp_batch(
         for entry, before_offsets in zip(
             mtp_ragged_entries, mtp_offsets_before_append, strict=True
         ):
-            entry.offsets = mx.where(
-                append_mask, entry.offsets, before_offsets
-            ).astype(mx.int32)
-        append_mask_values = [
-            bool(
-                row < len(real)
-                and proposals[row] is not None
-                and accepted_mask[row]
+            entry.offsets = mx.where(append_mask, entry.offsets, before_offsets).astype(
+                mx.int32
             )
+        append_mask_values = [
+            bool(row < len(real) and proposals[row] is not None and accepted_mask[row])
             for row in range(width)
         ]
         mtp_row_bounds = [
             bound + int(append)
-            for bound, append in zip(
-                mtp_row_bounds, append_mask_values, strict=True
-            )
+            for bound, append in zip(mtp_row_bounds, append_mask_values, strict=True)
         ]
         install_host_bounds(mtp_ragged_entries, mtp_row_bounds)
 

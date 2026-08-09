@@ -13,8 +13,7 @@ from mtplx import runtime as runtime_module
 
 
 _LAYER_TYPES = tuple(
-    "linear_attention" if index % 4 != 3 else "full_attention"
-    for index in range(40)
+    "linear_attention" if index % 4 != 3 else "full_attention" for index in range(40)
 )
 
 
@@ -97,9 +96,9 @@ def _clean_state(monkeypatch):
 def test_flag_off_constructs_unchanged_stock_path() -> None:
     model = _fake_a3b_model()
 
-    assert gdn_capture.prepare_a3b_gdn_postconv(
-        model, config=_fake_a3b_config()
-    ) is None
+    assert (
+        gdn_capture.prepare_a3b_gdn_postconv(model, config=_fake_a3b_config()) is None
+    )
     assert gdn_capture.gdn_postconv_stats() == {
         "enabled": False,
         "installed": False,
@@ -118,9 +117,7 @@ def test_exact_a3b_contract_installs_all_30_prebound_routes_after_selfcheck(
     monkeypatch.setenv("MTPLX_COMPILED_TARGET_PREFIX", "1")
     model = _fake_a3b_model()
 
-    plan = gdn_capture.prepare_a3b_gdn_postconv(
-        model, config=_fake_a3b_config()
-    )
+    plan = gdn_capture.prepare_a3b_gdn_postconv(model, config=_fake_a3b_config())
     assert plan is not None
 
     factory = gdn_capture.install_a3b_gdn_postconv(
@@ -291,9 +288,7 @@ def test_selfcheck_failure_prevents_installation(monkeypatch) -> None:
     monkeypatch.setenv("MTPLX_FUSE_GDN_POST_CONV", "1")
     monkeypatch.setenv("MTPLX_COMPILED_TARGET_PREFIX", "1")
     model = _fake_a3b_model()
-    plan = gdn_capture.prepare_a3b_gdn_postconv(
-        model, config=_fake_a3b_config()
-    )
+    plan = gdn_capture.prepare_a3b_gdn_postconv(model, config=_fake_a3b_config())
 
     with pytest.raises(gdn_capture.A3BGDNPostconvConfigError, match="selfcheck"):
         gdn_capture.install_a3b_gdn_postconv(
@@ -483,6 +478,68 @@ def test_exact_gdn_fixed_surroundings_match_explicit_reference(
     assert [call[0] for call in seen] == ["qkv", "z", "b", "a", "conv", "postconv"]
 
 
+def test_balanced_gdn_uses_prebound_projections_without_hot_routing(
+    monkeypatch,
+) -> None:
+    inputs = mx.zeros((8, 2, 2048), dtype=mx.bfloat16)
+    qkv = mx.full((8, 2, 8192), 0.25, dtype=mx.bfloat16)
+    z = mx.full((8, 2, 4096), 0.5, dtype=mx.bfloat16)
+    a = mx.full((8, 2, 32), 0.75, dtype=mx.bfloat16)
+    b = mx.full((8, 2, 32), 1.0, dtype=mx.bfloat16)
+    conv_state = mx.zeros((8, 3, 8192), dtype=mx.bfloat16)
+    recurrent = mx.zeros((8, 32, 128, 128), dtype=mx.float32)
+    conv_out = mx.full((8, 2, 8192), 1.25, dtype=mx.bfloat16)
+    conv_states = mx.full((8, 2, 3, 8192), 1.5, dtype=mx.bfloat16)
+    postconv_out = mx.full((8, 2, 32, 128), 2.0, dtype=mx.bfloat16)
+    states = mx.full((8, 2, 32, 128, 128), 2.5, dtype=mx.float32)
+    seen: list[str] = []
+    gdn = SimpleNamespace(
+        in_proj_qkv=lambda _value: pytest.fail("patched QKV projection was used"),
+        in_proj_z=lambda _value: pytest.fail("patched Z projection was used"),
+        in_proj_b=lambda _value: pytest.fail("patched B projection was used"),
+        in_proj_a=lambda _value: pytest.fail("patched A projection was used"),
+        norm=lambda value, gate: value + gate,
+        out_proj=lambda value: value,
+    )
+
+    monkeypatch.setattr(
+        gdn_capture,
+        "_stock_conv1d_capture",
+        lambda *_args: (conv_out, conv_states),
+    )
+    cache = [conv_state, recurrent]
+    out, captures = gdn_capture._a3b_gdn_forward_with_fixed_postconv_bound_projections(
+        gdn,
+        inputs,
+        cache,
+        lambda *_args: (postconv_out, states),
+        lambda value: seen.append("b1_qkv") or qkv,
+        lambda value: seen.append("b1_z") or z,
+        lambda value: seen.append("b") or b,
+        lambda value: seen.append("a") or a,
+    )
+    mx.eval(out)
+
+    assert seen == ["b1_qkv", "b1_z", "b", "a"]
+    assert captures["conv_states"] is conv_states
+    assert captures["states"] is states
+
+
+def test_b8_t2_rowwise_b1_qlinear_preserves_eight_m2_calls() -> None:
+    inputs = mx.arange(16, dtype=mx.float32).reshape(8, 2, 1)
+    seen_shapes: list[tuple[int, ...]] = []
+
+    def b1_qlinear(value):
+        seen_shapes.append(tuple(value.shape))
+        return value
+
+    result = gdn_capture._b8_t2_rowwise_b1_qlinear(inputs, b1_qlinear)
+    mx.eval(result)
+
+    assert seen_shapes == [(1, 2, 1)] * 8
+    assert mx.array_equal(result, inputs)
+
+
 @pytest.mark.parametrize(
     ("implementation", "logical_m"),
     (
@@ -537,9 +594,9 @@ def test_hot_route_does_not_validate_internal_artifacts(
 def test_runtime_contract_propagates_only_the_postconv_enable_flag() -> None:
     from mtplx.profiles import normalize_runtime_env_overrides
 
-    assert normalize_runtime_env_overrides(
-        {"MTPLX_FUSE_GDN_POST_CONV": True}
-    ) == {"MTPLX_FUSE_GDN_POST_CONV": "1"}
+    assert normalize_runtime_env_overrides({"MTPLX_FUSE_GDN_POST_CONV": True}) == {
+        "MTPLX_FUSE_GDN_POST_CONV": "1"
+    }
 
 
 def test_runtime_finalizes_compiled_factory_only_after_postconv_install() -> None:
@@ -551,6 +608,4 @@ def test_runtime_finalizes_compiled_factory_only_after_postconv_install() -> Non
     compiled_factory = source.index("prepare_a3b_compiled_target_prefix(")
     assert prepare < selfcheck < install < compiled_factory
     assert "gdn_postconv_factory=postconv_factory" in source
-    assert (
-        "a3b_compiled_target_prefix_factory=compiled_target_factory" in source
-    )
+    assert "a3b_compiled_target_prefix_factory=compiled_target_factory" in source

@@ -129,8 +129,7 @@ def test_app_parent_watchdog_stops_child_when_parent_is_gone():
         [
             sys.executable,
             "-c",
-            "import time\n"
-            "time.sleep(30)\n",
+            "import time\ntime.sleep(30)\n",
         ],
         env=os.environ.copy(),
         cwd=Path.cwd(),
@@ -415,10 +414,7 @@ def test_native_ar_only_runtime_requires_ar_and_disables_mtp_loading():
         no_mtp=True,
         load_mtp=True,
     )
-    assert (
-        public._apply_runtime_compatibility_mode(auto_ar_args, inspection)
-        is None
-    )
+    assert public._apply_runtime_compatibility_mode(auto_ar_args, inspection) is None
     assert auto_ar_args.load_mtp is False
 
 
@@ -878,9 +874,7 @@ def test_start_opencode_dry_run_json_writes_no_hidden_cap(
     assert "options" not in model
 
 
-def test_start_opencode_dry_run_emits_explicit_ssd_off(
-    monkeypatch, tmp_path, capsys
-):
+def test_start_opencode_dry_run_emits_explicit_ssd_off(monkeypatch, tmp_path, capsys):
     """Issue #140 class: a generated server_command must carry an explicit
     --ssd-session-cache off. The CLIs that re-parse these commands default
     the flag to "on" (kvcache-v2), so omitting "off" silently re-enables
@@ -1102,9 +1096,7 @@ def _serve_dry_run_payload_for_model(monkeypatch, capsys, model_dir, extra_args=
     return json.loads(capsys.readouterr().out)
 
 
-def test_serve_defaults_quantized_27b_flagships_to_turbo(
-    monkeypatch, tmp_path, capsys
-):
+def test_serve_defaults_quantized_27b_flagships_to_turbo(monkeypatch, tmp_path, capsys):
     """Bare `mtplx serve` on the quantized 27B flagships resolves turbo.
 
     This is the same launch rule the macOS app applies (Speed/Quality ->
@@ -1227,7 +1219,9 @@ def test_start_dry_run_uses_gemma_defaults_even_when_gate_reports_error(
         "runtime_compatibility": "native-contract-gated",
         "compatibility": {"can_run": False, "exit_code": 1},
     }
-    monkeypatch.setattr(public, "_model_gate", lambda *_args, **_kwargs: (inspection, 1))
+    monkeypatch.setattr(
+        public, "_model_gate", lambda *_args, **_kwargs: (inspection, 1)
+    )
 
     code = main(
         [
@@ -1440,8 +1434,8 @@ def test_start_hermes_live_path_writes_profile_and_handoff(
     env_text = (profile_dir / ".env").read_text(encoding="utf-8")
     assert "provider: custom" in config_text
     assert "toolsets:" in config_text
-    assert "HERMES_MODEL=\"example\"" in env_text
-    assert "OPENAI_API_KEY=\"mtplx-local\"" in env_text
+    assert 'HERMES_MODEL="example"' in env_text
+    assert 'OPENAI_API_KEY="mtplx-local"' in env_text
     assert "Hermes will open automatically" in capsys.readouterr().out
 
 
@@ -2028,9 +2022,7 @@ def test_sustained_ignores_performance_cold_draft_contract():
         "mode": "affine",
     }
     assert public._model_draft_sampler_spec(inspection, sustained) is None
-    assert (
-        public._model_contract_depth(inspection, profile=sustained, fallback=3) == 3
-    )
+    assert public._model_contract_depth(inspection, profile=sustained, fallback=3) == 3
     assert public._model_draft_lm_head_spec(inspection, burst) == {
         "bits": 3,
         "group_size": 64,
@@ -3380,20 +3372,17 @@ def test_tune_retune_starts_max_fans_before_slow_diagnostics(
     monkeypatch.setattr(
         public,
         "_apple_hardware_context",
-        lambda: (assert_after_max("hardware") or {"chip": "Apple M5 Max"}),
+        lambda: assert_after_max("hardware") or {"chip": "Apple M5 Max"},
     )
     monkeypatch.setattr(
         public,
         "_software_context",
-        lambda: (assert_after_max("software") or {"mtplx_version": "1.0.0"}),
+        lambda: assert_after_max("software") or {"mtplx_version": "1.0.0"},
     )
     monkeypatch.setattr(
         public,
         "_mlx_backend_context",
-        lambda: (
-            assert_after_max("backend")
-            or {"stock_mlx_likely": True}
-        ),
+        lambda: assert_after_max("backend") or {"stock_mlx_likely": True},
     )
     monkeypatch.setenv("MTPLX_TUNE_STATE", str(tmp_path / "tune-state.json"))
 
@@ -3490,9 +3479,12 @@ def test_tune_dry_run_supports_gemma_block_candidates(capsys):
         "Block 7",
         "Block 8",
     ]
-    assert payload["candidates"][-1]["command"][
-        payload["candidates"][-1]["command"].index("--_candidate") + 1
-    ] == "8"
+    assert (
+        payload["candidates"][-1]["command"][
+            payload["candidates"][-1]["command"].index("--_candidate") + 1
+        ]
+        == "8"
+    )
 
 
 def test_tune_dry_run_prints_gemma_block_candidates(capsys):
@@ -3630,7 +3622,12 @@ def test_tune_no_mtp_win_labels_collapsed_acceptance():
             [
                 {"mode": "AR", "depth": None, "tok_s": 96.0},
                 {"mode": "D1", "depth": 1, "tok_s": 68.0, "acceptance_by_depth": [0.0]},
-                {"mode": "D2", "depth": 2, "tok_s": 54.0, "acceptance_by_depth": [0.0, 0.0]},
+                {
+                    "mode": "D2",
+                    "depth": 2,
+                    "tok_s": 54.0,
+                    "acceptance_by_depth": [0.0, 0.0],
+                },
                 {
                     "mode": "D3",
                     "depth": 3,
@@ -3863,9 +3860,7 @@ def test_tune_measured_no_winner_clears_saved_record(tmp_path, monkeypatch, caps
     monkeypatch.setattr(
         public, "_apple_hardware_context", lambda: {"chip": "Apple M5 Max"}
     )
-    monkeypatch.setattr(
-        public, "_software_context", lambda: {"mtplx_version": "1.0.0"}
-    )
+    monkeypatch.setattr(public, "_software_context", lambda: {"mtplx_version": "1.0.0"})
     monkeypatch.setattr(
         public, "_mlx_backend_context", lambda: {"stock_mlx_likely": True}
     )
@@ -4143,7 +4138,9 @@ def test_tune_candidate_summary_prefers_decode_tok_s(tmp_path):
     assert depth_row["end_to_end_tok_s"] == 15.5
     assert ar_row["hit_token_budget"] is True
     assert ar_row["quality_passed"] is True
-    assert ar_row["quality_inconclusive_validations"][0]["name"] == "balanced_delimiters"
+    assert (
+        ar_row["quality_inconclusive_validations"][0]["name"] == "balanced_delimiters"
+    )
     assert depth_row["hit_token_budget_count"] == 1
     assert depth_row["finish_reasons"] == {"length": 1}
 
@@ -4682,10 +4679,7 @@ def test_public_profile_dispatch_without_trace_is_actionable(capsys):
     # --trace when the research-workspace script is present, and say plainly
     # that it is not included when it is absent (the shipped package never
     # carries it).
-    assert (
-        "--trace PATH" in captured
-        or "not included in this installation" in captured
-    )
+    assert "--trace PATH" in captured or "not included in this installation" in captured
 
 
 def test_reference_vllm_dry_run_includes_ssh_capture_command(capsys):
@@ -4839,9 +4833,12 @@ def test_bench_suite_quick_plans_client_contract_rows(capsys):
     assert payload["quick"] is True
     assert payload["status"] == "PLAN"
     assert payload["rows_jsonl"] == "outputs/cli/suite/quick-suite-test/rows.jsonl"
-    assert payload["full_exactness_command"][
-        payload["full_exactness_command"].index("--contexts") + 1
-    ] == "64,2048"
+    assert (
+        payload["full_exactness_command"][
+            payload["full_exactness_command"].index("--contexts") + 1
+        ]
+        == "64,2048"
+    )
     assert [task["label"] for task in payload["tasks"]] == [
         "short-context-384",
         "long-tool-history-1536",
@@ -4861,7 +4858,9 @@ def test_bench_suite_quick_plans_client_contract_rows(capsys):
 def test_bench_suite_quick_uses_verified_local_default_when_model_omitted(
     monkeypatch, capsys
 ):
-    local_default = "/Users/youssof/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Speed"
+    local_default = (
+        "/Users/youssof/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Speed"
+    )
     monkeypatch.setattr(
         public,
         "select_default_model",
@@ -4896,36 +4895,48 @@ def test_bench_suite_quick_uses_verified_local_default_when_model_omitted(
     first_command = payload["tasks"][0]["direct_http_command"]
     assert first_command[first_command.index("--model") + 1] == local_default
     assert "--no-strict-mlx-fork-assert" in first_command
-    assert payload["full_exactness_command"][
-        payload["full_exactness_command"].index("--model") + 1
-    ] == local_default
+    assert (
+        payload["full_exactness_command"][
+            payload["full_exactness_command"].index("--model") + 1
+        ]
+        == local_default
+    )
 
 
 def test_bench_suite_status_classifies_hard_and_perf_gates():
-    assert public._bench_suite_status(
-        {
-            "full_exactness_passed": True,
-            "quality_passed": True,
-            "no_fan_product_gate": True,
-            "cold_tok_s_ge_59": True,
-        }
-    ) == "PASS"
-    assert public._bench_suite_status(
-        {
-            "full_exactness_passed": True,
-            "quality_passed": True,
-            "no_fan_product_gate": True,
-            "cold_tok_s_ge_59": False,
-        }
-    ) == "WARN"
-    assert public._bench_suite_status(
-        {
-            "full_exactness_passed": False,
-            "quality_passed": True,
-            "no_fan_product_gate": True,
-            "cold_tok_s_ge_59": True,
-        }
-    ) == "FAIL"
+    assert (
+        public._bench_suite_status(
+            {
+                "full_exactness_passed": True,
+                "quality_passed": True,
+                "no_fan_product_gate": True,
+                "cold_tok_s_ge_59": True,
+            }
+        )
+        == "PASS"
+    )
+    assert (
+        public._bench_suite_status(
+            {
+                "full_exactness_passed": True,
+                "quality_passed": True,
+                "no_fan_product_gate": True,
+                "cold_tok_s_ge_59": False,
+            }
+        )
+        == "WARN"
+    )
+    assert (
+        public._bench_suite_status(
+            {
+                "full_exactness_passed": False,
+                "quality_passed": True,
+                "no_fan_product_gate": True,
+                "cold_tok_s_ge_59": True,
+            }
+        )
+        == "FAIL"
+    )
 
 
 def test_bench_suite_task_status_warns_on_speed_floor_only():
@@ -5211,7 +5222,9 @@ def test_model_architectures_json_lists_verified_and_pending(capsys):
     assert "glm4-moe-mtp" in payload["verified_runtime_arch_ids"]
     assert "glm4-moe-lite-mtp" in payload["verified_runtime_arch_ids"]
     assert "mimo-mtp" in payload["verified_runtime_arch_ids"]
-    qwen = next(row for row in payload["architectures"] if row["arch_id"] == "qwen3-next-mtp")
+    qwen = next(
+        row for row in payload["architectures"] if row["arch_id"] == "qwen3-next-mtp"
+    )
     assert "Qwen3.6" in qwen["display_name"]
     assert "qwen3_6_mtp" in qwen["aliases"]
     assert "glm4-moe-mtp" in ids
@@ -5289,15 +5302,17 @@ def test_integrate_claude_code_json_uses_anthropic_root_and_auth_token(capsys):
 
 
 def test_integrate_opencode_json_uses_mtplx_owned_generation_contract(capsys):
-    code = main([
-        "integrate",
-        "opencode",
-        "--port",
-        "18012",
-        "--api-key",
-        "1234",
-        "--json",
-    ])
+    code = main(
+        [
+            "integrate",
+            "opencode",
+            "--port",
+            "18012",
+            "--api-key",
+            "1234",
+            "--json",
+        ]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
@@ -5306,8 +5321,13 @@ def test_integrate_opencode_json_uses_mtplx_owned_generation_contract(capsys):
     assert "--api-key $MTPLX_API_KEY" in payload["server_command"]
     assert "--reasoning auto" in payload["server_command"]
     model = payload["config"]["provider"]["mtplx"]["models"][payload["model_id"]]
-    assert payload["config"]["provider"]["mtplx"]["options"]["headers"]["x-mtplx-client"] == "opencode"
-    assert payload["config"]["provider"]["mtplx"]["options"]["apiKey"] == "$MTPLX_API_KEY"
+    assert (
+        payload["config"]["provider"]["mtplx"]["options"]["headers"]["x-mtplx-client"]
+        == "opencode"
+    )
+    assert (
+        payload["config"]["provider"]["mtplx"]["options"]["apiKey"] == "$MTPLX_API_KEY"
+    )
     assert model["reasoning"] is False
     assert model["temperature"] is False
     assert "interleaved" not in model
@@ -5489,14 +5509,10 @@ def test_doctor_opencode_json_warns_when_config_model_is_stale(
     assert "OpenCode config points at gemma4-mtplx-optimized-speed" in (
         opencode["stale_model_warning"] or ""
     )
-    assert "mtplx-qwen36-27b-optimized-speed" in (
-        opencode["stale_model_warning"] or ""
-    )
+    assert "mtplx-qwen36-27b-optimized-speed" in (opencode["stale_model_warning"] or "")
 
 
-def test_doctor_pi_json_warns_when_config_model_is_stale(
-    monkeypatch, tmp_path, capsys
-):
+def test_doctor_pi_json_warns_when_config_model_is_stale(monkeypatch, tmp_path, capsys):
     config_path = tmp_path / "models.json"
     config_path.write_text(
         json.dumps(
@@ -5552,9 +5568,7 @@ def test_doctor_pi_json_warns_when_config_model_is_stale(
     assert "Pi config points at gemma4-mtplx-optimized-speed" in (
         pi["stale_model_warning"] or ""
     )
-    assert "mtplx-qwen36-27b-optimized-speed" in (
-        pi["stale_model_warning"] or ""
-    )
+    assert "mtplx-qwen36-27b-optimized-speed" in (pi["stale_model_warning"] or "")
 
 
 def test_doctor_model_ids_match_owner_prefixed_local_cache_alias():
@@ -5721,6 +5735,7 @@ def test_serve_dispatches_packaged_openai_server(monkeypatch, capsys):
         stats_footer=False,
         warmup_tokens=8,
         strict_warmup=True,
+        mtp_batch_numerics="balanced",
     )
 
     try:
@@ -5749,6 +5764,7 @@ def test_serve_dispatches_packaged_openai_server(monkeypatch, capsys):
     # decode is ~4x faster per stream (see MEASUREMENTS).
     assert calls["cmd"][calls["cmd"].index("--scheduler-mode") + 1] == "serial"
     assert calls["cmd"][calls["cmd"].index("--batching-preset") + 1] == "latency"
+    assert calls["cmd"][calls["cmd"].index("--mtp-batch-numerics") + 1] == ("balanced")
     assert calls["cmd"][calls["cmd"].index("--max-response-tokens") + 1] == "512"
     assert calls["cmd"][calls["cmd"].index("--adaptive-policy") + 1] == "expected_value"
     assert (
@@ -6135,9 +6151,7 @@ def test_config_set_show_supports_app_era_runtime_keys(tmp_path, capsys):
 
 
 def test_public_cli_accepts_mtp_batch_scheduler_mode(tmp_path, capsys):
-    serve = build_parser().parse_args(
-        ["serve", "--scheduler-mode", "mtp_batch"]
-    )
+    serve = build_parser().parse_args(["serve", "--scheduler-mode", "mtp_batch"])
     assert serve.scheduler_mode == "mtp_batch"
 
     config_path = tmp_path / "config.toml"
@@ -6469,9 +6483,7 @@ def test_serve_native_ar_only_requires_no_mtp_and_unloads_runtime(
         lambda *_args, **_kwargs: (inspection, None),
     )
 
-    rejected = build_parser().parse_args(
-        ["serve", "--model", str(tmp_path), "--yes"]
-    )
+    rejected = build_parser().parse_args(["serve", "--model", str(tmp_path), "--yes"])
     rejected.dry_run = True
     assert public.cmd_serve_public(rejected) == 2
     assert "rerun with --no-mtp" in capsys.readouterr().out
@@ -7389,7 +7401,9 @@ def test_profiles_command_lists_default_without_mlx(capsys):
 def test_pull_progress_json_emits_ndjson_events(tmp_path, monkeypatch, capsys):
     import mtplx.hf_loader as hf_loader
 
-    def fake_pull_model(model, *, cache_dir, revision, progress_callback, progress_interval_s):
+    def fake_pull_model(
+        model, *, cache_dir, revision, progress_callback, progress_interval_s
+    ):
         assert model == "mtplx/example"
         assert cache_dir == str(tmp_path)
         assert revision is None
@@ -7697,7 +7711,9 @@ def test_sync_hermes_profile_preserves_user_sections(monkeypatch, tmp_path):
         workspace_path=str(tmp_path / "ws"),
     )
     preserved = config_path.read_text(encoding="utf-8")
-    assert "# external memory (issue #131 repro)\nmemory:\n  provider: honcho" in preserved
+    assert (
+        "# external memory (issue #131 repro)\nmemory:\n  provider: honcho" in preserved
+    )
     assert "  max_tokens: 32768" in preserved
 
     # A repeat sync with unchanged inputs must not rewrite the file.

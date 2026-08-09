@@ -88,6 +88,129 @@ def _service(driver):
     )
 
 
+def test_b1_exact_profile_runs_each_sealed_request_through_unchanged_solo_runner():
+    driver = _Driver()
+    lane = SimpleNamespace(
+        numerics_profile="b1-exact",
+        route_id="qwen35b_mtp_batch_b1_exact_serial",
+    )
+    service = MTPBatchGenerationService(
+        SimpleNamespace(runtime=SimpleNamespace(tokenizer=None)),
+        lane=lane,
+        driver=driver,
+        batch_wait_s=0.0,
+        auto_schedule=False,
+    )
+    calls = []
+    jobs = []
+    for index in range(8):
+        expected = {
+            "request_id": f"request-{index}",
+            "tokens": [index, index + 100],
+            "stats": {"mode": "mtp", "server_seed": 100 + index},
+        }
+
+        def solo(job, *, expected=expected):
+            calls.append(job.request_id)
+            return expected
+
+        jobs.append(_job(index, solo_runner=solo))
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    assert driver.widths == []
+    assert calls == [job.request_id for job in jobs]
+    assert [result["tokens"] for result in results] == [
+        [index, index + 100] for index in range(8)
+    ]
+    assert all(result["_mtp_batch_solo"] is True for result in results)
+    snapshot = service.snapshot()
+    assert snapshot["last_route_id"] == "qwen35b_mtp_batch_b1_exact_serial"
+    assert snapshot["solo_runs"] == 8
+    assert snapshot["fixed_width_histogram"] == {}
+
+
+def test_b1_exact_profile_keeps_one_solo_failure_request_local():
+    driver = _Driver()
+    lane = SimpleNamespace(
+        numerics_profile="b1-exact",
+        route_id="qwen35b_mtp_batch_b1_exact_serial",
+    )
+    owner_finalize_calls = []
+    service = MTPBatchGenerationService(
+        SimpleNamespace(runtime=SimpleNamespace(tokenizer=None)),
+        lane=lane,
+        driver=driver,
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda jobs: owner_finalize_calls.append(
+            [job.request_id for job in jobs]
+        ),
+    )
+    jobs = []
+    for index in range(3):
+
+        def solo(job, *, index=index):
+            if index == 1:
+                raise RuntimeError("row-local exact failure")
+            return {
+                "request_id": job.request_id,
+                "tokens": [index],
+                "stats": {"mode": "mtp"},
+            }
+
+        jobs.append(_job(index, solo_runner=solo))
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+
+    assert futures[0].result(timeout=1)["tokens"] == [0]
+    with pytest.raises(RuntimeError, match="row-local exact failure"):
+        futures[1].result(timeout=1)
+    assert futures[2].result(timeout=1)["tokens"] == [2]
+    assert owner_finalize_calls == [["request-1"]]
+    assert driver.widths == []
+
+
+def test_b1_exact_owner_finalize_failure_stops_remaining_serial_rows():
+    driver = _Driver()
+    calls = []
+    service = MTPBatchGenerationService(
+        SimpleNamespace(runtime=SimpleNamespace(tokenizer=None)),
+        lane=SimpleNamespace(
+            numerics_profile="b1-exact",
+            route_id="qwen35b_mtp_batch_b1_exact_serial",
+        ),
+        driver=driver,
+        batch_wait_s=0.0,
+        auto_schedule=False,
+        owner_finalize=lambda _jobs: (_ for _ in ()).throw(
+            RuntimeError("clear exploded")
+        ),
+    )
+    jobs = []
+    for index in range(3):
+
+        def solo(job, *, index=index):
+            calls.append(job.request_id)
+            if index == 0:
+                raise RuntimeError("generation failed")
+            return {"tokens": [index], "stats": {"mode": "mtp"}}
+
+        jobs.append(_job(index, solo_runner=solo))
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+
+    assert calls == ["request-0"]
+    for future in futures:
+        with pytest.raises(RuntimeError, match="owner finalize failed"):
+            future.result(timeout=1)
+    assert "owner finalize failed" in str(service.snapshot()["last_error"])
+
+
 def test_eight_requests_stream_only_their_own_tokens_and_close_once():
     driver = _Driver()
     service = _service(driver)
@@ -97,7 +220,9 @@ def test_eight_requests_stream_only_their_own_tokens_and_close_once():
     assert service.pump_once()
     results = [future.result(timeout=1) for future in futures]
 
-    assert [result["request_id"] for result in results] == [job.request_id for job in jobs]
+    assert [result["request_id"] for result in results] == [
+        job.request_id for job in jobs
+    ]
     for index, (job, result) in enumerate(zip(jobs, results)):
         expected = [index + 10, index + 1010]
         assert job.test_emitted == expected
@@ -175,10 +300,7 @@ def test_cancellation_before_admission_keeps_finalize_ownership_local():
     job = _job(0)
     job.finalize_ownership = ownership
 
-    assert (
-        ownership.claim_cancellation_finalize()
-        == "not_required_before_admission"
-    )
+    assert ownership.claim_cancellation_finalize() == "not_required_before_admission"
     future = service.submit(job)
 
     with pytest.raises(RuntimeError, match="cancelled request-0"):
@@ -227,10 +349,7 @@ def test_cancellation_claim_wins_selection_to_admission_race():
     assert entered_mark.wait(timeout=1)
 
     job.cancel_event.set()
-    assert (
-        ownership.claim_cancellation_finalize()
-        == "not_required_before_admission"
-    )
+    assert ownership.claim_cancellation_finalize() == "not_required_before_admission"
     release_mark.set()
     pump.join(timeout=2)
 
