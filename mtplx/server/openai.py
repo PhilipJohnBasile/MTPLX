@@ -24339,6 +24339,45 @@ def create_app(state: ServerState) -> FastAPI:
                                                 f"{session_id or 'stateless'}"
                                             ),
                                         ).result()
+                                    elif generated.get("_final_state") is None:
+                                        # Batched AR has no generation-final cache
+                                        # state to install. Do not queue this known
+                                        # miss behind newer foreground requests.
+                                        # The helper still classifies tool/history
+                                        # incompatibilities before the unsafe result
+                                        # routes to bounded idle retokenization.
+                                        postcommit = _store_generation_final_history_snapshot(
+                                            state,
+                                            session_id=session_id,
+                                            prompt_ids=prompt_ids,
+                                            generated=generated,
+                                            messages=raw_messages_for_postcommit,
+                                            assistant_content=(
+                                                assistant_history_content
+                                            ),
+                                            assistant_tool_calls=(
+                                                assistant_tool_calls
+                                            ),
+                                            thinking_enabled=thinking_enabled,
+                                            policy_fingerprint=postcommit_policy_fingerprint,
+                                            tool_specs=postcommit_tool_specs,
+                                            keep_live_ref=session_keep_live_ref,
+                                            tool_prompt_mode=postcommit_tool_prompt_mode,
+                                            strip_tool_call_preamble_text=opencode_client,
+                                        )
+                                        generated["stats"][
+                                            "session_postcommit_snapshot"
+                                        ] = postcommit
+                                        queue.put(
+                                            (
+                                                "released",
+                                                {
+                                                    "generated": generated,
+                                                    "postcommit": postcommit,
+                                                },
+                                            )
+                                        )
+                                        return
                                     else:
                                         postcommit = _submit_foreground_model_work(
                                             state,

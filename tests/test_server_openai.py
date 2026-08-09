@@ -2784,6 +2784,13 @@ def test_nonstream_unsafe_mtp_schedules_async_postcommit_in_default_mode(
 def test_streaming_ar_schedules_async_postcommit_in_default_mode(monkeypatch):
     state = _fake_streaming_session_state()
     scheduled: list[dict] = []
+    foreground_batch_keys: list[str | None] = []
+
+    submit_foreground = openai._submit_foreground_model_work
+
+    def capture_foreground_submit(*args, batch_key=None, **kwargs):
+        foreground_batch_keys.append(batch_key)
+        return submit_foreground(*args, batch_key=batch_key, **kwargs)
 
     def fail_retokenized(*_args, **_kwargs):
         raise AssertionError("AR streaming must not retokenize inline by default")
@@ -2818,6 +2825,7 @@ def test_streaming_ar_schedules_async_postcommit_in_default_mode(monkeypatch):
     monkeypatch.setattr(openai, "_store_retokenized_history_snapshot", fail_retokenized)
     monkeypatch.setattr(openai, "_schedule_idle_postcommit_snapshot", fake_schedule)
     monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    monkeypatch.setattr(openai, "_submit_foreground_model_work", capture_foreground_submit)
 
     with TestClient(create_app(state)) as client:
         response = client.post(
@@ -2841,6 +2849,7 @@ def test_streaming_ar_schedules_async_postcommit_in_default_mode(monkeypatch):
     assert '"mode": "async_pending"' in response.text
     assert '"reason": "missing_generation_final_state"' in response.text
     assert '"generation_mode": "ar"' in response.text
+    assert foreground_batch_keys == ["chat.stream"]
 
 
 def test_streaming_ar_honors_explicit_inline_postcommit_mode(monkeypatch):
