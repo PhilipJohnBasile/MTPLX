@@ -13,6 +13,7 @@ import mlx.core as mx
 from mlx_lm.models.cache import ArraysCache
 
 from .attention_context import attention_phase
+from .fast_sampling import MAX_DEVICE_TOP_K_ORDER
 from .graphbank import (
     TensorOffsetKVCache,
     VERIFY_SPEC_KIND_FULL_ATTN,
@@ -111,6 +112,14 @@ def validate_a3b_k1_target_prefix_sampler(sampler: Any) -> None:
         return
     if int(sampler.top_k or 0) <= 0:
         _fail("compiled A3B target-prefix requires a stochastic top-k sampler")
+    if (
+        0.0 < float(sampler.top_p) < 1.0
+        and int(sampler.top_k) > MAX_DEVICE_TOP_K_ORDER
+    ):
+        _fail(
+            "compiled A3B target-prefix requires top_k <= "
+            f"{MAX_DEVICE_TOP_K_ORDER} when top_p < 1"
+        )
 
 
 def validate_a3b_k1_device_draft_request(
@@ -128,6 +137,15 @@ def validate_a3b_k1_device_draft_request(
     frequency_penalty: float,
 ) -> None:
     """Prove once that the installed K1 lane can keep its draft on-device."""
+    if (
+        float(draft_sampler.temperature) > 0.0
+        and 0.0 < float(draft_sampler.top_p) < 1.0
+        and int(draft_sampler.top_k or 0) > MAX_DEVICE_TOP_K_ORDER
+    ):
+        _fail(
+            "compiled A3B device draft requires top_k <= "
+            f"{MAX_DEVICE_TOP_K_ORDER} when top_p < 1"
+        )
     unsupported_sampler = (
         float(draft_sampler.temperature) > 0.0
         and int(draft_sampler.top_k or 0) <= 0

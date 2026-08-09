@@ -567,7 +567,7 @@ def test_lazy_bonus_verify_shortens_full_accept_verify_input(monkeypatch):
         _runtime(model, mtp_enabled=True),
         [0],
         max_tokens=5,
-        sampler=SamplerConfig(temperature=0.6, top_p=0.95, top_k=20),
+        sampler=SamplerConfig(temperature=0.6, top_p=1.0, top_k=1),
         speculative_depth=3,
         mtp_history_policy="committed",
         verify_strategy="batched",

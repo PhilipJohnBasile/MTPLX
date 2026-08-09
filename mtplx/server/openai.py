@@ -65,6 +65,11 @@ from fastapi.responses import (
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from mtplx import progress_heartbeat
+from mtplx.a3b_mtp_batch import (
+    A3B_MTP_BATCH_MAX_CONTEXT_TOKENS,
+    A3BMTPBatchCapacityError,
+    install_a3b_mtp_batch_lane,
+)
 from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from mtplx.attention_context import attention_phase
 from mtplx.cache_state import snapshot_cache
@@ -137,6 +142,11 @@ from mtplx.reasoning_codecs import (
     stream_splitter_for_parser,
 )
 from mtplx.server.dashboard_state import DashboardState, InFlightHandle
+from mtplx.server.mtp_batch import (
+    MTPBatchFinalizeOwnership,
+    MTPBatchGenerationService,
+    MTPBatchJob,
+)
 from mtplx.server.omlx_bridge import (
     ToolCallStreamFilter as OMLXToolCallStreamFilter,
     extract_thinking as omlx_extract_thinking,
@@ -343,6 +353,10 @@ _REASONING_CONTROL_TAG_RE = re.compile(
 
 class _StreamCancelled(RuntimeError):
     """Raised inside the generation worker after a request is cancelled."""
+
+
+class MTPBatchRequestError(ValueError):
+    """The request cannot execute on the installed fixed MTP batch lane."""
 
 
 class _StopSequenceHit(_StreamCancelled):
@@ -575,6 +589,18 @@ def _server_runtime_env_overrides(
         .lower()
         .replace("-", "_")
     )
+    scheduler_mode = getattr(args, "scheduler_mode", "serial")
+    scheduler_mode = str(getattr(scheduler_mode, "value", scheduler_mode))
+    if scheduler_mode == SchedulerMode.MTP_BATCH.value:
+        overrides.update(
+            {
+                "MTPLX_A3B_WHOLE_MOE_FUSION": "0",
+                "MTPLX_COMPILED_TARGET_PREFIX": "1",
+                "MTPLX_FUSE_GDN_POST_CONV": "1",
+                "MTPLX_QWEN_COMBINE_TAIL": "1",
+                "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
+            }
+        )
     if (
         generation_mode == "mtp"
         and verify_strategy not in VERIFY_SNAPSHOT_OPTIONAL_STRATEGIES
@@ -1652,8 +1678,41 @@ def _select_backend_context_window(
     )
 
 
+def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
+    """Reject an invalid fixed-width MTP service before model construction."""
+
+    if str(getattr(args, "scheduler_mode", "serial")) != SchedulerMode.MTP_BATCH:
+        return
+    required = (
+        (str(getattr(args, "generation_mode", "")) == "mtp", "generation_mode=mtp"),
+        (bool(getattr(args, "load_mtp", False)), "load_mtp=true"),
+        (int(getattr(args, "depth", 0) or 0) == 1, "depth=1"),
+        (
+            int(getattr(args, "max_active_requests", 0) or 0) == 8,
+            "max_active_requests=8",
+        ),
+        (
+            int(getattr(args, "decode_batch_max", 0) or 0) == 8,
+            "decode_batch_max=8",
+        ),
+        (
+            int(getattr(args, "context_window", 0) or 0)
+            == A3B_MTP_BATCH_MAX_CONTEXT_TOKENS,
+            f"context_window={A3B_MTP_BATCH_MAX_CONTEXT_TOKENS}",
+        ),
+        (
+            str(getattr(args, "verify_core", "")).strip().lower() == "stock",
+            "verify_core=stock",
+        ),
+    )
+    for valid, contract in required:
+        if not valid:
+            raise RuntimeError(f"mtp_batch requires {contract}")
+
+
 class ServerState:
     def __init__(self, args: argparse.Namespace) -> None:
+        _validate_mtp_batch_settings(args)
         self.args = args
         try:
             args.paged_kv_quantization = normalize_paged_kv_quantization(
@@ -1851,6 +1910,18 @@ class ServerState:
             )
         else:
             self.draft_head_identity = None
+        scheduler_config = _scheduler_config_from_args(args)
+        self.mtp_batch_lane = None
+        self.mtp_batch_omit_speculative_bonus = False
+        if scheduler_config.mode == SchedulerMode.MTP_BATCH:
+            self.mtp_batch_omit_speculative_bonus = str(
+                os.environ.get("MTPLX_OMIT_SPECULATIVE_BONUS", "")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            self.mtp_batch_lane = self.model_scheduler.submit_foreground(
+                install_a3b_mtp_batch_lane,
+                self.runtime,
+                batch_key="startup.mtp_batch_lane",
+            ).result()
         self.chat_template_profile = _normalize_chat_template_profile(
             getattr(args, "chat_template_profile", None)
         )
@@ -1901,6 +1972,16 @@ class ServerState:
             model_max=int(self.model_context_window_max),
             requested=requested_context_window,
         )
+        if (
+            scheduler_config.mode == SchedulerMode.MTP_BATCH
+            and self.mtp_batch_lane is not None
+            and int(self.context_window)
+            > int(self.mtp_batch_lane.geometry.max_context_tokens)
+        ):
+            raise RuntimeError(
+                "mtp_batch context window exceeds its installed fixed-width "
+                f"capacity of {self.mtp_batch_lane.geometry.max_context_tokens} tokens"
+            )
         _startup_line(f"[5/6] Context window: {self.context_window} tokens")
         # The paged KV pool clamps geometric growth to this window (#150);
         # env is the plumbing because cache_state has no server handle.
@@ -1980,6 +2061,20 @@ class ServerState:
         # surface as user requests.
         self.dashboard = DashboardState()
         self.ar_batch_service = _BatchedARGenerationService(self)
+        self.mtp_batch_service = (
+            MTPBatchGenerationService(
+                self,
+                lane=self.mtp_batch_lane,
+                owner_finalize=lambda jobs: _finalize_mtp_batch_cohort_owner(
+                    self, jobs
+                ),
+                batch_wait_s=(
+                    float(scheduler_config.to_dict()["batch_wait_ms"]) / 1000.0
+                ),
+            )
+            if self.mtp_batch_lane is not None
+            else None
+        )
         self.warmup_status = _run_startup_warmup(self)
 
     def _smart_fan_activity_probe(self) -> bool:
@@ -2854,10 +2949,9 @@ class _BatchedARGenerationService:
                             self._active.pop(uid, None)
                         try:
                             generator.remove([uid])
-                        except BaseException:
-                            pass
-                        if not job.future.done():
-                            job.future.set_exception(self._cancelled_error(job))
+                        finally:
+                            if not job.future.done():
+                                job.future.set_exception(self._cancelled_error(job))
                         continue
                     job.max_batch_size_observed = max(
                         job.max_batch_size_observed,
@@ -2910,11 +3004,10 @@ class _BatchedARGenerationService:
             return
         try:
             generator.remove([uid for uid, _job in cancelled])
-        except BaseException:
-            pass
-        for _uid, job in cancelled:
-            if not job.future.done():
-                job.future.set_exception(self._cancelled_error(job))
+        finally:
+            for _uid, job in cancelled:
+                if not job.future.done():
+                    job.future.set_exception(self._cancelled_error(job))
 
 
 def _submit_idle_postcommit_model_work(
@@ -12923,6 +13016,15 @@ def _mtplx_apply_settings_payload(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             if key == "depth":
+                if (
+                    _scheduler_config_from_args(state.args).mode
+                    == SchedulerMode.MTP_BATCH
+                    and int(value) != 1
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="mtp_batch has a fixed installed depth of 1",
+                    )
                 minimum = int(backend.draft_semantics.minimum)
                 maximum = int(backend.draft_semantics.maximum)
                 if not minimum <= int(value) <= maximum:
@@ -13173,6 +13275,8 @@ def _scheduler_config_from_args(args: Any) -> BatchSchedulerConfig:
 
 
 def _scheduler_policy_label(config: BatchSchedulerConfig) -> str:
+    if config.mode == SchedulerMode.MTP_BATCH:
+        return "fixed_mtp_batch_width_8"
     if (
         config.mode
         in {SchedulerMode.AR_BATCH, SchedulerMode.MTP_COHORT_EXPERIMENTAL}
@@ -13204,6 +13308,13 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             ar_batch_stats = dict(ar_batch_service.snapshot())
         except Exception as exc:
             ar_batch_stats = {"error": str(exc)}
+    mtp_batch_stats: dict[str, Any] = {}
+    mtp_batch_service = getattr(state, "mtp_batch_service", None)
+    if mtp_batch_service is not None and hasattr(mtp_batch_service, "snapshot"):
+        try:
+            mtp_batch_stats = dict(mtp_batch_service.snapshot())
+        except Exception as exc:
+            mtp_batch_stats = {"error": str(exc)}
     try:
         active_requests = int(state.dashboard.in_flight.count())
     except Exception:
@@ -13217,7 +13328,27 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         getattr(getattr(state, "runtime", None), "mtp_enabled", False)
         and str(getattr(state.args, "generation_mode", "mtp")) == "mtp"
     )
-    if active_requests <= 1 and mtp_available:
+    mtp_batch_has_cohort = bool(
+        config.mode == SchedulerMode.MTP_BATCH
+        and (
+            int(mtp_batch_stats.get("active") or 0) > 1
+            or int(mtp_batch_stats.get("last_real_width") or 0) > 1
+        )
+    )
+    if mtp_batch_has_cohort and mtp_available:
+        active_lane = "mtp_batch_width_8"
+        mtp_disabled_reason = None
+    elif config.mode == SchedulerMode.MTP_BATCH and mtp_available:
+        active_lane = (
+            "mtp_batch_gathering"
+            if active_requests > 1 or int(mtp_batch_stats.get("pending") or 0) > 1
+            else "solo_mtp"
+        )
+        mtp_disabled_reason = None
+    elif config.mode == SchedulerMode.SERIAL and mtp_available:
+        active_lane = "solo_mtp"
+        mtp_disabled_reason = None
+    elif active_requests <= 1 and mtp_available:
         active_lane = "solo_mtp"
         mtp_disabled_reason = None
     elif active_requests > 1 and mtp_available:
@@ -13234,6 +13365,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
     else:
         active_lane = "serial_ar" if not mtp_available else "serial_mtp"
         mtp_disabled_reason = None if mtp_available else "generation_mode_ar"
+    telemetry = dict(scheduler_stats)
+    if config.mode == SchedulerMode.MTP_BATCH:
+        telemetry.update(mtp_batch_stats)
     return {
         "config": config.to_dict(),
         "mode": config.mode.value,
@@ -13243,7 +13377,7 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         "active_requests": active_requests,
         "mtp_available": mtp_available,
         "mtp_disabled_reason": mtp_disabled_reason,
-        "path": "path_a",
+        "path": "mtp_batch" if config.mode == SchedulerMode.MTP_BATCH else "path_a",
         "path_a": {
             "solo_mtp_protected": True,
             "concurrent_strategy": "cooperative_ar_batch",
@@ -13253,8 +13387,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             "experimental_mtp_cohorts": bool(config.experimental_mtp_cohorts),
             "default_enabled": False,
         },
-        "telemetry": scheduler_stats,
+        "telemetry": telemetry,
         "ar_batch": ar_batch_stats,
+        "mtp_batch": mtp_batch_stats,
     }
 
 
@@ -14364,6 +14499,13 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "queue_wait_s",
     "active_batch_size",
     "ar_batch_max_observed",
+    "mtp_batch_real_width",
+    "mtp_batch_fixed_width",
+    "mtp_batch_route_id",
+    "target_verify_cycles",
+    "verify_timing_scope",
+    "mlx_finalize_scope",
+    "mtp_batch_session_cache_bypass",
     "mtp_disabled_reason",
     "mtp_depth",
     "speculative_depth",
@@ -14599,6 +14741,7 @@ def _record_stream_cancellation_metric(
     reason: str,
     request_observability: dict[str, Any],
     client_disconnected: bool,
+    mlx_finalize_scope: str | None = None,
 ) -> None:
     elapsed_s = max(0.0, time.perf_counter() - stream_started_s)
     streamed_tokens = int(streamed_completion_tokens)
@@ -14628,14 +14771,17 @@ def _record_stream_cancellation_metric(
         "session_cache_hit": False,
         "cache_miss_reason": None,
     }
-    cleanup = _auto_clear_mlx_cache_after_completed_request(
-        state,
-        session_id=session_id,
-        request_observability=request_observability,
-    )
-    if cleanup is not None:
-        envelope["mlx_cache_cleanup"] = cleanup
-    envelope.update(_mlx_allocator_public_stats())
+    if mlx_finalize_scope is not None:
+        envelope["mlx_finalize_scope"] = str(mlx_finalize_scope)
+    else:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=session_id,
+            request_observability=request_observability,
+        )
+        if cleanup is not None:
+            envelope["mlx_cache_cleanup"] = cleanup
+        envelope.update(_mlx_allocator_public_stats())
     envelope.update(request_observability)
     _record_request_metrics(state, envelope)
     state.last_request_at = time.time()
@@ -16422,6 +16568,11 @@ def _use_live_ar_batch(
     return True, fallback_reason
 
 
+def _use_live_mtp_batch(state: ServerState, *, effective_mode: str) -> bool:
+    config = _scheduler_config_from_args(state.args)
+    return config.mode == SchedulerMode.MTP_BATCH and effective_mode == "mtp"
+
+
 def _ar_batch_history_bypass_reason(
     request_observability: dict[str, Any] | None,
 ) -> str | None:
@@ -16478,11 +16629,16 @@ def _finalize_batched_ar_generation(
         completion_tokens=completion_tokens,
         elapsed_s=elapsed_s,
     )
+    request_elapsed_s = float(
+        generated.get("request_elapsed_s")
+        or stats.get("request_elapsed_s")
+        or elapsed_s
+    )
     envelope = _metrics_envelope(
         stats=stats,
         prompt_tokens=len(prompt_ids),
         completion_tokens=completion_tokens,
-        request_elapsed_s=elapsed_s,
+        request_elapsed_s=request_elapsed_s,
         token_times=token_times,
         request_started_s=float(stats.get("request_started_s") or time.perf_counter()),
         lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
@@ -16561,9 +16717,9 @@ def _finalize_batched_ar_generation(
         envelope["cache_miss_reason"] = None
     stats.update(envelope)
     stats.update(_generation_truth_stats(state, "ar"))
-    stats["server_elapsed_s"] = elapsed_s
+    stats["server_elapsed_s"] = request_elapsed_s
     stats["server_tok_s"] = (
-        completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
+        completion_tokens / request_elapsed_s if request_elapsed_s > 0 else 0.0
     )
     state.last_metrics.append(dict(envelope))
     state.last_metrics = state.last_metrics[-100:]
@@ -16582,7 +16738,7 @@ def _finalize_batched_ar_generation(
                     "scheduler_lane": "ar_batch",
                     "prompt_tokens": generated.get("prompt_tokens"),
                     "completion_tokens": completion_tokens,
-                    "elapsed_s": round(elapsed_s, 6),
+                    "elapsed_s": round(request_elapsed_s, 6),
                     "tok_s": round(float(generated.get("tok_s") or 0.0), 6),
                     "end_to_end_tok_s": round(float(generated["end_to_end_tok_s"]), 6),
                     "seed": stats.get("server_seed"),
@@ -16605,6 +16761,381 @@ def _finalize_batched_ar_generation(
             },
         )
     return generated
+
+
+def _finalize_mtp_batch_generation(
+    state: ServerState,
+    prompt_ids: list[int],
+    generated: dict[str, Any],
+    *,
+    session_id: str | None,
+    request_observability: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish one request from a completed multi-request MTP cohort."""
+
+    defer_mlx_finalize = bool(
+        generated.pop("_mtp_batch_defer_mlx_finalize", False)
+    )
+    raw_stats = dict(generated.get("stats") or {})
+    generation_elapsed_s = float(generated.get("elapsed_s") or 0.0)
+    carried_request_elapsed_s = float(
+        generated.get("request_elapsed_s")
+        or raw_stats.get("request_elapsed_s")
+        or generation_elapsed_s
+    )
+    request_started_value = raw_stats.get("request_started_s")
+    request_started_s = (
+        float(request_started_value)
+        if request_started_value is not None
+        else time.perf_counter() - carried_request_elapsed_s
+    )
+    if bool(generated.pop("_mtp_batch_decode_on_request", False)):
+        stop_token_ids = {
+            int(value)
+            for value in generated.pop("_mtp_batch_stop_token_ids", [])
+        }
+        decode = getattr(state.runtime.tokenizer, "decode", None)
+        generated["text"] = (
+            str(
+                decode(
+                    [
+                        int(token)
+                        for token in generated.get("tokens") or []
+                        if int(token) not in stop_token_ids
+                    ]
+                )
+            )
+            if callable(decode)
+            else ""
+        )
+    prefill_callback = generated.pop("_mtp_batch_prefill_callback", None)
+    prefill_completion = generated.pop("_mtp_batch_prefill_completion", None)
+    if callable(prefill_callback) and isinstance(prefill_completion, dict):
+        try:
+            prefill_callback(dict(prefill_completion))
+        except Exception:
+            pass
+    token_times = [float(value) for value in generated.pop("_token_times", [])]
+    generation_limits = dict(generated.pop("_generation_limits", {}) or {})
+    completion_tokens = _effective_completion_tokens(
+        generated_tokens=list(generated.get("tokens") or []),
+        streamed_token_times=token_times,
+    )
+    request_elapsed_s = max(
+        carried_request_elapsed_s,
+        time.perf_counter() - request_started_s,
+    )
+    generated["request_elapsed_s"] = request_elapsed_s
+    raw_stats["request_elapsed_s"] = request_elapsed_s
+    raw_stats.setdefault("elapsed_s", generation_elapsed_s)
+    stats = _repair_streamed_generation_stats(
+        raw_stats,
+        completion_tokens=completion_tokens,
+        elapsed_s=generation_elapsed_s,
+    )
+    envelope = _metrics_envelope(
+        stats=stats,
+        prompt_tokens=len(prompt_ids),
+        completion_tokens=completion_tokens,
+        request_elapsed_s=request_elapsed_s,
+        token_times=token_times,
+        request_started_s=request_started_s,
+        lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
+        session_id=session_id,
+        session_cache_hit=False,
+        cache_miss_reason="mtp_batch_cold_prefill",
+        session_restore_mode="mtp_batch_cold",
+        mtp_depth=1,
+        generation_limits=generation_limits,
+    )
+    envelope.update(
+        {
+            key: stats[key]
+            for key in (
+                "scheduler_lane",
+                "scheduler_mode",
+                "scheduler_policy",
+                "request_id",
+                "queue_wait_s",
+                "active_batch_size",
+                "mtp_batch_real_width",
+                "mtp_batch_fixed_width",
+                "mtp_batch_route_id",
+                "target_verify_cycles",
+                "mtp_disabled_reason",
+                "server_seed",
+            )
+            if key in stats
+        }
+    )
+    envelope["generation_mode"] = "mtp"
+    envelope["requested_mtp_depth"] = 1
+    envelope["requested_speculative_depth"] = 1
+    envelope["speculative_depth"] = 1
+    envelope["long_context_mtp_depth_policy"] = {}
+    # The enabled lane carries no per-cycle timers: adding them would perturb
+    # the measured hot path. Verify engagement is the physical cycle count;
+    # timing is collected by the external Metal/profile gate.
+    for key in (
+        "verify_time_s",
+        "verify_forward_time_s",
+        "verify_eval_time_s",
+        "verify_logits_eval_time_s",
+        "verify_hidden_eval_time_s",
+        "verify_joint_eval_time_s",
+        "verify_target_distribution_time_s",
+    ):
+        envelope.pop(key, None)
+    envelope["verify_timing_scope"] = "external_profile_only"
+    if request_observability:
+        envelope.update(request_observability)
+    if defer_mlx_finalize:
+        envelope["mlx_finalize_scope"] = "cohort_owner_after_decode"
+    else:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=session_id,
+            request_observability=request_observability,
+        )
+        if cleanup is not None:
+            envelope["mlx_cache_cleanup"] = cleanup
+        envelope.update(_mlx_allocator_public_stats())
+    stats.update(envelope)
+    stats.update(_generation_truth_stats(state, "mtp"))
+    stats["server_elapsed_s"] = request_elapsed_s
+    stats["server_tok_s"] = (
+        completion_tokens / request_elapsed_s if request_elapsed_s > 0 else 0.0
+    )
+    state.last_metrics.append(dict(envelope))
+    state.last_metrics = state.last_metrics[-100:]
+    state.last_request_at = time.time()
+    state.requests_completed += 1
+    _dashboard_record_completion(state, envelope=envelope, stats=stats)
+    generated["stats"] = _json_safe(stats)
+    generated["completion_tokens"] = completion_tokens
+    generated["tok_s"] = stats.get("decode_tok_s") or generated.get("tok_s") or 0.0
+    generated["end_to_end_tok_s"] = stats["server_tok_s"]
+    if not bool((request_observability or {}).get("warmup")) and not _server_console_enabled(state):
+        _safe_stdout_print(
+            json.dumps(
+                {
+                    "event": "mtplx_openai_generation",
+                    "scheduler_lane": "mtp_batch",
+                    "prompt_tokens": len(prompt_ids),
+                    "completion_tokens": completion_tokens,
+                    "elapsed_s": round(request_elapsed_s, 6),
+                    "tok_s": round(float(generated.get("tok_s") or 0.0), 6),
+                    "end_to_end_tok_s": round(float(generated["end_to_end_tok_s"]), 6),
+                    "seed": stats.get("server_seed"),
+                    "mtp_batch_real_width": stats.get("mtp_batch_real_width"),
+                    "text_preview": str(generated.get("text") or "")[:120],
+                },
+                ensure_ascii=False,
+            )
+        )
+    if request_capture.capture_dir():
+        request_capture.capture_outcome(
+            (request_observability or {}).get("request_id"),
+            {
+                "scheduler_lane": "mtp_batch",
+                "completion_tokens": completion_tokens,
+                "finish_reason": generated.get("finish_reason"),
+                "resolved_seed": stats.get("server_seed"),
+                "tok_s": round(float(generated.get("tok_s") or 0.0), 3),
+                **request_capture.clip_text_head_tail(generated.get("text") or ""),
+            },
+        )
+    return generated
+
+
+def _claim_mtp_batch_cancellation_finalize(
+    *,
+    route_selected: bool,
+    ownership: MTPBatchFinalizeOwnership,
+) -> str | None:
+    if not route_selected:
+        return None
+    return ownership.claim_cancellation_finalize()
+
+
+def _finalize_mtp_batch_cohort_owner(
+    state: ServerState,
+    jobs: list[MTPBatchJob],
+) -> dict[str, Any]:
+    """Run MLX completion work after the fixed cohort leaves model execution."""
+
+    receipt: dict[str, Any] = {
+        "mlx_finalize_scope": "cohort_owner_after_decode",
+    }
+    for job in jobs:
+        cleanup = _auto_clear_mlx_cache_after_completed_request(
+            state,
+            session_id=job.session_id,
+            request_observability=job.request_observability,
+        )
+        if cleanup is not None:
+            receipt["mlx_cache_cleanup"] = cleanup
+            break
+    receipt.update(_mlx_allocator_public_stats())
+    return receipt
+
+
+def _validate_mtp_batch_request_contract(
+    state: ServerState,
+    prompt_ids: list[int],
+    *,
+    response_max: int,
+    constraint_spec: Any | None,
+    vision_splice: Any | None,
+    background_request: bool,
+    depth: int | None,
+    resolved_mtp_depth: int | None,
+) -> None:
+    if constraint_spec is not None:
+        raise MTPBatchRequestError("mtp_batch does not support response_format")
+    if vision_splice is not None:
+        raise MTPBatchRequestError("mtp_batch does not support vision_splice")
+    if background_request:
+        raise MTPBatchRequestError("mtp_batch does not support background_request")
+    for field, value in (
+        ("depth", depth),
+        ("resolved_mtp_depth", resolved_mtp_depth),
+    ):
+        if value is not None and int(value) != 1:
+            raise MTPBatchRequestError(f"mtp_batch requires {field}=1")
+    service = getattr(state, "mtp_batch_service", None)
+    lane = getattr(state, "mtp_batch_lane", None)
+    if service is None or lane is None:
+        raise MTPBatchRequestError(
+            "mtp_batch service was not installed at construction"
+        )
+    if len(prompt_ids) + int(response_max) > int(
+        lane.geometry.max_context_tokens
+    ):
+        raise A3BMTPBatchCapacityError(
+            "mtp_batch requires prompt_tokens + max_tokens <= "
+            f"{lane.geometry.max_context_tokens}"
+        )
+
+
+def _run_mtp_batch_generation_dispatched(
+    state: ServerState,
+    prompt_ids: list[int],
+    *,
+    response_id: str | None,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    service = getattr(state, "mtp_batch_service", None)
+    lane = getattr(state, "mtp_batch_lane", None)
+    if service is None or lane is None:
+        raise MTPBatchRequestError(
+            "mtp_batch service was not installed at construction"
+        )
+    response_max, sampler, generation_limits = _generation_params(
+        state,
+        prompt_token_count=len(prompt_ids),
+        max_tokens=kwargs.get("max_tokens"),
+        temperature=kwargs.get("temperature"),
+        top_p=kwargs.get("top_p"),
+        top_k=kwargs.get("top_k"),
+        presence_penalty=kwargs.get("presence_penalty"),
+        frequency_penalty=kwargs.get("frequency_penalty"),
+    )
+    _validate_mtp_batch_request_contract(
+        state,
+        prompt_ids,
+        response_max=response_max,
+        constraint_spec=kwargs.get("constraint_spec"),
+        vision_splice=kwargs.get("vision_splice"),
+        background_request=bool(kwargs.get("background_request")),
+        depth=kwargs.get("depth"),
+        resolved_mtp_depth=kwargs.get("resolved_mtp_depth"),
+    )
+    generation_seed, _seed_is_explicit = _resolve_seed(state, kwargs.get("seed"))
+    request_observability = dict(kwargs.get("request_observability") or {})
+    solo_kwargs = dict(kwargs)
+    finalize_ownership = solo_kwargs.pop(
+        "mtp_batch_finalize_ownership", MTPBatchFinalizeOwnership()
+    )
+    solo_kwargs["seed"] = generation_seed
+    solo_kwargs["request_observability"] = dict(request_observability)
+    request_observability.update(
+        {
+            "scheduler_lane": "mtp_batch",
+            "scheduler_mode": "mtp_batch",
+            "scheduler_policy": "fixed_mtp_batch_width_8",
+            "mtp_disabled_reason": None,
+            "mtp_batch_session_cache_bypass": kwargs.get("session_bank") is not None,
+        }
+    )
+    explicit_draft_sampler = kwargs.get("draft_sampler") is not None
+    draft_sampler = _couple_draft_sampler_to_greedy_target(
+        kwargs.get("draft_sampler")
+        if explicit_draft_sampler
+        else getattr(state, "draft_sampler", None),
+        explicit_draft_sampler=explicit_draft_sampler,
+        target_temperature=kwargs.get("temperature"),
+        request_observability=request_observability,
+    )
+    if draft_sampler is None:
+        draft_sampler = sampler
+    cancel_event = kwargs.get("cancel_event") or Event()
+    omit_bonus = bool(getattr(state, "mtp_batch_omit_speculative_bonus", False))
+    job = MTPBatchJob(
+        request_id=response_id or f"mtpbatch-{uuid.uuid4().hex}",
+        prompt_ids=prompt_ids,
+        max_tokens=response_max,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        seed=generation_seed,
+        stop_token_ids=_default_stop_tokens(state.runtime.tokenizer),
+        token_callback=kwargs.get("token_callback"),
+        prefill_callback=kwargs.get("prefill_callback"),
+        compatibility_key=(
+            str(getattr(lane, "route_id", "")),
+            omit_bonus,
+            "cold_full_prompt",
+        ),
+        generation_limits=generation_limits,
+        solo_runner=lambda _job: _run_generation(state, prompt_ids, **solo_kwargs),
+        cancel_error=lambda item: _StreamCancelled(
+            f"request {item.request_id} cancelled"
+        ),
+        cancel_event=cancel_event,
+        finalize_ownership=finalize_ownership,
+        request_observability=request_observability,
+        omit_speculative_bonus=omit_bonus,
+        session_id=kwargs.get("session_id"),
+    )
+    smart_fan_lease = _begin_smart_fan_request(
+        state,
+        request_id=_smart_fan_request_id(job.request_id, "mtpbatch"),
+        request_observability=request_observability,
+    )
+    state.begin_foreground()
+    try:
+        future = service.submit(job)
+        scheduler = getattr(state, "model_scheduler", None)
+        if (
+            scheduler is not None
+            and hasattr(scheduler, "is_owner_thread")
+            and scheduler.is_owner_thread()
+            and hasattr(service, "pump_once")
+        ):
+            service.pump_once()
+        generated = future.result()
+    finally:
+        state.end_foreground()
+        _end_smart_fan_request(state, smart_fan_lease)
+    if bool(generated.pop("_mtp_batch_solo", False)):
+        return generated
+    return _finalize_mtp_batch_generation(
+        state,
+        prompt_ids,
+        generated,
+        session_id=kwargs.get("session_id"),
+        request_observability=request_observability,
+    )
 
 
 def _smart_fan_request_id(response_id: str | None, fallback_prefix: str) -> str:
@@ -16759,6 +17290,13 @@ def _run_generation_dispatched(
                     if isinstance(v, (str, int, float, bool))
                 },
             },
+        )
+    if _use_live_mtp_batch(state, effective_mode=effective_mode):
+        return _run_mtp_batch_generation_dispatched(
+            state,
+            prompt_ids,
+            response_id=response_id,
+            kwargs=kwargs,
         )
     history_bypass_reason = _ar_batch_history_bypass_reason(
         request_observability_for_lane
@@ -20897,6 +21435,9 @@ def create_app(state: ServerState) -> FastAPI:
                 pass
             for task in bg_tasks:
                 task.cancel()
+            mtp_batch_service = getattr(state, "mtp_batch_service", None)
+            if mtp_batch_service is not None:
+                mtp_batch_service.shutdown()
             scheduler = getattr(state, "model_scheduler", None)
             if scheduler is not None:
                 scheduler.shutdown(wait=False, cancel_futures=True)
@@ -22690,6 +23231,10 @@ def create_app(state: ServerState) -> FastAPI:
             request,
             allow_client_controls=client_controls_allowed,
         )
+        defer_mtp_batch_mlx_finalize = _use_live_mtp_batch(
+            state, effective_mode=request_generation_mode
+        )
+        mtp_batch_finalize_ownership = MTPBatchFinalizeOwnership()
         try:
             constraint_spec = constraint_spec_from_response_format(
                 request.response_format,
@@ -22811,6 +23356,25 @@ def create_app(state: ServerState) -> FastAPI:
                 prompt_tokens=len(prompt_ids),
             )
         )
+        if defer_mtp_batch_mlx_finalize:
+            response_max, _sampler, _generation_limits = _generation_params(
+                state,
+                prompt_token_count=len(prompt_ids),
+                max_tokens=request_max_tokens,
+                temperature=None,
+                top_p=None,
+                top_k=None,
+            )
+            _validate_mtp_batch_request_contract(
+                state,
+                prompt_ids,
+                response_max=response_max,
+                constraint_spec=constraint_spec,
+                vision_splice=vision_splice,
+                background_request=background,
+                depth=request_depth,
+                resolved_mtp_depth=effective_request_depth,
+            )
         current_system_hash = system_prompt_hash(messages_for_generation)
         if current_system_hash is not None and not background:
             state.main_system_prompt_hash = current_system_hash
@@ -23425,6 +23989,7 @@ def create_app(state: ServerState) -> FastAPI:
                         token_callback=_nonstream_on_tokens,
                         prefill_callback=_nonstream_on_prefill,
                         cancel_event=nonstream_cancel_event,
+                        mtp_batch_finalize_ownership=mtp_batch_finalize_ownership,
                         streaming_response=False,
                     )
                 )
@@ -23463,6 +24028,7 @@ def create_app(state: ServerState) -> FastAPI:
                     token_callback=_nonstream_on_tokens,
                     prefill_callback=_nonstream_on_prefill,
                     cancel_event=nonstream_cancel_event,
+                    mtp_batch_finalize_ownership=mtp_batch_finalize_ownership,
                     streaming_response=False,
                 )
                 generated_result = attach_response_observability(generated_result)
@@ -24541,6 +25107,9 @@ def create_app(state: ServerState) -> FastAPI:
                                 request_observability=request_observability,
                                 prefill_callback=on_prefill,
                                 cancel_event=cancel_event,
+                                mtp_batch_finalize_ownership=(
+                                    mtp_batch_finalize_ownership
+                                ),
                             )
                             generated = maybe_retry_degenerate_read_only_inspection(
                                 generated
@@ -24592,6 +25161,9 @@ def create_app(state: ServerState) -> FastAPI:
                                     request_observability=request_observability,
                                     prefill_callback=on_prefill,
                                     cancel_event=cancel_event,
+                                    mtp_batch_finalize_ownership=(
+                                        mtp_batch_finalize_ownership
+                                    ),
                                 )
                                 generated = maybe_retry_degenerate_read_only_inspection(
                                     generated
@@ -24651,6 +25223,45 @@ def create_app(state: ServerState) -> FastAPI:
                                                 f"{session_id or 'stateless'}"
                                             ),
                                         ).result()
+                                    elif generated.get("_final_state") is None:
+                                        # Batched AR has no generation-final cache
+                                        # state to install. Do not queue this known
+                                        # miss behind newer foreground requests.
+                                        # The helper still classifies tool/history
+                                        # incompatibilities before the unsafe result
+                                        # routes to bounded idle retokenization.
+                                        postcommit = _store_generation_final_history_snapshot(
+                                            state,
+                                            session_id=session_id,
+                                            prompt_ids=prompt_ids,
+                                            generated=generated,
+                                            messages=raw_messages_for_postcommit,
+                                            assistant_content=(
+                                                assistant_history_content
+                                            ),
+                                            assistant_tool_calls=(
+                                                assistant_tool_calls
+                                            ),
+                                            thinking_enabled=thinking_enabled,
+                                            policy_fingerprint=postcommit_policy_fingerprint,
+                                            tool_specs=postcommit_tool_specs,
+                                            keep_live_ref=session_keep_live_ref,
+                                            tool_prompt_mode=postcommit_tool_prompt_mode,
+                                            strip_tool_call_preamble_text=opencode_client,
+                                        )
+                                        generated["stats"][
+                                            "session_postcommit_snapshot"
+                                        ] = postcommit
+                                        queue.put(
+                                            (
+                                                "released",
+                                                {
+                                                    "generated": generated,
+                                                    "postcommit": postcommit,
+                                                },
+                                            )
+                                        )
+                                        return
                                     else:
                                         postcommit = _submit_foreground_model_work(
                                             state,
@@ -26052,6 +26663,14 @@ def create_app(state: ServerState) -> FastAPI:
                                 reason=nonlocal_cancel_reason,
                                 request_observability=request_observability,
                                 client_disconnected=stream_cancelled_by_client,
+                                mlx_finalize_scope=(
+                                    _claim_mtp_batch_cancellation_finalize(
+                                        route_selected=(
+                                            defer_mtp_batch_mlx_finalize
+                                        ),
+                                        ownership=mtp_batch_finalize_ownership,
+                                    )
+                                ),
                             )
                             cancelled_metric_recorded = True
                     state.dashboard.in_flight.deregister(response_id)
@@ -26191,6 +26810,10 @@ def create_app(state: ServerState) -> FastAPI:
                 reason=nonstream_cancel_reason,
                 request_observability=request_observability,
                 client_disconnected=nonstream_client_disconnected,
+                mlx_finalize_scope=_claim_mtp_batch_cancellation_finalize(
+                    route_selected=defer_mtp_batch_mlx_finalize,
+                    ownership=mtp_batch_finalize_ownership,
+                ),
             )
             return JSONResponse(
                 status_code=499,
@@ -26968,6 +27591,34 @@ def create_app(state: ServerState) -> FastAPI:
                 status_code=422,
                 code="request_validation_error",
                 param=param,
+            ),
+        )
+
+    @app.exception_handler(MTPBatchRequestError)
+    async def mtp_batch_request_exception_handler(
+        _request: Request, exc: MTPBatchRequestError
+    ) -> JSONResponse:
+        _record_tool_parse_event(state, event="openai_error_response")
+        return JSONResponse(
+            status_code=400,
+            content=_openai_error_content(
+                str(exc),
+                status_code=400,
+                code="mtp_batch_request_error",
+            ),
+        )
+
+    @app.exception_handler(A3BMTPBatchCapacityError)
+    async def mtp_batch_capacity_exception_handler(
+        _request: Request, exc: A3BMTPBatchCapacityError
+    ) -> JSONResponse:
+        _record_tool_parse_event(state, event="openai_error_response")
+        return JSONResponse(
+            status_code=400,
+            content=_openai_error_content(
+                str(exc),
+                status_code=400,
+                code="mtp_batch_capacity_error",
             ),
         )
 

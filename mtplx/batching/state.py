@@ -21,6 +21,7 @@ class SchedulerMode(StrEnum):
     SERIAL = "serial"
     COOPERATIVE = "cooperative"
     AR_BATCH = "ar_batch"
+    MTP_BATCH = "mtp_batch"
     MTP_COHORT_EXPERIMENTAL = "mtp_cohort_experimental"
 
 

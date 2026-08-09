@@ -64,6 +64,7 @@ class A3BGDNPostconvFactory:
     m1_implementations: tuple[Callable[..., Any], ...]
     m2_implementations: tuple[Callable[..., Any], ...]
     m3_implementations: tuple[Callable[..., Any], ...] = ()
+    b8_t2_implementations: tuple[Callable[..., Any], ...] = ()
 
 
 def _a3b_gdn_postconv_contract() -> dict[str, Any]:
@@ -313,11 +314,13 @@ def install_a3b_gdn_postconv(
         m1_apply = _apply_enabled_a3b_gdn_postconv_m1_headquarter
         m2_apply = _apply_enabled_a3b_gdn_postconv_m2_headquarter
         m3_apply = _apply_enabled_a3b_gdn_postconv_m3_headquarter
+        b8_t2_apply = _apply_enabled_a3b_gdn_postconv_b8_t2_headquarter
     else:
         required_lane = "gdn_postconv_inline_g"
         m1_apply = _apply_enabled_a3b_gdn_postconv_m1_tgy4
         m2_apply = _apply_enabled_a3b_gdn_postconv_m2_tgy4
         m3_apply = _apply_enabled_a3b_gdn_postconv_m3_tgy4
+        b8_t2_apply = _apply_enabled_a3b_gdn_postconv_b8_t2_tgy4
     if lanes.get(required_lane) != "ok":
         _fail_a3b_gdn_postconv_configuration(
             "A3B GDN postconv selfcheck did not validate the exact M1/M2 kernels"
@@ -347,6 +350,14 @@ def install_a3b_gdn_postconv(
         m3_implementations=tuple(
             partial(
                 m3_apply,
+                A_log=gdn.A_log,
+                dt_bias=gdn.dt_bias,
+            )
+            for gdn in plan.gdns
+        ),
+        b8_t2_implementations=tuple(
+            partial(
+                b8_t2_apply,
                 A_log=gdn.A_log,
                 dt_bias=gdn.dt_bias,
             )
@@ -2034,6 +2045,35 @@ def _a3b_compiled_target_gdn_postconv_m2_tgy4(
     )
 
 
+def _a3b_compiled_target_gdn_postconv_b8_t2_tgy4(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Launch the fixed eight-row A3B M2 recurrence with TGY4."""
+    return _linear_gated_delta_from_conv_inline_g_kernel(
+        inputs=[conv_out, a, b, A_log, dt_bias, state, 2],
+        template=[
+            ("InT", mx.bfloat16),
+            ("StT", mx.float32),
+            ("Dk", 128),
+            ("Dv", 128),
+            ("Hk", 16),
+            ("Hv", 32),
+            ("KeyDim", 2048),
+            ("ConvDim", 8192),
+        ],
+        grid=(32, 128, 256),
+        threadgroup=(32, 4, 1),
+        output_shapes=[(8, 2, 32, 128), (8, 2, 32, 128, 128)],
+        output_dtypes=[mx.bfloat16, mx.float32],
+    )
+
+
 def _apply_enabled_a3b_gdn_postconv_m1_tgy4(
     conv_out: mx.array,
     a: mx.array,
@@ -2065,6 +2105,26 @@ def _apply_enabled_a3b_gdn_postconv_m2_tgy4(
 ):
     """Execute the construction-installed exact A3B M2/TGY4 route."""
     return _a3b_compiled_target_gdn_postconv_m2_tgy4(
+        conv_out,
+        a,
+        b,
+        state,
+        A_log=A_log,
+        dt_bias=dt_bias,
+    )
+
+
+def _apply_enabled_a3b_gdn_postconv_b8_t2_tgy4(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Execute the construction-installed eight-row A3B M2/TGY4 route."""
+    return _a3b_compiled_target_gdn_postconv_b8_t2_tgy4(
         conv_out,
         a,
         b,
@@ -2136,6 +2196,37 @@ def _a3b_compiled_target_gdn_postconv_m2_headquarter(
     )
 
 
+def _a3b_compiled_target_gdn_postconv_b8_t2_headquarter(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Launch the fixed eight-row A3B M2 recurrence with headquarter."""
+    return _linear_gated_delta_from_conv_headquarter_kernel(
+        inputs=[conv_out, a, b, A_log, dt_bias, state, 2],
+        template=[
+            ("InT", mx.bfloat16),
+            ("StT", mx.float32),
+            ("Dk", 128),
+            ("Dv", 128),
+            ("Hk", 16),
+            ("Hv", 32),
+            ("KeyDim", 2048),
+            ("ConvDim", 8192),
+            ("Quarters", 4),
+            ("Simds", 8),
+        ],
+        grid=(256, 4, 256),
+        threadgroup=(256, 1, 1),
+        output_shapes=[(8, 2, 32, 128), (8, 2, 32, 128, 128)],
+        output_dtypes=[mx.bfloat16, mx.float32],
+    )
+
+
 def _apply_enabled_a3b_gdn_postconv_m1_headquarter(
     conv_out: mx.array,
     a: mx.array,
@@ -2167,6 +2258,26 @@ def _apply_enabled_a3b_gdn_postconv_m2_headquarter(
 ):
     """Execute the construction-installed exact A3B M2 headquarter route."""
     return _a3b_compiled_target_gdn_postconv_m2_headquarter(
+        conv_out,
+        a,
+        b,
+        state,
+        A_log=A_log,
+        dt_bias=dt_bias,
+    )
+
+
+def _apply_enabled_a3b_gdn_postconv_b8_t2_headquarter(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    state: mx.array,
+    *,
+    A_log: mx.array,
+    dt_bias: mx.array,
+):
+    """Execute the construction-installed eight-row A3B M2 headquarter route."""
+    return _a3b_compiled_target_gdn_postconv_b8_t2_headquarter(
         conv_out,
         a,
         b,
@@ -2763,4 +2874,97 @@ def commit_captured_prefix(
             replace_recurrent_cache_state(entry, [conv_state, gdn_state])
         elif trim_tokens and hasattr(entry, "is_trimmable") and entry.is_trimmable():
             entry.trim(trim_tokens)
+    return True
+
+
+def _select_captured_rows(value: mx.array, indices: list[int]) -> mx.array:
+    """Select one captured time position per batch row without a host round trip."""
+    batch = int(value.shape[0])
+    if batch != len(indices):
+        raise ValueError(
+            f"capture batch has {batch} rows, but {len(indices)} positions were given"
+        )
+    selector = mx.array(indices, dtype=mx.int32).reshape(
+        (batch, 1) + (1,) * (int(value.ndim) - 2)
+    )
+    selector = mx.broadcast_to(selector, (batch, 1) + tuple(value.shape[2:]))
+    return mx.contiguous(mx.take_along_axis(value, selector, axis=1)[:, 0])
+
+
+def commit_captured_rows(
+    cache: list[Any],
+    captures: dict[int, dict[str, mx.array]],
+    keep_tokens_by_row: list[int] | tuple[int, ...],
+    verified_tokens: int,
+) -> bool:
+    """Commit a different verified prefix length for every fixed cohort row.
+
+    This is the Qwen 35B A3B ``[B, 2]`` MTP commit boundary.  Full-attention
+    entries must already be :class:`RaggedBatchKVCache` instances so their
+    logical offsets can move independently.  Recurrent entries are rebound to
+    the captured state at each row's authoritative position.  The installed
+    post-conv capture path supplies both states directly; tape replay is not a
+    supported hot-path fallback.
+    """
+    verified = int(verified_tokens)
+    keeps = [int(value) for value in keep_tokens_by_row]
+    if not keeps or any(value <= 0 or value > verified for value in keeps):
+        return False
+    if captures.get("__final_only__"):
+        return False
+
+    from .cache_state import _is_trimmable
+    from .ragged_kv_cache import RaggedBatchKVCache
+
+    adjusted_by_layer: dict[int, list[int]] = {}
+    for layer_idx, entry in enumerate(cache):
+        capture = captures.get(layer_idx)
+        if capture is not None:
+            if "tape" in capture:
+                return False
+            if "conv_states" not in capture or "states" not in capture:
+                return False
+            capture_start = int(capture.get("capture_start", 0))
+            adjusted = [value - 1 - capture_start for value in keeps]
+            if any(value < 0 for value in adjusted):
+                return False
+            if len(keeps) != int(capture["conv_states"].shape[0]):
+                return False
+            adjusted_by_layer[layer_idx] = adjusted
+        elif _is_trimmable(entry):
+            if isinstance(entry, RaggedBatchKVCache):
+                if entry.offsets is not None and int(entry.offsets.size) != len(keeps):
+                    return False
+            elif len(set(keeps)) != 1:
+                return False
+        elif entry is not None and hasattr(entry, "state"):
+            # The installed A3B layout has exactly 30 recurrent entries and
+            # every one must have a post-conv capture.  Missing ownership is a
+            # cohort failure, never permission to keep speculative final state.
+            return False
+
+    for layer_idx, entry in enumerate(cache):
+        capture = captures.get(layer_idx)
+        if capture is not None:
+            adjusted = adjusted_by_layer[layer_idx]
+            conv_state = _select_captured_rows(capture["conv_states"], adjusted)
+            gdn_state = _select_captured_rows(capture["states"], adjusted)
+            # Rebind the two leaves directly.  OwnedRecurrentStateCache's
+            # item assignment is deliberately lazy; replace_state would add a
+            # per-cycle synchronization and copy to this enabled hot path.
+            if hasattr(entry, "__setitem__"):
+                entry[0] = conv_state
+                entry[1] = gdn_state
+            else:
+                entry.state = [conv_state, gdn_state]
+        elif isinstance(entry, RaggedBatchKVCache):
+            entry.offsets = (
+                entry.offsets
+                - verified
+                + mx.array(keeps, dtype=mx.int32)
+            ).astype(mx.int32)
+        elif _is_trimmable(entry):
+            trim = verified - keeps[0]
+            if trim:
+                entry.trim(trim)
     return True

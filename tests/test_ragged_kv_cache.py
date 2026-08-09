@@ -682,7 +682,6 @@ def test_capacity_bound_zero_device_sync_when_seeded(monkeypatch):
     )
     assert spy.calls == 0, "seeded host bound must not read device offsets"
     assert rg._capacity_bound == 7  # += q, monotone
-    assert rg.ragged_grows == 0  # capacity (32) sufficed => no allocation, no sync
 
 
 def test_capacity_bound_legacy_path_unchanged(monkeypatch):

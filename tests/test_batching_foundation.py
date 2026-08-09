@@ -100,6 +100,19 @@ def test_latency_preset_is_true_solo_mtp():
     assert config.to_dict()["prefill_chunk_tokens"] == 1024
 
 
+def test_mtp_batch_config_is_fixed_width_eight():
+    config = BatchSchedulerConfig.from_values(
+        mode="mtp_batch",
+        preset="throughput",
+        max_active_requests=8,
+        decode_batch_max=8,
+    )
+
+    assert config.mode is SchedulerMode.MTP_BATCH
+    assert config.to_dict()["max_active_requests"] == 8
+    assert config.to_dict()["decode_batch_max"] == 8
+
+
 def test_batch_keys_are_stable_and_separate_ar_from_mtp():
     request = RequestState(
         "r1",
@@ -149,6 +162,27 @@ def test_cooperative_scheduler_batches_ar_decode_ready_requests():
     assert snapshot["finished"] == 2
     assert snapshot["stats"]["batch_histogram"] == {"2": 1}
     assert snapshot["stats"]["last_mtp_disabled_reason"] == "batch_size_gt_1"
+
+
+def test_mtp_batch_scheduler_does_not_mark_parallel_decode_as_ar_fallback():
+    hooks = FakeHooks()
+    config = BatchSchedulerConfig(
+        mode=SchedulerMode.MTP_BATCH,
+        preset=SchedulerPreset.THROUGHPUT,
+        max_active_requests=8,
+        decode_batch_max=8,
+        prefill_chunk_tokens=8,
+    )
+    scheduler = MTPContinuousScheduler(config=config, hooks=hooks)
+    scheduler.submit(RequestState("r1", prompt_ids=[1, 2], max_tokens=1))
+    scheduler.submit(RequestState("r2", prompt_ids=[3, 4], max_tokens=1))
+
+    scheduler.run_until_idle()
+
+    snapshot = scheduler.snapshot()
+    assert hooks.decode_batches == [["r1", "r2"]]
+    assert snapshot["stats"]["batch_histogram"] == {"2": 1}
+    assert snapshot["stats"]["last_mtp_disabled_reason"] is None
 
 
 def test_cooperative_scheduler_cancellation_finishes_once():

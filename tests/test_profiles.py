@@ -126,6 +126,18 @@ def test_contract_runtime_env_overrides_are_normalized_and_restricted() -> None:
         raise AssertionError("unknown runtime env override should fail")
 
 
+def test_qwen_mtp_batch_construction_flags_are_validated_runtime_overrides() -> None:
+    assert normalize_runtime_env_overrides(
+        {
+            "MTPLX_QWEN_COMBINE_TAIL": True,
+            "MTPLX_QWEN_ROW_OWNED_ROUTER": 1,
+        }
+    ) == {
+        "MTPLX_QWEN_COMBINE_TAIL": "1",
+        "MTPLX_QWEN_ROW_OWNED_ROUTER": "1",
+    }
+
+
 def test_apply_profile_env_preserves_mtp_history_policy_override() -> None:
     environ = {"MTPLX_MTP_HISTORY_POLICY": "committed"}
 

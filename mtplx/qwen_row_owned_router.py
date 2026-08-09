@@ -88,8 +88,8 @@ def _a3b_router_contract(*, combine_tail: bool = False) -> dict[str, Any]:
     }
     if combine_tail:
         contract["combine_tail"] = {
-            "decode_verify": [1, 2],
-            "ar_decode": [1, 2],
+            "decode_verify": [1, 2, 8, 16],
+            "ar_decode": [1, 2, 8, 16],
             "other_rows": "stock_weighted_reduction",
         }
     return contract
@@ -318,6 +318,38 @@ def qwen_combine_tail_m2(
     return combined.reshape(1, 2, 2048)
 
 
+def qwen_combine_tail_m8(
+    routed: mx.array,
+    scores: mx.array,
+) -> mx.array:
+    """Launch the installed BF16 eight-row draft combine geometry."""
+    kernel = _build_qwen_combine_tail_kernel()
+    (combined,) = kernel(
+        inputs=[routed, scores],
+        grid=(16384, 1, 1),
+        threadgroup=(64, 1, 1),
+        output_shapes=[(8, 2048)],
+        output_dtypes=[mx.bfloat16],
+    )
+    return combined.reshape(*routed.shape[:-2], 2048)
+
+
+def qwen_combine_tail_m16(
+    routed: mx.array,
+    scores: mx.array,
+) -> mx.array:
+    """Launch the installed BF16 sixteen-row target combine geometry."""
+    kernel = _build_qwen_combine_tail_kernel()
+    (combined,) = kernel(
+        inputs=[routed, scores],
+        grid=(32768, 1, 1),
+        threadgroup=(64, 1, 1),
+        output_shapes=[(16, 2048)],
+        output_dtypes=[mx.bfloat16],
+    )
+    return combined.reshape(*routed.shape[:-2], 2048)
+
+
 def _qwen_row_owned_route_unchecked(
     probabilities: mx.array,
     *,
@@ -397,6 +429,10 @@ def _installed_a3b_router_combine_call(self: Any, value: mx.array) -> mx.array:
         routed = qwen_combine_tail_m1(routed, scores)
     elif rows == 2:
         routed = qwen_combine_tail_m2(routed, scores)
+    elif rows == 8:
+        routed = qwen_combine_tail_m8(routed, scores)
+    elif rows == 16:
+        routed = qwen_combine_tail_m16(routed, scores)
     else:
         routed = (routed * scores[..., None]).sum(axis=-2)
     shared = self.shared_expert(value)
@@ -633,7 +669,7 @@ def install_qwen_row_owned_routers(
         )
     if plan.combine_tail and lanes.get("qwen_combine_tail_m1_m2") != "ok":
         _fail_router_configuration(
-            "A3B combine tail selfcheck did not validate fixed M1/M2 arithmetic"
+            "A3B combine tail selfcheck did not validate fixed M1/M2/M8/M16 arithmetic"
         )
     installed: list[tuple[Any, type]] = []
     try:
@@ -651,6 +687,29 @@ def install_qwen_row_owned_routers(
     _STATS["installed"] = True
     _STATS["installation_status"] = "installed"
     return qwen_row_owned_router_stats()
+
+
+def call_with_stock_qwen_row_owned_routers(
+    *args: Any,
+    call: Any,
+    **kwargs: Any,
+) -> Any:
+    """Build one construction-time reference graph with all 41 stock blocks."""
+    if len(_INSTALLED_ROUTERS) != 41:
+        raise QwenRowOwnedRouterConfigError(
+            "stock A3B reference requires all 41 installed routers"
+        )
+    installed = [
+        (block, type(block), original_class)
+        for block, original_class in _INSTALLED_ROUTERS
+    ]
+    for block, _installed_class, original_class in installed:
+        block.__class__ = original_class
+    try:
+        return call(*args, **kwargs)
+    finally:
+        for block, installed_class, _original_class in installed:
+            block.__class__ = installed_class
 
 
 def qwen_row_owned_router_stats() -> dict[str, Any]:

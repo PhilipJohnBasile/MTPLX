@@ -289,7 +289,7 @@ class MTPContinuousScheduler:
             cohort.append(request)
         if not cohort:
             return
-        if len(cohort) > 1:
+        if len(cohort) > 1 and self.config.mode != SchedulerMode.MTP_BATCH:
             self.stats.last_mtp_disabled_reason = "batch_size_gt_1"
         self.stats.batch_histogram[len(cohort)] += 1
         results = self.hooks.decode_step(cohort)

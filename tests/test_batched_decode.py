@@ -13,7 +13,11 @@ invariance, which a CPU fake cannot.
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import astuple
+
 import mlx.core as mx
+import numpy as np
 import pytest
 
 import mtplx.batched_decode as bd
@@ -32,10 +36,79 @@ from mtplx.batched_decode import (
     streams_all_match,
     token_sha,
 )
+from mtplx.sampling import (
+    SamplerConfig,
+    distribution_from_logits,
+    sample_from_distribution,
+    verify_one_token,
+)
 
 VOCAB = 64
 HID = 4
 STOP_ID = 63
+
+
+def _reference_sampled_k1_cycle(
+    primary_logits,
+    draft_logits,
+    verify_logits,
+    bonus_logits,
+    *,
+    sampler,
+    draft_sampler,
+    rng,
+    history_tokens,
+    omit_speculative_bonus,
+    pending_primary=None,
+):
+    counts = Counter(history_tokens)
+    if pending_primary is None:
+        primary_p = distribution_from_logits(
+            primary_logits, sampler, token_counts=counts
+        )
+        primary = (
+            int(np.argmax(primary_logits))
+            if sampler.temperature <= 0
+            else sample_from_distribution(primary_p, rng)
+        )
+        counts[primary] += 1
+    else:
+        primary = int(pending_primary)
+    draft_q = distribution_from_logits(draft_logits, draft_sampler)
+    draft = (
+        int(np.argmax(draft_logits))
+        if draft_sampler.temperature <= 0
+        else sample_from_distribution(draft_q, rng)
+    )
+    target_p = distribution_from_logits(verify_logits, sampler, token_counts=counts)
+    if sampler.temperature <= 0:
+        accepted = draft == int(np.argmax(target_p))
+        second = draft if accepted else int(np.argmax(target_p))
+        accept_probability = 1.0 if accepted else 0.0
+    else:
+        decision = verify_one_token(target_p, draft_q, draft, rng)
+        accepted = decision.accepted
+        second = decision.token_id
+        accept_probability = decision.accept_probability
+    counts[second] += 1
+    bonus = None
+    if accepted and not omit_speculative_bonus and bonus_logits is not None:
+        bonus_p = distribution_from_logits(bonus_logits, sampler, token_counts=counts)
+        bonus = (
+            int(np.argmax(bonus_p))
+            if sampler.temperature <= 0
+            else sample_from_distribution(bonus_p, rng)
+        )
+    next_primary = bonus if accepted else second
+    return (
+        primary,
+        draft,
+        accepted,
+        second,
+        bonus,
+        accept_probability,
+        next_primary,
+    )
 
 
 class _FakeTrunkEntry:
@@ -504,6 +577,273 @@ def test_token_sha_stable_and_sensitive() -> None:
     assert token_sha([1, 2, 3]) == token_sha([1, 2, 3])
     assert token_sha([1, 2, 3]) != token_sha([1, 2, 4])
     assert len(token_sha([1, 2, 3])) == 16
+
+
+def test_sampled_k1_row_cycle_matches_reference_acceptance_and_rng_order():
+    sampler = SamplerConfig(temperature=0.8, top_p=1.0, top_k=0)
+    draft_sampler = SamplerConfig(temperature=0.7, top_p=1.0, top_k=0)
+    primary_logits = np.array([1.5, 0.5, -0.25, 0.0])
+    draft_logits = np.array([-0.2, 0.1, 1.2, 0.3])
+    verify_logits = np.array([0.2, 1.1, -0.4, 0.7])
+    bonus_logits = np.array([-0.1, 0.4, 0.2, 1.4])
+
+    for seed in range(32):
+        expected_rng = np.random.default_rng(seed)
+        actual_rng = np.random.default_rng(seed)
+        expected = _reference_sampled_k1_cycle(
+            primary_logits,
+            draft_logits,
+            verify_logits,
+            bonus_logits,
+            sampler=sampler,
+            draft_sampler=draft_sampler,
+            rng=expected_rng,
+            history_tokens=[1, 1, 3],
+            omit_speculative_bonus=False,
+        )
+        actual = bd._sample_mtp_k1_row_cycle(
+            primary_logits,
+            draft_logits,
+            verify_logits,
+            bonus_logits,
+            sampler=sampler,
+            draft_sampler=draft_sampler,
+            rng=actual_rng,
+            history_tokens=[1, 1, 3],
+            omit_speculative_bonus=False,
+        )
+
+        assert astuple(actual) == expected
+        assert actual_rng.random() == expected_rng.random()
+
+
+def test_sampled_k1_rows_keep_independent_rng_streams():
+    sampler = SamplerConfig(temperature=0.9, top_p=0.95, top_k=3)
+    draft_sampler = SamplerConfig(temperature=0.6, top_p=1.0, top_k=3)
+    rows = [
+        (
+            np.array([0.1 * (i + 1), 0.7, -0.3, 0.2]),
+            np.array([0.2, -0.1 * i, 0.9, 0.4]),
+            np.array([0.8, 0.3, 0.1 * i, -0.2]),
+            np.array([-0.4, 0.2, 0.6, 0.9 + 0.1 * i]),
+        )
+        for i in range(8)
+    ]
+
+    def run(order):
+        rngs = [np.random.default_rng(100 + i) for i in range(8)]
+        out = {}
+        for i in order:
+            out[i] = bd._sample_mtp_k1_row_cycle(
+                *rows[i],
+                sampler=sampler,
+                draft_sampler=draft_sampler,
+                rng=rngs[i],
+                history_tokens=[i, i],
+                omit_speculative_bonus=False,
+            )
+        return out, [rng.random() for rng in rngs]
+
+    forward, forward_next = run(range(8))
+    reverse, reverse_next = run(reversed(range(8)))
+
+    assert forward == reverse
+    assert forward_next == reverse_next
+
+
+def test_sampled_k1_split_propose_and_finish_matches_combined_rng_order():
+    sampler = SamplerConfig(temperature=0.85, top_p=0.9, top_k=4)
+    draft_sampler = SamplerConfig(temperature=0.65, top_p=1.0, top_k=4)
+    rows = (
+        np.array([0.4, -0.1, 0.8, 0.2]),
+        np.array([0.3, 0.7, -0.2, 0.1]),
+        np.array([-0.1, 0.5, 0.2, 0.9]),
+        np.array([0.6, 0.1, 0.4, -0.2]),
+    )
+    combined_rng = np.random.default_rng(44)
+    split_rng = np.random.default_rng(44)
+
+    combined = bd._sample_mtp_k1_row_cycle(
+        *rows,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=combined_rng,
+        history_tokens=[3, 1],
+        omit_speculative_bonus=False,
+    )
+    proposal = bd._sample_mtp_k1_row_proposal(
+        rows[0],
+        rows[1],
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=split_rng,
+        history_tokens=[3, 1],
+    )
+    split = bd._finish_mtp_k1_row_cycle(
+        proposal,
+        rows[2],
+        rows[3],
+        sampler=sampler,
+        rng=split_rng,
+        history_tokens=[3, 1, proposal.primary_token],
+        omit_speculative_bonus=False,
+    )
+
+    assert astuple(split) == astuple(combined)
+    assert split_rng.random() == combined_rng.random()
+
+
+def test_sampled_k1_bonus_policy_does_not_consume_bonus_rng_when_omitted():
+    sampler = SamplerConfig(temperature=1.0, top_p=1.0, top_k=0)
+    draft_sampler = SamplerConfig(temperature=0.0, top_p=1.0, top_k=0)
+    logits = np.array([0.0, 0.0, 4.0])
+    accepted_target = np.array([-2.0, -1.0, 4.0])
+    bonus_logits = np.array([0.3, 0.2, 0.1])
+    expected_rng = np.random.default_rng(123)
+    actual_rng = np.random.default_rng(123)
+
+    result = bd._sample_mtp_k1_row_cycle(
+        logits,
+        logits,
+        accepted_target,
+        bonus_logits,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=actual_rng,
+        history_tokens=[],
+        omit_speculative_bonus=True,
+    )
+    _reference_sampled_k1_cycle(
+        logits,
+        logits,
+        accepted_target,
+        bonus_logits,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=expected_rng,
+        history_tokens=[],
+        omit_speculative_bonus=True,
+    )
+
+    assert result.bonus_token is None
+    assert actual_rng.random() == expected_rng.random()
+
+
+def test_sampled_k1_pending_primary_skips_target_sample_rng_draw():
+    sampler = SamplerConfig(temperature=0.8, top_p=1.0, top_k=0)
+    draft_sampler = SamplerConfig(temperature=0.7, top_p=1.0, top_k=0)
+    primary_logits = np.array([0.9, 0.2, -0.1])
+    draft_logits = np.array([0.1, 0.8, 0.3])
+    verify_logits = np.array([0.7, -0.2, 0.5])
+    bonus_logits = np.array([0.2, 0.4, 0.6])
+    expected_rng = np.random.default_rng(91)
+    actual_rng = np.random.default_rng(91)
+
+    expected = _reference_sampled_k1_cycle(
+        primary_logits,
+        draft_logits,
+        verify_logits,
+        bonus_logits,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=expected_rng,
+        history_tokens=[2, 1],
+        omit_speculative_bonus=False,
+        pending_primary=2,
+    )
+    actual = bd._sample_mtp_k1_row_cycle(
+        primary_logits,
+        draft_logits,
+        verify_logits,
+        bonus_logits,
+        sampler=sampler,
+        draft_sampler=draft_sampler,
+        rng=actual_rng,
+        history_tokens=[2, 1],
+        omit_speculative_bonus=False,
+        pending_primary=2,
+    )
+
+    assert astuple(actual) == expected
+    assert actual_rng.random() == expected_rng.random()
+
+
+def test_sampled_k1_pending_primary_is_not_double_counted_for_penalties(monkeypatch):
+    sampler = SamplerConfig(
+        temperature=0.8,
+        top_p=1.0,
+        top_k=0,
+        presence_penalty=0.4,
+        frequency_penalty=0.2,
+    )
+    observed = []
+    original = bd.distribution_from_logits
+
+    def recording_distribution(logits, config, *, token_counts=None):
+        observed.append(None if token_counts is None else Counter(token_counts))
+        return original(logits, config, token_counts=token_counts)
+
+    monkeypatch.setattr(bd, "distribution_from_logits", recording_distribution)
+    bd._sample_mtp_k1_row_cycle(
+        np.array([0.1, 0.2, 0.3]),
+        np.array([0.3, 0.2, 0.1]),
+        np.array([0.2, 0.4, 0.1]),
+        None,
+        sampler=sampler,
+        draft_sampler=SamplerConfig(temperature=0.0),
+        rng=np.random.default_rng(7),
+        history_tokens=[2, 1],
+        omit_speculative_bonus=True,
+        pending_primary=2,
+    )
+
+    assert observed[-1] == Counter({2: 1, 1: 1})
+
+
+def test_greedy_k1_sampling_skips_full_distribution_construction(monkeypatch):
+    sampler = SamplerConfig(
+        temperature=0.0,
+        top_p=0.95,
+        top_k=2,
+        presence_penalty=0.4,
+        frequency_penalty=0.2,
+    )
+    draft_sampler = SamplerConfig(temperature=0.0, top_p=0.95, top_k=2)
+    rng = np.random.default_rng(123)
+    expected_next_random = np.random.default_rng(123).random()
+
+    def fail_distribution(*_args, **_kwargs):
+        raise AssertionError("greedy sampling must not build a full distribution")
+
+    monkeypatch.setattr(bd, "distribution_from_logits", fail_distribution)
+    primary = bd._sample_mtp_k1_primary(
+        np.array([0.0, 1.0, 0.9]),
+        sampler=sampler,
+        rng=rng,
+        history_tokens=[1, 1],
+    )
+    proposal = bd._sample_mtp_k1_draft(
+        primary,
+        np.array([0.0, 0.2, 2.0]),
+        draft_sampler=draft_sampler,
+        rng=rng,
+    )
+    result = bd._finish_mtp_k1_row_cycle(
+        proposal,
+        np.array([0.0, 0.2, 2.0]),
+        np.array([0.0, 3.0, 1.0]),
+        sampler=sampler,
+        rng=rng,
+        history_tokens=[1, 1, primary],
+        omit_speculative_bonus=False,
+    )
+
+    assert primary == 2
+    assert proposal.draft_token == 2
+    assert result.accepted is True
+    assert result.second_token == 2
+    assert result.bonus_token == 1
+    assert rng.random() == expected_next_random
 
 
 def test_left_pad_prompts() -> None:
