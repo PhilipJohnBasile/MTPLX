@@ -17045,6 +17045,9 @@ def _finalize_mtp_batch_generation(
         completion_tokens=completion_tokens,
         elapsed_s=generation_elapsed_s,
     )
+    restore_info = (request_observability or {}).get("mtp_batch_session_restore")
+    restore_hit = bool(isinstance(restore_info, dict) and restore_info.get("hit"))
+    restored_tokens = int(restore_info.get("restore_point") or 0) if restore_hit else 0
     envelope = _metrics_envelope(
         stats=stats,
         prompt_tokens=len(prompt_ids),
@@ -17054,12 +17057,17 @@ def _finalize_mtp_batch_generation(
         request_started_s=request_started_s,
         lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
         session_id=session_id,
-        session_cache_hit=False,
-        cache_miss_reason="mtp_batch_cold_prefill",
-        session_restore_mode="mtp_batch_cold",
+        session_cache_hit=restore_hit,
+        cache_miss_reason=None if restore_hit else "mtp_batch_cold_prefill",
+        session_restore_mode=(
+            "mtp_batch_boundary_restore" if restore_hit else "mtp_batch_cold"
+        ),
         mtp_depth=1,
         generation_limits=generation_limits,
     )
+    if restore_hit:
+        envelope["cached_tokens"] = restored_tokens
+        envelope["new_prefill_tokens"] = max(0, len(prompt_ids) - restored_tokens)
     envelope.update(
         {
             key: stats[key]
@@ -17230,6 +17238,186 @@ def _validate_mtp_batch_request_contract(
         )
 
 
+def _build_mtp_batch_session_hooks(
+    state: ServerState,
+    *,
+    prompt_ids: list[int],
+    session_bank: Any,
+    session_id: str | None,
+    template_hash: str | None,
+    policy_fingerprint: str | None,
+    lane: Any,
+    request_observability: dict[str, Any],
+) -> tuple[Callable[[], Any] | None, Callable[..., Any] | None]:
+    """Session-bank hooks for one mtp_batch cohort row (owner-thread only).
+
+    The cohort lane prefills every row as a scalar B=1 pass before the B8
+    merge, so the SERIAL bank machinery applies per row with no batched
+    capture: the restore hook runs the boundary-true executor and hands the
+    lane a cache sitting exactly at the boundary; the commit hook banks the
+    prompt-only scalar state WITH interior GDN boundaries and the committed
+    MTP-history snapshot — the two things ar_batch admission entries lack,
+    which is why batched rows never restored (LOG 2026-08-09 root cause).
+    Identity mirrors the serial put site (post_norm / committed /
+    state.draft_head_identity / the request's policy fingerprint), so
+    entries cross-restore between the solo runner, serial serving, and
+    cohorts. Both hooks are fail-safe: any error degrades to cold.
+    """
+    from types import SimpleNamespace as _NS
+
+    from mtplx.cache_state import snapshot_cache
+    from mtplx.generation import _inherited_gdn_boundaries
+    from mtplx.session_bank import _boundary_true_restore_enabled
+
+    prefill_keywords = dict(getattr(lane.prefill_request, "keywords", {}) or {})
+    cache_factory = prefill_keywords.get("target_cache_factory")
+    if session_bank is None or not callable(cache_factory):
+        return None, None
+    candidates_fn = getattr(session_bank, "near_prefix_candidates", None)
+    restore_fn = getattr(session_bank, "restore_entry_prefix_cache", None)
+    if not callable(candidates_fn) or not callable(restore_fn):
+        return None, None
+    rt = state.runtime
+    tokens = [int(token) for token in prompt_ids]
+    min_restore_tokens = 512  # matches the batched-lane cold-tier floor
+
+    def session_restore() -> Any | None:
+        outcome: dict[str, Any] = {"hit": False}
+        started = time.perf_counter()
+        try:
+            if len(tokens) <= min_restore_tokens or not _boundary_true_restore_enabled():
+                return None
+            candidates = candidates_fn(
+                tokens,
+                model_path=str(rt.model_path),
+                mtp_enabled=True,
+                hidden_variant="post_norm",
+                template_hash=template_hash,
+                mtp_history_policy="committed",
+                draft_head_identity=state.draft_head_identity,
+                policy_fingerprint=policy_fingerprint,
+                min_restore_tokens=min_restore_tokens,
+            )
+            for entry, matched in sorted(
+                candidates, key=lambda item: -int(item[1])
+            ):
+                restored = restore_fn(
+                    rt,
+                    entry,
+                    int(matched),
+                    mode="clone",
+                    cache_factory=cache_factory,
+                )
+                if restored is None:
+                    continue
+                if len(restored) == 5:
+                    cache, history, storage_mode, restore_point, hidden = restored
+                elif len(restored) == 4:
+                    cache, history, storage_mode, restore_point = restored
+                    hidden = None
+                else:
+                    cache, history, storage_mode = restored
+                    restore_point, hidden = int(matched), None
+                restore_point = int(restore_point)
+                # Cohort fail-closed gates: a GDN-hybrid row must resume at a
+                # boundary whose hidden is stored (re-running token b-1 would
+                # advance the recurrent state twice), and committed MTP
+                # history must restore with it (entries lacking the snapshot
+                # — e.g. ar_batch commits — stay cold here).
+                if (
+                    hidden is None
+                    or history is None
+                    or not min_restore_tokens <= restore_point < len(tokens)
+                ):
+                    continue
+                entry.hits += 1
+                entry.last_access_s = time.time()
+                outcome.update(
+                    {
+                        "hit": True,
+                        "restore_point": restore_point,
+                        "matched": int(matched),
+                        "entry_prefix_len": int(getattr(entry, "prefix_len", 0) or 0),
+                        "storage_restore_mode": str(storage_mode),
+                        "restore_s": round(time.perf_counter() - started, 6),
+                    }
+                )
+                return _NS(
+                    cache=cache,
+                    mtp_cache=history,
+                    restore_point=restore_point,
+                    boundary_hidden=hidden,
+                    inherited_boundaries=_inherited_gdn_boundaries(
+                        entry, restore_point
+                    ),
+                )
+            return None
+        except Exception as exc:
+            outcome["error"] = f"{type(exc).__name__}: {exc}"
+            return None
+        finally:
+            outcome.setdefault(
+                "restore_s", round(time.perf_counter() - started, 6)
+            )
+            request_observability["mtp_batch_session_restore"] = outcome
+
+    def session_commit(
+        *,
+        cache: Any,
+        mtp_cache: Any,
+        hidden: Any,
+        gdn_boundaries: list[Any],
+        restored: Any,
+    ) -> None:
+        started = time.perf_counter()
+        try:
+            if len(tokens) < 512:
+                return
+            if any(token >= (1 << 40) for token in tokens):
+                return  # vision surrogate ids never enter the batched bank path
+            if (
+                restored is not None
+                and len(tokens) - int(restored.restore_point) < 1024
+            ):
+                # The entry this restore served already covers the prompt to
+                # within a small suffix; same-key re-puts would only re-clone.
+                return
+            mtp_snapshot = snapshot_cache(mtp_cache) if mtp_cache is not None else None
+            entry = session_bank.put(
+                runtime=rt,
+                token_ids=tokens,
+                cache=cache,
+                logits=None,
+                hidden=hidden,
+                hidden_variant="post_norm",
+                session_id=session_id,
+                template_hash=template_hash,
+                mtp_history_policy="committed",
+                draft_head_identity=state.draft_head_identity,
+                policy_fingerprint=policy_fingerprint,
+                mtp_history_snapshot=mtp_snapshot,
+                snapshot_epoch=len(tokens),
+                mtp_snapshot_epoch=len(tokens) if mtp_snapshot is not None else None,
+                gdn_boundaries=list(gdn_boundaries or []),
+            )
+            request_observability["mtp_batch_prompt_boundary_bank_stored"] = (
+                entry is not None
+            )
+            request_observability["mtp_batch_bank_boundaries"] = len(
+                gdn_boundaries or []
+            )
+        except Exception as exc:
+            request_observability["mtp_batch_prompt_boundary_bank_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            request_observability["mtp_batch_prompt_boundary_bank_put_s"] = round(
+                time.perf_counter() - started, 6
+            )
+
+    return session_restore, session_commit
+
+
 def _run_mtp_batch_generation_dispatched(
     state: ServerState,
     prompt_ids: list[int],
@@ -17272,6 +17460,19 @@ def _run_mtp_batch_generation_dispatched(
     solo_kwargs["seed"] = generation_seed
     solo_kwargs["request_observability"] = dict(request_observability)
     b1_exact_serial = getattr(lane, "numerics_profile", None) == "b1-exact"
+    session_restore_hook: Callable[[], Any] | None = None
+    session_commit_hook: Callable[..., Any] | None = None
+    if kwargs.get("session_bank") is not None and not b1_exact_serial:
+        session_restore_hook, session_commit_hook = _build_mtp_batch_session_hooks(
+            state,
+            prompt_ids=prompt_ids,
+            session_bank=kwargs.get("session_bank"),
+            session_id=kwargs.get("session_id"),
+            template_hash=kwargs.get("session_template_hash"),
+            policy_fingerprint=kwargs.get("session_policy_fingerprint"),
+            lane=lane,
+            request_observability=request_observability,
+        )
     request_observability.update(
         {
             "scheduler_lane": (
@@ -17282,7 +17483,10 @@ def _run_mtp_batch_generation_dispatched(
                 "serial_b1_exact" if b1_exact_serial else "fixed_mtp_batch_width_8"
             ),
             "mtp_disabled_reason": None,
-            "mtp_batch_session_cache_bypass": kwargs.get("session_bank") is not None,
+            "mtp_batch_session_cache_bypass": (
+                kwargs.get("session_bank") is not None
+                and session_restore_hook is None
+            ),
         }
     )
     explicit_draft_sampler = kwargs.get("draft_sampler") is not None
@@ -17323,6 +17527,8 @@ def _run_mtp_batch_generation_dispatched(
         request_observability=request_observability,
         omit_speculative_bonus=omit_bonus,
         session_id=kwargs.get("session_id"),
+        session_restore=session_restore_hook,
+        session_commit=session_commit_hook,
     )
     smart_fan_lease = _begin_smart_fan_request(
         state,

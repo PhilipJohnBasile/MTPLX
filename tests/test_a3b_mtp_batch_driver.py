@@ -633,3 +633,181 @@ def test_final_prefill_boundary_replaces_newly_cancelled_long_row():
     assert lane.last_mtp_cache[0]._capacity_bound == max(
         np.asarray(lane.last_mtp_cache[0].offsets).tolist()
     )
+
+
+# ---------------------------------------------------------------------------
+# Session-bank hooks (composite lane: restore at admission, commit pre-merge)
+# ---------------------------------------------------------------------------
+
+
+class _HookLane(_FakeLane):
+    """FakeLane that records the session kwargs the driver passes."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.prefill_kwargs: list[dict] = []
+
+    def prefill_request(self, prompt, *, abort_check=None, restored=None, boundary_sink=None):
+        self.prefill_kwargs.append(
+            {"prompt": list(prompt), "restored": restored, "boundary_sink": boundary_sink}
+        )
+        if boundary_sink is not None:
+            boundary_sink.append((len(prompt) - 1, object(), None))
+        return super().prefill_request(prompt, abort_check=abort_check)
+
+
+def test_session_hooks_restore_state_reaches_prefill_and_commit_runs_pre_merge():
+    lane = _HookLane()
+    restored_state = SimpleNamespace(
+        cache=None,
+        mtp_cache=None,
+        restore_point=2,
+        boundary_hidden=object(),
+        inherited_boundaries=[(2, "snap-2", None)],
+    )
+    commits: list[dict] = []
+    restored_request = _request("warm", [1, 2, 3, 4], max_tokens=2)
+    cold_request = _request("cold", [7, 8], max_tokens=2)
+    object.__setattr__(restored_request, "session_restore", lambda: restored_state)
+    object.__setattr__(
+        restored_request, "session_commit", lambda **kw: commits.append(kw)
+    )
+    object.__setattr__(cold_request, "session_restore", lambda: None)
+    object.__setattr__(cold_request, "session_commit", lambda **kw: commits.append(kw))
+
+    result = generate_a3b_mtp_batch(lane, [restored_request, cold_request])
+
+    assert len(result.streams) == 2
+    warm_call = lane.prefill_kwargs[0]
+    assert warm_call["restored"] is restored_state
+    # Inherited boundaries seed the sink; the (fake) prefill appended one more.
+    assert warm_call["boundary_sink"][0] == (2, "snap-2", None)
+    cold_call = lane.prefill_kwargs[1]
+    assert cold_call["restored"] is None
+    assert cold_call["boundary_sink"] == [(1, cold_call["boundary_sink"][0][1], None)]
+    assert [c["restored"] for c in commits] == [restored_state, None]
+    assert [len(c["gdn_boundaries"]) for c in commits] == [2, 1]
+    # Padding rows never see session kwargs (old call shape preserved).
+    assert all(
+        call["restored"] is None and call["boundary_sink"] is None
+        for call in lane.prefill_kwargs[2:]
+    )
+
+
+def test_session_restore_failure_degrades_to_cold():
+    lane = _HookLane()
+    request = _request("a", [1, 2, 3], max_tokens=2)
+
+    def _boom():
+        raise RuntimeError("bank offline")
+
+    object.__setattr__(request, "session_restore", _boom)
+    result = generate_a3b_mtp_batch(lane, [request, _request("b", [7], max_tokens=2)])
+    assert len(result.streams) == 2
+    assert lane.prefill_kwargs[0]["restored"] is None
+
+
+def test_session_commit_failure_never_breaks_the_cohort():
+    lane = _HookLane()
+    request = _request("a", [1, 2, 3], max_tokens=2)
+
+    def _boom(**_kw):
+        raise RuntimeError("bank full")
+
+    object.__setattr__(request, "session_commit", _boom)
+    result = generate_a3b_mtp_batch(lane, [request, _request("b", [7], max_tokens=2)])
+    assert [stream.finish_reason for stream in result.streams] == ["length", "length"]
+
+
+def test_prefill_restored_path_runs_suffix_only_with_exact_history_transitions():
+    from mtplx.a3b_mtp_batch import _prefill_qwen35b_batch_request
+
+    forwards: list[list[int]] = []
+    history_updates: list[tuple[int, list[int]]] = []
+
+    def target_forward(tokens, *, cache, return_hidden, hidden_variant):
+        ids = np.asarray(tokens).reshape(-1).tolist()
+        forwards.append(ids)
+        t = len(ids)
+        return mx.zeros((1, t, VOCAB)), mx.arange(t, dtype=mx.float32).reshape(1, t, 1)
+
+    def update_mtp_cache(hidden, ids, *, mtp_cache, position_offset):
+        id_list = np.asarray(ids).reshape(-1).tolist()
+        history_updates.append((int(hidden.shape[1]), id_list))
+        return hidden
+
+    prompt = list(range(100, 112))  # N=12: body 100..110, final 111
+    restored = SimpleNamespace(
+        cache=[ArraysCache(2)],
+        mtp_cache=[KVCache()],
+        restore_point=5,
+        boundary_hidden=mx.ones((1, 1, 1)),
+    )
+    sink: list = []
+    cache, logits, hidden, mtp_cache, *_ = _prefill_qwen35b_batch_request(
+        prompt,
+        target_forward=target_forward,
+        target_cache_factory=lambda: pytest.fail("restored row must not build a cold cache"),
+        mtp_cache_factory=lambda: pytest.fail("restored row must not build a cold MTP cache"),
+        update_mtp_cache=update_mtp_cache,
+        chunk_size=4,
+        cleanup_every=0,
+        restored=restored,
+        boundary_sink=sink,
+    )
+
+    # Target forwards: suffix chunks [5..8], [9..10], then the final token —
+    # token 4 (restore_point-1) is never re-run.
+    assert forwards == [[105, 106, 107, 108], [109, 110], [111]]
+    # History transitions: pre-step (restore_point-1 -> restore_point) from the
+    # boundary hidden, then chunk pairs — ids are absolute and complete.
+    assert history_updates[0] == (1, [105])
+    assert history_updates[1] == (4, [106, 107, 108, 109])
+    assert history_updates[2] == (2, [110, 111])
+    # Boundary captures at absolute chunk edges (9 and 11 = len(body)).
+    assert [record[0] for record in sink] == [9, 11]
+    assert cache is restored.cache and mtp_cache is restored.mtp_cache
+
+
+def test_prefill_cold_path_is_byte_identical_in_shape_and_captures_edges():
+    from mtplx.a3b_mtp_batch import _prefill_qwen35b_batch_request
+
+    forwards: list[list[int]] = []
+
+    def target_forward(tokens, *, cache, return_hidden, hidden_variant):
+        ids = np.asarray(tokens).reshape(-1).tolist()
+        forwards.append(ids)
+        t = len(ids)
+        return mx.zeros((1, t, VOCAB)), mx.zeros((1, t, 1))
+
+    sink: list = []
+    _prefill_qwen35b_batch_request(
+        list(range(9)),  # N=9: body 0..7, final 8
+        target_forward=target_forward,
+        target_cache_factory=lambda: [ArraysCache(2)],
+        mtp_cache_factory=lambda: [KVCache()],
+        update_mtp_cache=lambda hidden, ids, *, mtp_cache, position_offset: hidden,
+        chunk_size=4,
+        cleanup_every=0,
+        boundary_sink=sink,
+    )
+    assert forwards == [[0, 1, 2, 3], [4, 5, 6, 7], [8]]
+    assert [record[0] for record in sink] == [4, 8]
+
+
+def test_prefill_restored_requires_boundary_hidden():
+    from mtplx.a3b_mtp_batch import _prefill_qwen35b_batch_request
+
+    with pytest.raises(ValueError):
+        _prefill_qwen35b_batch_request(
+            [1, 2, 3, 4],
+            target_forward=lambda *a, **k: pytest.fail("must not forward"),
+            target_cache_factory=lambda: [],
+            mtp_cache_factory=lambda: [],
+            update_mtp_cache=lambda *a, **k: None,
+            chunk_size=4,
+            cleanup_every=0,
+            restored=SimpleNamespace(
+                cache=[], mtp_cache=[], restore_point=2, boundary_hidden=None
+            ),
+        )

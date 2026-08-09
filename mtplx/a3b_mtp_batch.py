@@ -168,6 +168,15 @@ class A3BMTPBatchRequest:
     on_decode_start: Callable[[], None] | None = None
     on_terminal: Callable[[str, int], None] | None = None
     cancelled: Callable[[], bool] = _not_cancelled
+    # Session-bank hooks, resolved by the server glue and executed on the
+    # model-owner thread. Both are accelerators with a fail-safe contract:
+    # they must swallow their own errors (the driver additionally guards) —
+    # a bank problem never breaks a cohort. ``session_restore()`` returns
+    # None (cold) or a boundary-true restore state consumed by the row's
+    # prefill; ``session_commit(...)`` banks the row's prompt-only scalar
+    # state (with interior GDN boundaries) before the B8 merge nulls it.
+    session_restore: Callable[[], Any] | None = None
+    session_commit: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1910,35 +1919,74 @@ def _prefill_qwen35b_batch_request(
     chunk_size: int,
     cleanup_every: int,
     abort_check: Callable[[], bool] | None = None,
+    restored: Any | None = None,
+    boundary_sink: list[tuple[int, Any, Any]] | None = None,
 ) -> tuple[Any, Any, Any, Any, float, float, int]:
-    """Prefill one fixed-lane row without generic runtime policy dispatch."""
+    """Prefill one fixed-lane row without generic runtime policy dispatch.
+
+    ``restored`` carries a boundary-true session-bank restore (attributes
+    ``cache``, ``mtp_cache``, ``restore_point``, ``boundary_hidden``): target
+    KV and recurrent state sit exactly at ``restore_point``, so only the
+    suffix is prefilled. Token ``restore_point - 1`` is never re-run — the
+    recurrent state already consumed it, and re-forwarding it would advance
+    that state twice (temp-0 divergence, 2026-07-03). Committed MTP history
+    resumes from the boundary's stored hidden instead.
+
+    ``boundary_sink`` collects interior GDN boundaries at chunk edges —
+    ``(tokens_done, recurrent snapshot, hidden of tokens_done-1)`` — exactly
+    the serial capture contract, so entries banked from this lane restore
+    under boundary-true semantics (the batched-admission restore-miss root
+    cause, LOG 2026-08-09).
+    """
     import mlx.core as mx
 
     from .attention_context import attention_phase
-    from .generation import _check_postcommit_abort
+    from .generation import _capture_gdn_boundary, _check_postcommit_abort
 
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
     _check_postcommit_abort(abort_check)
-    cache = target_cache_factory()
-    mtp_cache = mtp_cache_factory()
+    start = 0
+    if restored is not None:
+        cache = restored.cache
+        mtp_cache = restored.mtp_cache
+        start = int(restored.restore_point)
+        boundary_hidden = restored.boundary_hidden
+        if boundary_hidden is None or not 0 < start < len(prompt_ids):
+            raise ValueError(
+                "restored row requires a boundary hidden strictly inside the prompt"
+            )
+        with attention_phase("prefill"):
+            history_hidden = update_mtp_cache(
+                boundary_hidden,
+                mx.array([[prompt_ids[start]]], dtype=mx.int32),
+                mtp_cache=mtp_cache,
+                position_offset=None,
+            )
+        mx.eval(history_hidden)
+        del history_hidden
+    else:
+        cache = target_cache_factory()
+        mtp_cache = mtp_cache_factory()
     body = prompt_ids[:-1]
-    if body:
+    if len(body) > start:
         body_array = mx.array([body], dtype=mx.int32)
         chunk_index = 0
-        for start in range(0, len(body), chunk_size):
+        for chunk_start in range(start, len(body), chunk_size):
             _check_postcommit_abort(abort_check)
-            end = min(len(body), start + chunk_size)
+            end = min(len(body), chunk_start + chunk_size)
             with attention_phase("prefill"):
                 _logits, hidden = target_forward(
-                    body_array[:, start:end],
+                    body_array[:, chunk_start:end],
                     cache=cache,
                     return_hidden=True,
                     hidden_variant="post_norm",
                 )
             mx.eval(hidden)
             _check_postcommit_abort(abort_check)
-            history_ids = mx.array([prompt_ids[start + 1 : end + 1]], dtype=mx.int32)
+            history_ids = mx.array(
+                [prompt_ids[chunk_start + 1 : end + 1]], dtype=mx.int32
+            )
             with attention_phase("prefill"):
                 history_hidden = update_mtp_cache(
                     hidden,
@@ -1947,6 +1995,7 @@ def _prefill_qwen35b_batch_request(
                     position_offset=None,
                 )
             mx.eval(history_hidden)
+            _capture_gdn_boundary(boundary_sink, end, cache, hidden[:, -1:, :])
             del _logits, hidden, history_hidden
             chunk_index += 1
             if cleanup_every > 0 and chunk_index % cleanup_every == 0:
@@ -2768,10 +2817,31 @@ def generate_a3b_mtp_batch(
         prompt = (
             [0] if request is None or request.cancelled() else list(request.prompt_ids)
         )
+        live_row = (
+            request is not None and row < len(real) and finish[row] is None
+        )
+        restored_state = None
+        boundary_sink: list[tuple[int, Any, Any]] | None = None
+        if live_row:
+            if request.session_restore is not None:
+                try:
+                    restored_state = request.session_restore()
+                except Exception:
+                    restored_state = None
+            if request.session_commit is not None:
+                boundary_sink = list(
+                    getattr(restored_state, "inherited_boundaries", None) or []
+                )
+        prefill_kwargs: dict[str, Any] = {}
+        if restored_state is not None:
+            prefill_kwargs["restored"] = restored_state
+        if boundary_sink is not None:
+            prefill_kwargs["boundary_sink"] = boundary_sink
         try:
             cache, logits, hidden, mtp_cache, *_timing = lane.prefill_request(
                 prompt,
                 abort_check=lambda row=row: poll_prefill_cancellations(row),
+                **prefill_kwargs,
             )
         except Exception as exc:
             from .generation import PostcommitAbort
@@ -2789,6 +2859,23 @@ def generate_a3b_mtp_batch(
             cache, logits, hidden, mtp_cache, *_timing = lane.prefill_request(
                 [0], abort_check=None
             )
+        else:
+            # Prompt-boundary session commit: at this instant the row's cache
+            # is still the scalar mlx-lm classes and covers exactly the
+            # prompt; the merge below nulls those layers as ownership moves,
+            # so the commit's clone must happen first. Fail-safe — a bank
+            # problem never breaks the cohort.
+            if live_row and finish[row] is None and request.session_commit is not None:
+                try:
+                    request.session_commit(
+                        cache=cache,
+                        mtp_cache=mtp_cache,
+                        hidden=hidden,
+                        gdn_boundaries=boundary_sink or [],
+                        restored=restored_state,
+                    )
+                except Exception:
+                    pass
         for peer_row in sorted(replacement_rows):
             replacement = lane.prefill_request([0], abort_check=None)
             prefills[peer_row] = tuple(replacement[:4])

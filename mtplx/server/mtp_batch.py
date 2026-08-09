@@ -94,6 +94,9 @@ class MTPBatchJob:
     request_observability: dict[str, Any] = field(default_factory=dict)
     omit_speculative_bonus: bool = False
     session_id: str | None = None
+    # Session-bank hooks (fail-safe accelerators, see A3BMTPBatchRequest).
+    session_restore: Callable[[], Any] | None = None
+    session_commit: Callable[..., Any] | None = None
     future: Future = field(default_factory=Future, init=False)
     tokens: list[int] = field(default_factory=list, init=False)
     token_times: list[float] = field(default_factory=list, init=False)
@@ -439,6 +442,8 @@ class MTPBatchGenerationService:
                     )
                 ),
                 cancelled=job.cancel_requested,
+                session_restore=job.session_restore,
+                session_commit=job.session_commit,
             )
             for row, job in enumerate(jobs)
         ]
