@@ -865,6 +865,27 @@ _MODEL_CONTRACT_DEPTH_DEFAULTS: dict[str, int] = {
 }
 
 
+def _artifact_runtime_metadata(inspection: dict[str, Any]) -> dict[str, Any]:
+    """Top-level ``mtplx_runtime.json`` of the inspected artifact, or ``{}``.
+
+    The typed contract keeps only schema fields; identity and depth-default
+    keys live beside them at the top level of the artifact json. Reading it
+    here is fail-safe: any I/O or parse problem returns an empty dict and the
+    caller falls back to contract-only behavior.
+    """
+    model_dir = inspection.get("model_dir") if isinstance(inspection, dict) else None
+    if not model_dir:
+        return {}
+    try:
+        path = Path(str(model_dir)) / "mtplx_runtime.json"
+        if not path.is_file():
+            return {}
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
 def _model_contract_depth(
     inspection: dict[str, Any],
     *,
@@ -883,11 +904,35 @@ def _model_contract_depth(
     # shallower declare ``mtp_depth_default``; the ceiling then only bounds
     # it. Without the split every artifact runs at its maximum depth, a
     # measured loss whenever per-level acceptance decays quickly.
-    measured_default = _MODEL_CONTRACT_DEPTH_DEFAULTS.get(
-        str(contract.get("public_model_id") or "").strip()
+    #
+    # The typed RuntimeContract serialization carries only its schema fields,
+    # so identity and depth-default keys living at the top level of
+    # ``mtplx_runtime.json`` never reach this dict — which silently killed the
+    # measured-depth map for every artifact (35B-A3B quickstart launched at
+    # its D3 ceiling, the exact -22% regression repro_a3b_depth_default.py
+    # documents). Resolve both from the artifact metadata when the contract
+    # dict lacks them; ``recommended_mtp_depth`` is honored as the historical
+    # spelling of ``mtp_depth_default`` (the Balance artifact ships it).
+    metadata = _artifact_runtime_metadata(inspection)
+    public_id = str(
+        contract.get("public_model_id") or metadata.get("public_model_id") or ""
+    ).strip()
+    measured_default = _MODEL_CONTRACT_DEPTH_DEFAULTS.get(public_id)
+    declared_default = next(
+        (
+            source.get(key)
+            for source in (contract, metadata)
+            for key in ("mtp_depth_default", "recommended_mtp_depth")
+            if source.get(key) is not None
+        ),
+        None,
     )
     try:
-        depth = int(contract.get("mtp_depth_default", measured_default or depth_max))
+        depth = int(
+            declared_default
+            if declared_default is not None
+            else (measured_default or depth_max)
+        )
     except (TypeError, ValueError):
         depth = measured_default or depth_max
     depth = min(depth, depth_max)
