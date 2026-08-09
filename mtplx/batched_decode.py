@@ -57,8 +57,18 @@ import hashlib
 import json
 import os
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
+
+import numpy as np
+
+from mtplx.sampling import (
+    SamplerConfig,
+    distribution_from_logits,
+    sample_from_distribution,
+    verify_one_token,
+)
 
 # --------------------------------------------------------------------------- #
 # Env gate (fail-closed).  Phase 1 calls ``generate_greedy_batched`` directly
@@ -179,6 +189,19 @@ class BatchedDecodeResult:
         return [s.sha for s in self.streams]
 
 
+@dataclass(frozen=True)
+class MTPK1RowCycle:
+    """One request-owned depth-one speculative sampling decision."""
+
+    primary_token: int
+    draft_token: int
+    accepted: bool
+    second_token: int
+    bonus_token: int | None
+    accept_probability: float
+    next_primary: int | None
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers (no MLX — unit-drivable)
 # --------------------------------------------------------------------------- #
@@ -186,6 +209,95 @@ def token_sha(tokens: list[int]) -> str:
     """Stable 16-hex digest of a committed token sequence (per-stream gate key)."""
     payload = json.dumps([int(t) for t in tokens], separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _sample_mtp_k1_row_cycle(
+    primary_logits: np.ndarray,
+    draft_logits: np.ndarray,
+    verify_logits: np.ndarray,
+    bonus_logits: np.ndarray | None,
+    *,
+    sampler: SamplerConfig,
+    draft_sampler: SamplerConfig,
+    rng: np.random.Generator,
+    history_tokens: list[int],
+    omit_speculative_bonus: bool,
+    pending_primary: int | None = None,
+) -> MTPK1RowCycle:
+    """Apply the single-request ``generate_mtpk`` K1 RNG order to one row.
+
+    All inputs are already materialized row logits. The caller owns ``rng``;
+    sharing or reordering other rows therefore cannot advance this request's
+    random stream. Completion penalties cover committed output only, matching
+    the solo path. Draft sampling intentionally does not consume completion
+    counts.
+    """
+
+    counts = Counter(int(token) for token in history_tokens)
+    if pending_primary is None:
+        primary_p = distribution_from_logits(
+            np.asarray(primary_logits, dtype=np.float64),
+            sampler,
+            token_counts=counts,
+        )
+        primary = (
+            int(np.argmax(primary_p))
+            if sampler.temperature <= 0
+            else sample_from_distribution(primary_p, rng)
+        )
+    else:
+        primary = int(pending_primary)
+    counts[primary] += 1
+
+    draft_q = distribution_from_logits(
+        np.asarray(draft_logits, dtype=np.float64),
+        draft_sampler,
+    )
+    draft = (
+        int(np.argmax(draft_q))
+        if draft_sampler.temperature <= 0
+        else sample_from_distribution(draft_q, rng)
+    )
+
+    target_p = distribution_from_logits(
+        np.asarray(verify_logits, dtype=np.float64),
+        sampler,
+        token_counts=counts,
+    )
+    if sampler.temperature <= 0:
+        target = int(np.argmax(target_p))
+        accepted = draft == target
+        second = draft if accepted else target
+        accept_probability = 1.0 if accepted else 0.0
+    else:
+        decision = verify_one_token(target_p, draft_q, draft, rng)
+        accepted = bool(decision.accepted)
+        second = int(decision.token_id)
+        accept_probability = float(decision.accept_probability)
+    counts[second] += 1
+
+    bonus = None
+    if accepted and not omit_speculative_bonus and bonus_logits is not None:
+        bonus_p = distribution_from_logits(
+            np.asarray(bonus_logits, dtype=np.float64),
+            sampler,
+            token_counts=counts,
+        )
+        bonus = (
+            int(np.argmax(bonus_p))
+            if sampler.temperature <= 0
+            else sample_from_distribution(bonus_p, rng)
+        )
+
+    return MTPK1RowCycle(
+        primary_token=primary,
+        draft_token=draft,
+        accepted=accepted,
+        second_token=second,
+        bonus_token=bonus,
+        accept_probability=accept_probability,
+        next_primary=bonus if accepted else second,
+    )
 
 
 def left_pad_prompts(
