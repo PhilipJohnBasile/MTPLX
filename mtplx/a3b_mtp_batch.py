@@ -1,4 +1,11 @@
-"""Construction-time contract for Qwen3.6-35B-A3B eight-row MTP decode."""
+"""Construction-time contract for Qwen3.6-35B-A3B fixed-width MTP decode.
+
+The shipped route is the eight-row (B8/T2, M16) cohort. A native three-row
+variant (B3/T2, M6) installs beside it for the throughput profile so 2-3
+request cohorts execute a physically smaller compiled graph instead of a B8
+graph with inert padded rows. Width 8 behavior is byte-identical to the
+pre-width code whenever width 8 is selected.
+"""
 
 from __future__ import annotations
 
@@ -47,6 +54,11 @@ _LAYER_TYPES = tuple(
     for index in range(40)
 )
 A3B_MTP_BATCH_MAX_CONTEXT_TOKENS = 131072
+# Physical cohort widths this lane can install. Width 8 is the shipped
+# default; width 3 is the native small-cohort graph (M6 target verify
+# positions) so a 2-3 request cohort stops paying five inert rows of dense,
+# GDN, attention, and sampler work every decode cycle.
+A3B_MTP_BATCH_SUPPORTED_WIDTHS = (3, 8)
 _MLX_LM_ARRAYS_CACHE_FIX_COMMIT = "985af30df768a6f4dd2d0c7969d1868ca5dc3e1a"
 _MLX_LM_ARRAYS_CACHE_FIX_REQUIREMENT = (
     "mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@"
@@ -448,13 +460,27 @@ def _bind_postconv_capture_forward(
     )
 
 
-def _bind_capture_forward(runtime: Any) -> Callable[..., Any]:
+def _postconv_implementation_field(cohort_slots: int) -> tuple[str, str]:
+    """Return the installed postconv field/label for one physical width."""
+
+    if int(cohort_slots) == 8:
+        return "b8_t2_implementations", "B8/T2"
+    if int(cohort_slots) == 3:
+        return "b3_t2_implementations", "B3/T2"
+    raise A3BMTPBatchInstallError(
+        f"Qwen 35B mtp_batch has no installed T2 postconv route for width "
+        f"{cohort_slots}; supported widths: {A3B_MTP_BATCH_SUPPORTED_WIDTHS}"
+    )
+
+
+def _bind_capture_forward(runtime: Any, *, cohort_slots: int = 8) -> Callable[..., Any]:
+    implementation_field, contract_label = _postconv_implementation_field(cohort_slots)
     eager_capture = _bind_postconv_capture_forward(
         runtime,
-        implementation_field="b8_t2_implementations",
-        contract_label="B8/T2",
+        implementation_field=implementation_field,
+        contract_label=contract_label,
     )
-    return _compile_qwen35b_b8_t2_capture(eager_capture)
+    return _compile_qwen35b_b8_t2_capture(eager_capture, cohort_slots=cohort_slots)
 
 
 def _bind_balanced_projection_implementations(
@@ -545,12 +571,18 @@ def _bind_balanced_capture_forward(runtime: Any) -> Callable[..., Any]:
 
 def _compile_qwen35b_b8_t2_capture(
     eager_capture: Callable[..., Any],
+    *,
+    cohort_slots: int = 8,
 ) -> Callable[..., Any]:
-    """Compile the fixed B8/T2 target graph with explicit row-owned state."""
+    """Compile one fixed-width T2 target graph with explicit row-owned state.
+
+    Each physical width owns its own compiled instance and shadow state; the
+    default keeps the shipped B8/T2 graph byte-identical.
+    """
     shadow: list[Any] = []
     for layer_type in _LAYER_TYPES:
         if layer_type == "full_attention":
-            shadow.append(RaggedBatchKVCache(batch_size=8, step=256))
+            shadow.append(RaggedBatchKVCache(batch_size=int(cohort_slots), step=256))
         else:
             shadow.append(ArraysCache(2))
 
@@ -617,6 +649,7 @@ def _compile_qwen35b_b8_t2_capture(
         return outputs[0], outputs[1], captures
 
     capture_forward._mtplx_compiled_qwen35b_b8_t2 = True
+    capture_forward._mtplx_compiled_qwen35b_t2_width = int(cohort_slots)
     return capture_forward
 
 
@@ -694,6 +727,11 @@ def _install_qwen35b_b8_attention_route(runtime: Any) -> str:
     exact_classes: dict[type, type] = {}
     for attention in full_attention:
         base = type(attention)
+        if hasattr(base, "_mtplx_mtp_batch_original_call"):
+            # Idempotent: a second lane install (native width variants share
+            # one runtime) must not re-wrap the already-installed route —
+            # re-subclassing would alias the wrapper as its own original call.
+            continue
         exact = exact_classes.get(base)
         if exact is None:
             exact = type(
@@ -721,9 +759,15 @@ def _commit_qwen35b_b8_t2_rows(
     keep_tokens_by_row: list[int],
     base_recurrent: dict[int, tuple[Any, Any]],
 ) -> None:
-    """Commit the prevalidated B8/T2 cache layout without hot-path proof work."""
+    """Commit the prevalidated fixed-width T2 cache layout without hot-path proof work.
+
+    The physical width is the length of ``keep_tokens_by_row`` — always the
+    lane's ``cohort_slots`` (8 on the shipped path, 3 on the native small
+    cohort), so the B8 route computes exactly what it always computed.
+    """
     import mlx.core as mx
 
+    width = len(keep_tokens_by_row)
     keeps = mx.array(keep_tokens_by_row, dtype=mx.int32)
     positions = [max(0, int(value) - 1) for value in keep_tokens_by_row]
     active_rows = mx.array(
@@ -738,16 +782,16 @@ def _commit_qwen35b_b8_t2_rows(
         conv_states = capture["conv_states"]
         states = capture["states"]
         conv_position_selector = mx.array(positions, dtype=mx.int32).reshape(
-            (8, 1) + (1,) * (int(conv_states.ndim) - 2)
+            (width, 1) + (1,) * (int(conv_states.ndim) - 2)
         )
         state_position_selector = mx.array(positions, dtype=mx.int32).reshape(
-            (8, 1) + (1,) * (int(states.ndim) - 2)
+            (width, 1) + (1,) * (int(states.ndim) - 2)
         )
         conv_selector = mx.broadcast_to(
-            conv_position_selector, (8, 1) + tuple(conv_states.shape[2:])
+            conv_position_selector, (width, 1) + tuple(conv_states.shape[2:])
         )
         state_selector = mx.broadcast_to(
-            state_position_selector, (8, 1) + tuple(states.shape[2:])
+            state_position_selector, (width, 1) + tuple(states.shape[2:])
         )
         selected_conv = mx.contiguous(
             mx.take_along_axis(conv_states, conv_selector, axis=1)[:, 0]
@@ -755,15 +799,22 @@ def _commit_qwen35b_b8_t2_rows(
         selected_state = mx.contiguous(
             mx.take_along_axis(states, state_selector, axis=1)[:, 0]
         )
-        conv_mask = active_rows.reshape((8,) + (1,) * (int(selected_conv.ndim) - 1))
-        state_mask = active_rows.reshape((8,) + (1,) * (int(selected_state.ndim) - 1))
+        conv_mask = active_rows.reshape((width,) + (1,) * (int(selected_conv.ndim) - 1))
+        state_mask = active_rows.reshape(
+            (width,) + (1,) * (int(selected_state.ndim) - 1)
+        )
         base_conv, base_state = base_recurrent[layer_idx]
         entry[0] = mx.where(conv_mask, selected_conv, base_conv)
         entry[1] = mx.where(state_mask, selected_state, base_state)
 
 
 def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str, Any]:
-    """Run one real B8/T2 route and compare row zero with unchanged B1."""
+    """Run one real fixed-width T2 route and compare each row with unchanged B1.
+
+    The physical width comes from ``lane.geometry.cohort_slots`` (8 on the
+    shipped lane, 3 on the native small cohort); every check below runs at the
+    lane's own width so the B8 report is byte-identical to before.
+    """
 
     import mlx.core as mx
     import numpy as np
@@ -775,6 +826,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
 
     token = int(getattr(getattr(runtime, "tokenizer", None), "eos_token_id", 1) or 1)
     geometry_relative_limit = _geometry_relative_limit(lane.numerics_profile)
+    slots = int(lane.geometry.cohort_slots)
 
     balanced_l0_qkv_z_b_b1_bitwise = True
     if lane.numerics_profile == MTPBatchNumerics.BALANCED.value:
@@ -1166,7 +1218,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         int((token + row) % lane.geometry.vocab_size)
         for row in range(lane.geometry.cohort_slots)
     ]
-    mixed_keeps = [0, 1, 2, 0, 1, 2, 0, 1]
+    # Cycle keep values 0/1/2 across the lane's rows; at width 8 this is the
+    # historical [0, 1, 2, 0, 1, 2, 0, 1] pattern exactly.
+    mixed_keeps = [(0, 1, 2)[row % 3] for row in range(slots)]
     (
         batch_input,
         batch_logits,
@@ -1232,7 +1286,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         mx.max(mx.abs(stock_hidden).astype(mx.float32)),
     ]
     same_geometry_shapes = bool(
-        tuple(batch_input.shape) == tuple(stock_input.shape) == (8, 2)
+        tuple(batch_input.shape) == tuple(stock_input.shape) == (slots, 2)
         and tuple(batch_logits.shape) == tuple(stock_logits.shape)
         and tuple(batch_hidden.shape) == tuple(stock_hidden.shape)
         and len(batch_captures) == len(stock_captures) == 30
@@ -1244,8 +1298,8 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             == tuple(stock_captures[layer_idx]["conv_states"].shape)
             and tuple(batch_captures[layer_idx]["states"].shape)
             == tuple(stock_captures[layer_idx]["states"].shape)
-            and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (8, 2)
-            and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (8, 2)
+            and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (slots, 2)
+            and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (slots, 2)
         )
         compiled_eager_capture_checks.extend(
             (
@@ -1512,7 +1566,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     next_tokens = mx.array(
         [(value + 17) % lane.geometry.vocab_size for value in batch_tokens],
         dtype=mx.int32,
-    ).reshape(8, 1)
+    ).reshape(slots, 1)
     with attention_phase("ar_decode"):
         reference_next_logits, reference_next_hidden = lane.target_forward(
             next_tokens,
@@ -1774,8 +1828,8 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         layer_idx in batch_captures
         and "tape" not in batch_captures[layer_idx]
         and int(batch_captures[layer_idx].get("capture_start", 0)) == 0
-        and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (8, 2)
-        and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (8, 2)
+        and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (slots, 2)
+        and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (slots, 2)
         for layer_idx, layer_type in enumerate(_LAYER_TYPES)
         if layer_type == "linear_attention"
     )
@@ -1790,7 +1844,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                     "layer": layer_idx,
                     "phase": "decode_verify",
                     "b1_shape": [1, 2, 32, 128],
-                    "b8_shape": [8, 2, 32, 128],
+                    "b8_shape": [slots, 2, 32, 128],
                     "bitwise": conv_max_abs == 0.0,
                     "max_abs": conv_max_abs,
                     "max_ulp": conv_max_ulp,
@@ -1801,7 +1855,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                     "layer": layer_idx,
                     "phase": "decode_verify",
                     "b1_shape": [1, 2, 32, 128, 128],
-                    "b8_shape": [8, 2, 32, 128, 128],
+                    "b8_shape": [slots, 2, 32, 128, 128],
                     "bitwise": state_max_abs == 0.0,
                     "max_abs": state_max_abs,
                     "max_ulp": state_max_ulp,
@@ -1811,9 +1865,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         )
     return {
         "ok": bool(
-            target_shape == [8, 2]
-            and logits_shape[:2] == [8, 2]
-            and hidden_shape[:2] == [8, 2]
+            target_shape == [slots, 2]
+            and logits_shape[:2] == [slots, 2]
+            and hidden_shape[:2] == [slots, 2]
             and solo_parity
             and batch_commit
             and solo_commit
@@ -1844,7 +1898,8 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "target_shape": target_shape,
         "logits_shape": logits_shape,
         "hidden_shape": hidden_shape,
-        "projection_rows": 16,
+        "cohort_slots": slots,
+        "projection_rows": 2 * slots,
         "numerics_profile": lane.numerics_profile,
         "geometry_relative_limit": geometry_relative_limit,
         "balanced_l0_qkv_z_b_b1_bitwise": balanced_l0_qkv_z_b_b1_bitwise,
@@ -2078,10 +2133,15 @@ def _bind_qwen35b_batch_prefill(
 
 
 def _throughput_selfcheck_contract(report: Mapping[str, Any]) -> bool:
+    # The report carries its own physical width (absent on pre-width reports,
+    # which are always B8); the geometry checks scale with it while every
+    # parity requirement below stays width-independent.
+    slots = int(report.get("cohort_slots", 8) or 8)
     return bool(
         bool(report.get("ok"))
-        and report.get("target_shape") == [8, 2]
-        and int(report.get("projection_rows", 0) or 0) == 16
+        and slots in A3B_MTP_BATCH_SUPPORTED_WIDTHS
+        and report.get("target_shape") == [slots, 2]
+        and int(report.get("projection_rows", 0) or 0) == 2 * slots
         and bool(report.get("solo_parity"))
         and int(report.get("captured_gdn_layers", 0) or 0) == 30
         and bool(report.get("row_commit"))
@@ -2128,15 +2188,36 @@ def install_a3b_mtp_batch_lane(
         object, Callable[[A3BMTPBatchProfileSpec], A3BMTPBatchProfileSpec]
     ]
     | None = None,
+    cohort_slots: int = 8,
 ) -> InstalledA3BMTPBatchLane:
-    """Validate and freeze the exact Qwen 35B B8/T2 route once at startup."""
+    """Validate and freeze one exact Qwen 35B fixed-width T2 route at startup.
+
+    ``cohort_slots`` selects the physical width: 8 is the shipped default and
+    stays byte-identical; 3 installs the native small-cohort graph (M6 target
+    verify positions) and is available for the ``throughput`` profile only.
+    Installing both widths against one runtime is supported — shared runtime
+    mutations (attention route) are idempotent, and each width compiles its
+    own capture graph and runs its own numerical self-check.
+    """
 
     selected_numerics = normalize_mtp_batch_numerics(numerics)
+    width = int(cohort_slots)
+    if width not in A3B_MTP_BATCH_SUPPORTED_WIDTHS:
+        raise A3BMTPBatchInstallError(
+            f"Qwen 35B mtp_batch cohort width {width} is not supported; "
+            f"expected one of {A3B_MTP_BATCH_SUPPORTED_WIDTHS}"
+        )
+    if width != 8 and selected_numerics is not MTPBatchNumerics.THROUGHPUT:
+        raise A3BMTPBatchInstallError(
+            "Qwen 35B mtp_batch native width "
+            f"{width} installs only for the throughput profile; "
+            f"{selected_numerics.value} keeps the B8 route"
+        )
     _require_mlx_lm_arrays_cache_fix()
     _config, fingerprint = _validate_config(runtime)
     _validate_runtime(runtime)
     model_target_forward = _require_callable(runtime, "model")
-    model_capture_forward = _bind_capture_forward(runtime)
+    model_capture_forward = _bind_capture_forward(runtime, cohort_slots=width)
     model_draft_forward = _require_callable(runtime.model, "mtp_forward")
     model_update_mtp_cache = _require_callable(runtime.model, "mtp_update_cache")
     language_model = getattr(runtime.model, "language_model", None)
@@ -2181,7 +2262,11 @@ def install_a3b_mtp_batch_lane(
     )
     throughput_spec = A3BMTPBatchProfileSpec(
         numerics=MTPBatchNumerics.THROUGHPUT,
-        route_id="qwen35b_a3b_mtp_batch_b8_t2_m16_throughput",
+        route_id=(
+            "qwen35b_a3b_mtp_batch_b8_t2_m16_throughput"
+            if width == 8
+            else f"qwen35b_a3b_mtp_batch_b{width}_t2_m{2 * width}_throughput"
+        ),
         target_forward=target_forward,
         capture_forward=capture_forward,
         draft_forward=draft_forward,
@@ -2246,7 +2331,10 @@ def install_a3b_mtp_batch_lane(
         update_mtp_cache=profile_spec.update_mtp_cache,
         chunk_size=prefill_chunk_tokens,
     )
-    geometry = A3BMTPBatchGeometry()
+    geometry = A3BMTPBatchGeometry(
+        cohort_slots=width,
+        projection_rows=2 * width,
+    )
     lane = InstalledA3BMTPBatchLane(
         geometry=geometry,
         numerics_profile=selected_numerics.value,
@@ -2357,8 +2445,11 @@ def _merge_qwen35b_kv_rows(
             value_rows.append(values)
         keys = mx.concatenate(key_rows, axis=0)
         values = mx.concatenate(value_rows, axis=0)
+    # The physical batch is the number of source rows: always the lane's
+    # cohort_slots (8 today, 3 for the native small cohort), so the shipped
+    # eight-row merge is unchanged.
     merged = RaggedBatchKVCache(
-        batch_size=8,
+        batch_size=len(entries),
         step=256,
         keys=keys,
         values=values,
@@ -2791,7 +2882,7 @@ def generate_a3b_mtp_batch(
     lane: InstalledA3BMTPBatchLane,
     requests: list[A3BMTPBatchRequest] | tuple[A3BMTPBatchRequest, ...],
 ) -> A3BMTPBatchResult:
-    """Generate one immutable 2-8 request cohort through the fixed B8/T2 lane."""
+    """Generate one immutable multi-request cohort through the lane's fixed width."""
     import mlx.core as mx
 
     from .attention_context import attention_phase
@@ -2800,7 +2891,9 @@ def generate_a3b_mtp_batch(
     real = list(requests)
     width = lane.geometry.cohort_slots
     if not 2 <= len(real) <= width:
-        raise ValueError("Qwen 35B mtp_batch requires 2-8 requests per cohort")
+        raise ValueError(
+            f"Qwen 35B mtp_batch requires 2-{width} requests per cohort"
+        )
     for request in real:
         if not request.prompt_ids:
             raise ValueError("Qwen 35B mtp_batch prompts must not be empty")
