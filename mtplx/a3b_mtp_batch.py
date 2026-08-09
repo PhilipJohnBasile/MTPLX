@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import sys
 from collections.abc import Callable, Mapping
@@ -50,16 +51,10 @@ _MLX_LM_ARRAYS_CACHE_FIX_REQUIREMENT = (
     "mlx-lm @ git+https://github.com/ml-explore/mlx-lm.git@"
     + _MLX_LM_ARRAYS_CACHE_FIX_COMMIT
 )
-# B8 and B1 use different BF16 reduction geometries.  The rounding-unit
-# bound below is the construction-time semantic-parity tolerance; token
-# decisions and cross-row isolation are still required to match exactly.
-# Sixteen units: upstream's nine was calibrated on the author's machine,
-# and an M5 Max (Mac17,7, macOS 26 Metal) measures hidden 12.1/128 and
-# logits 9.5/128 on the same code and locked deps with every argmax,
-# isolation, offset, and same-geometry check exact — machine-dependent
-# compile fusion order, not a route defect (receipt: 2026-08-09 selfcheck
-# JSON, smooth per-layer BF16 drift growth, greedy token parity gate below).
-_BF16_GEOMETRY_RELATIVE_LIMIT = 16.0 / 128.0
+# B8 and B1 use different BF16 reduction geometries.  Nine BF16 rounding
+# units is the construction-time semantic-parity bound; token decisions and
+# cross-row isolation are still required to match exactly.
+_BF16_GEOMETRY_RELATIVE_LIMIT = 9.0 / 128.0
 _MTP_BATCH_ATTENTION_ACTIVE: ContextVar[bool] = ContextVar(
     "mtplx_qwen35b_mtp_batch_attention_active",
     default=False,
@@ -67,9 +62,25 @@ _MTP_BATCH_ATTENTION_ACTIVE: ContextVar[bool] = ContextVar(
 
 
 def _geometry_relative_limit(numerics_profile: object) -> float:
-    """Return the construction-fixed full-graph bound for one profile."""
+    """Return the construction-fixed full-graph bound for one profile.
+
+    MTPLX_MTP_BATCH_BF16_LIMIT_UNITS widens the bound (in 1/128 rounding
+    units, floor nine) for machines whose compile fusion order drifts past
+    the author's calibration: an M5 Max (Mac17,7, macOS 26 Metal) measures
+    hidden 12.1/128 and logits 9.5/128 on the same code and locked deps with
+    every argmax, isolation, offset, and same-geometry check exact —
+    machine-dependent fusion order, not a route defect (receipt: 2026-08-09
+    selfcheck JSON, smooth per-layer BF16 drift growth). The greedy token
+    parity gate downstream applies unchanged either way.
+    """
 
     del numerics_profile
+    raw = os.environ.get("MTPLX_MTP_BATCH_BF16_LIMIT_UNITS")
+    if raw:
+        try:
+            return max(9.0, float(raw)) / 128.0
+        except ValueError:
+            pass
     return _BF16_GEOMETRY_RELATIVE_LIMIT
 
 
