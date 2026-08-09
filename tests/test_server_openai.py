@@ -671,6 +671,28 @@ def test_ar_batch_detects_nonmergeable_history_cache_entries():
     )
 
 
+def test_ar_batch_propagates_cancelled_cache_removal_failure():
+    service = openai._BatchedARGenerationService(SimpleNamespace())
+    job = SimpleNamespace(
+        request_id="cancelled-request",
+        future=Future(),
+        cancel_requested=lambda: True,
+    )
+    service._active[7] = job
+
+    class PartiallyFilteredGenerator:
+        def remove(self, uids):
+            assert uids == [7]
+            raise RuntimeError("cache filtering failed after partial mutation")
+
+    with pytest.raises(RuntimeError, match="partial mutation"):
+        service._remove_cancelled_active(PartiallyFilteredGenerator())
+
+    assert service._active == {}
+    with pytest.raises(openai._StreamCancelled, match="cancelled-request"):
+        job.future.result()
+
+
 def test_long_prompt_commits_prompt_prefix_when_ssd_cache_is_enabled():
     state = SimpleNamespace(
         session_bank_cold_tier=SimpleNamespace(enabled=True, min_prefix_tokens=512)

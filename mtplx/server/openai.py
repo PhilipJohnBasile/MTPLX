@@ -2820,10 +2820,9 @@ class _BatchedARGenerationService:
                             self._active.pop(uid, None)
                         try:
                             generator.remove([uid])
-                        except BaseException:
-                            pass
-                        if not job.future.done():
-                            job.future.set_exception(self._cancelled_error(job))
+                        finally:
+                            if not job.future.done():
+                                job.future.set_exception(self._cancelled_error(job))
                         continue
                     job.max_batch_size_observed = max(
                         job.max_batch_size_observed,
@@ -2876,11 +2875,10 @@ class _BatchedARGenerationService:
             return
         try:
             generator.remove([uid for uid, _job in cancelled])
-        except BaseException:
-            pass
-        for _uid, job in cancelled:
-            if not job.future.done():
-                job.future.set_exception(self._cancelled_error(job))
+        finally:
+            for _uid, job in cancelled:
+                if not job.future.done():
+                    job.future.set_exception(self._cancelled_error(job))
 
 
 def _submit_idle_postcommit_model_work(
