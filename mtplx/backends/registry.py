@@ -1129,6 +1129,27 @@ def _unsupported_quant_bits(model_dir: Any) -> int | None:
     return None
 
 
+def _requires_remote_code(model_dir: Any) -> bool:
+    """True when loading needs transformers to execute repository code.
+
+    MTPLX never passes trust_remote_code: a checkpoint whose config or
+    tokenizer_config carries an ``auto_map`` (custom Python classes shipped
+    in the repo) cannot be loaded under this policy, whatever the weights
+    look like.
+    """
+    for name in ("config.json", "tokenizer_config.json"):
+        try:
+            data = json.loads(
+                (Path(str(model_dir)) / name).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        auto_map = data.get("auto_map")
+        if isinstance(auto_map, dict) and auto_map:
+            return True
+    return False
+
+
 def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
     if arch_id in {"lfm2-moe-ar", "iquestcoder-ar"}:
         return _passes_mlx_lm_ar_gate(inspection)
@@ -1192,6 +1213,30 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
     contract_path = getattr(inspection, "runtime_contract_path", None)
     if not contract_path:
         contract_path = str(_contract_path(model_dir)) if _contract_path(model_dir).exists() else None
+    if _requires_remote_code(model_dir):
+        support = architecture_support_for(detected_arch_id)
+        return CompatibilityVerdict(
+            tier=TIER_ARCH_COMPATIBLE_UNVERIFIED,
+            arch_id=detected_arch_id,
+            supported=False,
+            recognized=support is not None,
+            can_run=False,
+            exit_code=EXIT_UNVERIFIED,
+            message=(
+                "this checkpoint declares custom code (auto_map) that "
+                "transformers must execute to load it; MTPLX never runs "
+                "repository code (trust_remote_code stays off). Use a "
+                "conversion that ships standard tokenizer/model classes."
+            ),
+            recommended_backend=(support.backend if support else None),
+            recommended_profile=DEFAULT_PROFILE_NAME,
+            unsafe_force_required=False,
+            unverified_model=True,
+            mtp_supported="no",
+            runtime_compatibility="trust-remote-code-required",
+            support_level="trust-remote-code-refused",
+            support_notes=(support.notes if support else None),
+        )
     bad_bits = _unsupported_quant_bits(model_dir)
     if bad_bits is not None:
         support = architecture_support_for(detected_arch_id)

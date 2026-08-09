@@ -2527,3 +2527,29 @@ def test_lfm2_moe_without_trunk_weights_still_refuses(tmp_path):
     result = inspect_model(tmp_path)
 
     assert result.compatibility["can_run"] is False
+
+
+def test_remote_code_checkpoints_refuse_cleanly(tmp_path):
+    """auto_map custom code refuses loudly; MTPLX never runs repo code."""
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["IQuestCoderForCausalLM"],
+                "model_type": "iquestcoder",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps(
+            {"auto_map": {"AutoTokenizer": ["tokenization_iquest.IQuestTokenizer", None]}}
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["runtime_compatibility"] == "trust-remote-code-required"
+    assert result.compatibility["can_run"] is False
+    assert "trust_remote_code" in result.compatibility["message"]
