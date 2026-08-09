@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import sys
+import time
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -184,9 +185,13 @@ class A3BMTPBatchStreamResult:
     request_id: str
     tokens: tuple[int, ...]
     finish_reason: str
+    # Per-row truth: cycles the ROW was active (not cohort totals), this
+    # row's own draft outcomes, and the perf_counter stamp of its terminal
+    # event. Early finishers stop accruing here while the cohort drains.
     cycles: int = 0
     accepted_drafts: int = 0
     rejected_drafts: int = 0
+    terminal_perf_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -2800,11 +2805,17 @@ def generate_a3b_mtp_batch(
     ]
     terminal_notified = [False for _ in real]
     replacement_rows: set[int] = set()
+    row_accepted = [0 for _ in real]
+    row_rejected = [0 for _ in real]
+    row_terminal_cycle = [0 for _ in real]
+    row_terminal_perf: list[float | None] = [None for _ in real]
 
     def notify_terminal(row: int, cycle_count: int) -> None:
         if terminal_notified[row] or finish[row] is None:
             return
         terminal_notified[row] = True
+        row_terminal_cycle[row] = int(cycle_count)
+        row_terminal_perf[row] = time.perf_counter()
         callback = real[row].on_terminal
         if callback is not None:
             callback(str(finish[row]), int(cycle_count))
@@ -3064,6 +3075,8 @@ def generate_a3b_mtp_batch(
             keeps[row] = 2 if decision.accepted else 1
             accepted_drafts += int(decision.accepted)
             rejected_drafts += int(not decision.accepted)
+            row_accepted[row] += int(decision.accepted)
+            row_rejected[row] += int(not decision.accepted)
             cycle_tokens[row].append(decision.second_token)
             if decision.bonus_token is not None:
                 cycle_tokens[row].append(decision.bonus_token)
@@ -3158,6 +3171,10 @@ def generate_a3b_mtp_batch(
                 request_id=request.request_id,
                 tokens=tuple(tokens[row]),
                 finish_reason=str(finish[row]),
+                cycles=row_terminal_cycle[row],
+                accepted_drafts=row_accepted[row],
+                rejected_drafts=row_rejected[row],
+                terminal_perf_s=row_terminal_perf[row],
             )
             for row, request in enumerate(real)
         ),

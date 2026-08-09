@@ -811,3 +811,32 @@ def test_prefill_restored_requires_boundary_hidden():
                 cache=[], mtp_cache=[], restore_point=2, boundary_hidden=None
             ),
         )
+
+
+def test_per_row_stats_reflect_each_rows_own_active_window():
+    """Streams carry the ROW's truth, not cohort totals (Pro flaw 4).
+
+    An early finisher must report fewer active cycles and an earlier
+    terminal stamp than a peer that keeps decoding; per-row draft outcomes
+    must partition the cohort totals.
+    """
+    lane = _FakeLane()
+    result = generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("early", list(range(100)), max_tokens=1),
+            _request("late", [7], max_tokens=32),
+        ],
+    )
+
+    early, late = result.streams
+    assert early.finish_reason == "length"
+    assert late.finish_reason == "length"
+    assert 0 < early.cycles < late.cycles
+    assert late.cycles == result.cycles
+    assert early.terminal_perf_s is not None
+    assert late.terminal_perf_s is not None
+    assert early.terminal_perf_s <= late.terminal_perf_s
+    assert early.accepted_drafts + late.accepted_drafts == result.accepted_drafts
+    assert early.rejected_drafts + late.rejected_drafts == result.rejected_drafts
+    assert early.accepted_drafts + early.rejected_drafts <= early.cycles

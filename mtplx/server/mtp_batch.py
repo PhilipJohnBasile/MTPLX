@@ -473,7 +473,7 @@ class MTPBatchGenerationService:
                 successful.append(
                     (
                         job,
-                        stream.finish_reason,
+                        stream,
                         result.route_id,
                         result.cycles,
                     )
@@ -486,14 +486,17 @@ class MTPBatchGenerationService:
             finally:
                 for job in jobs:
                     job.finish_finalize_ownership(finalized=finalized)
-        for job, finish_reason, route_id, target_cycles in successful:
+        for job, stream, route_id, cohort_cycles in successful:
             self._complete_cohort_job(
                 job,
-                finish_reason=finish_reason,
+                finish_reason=stream.finish_reason,
                 route_id=route_id,
                 real_width=real_width,
-                target_cycles=target_cycles,
+                target_cycles=int(stream.cycles) or int(cohort_cycles),
                 cohort_started_s=started,
+                row_accepted_drafts=int(stream.accepted_drafts),
+                row_rejected_drafts=int(stream.rejected_drafts),
+                terminal_perf_s=stream.terminal_perf_s,
             )
 
     def _finalize_on_owner(self, jobs: list[MTPBatchJob]) -> dict[str, Any]:
@@ -557,13 +560,24 @@ class MTPBatchGenerationService:
         real_width: int,
         target_cycles: int,
         cohort_started_s: float,
+        row_accepted_drafts: int | None = None,
+        row_rejected_drafts: int | None = None,
+        terminal_perf_s: float | None = None,
     ) -> None:
         if job.future.done():
             return
         completed_s = time.perf_counter()
         request_elapsed_s = max(0.0, completed_s - job.created_s)
         decode_started_s = job.decode_started_s or cohort_started_s
-        decode_elapsed_s = max(0.0, completed_s - decode_started_s)
+        # The driver stamps each row's own terminal event; an early finisher's
+        # decode window ends there, not at cohort drain. Same perf_counter
+        # domain (one process), so the subtraction is valid.
+        decode_ended_s = (
+            terminal_perf_s
+            if terminal_perf_s is not None and terminal_perf_s >= decode_started_s
+            else completed_s
+        )
+        decode_elapsed_s = max(0.0, decode_ended_s - decode_started_s)
         prefill_elapsed_s = max(0.0, decode_started_s - cohort_started_s)
         generation_elapsed_s = max(0.0, completed_s - cohort_started_s)
         completion_tokens = len(job.tokens)
@@ -593,6 +607,17 @@ class MTPBatchGenerationService:
             "target_verify_cycles": int(target_cycles),
             "scheduler_lane": "mtp_batch",
             "scheduler_mode": "mtp_batch",
+            "row_accepted_drafts": (
+                int(row_accepted_drafts) if row_accepted_drafts is not None else None
+            ),
+            "row_rejected_drafts": (
+                int(row_rejected_drafts) if row_rejected_drafts is not None else None
+            ),
+            "row_terminal_to_cohort_end_s": (
+                max(0.0, completed_s - terminal_perf_s)
+                if terminal_perf_s is not None
+                else None
+            ),
             "scheduler_policy": "fixed_mtp_batch_width_8",
             "request_id": job.request_id,
             "active_batch_size": real_width,
