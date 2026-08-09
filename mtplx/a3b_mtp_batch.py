@@ -220,8 +220,17 @@ def _require_callable(runtime: Any, name: str) -> Callable[..., Any]:
 
 
 def _require_mlx_lm_arrays_cache_fix() -> None:
-    """Fail before model work when the Qwen cache-leak fix is absent."""
+    """Fail before model work when the Qwen cache-leak fix is absent.
 
+    The vendored fix installs first, so a stock mlx-lm environment (what a
+    fresh ``pip install mtplx`` resolves) passes the probe without the manual
+    git-pin step; the repair instructions below are the true fallback for an
+    environment where even the vendored install failed.
+    """
+
+    from mtplx.arrays_cache_patch import install_arrays_cache_fix
+
+    install_arrays_cache_fix()
     cache = ArraysCache(1)
     if hasattr(cache, "_lp_advance") and hasattr(cache, "_len_advance"):
         return

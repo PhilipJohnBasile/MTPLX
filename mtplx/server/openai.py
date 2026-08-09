@@ -1699,6 +1699,14 @@ def _select_backend_context_window(
 def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
     """Reject an invalid fixed-width MTP service before model construction."""
 
+    # The ArraysCache.advance() Metal buffer-object leak arms on the
+    # BatchGenerator paths (ar_batch), not only mtp_batch — install the
+    # vendored fix for EVERY server mode before the scheduler-mode
+    # early-return, closing the gate hole where stock mlx-lm could serve
+    # the AR lane unprotected (leak crash bound ~17k tokens on 35B).
+    from mtplx.arrays_cache_patch import install_arrays_cache_fix
+
+    install_arrays_cache_fix()
     numerics = normalize_mtp_batch_numerics(getattr(args, "mtp_batch_numerics", None))
     args.mtp_batch_numerics = numerics.value
     if str(getattr(args, "scheduler_mode", "serial")) != SchedulerMode.MTP_BATCH:
