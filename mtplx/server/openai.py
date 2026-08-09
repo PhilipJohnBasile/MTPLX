@@ -2459,6 +2459,23 @@ class _BatchedARGenerationService:
                 "last_miss_reason",
                 job.cache_miss_reason,
             )
+            if os.environ.get("MTPLX_BANK_RESTORE_DEBUG"):
+                diag = getattr(job.session_bank, "last_prefix_diagnostic", None)
+                _safe_stdout_print(
+                    json.dumps(
+                        {
+                            "event": "ar_batch_restore_miss_debug",
+                            "prompt_len": len(job.prompt_ids),
+                            "bank_entries": len(job.session_bank),
+                            "miss_reason": job.cache_miss_reason,
+                            "session_id": job.session_id,
+                            "template_hash": job.session_template_hash,
+                            "policy_fingerprint": job.session_policy_fingerprint,
+                            "diag": diag,
+                        },
+                        default=str,
+                    )
+                )
             return False
         if not self._cache_supports_batch_history_merge(restored.cache):
             # mlx-lm BatchGenerator requires history caches to expose merge().
