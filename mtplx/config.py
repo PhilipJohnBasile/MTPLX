@@ -30,6 +30,7 @@ CONFIG_VALUE_KEYS = (
     "paged_kv_quantization",
     "scheduler_mode",
     "batching_preset",
+    "mtp_batch_numerics",
     "max_active_requests",
     "decode_batch_max",
     "batch_wait_ms",
@@ -65,6 +66,7 @@ class UserConfig:
     paged_kv_quantization: str | None = None
     scheduler_mode: str | None = None
     batching_preset: str | None = None
+    mtp_batch_numerics: str | None = None
     max_active_requests: int | None = None
     decode_batch_max: int | None = None
     batch_wait_ms: float | None = None
@@ -137,6 +139,7 @@ def load_user_config(path: str | Path | None = None) -> UserConfig:
         paged_kv_quantization=str(paged_kv_quantization) if paged_kv_quantization else None,
         scheduler_mode=_str_or_none(data.get("scheduler_mode")),
         batching_preset=_str_or_none(data.get("batching_preset")),
+        mtp_batch_numerics=_str_or_none(data.get("mtp_batch_numerics")),
         max_active_requests=_int_or_none(data.get("max_active_requests")),
         decode_batch_max=_int_or_none(data.get("decode_batch_max")),
         batch_wait_ms=_float_or_none(data.get("batch_wait_ms")),
@@ -231,6 +234,7 @@ _RUNTIME_DEFAULTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "paged_kv_quantization": ("paged_kv_quantization", ("paged-kv-quantization", "paged-kv-quant", "kv-quant")),
     "scheduler_mode": ("scheduler_mode", ("scheduler-mode",)),
     "batching_preset": ("batching_preset", ("batching-preset",)),
+    "mtp_batch_numerics": ("mtp_batch_numerics", ("mtp-batch-numerics",)),
     "max_active_requests": ("max_active_requests", ("max-active-requests",)),
     "decode_batch_max": ("decode_batch_max", ("decode-batch-max",)),
     "batch_wait_ms": ("batch_wait_ms", ("batch-wait-ms",)),

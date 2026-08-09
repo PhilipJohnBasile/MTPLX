@@ -73,6 +73,11 @@ from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from mtplx.attention_context import attention_phase
 from mtplx.cache_state import snapshot_cache
 from mtplx.mtp_patch import MTPContract
+from mtplx.mtp_batch_numerics import (
+    MTP_BATCH_NUMERICS_CHOICES,
+    MTPBatchNumerics,
+    normalize_mtp_batch_numerics,
+)
 from mtplx.backends.descriptors import (
     BackendDescriptor,
     assistant_target_distribution_choices,
@@ -1652,7 +1657,16 @@ def _select_backend_context_window(
 def _validate_mtp_batch_settings(args: argparse.Namespace) -> None:
     """Reject an invalid fixed-width MTP service before model construction."""
 
+    numerics = normalize_mtp_batch_numerics(
+        getattr(args, "mtp_batch_numerics", None)
+    )
+    args.mtp_batch_numerics = numerics.value
     if str(getattr(args, "scheduler_mode", "serial")) != SchedulerMode.MTP_BATCH:
+        if numerics is not MTPBatchNumerics.THROUGHPUT:
+            raise RuntimeError(
+                f"mtp_batch numerics profile {numerics.value} "
+                "requires scheduler_mode=mtp_batch"
+            )
         return
     required = (
         (str(getattr(args, "generation_mode", "")) == "mtp", "generation_mode=mtp"),
@@ -1886,6 +1900,7 @@ class ServerState:
             self.mtp_batch_lane = self.model_scheduler.submit_foreground(
                 install_a3b_mtp_batch_lane,
                 self.runtime,
+                numerics=args.mtp_batch_numerics,
                 batch_key="startup.mtp_batch_lane",
             ).result()
         self.chat_template_profile = _normalize_chat_template_profile(
@@ -13275,6 +13290,7 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         except Exception as exc:
             ar_batch_stats = {"error": str(exc)}
     mtp_batch_stats: dict[str, Any] = {}
+    mtp_batch_lane = getattr(state, "mtp_batch_lane", None)
     mtp_batch_service = getattr(state, "mtp_batch_service", None)
     if mtp_batch_service is not None and hasattr(mtp_batch_service, "snapshot"):
         try:
@@ -13343,6 +13359,11 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         "active_requests": active_requests,
         "mtp_available": mtp_available,
         "mtp_disabled_reason": mtp_disabled_reason,
+        "mtp_batch_numerics": getattr(mtp_batch_lane, "numerics_profile", None),
+        "mtp_batch_route_id": getattr(mtp_batch_lane, "route_id", None),
+        "mtp_batch_config_fingerprint": getattr(
+            mtp_batch_lane, "config_fingerprint", None
+        ),
         "path": "mtp_batch" if config.mode == SchedulerMode.MTP_BATCH else "path_a",
         "path_a": {
             "solo_mtp_protected": True,
@@ -14958,6 +14979,17 @@ def _policy_fingerprint(
         f"online_hidden={json.dumps(online_hidden, sort_keys=True, separators=(',', ':'))}",
     ]
     normalized_cache_scope = str(cache_scope or "").strip()
+    mtp_batch_lane = getattr(state, "mtp_batch_lane", None)
+    if mtp_batch_lane is not None:
+        parts.extend(
+            (
+                "mtp_batch_numerics="
+                f"{getattr(mtp_batch_lane, 'numerics_profile', 'unknown')}",
+                f"mtp_batch_route={getattr(mtp_batch_lane, 'route_id', 'unknown')}",
+                "mtp_batch_config="
+                f"{getattr(mtp_batch_lane, 'config_fingerprint', 'unknown')}",
+            )
+        )
     if normalized_cache_scope and normalized_cache_scope != "stable":
         parts.append(f"cache_scope={normalized_cache_scope}")
     return ";".join(parts)
@@ -27731,6 +27763,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=BATCHING_PRESET_CHOICES,
         default=os.environ.get("MTPLX_BATCHING_PRESET", "latency"),
         help="Concurrent batching policy preset: solo, latency, agent, or throughput.",
+    )
+    parser.add_argument(
+        "--mtp-batch-numerics",
+        choices=MTP_BATCH_NUMERICS_CHOICES,
+        default="throughput",
+        help="Construction-time arithmetic profile for fixed-width Qwen MTP batches.",
     )
     parser.add_argument("--max-active-requests", type=int)
     parser.add_argument("--decode-batch-max", type=int)

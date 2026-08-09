@@ -28,6 +28,7 @@ from mtplx.fast_sampling import (
     BatchedSparseDistributions,
     bind_batched_top_k_distributions,
 )
+from mtplx.mtp_batch_numerics import MTPBatchNumerics, normalize_mtp_batch_numerics
 from mtplx.ragged_kv_cache import RaggedBatchKVCache
 from mtplx.sampling import SamplerConfig, sample_from_distribution, verify_one_token
 
@@ -78,10 +79,25 @@ class A3BMTPBatchGeometry:
 
 
 @dataclass(frozen=True)
+class A3BMTPBatchProfileSpec:
+    """One construction-installed arithmetic route with no decode-time lookup."""
+
+    numerics: MTPBatchNumerics
+    route_id: str
+    target_forward: Callable[..., Any]
+    capture_forward: Callable[..., Any]
+    draft_forward: Callable[..., Any]
+    update_mtp_cache: Callable[..., Any]
+    commit_rows: Callable[..., Any]
+    selfcheck_contract: Callable[[Mapping[str, Any]], bool]
+
+
+@dataclass(frozen=True)
 class InstalledA3BMTPBatchLane:
     """Prevalidated, prebound fixed-shape lane used directly by serving."""
 
     geometry: A3BMTPBatchGeometry
+    numerics_profile: str
     route_id: str
     attention_route_id: str
     config_fingerprint: str
@@ -592,6 +608,22 @@ def _commit_qwen35b_b8_t2_rows(
         base_conv, base_state = base_recurrent[layer_idx]
         entry[0] = mx.where(conv_mask, selected_conv, base_conv)
         entry[1] = mx.where(state_mask, selected_state, base_state)
+
+
+def _bfloat16_max_ulp(left: Any, right: Any) -> Any:
+    """Return one device scalar; construction receipts call this, decode does not."""
+
+    if left.dtype != mx.bfloat16 or right.dtype != mx.bfloat16:
+        return mx.array(-1, dtype=mx.int32)
+    left_bits = left.view(mx.uint16).astype(mx.int32)
+    right_bits = right.view(mx.uint16).astype(mx.int32)
+
+    def ordered(bits: Any) -> Any:
+        sign = bits & 0x8000
+        magnitude = bits & 0x7FFF
+        return mx.where(sign != 0, 0x8000 - magnitude, 0x8000 + magnitude)
+
+    return mx.max(mx.abs(ordered(left_bits) - ordered(right_bits)))
 
 
 def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str, Any]:
@@ -1365,6 +1397,9 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     heterogeneous_layer_max_abs: dict[int, list[float]] = {
         layer_idx: [0.0, 0.0] for layer_idx in batch_captures
     }
+    heterogeneous_layer_max_ulp: dict[int, list[int]] = {
+        layer_idx: [0, -1] for layer_idx in batch_captures
+    }
     solo_commit = True
     solo_capture_layers = 30
     for row, row_token in enumerate(batch_tokens):
@@ -1407,6 +1442,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             mx.argmax(batch_logits[row : row + 1], axis=-1)
             == mx.argmax(solo_logits, axis=-1)
         )
+        row_ulps = []
         for layer_idx in batch_captures:
             comparisons.extend(
                 (
@@ -1452,11 +1488,30 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
                     ),
                 )
             )
-        mx.eval(*comparisons, *row_errors, *row_reference_max, row_argmax_parity)
+            row_ulps.extend(
+                (
+                    _bfloat16_max_ulp(
+                        batch_captures[layer_idx]["conv_states"][row : row + 1],
+                        solo_captures[layer_idx]["conv_states"],
+                    ),
+                    _bfloat16_max_ulp(
+                        batch_captures[layer_idx]["states"][row : row + 1],
+                        solo_captures[layer_idx]["states"],
+                    ),
+                )
+            )
+        mx.eval(
+            *comparisons,
+            *row_errors,
+            *row_reference_max,
+            *row_ulps,
+            row_argmax_parity,
+        )
         error_values = [float(np.asarray(value).item()) for value in row_errors]
         reference_values = [
             float(np.asarray(value).item()) for value in row_reference_max
         ]
+        ulp_values = [int(np.asarray(value).item()) for value in row_ulps]
         heterogeneous_argmax_parity = bool(
             heterogeneous_argmax_parity
             and bool(np.asarray(row_argmax_parity).item())
@@ -1503,6 +1558,13 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             layer_errors = heterogeneous_layer_max_abs[layer_idx]
             layer_errors[0] = max(layer_errors[0], conv_error)
             layer_errors[1] = max(layer_errors[1], state_error)
+            layer_ulps = heterogeneous_layer_max_ulp[layer_idx]
+            layer_ulps[0] = max(
+                layer_ulps[0], ulp_values[2 * capture_position]
+            )
+            layer_ulps[1] = max(
+                layer_ulps[1], ulp_values[1 + 2 * capture_position]
+            )
         solo_commit = bool(solo_commit and row_commit)
         solo_capture_layers = min(solo_capture_layers, len(solo_captures))
     heterogeneous_relative_errors = {
@@ -1597,6 +1659,36 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         for layer_idx, layer_type in enumerate(_LAYER_TYPES)
         if layer_type == "linear_attention"
     )
+    attribution_boundaries = []
+    for layer_idx in sorted(heterogeneous_layer_max_abs):
+        conv_max_abs, state_max_abs = heterogeneous_layer_max_abs[layer_idx]
+        conv_max_ulp, state_max_ulp = heterogeneous_layer_max_ulp[layer_idx]
+        attribution_boundaries.extend(
+            (
+                {
+                    "operator": f"target.layers.{layer_idx}.gdn_postconv.conv_state",
+                    "layer": layer_idx,
+                    "phase": "decode_verify",
+                    "b1_shape": [1, 2, 32, 128],
+                    "b8_shape": [8, 2, 32, 128],
+                    "bitwise": conv_max_abs == 0.0,
+                    "max_abs": conv_max_abs,
+                    "max_ulp": conv_max_ulp,
+                    "argmax_equal": heterogeneous_argmax_parity,
+                },
+                {
+                    "operator": f"target.layers.{layer_idx}.gdn_postconv.state",
+                    "layer": layer_idx,
+                    "phase": "decode_verify",
+                    "b1_shape": [1, 2, 32, 128, 128],
+                    "b8_shape": [8, 2, 32, 128, 128],
+                    "bitwise": state_max_abs == 0.0,
+                    "max_abs": state_max_abs,
+                    "max_ulp": state_max_ulp,
+                    "argmax_equal": heterogeneous_argmax_parity,
+                },
+            )
+        )
     return {
         "ok": bool(
             target_shape == [8, 2]
@@ -1703,6 +1795,11 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             str(layer_idx): values
             for layer_idx, values in heterogeneous_layer_max_abs.items()
         },
+        "heterogeneous_layer_max_ulp": {
+            str(layer_idx): values
+            for layer_idx, values in heterogeneous_layer_max_ulp.items()
+        },
+        "attribution_boundaries": attribution_boundaries,
     }
 
 
@@ -1820,13 +1917,50 @@ def _bind_qwen35b_batch_prefill(
     )
 
 
+def _throughput_selfcheck_contract(report: Mapping[str, Any]) -> bool:
+    return bool(
+        bool(report.get("ok"))
+        and report.get("target_shape") == [8, 2]
+        and int(report.get("projection_rows", 0) or 0) == 16
+        and bool(report.get("solo_parity"))
+        and int(report.get("captured_gdn_layers", 0) or 0) == 30
+        and bool(report.get("row_commit"))
+        and bool(report.get("fixed_row_commit"))
+        and bool(report.get("heterogeneous_row_parity"))
+        and bool(report.get("heterogeneous_numerical_parity"))
+        and bool(report.get("heterogeneous_argmax_parity"))
+        and bool(report.get("b8_t2_gdn_numerical_parity"))
+        and bool(report.get("compiled_eager_numerical_parity"))
+        and bool(report.get("compiled_eager_argmax_parity"))
+        and bool(report.get("compiled_eager_offset_parity"))
+        and bool(report.get("same_geometry_numerical_parity"))
+        and bool(report.get("same_geometry_argmax_parity"))
+        and bool(report.get("same_geometry_attention_parity"))
+        and bool(report.get("stock_b8_unchanged_moe_reference"))
+        and bool(report.get("mixed_commit_parity"))
+        and bool(report.get("prefill_contract"))
+        and bool(report.get("prefill_numerical_parity"))
+        and bool(report.get("empty_mtp_draft_parity"))
+        and bool(report.get("empty_mtp_draft_numerical_parity"))
+        and bool(report.get("empty_mtp_draft_argmax_parity"))
+        and bool(report.get("empty_mtp_row_isolation_parity"))
+        and bool(report.get("row_isolation_parity"))
+    )
+
+
 def install_a3b_mtp_batch_lane(
     runtime: Any,
     *,
+    numerics: object | None = None,
     selfcheck: Callable[[InstalledA3BMTPBatchLane], Mapping[str, Any]] | None = None,
+    profile_factories: Mapping[
+        object, Callable[[A3BMTPBatchProfileSpec], A3BMTPBatchProfileSpec]
+    ]
+    | None = None,
 ) -> InstalledA3BMTPBatchLane:
     """Validate and freeze the exact Qwen 35B B8/T2 route once at startup."""
 
+    selected_numerics = normalize_mtp_batch_numerics(numerics)
     _config, fingerprint = _validate_config(runtime)
     _validate_runtime(runtime)
     model_target_forward = _require_callable(runtime, "model")
@@ -1873,22 +2007,59 @@ def install_a3b_mtp_batch_lane(
         _call_with_qwen35b_mtp_batch_attention,
         call=model_update_mtp_cache,
     )
-    prefill_request = _bind_qwen35b_batch_prefill(
-        runtime,
-        update_mtp_cache=update_mtp_cache,
-        chunk_size=prefill_chunk_tokens,
-    )
-    geometry = A3BMTPBatchGeometry()
-    lane = InstalledA3BMTPBatchLane(
-        geometry=geometry,
-        route_id="qwen35b_a3b_mtp_batch_b8_t2_m16",
-        attention_route_id=attention_route_id,
-        config_fingerprint=fingerprint,
+    throughput_spec = A3BMTPBatchProfileSpec(
+        numerics=MTPBatchNumerics.THROUGHPUT,
+        route_id="qwen35b_a3b_mtp_batch_b8_t2_m16_throughput",
         target_forward=target_forward,
         capture_forward=capture_forward,
         draft_forward=draft_forward,
         update_mtp_cache=update_mtp_cache,
         commit_rows=_commit_qwen35b_b8_t2_rows,
+        selfcheck_contract=_throughput_selfcheck_contract,
+    )
+    if selected_numerics is MTPBatchNumerics.THROUGHPUT:
+        profile_spec = throughput_spec
+    else:
+        factories = profile_factories or {}
+        factory = factories.get(selected_numerics) or factories.get(
+            selected_numerics.value
+        )
+        if factory is None:
+            raise A3BMTPBatchInstallError(
+                f"Qwen 35B mtp_batch {selected_numerics.value} profile factory "
+                "was not installed"
+            )
+        profile_spec = factory(throughput_spec)
+        if not isinstance(profile_spec, A3BMTPBatchProfileSpec):
+            raise A3BMTPBatchInstallError(
+                f"Qwen 35B mtp_batch {selected_numerics.value} profile factory "
+                "returned the wrong specification type"
+            )
+        if profile_spec.numerics is not selected_numerics:
+            raise A3BMTPBatchInstallError(
+                f"Qwen 35B mtp_batch {selected_numerics.value} profile factory "
+                f"returned {profile_spec.numerics.value}"
+            )
+    profile_fingerprint = (
+        f"{fingerprint}:{selected_numerics.value}:{profile_spec.route_id}"
+    )
+    prefill_request = _bind_qwen35b_batch_prefill(
+        runtime,
+        update_mtp_cache=profile_spec.update_mtp_cache,
+        chunk_size=prefill_chunk_tokens,
+    )
+    geometry = A3BMTPBatchGeometry()
+    lane = InstalledA3BMTPBatchLane(
+        geometry=geometry,
+        numerics_profile=selected_numerics.value,
+        route_id=profile_spec.route_id,
+        attention_route_id=attention_route_id,
+        config_fingerprint=profile_fingerprint,
+        target_forward=profile_spec.target_forward,
+        capture_forward=profile_spec.capture_forward,
+        draft_forward=profile_spec.draft_forward,
+        update_mtp_cache=profile_spec.update_mtp_cache,
+        commit_rows=profile_spec.commit_rows,
         prefill_request=prefill_request,
         merge_target_caches=_merge_qwen35b_target_caches,
         merge_mtp_caches=_merge_qwen35b_mtp_caches,
@@ -1899,48 +2070,22 @@ def install_a3b_mtp_batch_lane(
     report = dict(
         selfcheck(lane) if selfcheck is not None else _default_selfcheck(lane, runtime)
     )
-    if (
-        not bool(report.get("ok"))
-        or report.get("target_shape") != [8, 2]
-        or int(report.get("projection_rows", 0) or 0) != 16
-        or not bool(report.get("solo_parity"))
-        or int(report.get("captured_gdn_layers", 0) or 0) != 30
-        or not bool(report.get("row_commit"))
-        or not bool(report.get("fixed_row_commit"))
-        or not bool(report.get("heterogeneous_row_parity"))
-        or not bool(report.get("heterogeneous_numerical_parity"))
-        or not bool(report.get("heterogeneous_argmax_parity"))
-        or not bool(report.get("b8_t2_gdn_numerical_parity"))
-        or not bool(report.get("compiled_eager_numerical_parity"))
-        or not bool(report.get("compiled_eager_argmax_parity"))
-        or not bool(report.get("compiled_eager_offset_parity"))
-        or not bool(report.get("same_geometry_numerical_parity"))
-        or not bool(report.get("same_geometry_argmax_parity"))
-        or not bool(report.get("same_geometry_attention_parity"))
-        or not bool(report.get("stock_b8_unchanged_moe_reference"))
-        or not bool(report.get("mixed_commit_parity"))
-        or not bool(report.get("prefill_contract"))
-        or not bool(report.get("prefill_numerical_parity"))
-        or not bool(report.get("empty_mtp_draft_parity"))
-        or not bool(report.get("empty_mtp_draft_numerical_parity"))
-        or not bool(report.get("empty_mtp_draft_argmax_parity"))
-        or not bool(report.get("empty_mtp_row_isolation_parity"))
-        or not bool(report.get("row_isolation_parity"))
-    ):
+    if not profile_spec.selfcheck_contract(report):
         raise A3BMTPBatchInstallError(
             "Qwen 35B mtp_batch numerical self-check failed: "
             + json.dumps(report, sort_keys=True, default=str)
         )
     return InstalledA3BMTPBatchLane(
         geometry=geometry,
-        route_id=lane.route_id,
+        numerics_profile=selected_numerics.value,
+        route_id=profile_spec.route_id,
         attention_route_id=attention_route_id,
-        config_fingerprint=fingerprint,
-        target_forward=target_forward,
-        capture_forward=capture_forward,
-        draft_forward=draft_forward,
-        update_mtp_cache=update_mtp_cache,
-        commit_rows=_commit_qwen35b_b8_t2_rows,
+        config_fingerprint=profile_fingerprint,
+        target_forward=profile_spec.target_forward,
+        capture_forward=profile_spec.capture_forward,
+        draft_forward=profile_spec.draft_forward,
+        update_mtp_cache=profile_spec.update_mtp_cache,
+        commit_rows=profile_spec.commit_rows,
         prefill_request=prefill_request,
         merge_target_caches=_merge_qwen35b_target_caches,
         merge_mtp_caches=_merge_qwen35b_mtp_caches,

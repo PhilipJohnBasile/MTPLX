@@ -30,6 +30,25 @@ def test_server_parser_accepts_native_app_launch_id():
     assert args.app_launch_id == "native-123"
 
 
+def test_direct_server_parser_exposes_mtp_batch_numerics():
+    args = parse_args(
+        ["--mtp-batch-numerics", "b1-exact", "--warmup-tokens", "0"]
+    )
+
+    assert args.mtp_batch_numerics == "b1-exact"
+
+
+def test_non_default_numerics_requires_mtp_batch():
+    args = parse_args(
+        ["--mtp-batch-numerics", "balanced", "--warmup-tokens", "0"]
+    )
+
+    with pytest.raises(
+        RuntimeError, match="balanced requires scheduler_mode=mtp_batch"
+    ):
+        openai._validate_mtp_batch_settings(args)
+
+
 def test_mtp_batch_server_settings_accept_exact_contract():
     args = parse_args(
         [
@@ -446,6 +465,9 @@ def test_mtp_batch_over_context_request_fails_before_cohort_admission():
 
 def test_mtp_batch_scheduler_health_reports_real_width_and_acceptance():
     state = _mtp_batch_dispatch_state()
+    state.mtp_batch_lane.numerics_profile = "balanced"
+    state.mtp_batch_lane.route_id = "qwen35b_a3b_mtp_batch_b8_t2_balanced"
+    state.mtp_batch_lane.config_fingerprint = "model:balanced:route"
     state.mtp_batch_service = SimpleNamespace(
         snapshot=lambda: {
             "pending": 0,
@@ -467,6 +489,35 @@ def test_mtp_batch_scheduler_health_reports_real_width_and_acceptance():
     assert payload["telemetry"]["target_verify_cycles"] == 64
     assert payload["telemetry"]["accepted_draft_tokens"] == 455
     assert payload["mtp_disabled_reason"] is None
+    assert payload["mtp_batch_numerics"] == "balanced"
+    assert payload["mtp_batch_route_id"].endswith("balanced")
+    assert payload["mtp_batch_config_fingerprint"] == "model:balanced:route"
+
+
+def test_policy_fingerprint_changes_with_mtp_batch_numerics():
+    throughput = _fake_state()
+    throughput.mtp_batch_lane = SimpleNamespace(
+        numerics_profile="throughput",
+        route_id="qwen35b_a3b_mtp_batch_b8_t2_m16_throughput",
+        config_fingerprint="model:throughput:route",
+    )
+    balanced = _fake_state()
+    balanced.mtp_batch_lane = SimpleNamespace(
+        numerics_profile="balanced",
+        route_id="qwen35b_a3b_mtp_batch_b8_t2_balanced",
+        config_fingerprint="model:balanced:route",
+    )
+
+    throughput_fingerprint = openai._policy_fingerprint(
+        throughput, thinking_enabled=False
+    )
+    balanced_fingerprint = openai._policy_fingerprint(
+        balanced, thinking_enabled=False
+    )
+
+    assert throughput_fingerprint != balanced_fingerprint
+    assert "mtp_batch_numerics=throughput" in throughput_fingerprint
+    assert "mtp_batch_numerics=balanced" in balanced_fingerprint
 
 
 def test_mtp_batch_scheduler_health_never_labels_gathering_as_ar():

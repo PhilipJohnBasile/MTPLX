@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import inspect
 import json
 from types import SimpleNamespace
@@ -172,6 +172,62 @@ def _passing_selfcheck(lane):
     }
 
 
+def _fake_profile_factories():
+    from mtplx.mtp_batch_numerics import MTPBatchNumerics
+
+    return {
+        MTPBatchNumerics.BALANCED: lambda base: replace(
+            base,
+            numerics=MTPBatchNumerics.BALANCED,
+            route_id="qwen35b_a3b_mtp_batch_b8_t2_balanced",
+        ),
+        MTPBatchNumerics.B1_EXACT: lambda base: replace(
+            base,
+            numerics=MTPBatchNumerics.B1_EXACT,
+            route_id="qwen35b_a3b_mtp_batch_b8_t2_b1_exact",
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("profile", "suffix"),
+    [
+        ("throughput", "m16_throughput"),
+        ("balanced", "balanced"),
+        ("b1-exact", "b1_exact"),
+    ],
+)
+def test_installer_route_identity_includes_numerics_profile(
+    tmp_path, profile, suffix
+):
+    from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+
+    lane = install_a3b_mtp_batch_lane(
+        _runtime(tmp_path),
+        numerics=profile,
+        selfcheck=_passing_selfcheck,
+        profile_factories=_fake_profile_factories(),
+    )
+
+    assert lane.numerics_profile == profile
+    assert lane.route_id.endswith(suffix)
+    assert profile in lane.config_fingerprint
+
+
+def test_non_throughput_profile_requires_installed_factory(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    with pytest.raises(A3BMTPBatchInstallError, match="balanced.*factory"):
+        install_a3b_mtp_batch_lane(
+            _runtime(tmp_path),
+            numerics="balanced",
+            selfcheck=_passing_selfcheck,
+        )
+
+
 def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     from mtplx.a3b_mtp_batch import (
         _prefill_qwen35b_batch_request,
@@ -187,7 +243,8 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     assert lane.geometry.projection_rows == 16
     assert lane.geometry.hidden_size == 2048
     assert lane.geometry.vocab_size == 248320
-    assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16"
+    assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16_throughput"
+    assert lane.numerics_profile == "throughput"
     assert lane.attention_route_id == "qwen35b_b8_t2_stock_fused_sdpa"
     assert lane.target_forward.keywords["call"] is runtime.model
     assert lane.draft_forward.keywords["call"].func.__self__ is runtime
@@ -237,6 +294,15 @@ def test_batch_driver_executes_draft_and_verify_in_installed_kernel_phases():
     assert 'with attention_phase("ar_decode")' in source
     assert 'with attention_phase("decode_verify")' in source
     assert "solo prefill did not preserve" not in source
+
+
+def test_batch_driver_does_not_call_numerics_attribution():
+    from mtplx import a3b_mtp_batch
+
+    source = inspect.getsource(a3b_mtp_batch.generate_a3b_mtp_batch)
+
+    assert "attribution" not in source
+    assert "first_material_divergence" not in source
 
 
 @pytest.mark.parametrize(

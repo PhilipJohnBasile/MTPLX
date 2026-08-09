@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .constants import DEFAULT_RUNTIME_MODEL_DIR
 from .fan_mode import FAN_MODE_CHOICES
+from .mtp_batch_numerics import MTP_BATCH_NUMERICS_CHOICES
 from .profiles import (
     DEFAULT_HF_MODEL_ID,
     DEFAULT_MODEL_ID,
@@ -648,6 +649,12 @@ def _add_batching_args(parser: argparse.ArgumentParser) -> None:
         choices=BATCHING_PRESET_CHOICES,
         default="latency",
         help="Concurrent batching preset for coding-agent/server UX.",
+    )
+    parser.add_argument(
+        "--mtp-batch-numerics",
+        choices=MTP_BATCH_NUMERICS_CHOICES,
+        default="throughput",
+        help="Construction-time arithmetic profile for fixed-width Qwen MTP batches.",
     )
     parser.add_argument("--max-active-requests", type=_positive_int)
     parser.add_argument("--decode-batch-max", type=_positive_int)
