@@ -62,6 +62,7 @@ class _Runtime:
         }
         self.contract = SimpleNamespace(
             hidden_variant="post_norm",
+            concat_order="embedding_hidden",
             mtp_quant_bits=4,
             mtp_quant_group_size=32,
             mtp_quant_mode="affine",
@@ -71,6 +72,8 @@ class _Runtime:
                 model=SimpleNamespace(layers=[object() for _ in range(40)])
             ),
             mtp=SimpleNamespace(layers=[object()]),
+            mtp_forward=self.draft_mtp,
+            mtp_update_cache=self.update_mtp_cache,
         )
         self.a3b_compiled_target_prefix_factory = SimpleNamespace(
             layer_types=tuple(
@@ -98,6 +101,9 @@ class _Runtime:
     def make_mtp_cache(self):
         return []
 
+    def update_mtp_cache(self, *args, **kwargs):
+        return args, kwargs
+
     def _forward_ar_capture_a3b_postconv(self, *args, **kwargs):
         return args, kwargs
 
@@ -119,6 +125,7 @@ def _passing_selfcheck(lane):
         "solo_parity": True,
         "captured_gdn_layers": 30,
         "row_commit": True,
+        "fixed_row_commit": True,
     }
 
 
@@ -136,7 +143,8 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     assert lane.geometry.vocab_size == 248320
     assert lane.route_id == "qwen35b_a3b_mtp_batch_b8_t2_m16"
     assert lane.target_forward.__self__ is runtime
-    assert lane.draft_forward.__self__ is runtime
+    assert lane.draft_forward.func.__self__ is runtime
+    assert callable(lane.update_mtp_cache)
     assert lane.capture_forward.func.__self__ is runtime
     assert lane.prefill_request.func is not None
     assert lane.selfcheck["solo_parity"] is True
@@ -198,9 +206,9 @@ def test_installer_rejects_missing_prebound_callable(tmp_path):
     )
 
     runtime = _runtime(tmp_path)
-    runtime.draft_mtp = None
+    runtime.model.mtp_forward = None
 
-    with pytest.raises(A3BMTPBatchInstallError, match="draft_mtp"):
+    with pytest.raises(A3BMTPBatchInstallError, match="mtp_forward"):
         install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
 
 

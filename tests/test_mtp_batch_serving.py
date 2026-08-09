@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Event, Thread
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -98,10 +99,7 @@ def test_eight_requests_stream_only_their_own_tokens_and_close_once():
         assert job.test_emitted == expected
         assert result["tokens"] == expected
         assert result["stats"]["generation_mode"] == "mtp"
-        assert result["stats"]["accepted_by_depth"] == [1]
-        assert result["stats"]["accepted_drafts"] == 1
-        assert result["stats"]["rejected_drafts"] == 0
-        assert result["stats"]["drafted_tokens"] == 1
+        assert result["stats"]["target_verify_cycles"] == 2
     assert service.snapshot()["batch_histogram"] == {"8": 1}
     assert service.snapshot()["fixed_width_histogram"] == {"8": 2}
 
@@ -247,3 +245,110 @@ def test_shutdown_closes_queued_requests():
 
     with pytest.raises(RuntimeError, match="shut down"):
         job.future.result(timeout=1)
+
+
+def test_shutdown_closes_active_requests_before_scheduler_cancellation():
+    service = _service(_Driver())
+    job = _job(0)
+    service.submit(job)
+    with service._condition:
+        service._pending.clear()
+        service._active = [job]
+
+    service.shutdown()
+
+    assert job.cancel_requested()
+    with pytest.raises(RuntimeError, match="shut down"):
+        job.future.result(timeout=1)
+
+
+def test_duplicate_public_request_ids_keep_distinct_cohort_rows():
+    def driver(_lane, requests):
+        requests[0].on_token(10)
+        return A3BMTPBatchResult(
+            streams=(
+                A3BMTPBatchStreamResult(requests[0].request_id, (10,), "length"),
+                A3BMTPBatchStreamResult(requests[1].request_id, (), "cancelled"),
+            ),
+            cycles=1,
+            accepted_drafts=0,
+            rejected_drafts=1,
+            route_id="fake-b8-t2",
+            width_histogram=MappingProxyType({8: 1}),
+        )
+
+    service = _service(driver)
+    first = _job(0)
+    second = _job(1)
+    first.request_id = second.request_id = "client-duplicate"
+    service.submit(first)
+    service.submit(second)
+
+    service.pump_once()
+
+    assert first.future.result(timeout=1)["tokens"] == [10]
+    with pytest.raises(RuntimeError, match="cancelled client-duplicate"):
+        second.future.result(timeout=1)
+
+
+def test_cancelled_terminal_future_closes_before_long_peer_finishes():
+    peer_blocked = Event()
+    release_peer = Event()
+
+    def blocking_driver(_lane, requests):
+        requests[0].on_terminal("cancelled", 0)
+        peer_blocked.set()
+        assert release_peer.wait(timeout=2)
+        return A3BMTPBatchResult(
+            streams=(
+                A3BMTPBatchStreamResult("0", (), "cancelled"),
+                A3BMTPBatchStreamResult("1", (11,), "length"),
+            ),
+            cycles=1,
+            accepted_drafts=0,
+            rejected_drafts=1,
+            route_id="fake-b8-t2",
+            width_histogram=MappingProxyType({8: 1}),
+        )
+
+    service = _service(blocking_driver)
+    first = _job(0)
+    second = _job(1)
+    service.submit(first)
+    service.submit(second)
+    pump = Thread(target=service.pump_once)
+    pump.start()
+    try:
+        assert peer_blocked.wait(timeout=1)
+        with pytest.raises(RuntimeError, match="cancelled request-0"):
+            first.future.result(timeout=0.1)
+        assert not second.future.done()
+    finally:
+        release_peer.set()
+        pump.join(timeout=2)
+
+
+def test_real_model_owner_scheduler_gathers_eight_requests():
+    from mtplx.model_scheduler import ModelWorkScheduler
+
+    scheduler = ModelWorkScheduler(name="test-mtp-batch-owner", idle_grace_s=0.0)
+    driver = _Driver()
+    state = SimpleNamespace(
+        runtime=SimpleNamespace(tokenizer=None), model_scheduler=scheduler
+    )
+    service = MTPBatchGenerationService(
+        state,
+        lane=SimpleNamespace(route_id="fake-b8-t2"),
+        driver=driver,
+        batch_wait_s=0.05,
+    )
+    try:
+        futures = [service.submit(_job(index)) for index in range(8)]
+        results = [future.result(timeout=2) for future in futures]
+
+        assert driver.widths == [8]
+        assert len(results) == 8
+        assert service.snapshot()["batch_histogram"] == {"8": 1}
+    finally:
+        service.shutdown()
+        scheduler.shutdown(wait=True, cancel_futures=True)

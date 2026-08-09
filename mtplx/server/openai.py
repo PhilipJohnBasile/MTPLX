@@ -64,7 +64,10 @@ from fastapi.responses import (
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from mtplx import progress_heartbeat
-from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+from mtplx.a3b_mtp_batch import (
+    A3BMTPBatchCapacityError,
+    install_a3b_mtp_batch_lane,
+)
 from mtplx.adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from mtplx.attention_context import attention_phase
 from mtplx.cache_state import snapshot_cache
@@ -343,6 +346,10 @@ _REASONING_CONTROL_TAG_RE = re.compile(
 
 class _StreamCancelled(RuntimeError):
     """Raised inside the generation worker after a request is cancelled."""
+
+
+class MTPBatchRequestError(ValueError):
+    """The request cannot execute on the installed fixed MTP batch lane."""
 
 
 class _StopSequenceHit(_StreamCancelled):
@@ -1917,6 +1924,16 @@ class ServerState:
             model_max=int(self.model_context_window_max),
             requested=requested_context_window,
         )
+        if (
+            scheduler_config.mode == SchedulerMode.MTP_BATCH
+            and self.mtp_batch_lane is not None
+            and int(self.context_window)
+            > int(self.mtp_batch_lane.geometry.max_context_tokens)
+        ):
+            raise RuntimeError(
+                "mtp_batch context window exceeds its installed fixed-width "
+                f"capacity of {self.mtp_batch_lane.geometry.max_context_tokens} tokens"
+            )
         _startup_line(f"[5/6] Context window: {self.context_window} tokens")
         # The paged KV pool clamps geometric growth to this window (#150);
         # env is the plumbing because cache_state has no server handle.
@@ -12948,6 +12965,15 @@ def _mtplx_apply_settings_payload(
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             if key == "depth":
+                if (
+                    _scheduler_config_from_args(state.args).mode
+                    == SchedulerMode.MTP_BATCH
+                    and int(value) != 1
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="mtp_batch has a fixed installed depth of 1",
+                    )
                 minimum = int(backend.draft_semantics.minimum)
                 maximum = int(backend.draft_semantics.maximum)
                 if not minimum <= int(value) <= maximum:
@@ -14367,6 +14393,7 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "mtp_batch_fixed_width",
     "mtp_batch_route_id",
     "target_verify_cycles",
+    "verify_timing_scope",
     "mtp_batch_session_cache_bypass",
     "mtp_disabled_reason",
     "mtp_depth",
@@ -16487,11 +16514,16 @@ def _finalize_batched_ar_generation(
         completion_tokens=completion_tokens,
         elapsed_s=elapsed_s,
     )
+    request_elapsed_s = float(
+        generated.get("request_elapsed_s")
+        or stats.get("request_elapsed_s")
+        or elapsed_s
+    )
     envelope = _metrics_envelope(
         stats=stats,
         prompt_tokens=len(prompt_ids),
         completion_tokens=completion_tokens,
-        request_elapsed_s=elapsed_s,
+        request_elapsed_s=request_elapsed_s,
         token_times=token_times,
         request_started_s=float(stats.get("request_started_s") or time.perf_counter()),
         lock_wait_time_s=float(stats.get("queue_wait_s") or 0.0),
@@ -16570,9 +16602,9 @@ def _finalize_batched_ar_generation(
         envelope["cache_miss_reason"] = None
     stats.update(envelope)
     stats.update(_generation_truth_stats(state, "ar"))
-    stats["server_elapsed_s"] = elapsed_s
+    stats["server_elapsed_s"] = request_elapsed_s
     stats["server_tok_s"] = (
-        completion_tokens / elapsed_s if elapsed_s > 0 else 0.0
+        completion_tokens / request_elapsed_s if request_elapsed_s > 0 else 0.0
     )
     state.last_metrics.append(dict(envelope))
     state.last_metrics = state.last_metrics[-100:]
@@ -16591,7 +16623,7 @@ def _finalize_batched_ar_generation(
                     "scheduler_lane": "ar_batch",
                     "prompt_tokens": generated.get("prompt_tokens"),
                     "completion_tokens": completion_tokens,
-                    "elapsed_s": round(elapsed_s, 6),
+                    "elapsed_s": round(request_elapsed_s, 6),
                     "tok_s": round(float(generated.get("tok_s") or 0.0), 6),
                     "end_to_end_tok_s": round(float(generated["end_to_end_tok_s"]), 6),
                     "seed": stats.get("server_seed"),
@@ -16678,6 +16710,20 @@ def _finalize_mtp_batch_generation(
     envelope["requested_speculative_depth"] = 1
     envelope["speculative_depth"] = 1
     envelope["long_context_mtp_depth_policy"] = {}
+    # The enabled lane carries no per-cycle timers: adding them would perturb
+    # the measured hot path. Verify engagement is the physical cycle count;
+    # timing is collected by the external Metal/profile gate.
+    for key in (
+        "verify_time_s",
+        "verify_forward_time_s",
+        "verify_eval_time_s",
+        "verify_logits_eval_time_s",
+        "verify_hidden_eval_time_s",
+        "verify_joint_eval_time_s",
+        "verify_target_distribution_time_s",
+    ):
+        envelope.pop(key, None)
+    envelope["verify_timing_scope"] = "external_profile_only"
     if request_observability:
         envelope.update(request_observability)
     cleanup = _auto_clear_mlx_cache_after_completed_request(
@@ -16745,18 +16791,20 @@ def _run_mtp_batch_generation_dispatched(
 ) -> dict[str, Any]:
     for field in ("constraint_spec", "vision_splice"):
         if kwargs.get(field) is not None:
-            raise RuntimeError(f"mtp_batch does not support {field}")
+            raise MTPBatchRequestError(f"mtp_batch does not support {field}")
     if bool(kwargs.get("background_request")):
-        raise RuntimeError("mtp_batch does not support background_request")
+        raise MTPBatchRequestError("mtp_batch does not support background_request")
     for field in ("depth", "resolved_mtp_depth"):
         value = kwargs.get(field)
         if value is not None and int(value) != 1:
-            raise RuntimeError(f"mtp_batch requires {field}=1")
+            raise MTPBatchRequestError(f"mtp_batch requires {field}=1")
 
     service = getattr(state, "mtp_batch_service", None)
     lane = getattr(state, "mtp_batch_lane", None)
     if service is None or lane is None:
-        raise RuntimeError("mtp_batch service was not installed at construction")
+        raise MTPBatchRequestError(
+            "mtp_batch service was not installed at construction"
+        )
     response_max, sampler, generation_limits = _generation_params(
         state,
         prompt_token_count=len(prompt_ids),
@@ -21104,6 +21152,9 @@ def create_app(state: ServerState) -> FastAPI:
                 pass
             for task in bg_tasks:
                 task.cancel()
+            mtp_batch_service = getattr(state, "mtp_batch_service", None)
+            if mtp_batch_service is not None:
+                mtp_batch_service.shutdown()
             scheduler = getattr(state, "model_scheduler", None)
             if scheduler is not None:
                 scheduler.shutdown(wait=False, cancel_futures=True)
@@ -27036,6 +27087,34 @@ def create_app(state: ServerState) -> FastAPI:
                 status_code=422,
                 code="request_validation_error",
                 param=param,
+            ),
+        )
+
+    @app.exception_handler(MTPBatchRequestError)
+    async def mtp_batch_request_exception_handler(
+        _request: Request, exc: MTPBatchRequestError
+    ) -> JSONResponse:
+        _record_tool_parse_event(state, event="openai_error_response")
+        return JSONResponse(
+            status_code=400,
+            content=_openai_error_content(
+                str(exc),
+                status_code=400,
+                code="mtp_batch_request_error",
+            ),
+        )
+
+    @app.exception_handler(A3BMTPBatchCapacityError)
+    async def mtp_batch_capacity_exception_handler(
+        _request: Request, exc: A3BMTPBatchCapacityError
+    ) -> JSONResponse:
+        _record_tool_parse_event(state, event="openai_error_response")
+        return JSONResponse(
+            status_code=400,
+            content=_openai_error_content(
+                str(exc),
+                status_code=400,
+                code="mtp_batch_capacity_error",
             ),
         )
 

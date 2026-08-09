@@ -26,6 +26,10 @@ class A3BMTPBatchInstallError(RuntimeError):
     """The fixed Qwen 35B MTP batch lane cannot be installed safely."""
 
 
+class A3BMTPBatchCapacityError(RuntimeError):
+    """A cohort exceeds the installed fixed-width KV capacity contract."""
+
+
 @dataclass(frozen=True)
 class A3BMTPBatchGeometry:
     cohort_slots: int = 8
@@ -41,6 +45,7 @@ class A3BMTPBatchGeometry:
     body_quant_group_size: int = 64
     mtp_quant_bits: int = 4
     mtp_quant_group_size: int = 32
+    max_context_tokens: int = 131072
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,8 @@ class InstalledA3BMTPBatchLane:
     target_forward: Callable[..., Any]
     capture_forward: Callable[..., Any]
     draft_forward: Callable[..., Any]
+    update_mtp_cache: Callable[..., Any]
+    commit_rows: Callable[..., Any]
     prefill_request: Callable[..., Any]
     make_cache: Callable[..., Any]
     make_mtp_cache: Callable[..., Any]
@@ -74,6 +81,8 @@ class A3BMTPBatchRequest:
     stop_token_ids: frozenset[int] = frozenset()
     omit_speculative_bonus: bool = False
     on_token: Callable[[int], None] | None = None
+    on_decode_start: Callable[[], None] | None = None
+    on_terminal: Callable[[str, int], None] | None = None
     cancelled: Callable[[], bool] = _not_cancelled
 
 
@@ -302,6 +311,41 @@ def _bind_capture_forward(runtime: Any) -> Callable[..., Any]:
     )
 
 
+def _commit_qwen35b_b8_t2_rows(
+    cache: list[Any],
+    captures: dict[int, dict[str, Any]],
+    keep_tokens_by_row: list[int],
+) -> None:
+    """Commit the prevalidated B8/T2 cache layout without hot-path proof work."""
+    import mlx.core as mx
+
+    keeps = mx.array(keep_tokens_by_row, dtype=mx.int32)
+    positions = [int(value) - 1 for value in keep_tokens_by_row]
+    for layer_idx, layer_type in enumerate(_LAYER_TYPES):
+        entry = cache[layer_idx]
+        if layer_type == "full_attention":
+            entry.offsets = (entry.offsets - 2 + keeps).astype(mx.int32)
+            continue
+        capture = captures[layer_idx]
+        conv_states = capture["conv_states"]
+        states = capture["states"]
+        selector = mx.array(positions, dtype=mx.int32).reshape(
+            (8, 1) + (1,) * (int(conv_states.ndim) - 2)
+        )
+        conv_selector = mx.broadcast_to(
+            selector, (8, 1) + tuple(conv_states.shape[2:])
+        )
+        state_selector = mx.broadcast_to(
+            selector, (8, 1) + tuple(states.shape[2:])
+        )
+        entry[0] = mx.contiguous(
+            mx.take_along_axis(conv_states, conv_selector, axis=1)[:, 0]
+        )
+        entry[1] = mx.contiguous(
+            mx.take_along_axis(states, state_selector, axis=1)[:, 0]
+        )
+
+
 def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str, Any]:
     """Run one real B8/T2 route and compare row zero with unchanged B1."""
 
@@ -361,6 +405,15 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         and np.array_equal(batch_logits_row, solo_logits_row)
         and np.array_equal(batch_hidden_row, solo_hidden_row)
     )
+    fixed_row_commit = all(
+        layer_idx in batch_captures
+        and "tape" not in batch_captures[layer_idx]
+        and int(batch_captures[layer_idx].get("capture_start", 0)) == 0
+        and tuple(batch_captures[layer_idx]["conv_states"].shape[:2]) == (8, 2)
+        and tuple(batch_captures[layer_idx]["states"].shape[:2]) == (8, 2)
+        for layer_idx, layer_type in enumerate(_LAYER_TYPES)
+        if layer_type == "linear_attention"
+    )
     return {
         "ok": bool(
             target_shape == [8, 2]
@@ -371,6 +424,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
             and solo_commit
             and len(batch_captures) == 30
             and len(solo_captures) == 30
+            and fixed_row_commit
         ),
         "target_shape": target_shape,
         "logits_shape": logits_shape,
@@ -379,6 +433,7 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
         "solo_parity": solo_parity,
         "captured_gdn_layers": len(batch_captures),
         "row_commit": bool(batch_commit and solo_commit),
+        "fixed_row_commit": fixed_row_commit,
     }
 
 
@@ -393,16 +448,29 @@ def install_a3b_mtp_batch_lane(
     _validate_runtime(runtime)
     target_forward = _require_callable(runtime, "forward_ar")
     capture_forward = _bind_capture_forward(runtime)
-    draft_forward = _require_callable(runtime, "draft_mtp")
+    model_draft_forward = _require_callable(runtime.model, "mtp_forward")
+    model_update_mtp_cache = _require_callable(runtime.model, "mtp_update_cache")
     make_cache = _require_callable(runtime, "make_cache")
     make_mtp_cache = _require_callable(runtime, "make_mtp_cache")
-    from .generation import _prefill
+    from .generation import _prefill_committed_mtp_history_streaming
 
     prefill_request = partial(
-        _prefill,
+        _prefill_committed_mtp_history_streaming,
         runtime,
-        return_hidden=True,
-        hidden_variant="post_norm",
+        base_hidden_variant="post_norm",
+        mtp_hidden_variant="post_norm",
+        mtp_position_mode="cache",
+    )
+    draft_forward = partial(
+        model_draft_forward,
+        concat_order=getattr(runtime.contract, "concat_order", None),
+        return_hidden=False,
+        mtp_hidden_variant="post_norm",
+        mtp_depth=1,
+    )
+    update_mtp_cache = partial(
+        model_update_mtp_cache,
+        concat_order=getattr(runtime.contract, "concat_order", None),
     )
     geometry = A3BMTPBatchGeometry()
     lane = InstalledA3BMTPBatchLane(
@@ -412,6 +480,8 @@ def install_a3b_mtp_batch_lane(
         target_forward=target_forward,
         capture_forward=capture_forward,
         draft_forward=draft_forward,
+        update_mtp_cache=update_mtp_cache,
+        commit_rows=_commit_qwen35b_b8_t2_rows,
         prefill_request=prefill_request,
         make_cache=make_cache,
         make_mtp_cache=make_mtp_cache,
@@ -427,6 +497,7 @@ def install_a3b_mtp_batch_lane(
         or not bool(report.get("solo_parity"))
         or int(report.get("captured_gdn_layers", 0) or 0) != 30
         or not bool(report.get("row_commit"))
+        or not bool(report.get("fixed_row_commit"))
     ):
         raise A3BMTPBatchInstallError(
             "Qwen 35B mtp_batch numerical self-check failed: "
@@ -439,6 +510,8 @@ def install_a3b_mtp_batch_lane(
         target_forward=target_forward,
         capture_forward=capture_forward,
         draft_forward=draft_forward,
+        update_mtp_cache=update_mtp_cache,
+        commit_rows=_commit_qwen35b_b8_t2_rows,
         prefill_request=prefill_request,
         make_cache=make_cache,
         make_mtp_cache=make_mtp_cache,
@@ -459,14 +532,73 @@ def _merge_prefilled_caches(caches: list[list[Any]]) -> list[Any]:
         entries = [cache[layer_idx] for cache in caches]
         first = entries[0]
         if _is_trimmable(first):
-            rows = [
-                RaggedBatchKVCache.from_scalar_cache(entry, batch_size=1)
-                for entry in entries
-            ]
-            merged = rows[0]
-            for row in rows[1:]:
-                merged.extend(row)
-            merged._capacity_bound = max(int(getattr(entry, "offset", 0)) for entry in entries)
+            offsets = [int(getattr(entry, "offset", 0)) for entry in entries]
+            populated = [entry for entry in entries if getattr(entry, "keys", None) is not None]
+            if not populated:
+                merged = RaggedBatchKVCache(
+                    batch_size=len(entries),
+                    step=int(getattr(first, "step", 256)),
+                )
+            else:
+                import mlx.core as mx
+
+                template = populated[0]
+                capacity = max(int(entry.keys.shape[2]) for entry in populated)
+                key_rows = []
+                value_rows = []
+                for entry in entries:
+                    keys = getattr(entry, "keys", None)
+                    values = getattr(entry, "values", None)
+                    if keys is None:
+                        keys = mx.zeros(
+                            (
+                                1,
+                                int(template.keys.shape[1]),
+                                capacity,
+                                int(template.keys.shape[3]),
+                            ),
+                            dtype=template.keys.dtype,
+                        )
+                        values = mx.zeros(
+                            (
+                                1,
+                                int(template.values.shape[1]),
+                                capacity,
+                                int(template.values.shape[3]),
+                            ),
+                            dtype=template.values.dtype,
+                        )
+                    elif int(keys.shape[2]) < capacity:
+                        key_pad = mx.zeros(
+                            (
+                                1,
+                                int(keys.shape[1]),
+                                capacity - int(keys.shape[2]),
+                                int(keys.shape[3]),
+                            ),
+                            dtype=keys.dtype,
+                        )
+                        value_pad = mx.zeros(
+                            (
+                                1,
+                                int(values.shape[1]),
+                                capacity - int(values.shape[2]),
+                                int(values.shape[3]),
+                            ),
+                            dtype=values.dtype,
+                        )
+                        keys = mx.concatenate((keys, key_pad), axis=2)
+                        values = mx.concatenate((values, value_pad), axis=2)
+                    key_rows.append(keys)
+                    value_rows.append(values)
+                merged = RaggedBatchKVCache(
+                    batch_size=len(entries),
+                    step=int(getattr(first, "step", 256)),
+                    keys=mx.concatenate(key_rows, axis=0),
+                    values=mx.concatenate(value_rows, axis=0),
+                    offsets=mx.array(offsets, dtype=mx.int32),
+                )
+            merged._capacity_bound = max(offsets)
             merged_cache.append(merged)
             continue
 
@@ -504,7 +636,6 @@ def generate_a3b_mtp_batch(
         _sample_mtp_k1_draft,
         _sample_mtp_k1_primary,
     )
-    from .gdn_capture import commit_captured_rows
     from .ragged_kv_cache import RaggedBatchKVCache
 
     real = list(requests)
@@ -516,12 +647,53 @@ def generate_a3b_mtp_batch(
             raise ValueError("Qwen 35B mtp_batch prompts must not be empty")
         if int(request.max_tokens) < 1:
             raise ValueError("Qwen 35B mtp_batch max_tokens must be >= 1")
+        if len(request.prompt_ids) + int(request.max_tokens) > int(
+            lane.geometry.max_context_tokens
+        ):
+            raise A3BMTPBatchCapacityError(
+                "Qwen 35B mtp_batch requires prompt_tokens + max_tokens <= "
+                f"{lane.geometry.max_context_tokens}"
+            )
 
     slots: list[A3BMTPBatchRequest | None] = [*real, *([None] * (width - len(real)))]
-    prefills: list[tuple[Any, Any, Any]] = []
-    for request in slots:
+    finish: list[str | None] = [
+        "cancelled" if request.cancelled() else None for request in real
+    ]
+    terminal_notified = [False for _ in real]
+
+    def notify_terminal(row: int, cycle_count: int) -> None:
+        if terminal_notified[row] or finish[row] is None:
+            return
+        terminal_notified[row] = True
+        callback = real[row].on_terminal
+        if callback is not None:
+            callback(str(finish[row]), int(cycle_count))
+
+    prefills: list[tuple[Any, Any, Any, Any]] = []
+    for row, request in enumerate(slots):
+        if request is not None and row < len(real) and finish[row] is not None:
+            notify_terminal(row, 0)
         prompt = [0] if request is None or request.cancelled() else list(request.prompt_ids)
-        cache, logits, hidden, *_timing = lane.prefill_request(prompt)
+        try:
+            cache, logits, hidden, mtp_cache, *_timing = lane.prefill_request(
+                prompt,
+                abort_check=request.cancelled if request is not None else None,
+            )
+        except Exception as exc:
+            from .generation import PostcommitAbort
+
+            if (
+                request is None
+                or row >= len(real)
+                or not isinstance(exc, PostcommitAbort)
+                or not request.cancelled()
+            ):
+                raise
+            finish[row] = "cancelled"
+            notify_terminal(row, 0)
+            cache, logits, hidden, mtp_cache, *_timing = lane.prefill_request(
+                [0], abort_check=None
+            )
         if (
             int(logits.shape[0]) != 1
             or int(hidden.shape[0]) != 1
@@ -530,24 +702,22 @@ def generate_a3b_mtp_batch(
             raise RuntimeError(
                 "Qwen 35B mtp_batch solo prefill did not preserve [1,1] ownership"
             )
-        prefills.append((cache, logits, hidden))
+        prefills.append((cache, logits, hidden, mtp_cache))
 
     cache = _merge_prefilled_caches([item[0] for item in prefills])
+    mtp_cache = _merge_prefilled_caches([item[3] for item in prefills])
     logits_last = mx.concatenate([item[1] for item in prefills], axis=0)
     hidden_last = mx.concatenate([item[2] for item in prefills], axis=0)
     mx.eval(logits_last, hidden_last)
+    for request in real:
+        if request.on_decode_start is not None:
+            request.on_decode_start()
 
     rngs = [np.random.default_rng(request.seed) for request in real]
     tokens: list[list[int]] = [[] for _ in real]
-    finish: list[str | None] = [
-        "cancelled" if request.cancelled() else None for request in real
-    ]
     pending: list[int | None] = [None for _ in real]
     accepted_drafts = 0
     rejected_drafts = 0
-    row_cycles = [0 for _ in real]
-    row_accepted_drafts = [0 for _ in real]
-    row_rejected_drafts = [0 for _ in real]
     cycles = 0
     max_cycles = max(int(request.max_tokens) for request in real) + 2
 
@@ -560,10 +730,9 @@ def generate_a3b_mtp_batch(
         for row, request in enumerate(real):
             if finish[row] is None and request.cancelled():
                 finish[row] = "cancelled"
+                notify_terminal(row, cycles)
         if not any(reason is None for reason in finish):
             break
-        cycle_active = [active(row) for row in range(len(real))]
-
         primary_rows = np.asarray(logits_last, dtype=np.float32)
         primary_ids = [0] * width
         primary_was_pending = [False] * width
@@ -597,7 +766,7 @@ def generate_a3b_mtp_batch(
             draft_logits = lane.draft_forward(
                 hidden_last,
                 primary_array[:, None],
-                mtp_cache=lane.make_mtp_cache(),
+                mtp_cache=mtp_cache,
                 mtp_depth=1,
             )
         mx.eval(draft_logits)
@@ -627,13 +796,6 @@ def generate_a3b_mtp_batch(
         with attention_phase("decode_verify"):
             verify_logits, verify_hidden, captures = lane.capture_forward(
                 verify_input, cache=cache
-            )
-        if (
-            tuple(verify_logits.shape[:2]) != (width, lane.geometry.verify_tokens)
-            or tuple(verify_hidden.shape[:2]) != (width, lane.geometry.verify_tokens)
-        ):
-            raise RuntimeError(
-                "Qwen 35B mtp_batch verify collapsed fixed B8/T2 ownership"
             )
         mx.eval(verify_logits)
         verify_rows = np.asarray(verify_logits, dtype=np.float32)
@@ -669,20 +831,35 @@ def generate_a3b_mtp_batch(
             keeps[row] = 2 if decision.accepted else 1
             accepted_drafts += int(decision.accepted)
             rejected_drafts += int(not decision.accepted)
-            row_accepted_drafts[row] += int(decision.accepted)
-            row_rejected_drafts[row] += int(not decision.accepted)
             cycle_tokens[row].append(decision.second_token)
             if decision.bonus_token is not None:
                 cycle_tokens[row].append(decision.bonus_token)
             next_pending[row] = decision.next_primary
 
-        if not commit_captured_rows(
-            cache,
-            captures,
-            keep_tokens_by_row=keeps,
-            verified_tokens=lane.geometry.verify_tokens,
-        ):
-            raise RuntimeError("Qwen 35B mtp_batch could not commit row-owned state")
+        lane.commit_rows(cache, captures, keeps)
+
+        append_mask = mx.array(
+            [
+                bool(
+                    row < len(real)
+                    and proposals[row] is not None
+                    and accepted_mask[row]
+                )
+                for row in range(width)
+            ],
+            dtype=mx.bool_,
+        )
+        mtp_offsets_before_append = [entry.offsets for entry in mtp_cache]
+        with attention_phase("ar_decode"):
+            lane.update_mtp_cache(
+                verify_hidden[:, 0:1, :],
+                mx.array(draft_ids, dtype=mx.int32)[:, None],
+                mtp_cache=mtp_cache,
+            )
+        for entry, before_offsets in zip(mtp_cache, mtp_offsets_before_append):
+            entry.offsets = mx.where(
+                append_mask, entry.offsets, before_offsets
+            ).astype(mx.int32)
 
         accept_array = mx.array(accepted_mask).reshape(width, 1)
         logits_last = mx.where(
@@ -695,8 +872,6 @@ def generate_a3b_mtp_batch(
         )
 
         for row, request in enumerate(real):
-            if cycle_active[row]:
-                row_cycles[row] += 1
             if finish[row] is not None:
                 continue
             if request.cancelled():
@@ -720,7 +895,11 @@ def generate_a3b_mtp_batch(
                     finish[row] = "length"
                     break
             pending[row] = next_pending[row] if finish[row] is None else None
+            notify_terminal(row, cycles + 1)
         cycles += 1
+
+    for row in range(len(real)):
+        notify_terminal(row, cycles)
 
     return A3BMTPBatchResult(
         streams=tuple(
@@ -728,9 +907,6 @@ def generate_a3b_mtp_batch(
                 request_id=request.request_id,
                 tokens=tuple(tokens[row]),
                 finish_reason=str(finish[row]),
-                cycles=row_cycles[row],
-                accepted_drafts=row_accepted_drafts[row],
-                rejected_drafts=row_rejected_drafts[row],
             )
             for row, request in enumerate(real)
         ),

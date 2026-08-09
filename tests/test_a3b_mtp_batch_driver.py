@@ -26,12 +26,20 @@ class _FakeLane:
         self.geometry = SimpleNamespace(
             cohort_slots=8,
             verify_tokens=2,
+            max_context_tokens=131072,
         )
         self.route_id = "fake_qwen35b_b8_t2"
         self.fail_verify = fail_verify
         self.last_cache = None
+        self.last_mtp_cache = None
+        self.prefill_calls = 0
 
-    def prefill_request(self, prompt):
+    def prefill_request(self, prompt, *, abort_check=None):
+        self.prefill_calls += 1
+        if abort_check is not None and abort_check():
+            from mtplx.generation import PostcommitAbort
+
+            raise PostcommitAbort("cancelled")
         kv = KVCache()
         length = len(prompt)
         values = mx.array(np.asarray(prompt, dtype=np.float32)).reshape(1, 1, length, 1)
@@ -41,14 +49,22 @@ class _FakeLane:
         recurrent[1] = mx.array([[[[float(prompt[-1])]]]])
         logits = mx.array(_logits(prompt[-1] + 1))[None, :]
         hidden = mx.array([[[float(prompt[-1])]]])
-        return [kv, recurrent], logits, hidden, 0.0
-
-    def make_mtp_cache(self):
-        return []
+        mtp = KVCache()
+        history = list(prompt[1:])
+        if history:
+            history_values = mx.array(np.asarray(history, dtype=np.float32)).reshape(
+                1, 1, len(history), 1
+            )
+            mtp.update_and_fetch(history_values, history_values)
+        return [kv, recurrent], logits, hidden, [mtp], 0.0
 
     def draft_forward(self, hidden, primary, **kwargs):
-        del hidden, kwargs
+        del hidden
+        mtp_cache = kwargs["mtp_cache"]
+        self.last_mtp_cache = mtp_cache
         ids = np.asarray(primary).reshape(-1)
+        values = mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1)
+        mtp_cache[0].update_and_fetch(values, values)
         rows = []
         for row, token in enumerate(ids):
             target = int(token) + 1
@@ -56,6 +72,22 @@ class _FakeLane:
                 target += 3
             rows.append(_logits(target))
         return mx.array(np.stack(rows))[:, None, :]
+
+    def update_mtp_cache(self, hidden, token_ids, *, mtp_cache):
+        del hidden
+        ids = np.asarray(token_ids).reshape(-1)
+        values = mx.array(ids.astype(np.float32)).reshape(len(ids), 1, 1, 1)
+        mtp_cache[0].update_and_fetch(values, values)
+
+    def commit_rows(self, cache, captures, keeps):
+        from mtplx.gdn_capture import commit_captured_rows
+
+        assert commit_captured_rows(
+            cache,
+            captures,
+            keep_tokens_by_row=keeps,
+            verified_tokens=2,
+        )
 
     def capture_forward(self, verify_input, *, cache):
         if self.fail_verify:
@@ -118,6 +150,8 @@ def test_driver_runs_fixed_b8_t2_and_commits_one_or_two_positions_per_row():
     assert dict(result.width_histogram) == {8: 1}
     ragged = next(entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache))
     assert np.asarray(ragged.offsets)[:2].tolist() == [5, 2]
+    assert isinstance(lane.last_mtp_cache[0], RaggedBatchKVCache)
+    assert np.asarray(lane.last_mtp_cache[0].offsets)[:2].tolist() == [4, 1]
 
 
 def test_driver_keeps_request_rng_and_output_independent_of_neighbor():
@@ -176,3 +210,49 @@ def test_driver_verify_failure_emits_nothing_for_any_request():
         )
 
     assert emitted == []
+
+
+def test_driver_rejects_capacity_before_any_prefill_allocation():
+    from mtplx.a3b_mtp_batch import A3BMTPBatchCapacityError
+
+    lane = _FakeLane()
+    lane.geometry.max_context_tokens = 4
+
+    with pytest.raises(A3BMTPBatchCapacityError, match=r"prompt_tokens \+ max_tokens"):
+        generate_a3b_mtp_batch(
+            lane,
+            [_request("a", [1, 2, 3, 4]), _request("b", [5])],
+        )
+
+    assert lane.prefill_calls == 0
+
+
+def test_driver_interrupts_cancelled_prefill_and_keeps_peer_alive():
+    cancelled = {"value": False}
+    terminals = []
+
+    class CancellingLane(_FakeLane):
+        def prefill_request(self, prompt, *, abort_check=None):
+            if prompt == [1, 2, 3] and not cancelled["value"]:
+                cancelled["value"] = True
+            return super().prefill_request(prompt, abort_check=abort_check)
+
+    first = _request(
+        "cancel",
+        [1, 2, 3],
+        cancelled=lambda: cancelled["value"],
+    )
+    first = A3BMTPBatchRequest(
+        **{
+            **first.__dict__,
+            "on_terminal": lambda reason, cycles: terminals.append((reason, cycles)),
+        }
+    )
+    result = generate_a3b_mtp_batch(
+        CancellingLane(),
+        [first, _request("peer", [4], max_tokens=3)],
+    )
+
+    assert terminals == [("cancelled", 0)]
+    assert result.streams[0].finish_reason == "cancelled"
+    assert len(result.streams[1].tokens) == 3

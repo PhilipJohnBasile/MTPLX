@@ -216,7 +216,9 @@ def test_mtp_batch_rejects_constraint_graph_without_solo_fallback(monkeypatch):
         lambda *_args, **_kwargs: pytest.fail("incompatible MTP batch cannot go solo"),
     )
 
-    with pytest.raises(RuntimeError, match="does not support constraint_spec"):
+    with pytest.raises(
+        openai.MTPBatchRequestError, match="does not support constraint_spec"
+    ):
         openai._run_generation_dispatched(
             state,
             [1],
@@ -224,6 +226,44 @@ def test_mtp_batch_rejects_constraint_graph_without_solo_fallback(monkeypatch):
             generation_mode="mtp",
             constraint_spec=object(),
         )
+
+
+def test_mtp_batch_depth_setting_cannot_break_installed_lane():
+    state = _mtp_batch_dispatch_state()
+    state.mtp_batch_service = None
+    client = TestClient(create_app(state))
+
+    response = client.post("/v1/mtplx/settings", json={"depth": 2})
+
+    assert response.status_code == 409
+    assert state.args.depth == 1
+
+
+def test_mtp_batch_constraint_error_is_openai_compatible_400(monkeypatch):
+    state = _mtp_batch_dispatch_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.mtp_batch_service = SimpleNamespace(
+        submit=lambda _job: pytest.fail("invalid request must fail before submit")
+    )
+    client = TestClient(create_app(state))
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: pytest.fail("invalid request must not use solo"),
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "messages": [{"role": "user", "content": "return json"}],
+            "max_tokens": 4,
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "response_format" in response.json()["error"]["message"]
 
 
 def test_mtp_batch_scheduler_health_reports_real_width_and_acceptance():
@@ -1261,6 +1301,26 @@ class FakeExecutor:
 
     def shutdown(self, **_kwargs):
         return None
+
+
+def test_app_shutdown_closes_mtp_batch_before_model_scheduler(monkeypatch):
+    events = []
+    state = SimpleNamespace(
+        args=SimpleNamespace(enable_thermal_poll=False),
+        dashboard=None,
+        mtp_batch_service=SimpleNamespace(
+            shutdown=lambda: events.append("mtp_batch")
+        ),
+        model_scheduler=SimpleNamespace(
+            shutdown=lambda **_kwargs: events.append("scheduler")
+        ),
+    )
+    monkeypatch.setattr(openai, "_memory_pressure_guard_enabled", lambda: False)
+
+    with TestClient(openai.create_app(state)):
+        pass
+
+    assert events == ["mtp_batch", "scheduler"]
 
 
 class StreamingTokenizer:
