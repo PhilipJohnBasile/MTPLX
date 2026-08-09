@@ -2703,6 +2703,58 @@ class _BatchedARGenerationService:
                 self._active[int(uid)] = job
             self._condition.notify_all()
 
+    def _commit_finished_row(self, job: _BatchedARJob, response: Any) -> None:
+        """Store a finished batched row's state in the session bank.
+
+        The fleet's deep-context collapse (LOG 2026-08-09) is this seam's
+        absence: mlx-lm's batch step already extracts the finishing row's
+        per-layer cache into `response.prompt_cache`, and dropping it forced
+        every follow-up tool round to re-prefill its whole transcript
+        (live receipt: cached_tokens=0 on 23/23 fleet rounds). The extracted
+        caches are the standard mergeable classes, so entries stored here are
+        insertable by _prepare_session_bank_restore on the next round.
+
+        The cache holds positions for every token EXCEPT the just-sampled
+        final one, so the entry keys on tokens[:-1] — which also keeps every
+        stored prefix strictly shorter than any follow-up prompt (the
+        full-prefix-not-insertable refusal can't hit these entries).
+        A commit failure must never break generation: errors are recorded and
+        swallowed."""
+        bank = getattr(job, "session_bank", None)
+        if bank is None:
+            return
+        row_cache = getattr(response, "prompt_cache", None)
+        all_tokens = list(getattr(response, "all_tokens", None) or [])
+        if row_cache is None or len(all_tokens) < 2:
+            return
+        token_ids = [int(token) for token in all_tokens[:-1]]
+        if len(token_ids) < 512:
+            return  # matches the cold-tier floor; tiny prefixes aren't worth a slot
+        if any(token >= (1 << 40) for token in token_ids):
+            return  # vision surrogate ids never enter the batched bank path
+        started = time.perf_counter()
+        try:
+            entry = bank.put(
+                runtime=self.state.runtime,
+                token_ids=token_ids,
+                cache=row_cache,
+                logits=None,
+                hidden=None,
+                session_id=job.session_id,
+                template_hash=job.session_template_hash,
+                policy_fingerprint=job.session_policy_fingerprint,
+                snapshot_epoch=len(token_ids),
+            )
+            job.request_observability["ar_batch_row_bank_stored"] = entry is not None
+        except Exception as exc:
+            job.request_observability["ar_batch_row_bank_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+        finally:
+            job.request_observability["ar_batch_row_bank_put_s"] = round(
+                time.perf_counter() - started, 6
+            )
+
     def _complete_job(self, job: _BatchedARJob, *, finish_reason: str) -> None:
         if job.future.done():
             return
@@ -2970,6 +3022,7 @@ class _BatchedARGenerationService:
                     if finish_reason is not None:
                         with self._condition:
                             self._active.pop(uid, None)
+                        self._commit_finished_row(job, response)
                         self._complete_job(job, finish_reason=str(finish_reason))
                 mx.eval([])
         except BaseException as exc:
