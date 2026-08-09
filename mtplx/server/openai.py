@@ -17420,6 +17420,10 @@ def _run_generation_dispatched(
         )
 
     def run() -> dict[str, Any]:
+        # Routing-only token: consumed by the mtp_batch branch (which receives
+        # the whole kwargs dict). The solo/_run_generation path must not see it
+        # — chat completions on non-mtp_batch schedulers crash otherwise.
+        kwargs.pop("mtp_batch_finalize_ownership", None)
         return _run_generation(state, prompt_ids, **kwargs)
 
     scheduler = getattr(state, "model_scheduler", None)
