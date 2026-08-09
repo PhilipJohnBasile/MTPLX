@@ -8569,6 +8569,10 @@ def cmd_serve_public(args: Any) -> int:
     )
     if mode_exit is not None:
         return mode_exit
+    # The missing-MTP degrade above may have flipped args to AR; the local
+    # snapshot taken before model resolution would otherwise hand the child
+    # a stale "--generation-mode mtp" with load_mtp already stripped.
+    generation_mode = _generation_mode_from_args(args)
     model_id = _public_model_id_for_args(args, str(runtime_model))
     args.model_id = model_id
     if _apply_model_default_profile(args, model_id):

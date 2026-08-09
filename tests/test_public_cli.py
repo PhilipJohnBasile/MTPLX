@@ -7869,3 +7869,81 @@ def test_serve_parser_accepts_draft_core():
     assert args.draft_core == "device"
     default = parser.parse_args(["serve", "--model", "m"])
     assert default.draft_core == "stock"
+
+
+def test_serve_missing_mtp_degrade_reaches_child_argv(monkeypatch):
+    """The missing-MTP degrade must flip the CHILD's --generation-mode too.
+
+    Regression: the serve path snapshotted generation_mode before
+    _apply_runtime_compatibility_mode mutated args, so a trunk without MTP
+    heads spawned a child with the stale "--generation-mode mtp" while
+    load_mtp had already been stripped — ServerState then refused with
+    "--generation-mode mtp requires --load-mtp" (first live Bonsai serve).
+    """
+    calls = {}
+
+    monkeypatch.setattr(
+        public,
+        "_resolve_runtime_model_path",
+        lambda model, cache_dir=None: (model, None),
+    )
+    monkeypatch.setattr(
+        public,
+        "_model_gate",
+        lambda model, unsafe_force_unverified=False, yes=False: (
+            {
+                "compatibility": {
+                    "tier": "architecture-compatible-but-unverified",
+                    "can_run": True,
+                    "exit_code": 0,
+                    "runtime_compatibility": "native-ar-only-missing-mtp",
+                }
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(public, "_port_is_busy", lambda host, port: False)
+
+    def fake_execvpe(_executable, cmd, _env):
+        calls["cmd"] = cmd
+        raise SystemExit(0)
+
+    monkeypatch.setattr(public.os, "execvpe", fake_execvpe)
+    args = SimpleNamespace(
+        command="serve",
+        model="models/bonsai-trunk-no-mtp",
+        cache_dir=None,
+        profile="performance-cold",
+        unsafe_force_unverified=False,
+        yes=True,
+        host="127.0.0.1",
+        port=8000,
+        depth=3,
+        no_mtp=False,
+        generation_mode="mtp",
+        load_mtp=True,
+        stock_ar=False,
+        api_key=None,
+        rate_limit=0,
+        stream_interval=1,
+        max_response_tokens=None,
+        temperature=0.6,
+        top_p=0.95,
+        reasoning_parser="qwen3",
+        stats_footer=True,
+        warmup_tokens=0,
+        strict_warmup=False,
+        strict_fast_path=False,
+        max=False,
+        _cli_flags=set(),
+    )
+
+    try:
+        public.cmd_serve_public(args)
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    cmd = calls["cmd"]
+    assert cmd[cmd.index("--generation-mode") + 1] == "ar"
+    assert "--no-load-mtp" in cmd
+    assert cmd[cmd.index("--depth") + 1] == "0"
