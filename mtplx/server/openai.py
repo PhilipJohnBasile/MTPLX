@@ -13311,6 +13311,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             else "solo_mtp"
         )
         mtp_disabled_reason = None
+    elif config.mode == SchedulerMode.SERIAL and mtp_available:
+        active_lane = "solo_mtp"
+        mtp_disabled_reason = None
     elif active_requests <= 1 and mtp_available:
         active_lane = "solo_mtp"
         mtp_disabled_reason = None

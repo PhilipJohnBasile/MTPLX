@@ -487,6 +487,19 @@ def test_mtp_batch_scheduler_health_never_labels_gathering_as_ar():
     assert payload["mtp_disabled_reason"] is None
 
 
+def test_serial_mtp_health_never_labels_queued_requests_as_ar():
+    state = _fake_state()
+    state.foreground_count = lambda: 7
+
+    payload = openai._mtplx_scheduler_state(state)
+
+    assert payload["config"]["mode"] == "serial"
+    assert payload["active_requests"] == 7
+    assert payload["active_lane"] == "solo_mtp"
+    assert payload["mtp_disabled_reason"] is None
+    assert openai._use_live_ar_batch(state, effective_mode="mtp") == (False, None)
+
+
 def test_server_parser_resolves_api_key_file_before_env(monkeypatch, tmp_path):
     api_key_file = tmp_path / "api-key"
     api_key_file.write_text("file-secret\n", encoding="utf-8")
