@@ -1,12 +1,20 @@
 """Fixed-width Qwen 35B MTP cohort service.
 
 Request threads enqueue independent jobs.  One existing model-owner thread seals
-an immutable cohort, runs the preinstalled B8/T2 lane, and closes each future.
-No request is admitted into an active cohort and no AR route exists here.
+an immutable cohort, selects the narrowest preinstalled fixed-width lane that
+fits it (real width 2-3 -> native B3/T2 when installed, otherwise B8/T2), runs
+that lane, and closes each future.  A sealed cohort keeps its width for its
+lifetime; no request is admitted into an active cohort and no AR route exists
+here.
+
+``MTPLX_MTP_BATCH_FORCE_WIDTH`` (default off, read once at construction) pins
+lane selection to one installed width for matched A/B measurement — e.g. ``8``
+forces small cohorts through the padded B8 graph as the control arm.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from collections import Counter
 from collections.abc import Callable, Hashable
@@ -164,6 +172,7 @@ class MTPBatchGenerationService:
         state: Any,
         *,
         lane: Any,
+        lanes: dict[int, Any] | None = None,
         driver: Callable[[Any, list[A3BMTPBatchRequest]], A3BMTPBatchResult] = (
             generate_a3b_mtp_batch
         ),
@@ -174,6 +183,26 @@ class MTPBatchGenerationService:
     ) -> None:
         self.state = state
         self.lane = lane
+        # Installed physical widths. ``lane`` stays the primary (widest) lane
+        # for compatibility keys, fingerprints, and b1-exact identity; the
+        # optional ``lanes`` mapping adds narrower native graphs.
+        default_width = int(
+            getattr(getattr(lane, "geometry", None), "cohort_slots", 8) or 8
+        )
+        lane_map = {int(width): entry for width, entry in (lanes or {}).items()}
+        lane_map.setdefault(default_width, lane)
+        self.lanes = dict(sorted(lane_map.items()))
+        forced_raw = str(
+            os.environ.get("MTPLX_MTP_BATCH_FORCE_WIDTH", "") or ""
+        ).strip()
+        self._forced_width: int | None = None
+        if forced_raw:
+            try:
+                forced = int(forced_raw)
+            except ValueError:
+                forced = None
+            if forced is not None and forced in self.lanes:
+                self._forced_width = forced
         self.driver = driver
         self.batch_wait_s = max(0.0, float(batch_wait_s))
         self.auto_schedule = bool(auto_schedule)
@@ -198,12 +227,32 @@ class MTPBatchGenerationService:
         self._solo_runs = 0
         self._last_owner_finalize: dict[str, Any] = {}
 
+    def _lane_for_real_width(self, real_width: int) -> tuple[int, Any]:
+        """Select the narrowest installed lane that fits one sealed cohort.
+
+        Phase-1 policy: real width 2-3 uses the native B3 lane when installed;
+        4-8 uses B8. The forced-width override (A/B control arm) wins whenever
+        the cohort fits its lane. A sealed cohort keeps this width for its
+        lifetime — there is no mid-flight demotion.
+        """
+
+        width = int(real_width)
+        if self._forced_width is not None and width <= self._forced_width:
+            return self._forced_width, self.lanes[self._forced_width]
+        for installed_width in self.lanes:
+            if width <= installed_width:
+                return installed_width, self.lanes[installed_width]
+        widest = max(self.lanes)
+        return widest, self.lanes[widest]
+
     def snapshot(self) -> dict[str, Any]:
         with self._condition:
             return {
                 "pending": len(self._pending),
                 "active": len(self._active),
                 "pump_scheduled": self._pump_scheduled,
+                "installed_widths": sorted(self.lanes),
+                "forced_width": self._forced_width,
                 "last_real_width": self._last_real_width,
                 "last_route_id": self._last_route_id,
                 "last_error": self._last_error,
@@ -413,6 +462,7 @@ class MTPBatchGenerationService:
     def _run_cohort(self, jobs: list[MTPBatchJob]) -> None:
         started = time.perf_counter()
         real_width = len(jobs)
+        fixed_width, lane = self._lane_for_real_width(real_width)
         successful: list[tuple[MTPBatchJob, str, str, int]] = []
         for job in jobs:
             job.emit_prefill(
@@ -448,7 +498,7 @@ class MTPBatchGenerationService:
             for row, job in enumerate(jobs)
         ]
         try:
-            result = self.driver(self.lane, requests)
+            result = self.driver(lane, requests)
             streams = list(result.streams)
             with self._condition:
                 self._last_route_id = result.route_id
@@ -492,6 +542,7 @@ class MTPBatchGenerationService:
                 finish_reason=stream.finish_reason,
                 route_id=route_id,
                 real_width=real_width,
+                fixed_width=fixed_width,
                 target_cycles=int(stream.cycles) or int(cohort_cycles),
                 cohort_started_s=started,
                 row_accepted_drafts=int(stream.accepted_drafts),
@@ -560,6 +611,7 @@ class MTPBatchGenerationService:
         real_width: int,
         target_cycles: int,
         cohort_started_s: float,
+        fixed_width: int = 8,
         row_accepted_drafts: int | None = None,
         row_rejected_drafts: int | None = None,
         terminal_perf_s: float | None = None,
@@ -618,11 +670,11 @@ class MTPBatchGenerationService:
                 if terminal_perf_s is not None
                 else None
             ),
-            "scheduler_policy": "fixed_mtp_batch_width_8",
+            "scheduler_policy": f"fixed_mtp_batch_width_{int(fixed_width)}",
             "request_id": job.request_id,
             "active_batch_size": real_width,
             "mtp_batch_real_width": real_width,
-            "mtp_batch_fixed_width": 8,
+            "mtp_batch_fixed_width": int(fixed_width),
             "mtp_batch_route_id": route_id,
             "mtp_disabled_reason": None,
             "queue_wait_s": max(0.0, (job.admitted_s or job.created_s) - job.created_s),
@@ -630,6 +682,17 @@ class MTPBatchGenerationService:
             "server_seed": job.seed,
         }
         stats.update(job.request_observability)
+        # Width truth wins over the submit-time observability defaults: the
+        # request could not know its sealed width when it was enqueued. At
+        # width 8 these values equal the pre-update ones, so the shipped B8
+        # payload is unchanged.
+        stats.update(
+            {
+                "scheduler_policy": f"fixed_mtp_batch_width_{int(fixed_width)}",
+                "mtp_batch_fixed_width": int(fixed_width),
+                "mtp_batch_route_id": route_id,
+            }
+        )
         completion_prefill = {
             "phase": "completed",
             "tokens_total": len(job.prompt_ids),

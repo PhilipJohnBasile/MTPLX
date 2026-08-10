@@ -1955,6 +1955,7 @@ class ServerState:
             self.draft_head_identity = None
         scheduler_config = _scheduler_config_from_args(args)
         self.mtp_batch_lane = None
+        self.mtp_batch_lanes: dict[int, Any] = {}
         self.mtp_batch_omit_speculative_bonus = False
         if scheduler_config.mode == SchedulerMode.MTP_BATCH:
             self.mtp_batch_omit_speculative_bonus = str(
@@ -1966,6 +1967,37 @@ class ServerState:
                 numerics=args.mtp_batch_numerics,
                 batch_key="startup.mtp_batch_lane",
             ).result()
+            self.mtp_batch_lanes = {
+                int(self.mtp_batch_lane.geometry.cohort_slots): self.mtp_batch_lane
+            }
+            _startup_line(
+                "[4/6] mtp_batch lane installed: "
+                f"width={int(self.mtp_batch_lane.geometry.cohort_slots)} "
+                f"route={self.mtp_batch_lane.route_id} "
+                f"selfcheck_ok={bool(self.mtp_batch_lane.selfcheck.get('ok'))}"
+            )
+            if (
+                normalize_mtp_batch_numerics(args.mtp_batch_numerics)
+                is MTPBatchNumerics.THROUGHPUT
+            ):
+                # Native small-cohort width: 2-3 request cohorts run a
+                # physical B3/T2 graph instead of B8 with five inert rows.
+                # Install fails closed — a B3 selfcheck failure aborts
+                # startup exactly like a B8 one.
+                b3_lane = self.model_scheduler.submit_foreground(
+                    install_a3b_mtp_batch_lane,
+                    self.runtime,
+                    numerics=args.mtp_batch_numerics,
+                    cohort_slots=3,
+                    batch_key="startup.mtp_batch_lane_b3",
+                ).result()
+                self.mtp_batch_lanes[int(b3_lane.geometry.cohort_slots)] = b3_lane
+                _startup_line(
+                    "[4/6] mtp_batch lane installed: "
+                    f"width={int(b3_lane.geometry.cohort_slots)} "
+                    f"route={b3_lane.route_id} "
+                    f"selfcheck_ok={bool(b3_lane.selfcheck.get('ok'))}"
+                )
         self.chat_template_profile = _normalize_chat_template_profile(
             getattr(args, "chat_template_profile", None)
         )
@@ -2109,6 +2141,7 @@ class ServerState:
             MTPBatchGenerationService(
                 self,
                 lane=self.mtp_batch_lane,
+                lanes=dict(self.mtp_batch_lanes),
                 owner_finalize=lambda jobs: _finalize_mtp_batch_cohort_owner(
                     self, jobs
                 ),
@@ -13596,6 +13629,15 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
         "mtp_batch_construction_receipt": _mtp_batch_construction_receipt(
             mtp_batch_lane
         ),
+        "mtp_batch_installed_widths": sorted(
+            int(width) for width in (getattr(state, "mtp_batch_lanes", None) or {})
+        ),
+        "mtp_batch_width_routes": {
+            str(width): getattr(lane, "route_id", None)
+            for width, lane in sorted(
+                (getattr(state, "mtp_batch_lanes", None) or {}).items()
+            )
+        },
         "path": "mtp_batch" if config.mode == SchedulerMode.MTP_BATCH else "path_a",
         "path_a": {
             "solo_mtp_protected": True,
