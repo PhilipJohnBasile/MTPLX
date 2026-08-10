@@ -116,6 +116,7 @@ from mtplx.runtime_options import (
     paged_kv_quantization_env,
     resolve_api_key,
 )
+from mtplx.tool_semantic_hints import normalize_semantic_hint_timeout_s
 
 
 DEFAULT_CHAMPION = DEFAULT_MODEL_ID
@@ -8541,6 +8542,31 @@ def cmd_serve_public(args: Any) -> int:
                 str(float(draft_sampler["top_p"])),
                 "--draft-top-k",
                 str(int(draft_sampler["top_k"])),
+            ]
+        )
+    tool_semantic_hints = getattr(args, "tool_semantic_hints", None)
+    if tool_semantic_hints is True:
+        cmd.append("--tool-semantic-hints")
+    elif tool_semantic_hints is False:
+        cmd.append("--no-tool-semantic-hints")
+    tool_semantic_hints_url = str(
+        getattr(args, "tool_semantic_hints_url", "") or ""
+    ).strip()
+    if tool_semantic_hints_url:
+        cmd.extend(["--tool-semantic-hints-url", tool_semantic_hints_url])
+    tool_semantic_hints_timeout_s = getattr(
+        args,
+        "tool_semantic_hints_timeout_s",
+        None,
+    )
+    if tool_semantic_hints_timeout_s is not None:
+        tool_semantic_hints_timeout_s = normalize_semantic_hint_timeout_s(
+            tool_semantic_hints_timeout_s
+        )
+        cmd.extend(
+            [
+                "--tool-semantic-hints-timeout-s",
+                str(tool_semantic_hints_timeout_s),
             ]
         )
     if getattr(args, "tool_prompt_mode", None):

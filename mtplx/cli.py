@@ -23,6 +23,10 @@ from .profiles import (
     resolve_profile_name,
 )
 from .runtime_options import canonicalize_flag_tokens, normalize_paged_kv_quantization
+from .tool_semantic_hints import (
+    SEMANTIC_HINT_TIMEOUT_MAX_S,
+    normalize_semantic_hint_timeout_s,
+)
 from .version import DISPLAY_VERSION, __version__
 
 # Help/usage advertises only the canonical profiles; the parser itself
@@ -2620,6 +2624,30 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Server DraftCore backend. 'device' keeps the whole draft chain "
             "on device with a single sync per cycle."
+        ),
+    )
+    serve_p.add_argument(
+        "--tool-semantic-hints",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Opt in to the external one-view K=1 semantic tool-hint lane. "
+            "Disabled by default."
+        ),
+    )
+    serve_p.add_argument(
+        "--tool-semantic-hints-url",
+        help=(
+            "External semantic-hint endpoint. HTTPS is required except for "
+            "localhost loopback development."
+        ),
+    )
+    serve_p.add_argument(
+        "--tool-semantic-hints-timeout-s",
+        type=normalize_semantic_hint_timeout_s,
+        help=(
+            "Nonblocking semantic-hint deadline in seconds "
+            f"(finite, greater than 0, and at most {SEMANTIC_HINT_TIMEOUT_MAX_S:g})."
         ),
     )
     serve_p.add_argument("--mtp-adapter", type=Path)

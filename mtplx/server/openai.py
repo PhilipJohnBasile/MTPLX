@@ -16,6 +16,7 @@ import argparse
 import base64
 import asyncio
 import builtins
+from contextvars import ContextVar
 import errno
 import gc
 import hashlib
@@ -38,6 +39,7 @@ from concurrent.futures import Future
 from contextlib import asynccontextmanager, contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Condition, Event, Lock, Thread, Timer
@@ -93,6 +95,20 @@ from mtplx.gemma4_pair import (
 )
 from mtplx.model_scheduler import ModelWorkScheduler
 from mtplx.sampling import SamplerConfig
+from mtplx.tool_semantic_hints import (
+    DisabledSemanticHintProvider,
+    K1SemanticHintDraftSource,
+    SEMANTIC_HINT_TIMEOUT_DEFAULT_S,
+    SEMANTIC_HINT_TIMEOUT_MAX_S,
+    SemanticHintMailbox,
+    SemanticHintMailboxOwner,
+    SemanticHintProviderConfig,
+    SemanticHintRequest,
+    normalize_semantic_hint_timeout_s,
+    semantic_hint_provider_from_config,
+    semantic_hint_tool_schemas_supported,
+    target_tokenized_hint_bank,
+)
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
     DEFAULT_PROFILE_NAME,
@@ -760,8 +776,8 @@ class ChatCompletionRequest(BaseModel):
 
     model: str | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, gt=0)
+    max_completion_tokens: int | None = Field(default=None, gt=0)
     temperature: float | None = None
     top_p: float | None = Field(
         default=None, validation_alias=AliasChoices("top_p", "topP")
@@ -1640,6 +1656,17 @@ class ServerState:
         self.generation_executor = self.model_scheduler
         self.postcommit_executor = None
         self.rate_limiter = _RateLimiter(args.rate_limit)
+        self.tool_semantic_hint_provider = semantic_hint_provider_from_config(
+            SemanticHintProviderConfig(
+                enabled=bool(getattr(args, "tool_semantic_hints", False)),
+                endpoint=getattr(args, "tool_semantic_hints_url", None),
+                timeout_s=normalize_semantic_hint_timeout_s(
+                    getattr(args, "tool_semantic_hints_timeout_s", None)
+                    if getattr(args, "tool_semantic_hints_timeout_s", None) is not None
+                    else SEMANTIC_HINT_TIMEOUT_DEFAULT_S
+                ),
+            )
+        )
         startup_backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
         minimum_resident_bytes = None
         if startup_backend.backend_id == "laguna_ar":
@@ -3668,6 +3695,51 @@ def _anthropic_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
 
 
+async def _aclose_async_iterator(iterator: Any) -> None:
+    close = getattr(iterator, "aclose", None)
+    if close is None:
+        return
+    result = close()
+    if hasattr(result, "__await__"):
+        await result
+
+
+class _CloseOnceAsyncIterator:
+    """Idempotently close one async iterator and its delegated resources."""
+
+    def __init__(self, iterable: Any, *, close_delegates: Iterable[Any] = ()) -> None:
+        self._iterator = iterable.__aiter__()
+        self._close_delegates = tuple(close_delegates)
+        self._closed = False
+
+    def __aiter__(self) -> _CloseOnceAsyncIterator:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._closed:
+            raise StopAsyncIteration
+        return await self._iterator.__anext__()
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        first_error: BaseException | None = None
+        seen: set[int] = set()
+        for iterator in (self._iterator, *self._close_delegates):
+            identity = id(iterator)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            try:
+                await _aclose_async_iterator(iterator)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+
 async def _iter_sse_data(body_iterator: Any):
     buffer = ""
     async for raw_chunk in body_iterator:
@@ -3696,7 +3768,9 @@ async def _iter_sse_data(body_iterator: Any):
             yield "\n".join(data_lines)
 
 
-async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
+async def _anthropic_stream_from_openai_sse_events(
+    body_iterator: Any, *, model: str
+):
     message_id = "msg_" + uuid.uuid4().hex
     next_block_index = 0
     active_text_index: int | None = None
@@ -3740,6 +3814,7 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
             "content_block_stop", {"type": "content_block_stop", "index": index}
         )
 
+    primary_error = False
     try:
         async for data in _iter_sse_data(body_iterator):
             if data == "[DONE]":
@@ -3915,12 +3990,15 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
                             {"mtplx_stats": mtplx_stats}
                         ),
                     )
+    except BaseException:
+        primary_error = True
+        raise
     finally:
-        if hasattr(body_iterator, "aclose"):
-            try:
-                await body_iterator.aclose()
-            except Exception:
-                pass
+        try:
+            await _aclose_async_iterator(body_iterator)
+        except BaseException:
+            if not primary_error:
+                raise
 
     if active_text_index is not None:
         yield stop_content_block(active_text_index)
@@ -3946,6 +4024,30 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
         delta_payload["mtplx_stats"] = mtplx_stats
     yield _anthropic_sse("message_delta", delta_payload)
     yield _anthropic_sse("message_stop", {"type": "message_stop"})
+
+
+async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
+    """Translate SSE while closing upstream even before translation begins."""
+
+    upstream = _CloseOnceAsyncIterator(body_iterator)
+    translated = _anthropic_stream_from_openai_sse_events(upstream, model=model)
+    primary_error = False
+    try:
+        async for chunk in translated:
+            yield chunk
+    except BaseException:
+        primary_error = True
+        raise
+    finally:
+        close_error: BaseException | None = None
+        for iterator in (translated, upstream):
+            try:
+                await _aclose_async_iterator(iterator)
+            except BaseException as exc:
+                if close_error is None:
+                    close_error = exc
+        if close_error is not None and not primary_error:
+            raise close_error
 
 
 def _strip_stats_footer(text: str) -> str:
@@ -5944,6 +6046,495 @@ def _filter_tool_specs_for_request(
     if hidden_tools:
         return _without_tool_specs(tools, hidden_tools)
     return tools
+
+
+def _semantic_hint_message_payload(message: ChatMessage) -> dict[str, Any]:
+    """Provider payload preserving the canonical server message, never logged."""
+
+    try:
+        payload = message.model_dump(exclude_none=True)
+    except AttributeError:
+        payload = message.dict(exclude_none=True)
+    return dict(payload)
+
+
+_SEMANTIC_HINT_STRUCTURED_TOOL_CONTENT_TYPES = frozenset(
+    {
+        "function_call",
+        "function_result",
+        "tool_call",
+        "tool_result",
+        "tool_use",
+    }
+)
+_SEMANTIC_HINT_STRUCTURED_TOOL_FIELDS = (
+    "function_call",
+    "function_result",
+    "tool_call_id",
+    "tool_calls",
+    "tool_result",
+    "tool_use",
+)
+
+
+def _semantic_hint_content_has_structured_tool_history(content: Any) -> bool:
+    if isinstance(content, list):
+        return any(
+            _semantic_hint_content_has_structured_tool_history(item)
+            for item in content
+        )
+    if not isinstance(content, dict):
+        return False
+    content_type = str(content.get("type") or "").strip().lower()
+    if content_type in _SEMANTIC_HINT_STRUCTURED_TOOL_CONTENT_TYPES:
+        return True
+    return any(
+        _semantic_hint_content_has_structured_tool_history(value)
+        for value in content.values()
+        if isinstance(value, (dict, list))
+    )
+
+
+def _semantic_hint_has_structured_tool_history(
+    messages: list[ChatMessage],
+) -> bool:
+    """Reject prior structured tool turns before provider payload creation."""
+
+    for message in messages:
+        role = str(message.role or "").strip().lower()
+        if role in {"function", "tool"}:
+            return True
+        if message.tool_calls or str(message.tool_call_id or "").strip():
+            return True
+        extras = _message_extra_map(message)
+        if any(
+            key in extras and extras[key] not in (None, "", [], {})
+            for key in _SEMANTIC_HINT_STRUCTURED_TOOL_FIELDS
+        ):
+            return True
+        if _semantic_hint_content_has_structured_tool_history(message.content):
+            return True
+    return False
+
+
+_semantic_hint_mailbox_owner: ContextVar[SemanticHintMailboxOwner | None] = ContextVar(
+    "semantic_hint_mailbox_owner",
+    default=None,
+)
+
+
+def _with_semantic_hint_mailbox_lifecycle(handler: Callable[..., Any]) -> Callable[..., Any]:
+    """Cancel an untransferred sidecar future on every handler exit."""
+
+    @wraps(handler)
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        owner = SemanticHintMailboxOwner()
+        token = _semantic_hint_mailbox_owner.set(owner)
+        try:
+            return await handler(*args, **kwargs)
+        finally:
+            owner.cancel_untransferred()
+            _semantic_hint_mailbox_owner.reset(token)
+
+    return wrapped
+
+
+def _adopt_semantic_hint_mailbox(mailbox: SemanticHintMailbox | None) -> None:
+    owner = _semantic_hint_mailbox_owner.get()
+    if owner is not None:
+        owner.adopt(mailbox)
+
+
+def _release_cancelled_semantic_hint_mailbox(mailbox: SemanticHintMailbox) -> None:
+    owner = _semantic_hint_mailbox_owner.get()
+    if owner is not None:
+        owner.release_cancelled(mailbox)
+
+
+def _stage_semantic_hint_source(source: K1SemanticHintDraftSource) -> None:
+    owner = _semantic_hint_mailbox_owner.get()
+    if owner is not None:
+        owner.stage_source(source)
+
+
+def _defer_semantic_hint_owner_to_stream() -> SemanticHintMailboxOwner | None:
+    owner = _semantic_hint_mailbox_owner.get()
+    if owner is not None:
+        owner.defer_to_stream()
+    return owner
+
+
+async def _owned_semantic_hint_stream(
+    stream: Any,
+    owner: SemanticHintMailboxOwner | None,
+):
+    """Close an unadopted source even when the client leaves after first yield."""
+
+    primary_error = False
+    try:
+        async for chunk in stream:
+            yield chunk
+    except BaseException:
+        primary_error = True
+        raise
+    finally:
+        close_error: BaseException | None = None
+        try:
+            await _aclose_async_iterator(stream)
+        except BaseException as exc:
+            close_error = exc
+        try:
+            if owner is not None:
+                owner.cancel_untransferred(force=True)
+        except BaseException as exc:
+            if close_error is None:
+                close_error = exc
+        if close_error is not None and not primary_error:
+            raise close_error
+
+
+class _SemanticHintStreamingResponse(StreamingResponse):
+    """Streaming response whose request ownership survives ASGI disconnects."""
+
+    def __init__(
+        self,
+        content: Any,
+        *,
+        owner: SemanticHintMailboxOwner | None,
+        media_type: str,
+    ) -> None:
+        super().__init__(content, media_type=media_type)
+        self._semantic_hint_owner = owner
+        self._body_iterator_close_started = False
+
+    def transfer_semantic_hint_owner(self) -> SemanticHintMailboxOwner | None:
+        """Move the one request owner to a compatibility response wrapper."""
+
+        owner = self._semantic_hint_owner
+        self._semantic_hint_owner = None
+        return owner
+
+    async def _close_body_iterator(self) -> None:
+        if self._body_iterator_close_started:
+            return
+        self._body_iterator_close_started = True
+        await _aclose_async_iterator(self.body_iterator)
+
+    def _take_semantic_hint_owner(self) -> SemanticHintMailboxOwner | None:
+        owner = self._semantic_hint_owner
+        self._semantic_hint_owner = None
+        return owner
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        primary_error = False
+        try:
+            await super().__call__(scope, receive, send)
+        except BaseException:
+            primary_error = True
+            raise
+        finally:
+            cleanup_error: BaseException | None = None
+            try:
+                await self._close_body_iterator()
+            except BaseException as exc:
+                cleanup_error = exc
+            owner = self._take_semantic_hint_owner()
+            try:
+                if owner is not None:
+                    owner.cancel_untransferred(force=True)
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if cleanup_error is not None and not primary_error:
+                raise cleanup_error
+
+
+def _tool_semantic_hint_ineligible_reason(
+    state: Any,
+    *,
+    tools: list[dict[str, Any]],
+    generation_mode: str,
+    depth: int,
+    temperature: float,
+    presence_penalty: float,
+    frequency_penalty: float,
+    repetition_stop_active: bool,
+    constraint_active: bool,
+    vision_active: bool,
+    parallel_tool_calls: bool | None,
+    thinking_active: bool,
+    prompt_template_fallback: bool,
+    tool_history_present: bool = False,
+) -> str | None:
+    """Resolve request eligibility without serializing provider payload data."""
+
+    if not bool(getattr(state.args, "tool_semantic_hints", False)):
+        return "disabled"
+    if isinstance(
+        getattr(state, "tool_semantic_hint_provider", None),
+        DisabledSemanticHintProvider,
+    ):
+        return "provider_unavailable"
+    try:
+        normalize_semantic_hint_timeout_s(
+            getattr(state.args, "tool_semantic_hints_timeout_s", None)
+            if getattr(state.args, "tool_semantic_hints_timeout_s", None) is not None
+            else SEMANTIC_HINT_TIMEOUT_DEFAULT_S
+        )
+    except ValueError:
+        return "timeout"
+    if not tools:
+        return "no_tools"
+    if tool_history_present:
+        return "tool_history"
+    if not semantic_hint_tool_schemas_supported(tools):
+        return "tool_schema_unsupported"
+    if generation_mode != "mtp":
+        return "generation_mode"
+    if str(getattr(state.args, "verify_strategy", "")) != "target_prefix":
+        return "verify_strategy"
+    if int(depth) != 1:
+        return "speculative_depth"
+    if temperature != 0.0 or presence_penalty != 0.0 or frequency_penalty != 0.0:
+        return "sampler"
+    if repetition_stop_active:
+        return "repetition_stop"
+    if bool(getattr(state.args, "loop_guard", False)) or _loop_guard_enabled():
+        return "loop_guard"
+    if constraint_active:
+        return "constraint"
+    if vision_active:
+        return "vision"
+    if parallel_tool_calls is not False:
+        return "parallel_tool_calls"
+    if thinking_active:
+        # Qwen3.6's thinking-on generation scaffold is not an exact prefix of
+        # the completed assistant tool-call render. Do not disclose a request
+        # that cannot produce this MVP's one canonical target-token view.
+        return "thinking"
+    if prompt_template_fallback:
+        return "template_fallback"
+    if not callable(getattr(state.runtime.tokenizer, "apply_chat_template", None)):
+        return "template_unsupported"
+    # The one-view MVP is proven only for MTPLX's canonical Qwen template.
+    # Froggeric/custom/tokenizer-owned profiles may rewrite the assistant
+    # prefix when a completed tool call is appended; do not disclose the
+    # request to a provider for an unproven prefix relation.
+    profile = _normalize_chat_template_profile(
+        getattr(
+            state,
+            "chat_template_profile",
+            getattr(state.args, "chat_template_profile", None),
+        )
+    )
+    if profile != _CHAT_TEMPLATE_PROFILE_LOCAL:
+        return "template_prefix_unproven"
+    if bool(getattr(state.runtime, "a3b_compiled_target_prefix_factory", None)):
+        return "compiled_target_prefix"
+    if (
+        (os.environ.get("MTPLX_COMPILED_VERIFY") or "").strip().lower()
+        not in {"", "0", "false", "no", "off"}
+        and (os.environ.get("MTPLX_COMPILED_TARGET_PREFIX") or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    ):
+        return "compiled_target_prefix"
+    from mtplx.context_copy import (
+        context_copy_enabled,
+        context_copy_target_prefix_enabled,
+    )
+
+    if context_copy_enabled() and context_copy_target_prefix_enabled():
+        return "context_copy"
+    return None
+
+
+def _submit_tool_semantic_hint(
+    state: Any,
+    *,
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]],
+) -> SemanticHintMailbox | None:
+    """Launch only after target encoding and every static eligibility check.
+
+    The mailbox only transports decoded semantics.  It deliberately has no
+    request/client field and does not wait for the provider on the HTTP path.
+    """
+
+    try:
+        request_payload = SemanticHintRequest(
+            messages=tuple(_semantic_hint_message_payload(message) for message in messages),
+            tools=tuple(tools),
+        )
+        return SemanticHintMailbox.submit(
+            state.tool_semantic_hint_provider,
+            request_payload,
+            timeout_s=normalize_semantic_hint_timeout_s(
+                getattr(state.args, "tool_semantic_hints_timeout_s", None)
+                if getattr(state.args, "tool_semantic_hints_timeout_s", None) is not None
+                else SEMANTIC_HINT_TIMEOUT_DEFAULT_S
+            ),
+        )
+    except Exception:
+        # Payload/provider setup is an optional optimization. Keep its error
+        # private and use native MTP rather than turning it into a request error.
+        return None
+
+
+def _tool_semantic_hint_template_prefix_reason(
+    state: Any,
+    *,
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]],
+    prompt_ids: list[int],
+    enable_thinking: bool,
+    reasoning_effort: str | None,
+    tool_choice: Any,
+    tool_prompt_mode: str,
+) -> str | None:
+    """Prove the MVP's one target-rendered view before provider disclosure."""
+
+    if _semantic_hint_has_structured_tool_history(messages):
+        # Qwen3.6 can re-segment prior tool turns when a new completed
+        # assistant tool call is appended. This narrow one-view MVP therefore
+        # supports plain assistant text history only.
+        return "tool_history"
+    forced_name = _forced_tool_choice_name(tool_choice)
+    tool = next(
+        (
+            item
+            for item in tools
+            if forced_name is None or _tool_spec_name(item) == forced_name
+        ),
+        None,
+    )
+    tool_name = _tool_spec_name(tool) if tool is not None else None
+    if not tool_name:
+        return "template_prefix_unproven"
+    probe_call = {
+        "type": "function",
+        "function": {"name": tool_name, "arguments": {}},
+    }
+    probe_observability: dict[str, Any] = {}
+    try:
+        rendered = _encode_messages(
+            state.runtime.tokenizer,
+            [
+                *messages,
+                ChatMessage(role="assistant", content="", tool_calls=[probe_call]),
+            ],
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+            scoped_reasoning_history=_reasoning_history_scoped_active(state),
+            add_generation_prompt=False,
+            tools=tools,
+            tool_choice=tool_choice,
+            tool_prompt_mode=tool_prompt_mode,
+            template_observability=probe_observability,
+        )
+    except Exception:
+        return "template_prefix_unproven"
+    if probe_observability.get("tool_template_fallback"):
+        return "template_prefix_unproven"
+    if target_tokenized_hint_bank(prompt_ids, rendered) is None:
+        return "template_prefix_unproven"
+    return None
+
+
+def _tool_semantic_hint_source_for_request(
+    state: Any,
+    *,
+    mailbox: SemanticHintMailbox | None,
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]],
+    prompt_ids: list[int],
+    enable_thinking: bool,
+    reasoning_effort: str | None,
+    tool_choice: Any,
+    tool_prompt_mode: str,
+    preflight_disabled_reason: str | None,
+    request_observability: dict[str, Any],
+) -> K1SemanticHintDraftSource | None:
+    """Return a source only for the one-view eager K=1 target-prefix lane."""
+
+    if mailbox is None:
+        request_observability["tool_semantic_hints"] = {
+            "enabled": False,
+            "status": "baseline",
+            "disabled_reason": preflight_disabled_reason or "provider_error",
+        }
+        return None
+    if preflight_disabled_reason is not None:
+        mailbox.cancel()
+        _release_cancelled_semantic_hint_mailbox(mailbox)
+        request_observability["tool_semantic_hints"] = {
+            "enabled": False,
+            "status": "baseline",
+            "disabled_reason": preflight_disabled_reason,
+        }
+        return None
+
+    forced_name = _forced_tool_choice_name(tool_choice)
+    allowed_indices = (
+        frozenset(
+            index
+            for index, tool in enumerate(tools)
+            if _tool_spec_name(tool) == forced_name
+        )
+        if forced_name is not None
+        else None
+    )
+
+    def render(validated) -> list[int] | None:
+        # The sidecar never chooses target ids. Render one canonical assistant
+        # tool-call view with the same target tokenizer/template as this
+        # request, then accept it only if it extends the exact prompt token
+        # prefix. Multi-view banks are intentionally outside this MVP.
+        if not callable(getattr(state.runtime.tokenizer, "apply_chat_template", None)):
+            return None
+        tool_call = {
+            "type": "function",
+            "function": {
+                "name": validated.tool_name,
+                "arguments": validated.arguments,
+            },
+        }
+        try:
+            render_observability: dict[str, Any] = {}
+            rendered = _encode_messages(
+                state.runtime.tokenizer,
+                [
+                    *messages,
+                    ChatMessage(role="assistant", content="", tool_calls=[tool_call]),
+                ],
+                enable_thinking=enable_thinking,
+                reasoning_effort=reasoning_effort,
+                strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
+                scoped_reasoning_history=_reasoning_history_scoped_active(state),
+                add_generation_prompt=False,
+                tools=tools,
+                tool_choice=tool_choice,
+                tool_prompt_mode=tool_prompt_mode,
+                template_observability=render_observability,
+            )
+        except Exception:
+            return None
+        if render_observability.get("tool_template_fallback"):
+            return None
+        bank = target_tokenized_hint_bank(prompt_ids, rendered)
+        return list(bank.tokens) if bank is not None else None
+
+    # Final source telemetry is generated by the source itself; do not leave a
+    # stale request-level "submitted" value that can overwrite it later.
+    request_observability.pop("tool_semantic_hints", None)
+    source = K1SemanticHintDraftSource(
+        mailbox,
+        tools=tools,
+        render=render,
+        allowed_tool_indices=allowed_indices,
+    )
+    _stage_semantic_hint_source(source)
+    return source
 
 
 def _should_add_no_tool_contract(
@@ -13442,6 +14033,7 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "context_copy_suspended",
     "context_copy_backoff_tokens",
     "context_copy_disabled_reason",
+    "tool_semantic_hints",
     # Grammar-constrained decoding (response_format) counters.
     "constraint_active",
     "constraint_completed",
@@ -15831,7 +16423,17 @@ def _run_generation_dispatched(
     history_bypass_reason = _ar_batch_history_bypass_reason(
         request_observability_for_lane
     )
-    if kwargs.get("constraint_spec") is not None:
+    if kwargs.get("semantic_hint_draft_source") is not None:
+        # This source is defined only for the eager K=1 target-prefix lane;
+        # never silently hand it to the batched AR scheduler and call that
+        # partial enablement. The serial target remains authoritative.
+        use_ar_batch = False
+        mtp_disabled_reason = None
+        request_observability_for_lane["scheduler_lane"] = "solo_mtp_semantic_hint"
+        request_observability_for_lane["ar_batch_bypass_reason"] = (
+            "tool_semantic_hint"
+        )
+    elif kwargs.get("constraint_spec") is not None:
         # Grammar masks only exist on the serial lanes; the batched AR
         # pump's per-job samplers carry no matcher state (issue #186 phase 1).
         # MTP itself stays ON for constrained requests (phase 3 composes the
@@ -15996,6 +16598,7 @@ def _run_generation(
     streaming_response: bool | None = None,
     vision_splice: Any | None = None,
     constraint_spec: Any | None = None,
+    semantic_hint_draft_source: Any | None = None,
 ) -> dict[str, Any]:
     response_max, sampler, generation_limits = _generation_params(
         state,
@@ -16021,6 +16624,9 @@ def _run_generation(
         generation_mode,
         default=getattr(state.args, "generation_mode", "mtp"),
     )
+    if effective_mode == "ar" and semantic_hint_draft_source is not None:
+        semantic_hint_draft_source.close()
+        semantic_hint_draft_source = None
     requested_depth = (
         0
         if effective_mode == "ar"
@@ -16070,9 +16676,13 @@ def _run_generation(
         **(request_observability or {}),
     }
     for attempt in range(max_attempts):
+        attempt_semantic_hint_source = (
+            semantic_hint_draft_source if attempt == 0 else None
+        )
         generation_seed, seed_is_explicit = _resolve_seed(state, seed)
         lock_started = time.perf_counter()
         smart_fan_lease: str | None = None
+        adopted_semantic_hint_source = None
         if background_request:
             if state.has_foreground() or state.lock.locked():
                 raise HTTPException(
@@ -16102,6 +16712,13 @@ def _run_generation(
         lock_wait_time_s += time.perf_counter() - lock_started
         try:
             if cancel_event is not None and cancel_event.is_set():
+                close_semantic_hint = getattr(
+                    semantic_hint_draft_source,
+                    "close",
+                    None,
+                )
+                if callable(close_semantic_hint):
+                    close_semantic_hint()
                 raise _StreamCancelled("request cancelled before generation")
             dynamic_kv_reservation = _dynamic_paged_kv_reservation(
                 prompt_tokens=len(prompt_ids),
@@ -16150,6 +16767,18 @@ def _run_generation(
                         # Retries and tool-loop redispatches replay the
                         # full prompt, so the image rows must rewind.
                         vision_splice.reset()
+                    if attempt_semantic_hint_source is not None:
+                        adopt_semantic_hint = getattr(
+                            attempt_semantic_hint_source,
+                            "adopt_for_generation",
+                            None,
+                        )
+                        if not callable(adopt_semantic_hint) or not adopt_semantic_hint():
+                            attempt_semantic_hint_source.close()
+                            raise _StreamCancelled(
+                                "semantic hint source was cancelled before generation"
+                            )
+                        adopted_semantic_hint_source = attempt_semantic_hint_source
                     out = generate_mtpk(
                         state.runtime,
                         prompt_ids,
@@ -16229,6 +16858,7 @@ def _run_generation(
                         online_hidden_corrector_key=str(
                             state.args.online_hidden_corrector_key
                         ),
+                        semantic_hint_draft_source=attempt_semantic_hint_source,
                     )
         except PostcommitAbort:
             # abort_check tripped inside the prefill: the client disconnected
@@ -16236,6 +16866,8 @@ def _run_generation(
             # disconnects already take during decode.
             raise _StreamCancelled("client disconnected during prefill")
         finally:
+            if adopted_semantic_hint_source is not None:
+                adopted_semantic_hint_source.close()
             state.lock.release()
             if not background_request:
                 state.end_foreground()
@@ -21105,6 +21737,7 @@ def create_app(state: ServerState) -> FastAPI:
         }
 
     @app.post("/v1/chat/completions")
+    @_with_semantic_hint_mailbox_lifecycle
     async def chat_completions(
         raw_request: Request, request: ChatCompletionRequest
     ) -> Any:
@@ -21953,6 +22586,96 @@ def create_app(state: ServerState) -> FastAPI:
             if sampler_frequency_penalty is not None
             else getattr(state.args, "default_frequency_penalty", 0.0) or 0.0
         )
+        _, _, semantic_hint_generation_limits = _generation_params(
+            state,
+            prompt_token_count=len(prompt_ids),
+            max_tokens=request_max_tokens,
+            temperature=float(sampler_temperature),
+            top_p=float(sampler_top_p),
+            top_k=int(sampler_top_k),
+            presence_penalty=(
+                sampler_presence_penalty
+                if sampler_presence_penalty is not None
+                else getattr(state.args, "default_presence_penalty", 0.0) or 0.0
+            ),
+            frequency_penalty=(
+                sampler_frequency_penalty
+                if sampler_frequency_penalty is not None
+                else getattr(state.args, "default_frequency_penalty", 0.0) or 0.0
+            ),
+        )
+        semantic_hint_repetition_stop_active = _uncapped_repetition_stop_enabled(
+            semantic_hint_generation_limits
+        )
+        semantic_hint_preflight_reason = _tool_semantic_hint_ineligible_reason(
+            state,
+            tools=tool_specs if tools_active else [],
+            generation_mode=str(
+                request_generation_mode
+                or getattr(state.args, "generation_mode", "mtp")
+                or "mtp"
+            ),
+            depth=effective_request_depth,
+            temperature=float(sampler_temperature),
+            presence_penalty=float(
+                sampler_presence_penalty
+                if sampler_presence_penalty is not None
+                else getattr(state.args, "default_presence_penalty", 0.0) or 0.0
+            ),
+            frequency_penalty=float(
+                sampler_frequency_penalty
+                if sampler_frequency_penalty is not None
+                else getattr(state.args, "default_frequency_penalty", 0.0) or 0.0
+            ),
+            repetition_stop_active=semantic_hint_repetition_stop_active,
+            constraint_active=constraint_spec is not None,
+            vision_active=bool(vision_images),
+            parallel_tool_calls=_request_parallel_tool_calls(request),
+            thinking_active=bool(thinking_enabled),
+            prompt_template_fallback=bool(
+                template_observability.get("tool_template_fallback")
+            ),
+            tool_history_present=_semantic_hint_has_structured_tool_history(
+                request.messages
+            ),
+        )
+        if semantic_hint_preflight_reason is None:
+            semantic_hint_preflight_reason = (
+                _tool_semantic_hint_template_prefix_reason(
+                    state,
+                    messages=messages_for_generation,
+                    tools=tool_specs if tools_active else [],
+                    prompt_ids=prompt_ids,
+                    enable_thinking=thinking_enabled,
+                    reasoning_effort=reasoning_effort,
+                    tool_choice=request.tool_choice,
+                    tool_prompt_mode=template_tool_prompt_mode,
+                )
+            )
+        semantic_hint_mailbox = None
+        if semantic_hint_preflight_reason is None:
+            # Target prompt encoding and every static lane/template/sampler
+            # check have succeeded. Only now serialize the final filtered
+            # messages/tools for the external provider.
+            semantic_hint_mailbox = _submit_tool_semantic_hint(
+                state,
+                messages=messages_for_generation,
+                tools=tool_specs if tools_active else [],
+            )
+            _adopt_semantic_hint_mailbox(semantic_hint_mailbox)
+        semantic_hint_draft_source = _tool_semantic_hint_source_for_request(
+            state,
+            mailbox=semantic_hint_mailbox,
+            messages=messages_for_generation,
+            tools=tool_specs if tools_active else [],
+            prompt_ids=prompt_ids,
+            enable_thinking=thinking_enabled,
+            reasoning_effort=reasoning_effort,
+            tool_choice=request.tool_choice,
+            tool_prompt_mode=template_tool_prompt_mode,
+            preflight_disabled_reason=semantic_hint_preflight_reason,
+            request_observability=request_observability,
+        )
         suppress_visible_reasoning = False
         stop_sequences = _normalize_stop_sequences(request.stop)
 
@@ -22075,6 +22798,7 @@ def create_app(state: ServerState) -> FastAPI:
                         commit_prompt_prefix_to_bank=commit_prompt_prefix,
                         session_keep_live_ref=session_keep_live_ref,
                         vision_splice=vision_splice,
+                        semantic_hint_draft_source=semantic_hint_draft_source,
                         request_observability=request_observability,
                         token_callback=_nonstream_on_tokens,
                         prefill_callback=_nonstream_on_prefill,
@@ -22113,6 +22837,7 @@ def create_app(state: ServerState) -> FastAPI:
                     commit_prompt_prefix_to_bank=commit_prompt_prefix,
                     session_keep_live_ref=session_keep_live_ref,
                     vision_splice=vision_splice,
+                    semantic_hint_draft_source=semantic_hint_draft_source,
                     request_observability=request_observability,
                     token_callback=_nonstream_on_tokens,
                     prefill_callback=_nonstream_on_prefill,
@@ -23160,6 +23885,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 commit_prompt_prefix_to_bank=commit_prompt_prefix,
                                 session_keep_live_ref=session_keep_live_ref,
                                 vision_splice=vision_splice,
+                                semantic_hint_draft_source=semantic_hint_draft_source,
                                 request_observability=request_observability,
                                 prefill_callback=on_prefill,
                                 cancel_event=cancel_event,
@@ -23211,6 +23937,7 @@ def create_app(state: ServerState) -> FastAPI:
                                     commit_prompt_prefix_to_bank=commit_prompt_prefix,
                                     session_keep_live_ref=session_keep_live_ref,
                                     vision_splice=vision_splice,
+                                    semantic_hint_draft_source=semantic_hint_draft_source,
                                     request_observability=request_observability,
                                     prefill_callback=on_prefill,
                                     cancel_event=cancel_event,
@@ -24705,7 +25432,13 @@ def create_app(state: ServerState) -> FastAPI:
                 yield mark_sse_sent(f"data: {json.dumps(done)}\n\n")
                 yield mark_sse_sent("data: [DONE]\n\n")
 
-            return StreamingResponse(event_stream(), media_type="text/event-stream")
+            semantic_stream_owner = _defer_semantic_hint_owner_to_stream()
+
+            return _SemanticHintStreamingResponse(
+                _owned_semantic_hint_stream(event_stream(), semantic_stream_owner),
+                owner=semantic_stream_owner,
+                media_type="text/event-stream",
+            )
 
         def run_nonstream_generation() -> dict[str, Any]:
             return run_generation_for_response()
@@ -25007,13 +25740,40 @@ def create_app(state: ServerState) -> FastAPI:
         if request.stream:
             if not isinstance(response, StreamingResponse):
                 return response
-            return StreamingResponse(
-                _anthropic_stream_from_openai_sse(
-                    response.body_iterator,
-                    model=state.model_id,
-                ),
-                media_type="text/event-stream",
+            semantic_stream_owner = (
+                response.transfer_semantic_hint_owner()
+                if isinstance(response, _SemanticHintStreamingResponse)
+                else None
             )
+            openai_body_iterator = None
+            anthropic_body_iterator = None
+            try:
+                openai_body_iterator = _CloseOnceAsyncIterator(
+                    response.body_iterator
+                )
+                anthropic_body_iterator = _CloseOnceAsyncIterator(
+                    _anthropic_stream_from_openai_sse(
+                        openai_body_iterator,
+                        model=state.model_id,
+                    ),
+                    close_delegates=(openai_body_iterator,),
+                )
+                return _SemanticHintStreamingResponse(
+                    anthropic_body_iterator,
+                    owner=semantic_stream_owner,
+                    media_type="text/event-stream",
+                )
+            except BaseException:
+                for iterator in (anthropic_body_iterator, openai_body_iterator):
+                    if iterator is None:
+                        continue
+                    try:
+                        await _aclose_async_iterator(iterator)
+                    except BaseException:
+                        pass
+                if semantic_stream_owner is not None:
+                    semantic_stream_owner.cancel_untransferred(force=True)
+                raise
         if not isinstance(response, JSONResponse):
             return response
         try:
@@ -26148,6 +26908,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Tool prompt contract mode. native passes tools only to the model "
             "chat template; hybrid keeps the legacy MTPLX contract for rollback."
+        ),
+    )
+    parser.add_argument(
+        "--tool-semantic-hints",
+        action=argparse.BooleanOptionalAction,
+        default=(os.environ.get("MTPLX_TOOL_SEMANTIC_HINTS") or "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Experimental target-side OoO-Spec tool hints. Disabled by default; "
+            "the target alone tokenizes, verifies, and commits every hint."
+        ),
+    )
+    parser.add_argument(
+        "--tool-semantic-hints-url",
+        default=os.environ.get("MTPLX_TOOL_SEMANTIC_HINTS_URL"),
+        help=(
+            "Operator-owned semantic-hint provider URL. HTTPS is required "
+            "except for exact loopback development URLs. It is used only "
+            "when --tool-semantic-hints is enabled."
+        ),
+    )
+    parser.add_argument(
+        "--tool-semantic-hints-timeout-s",
+        type=normalize_semantic_hint_timeout_s,
+        default=(
+            os.environ.get("MTPLX_TOOL_SEMANTIC_HINTS_TIMEOUT_S")
+            or str(SEMANTIC_HINT_TIMEOUT_DEFAULT_S)
+        ),
+        help=(
+            "Nonblocking semantic-hint mailbox deadline in seconds "
+            f"(finite, greater than 0, and at most {SEMANTIC_HINT_TIMEOUT_MAX_S:g})."
         ),
     )
     parser.add_argument(

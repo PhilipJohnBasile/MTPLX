@@ -1770,6 +1770,9 @@ class GenerationStats:
     context_copy_suspended: bool = False
     context_copy_backoff_tokens: int = 0
     context_copy_disabled_reason: str | None = None
+    # OoO-Spec semantic tool hints. This is intentionally counts/status only:
+    # neither decoded arguments nor their target token ids enter telemetry.
+    tool_semantic_hints: dict[str, object] = field(default_factory=dict)
     # Grammar-constrained decoding (response_format). constraint_completed is
     # None when no constraint was active, False when generation ended before
     # the grammar reached a complete document (truncation is never passed off
@@ -5893,6 +5896,7 @@ def _generate_mtpk_impl(
     vision_splice: Any | None = None,
     constraint: Any | None = None,
     block_draft_source: Any | None = None,
+    semantic_hint_draft_source: Any | None = None,
 ) -> GenerationOutput:
     """Generate with a fixed native-MTP depth.
 
@@ -6361,6 +6365,40 @@ def _generate_mtpk_impl(
         )
         else None
     )
+    # OoO-Spec semantic hints are a bounded K=1 substitution on the eager
+    # target-prefix lane only.  Unlike block sources they neither own target
+    # context nor need an in-process draft runtime: a ready hint supplies one
+    # rendered token, and the target still pre-samples, verifies, and commits.
+    # Any unsupported request keeps its native MTP path unchanged.
+    semantic_hint_disabled_reason: str | None = None
+    if semantic_hint_draft_source is not None:
+        if not target_prefix_verify:
+            semantic_hint_disabled_reason = "verify_strategy"
+        elif speculative_depth != 1:
+            semantic_hint_disabled_reason = "speculative_depth"
+        elif (
+            sampler.temperature > 0
+            or sampler.presence_penalty != 0
+            or sampler.frequency_penalty != 0
+        ):
+            semantic_hint_disabled_reason = "sampler"
+        elif repetition_config.enabled:
+            semantic_hint_disabled_reason = "repetition_stop"
+        elif _loop_guard_config.enabled:
+            semantic_hint_disabled_reason = "loop_guard"
+        elif thinking_guard is not None and thinking_guard.enabled:
+            semantic_hint_disabled_reason = "thinking_guard"
+        elif constraint is not None:
+            semantic_hint_disabled_reason = "constraint"
+        elif vision_splice is not None:
+            semantic_hint_disabled_reason = "vision"
+        elif exact_a3b_target_prefix or compiled_verify_bank is not None:
+            semantic_hint_disabled_reason = "compiled_target_prefix"
+        elif using_block_draft_source:
+            semantic_hint_disabled_reason = "block_draft_source"
+        if semantic_hint_disabled_reason is not None:
+            semantic_hint_draft_source.close()
+            semantic_hint_draft_source = None
     a3b_target_prefix_route = None
     a3b_rebase_state = None  # stashed post-primary state for a deferred correction
     snapshot_time = accept_time = rollback_time = repair_time = 0.0
@@ -7159,6 +7197,11 @@ def _generate_mtpk_impl(
         # continuation predictiveness and can cost more to verify than they commit,
         # while grounded re-emission matches into the prompt (see the PR benchmarks).
         ccopy_index.sync(prompt_ids)
+    if semantic_hint_draft_source is not None and ccopy_index is not None:
+        # One request has one substitution source. Do not let a semantic
+        # mailbox and prompt-copy index alternate ownership across cycles.
+        semantic_hint_disabled_reason = "context_copy"
+        semantic_hint_draft_source = None
     while len(tokens) < max_tokens:
         repetition_result = _trim_repeated_suffix(tokens, repetition_config)
         if repetition_result is not None:
@@ -7643,10 +7686,49 @@ def _generate_mtpk_impl(
             _cc_streak_outstanding += 1
             ccopy_drafted += 1
 
+        # The mailbox poll is deliberately nonblocking.  A pending, invalid,
+        # late, or rejected semantic hint simply leaves the native MTP draft
+        # path in charge for this cycle.  Do not put the token in the event:
+        # it may encode a tool argument, and decode traces are telemetry.
+        _semantic_hint_draft_token: int | None = None
+        draft_arbiter = (
+            "block_draft_source"
+            if using_block_draft_source
+            else "context_copy"
+            if _cc_draft_source_token is not None
+            else "tool_semantic_hint"
+            if semantic_hint_draft_source is not None and cycle_depth == 1
+            else "native_mtp"
+        )
+        if draft_arbiter == "tool_semantic_hint":
+            semantic_propose = getattr(semantic_hint_draft_source, "propose", None)
+            if callable(semantic_propose):
+                semantic_proposal = semantic_propose(
+                    primary_token=int(primary),
+                    committed_tokens=tuple(tokens),
+                )
+                if semantic_proposal is not None:
+                    candidate_token = int(semantic_proposal.token)
+                    if 0 <= candidate_token < int(logits.shape[-1]):
+                        _semantic_hint_draft_token = candidate_token
+                    else:
+                        semantic_commit_invalid = getattr(
+                            semantic_hint_draft_source,
+                            "commit_target_prefix",
+                            None,
+                        )
+                        if callable(semantic_commit_invalid):
+                            semantic_commit_invalid(0)
+                        event["tool_semantic_hint"] = {"invalid_proposal": 1}
+            if _semantic_hint_draft_token is None:
+                draft_arbiter = "native_mtp"
+        if semantic_hint_draft_source is not None:
+            event["draft_arbiter"] = draft_arbiter
+
         used_device_d2_core = False
         used_block_draft_source = False
         external_soft_draft_q = False
-        if using_block_draft_source:
+        if draft_arbiter == "block_draft_source":
             propose = getattr(block_draft_source, "propose", None)
             if not callable(propose):
                 raise TypeError("block_draft_source must implement propose(...)")
@@ -7801,6 +7883,7 @@ def _generate_mtpk_impl(
             not used_block_draft_source
             and
             _cc_draft_source_token is None
+            and _semantic_hint_draft_token is None
             and draft_core == "device-d2"
             and cycle_depth == 2
             and speculative_depth == 2
@@ -7922,7 +8005,35 @@ def _generate_mtpk_impl(
                 )
             next_token = draft_tokens[-1]
             used_device_core = True
-        if _cc_draft_source_token is not None:
+        if _semantic_hint_draft_token is not None:
+            # Sidecar semantics became a target-tokenized continuation.  It
+            # is one K=1 point proposal only; the normal target-prefix accept
+            # loop below remains the authority for every emitted token.
+            draft_tokens = [int(_semantic_hint_draft_token)]
+            draft_probs = [None]
+            next_token = int(_semantic_hint_draft_token)
+            used_device_core = True
+            if (
+                _mtp_history_uses_committed_cache(mtp_history_policy)
+                and mtp_cache is not None
+            ):
+                # Native MTP drafting appends (hidden-before-primary, primary)
+                # before verification. Semantic substitution skips that head
+                # forward, so preserve the exact committed-history invariant
+                # explicitly, including non-zero restored cache offsets.
+                draft_time += append_mtp_history(mtp_cache, draft_hidden, [primary])
+            drafted += 1
+            drafted_by_depth[0] += 1
+            event["drafts"].append(
+                {
+                    "depth": 1,
+                    "timing_s": {"draft": 0.0},
+                    "mtp_corrector": None,
+                    "draft_core": "tool_semantic_hint",
+                }
+            )
+            event["tool_semantic_hint"] = {"proposal": 1}
+        elif _cc_draft_source_token is not None:
             # Copy streak owns this cycle's draft: one host token, no MTP
             # forward.  The accept path is draft-source-agnostic (the
             # accepted token is always the pre-sampled target id).
@@ -8979,8 +9090,9 @@ def _generate_mtpk_impl(
 
             event["drafts"][depth_index]["accepted"] = accepted_now
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
-            event["drafts"][depth_index]["correction"] = int(correction)
-            event["drafts"][depth_index]["correction_origin"] = correction_origin
+            if event["drafts"][depth_index].get("draft_core") != "tool_semantic_hint":
+                event["drafts"][depth_index]["correction"] = int(correction)
+                event["drafts"][depth_index]["correction_origin"] = correction_origin
             accept_probability_sum_by_depth[depth_index] += float(accept_prob)
 
             if accepted_now:
@@ -9055,6 +9167,18 @@ def _generate_mtpk_impl(
             )
 
         event["accepted_depths"] = accepted_count
+        if _semantic_hint_draft_token is not None and semantic_hint_draft_source is not None:
+            semantic_commit = getattr(
+                semantic_hint_draft_source,
+                "commit_target_prefix",
+                None,
+            )
+            if callable(semantic_commit):
+                semantic_commit(accepted_count)
+            event["tool_semantic_hint"] = {
+                "proposal": 1,
+                "accepted_draft_tokens": int(accepted_count),
+            }
         if used_block_draft_source and verify_strategy != "sequential":
             commit_target_prefix = getattr(
                 block_draft_source,
@@ -9917,6 +10041,23 @@ def _generate_mtpk_impl(
         context_copy_suspended=len(tokens) < ccopy_suspend_until,
         context_copy_backoff_tokens=ccopy_backoff if ccopy_index is not None else 0,
         context_copy_disabled_reason=ccopy_disabled_reason,
+        tool_semantic_hints=(
+            {
+                **dict(semantic_hint_draft_source.telemetry()),
+                **(
+                    {"disabled_reason": semantic_hint_disabled_reason}
+                    if semantic_hint_disabled_reason is not None
+                    else {}
+                ),
+            }
+            if semantic_hint_draft_source is not None
+            and callable(getattr(semantic_hint_draft_source, "telemetry", None))
+            else (
+                {"enabled": False, "disabled_reason": semantic_hint_disabled_reason}
+                if semantic_hint_disabled_reason is not None
+                else {"enabled": False, "status": "disabled"}
+            )
+        ),
         graphbank={
             **(graphbank.to_dict() if graphbank is not None else {}),
             **(
@@ -10015,11 +10156,16 @@ def generate_mtpk(*args: Any, **kwargs: Any) -> GenerationOutput:
     """Run fixed-depth generation and always release external source taps."""
 
     block_draft_source = kwargs.get("block_draft_source")
+    semantic_hint_draft_source = kwargs.get("semantic_hint_draft_source")
     try:
         return _generate_mtpk_impl(*args, **kwargs)
     finally:
         if block_draft_source is not None:
             close = getattr(block_draft_source, "close", None)
+            if callable(close):
+                close()
+        if semantic_hint_draft_source is not None:
+            close = getattr(semantic_hint_draft_source, "close", None)
             if callable(close):
                 close()
 

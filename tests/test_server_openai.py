@@ -1,10 +1,11 @@
 from concurrent.futures import Future, ThreadPoolExecutor
+import asyncio
 import json
 import os
 from pathlib import Path
 import re
 import time
-from threading import Lock
+from threading import Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -13,9 +14,17 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from mtplx.backends.gemma4_assistant import _gemma4_draft_position
+from mtplx import tool_semantic_hints as semantic_hints
 from mtplx.profiles import DEFAULT_HF_MODEL_ID, get_profile
 from mtplx.server import openai
 from mtplx.server.openai import _RateLimiter, create_app, parse_args
+from mtplx.tool_semantic_hints import (
+    DisabledSemanticHintProvider,
+    K1SemanticHintDraftSource,
+    SemanticHintMailbox,
+    SemanticHintMailboxOwner,
+    target_tokenized_hint_bank,
+)
 
 
 def test_server_parser_default_model_is_public_hf_default():
@@ -205,6 +214,1916 @@ def test_server_parser_accepts_tool_prompt_and_template_profile():
 
     assert args.tool_prompt_mode == "native"
     assert args.chat_template_profile == "froggeric_v19"
+
+
+def test_server_parser_accepts_tool_semantic_hint_flags():
+    args = parse_args(
+        [
+            "--warmup-tokens",
+            "0",
+            "--tool-semantic-hints",
+            "--tool-semantic-hints-url",
+            "https://hints.example.test/v1/hint",
+            "--tool-semantic-hints-timeout-s",
+            "0.25",
+        ]
+    )
+
+    assert args.tool_semantic_hints is True
+    assert args.tool_semantic_hints_url == "https://hints.example.test/v1/hint"
+    assert args.tool_semantic_hints_timeout_s == 0.25
+
+
+@pytest.mark.parametrize(
+    "timeout_s",
+    ["nan", "inf", "-inf", "0", "-0.1", "30.0001"],
+)
+def test_server_parser_rejects_invalid_semantic_hint_timeouts(timeout_s):
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--warmup-tokens",
+                "0",
+                "--tool-semantic-hints-timeout-s",
+                timeout_s,
+            ]
+        )
+
+
+@pytest.mark.parametrize("timeout_s", ["nan", "inf", "-inf", "0", "-1", "31"])
+def test_server_parser_rejects_invalid_semantic_hint_timeout_env(
+    monkeypatch,
+    timeout_s,
+):
+    monkeypatch.setenv("MTPLX_TOOL_SEMANTIC_HINTS_TIMEOUT_S", timeout_s)
+
+    with pytest.raises(SystemExit):
+        parse_args(["--warmup-tokens", "0"])
+
+
+def _semantic_hint_preflight_state(provider):
+    return SimpleNamespace(
+        chat_template_profile="local_qwen36",
+        args=SimpleNamespace(
+            tool_semantic_hints=True,
+            verify_strategy="target_prefix",
+            chat_template_profile="local_qwen36",
+        ),
+        runtime=SimpleNamespace(
+            tokenizer=SimpleNamespace(apply_chat_template=lambda *_a, **_k: []),
+            a3b_compiled_target_prefix_factory=None,
+        ),
+        tool_semantic_hint_provider=provider,
+    )
+
+
+def test_server_preflight_disabled_provider_never_creates_a_semantic_lane():
+    reason = openai._tool_semantic_hint_ineligible_reason(
+        _semantic_hint_preflight_state(DisabledSemanticHintProvider()),
+        tools=[{"type": "function", "function": {"name": "read"}}],
+        generation_mode="mtp",
+        depth=1,
+        temperature=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        repetition_stop_active=False,
+        constraint_active=False,
+        vision_active=False,
+        parallel_tool_calls=False,
+        thinking_active=False,
+        prompt_template_fallback=False,
+    )
+
+    assert reason == "provider_unavailable"
+
+
+@pytest.mark.parametrize("parallel_tool_calls", [None, True])
+def test_server_preflight_requires_explicitly_serial_tools_before_provider_submit(
+    parallel_tool_calls,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            future = Future()
+            future.set_result(None)
+            return future
+
+    provider = RecordingProvider()
+    state = _semantic_hint_preflight_state(provider)
+    reason = openai._tool_semantic_hint_ineligible_reason(
+        state,
+        tools=[{"type": "function", "function": {"name": "read"}}],
+        generation_mode="mtp",
+        depth=1,
+        temperature=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        repetition_stop_active=False,
+        constraint_active=False,
+        vision_active=False,
+        parallel_tool_calls=parallel_tool_calls,
+        thinking_active=False,
+        prompt_template_fallback=False,
+    )
+
+    assert reason == "parallel_tool_calls"
+    assert provider.calls == 0
+
+
+def test_server_preflight_rejects_froggeric_prefix_before_provider_submit():
+    class RecordingProvider:
+        calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _semantic_hint_preflight_state(provider)
+    # Startup may resolve the actual profile differently from the parser
+    # namespace (notably custom template paths), so eligibility must consult
+    # the applied profile rather than the requested flag alone.
+    state.chat_template_profile = "froggeric_v21_3"
+    reason = openai._tool_semantic_hint_ineligible_reason(
+        state,
+        tools=[{"type": "function", "function": {"name": "read"}}],
+        generation_mode="mtp",
+        depth=1,
+        temperature=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        repetition_stop_active=False,
+        constraint_active=False,
+        vision_active=False,
+        parallel_tool_calls=False,
+        thinking_active=False,
+        prompt_template_fallback=False,
+    )
+
+    assert reason == "template_prefix_unproven"
+    assert provider.calls == 0
+
+
+def test_server_preflight_rejects_thinking_and_unsupported_schema_before_submit():
+    class RecordingProvider:
+        calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _semantic_hint_preflight_state(provider)
+    common = {
+        "generation_mode": "mtp",
+        "depth": 1,
+        "temperature": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_stop_active": False,
+        "constraint_active": False,
+        "vision_active": False,
+        "parallel_tool_calls": False,
+        "prompt_template_fallback": False,
+    }
+
+    thinking_reason = openai._tool_semantic_hint_ineligible_reason(
+        state,
+        tools=[{"type": "function", "function": {"name": "read"}}],
+        thinking_active=True,
+        **common,
+    )
+    schema_reason = openai._tool_semantic_hint_ineligible_reason(
+        state,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read",
+                    "parameters": {"pattern": "private"},
+                },
+            }
+        ],
+        thinking_active=False,
+        **common,
+    )
+
+    assert thinking_reason == "thinking"
+    assert schema_reason == "tool_schema_unsupported"
+    assert provider.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "loop_guard", "loop_guard_env", "expected_reason"),
+    [
+        (float("nan"), False, "0", "timeout"),
+        (float("inf"), False, "0", "timeout"),
+        (0.0, False, "0", "timeout"),
+        (-1.0, False, "0", "timeout"),
+        (31.0, False, "0", "timeout"),
+        (1.0, False, "1", "loop_guard"),
+        (1.0, True, "0", "loop_guard"),
+    ],
+)
+def test_server_preflight_rejects_invalid_timeout_and_loop_guard_before_submit(
+    monkeypatch,
+    timeout_s,
+    loop_guard,
+    loop_guard_env,
+    expected_reason,
+):
+    class RecordingProvider:
+        calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _semantic_hint_preflight_state(provider)
+    state.args.tool_semantic_hints_timeout_s = timeout_s
+    state.args.loop_guard = loop_guard
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", loop_guard_env)
+
+    reason = openai._tool_semantic_hint_ineligible_reason(
+        state,
+        tools=[{"type": "function", "function": {"name": "read"}}],
+        generation_mode="mtp",
+        depth=1,
+        temperature=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+        repetition_stop_active=False,
+        constraint_active=False,
+        vision_active=False,
+        parallel_tool_calls=False,
+        thinking_active=False,
+        prompt_template_fallback=False,
+    )
+
+    assert reason == expected_reason
+    assert provider.calls == 0
+
+
+def test_server_provider_request_mutation_cannot_change_canonical_target_tools():
+    class MutatingProvider:
+        def __init__(self):
+            self.request = None
+
+        def submit(self, request):
+            self.request = request
+            request.tools[0]["function"]["name"] = "provider_mutated"
+            request.tools[0]["function"]["parameters"]["properties"].clear()
+            request.messages[0]["content"] = "provider_mutated"
+            future = Future()
+            future.set_result(
+                {"tool_index": 0, "arguments": {"path": "target.txt"}}
+            )
+            return future
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    original_tools = json.loads(json.dumps(tools))
+    provider = MutatingProvider()
+    state = SimpleNamespace(
+        args=SimpleNamespace(tool_semantic_hints_timeout_s=1.0),
+        tool_semantic_hint_provider=provider,
+    )
+    mailbox = openai._submit_tool_semantic_hint(
+        state,
+        messages=[openai.ChatMessage(role="user", content="target message")],
+        tools=tools,
+    )
+    rendered = []
+
+    def render(hint):
+        rendered.append((hint.tool_name, hint.arguments))
+        return [1, 2]
+
+    assert mailbox is not None
+    source = K1SemanticHintDraftSource(mailbox, tools=tools, render=render)
+    try:
+        proposal = source.propose(primary_token=1, committed_tokens=(1,))
+
+        assert proposal is not None and proposal.token == 2
+        assert rendered == [("read_file", {"path": "target.txt"})]
+        assert tools == original_tools
+        assert provider.request.messages[0]["content"] == "provider_mutated"
+        assert provider.request.tools[0]["function"]["name"] == "provider_mutated"
+    finally:
+        source.close()
+
+
+def _local_qwen36_tokenizer_path() -> Path | None:
+    candidates = [
+        Path.home() / ".mtplx/models/Qwen3.6-27B-Fable-Fusion-711-MTPLX",
+    ]
+    hub = Path.home() / ".cache/huggingface/hub"
+    candidates.extend(
+        snapshot
+        for model in sorted(hub.glob("models--*--*Qwen3.6*"))
+        for snapshot in sorted((model / "snapshots").glob("*"))
+    )
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate / "tokenizer_config.json").is_file()
+        ),
+        None,
+    )
+
+
+def _semantic_hint_prefix_test_encoding(
+    *_args,
+    add_generation_prompt=True,
+    **_kwargs,
+):
+    return [1, 2, 3] if add_generation_prompt else [1, 2, 3, 4]
+
+
+def test_real_qwen36_tokenizer_thinking_prefix_matrix_when_cached(monkeypatch):
+    tokenizer_path = _local_qwen36_tokenizer_path()
+    if tokenizer_path is None:
+        pytest.skip("no locally cached Qwen3.6 tokenizer")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    from mlx_lm.utils import load_tokenizer
+
+    tokenizer = load_tokenizer(tokenizer_path)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a text file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    messages = [
+        openai.ChatMessage(role="system", content="You are a careful assistant."),
+        openai.ChatMessage(role="user", content="Read the project notes."),
+    ]
+    completed = [
+        *messages,
+        openai.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"path": "notes.txt"},
+                    },
+                }
+            ],
+        ),
+    ]
+
+    def matrix_row(enable_thinking: bool):
+        baseline = openai._encode_messages(
+            tokenizer,
+            messages,
+            enable_thinking=enable_thinking,
+            tools=tools,
+        )
+        rendered = openai._encode_messages(
+            tokenizer,
+            completed,
+            enable_thinking=enable_thinking,
+            add_generation_prompt=False,
+            tools=tools,
+        )
+        common = 0
+        for baseline_token, rendered_token in zip(baseline, rendered):
+            if baseline_token != rendered_token:
+                break
+            common += 1
+        return baseline, rendered, common
+
+    off_baseline, off_rendered, off_common = matrix_row(False)
+    on_baseline, on_rendered, on_common = matrix_row(True)
+
+    assert off_common == len(off_baseline)
+    assert target_tokenized_hint_bank(off_baseline, off_rendered) is not None
+    # Cached Qwen3.6 diverges at the thinking scaffold's final token. The
+    # one-view MVP therefore fails thinking-on closed before provider submit.
+    assert on_common == len(on_baseline) - 1
+    assert target_tokenized_hint_bank(on_baseline, on_rendered) is None
+
+
+@pytest.mark.parametrize("tool_prompt_mode", ["native", "hybrid"])
+def test_real_qwen36_prior_tool_history_is_ineligible_without_disclosure(
+    monkeypatch,
+    tool_prompt_mode,
+):
+    tokenizer_path = _local_qwen36_tokenizer_path()
+    if tokenizer_path is None:
+        pytest.skip("no locally cached Qwen3.6 tokenizer")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    from mlx_lm.utils import load_tokenizer
+
+    tokenizer = load_tokenizer(tokenizer_path)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a text file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    messages = [
+        openai.ChatMessage(role="user", content="Read the first file."),
+        openai.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "id": "call_prior",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"path": "first.txt"},
+                    },
+                }
+            ],
+        ),
+        openai.ChatMessage(
+            role="tool",
+            tool_call_id="call_prior",
+            content="first result",
+        ),
+        openai.ChatMessage(role="user", content="Now read the second file."),
+    ]
+    completed = [
+        *messages,
+        openai.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": {"path": "second.txt"},
+                    },
+                }
+            ],
+        ),
+    ]
+    baseline = openai._encode_messages(
+        tokenizer,
+        messages,
+        enable_thinking=False,
+        tools=tools,
+        tool_prompt_mode=tool_prompt_mode,
+    )
+    rendered = openai._encode_messages(
+        tokenizer,
+        completed,
+        enable_thinking=False,
+        add_generation_prompt=False,
+        tools=tools,
+        tool_prompt_mode=tool_prompt_mode,
+    )
+    assert target_tokenized_hint_bank(baseline, rendered) is None
+
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.tool_semantic_hints_timeout_s = 1.0
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.args.tool_prompt_mode = tool_prompt_mode
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = tokenizer
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured = {}
+
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", "0")
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [message.model_dump(exclude_none=True) for message in messages],
+            "tools": tools,
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == 0
+    assert captured.get("semantic_hint_draft_source") is None
+    assert captured["generation_mode"] == "mtp"
+    assert captured["request_observability"]["tool_semantic_hints"] == {
+        "enabled": False,
+        "status": "baseline",
+        "disabled_reason": "tool_history",
+    }
+
+
+@pytest.mark.parametrize(
+    ("history_message", "case_id"),
+    [
+        (
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_current",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"first.txt"}',
+                        },
+                    }
+                ],
+            },
+            "assistant_tool_calls",
+        ),
+        (
+            {
+                "role": "assistant",
+                "content": "",
+                "function_call": {
+                    "name": "read_file",
+                    "arguments": '{"path":"first.txt"}',
+                },
+            },
+            "assistant_function_call",
+        ),
+        (
+            {"role": "tool", "tool_call_id": "call_current", "content": "result"},
+            "tool_role",
+        ),
+        (
+            {"role": "function", "name": "read_file", "content": "result"},
+            "function_role",
+        ),
+        (
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_anthropic",
+                        "name": "read_file",
+                        "input": {"path": "first.txt"},
+                    }
+                ],
+            },
+            "anthropic_tool_use",
+        ),
+        (
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_anthropic",
+                        "content": "result",
+                    }
+                ],
+            },
+            "anthropic_tool_result",
+        ),
+        (
+            {
+                "role": "assistant",
+                "content": [{"type": "function_call", "name": "read_file"}],
+            },
+            "structured_function_call",
+        ),
+        (
+            {
+                "role": "user",
+                "content": [{"type": "function_result", "content": "result"}],
+            },
+            "structured_function_result",
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_semantic_hint_tool_history_shapes_fall_back_before_disclosure(
+    monkeypatch,
+    history_message,
+    case_id,
+):
+    del case_id
+
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def submit(self, request):
+            self.calls += 1
+            self.requests.append(request)
+            return Future()
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.tool_semantic_hints_timeout_s = 1.0
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured = {}
+
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", "0")
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+    monkeypatch.setattr(
+        openai,
+        "_encode_messages",
+        _semantic_hint_prefix_test_encoding,
+    )
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [
+                {"role": "user", "content": "Read the first file."},
+                history_message,
+                {"role": "user", "content": "Now read the second file."},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == 0
+    assert provider.requests == []
+    assert captured.get("semantic_hint_draft_source") is None
+    assert captured["generation_mode"] == "mtp"
+    assert captured["request_observability"]["tool_semantic_hints"][
+        "disabled_reason"
+    ] == "tool_history"
+
+
+@pytest.mark.parametrize(
+    ("completed_tokens", "expected_calls", "expected_reason"),
+    [
+        ([1, 2, 3, 4], 1, None),
+        ([1, 9, 3, 4], 0, "template_prefix_unproven"),
+    ],
+)
+def test_plain_assistant_history_requires_proven_target_render_prefix(
+    monkeypatch,
+    completed_tokens,
+    expected_calls,
+    expected_reason,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.future = Future()
+
+        def submit(self, _request):
+            self.calls += 1
+            return self.future
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.tool_semantic_hints_timeout_s = 1.0
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured = {}
+
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", "0")
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+
+    def encode_messages(*_args, add_generation_prompt=True, **_kwargs):
+        return [1, 2, 3] if add_generation_prompt else completed_tokens
+
+    monkeypatch.setattr(openai, "_encode_messages", encode_messages)
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [
+                {"role": "user", "content": "Hello."},
+                {"role": "assistant", "content": "Hi there."},
+                {"role": "user", "content": "Read the file."},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == expected_calls
+    source = captured.get("semantic_hint_draft_source")
+    assert (source is not None) is (expected_reason is None)
+    if expected_reason is not None:
+        assert captured["request_observability"]["tool_semantic_hints"][
+            "disabled_reason"
+        ] == expected_reason
+
+
+def test_first_yield_stream_disconnect_closes_unadopted_source():
+    future = Future()
+    mailbox = SemanticHintMailbox(future, timeout_s=10.0)
+    source = K1SemanticHintDraftSource(
+        mailbox,
+        tools=[],
+        render=lambda _hint: None,
+    )
+    owner = SemanticHintMailboxOwner()
+    owner.adopt(mailbox)
+    owner.stage_source(source)
+
+    async def first_then_wait():
+        yield "first"
+        yield "second"
+
+    async def exercise():
+        stream = openai._owned_semantic_hint_stream(first_then_wait(), owner)
+        assert await anext(stream) == "first"
+        await stream.aclose()
+
+    import asyncio
+
+    asyncio.run(exercise())
+    assert future.cancelled()
+
+
+@pytest.mark.parametrize(
+    "disconnect_event",
+    ["http.response.start", "http.response.body"],
+)
+def test_stream_response_closes_owner_before_or_after_first_yield(
+    disconnect_event,
+):
+    from starlette.requests import ClientDisconnect
+
+    future = Future()
+    mailbox = SemanticHintMailbox(future, timeout_s=10.0)
+    source = K1SemanticHintDraftSource(
+        mailbox,
+        tools=[],
+        render=lambda _hint: None,
+    )
+    owner = SemanticHintMailboxOwner()
+    owner.adopt(mailbox)
+    owner.stage_source(source)
+    owner.defer_to_stream()
+
+    async def content():
+        yield "first"
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == disconnect_event:
+            raise OSError("representative client disconnect")
+
+    async def exercise():
+        response = openai._SemanticHintStreamingResponse(
+            openai._owned_semantic_hint_stream(content(), owner),
+            owner=owner,
+            media_type="text/event-stream",
+        )
+        with pytest.raises(ClientDisconnect):
+            await response(
+                {
+                    "type": "http",
+                    "asgi": {"spec_version": "2.4"},
+                    "method": "GET",
+                    "path": "/stream",
+                    "headers": [],
+                },
+                receive,
+                send,
+            )
+
+    import asyncio
+
+    asyncio.run(exercise())
+    assert future.cancelled()
+
+
+class _CountingProcessSemanticHintFuture:
+    def __init__(self):
+        self._future = semantic_hints._ProcessSemanticHintFuture(time.sleep, (30.0,))
+        self.cancel_calls = 0
+
+    def cancel(self):
+        self.cancel_calls += 1
+        return self._future.cancel()
+
+    def cancelled(self):
+        return self._future.cancelled()
+
+    def done(self):
+        return self._future.done()
+
+    def result(self, timeout=None):
+        return self._future.result(timeout=timeout)
+
+    def add_done_callback(self, callback):
+        self._future.add_done_callback(lambda _future: callback(self))
+
+    @property
+    def worker_pid(self):
+        return self._future.worker_pid
+
+    def worker_alive(self):
+        return self._future.worker_alive()
+
+    def wait_stopped(self, timeout=None):
+        return self._future.wait_stopped(timeout)
+
+
+class _RecordingProcessSemanticHintProvider:
+    def __init__(self):
+        self.calls = 0
+        self.future = None
+
+    def submit(self, _request):
+        self.calls += 1
+        self.future = _CountingProcessSemanticHintFuture()
+        return self.future
+
+
+def _anthropic_semantic_stream_request():
+    return openai.AnthropicMessagesRequest(
+        model="mtplx-test-model",
+        max_tokens=8,
+        stream=True,
+        temperature=0.0,
+        thinking={"type": "disabled"},
+        messages=[{"role": "user", "content": "Read the file."}],
+        tools=[
+            {
+                "name": "read_file",
+                "description": "Read a text file.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+        tool_choice={"type": "auto"},
+    )
+
+
+def _anthropic_semantic_stream_scope():
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"x-mtplx-cache-mode", b"bypass"),
+            (b"x-mtplx-allow-client-controls", b"1"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8000),
+    }
+
+
+@pytest.fixture
+def anthropic_semantic_stream_factory(monkeypatch):
+    providers = []
+
+    def factory(*, text="OK", run_generation=None, translator=None):
+        provider = _RecordingProcessSemanticHintProvider()
+        providers.append(provider)
+        state = _fake_state()
+        state.args.tool_semantic_hints = True
+        state.args.tool_semantic_hints_timeout_s = 10.0
+        state.args.reasoning = "off"
+        state.args.enable_thinking = False
+        state.args.verify_strategy = "target_prefix"
+        state.args.generation_mode = "mtp"
+        state.args.depth = 1
+        state.args.temperature = 0.0
+        state.args.chat_template_profile = "local_qwen36"
+        state.args.stats_footer = False
+        state.chat_template_profile = "local_qwen36"
+        state.runtime.tokenizer = StreamingTokenizer()
+        state.runtime.a3b_compiled_target_prefix_factory = None
+        state.tool_semantic_hint_provider = provider
+
+        monkeypatch.setenv("MTPLX_LOOP_GUARD", "0")
+        monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+        monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+        monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+        monkeypatch.setattr(openai, "_request_parallel_tool_calls", lambda _request: False)
+        monkeypatch.setattr(
+            openai,
+            "_encode_messages",
+            _semantic_hint_prefix_test_encoding,
+        )
+        monkeypatch.setattr(
+            openai,
+            "_run_generation",
+            run_generation or _fake_streaming_generation(text),
+        )
+        if translator is not None:
+            monkeypatch.setattr(
+                openai,
+                "_anthropic_stream_from_openai_sse",
+                translator,
+            )
+
+        app = create_app(state)
+        endpoint = next(
+            route.endpoint
+            for route in app.routes
+            if getattr(route, "path", None) == "/v1/messages"
+        )
+        scope = _anthropic_semantic_stream_scope()
+        from starlette.requests import Request
+
+        response = asyncio.run(
+            endpoint(Request(scope), _anthropic_semantic_stream_request())
+        )
+        assert provider.calls == 1
+        assert provider.future is not None
+        return response, provider.future, scope
+
+    yield factory
+
+    for provider in providers:
+        future = provider.future
+        if future is None:
+            continue
+        future.cancel()
+        assert future.wait_stopped(2.0)
+        assert not future.worker_alive()
+
+
+def _run_stream_response(response, scope, send):
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    return asyncio.run(response(scope, receive, send))
+
+
+def _stream_response_body(messages):
+    return b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    ).decode("utf-8")
+
+
+class _CloseTrackingAsyncIterator:
+    def __init__(self, values=(), *, terminal_error=None, close_error=None):
+        self._values = iter(values)
+        self._terminal_error = terminal_error
+        self._terminal_raised = False
+        self._close_error = close_error
+        self.close_calls = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._values)
+        except StopIteration:
+            if self._terminal_error is not None and not self._terminal_raised:
+                self._terminal_raised = True
+                raise self._terminal_error
+            raise StopAsyncIteration
+
+    async def aclose(self):
+        self.close_calls += 1
+        if self._close_error is not None:
+            raise self._close_error
+
+
+class _DelegatedCloseTracker:
+    def __init__(self, delegated):
+        self._delegated = delegated
+        self.close_calls = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        return await anext(self._delegated)
+
+    async def aclose(self):
+        self.close_calls += 1
+        close = getattr(self._delegated, "aclose", None)
+        if close is not None:
+            await close()
+
+
+@pytest.mark.parametrize("close_mode", ["explicit", "normal", "iteration_error"])
+def test_owned_semantic_hint_stream_closes_delegated_iterator_once(close_mode):
+    terminal_error = (
+        RuntimeError("synthetic iteration failure")
+        if close_mode == "iteration_error"
+        else None
+    )
+    delegated = _CloseTrackingAsyncIterator(
+        ["first"] if close_mode != "normal" else ["first", "second"],
+        terminal_error=terminal_error,
+    )
+
+    async def exercise():
+        stream = openai._owned_semantic_hint_stream(delegated, None)
+        if close_mode == "explicit":
+            assert await anext(stream) == "first"
+            await stream.aclose()
+            await stream.aclose()
+        elif close_mode == "normal":
+            assert [chunk async for chunk in stream] == ["first", "second"]
+            await stream.aclose()
+        else:
+            with pytest.raises(RuntimeError, match="iteration failure"):
+                assert [chunk async for chunk in stream] == ["first"]
+            await stream.aclose()
+
+    asyncio.run(exercise())
+    assert delegated.close_calls == 1
+
+
+@pytest.mark.parametrize("teardown", ["response_start", "response_body", "normal"])
+def test_semantic_hint_response_closes_body_before_owner_once(teardown):
+    order = []
+
+    class TrackingBody(_CloseTrackingAsyncIterator):
+        async def aclose(self):
+            order.append("body")
+            await super().aclose()
+
+    class TrackingOwner:
+        def __init__(self):
+            self.cancel_calls = 0
+
+        def cancel_untransferred(self, *, force=False):
+            assert force
+            self.cancel_calls += 1
+            order.append("owner")
+
+    body = TrackingBody(["payload"])
+    owner = TrackingOwner()
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if teardown == "response_start" and message["type"] == "http.response.start":
+            raise OSError("synthetic start failure")
+        if teardown == "response_body" and message["type"] == "http.response.body":
+            raise OSError("synthetic body failure")
+
+    async def exercise():
+        response = openai._SemanticHintStreamingResponse(
+            body,
+            owner=owner,
+            media_type="text/event-stream",
+        )
+        if teardown == "normal":
+            await response(_anthropic_semantic_stream_scope(), receive, send)
+        else:
+            from starlette.requests import ClientDisconnect
+
+            with pytest.raises(ClientDisconnect):
+                await response(_anthropic_semantic_stream_scope(), receive, send)
+        await response._close_body_iterator()
+
+    asyncio.run(exercise())
+    assert body.close_calls == 1
+    assert owner.cancel_calls == 1
+    assert order == ["body", "owner"]
+
+
+@pytest.mark.parametrize("model", ["model-a", "model-b", "model-c"])
+def test_anthropic_translator_close_before_openai_iteration_propagates(model):
+    delegated = _CloseTrackingAsyncIterator([])
+
+    async def exercise():
+        stream = openai._anthropic_stream_from_openai_sse(delegated, model=model)
+        first = await anext(stream)
+        assert "event: message_start" in first
+        await stream.aclose()
+        await stream.aclose()
+
+    asyncio.run(exercise())
+    assert delegated.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "close_error",
+    [
+        RuntimeError("secondary runtime close failure"),
+        OSError("secondary I/O close failure"),
+        ValueError("secondary value close failure"),
+    ],
+)
+def test_owned_stream_close_does_not_mask_primary_iteration_error(close_error):
+    delegated = _CloseTrackingAsyncIterator(
+        ["first"],
+        terminal_error=RuntimeError("primary iteration failure"),
+        close_error=close_error,
+    )
+
+    async def exercise():
+        stream = openai._owned_semantic_hint_stream(delegated, None)
+        with pytest.raises(RuntimeError, match="primary iteration failure"):
+            assert [chunk async for chunk in stream] == ["first"]
+
+    asyncio.run(exercise())
+    assert delegated.close_calls == 1
+
+
+@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+def test_anthropic_outer_disconnect_before_upstream_iteration_cleans_owner(
+    anthropic_semantic_stream_factory,
+    disconnect_error,
+):
+    from starlette.requests import ClientDisconnect
+
+    response, future, scope = anthropic_semantic_stream_factory()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            raise disconnect_error("synthetic response-start disconnect")
+
+    with pytest.raises(ClientDisconnect):
+        _run_stream_response(response, scope, send)
+
+    assert future.cancelled()
+    assert future.cancel_calls == 1
+    assert future.wait_stopped(2.0)
+    assert not future.worker_alive()
+
+
+@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+def test_anthropic_disconnect_after_message_start_cleans_before_openai_iteration(
+    anthropic_semantic_stream_factory,
+    disconnect_error,
+):
+    from starlette.requests import ClientDisconnect
+
+    response, future, scope = anthropic_semantic_stream_factory()
+
+    async def send(message):
+        if (
+            message["type"] == "http.response.body"
+            and b"event: message_start" in message.get("body", b"")
+        ):
+            raise disconnect_error("synthetic post-message-start disconnect")
+
+    with pytest.raises(ClientDisconnect):
+        _run_stream_response(response, scope, send)
+
+    assert future.cancelled()
+    assert future.cancel_calls == 1
+    assert future.wait_stopped(2.0)
+    assert not future.worker_alive()
+
+
+@pytest.mark.parametrize("text", ["A", "OK", "exact output"])
+def test_anthropic_outer_normal_completion_is_exact_and_cleans_owner(
+    anthropic_semantic_stream_factory,
+    text,
+):
+    response, future, scope = anthropic_semantic_stream_factory(text=text)
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    _run_stream_response(response, scope, send)
+
+    body = _stream_response_body(sent)
+    events = _anthropic_events(body)
+    names = [name for name, _payload in events]
+    text_deltas = [
+        payload.get("delta", {}).get("text", "")
+        for name, payload in events
+        if name == "content_block_delta"
+        and payload.get("delta", {}).get("type") == "text_delta"
+    ]
+    expected_deltas = {
+        "A": ["A"],
+        "OK": ["OK"],
+        "exact output": ["exact ", "output"],
+    }[text]
+    assert names == [
+        "message_start",
+        "content_block_start",
+        *(["content_block_delta"] * len(expected_deltas)),
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert text_deltas == expected_deltas
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 200
+    assert sent[-1] == {
+        "type": "http.response.body",
+        "body": b"",
+        "more_body": False,
+    }
+    assert future.cancelled()
+    assert future.cancel_calls == 1
+    assert future.wait_stopped(2.0)
+    assert not future.worker_alive()
+
+
+@pytest.mark.parametrize(
+    "disconnect_marker",
+    [b"event: content_block_start", b"event: content_block_delta", b"event: message_delta"],
+)
+def test_anthropic_disconnect_after_source_adoption_does_not_double_cancel(
+    anthropic_semantic_stream_factory,
+    disconnect_marker,
+):
+    from starlette.requests import ClientDisconnect
+
+    adopted = []
+
+    def run_generation(_state, _prompt_ids, **kwargs):
+        source = kwargs["semantic_hint_draft_source"]
+        assert source is not None
+        assert source.adopt_for_generation()
+        adopted.append(True)
+        try:
+            token_callback = kwargs.get("token_callback")
+            if token_callback is not None:
+                for token in map(ord, "ADOPTED"):
+                    token_callback([token])
+            return {
+                "text": "ADOPTED",
+                "tokens": list(map(ord, "ADOPTED")),
+                "stats": {
+                    "generation_mode": kwargs["generation_mode"],
+                    "mtp_depth": kwargs["depth"],
+                    "completion_tokens": 7,
+                },
+                "prompt_tokens": 3,
+                "completion_tokens": 7,
+                "finish_reason": "stop",
+            }
+        finally:
+            source.close()
+
+    response, future, scope = anthropic_semantic_stream_factory(
+        run_generation=run_generation
+    )
+
+    async def send(message):
+        if (
+            adopted
+            and message["type"] == "http.response.body"
+            and disconnect_marker in message.get("body", b"")
+        ):
+            raise OSError("synthetic post-adoption disconnect")
+
+    with pytest.raises(ClientDisconnect):
+        _run_stream_response(response, scope, send)
+
+    assert adopted == [True]
+    assert future.cancelled()
+    assert future.cancel_calls == 1
+    assert future.wait_stopped(2.0)
+    assert not future.worker_alive()
+
+
+@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+def test_anthropic_send_failure_closes_adopted_blocked_generation_immediately(
+    anthropic_semantic_stream_factory,
+    disconnect_error,
+):
+    from starlette.requests import ClientDisconnect
+
+    adopted = Event()
+    generation_cancelled = Event()
+    generation_stopped = Event()
+    emergency_release = Event()
+    tracker = {}
+    original_translator = openai._anthropic_stream_from_openai_sse
+
+    def tracking_translator(body_iterator, *, model):
+        tracked_body = _DelegatedCloseTracker(body_iterator)
+        tracker["body"] = tracked_body
+        return original_translator(tracked_body, model=model)
+
+    def run_generation(_state, _prompt_ids, **kwargs):
+        source = kwargs["semantic_hint_draft_source"]
+        assert source is not None
+        assert source.adopt_for_generation()
+        cancel_event = kwargs["cancel_event"]
+        try:
+            adopted.set()
+            kwargs["token_callback"]([ord("X")])
+            while not cancel_event.wait(0.005):
+                if emergency_release.is_set():
+                    raise RuntimeError("emergency test release")
+            generation_cancelled.set()
+            raise openai._StreamCancelled("synthetic adopted generation cancelled")
+        finally:
+            source.close()
+            generation_stopped.set()
+
+    response, future, scope = anthropic_semantic_stream_factory(
+        run_generation=run_generation,
+        translator=tracking_translator,
+    )
+
+    async def send(message):
+        if (
+            adopted.is_set()
+            and message["type"] == "http.response.body"
+            and message.get("body", b"")
+        ):
+            raise disconnect_error("synthetic adopted-stream send failure")
+
+    async def receive():
+        await asyncio.sleep(3600)
+
+    async def exercise():
+        started = time.perf_counter()
+        try:
+            with pytest.raises(ClientDisconnect):
+                await response(scope, receive, send)
+
+            # These assertions deliberately run before asyncio.run() tears
+            # down its loop and auto-closes otherwise leaked async generators.
+            assert tracker["body"].close_calls == 1
+            assert generation_cancelled.wait(0.5)
+            assert generation_stopped.wait(0.5)
+            assert future.cancelled()
+            assert future.wait_stopped(1.0)
+            assert not future.worker_alive()
+            assert response._semantic_hint_owner is None
+            assert time.perf_counter() - started < 2.0
+        finally:
+            emergency_release.set()
+            assert generation_stopped.wait(2.0)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failure_stage", ["before_yield", "after_one", "after_two"])
+def test_anthropic_wrapper_translation_exception_cleans_unconsumed_owner(
+    anthropic_semantic_stream_factory,
+    failure_stage,
+):
+    def translator(_body_iterator, *, model):
+        async def stream():
+            if failure_stage != "before_yield":
+                yield openai._anthropic_sse(
+                    "message_start",
+                    {"type": "message_start", "model": model},
+                )
+            if failure_stage == "after_two":
+                yield openai._anthropic_sse("ping", {"type": "ping"})
+            raise RuntimeError("synthetic redacted translation failure")
+            yield  # pragma: no cover
+
+        return stream()
+
+    response, future, scope = anthropic_semantic_stream_factory(translator=translator)
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    with pytest.raises(RuntimeError, match="translation failure"):
+        _run_stream_response(response, scope, send)
+
+    assert future.cancelled()
+    assert future.cancel_calls == 1
+    assert future.wait_stopped(2.0)
+    assert not future.worker_alive()
+
+
+def test_invalid_response_format_never_submits_private_provider_payload():
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [{"role": "user", "content": "Read the file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "response_format": {"type": "unsupported-private-lane"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert provider.calls == 0
+
+
+def test_prompt_encoding_failure_never_submits_provider_payload(monkeypatch):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.future = Future()
+
+        def submit(self, _request):
+            self.calls += 1
+            return self.future
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+
+    def fail_prompt_encoding(*_args, **_kwargs):
+        raise RuntimeError("representative prompt encoding failure")
+
+    monkeypatch.setattr(openai, "_encode_messages", fail_prompt_encoding)
+    with pytest.raises(RuntimeError, match="representative prompt encoding failure"):
+        TestClient(create_app(state)).post(
+            "/v1/chat/completions",
+            headers={"x-mtplx-cache-mode": "bypass"},
+            json={
+                "model": state.model_id,
+                "messages": [
+                    {"role": "user", "content": "Read the file."}
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                "parallel_tool_calls": False,
+                "temperature": 0.0,
+            },
+        )
+
+    assert provider.calls == 0
+    assert not provider.future.done()
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "loop_guard", "loop_guard_env", "expected_reason"),
+    [
+        (float("nan"), False, "0", "timeout"),
+        (float("inf"), False, "0", "timeout"),
+        (float("-inf"), False, "0", "timeout"),
+        (0.0, False, "0", "timeout"),
+        (-1.0, False, "0", "timeout"),
+        (30.0001, False, "0", "timeout"),
+        (1.0, False, "1", "loop_guard"),
+        (1.0, True, "0", "loop_guard"),
+    ],
+)
+def test_endpoint_discloses_nothing_for_invalid_timeout_or_loop_guard(
+    monkeypatch,
+    timeout_s,
+    loop_guard,
+    loop_guard_env,
+    expected_reason,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.requests = []
+
+        def submit(self, request):
+            self.calls += 1
+            self.requests.append(request)
+            return Future()
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.tool_semantic_hints_timeout_s = timeout_s
+    state.args.loop_guard = loop_guard
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured = {}
+
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", loop_guard_env)
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3])
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [{"role": "user", "content": "Read the file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == 0
+    assert provider.requests == []
+    assert captured.get("semantic_hint_draft_source") is None
+    assert captured["request_observability"]["tool_semantic_hints"][
+        "disabled_reason"
+    ] == expected_reason
+
+
+@pytest.mark.parametrize(
+    (
+        "token_field",
+        "token_value",
+        "server_cap",
+        "repetition_stop_env",
+        "lease_env",
+        "expected_provider_calls",
+        "expected_reason",
+    ),
+    [
+        (None, None, None, None, None, 0, "repetition_stop"),
+        ("max_tokens", None, None, None, None, 0, "repetition_stop"),
+        ("max_completion_tokens", None, None, None, None, 0, "repetition_stop"),
+        (None, None, None, None, "64", 0, "repetition_stop"),
+        ("max_tokens", 8, None, None, None, 1, None),
+        ("max_completion_tokens", 8, None, None, None, 1, None),
+        ("max_tokens", 10**9, None, None, None, 1, None),
+        (None, None, 128, None, None, 1, None),
+        (None, None, None, "0", None, 1, None),
+    ],
+)
+def test_semantic_hint_endpoint_matches_actual_repetition_stop_policy(
+    monkeypatch,
+    token_field,
+    token_value,
+    server_cap,
+    repetition_stop_env,
+    lease_env,
+    expected_provider_calls,
+    expected_reason,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.future = Future()
+
+        def submit(self, _request):
+            self.calls += 1
+            return self.future
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.tool_semantic_hints_timeout_s = 1.0
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.max_response_tokens = server_cap
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured = {}
+
+    monkeypatch.setenv("MTPLX_LOOP_GUARD", "0")
+    if repetition_stop_env is None:
+        monkeypatch.delenv("MTPLX_UNCAPPED_REPETITION_STOP", raising=False)
+    else:
+        monkeypatch.setenv("MTPLX_UNCAPPED_REPETITION_STOP", repetition_stop_env)
+    if lease_env is None:
+        monkeypatch.delenv("MTPLX_UNCAPPED_RESPONSE_LEASE_TOKENS", raising=False)
+    else:
+        monkeypatch.setenv("MTPLX_UNCAPPED_RESPONSE_LEASE_TOKENS", lease_env)
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+    monkeypatch.setattr(
+        openai,
+        "_encode_messages",
+        _semantic_hint_prefix_test_encoding,
+    )
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        captured["effective_generation_mode"] = openai._normalize_generation_mode(
+            kwargs.get("generation_mode"),
+            default=state.args.generation_mode,
+        )
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    body = {
+        "model": state.model_id,
+        "messages": [{"role": "user", "content": "Read the file."}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
+        "parallel_tool_calls": False,
+        "temperature": 0.0,
+    }
+    if token_field is not None:
+        body[token_field] = token_value
+
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json=body,
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == expected_provider_calls
+    assert captured["effective_generation_mode"] == "mtp"
+    source = captured.get("semantic_hint_draft_source")
+    if expected_reason is None:
+        assert source is not None
+    else:
+        assert source is None
+        assert captured["request_observability"]["tool_semantic_hints"][
+            "disabled_reason"
+        ] == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("token_field", "token_value"),
+    [
+        ("max_tokens", 0),
+        ("max_tokens", -1),
+        ("max_completion_tokens", 0),
+        ("max_completion_tokens", -1),
+    ],
+)
+def test_semantic_hint_endpoint_rejects_nonpositive_token_limits_without_disclosure(
+    monkeypatch,
+    token_field,
+    token_value,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, _request):
+            self.calls += 1
+            return Future()
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    generation_calls = []
+
+    def fake_run_generation(*_args, **_kwargs):
+        generation_calls.append(True)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [{"role": "user", "content": "Read the file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            token_field: token_value,
+        },
+    )
+
+    assert response.status_code == 422
+    assert provider.calls == 0
+    assert generation_calls == []
 
 
 def _write_gemma4_pair_bundle(path: Path) -> Path:
@@ -3304,6 +5223,240 @@ def _fake_streaming_generation(text: str, *, finish_reason: str | None = "stop")
         }
 
     return fake_run_generation
+
+
+@pytest.mark.parametrize(
+    (
+        "parallel_tool_calls",
+        "thinking",
+        "unsupported_parameters",
+        "expected_calls",
+        "expects_source",
+    ),
+    [
+        (None, False, None, 0, False),
+        (False, False, None, 1, True),
+        (False, True, None, 0, False),
+        (False, False, {"pattern": "unsupported"}, 0, False),
+        (
+            False,
+            False,
+            {
+                "type": "object",
+                "properties": {
+                    "nested": {"$id": "https://foreign.example/resource"}
+                },
+            },
+            0,
+            False,
+        ),
+        (
+            False,
+            False,
+            {
+                "allOf": [
+                    {
+                        "$schema": (
+                            "https://json-schema.org/draft/2020-12/schema"
+                        )
+                    }
+                ]
+            },
+            0,
+            False,
+        ),
+        (
+            False,
+            False,
+            {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "contains": {},
+                        "minContains": 0,
+                    }
+                },
+            },
+            0,
+            False,
+        ),
+        (
+            False,
+            False,
+            {
+                "$defs": {"value~2name": {"type": "string"}},
+                "type": "object",
+                "properties": {
+                    "value": {"$ref": "#/$defs/value~2name"}
+                },
+            },
+            0,
+            False,
+        ),
+        (
+            False,
+            False,
+            {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "$ref": "https://foreign.example/schema#/$defs/value"
+                    }
+                },
+            },
+            0,
+            False,
+        ),
+    ],
+)
+def test_server_submits_only_after_full_semantic_lane_preflight(
+    monkeypatch,
+    parallel_tool_calls,
+    thinking,
+    unsupported_parameters,
+    expected_calls,
+    expects_source,
+):
+    class RecordingProvider:
+        def __init__(self):
+            self.calls = 0
+            self.future = Future()
+
+        def submit(self, _request):
+            self.calls += 1
+            return self.future
+
+    provider = RecordingProvider()
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.reasoning = "on" if thinking else "off"
+    state.args.enable_thinking = thinking
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = provider
+    captured: dict[str, object] = {}
+
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
+    monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
+    monkeypatch.setattr(
+        openai,
+        "_encode_messages",
+        _semantic_hint_prefix_test_encoding,
+    )
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    client = TestClient(create_app(state))
+    body = {
+        "model": state.model_id,
+        "messages": [{"role": "user", "content": "Read the file."}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": (
+                        unsupported_parameters
+                        if unsupported_parameters is not None
+                        else {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        }
+                    ),
+                },
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 8,
+    }
+    if parallel_tool_calls is not None:
+        body["parallel_tool_calls"] = parallel_tool_calls
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json=body,
+    )
+
+    assert response.status_code == 200
+    assert provider.calls == expected_calls
+    assert (captured.get("semantic_hint_draft_source") is not None) is expects_source
+    if expects_source:
+        assert "tool_semantic_hints" not in captured["request_observability"]
+        assert provider.future.cancelled()
+    else:
+        assert captured["request_observability"].get(
+            "ar_batch_bypass_reason"
+        ) != "tool_semantic_hint"
+
+
+def test_server_disabled_provider_does_not_force_the_solo_semantic_lane(
+    monkeypatch,
+):
+    state = _fake_state()
+    state.args.tool_semantic_hints = True
+    state.args.reasoning = "off"
+    state.args.enable_thinking = False
+    state.args.verify_strategy = "target_prefix"
+    state.args.generation_mode = "mtp"
+    state.args.depth = 1
+    state.args.temperature = 0.0
+    state.args.chat_template_profile = "local_qwen36"
+    state.chat_template_profile = "local_qwen36"
+    state.runtime.tokenizer = StreamingTokenizer()
+    state.runtime.a3b_compiled_target_prefix_factory = None
+    state.tool_semantic_hint_provider = DisabledSemanticHintProvider()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3])
+
+    def fake_run_generation(_state, _prompt_ids, **kwargs):
+        captured.update(kwargs)
+        return _fake_generation("OK")
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    response = TestClient(create_app(state)).post(
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "model": state.model_id,
+            "messages": [{"role": "user", "content": "Read the file."}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            "parallel_tool_calls": False,
+            "temperature": 0.0,
+            "max_tokens": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured.get("semantic_hint_draft_source") is None
+    request_observability = captured["request_observability"]
+    assert request_observability["tool_semantic_hints"]["disabled_reason"] == (
+        "provider_unavailable"
+    )
+    assert request_observability.get("ar_batch_bypass_reason") != (
+        "tool_semantic_hint"
+    )
 
 
 def _stream_payloads(response_text: str) -> list[dict]:

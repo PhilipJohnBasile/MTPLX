@@ -1102,6 +1102,64 @@ def _serve_dry_run_payload_for_model(monkeypatch, capsys, model_dir, extra_args=
     return json.loads(capsys.readouterr().out)
 
 
+def test_public_serve_forwards_tool_semantic_hint_flags(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    model_dir = tmp_path / "Qwen3.6-27B-MTPLX-Optimized-Speed"
+    model_dir.mkdir()
+
+    payload = _serve_dry_run_payload_for_model(
+        monkeypatch,
+        capsys,
+        model_dir,
+        extra_args=(
+            "--tool-semantic-hints",
+            "--tool-semantic-hints-url",
+            "https://hints.example.test/v1/hint",
+            "--tool-semantic-hints-timeout-s",
+            "0.25",
+        ),
+    )
+
+    command = payload["server_command"]
+    assert "--tool-semantic-hints" in command
+    assert "--tool-semantic-hints-url https://hints.example.test/v1/hint" in command
+    assert "--tool-semantic-hints-timeout-s 0.25" in command
+
+
+@pytest.mark.parametrize(
+    "timeout_s",
+    ["nan", "inf", "-inf", "0", "-0.1", "30.0001"],
+)
+def test_public_serve_parser_rejects_invalid_semantic_hint_timeouts(timeout_s):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["serve", "--tool-semantic-hints-timeout-s", timeout_s]
+        )
+
+
+def test_public_serve_forwards_explicitly_disabled_tool_semantic_hints(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    model_dir = tmp_path / "Qwen3.6-27B-MTPLX-Optimized-Speed"
+    model_dir.mkdir()
+
+    payload = _serve_dry_run_payload_for_model(
+        monkeypatch,
+        capsys,
+        model_dir,
+        extra_args=("--no-tool-semantic-hints",),
+    )
+
+    command = payload["server_command"]
+    assert "--no-tool-semantic-hints" in command
+    assert "--tool-semantic-hints " not in command
+
+
 def test_serve_defaults_quantized_27b_flagships_to_turbo(
     monkeypatch, tmp_path, capsys
 ):
