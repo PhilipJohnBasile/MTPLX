@@ -890,10 +890,13 @@ def _default_selfcheck(lane: InstalledA3BMTPBatchLane, runtime: Any) -> dict[str
     if lane.numerics_profile == MTPBatchNumerics.BALANCED.value:
         eager_capture = _bind_balanced_eager_capture_forward(runtime)
     else:
+        # The eager reference arm must run the lane's own width: the postconv
+        # kernel launch bakes the row count into its grid and output shapes.
+        eager_field, eager_label = _postconv_implementation_field(slots)
         eager_capture = _bind_postconv_capture_forward(
             runtime,
-            implementation_field="b8_t2_implementations",
-            contract_label="B8/T2",
+            implementation_field=eager_field,
+            contract_label=eager_label,
         )
     eager_b8_capture_forward = partial(
         _call_with_qwen35b_mtp_batch_attention,
