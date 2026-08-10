@@ -17602,6 +17602,19 @@ def _run_mtp_batch_generation_dispatched(
         _end_smart_fan_request(state, smart_fan_lease)
     if bool(generated.pop("_mtp_batch_solo", False)):
         return generated
+    # Sealed-width truth: the cohort service stamped the executed width into
+    # the result stats after sealing; the request-thread observability dict
+    # still carries the submit-time defaults and is re-applied over stats by
+    # the envelope stages, so copy the truth back before finalization. At
+    # width 8 the values equal the defaults (byte-identical payloads).
+    sealed_stats = generated.get("stats") or {}
+    for width_truth_key in (
+        "scheduler_policy",
+        "mtp_batch_fixed_width",
+        "mtp_batch_route_id",
+    ):
+        if width_truth_key in sealed_stats:
+            request_observability[width_truth_key] = sealed_stats[width_truth_key]
     return _finalize_mtp_batch_generation(
         state,
         prompt_ids,
