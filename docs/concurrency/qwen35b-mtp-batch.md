@@ -56,10 +56,18 @@ and sampler work every decode cycle; on the B3 graph those rows do not exist.
 Each width is its own compiled graph with its own construction-time numerical
 self-check; install fails closed if either width fails. Same-geometry
 determinism is the exactness gate: two identical greedy runs through the same
-width are token-identical. Across widths (the same request decoded through B3
-versus B8) bounded BF16 geometry drift applies — exactly the documented
-B1-versus-B8 cross-geometry bound — so token drift between the widths is
-expected and is not a defect. Session-bank identity is width-neutral by
+width are token-identical (live receipt 2026-08-09: bank-bypassed 3-wide
+cohorts reproduced byte-identical outputs within one daemon and across fresh
+daemons, at both ~8k and ~13k prompts, on both widths). Identical inputs
+include row order — the seal is FIFO, so identical arrival order gives
+identical rows. Across widths (the same request decoded through B3 versus B8)
+bounded BF16 geometry drift applies — exactly the documented B1-versus-B8
+cross-geometry bound — so token drift between the widths is expected and is
+not a defect. The same bounded drift applies between session-bank restore
+lineages: entries banked at the same token boundary by different execution
+paths restore states within the numeric bound but not always bitwise, so a
+rerun that restores from different-lineage entries can flip a near-tie token.
+That behavior predates the B3 width and is width-independent. Session-bank identity is width-neutral by
 construction: cohort rows commit prompt-boundary state from the unchanged
 request-local scalar prefill (shared by both widths and the solo lane) before
 any width-specific merge, so entries bank and restore identically across solo,
