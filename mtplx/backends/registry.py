@@ -179,6 +179,29 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "iquestcoder -> llama); serves target-only AR."
         ),
     ),
+    "llama-ar": ArchitectureSupport(
+        arch_id="llama-ar",
+        display_name="Llama-architecture AR (MLX)",
+        family="llama",
+        backend="mlx_lm_ar",
+        support_level="experimental-mlx-lm-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        aliases=("llama", "LlamaForCausalLM"),
+        config_markers=(),
+        family_gate="mlx-lm-loader-plus-trunk-weights",
+        references=(
+            "https://huggingface.co/ai9stars/G9v3-3B",
+            "https://huggingface.co/openbmb/MiniCPM5-1B",
+            "REFERENCES:TOOLS/mlx-lm/mlx_lm/models/llama.py",
+        ),
+        notes=(
+            "Plain Llama-architecture checkpoints without an MTP head (G9v3, "
+            "MiniCPM5, Nemotron Llama distills, and other community models); "
+            "loads through the bundled mlx-lm llama module and serves "
+            "target-only AR."
+        ),
+    ),
     "qwen3-next-mtp": ArchitectureSupport(
         arch_id="qwen3-next-mtp",
         display_name="Qwen3.6 / Qwen3-Next / Qwen3.5 MTP",
@@ -1151,7 +1174,7 @@ def _requires_remote_code(model_dir: Any) -> bool:
 
 
 def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
-    if arch_id in {"lfm2-moe-ar", "iquestcoder-ar"}:
+    if arch_id in {"lfm2-moe-ar", "iquestcoder-ar", "llama-ar"}:
         return _passes_mlx_lm_ar_gate(inspection)
     if arch_id == "deepseek-v4":
         return _passes_deepseek_v4_gate(inspection)

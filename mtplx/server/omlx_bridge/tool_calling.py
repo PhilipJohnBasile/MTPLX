@@ -9,11 +9,25 @@ and valid tool calls are parsed at completion.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
+
+# LFM-family (lfm2/lfm2_moe/lfm2.5) tool envelope: special tokens survive the
+# mlx-lm detokenizer as literal text, wrapping a python-call list such as
+# [get_weather(city='Paris'), get_time(tz={"name": "CET"})].
+PYTHONIC_TOOL_CALL_START = "<|tool_call_start|>"
+PYTHONIC_TOOL_CALL_END = "<|tool_call_end|>"
+_PYTHONIC_ENVELOPE_RE = re.compile(
+    re.escape(PYTHONIC_TOOL_CALL_START)
+    + r"(.*?)"
+    + re.escape(PYTHONIC_TOOL_CALL_END),
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -490,6 +504,155 @@ def _parse_bracket_tool_calls(text: str) -> tuple[str, list[dict[str, Any]] | No
     return re.sub(pattern, "", text, flags=re.DOTALL).strip(), calls
 
 
+def _pythonic_literal(node: ast.expr) -> Any:
+    """Evaluate a python-call argument node without executing anything.
+
+    LFM templates render string values single-quoted, mappings via ``tojson``
+    (so ``true``/``false``/``null`` appear as bare names inside dicts), and
+    everything else through ``str()`` — which spells Python ``True``/``None``.
+    Both spellings must decode; any non-literal expression is malformed.
+    """
+
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        lowered = node.id.lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+        if lowered in {"null", "none"}:
+            return None
+        raise ValueError(f"unsupported bare name {node.id!r}")
+    if isinstance(node, ast.Dict):
+        result: dict[Any, Any] = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                raise ValueError("dict unpacking is not a literal")
+            result[_pythonic_literal(key_node)] = _pythonic_literal(value_node)
+        return result
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return [_pythonic_literal(element) for element in node.elts]
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+    ):
+        return -node.operand.value
+    raise ValueError(f"unsupported argument expression {ast.dump(node)[:80]}")
+
+
+def _pythonic_call_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        parent = _pythonic_call_name(func.value)
+        return f"{parent}.{func.attr}" if parent else None
+    return None
+
+
+def _sole_tool_parameter_name(
+    tools: list[dict[str, Any]] | None,
+    tool_name: str,
+) -> str | None:
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        candidate = function if isinstance(function, dict) else tool
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("name")) != tool_name:
+            continue
+        parameters = candidate.get("parameters")
+        properties = (
+            parameters.get("properties") if isinstance(parameters, dict) else None
+        )
+        if isinstance(properties, dict) and len(properties) == 1:
+            return next(iter(properties))
+        return None
+    return None
+
+
+def _parse_pythonic_marker_tool_calls(
+    text: str,
+    tools: list[dict[str, Any]] | None,
+) -> tuple[str, list[dict[str, Any]] | None, str | None]:
+    calls: list[dict[str, Any]] = []
+    malformed: str | None = None
+    envelopes = _PYTHONIC_ENVELOPE_RE.findall(text or "")
+    if not envelopes:
+        return text, None, "unclosed pythonic tool call envelope"
+    for index, body in enumerate(envelopes):
+        body = body.strip()
+        if not body:
+            malformed = f"pythonic tool_call[{index}] is empty"
+            calls = []
+            break
+        try:
+            tree = ast.parse(body, mode="eval")
+        except SyntaxError:
+            malformed = f"pythonic tool_call[{index}] is not a call expression"
+            calls = []
+            break
+        nodes = (
+            list(tree.body.elts)
+            if isinstance(tree.body, (ast.List, ast.Tuple))
+            else [tree.body]
+        )
+        for node in nodes:
+            if not isinstance(node, ast.Call):
+                malformed = f"pythonic tool_call[{index}] contains a non-call item"
+                break
+            name = _pythonic_call_name(node.func)
+            if not name:
+                malformed = f"pythonic tool_call[{index}] has an unreadable name"
+                break
+            arguments: dict[str, Any] = {}
+            if node.args:
+                # The template only renders keyword arguments; accept a single
+                # positional only when the named tool declares exactly one
+                # parameter, so the intent is unambiguous.
+                sole = (
+                    _sole_tool_parameter_name(tools, name)
+                    if len(node.args) == 1 and not node.keywords
+                    else None
+                )
+                if sole is None:
+                    malformed = (
+                        f"pythonic tool_call[{index}] uses positional arguments"
+                    )
+                    break
+                try:
+                    arguments[sole] = _pythonic_literal(node.args[0])
+                except ValueError as exc:
+                    malformed = f"pythonic tool_call[{index}]: {exc}"
+                    break
+            argument_error: str | None = None
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    argument_error = (
+                        f"pythonic tool_call[{index}] uses ** unpacking"
+                    )
+                    break
+                try:
+                    arguments[keyword.arg] = _pythonic_literal(keyword.value)
+                except ValueError as exc:
+                    argument_error = f"pythonic tool_call[{index}]: {exc}"
+                    break
+            if argument_error:
+                malformed = argument_error
+                break
+            calls.append(_tool_call(name, arguments))
+        if malformed:
+            calls = []
+            break
+    if not calls:
+        return text, None, malformed
+    calls = _filter_known_tools(calls, tools) or []
+    if not calls:
+        return text, None, "pythonic tool calls named no declared tool"
+    cleaned = _PYTHONIC_ENVELOPE_RE.sub("", text or "").strip()
+    return cleaned, calls, None
+
+
 def _allowed_tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
     names: set[str] = set()
     for tool in tools or []:
@@ -542,7 +705,13 @@ def parse_tool_calls(
     cleaned_text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL)
     raw_markup = any(
         marker in (text or "")
-        for marker in ("<tool_call", "</tool_call>", "[Calling tool:", "[Tool call:")
+        for marker in (
+            "<tool_call",
+            "</tool_call>",
+            "[Calling tool:",
+            "[Tool call:",
+            PYTHONIC_TOOL_CALL_START,
+        )
     )
 
     if re.search(r"<tool_calls?:[A-Za-z_][\w.-]*>", cleaned_text):
@@ -646,6 +815,33 @@ def parse_tool_calls(
                     status="parsed",
                     raw_tool_markup_suppressed=raw_markup,
                 )
+
+    if PYTHONIC_TOOL_CALL_START in cleaned_text:
+        # LFM-family envelope. Runs after the tokenizer-native path so a
+        # tokenizer that declares its own protocol on these markers keeps
+        # precedence; today mlx-lm exposes none for lfm2 checkpoints.
+        cleaned, calls, malformed = _parse_pythonic_marker_tool_calls(
+            cleaned_text,
+            tools,
+        )
+        if calls:
+            return ToolCallExtraction(
+                cleaned_text=cleaned,
+                tool_calls=calls,
+                cleaned_thinking="",
+                parser_source="pythonic_marker",
+                status="parsed",
+                raw_tool_markup_suppressed=True,
+            )
+        return ToolCallExtraction(
+            cleaned_text=cleaned_text,
+            tool_calls=None,
+            cleaned_thinking="",
+            parser_source="pythonic_marker",
+            status="malformed_as_content",
+            malformed_reason=malformed or "unclosed or invalid pythonic tool call",
+            raw_tool_markup_suppressed=False,
+        )
 
     if "<tool_call" in cleaned_text:
         cleaned, calls, malformed = _parse_xml_tool_calls(cleaned_text)
@@ -758,7 +954,10 @@ class ToolCallStreamFilter:
     def __init__(self, tokenizer: Any | None = None) -> None:
         start = getattr(tokenizer, "tool_call_start", None) if tokenizer is not None else None
         end = getattr(tokenizer, "tool_call_end", None) if tokenizer is not None else None
-        self._marker_pairs: list[tuple[str, str]] = [("<tool_call>", "</tool_call>")]
+        self._marker_pairs: list[tuple[str, str]] = [
+            ("<tool_call>", "</tool_call>"),
+            (PYTHONIC_TOOL_CALL_START, PYTHONIC_TOOL_CALL_END),
+        ]
         self._suppress_after_markers: list[str] = []
         if start:
             if end:

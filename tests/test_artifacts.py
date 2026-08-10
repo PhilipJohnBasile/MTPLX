@@ -2491,6 +2491,28 @@ def test_iquestcoder_trunk_serves_target_only_ar(tmp_path):
     assert result.compatibility["recommended_backend"] == "mlx_lm_ar"
 
 
+def test_plain_llama_trunk_serves_target_only_ar(tmp_path):
+    """G9v3 / MiniCPM5-class checkpoints: bare LlamaForCausalLM, no MTP head."""
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "model_type": "llama",
+                "quantization": {"group_size": 64, "bits": 4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "model.safetensors").write_bytes(b"\x00" * 8)
+
+    result = inspect_model(tmp_path)
+
+    assert result.compatibility["arch_id"] == "llama-ar"
+    assert result.compatibility["runtime_compatibility"] == "native-ar-only"
+    assert result.compatibility["can_run"] is True
+    assert result.compatibility["recommended_backend"] == "mlx_lm_ar"
+
+
 def test_unsupported_quant_bits_refuse_cleanly(tmp_path):
     """A 1-bit export cannot construct QuantizedLinear on this mlx build."""
     (tmp_path / "config.json").write_text(

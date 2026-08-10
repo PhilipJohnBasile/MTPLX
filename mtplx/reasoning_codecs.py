@@ -284,6 +284,14 @@ def normalize_reasoning_tags(
         if not thinking_enabled:
             return parts.content
         return _format_qwen_reasoning_history(parts)
+    if parser_id == "lfm2":
+        # LFM templates never prefill an open think tag, so text without one is
+        # entirely visible content; the prefilled-thinking normalizer would
+        # misfile it as reasoning.
+        parts = split_qwen_reasoning_text(text, thinking_enabled=thinking_enabled)
+        if not thinking_enabled:
+            return parts.content
+        return _format_qwen_reasoning_history(parts)
     if parser_id in QWEN_STYLE_REASONING_PARSERS:
         return normalize_qwen_thinking_tags(
             text,
@@ -301,6 +309,8 @@ def split_reasoning_text(
     parser_id = str(parser or "none").lower()
     if parser_id == "gemma4":
         return split_gemma4_reasoning_text(text, thinking_enabled=thinking_enabled)
+    if parser_id == "lfm2":
+        return split_qwen_reasoning_text(text, thinking_enabled=thinking_enabled)
     if parser_id in QWEN_STYLE_REASONING_PARSERS:
         return split_qwen_reasoning_text(text, thinking_enabled=thinking_enabled)
     return ReasoningTextParts("", str(text or "").strip())
@@ -467,6 +477,21 @@ class QwenThinkingContentStreamSplitter(ReasoningContentStreamSplitter):
         return chunks
 
 
+class Lfm2ThinkingContentStreamSplitter(QwenThinkingContentStreamSplitter):
+    """Think-tag splitter for templates that do not prefill the open tag.
+
+    LFM generation prompts end at ``<|im_start|>assistant`` with no opened
+    ``<think>``, so the stream starts in visible content and enters the
+    reasoning channel only when the model emits a literal open tag. The
+    inherited splitter assumes a prefilled open tag and would classify a
+    no-thinking response as reasoning until a close tag that never arrives.
+    """
+
+    def __init__(self, *, thinking_enabled: bool) -> None:
+        super().__init__(thinking_enabled=thinking_enabled)
+        self._inside_thinking = False
+
+
 class Gemma4ThinkingContentStreamSplitter(ReasoningContentStreamSplitter):
     def __init__(self, *, thinking_enabled: bool) -> None:
         super().__init__(thinking_enabled=thinking_enabled)
@@ -589,6 +614,8 @@ def stream_splitter_for_parser(
         return Gemma4ThinkingContentStreamSplitter(
             thinking_enabled=thinking_enabled,
         )
+    if parser_id == "lfm2":
+        return Lfm2ThinkingContentStreamSplitter(thinking_enabled=thinking_enabled)
     if parser_id in QWEN_STYLE_REASONING_PARSERS:
         return QwenThinkingContentStreamSplitter(thinking_enabled=thinking_enabled)
     return QwenThinkingContentStreamSplitter(thinking_enabled=False)

@@ -9,7 +9,7 @@ without inheriting Qwen-specific assumptions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -482,6 +482,22 @@ MLX_LM_AR_DESCRIPTOR = BackendDescriptor(
 )
 
 
+# Same lane and backend_id as MLX_LM_AR_DESCRIPTOR, but with the LFM wire
+# format verified: literal <think> tags without a prefilled open tag, and
+# pythonic <|tool_call_start|> envelopes. Deliberately NOT registered in
+# DESCRIPTORS_BY_BACKEND_ID (the generic entry owns the backend_id); only
+# descriptor_from_runtime returns it, after sniffing the loaded model family.
+MLX_LM_AR_LFM2_DESCRIPTOR = replace(
+    MLX_LM_AR_DESCRIPTOR,
+    display_name="mlx-lm target-only AR (LFM grammar)",
+    reasoning_codec=ReasoningCodec(
+        parser="lfm2",
+        display_name="LFM think tags",
+        default_mode="auto",
+    ),
+)
+
+
 NATIVE_CONTRACT_DESCRIPTOR = BackendDescriptor(
     backend_id="native_mtp",
     architecture_id="native-contract-mtp",
@@ -880,6 +896,8 @@ def model_family_from_inspection(
         return "deepseek"
     if backend_id == GLM_MTP_DESCRIPTOR.backend_id or "glm" in text:
         return "glm"
+    if "lfm2" in text:
+        return "lfm2"
     family = _explicit_qwen_family_marker(text)
     if family is not None:
         return family
@@ -1006,6 +1024,8 @@ def reasoning_policy_for_model(
         return DEEPSEEK_MTP_DESCRIPTOR.reasoning_codec
     if family == "laguna":
         return LAGUNA_AR_DESCRIPTOR.reasoning_codec
+    if family == "lfm2":
+        return MLX_LM_AR_LFM2_DESCRIPTOR.reasoning_codec
     return ReasoningCodec(
         parser="none",
         display_name="No verified reasoning parser",
@@ -1159,14 +1179,29 @@ def descriptor_from_inspection(inspection: dict[str, Any] | None) -> BackendDesc
     return descriptor_for_backend_id(backend_id_from_inspection(inspection))
 
 
+def _runtime_is_lfm2(runtime: Any) -> bool:
+    model_args = getattr(getattr(runtime, "model", None), "args", None)
+    model_type = str(getattr(model_args, "model_type", "") or "").lower()
+    if model_type.startswith("lfm2"):
+        return True
+    return "lfm2" in str(getattr(runtime, "model_path", "") or "").lower()
+
+
 def descriptor_from_runtime(runtime: Any, args: Any | None = None) -> BackendDescriptor:
     runtime_backend = getattr(runtime, "backend_id", None)
     if runtime_backend:
-        return descriptor_for_backend_id(str(runtime_backend))
-    if bool(getattr(runtime, "gemma4_external_assistant", False)):
+        descriptor = descriptor_for_backend_id(str(runtime_backend))
+    elif bool(getattr(runtime, "gemma4_external_assistant", False)):
         return GEMMA4_ASSISTANT_DESCRIPTOR
-    backend_id = getattr(args, "backend_id", None) if args is not None else None
-    return descriptor_for_backend_id(str(backend_id) if backend_id else None)
+    else:
+        backend_id = getattr(args, "backend_id", None) if args is not None else None
+        descriptor = descriptor_for_backend_id(str(backend_id) if backend_id else None)
+    if (
+        descriptor.backend_id == MLX_LM_AR_DESCRIPTOR.backend_id
+        and _runtime_is_lfm2(runtime)
+    ):
+        return MLX_LM_AR_LFM2_DESCRIPTOR
+    return descriptor
 
 
 def _arg_value(args: Any, names: tuple[str, ...], default: Any = None) -> Any:

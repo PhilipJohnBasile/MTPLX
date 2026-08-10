@@ -13147,10 +13147,10 @@ def _coerce_setting(name: str, value: Any) -> Any:
         return bool(value)
     if name == "reasoning_parser":
         text = str(value)
-        if text not in {"qwen3", "step3p5", "gemma4", "poolside_v1", "none"}:
+        if text not in {"qwen3", "step3p5", "gemma4", "poolside_v1", "lfm2", "none"}:
             raise ValueError(
                 "reasoning_parser must be 'qwen3', 'step3p5', 'gemma4', "
-                "'poolside_v1', or 'none'"
+                "'poolside_v1', 'lfm2', or 'none'"
             )
         return text
     if name == "reasoning_effort":
@@ -20014,7 +20014,7 @@ def _nonstream_chat_message_parts(
         stats["visible_reasoning_stripped"] = bool(
             reasoning_text and display_text != raw_text
         )
-    elif parser_enabled and parser in {"qwen3", "step3p5", "poolside_v1"}:
+    elif parser_enabled and parser in {"qwen3", "step3p5", "poolside_v1", "lfm2"}:
         if thinking_enabled and has_qwen_style_reasoning_marker:
             reasoning_text, display_text = _split_backend_reasoning_for_state(
                 state,
@@ -28766,7 +28766,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reasoning-parser",
-        choices=["qwen3", "step3p5", "gemma4", "poolside_v1", "none"],
+        choices=["qwen3", "step3p5", "gemma4", "poolside_v1", "lfm2", "none"],
         default="qwen3",
         help="Parser for streamed reasoning tags. Use 'none' to stream all text as content.",
     )

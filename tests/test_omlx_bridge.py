@@ -365,3 +365,156 @@ def test_omlx_tool_parser_passes_unknown_tool_name_through():
 
     assert extraction.status == "parsed"
     assert extraction.tool_calls[0]["function"]["name"] == "task_progress"
+
+
+def test_omlx_tool_parser_accepts_lfm_pythonic_marker_protocol():
+    extraction = parse_tool_calls(
+        "<think>plan the lookup</think>I'll check the weather."
+        "<|tool_call_start|>[get_weather(city='Paris', days=3, "
+        'opts={"detail": true, "fallback": null}, tags=[\'a\', \'b\'], '
+        "verbose=True, region=None)]<|tool_call_end|>",
+        tokenizer=None,
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+    )
+
+    assert extraction.status == "parsed"
+    assert extraction.parser_source == "pythonic_marker"
+    assert extraction.raw_tool_markup_suppressed is True
+    assert "tool_call" not in extraction.cleaned_text
+    assert "I'll check the weather." in extraction.cleaned_text
+    call = extraction.tool_calls[0]["function"]
+    assert call["name"] == "get_weather"
+    assert json.loads(call["arguments"]) == {
+        "city": "Paris",
+        "days": 3,
+        "opts": {"detail": True, "fallback": None},
+        "tags": ["a", "b"],
+        "verbose": True,
+        "region": None,
+    }
+
+
+def test_omlx_tool_parser_lfm_pythonic_multiple_calls_in_one_envelope():
+    extraction = parse_tool_calls(
+        "<|tool_call_start|>[first(x=1), second(y='z')]<|tool_call_end|>",
+        tokenizer=None,
+        tools=[
+            {"type": "function", "function": {"name": "first"}},
+            {"type": "function", "function": {"name": "second"}},
+        ],
+    )
+
+    assert extraction.status == "parsed"
+    names = [call["function"]["name"] for call in extraction.tool_calls]
+    assert names == ["first", "second"]
+    assert json.loads(extraction.tool_calls[1]["function"]["arguments"]) == {"y": "z"}
+
+
+def test_omlx_tool_parser_lfm_pythonic_sole_positional_maps_to_parameter():
+    extraction = parse_tool_calls(
+        "<|tool_call_start|>[read_file('notes.md')]<|tool_call_end|>",
+        tokenizer=None,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            }
+        ],
+    )
+
+    assert extraction.status == "parsed"
+    assert json.loads(extraction.tool_calls[0]["function"]["arguments"]) == {
+        "path": "notes.md"
+    }
+
+
+def test_omlx_tool_parser_lfm_pythonic_ambiguous_positional_is_malformed():
+    text = "<|tool_call_start|>[edit('a', 'b')]<|tool_call_end|>"
+    extraction = parse_tool_calls(
+        text,
+        tokenizer=None,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "old": {"type": "string"},
+                            "new": {"type": "string"},
+                        },
+                    },
+                },
+            }
+        ],
+    )
+
+    assert extraction.status == "malformed_as_content"
+    assert extraction.tool_calls is None
+    assert "positional" in (extraction.malformed_reason or "")
+    assert extraction.cleaned_text == text
+
+
+def test_omlx_tool_parser_lfm_pythonic_unknown_tool_refuses():
+    extraction = parse_tool_calls(
+        "<|tool_call_start|>[made_up(x=1)]<|tool_call_end|>",
+        tokenizer=None,
+        tools=[{"type": "function", "function": {"name": "real_tool"}}],
+    )
+
+    assert extraction.status == "malformed_as_content"
+    assert extraction.tool_calls is None
+    assert "no declared tool" in (extraction.malformed_reason or "")
+
+
+def test_omlx_tool_parser_lfm_pythonic_unclosed_envelope_is_malformed():
+    extraction = parse_tool_calls(
+        "<|tool_call_start|>[get_weather(city='Par",
+        tokenizer=None,
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+    )
+
+    assert extraction.status == "malformed_as_content"
+    assert extraction.tool_calls is None
+
+
+def test_omlx_stream_filter_suppresses_lfm_pythonic_envelope_across_chunks():
+    stream = ToolCallStreamFilter(tokenizer=None)
+    visible = ""
+    for chunk in (
+        "Checking now. <|tool_call_st",
+        "art|>[get_weather(city='Paris')]<|tool_call_e",
+        "nd|> Done.",
+    ):
+        visible += stream.feed(chunk)
+    visible += stream.finish()
+
+    assert "tool_call" not in visible
+    assert "get_weather" not in visible
+    assert "Checking now." in visible
+    assert "Done." in visible
+    assert stream.suppressed_markup is True
+
+
+def test_omlx_tool_parser_lfm_pythonic_call_inside_thinking_is_recovered():
+    from mtplx.server.omlx_bridge import extract_tool_calls_with_thinking
+
+    extraction = extract_tool_calls_with_thinking(
+        "I should look this up "
+        "<|tool_call_start|>[get_weather(city='Oslo')]<|tool_call_end|>",
+        "",
+        tokenizer=None,
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+    )
+
+    assert extraction.tool_calls is not None
+    assert extraction.tool_calls[0]["function"]["name"] == "get_weather"
+    assert "tool_call" not in extraction.cleaned_thinking

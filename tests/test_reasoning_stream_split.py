@@ -57,3 +57,73 @@ def test_poolside_v1_uses_think_tag_reasoning_codec() -> None:
     chunks = splitter.feed("inspect inputs</think>Final") + splitter.finish()
     assert "".join(text for field, text in chunks if field == "reasoning_content") == "inspect inputs"
     assert "".join(text for field, text in chunks if field == "content") == "Final"
+
+
+def _split_lfm2(chunks: list[str], *, thinking_enabled: bool = True) -> tuple[str, str]:
+    sp = stream_splitter_for_parser("lfm2", thinking_enabled=thinking_enabled)
+    out: list[tuple[str, str]] = []
+    for c in chunks:
+        out += sp.feed(c)
+    out += sp.finish()
+    content = "".join(t for f, t in out if f == "content")
+    reasoning = "".join(t for f, t in out if f == "reasoning_content")
+    return content, reasoning
+
+
+def test_lfm2_stream_without_think_block_is_all_visible_content() -> None:
+    # LFM templates never prefill an open think tag, so a response that skips
+    # thinking must stream as content. The prefilled-start splitter would file
+    # every token as reasoning until a close tag that never arrives.
+    content, reasoning = _split_lfm2(["The answer", " is 4."])
+    assert content == "The answer is 4."
+    assert reasoning == ""
+
+
+def test_lfm2_stream_splits_model_emitted_think_block() -> None:
+    content, reasoning = _split_lfm2(["<think>count the legs</think>", "Four."])
+    assert content == "Four."
+    assert "count the legs" in reasoning
+    assert "<think>" not in content
+
+
+def test_lfm2_stream_think_marker_split_across_chunks() -> None:
+    content, reasoning = _split_lfm2(["<thi", "nk>SECRET</th", "ink>Visible"])
+    assert "SECRET" not in content
+    assert "SECRET" in reasoning
+    assert "Visible" in content
+
+
+def test_lfm2_split_reasoning_text_handles_both_shapes() -> None:
+    parts = split_reasoning_text(
+        "<think>R</think>C",
+        parser="lfm2",
+        thinking_enabled=True,
+    )
+    assert (parts.reasoning, parts.content) == ("R", "C")
+    bare = split_reasoning_text(
+        "plain answer",
+        parser="lfm2",
+        thinking_enabled=True,
+    )
+    assert bare.reasoning == ""
+    assert bare.content == "plain answer"
+
+
+def test_lfm2_normalize_keeps_plain_history_as_content() -> None:
+    from mtplx.reasoning_codecs import normalize_reasoning_tags
+
+    # A historical assistant message without think markup must stay visible
+    # content; the prefilled-thinking normalizer would wrap it in think tags.
+    normalized = normalize_reasoning_tags(
+        "Deployed the fix.",
+        parser="lfm2",
+        thinking_enabled=True,
+    )
+    assert normalized == "Deployed the fix."
+    with_think = normalize_reasoning_tags(
+        "<think>weigh options</think>Ship it.",
+        parser="lfm2",
+        thinking_enabled=True,
+    )
+    assert "Ship it." in with_think
+    assert with_think.index("weigh options") < with_think.index("Ship it.")
