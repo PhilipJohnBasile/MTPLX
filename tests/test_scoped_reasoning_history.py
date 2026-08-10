@@ -473,3 +473,52 @@ def test_policy_fingerprint_scoped_differs_but_on_matches_legacy():
     # component so pre-existing warm banks stay valid.
     assert preserve == legacy_preserve
     assert scoped != preserve
+
+
+# ---------------------------------------------------------------------------
+# _reasoning_parser_for_state: the parent-resolved args value is
+# authoritative; the backend codec is only a fallback for states that carry
+# no parser. The old backend-wins-on-mismatch rule silently discarded an
+# operator's --reasoning-parser on shared lanes whose codec pins "none"
+# (llama-ar), which force-closed thinking with no possible override.
+# ---------------------------------------------------------------------------
+
+
+def _parser_state(parser_value, *, backend_parser="none", omit_attr=False):
+    from mtplx.server.openai import _reasoning_parser_for_state  # noqa: F401
+
+    args = SimpleNamespace() if omit_attr else SimpleNamespace(
+        reasoning_parser=parser_value
+    )
+    backend = SimpleNamespace(
+        reasoning_codec=SimpleNamespace(parser=backend_parser)
+    )
+    return SimpleNamespace(args=args, backend_descriptor=backend)
+
+
+def test_operator_parser_wins_over_backend_none_codec():
+    from mtplx.server.openai import _reasoning_parser_for_state
+
+    state = _parser_state("qwen3", backend_parser="none")
+    assert _reasoning_parser_for_state(state) == "qwen3"
+
+
+def test_explicit_none_parser_stays_none():
+    from mtplx.server.openai import _reasoning_parser_for_state
+
+    state = _parser_state("none", backend_parser="qwen3")
+    assert _reasoning_parser_for_state(state) == "none"
+
+
+def test_missing_parser_attr_falls_back_to_backend_codec():
+    from mtplx.server.openai import _reasoning_parser_for_state
+
+    state = _parser_state(None, backend_parser="lfm2", omit_attr=True)
+    assert _reasoning_parser_for_state(state) == "lfm2"
+
+
+def test_null_parser_value_falls_back_to_backend_codec():
+    from mtplx.server.openai import _reasoning_parser_for_state
+
+    state = _parser_state(None, backend_parser="step3p5")
+    assert _reasoning_parser_for_state(state) == "step3p5"

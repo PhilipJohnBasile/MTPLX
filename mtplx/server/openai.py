@@ -1294,13 +1294,18 @@ def _backend_descriptor(state: "ServerState") -> BackendDescriptor:
 
 
 def _reasoning_parser_for_state(state: "ServerState") -> str:
-    parser = str(getattr(state.args, "reasoning_parser", "qwen3") or "qwen3")
-    if parser == "none":
-        return "none"
-    backend = _backend_descriptor(state)
-    if parser != backend.reasoning_codec.parser:
-        return backend.reasoning_codec.parser
-    return parser
+    # args.reasoning_parser is the parent-resolved intent: family policy by
+    # default, or the operator's explicit --reasoning-parser. It is
+    # authoritative. The backend codec is a fallback for states that carry
+    # no parser at all (embedders/tests) — it must not censor a set value:
+    # the old backend-wins-on-mismatch rule made --reasoning-parser a silent
+    # no-op on shared lanes (llama-ar pins codec "none"), which force-closed
+    # thinking for models whose templates fully support it and no flag,
+    # request field, or header could override it.
+    parser = getattr(state.args, "reasoning_parser", None)
+    if parser:
+        return str(parser)
+    return _backend_descriptor(state).reasoning_codec.parser
 
 
 def _open_browser_later(url: str, *, delay_s: float = 1.0) -> None:
