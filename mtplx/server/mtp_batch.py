@@ -681,18 +681,20 @@ class MTPBatchGenerationService:
             "request_started_s": job.created_s,
             "server_seed": job.seed,
         }
-        stats.update(job.request_observability)
         # Width truth wins over the submit-time observability defaults: the
-        # request could not know its sealed width when it was enqueued. At
-        # width 8 these values equal the pre-update ones, so the shipped B8
-        # payload is unchanged.
-        stats.update(
+        # request could not know its sealed width when it was enqueued. The
+        # truth goes into the job's observability itself because later
+        # envelope stages re-apply request_observability over stats; at width
+        # 8 these values equal the defaults, so the shipped payload is
+        # unchanged.
+        job.request_observability.update(
             {
                 "scheduler_policy": f"fixed_mtp_batch_width_{int(fixed_width)}",
                 "mtp_batch_fixed_width": int(fixed_width),
                 "mtp_batch_route_id": route_id,
             }
         )
+        stats.update(job.request_observability)
         completion_prefill = {
             "phase": "completed",
             "tokens_total": len(job.prompt_ids),
