@@ -73,6 +73,7 @@ from mtplx.backends.descriptors import (
     descriptor_from_inspection,
     model_controls_for_descriptor,
     model_family_from_inspection,
+    reasoning_policy_for_model,
     tune_policy_for_model,
 )
 from mtplx.profiles import (
@@ -1149,19 +1150,26 @@ def _gemma4_pair_draft_block_size(inspection: dict[str, Any]) -> int:
 def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None:
     descriptor = descriptor_from_inspection(inspection)
     cli_flags = getattr(args, "_cli_flags", set()) or set()
-    reasoning = descriptor.reasoning_codec
+    # Family-aware policy, not the raw lane descriptor: shared lanes (mlx_lm_ar)
+    # pin parser=none while a family on that lane (lfm2) has a verified codec.
+    # Stamping the lane's "none" here reads as an operator override downstream
+    # and permanently disables reasoning for the child daemon.
+    reasoning = reasoning_policy_for_model(
+        inspection=inspection,
+        descriptor=descriptor,
+    )
     if "reasoning" not in cli_flags and getattr(args, "reasoning", None) is None:
         args.reasoning = reasoning.default_mode if reasoning.supported else "off"
     if "reasoning-parser" not in cli_flags and getattr(
         args, "reasoning_parser", None
     ) in (None, "qwen3"):
-        args.reasoning_parser = descriptor.reasoning_codec.parser
+        args.reasoning_parser = reasoning.parser
     if (
         "reasoning-effort" not in cli_flags
         and getattr(args, "reasoning_effort", None) in (None, "auto")
-        and descriptor.reasoning_codec.default_effort
+        and reasoning.default_effort
     ):
-        args.reasoning_effort = descriptor.reasoning_codec.default_effort
+        args.reasoning_effort = reasoning.default_effort
     required_tool_prompt_mode = descriptor.required_tool_prompt_mode
     if required_tool_prompt_mode is not None:
         requested_tool_prompt_mode = str(

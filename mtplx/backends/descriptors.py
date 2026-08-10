@@ -495,6 +495,11 @@ MLX_LM_AR_LFM2_DESCRIPTOR = replace(
         display_name="LFM think tags",
         default_mode="auto",
     ),
+    # The LFM chat template owns tool formatting (List of tools + pythonic
+    # <|tool_call_start|> envelope). The hybrid launch default would inject the
+    # legacy <tool_call> XML contract on top and the model obeys the injected
+    # format over its native one — with malformed results.
+    required_tool_prompt_mode="native",
 )
 
 

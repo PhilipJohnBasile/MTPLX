@@ -161,6 +161,10 @@ from mtplx.server.omlx_bridge import (
     normalize_messages_for_template as omlx_normalize_messages_for_template,
     parse_tool_calls as omlx_parse_tool_calls,
 )
+from mtplx.server.omlx_bridge.tool_calling import (
+    PYTHONIC_TOOL_CALL_END,
+    PYTHONIC_TOOL_CALL_START,
+)
 from mtplx.server_urls import bind_label, is_wildcard_bind, local_url_for_bind
 
 LOGGER = logging.getLogger("mtplx.server.openai")
@@ -6971,18 +6975,31 @@ def _classify_bracket_tool_call(text: str, start: int) -> str:
     return "incomplete" if re.fullmatch(r"\s*\)?\s*", text[j:]) else "invalid"
 
 
+_PYTHONIC_TOOL_MARKER_PAIR = (
+    PYTHONIC_TOOL_CALL_START,
+    PYTHONIC_TOOL_CALL_END,
+)
+
+
 def _tool_marker_pairs_from_tokenizer(tokenizer: Any | None) -> list[tuple[str, str]]:
+    # The LFM pythonic envelope is always recognized: lfm2 tokenizers carry no
+    # tool metadata (mlx-lm has_tool_calling=False) while the special tokens
+    # survive detokenization as literal text, so tokenizer-derived pairs alone
+    # would stream the envelope to clients as content.
+    pairs: list[tuple[str, str]] = [_PYTHONIC_TOOL_MARKER_PAIR]
     if tokenizer is None:
-        return []
+        return pairs
     start = getattr(tokenizer, "tool_call_start", None)
     end = getattr(tokenizer, "tool_call_end", None)
     if not isinstance(start, str) or not start:
-        return []
+        return pairs
     if not isinstance(end, str) or not end:
-        return []
+        return pairs
     if start == "<tool_call>" and end == "</tool_call>":
-        return []
-    return [(start, end)]
+        return pairs
+    if (start, end) != _PYTHONIC_TOOL_MARKER_PAIR:
+        pairs.append((start, end))
+    return pairs
 
 
 def _iter_generated_tool_call_envelopes(
@@ -7472,6 +7489,38 @@ class _SuffixedNativeToolCallStreamParser(_ToolCallStreamParser):
         if span is None:
             return []
         return self._finish_complete(*span)
+
+
+class _PythonicToolCallStreamParser(_SuffixedNativeToolCallStreamParser):
+    """Buffer and translate the LFM pythonic tool envelope.
+
+    Same buffered-envelope contract as the suffixed parser (the envelope is a
+    few dozen tokens; buffering to the end marker costs nothing perceptible),
+    reusing its normalize/validate/delta pipeline via _finish_complete. Only
+    the span recognition differs: a literal marker pair around a python-call
+    list, parsed by the omlx pythonic_marker branch.
+    """
+
+    dialect = "pythonic_marker"
+    _OPEN_RE = re.compile(re.escape(PYTHONIC_TOOL_CALL_START))
+
+    @property
+    def started(self) -> bool:
+        return self._raw.lstrip().startswith(PYTHONIC_TOOL_CALL_START)
+
+    def _complete_span(self, *, final: bool) -> tuple[str, str] | None:
+        stripped = self._raw.lstrip()
+        if not stripped.startswith(PYTHONIC_TOOL_CALL_START):
+            if final:
+                self._fallback_reason = "invalid pythonic tool call opener"
+            return None
+        end = stripped.find(PYTHONIC_TOOL_CALL_END)
+        if end < 0:
+            if final:
+                self._fallback_reason = "unclosed pythonic tool call envelope"
+            return None
+        end += len(PYTHONIC_TOOL_CALL_END)
+        return stripped[:end], stripped[end:]
 
 
 class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
@@ -8238,26 +8287,34 @@ class _ToolAwareContentStreamTranslator:
             return []
         return self._flush_deferred_content()
 
+    def _make_tool_parser(self, pending: str) -> _ToolCallStreamParser:
+        stripped = pending.lstrip()
+        lowered = stripped.lower()
+        if stripped.startswith(PYTHONIC_TOOL_CALL_START):
+            return _PythonicToolCallStreamParser(
+                tools=self._tools,
+                tokenizer=self._tokenizer,
+                argument_chunk_chars=self._argument_chunk_chars,
+            )
+        if lowered.startswith("<tool_call:") or lowered.startswith("<tool_calls:"):
+            return _SuffixedNativeToolCallStreamParser(
+                tools=self._tools,
+                tokenizer=self._tokenizer,
+                argument_chunk_chars=self._argument_chunk_chars,
+            )
+        return _QwenXMLToolCallStreamParser(
+            tools=self._tools,
+            call_index=len(self.tool_calls or []),
+            repair_unclosed_complete=self._repair_unclosed_complete,
+        )
+
     def _tool_deltas_if_complete(self, *, final: bool) -> list[dict[str, Any]]:
         if self._tool_parser is None:
             stripped_pending = self._pending.lstrip()
             lowered_pending = stripped_pending.lower()
             if lowered_pending in {"<tool_call", "<tool_calls"} and not final:
                 return []
-            if lowered_pending.startswith("<tool_call:") or lowered_pending.startswith(
-                "<tool_calls:"
-            ):
-                self._tool_parser = _SuffixedNativeToolCallStreamParser(
-                    tools=self._tools,
-                    tokenizer=self._tokenizer,
-                    argument_chunk_chars=self._argument_chunk_chars,
-                )
-            else:
-                self._tool_parser = _QwenXMLToolCallStreamParser(
-                    tools=self._tools,
-                    call_index=len(self.tool_calls or []),
-                    repair_unclosed_complete=self._repair_unclosed_complete,
-                )
+            self._tool_parser = self._make_tool_parser(self._pending)
             self.tool_parser_dialect = self._tool_parser.dialect
         chunk = self._pending
         self._pending = ""
@@ -8287,11 +8344,7 @@ class _ToolAwareContentStreamTranslator:
                     return deltas
                 idx = self._find_tool_start(remaining)
                 if idx >= 0 and not remaining[:idx].strip():
-                    self._tool_parser = _QwenXMLToolCallStreamParser(
-                        tools=self._tools,
-                        call_index=len(self.tool_calls or []),
-                        repair_unclosed_complete=self._repair_unclosed_complete,
-                    )
+                    self._tool_parser = self._make_tool_parser(remaining[idx:])
                     self.tool_parser_dialect = self._tool_parser.dialect
                     chunk = remaining[idx:]
                     self._mode = "tool"
@@ -8330,11 +8383,7 @@ class _ToolAwareContentStreamTranslator:
                     return deltas
                 idx = self._find_tool_start(remaining)
                 if idx >= 0 and not remaining[:idx].strip():
-                    self._tool_parser = _QwenXMLToolCallStreamParser(
-                        tools=self._tools,
-                        call_index=len(self.tool_calls or []),
-                        repair_unclosed_complete=self._repair_unclosed_complete,
-                    )
+                    self._tool_parser = self._make_tool_parser(remaining[idx:])
                     self.tool_parser_dialect = self._tool_parser.dialect
                     chunk = remaining[idx:]
                     self._mode = "tool"
@@ -15387,6 +15436,7 @@ def _tool_prompt_mode_for_request(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
     tools_active: bool,
+    backend: BackendDescriptor | None = None,
 ) -> tuple[str, dict[str, Any]]:
     launch_mode = _tool_prompt_mode_from_args(args)
     requested_mode = _request_tool_prompt_mode_override(
@@ -15397,7 +15447,11 @@ def _tool_prompt_mode_for_request(
         headers=headers,
         metadata=metadata,
     )
-    backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
+    # Callers with a ServerState pass the resolved descriptor: runtime-sniffed
+    # variants (LFM2 on the mlx_lm_ar lane) carry a required mode the plain
+    # backend_id lookup cannot see.
+    if backend is None:
+        backend = descriptor_for_backend_id(getattr(args, "backend_id", None))
     required_mode = backend.required_tool_prompt_mode
     if required_mode is not None:
         if requested_mode is not None and requested_mode != required_mode:
@@ -23704,6 +23758,7 @@ def create_app(state: ServerState) -> FastAPI:
             headers=headers,
             metadata=metadata,
             tools_active=tools_active,
+            backend=_backend_descriptor(state),
         )
         template_tool_prompt_mode = tool_prompt_mode
         if read_only_force_answer_contract_active and tools_active:
@@ -23726,6 +23781,7 @@ def create_app(state: ServerState) -> FastAPI:
                 headers=headers,
                 metadata=metadata,
                 tools_active=True,
+                backend=_backend_descriptor(state),
             )
         request_generation_mode = _request_generation_mode_for_generation(
             state,
@@ -27565,6 +27621,7 @@ def create_app(state: ServerState) -> FastAPI:
             headers=headers,
             metadata=metadata,
             tools_active=tools_active,
+            backend=_backend_descriptor(state),
         )
         prompt_ids = _encode_messages(
             state.runtime.tokenizer,

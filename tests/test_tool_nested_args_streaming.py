@@ -361,3 +361,83 @@ def test_tool_call_example_string_params_unchanged():
     ]
     example = _tool_call_example(specs)
     assert "<parameter=path>\nARGUMENT_VALUE\n</parameter>" in example
+
+
+# ---------- LFM pythonic envelope through the stream translator ----------
+
+TIME_TOOL_SPECS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_time",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+        },
+    }
+]
+
+PYTHONIC_CALL = "<|tool_call_start|>[get_time(city='Tokyo')]<|tool_call_end|>"
+
+
+def test_pythonic_envelope_streams_tool_deltas_not_content():
+    translator = _make(TIME_TOOL_SPECS)
+    deltas = translator.feed("content", PYTHONIC_CALL)
+    deltas.extend(translator.finish())
+
+    assert _content_text(deltas) == ""
+    assert json.loads(_argument_text(deltas)) == {"city": "Tokyo"}
+    assert translator.tool_calls
+    assert translator.tool_calls[0]["function"]["name"] == "get_time"
+    assert translator.tool_parser_dialect == "pythonic_marker"
+
+
+def test_pythonic_envelope_bytewise_never_leaks_marker():
+    translator = _make(TIME_TOOL_SPECS)
+    deltas = _feed_bytewise(translator, "Checking. " + PYTHONIC_CALL)
+
+    content = _content_text(deltas)
+    assert "tool_call" not in content
+    assert "Checking." in content
+    assert translator.tool_calls
+    assert translator.tool_calls[0]["function"]["name"] == "get_time"
+
+
+def test_pythonic_multi_call_envelope_streams_both():
+    translator = _make(
+        TIME_TOOL_SPECS
+        + [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+    )
+    deltas = translator.feed(
+        "content",
+        "<|tool_call_start|>[get_time(city='Oslo'), get_weather(city='Oslo')]"
+        "<|tool_call_end|>",
+    )
+    deltas.extend(translator.finish())
+
+    assert _content_text(deltas) == ""
+    names = [call["function"]["name"] for call in translator.tool_calls or []]
+    assert names == ["get_time", "get_weather"]
+
+
+def test_pythonic_unclosed_envelope_falls_back_without_markup():
+    translator = _make(TIME_TOOL_SPECS)
+    deltas = translator.feed("content", "<|tool_call_start|>[get_time(city='To")
+    deltas.extend(translator.finish())
+
+    assert translator.tool_calls in (None, [])
+    assert translator.fallback_reason
+    assert "tool_call" not in _content_text(deltas)
