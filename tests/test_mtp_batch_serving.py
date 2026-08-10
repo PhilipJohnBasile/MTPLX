@@ -89,6 +89,156 @@ def _service(driver):
     )
 
 
+class _WidthDriver(_Driver):
+    """Driver that records which lane object each cohort ran on."""
+
+    def __init__(self):
+        super().__init__()
+        self.lanes = []
+
+    def __call__(self, lane, requests):
+        self.lanes.append(lane)
+        result = super().__call__(lane, requests)
+        width = int(getattr(getattr(lane, "geometry", None), "cohort_slots", 8) or 8)
+        return A3BMTPBatchResult(
+            streams=result.streams,
+            cycles=result.cycles,
+            accepted_drafts=result.accepted_drafts,
+            rejected_drafts=result.rejected_drafts,
+            route_id=str(getattr(lane, "route_id", result.route_id)),
+            width_histogram=MappingProxyType({width: result.cycles}),
+        )
+
+
+def _width_lanes():
+    lane_b8 = SimpleNamespace(
+        geometry=SimpleNamespace(cohort_slots=8),
+        route_id="fake-b8-t2",
+        numerics_profile="throughput",
+    )
+    lane_b3 = SimpleNamespace(
+        geometry=SimpleNamespace(cohort_slots=3),
+        route_id="fake-b3-t2",
+        numerics_profile="throughput",
+    )
+    return lane_b8, lane_b3
+
+
+def _width_service(driver, *, widths=(8, 3)):
+    lane_b8, lane_b3 = _width_lanes()
+    by_width = {8: lane_b8, 3: lane_b3}
+    state = SimpleNamespace(runtime=SimpleNamespace(tokenizer=None))
+    return (
+        MTPBatchGenerationService(
+            state,
+            lane=lane_b8,
+            lanes={width: by_width[width] for width in widths},
+            driver=driver,
+            batch_wait_s=0.0,
+            auto_schedule=False,
+        ),
+        lane_b8,
+        lane_b3,
+    )
+
+
+def test_seal_selects_native_width_three_lane_for_small_cohorts():
+    """2-3 compatible jobs run the B3 lane; the histogram tells width truth."""
+    driver = _WidthDriver()
+    service, _lane_b8, lane_b3 = _width_service(driver)
+    jobs = [_job(index) for index in range(2)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    assert driver.lanes == [lane_b3]
+    assert driver.widths == [2]
+    for result in results:
+        assert result["stats"]["mtp_batch_fixed_width"] == 3
+        assert result["stats"]["mtp_batch_real_width"] == 2
+        assert result["stats"]["scheduler_policy"] == "fixed_mtp_batch_width_3"
+        assert result["stats"]["mtp_batch_route_id"] == "fake-b3-t2"
+    snapshot = service.snapshot()
+    assert snapshot["installed_widths"] == [3, 8]
+    assert snapshot["fixed_width_histogram"] == {"3": 2}
+
+
+def test_seal_keeps_wide_cohorts_on_the_b8_lane():
+    """4-8 compatible jobs must stay on the shipped B8 lane."""
+    driver = _WidthDriver()
+    service, lane_b8, _lane_b3 = _width_service(driver)
+    jobs = [_job(index) for index in range(5)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    assert driver.lanes == [lane_b8]
+    assert driver.widths == [5]
+    for result in results:
+        assert result["stats"]["mtp_batch_fixed_width"] == 8
+        assert result["stats"]["scheduler_policy"] == "fixed_mtp_batch_width_8"
+        assert result["stats"]["mtp_batch_route_id"] == "fake-b8-t2"
+    assert service.snapshot()["fixed_width_histogram"] == {"8": 2}
+
+
+def test_seal_without_native_width_three_keeps_todays_b8_route():
+    """A service constructed with only the B8 lane behaves exactly as before."""
+    driver = _WidthDriver()
+    service, lane_b8, _lane_b3 = _width_service(driver, widths=(8,))
+    jobs = [_job(index) for index in range(2)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    assert driver.lanes == [lane_b8]
+    for result in results:
+        assert result["stats"]["mtp_batch_fixed_width"] == 8
+        assert result["stats"]["scheduler_policy"] == "fixed_mtp_batch_width_8"
+
+
+def test_force_width_env_pins_small_cohorts_to_b8_for_ab_control(monkeypatch):
+    """MTPLX_MTP_BATCH_FORCE_WIDTH=8 is the documented A/B control arm."""
+    monkeypatch.setenv("MTPLX_MTP_BATCH_FORCE_WIDTH", "8")
+    driver = _WidthDriver()
+    service, lane_b8, _lane_b3 = _width_service(driver)
+    jobs = [_job(index) for index in range(3)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    results = [future.result(timeout=1) for future in futures]
+
+    assert driver.lanes == [lane_b8]
+    for result in results:
+        assert result["stats"]["mtp_batch_fixed_width"] == 8
+        assert result["stats"]["mtp_batch_real_width"] == 3
+    assert service.snapshot()["forced_width"] == 8
+
+
+def test_force_width_env_ignores_widths_the_cohort_cannot_fit(monkeypatch):
+    """Forcing 3 must never squeeze a 5-wide cohort into the B3 lane."""
+    monkeypatch.setenv("MTPLX_MTP_BATCH_FORCE_WIDTH", "3")
+    driver = _WidthDriver()
+    service, lane_b8, lane_b3 = _width_service(driver)
+    jobs = [_job(index) for index in range(5)]
+    futures = [service.submit(job) for job in jobs]
+
+    assert service.pump_once()
+    for future in futures:
+        future.result(timeout=1)
+
+    assert driver.lanes == [lane_b8]
+
+    small_jobs = [_job(index + 10) for index in range(2)]
+    small_futures = [service.submit(job) for job in small_jobs]
+    assert service.pump_once()
+    for future in small_futures:
+        future.result(timeout=1)
+    assert driver.lanes == [lane_b8, lane_b3]
+
+
 def test_b1_exact_profile_runs_each_sealed_request_through_unchanged_solo_runner():
     driver = _Driver()
     lane = SimpleNamespace(

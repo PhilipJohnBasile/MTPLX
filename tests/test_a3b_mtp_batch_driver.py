@@ -35,15 +35,21 @@ def _logits(token: int) -> np.ndarray:
 
 
 class _FakeLane:
-    def __init__(self, *, fail_verify: bool = False, logits_dtype=mx.float32):
+    def __init__(
+        self,
+        *,
+        fail_verify: bool = False,
+        logits_dtype=mx.float32,
+        cohort_slots: int = 8,
+    ):
         self.geometry = SimpleNamespace(
-            cohort_slots=8,
+            cohort_slots=int(cohort_slots),
             verify_tokens=2,
             max_context_tokens=131072,
             num_kv_heads=2,
             head_dim=256,
         )
-        self.route_id = "fake_qwen35b_b8_t2"
+        self.route_id = f"fake_qwen35b_b{int(cohort_slots)}_t2"
         self.fail_verify = fail_verify
         self.logits_dtype = logits_dtype
         self.last_cache = None
@@ -840,6 +846,175 @@ def test_per_row_stats_reflect_each_rows_own_active_window():
     assert early.accepted_drafts + late.accepted_drafts == result.accepted_drafts
     assert early.rejected_drafts + late.rejected_drafts == result.rejected_drafts
     assert early.accepted_drafts + early.rejected_drafts <= early.cycles
+
+
+def test_driver_runs_native_width_three_cohort_end_to_end():
+    """A B3 lane runs 2-3 real rows with no padded slots beyond width 3."""
+    lane = _FakeLane(cohort_slots=3)
+    streamed = {"a": [], "b": [], "c": []}
+    result = generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("a", [1, 2, 3], max_tokens=2, callback=streamed["a"].append),
+            _request("b", [7], max_tokens=2, callback=streamed["b"].append),
+            _request("c", [11], max_tokens=2, callback=streamed["c"].append),
+        ],
+    )
+
+    assert [stream.tokens for stream in result.streams] == [(4, 5), (8, 9), (12, 13)]
+    assert streamed == {"a": [4, 5], "b": [8, 9], "c": [12, 13]}
+    assert dict(result.width_histogram) == {3: result.cycles}
+    assert result.route_id == "fake_qwen35b_b3_t2"
+    ragged = next(
+        entry for entry in lane.last_cache if isinstance(entry, RaggedBatchKVCache)
+    )
+    # Physical batch is exactly three rows: no inert padding beyond width.
+    assert int(ragged.offsets.shape[0]) == 3
+    assert int(lane.last_mtp_cache[0].offsets.shape[0]) == 3
+
+
+def test_width_three_lane_rejects_more_requests_than_slots():
+    lane = _FakeLane(cohort_slots=3)
+    with pytest.raises(ValueError, match="2-3 requests"):
+        generate_a3b_mtp_batch(
+            lane,
+            [_request(str(row), [row + 1], max_tokens=1) for row in range(4)],
+        )
+
+
+def test_width_three_pads_single_free_slot_with_inert_row():
+    """A 2-request B3 cohort pads exactly one slot and keeps rows truthful."""
+    lane = _FakeLane(cohort_slots=3)
+    result = generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("a", [1, 2, 3], max_tokens=2),
+            _request("b", [7], max_tokens=2),
+        ],
+    )
+    assert [stream.tokens for stream in result.streams] == [(4, 5), (8, 9)]
+    assert dict(result.width_histogram) == {3: result.cycles}
+    # 2 real prefills + 1 padded slot.
+    assert lane.prefill_calls == 3
+
+
+def test_per_row_stats_stay_row_truthful_in_width_three_cohort():
+    """8e1cc55 semantics survive the native width: rows report their own truth."""
+    lane = _FakeLane(cohort_slots=3)
+    result = generate_a3b_mtp_batch(
+        lane,
+        [
+            _request("early", list(range(100)), max_tokens=1),
+            _request("late", [7], max_tokens=32),
+        ],
+    )
+
+    early, late = result.streams
+    assert early.finish_reason == "length"
+    assert late.finish_reason == "length"
+    assert 0 < early.cycles < late.cycles
+    assert late.cycles == result.cycles
+    assert early.terminal_perf_s is not None
+    assert late.terminal_perf_s is not None
+    assert early.terminal_perf_s <= late.terminal_perf_s
+    assert early.accepted_drafts + late.accepted_drafts == result.accepted_drafts
+    assert early.rejected_drafts + late.rejected_drafts == result.rejected_drafts
+
+
+class _WidthThreeHookLane(_HookLane):
+    def __init__(self, **kwargs):
+        super().__init__(cohort_slots=3, **kwargs)
+
+
+def test_session_hooks_fire_in_width_three_cohorts():
+    """0e6fc5e restore/commit machinery is width-agnostic per-row scalar work."""
+    lane = _WidthThreeHookLane()
+    restored_state = SimpleNamespace(
+        cache=None,
+        mtp_cache=None,
+        restore_point=2,
+        boundary_hidden=object(),
+        inherited_boundaries=[(2, "snap-2", None)],
+    )
+    commits: list[dict] = []
+    restored_request = _request("warm", [1, 2, 3, 4], max_tokens=2)
+    cold_request = _request("cold", [7, 8], max_tokens=2)
+    object.__setattr__(restored_request, "session_restore", lambda: restored_state)
+    object.__setattr__(
+        restored_request, "session_commit", lambda **kw: commits.append(kw)
+    )
+    object.__setattr__(cold_request, "session_restore", lambda: None)
+    object.__setattr__(cold_request, "session_commit", lambda **kw: commits.append(kw))
+
+    result = generate_a3b_mtp_batch(lane, [restored_request, cold_request])
+
+    assert len(result.streams) == 2
+    warm_call = lane.prefill_kwargs[0]
+    assert warm_call["restored"] is restored_state
+    assert warm_call["boundary_sink"][0] == (2, "snap-2", None)
+    cold_call = lane.prefill_kwargs[1]
+    assert cold_call["restored"] is None
+    assert [c["restored"] for c in commits] == [restored_state, None]
+    assert [len(c["gdn_boundaries"]) for c in commits] == [2, 1]
+    # Exactly one padded slot behind the two real rows, with no session kwargs.
+    assert len(lane.prefill_kwargs) == 3
+    assert (
+        lane.prefill_kwargs[2]["restored"] is None
+        and lane.prefill_kwargs[2]["boundary_sink"] is None
+    )
+
+
+def test_commit_rows_and_merge_infer_width_from_arguments():
+    """The shared commit/merge helpers scale to three rows by inference."""
+    from mtplx.a3b_mtp_batch import _commit_qwen35b_b8_t2_rows
+
+    width = 3
+    cache = []
+    base_recurrent = {}
+    for layer_idx, layer_type in enumerate(LAYER_TYPES):
+        if layer_type == "full_attention":
+            entry = RaggedBatchKVCache(batch_size=width, step=256)
+            entry.offsets = mx.array([4, 4, 4], dtype=mx.int32)
+            cache.append(entry)
+        else:
+            entry = ArraysCache(2)
+            entry[0] = mx.zeros((width, 1))
+            entry[1] = mx.zeros((width, 1, 1))
+            cache.append(entry)
+            base_recurrent[layer_idx] = (entry[0], entry[1])
+    captures = {
+        layer_idx: {
+            "conv_states": mx.broadcast_to(
+                mx.arange(2, dtype=mx.float32).reshape(1, 2, 1), (width, 2, 1)
+            ),
+            "states": mx.broadcast_to(
+                mx.arange(2, dtype=mx.float32).reshape(1, 2, 1, 1), (width, 2, 1, 1)
+            ),
+        }
+        for layer_idx, layer_type in enumerate(LAYER_TYPES)
+        if layer_type == "linear_attention"
+    }
+
+    _commit_qwen35b_b8_t2_rows(cache, captures, [0, 1, 2], base_recurrent)
+
+    ragged = next(e for e in cache if isinstance(e, RaggedBatchKVCache))
+    assert np.asarray(ragged.offsets).tolist() == [2, 3, 4]
+    recurrent = next(e for e in cache if isinstance(e, ArraysCache))
+    # Row 0 inactive (keep=0) -> base value; rows 1/2 take position keep-1.
+    assert np.asarray(recurrent[0]).reshape(-1).tolist() == [0.0, 0.0, 1.0]
+
+    merged = _merge_qwen35b_mtp_caches(
+        [[_kv_with_tokens(5)], [_kv_with_tokens(3)], [_kv_with_tokens(7)]]
+    )[0]
+    assert int(merged.keys.shape[0]) == 3
+    assert np.asarray(merged.offsets).tolist() == [5, 3, 7]
+
+
+def _kv_with_tokens(count: int) -> KVCache:
+    entry = KVCache()
+    values = mx.ones((1, 1, count, 1), dtype=mx.float32)
+    entry.update_and_fetch(values, values)
+    return entry
 
 
 def test_merge_capacity_follows_logical_offsets_not_stale_allocation():

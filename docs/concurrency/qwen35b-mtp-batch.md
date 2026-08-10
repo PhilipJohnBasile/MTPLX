@@ -8,9 +8,19 @@ backend. They are not global concurrency limits.
 ## Execution model
 
 One request uses the unchanged solo B1 MTP route. Two through eight compatible
-requests are placed in one physical B8 cohort. Empty rows are padded and remain
-inactive. The eight rows execute each model cycle in lockstep because they
-share one fixed-shape forward, but every row owns its own:
+requests are placed in one physical fixed-width cohort. For the `throughput`
+profile the server installs two physical widths at construction and seals each
+cohort onto the narrowest lane that fits it:
+
+- real width 1: unchanged solo B1 MTP route;
+- real width 2-3: the native B3/T2 lane (M6 target verify positions);
+- real width 4-8: the B8/T2 lane (M16).
+
+A sealed cohort keeps its width for its lifetime; there is no mid-flight
+demotion. `balanced` and `b1-exact` keep their single-route behavior. Empty
+rows are padded and remain inactive. The rows execute each model cycle in
+lockstep because they share one fixed-shape forward, but every row owns its
+own:
 
 - prompt and generated tokens;
 - target and MTP KV offsets and contents;
@@ -27,16 +37,47 @@ request's history.
 
 This backend uses depth-one MTP, also called K1:
 
-- `B1` means one request row. `B8` means eight physical request rows.
-- The MTP head drafts one token per active row with shape `B8 x T1`, flattened
-  to `M8` for projections and MoE work.
+- `B1` means one request row. `B3` means three physical request rows. `B8`
+  means eight physical request rows.
+- The MTP head drafts one token per active row with shape `Bn x T1`, flattened
+  to `Mn` for projections and MoE work.
 - The target verifies the current target token plus that draft with shape
-  `B8 x T2`, flattened to `M16`.
+  `Bn x T2`, flattened to `M2n` (`M6` for B3, `M16` for B8).
 - Acceptance, correction sampling, and commit decisions are independent for
   every row.
 
 This is why this implementation appears synchronized while still providing
-eight separate contexts.
+separate per-request contexts. The native B3 width exists because a 2-3
+request cohort on the B8 graph pays five inert rows of dense, GDN, attention,
+and sampler work every decode cycle; on the B3 graph those rows do not exist.
+
+### Width identity and drift
+
+Each width is its own compiled graph with its own construction-time numerical
+self-check; install fails closed if either width fails. Same-geometry
+determinism is the exactness gate: two identical greedy runs through the same
+width are token-identical (live receipt 2026-08-09: bank-bypassed 3-wide
+cohorts reproduced byte-identical outputs within one daemon and across fresh
+daemons, at both ~8k and ~13k prompts, on both widths). Identical inputs
+include row order — the seal is FIFO, so identical arrival order gives
+identical rows. Across widths (the same request decoded through B3 versus B8)
+bounded BF16 geometry drift applies — exactly the documented B1-versus-B8
+cross-geometry bound — so token drift between the widths is expected and is
+not a defect. The same bounded drift applies between session-bank restore
+lineages: entries banked at the same token boundary by different execution
+paths restore states within the numeric bound but not always bitwise, so a
+rerun that restores from different-lineage entries can flip a near-tie token.
+That behavior predates the B3 width and is width-independent. Session-bank identity is width-neutral by
+construction: cohort rows commit prompt-boundary state from the unchanged
+request-local scalar prefill (shared by both widths and the solo lane) before
+any width-specific merge, so entries bank and restore identically across solo,
+B3, and B8 execution and the policy fingerprint does not embed the physical
+width.
+
+`MTPLX_MTP_BATCH_FORCE_WIDTH` (default off, read once at service construction)
+pins cohort sealing to one installed width — e.g. `8` sends 2-3 request
+cohorts through the padded B8 graph. It exists for matched A/B measurement; a
+forced width that cannot fit a sealed cohort is ignored for that cohort.
 
 ## Request capabilities
 
@@ -189,6 +230,15 @@ prove this backend handled concurrent requests. A configured mode or route ID
 alone does not prove that a cohort ran. A single request correctly reports the
 solo MTP lane. `b1-exact` reports `mtp_batch_b1_exact_serial` and never claims a
 fixed-width B8 execution.
+
+For `throughput`, the scheduler payload also reports
+`mtp_batch_installed_widths` (`[3, 8]`) with per-width route IDs in
+`mtp_batch_width_routes`, and `telemetry.fixed_width_histogram` counts decode
+cycles by the physical width that executed them (`{"3": ...}` proves real B3
+cohorts ran). Completion metadata reports the sealed width per request:
+`mtp_batch_fixed_width` is 3 for a B3 cohort row, 8 for B8, and
+`scheduler_policy` is `fixed_mtp_batch_width_3` or `fixed_mtp_batch_width_8`
+accordingly.
 
 ## Live serving receipt
 

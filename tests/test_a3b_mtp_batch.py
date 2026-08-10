@@ -107,6 +107,7 @@ class _Runtime:
             gdn_postconv=SimpleNamespace(
                 m2_implementations=tuple((lambda *args: args) for _ in range(30)),
                 b8_t2_implementations=tuple((lambda *args: args) for _ in range(30)),
+                b3_t2_implementations=tuple((lambda *args: args) for _ in range(30)),
             ),
         )
 
@@ -370,6 +371,127 @@ def test_installer_pins_qwen35b_width8_depth1_geometry(tmp_path):
     assert lane.selfcheck["solo_parity"] is True
     with pytest.raises(FrozenInstanceError):
         lane.route_id = "changed"
+
+
+def test_installer_builds_native_width3_throughput_lane(tmp_path):
+    from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+
+    runtime = _runtime(tmp_path)
+    lane = install_a3b_mtp_batch_lane(
+        runtime,
+        selfcheck=_passing_selfcheck,
+        cohort_slots=3,
+    )
+
+    assert lane.geometry.cohort_slots == 3
+    assert lane.geometry.projection_rows == 6
+    assert lane.geometry.speculative_depth == 1
+    assert lane.geometry.verify_tokens == 2
+    assert lane.route_id == "qwen35b_a3b_mtp_batch_b3_t2_m6_throughput"
+    assert lane.numerics_profile == "throughput"
+    assert (
+        getattr(
+            lane.capture_forward.keywords["call"],
+            "_mtplx_compiled_qwen35b_t2_width",
+            None,
+        )
+        == 3
+    )
+    assert lane.selfcheck["cohort_slots"] == 3
+
+
+def test_installer_rejects_native_width3_for_non_throughput_profiles(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    for profile in ("balanced", "b1-exact"):
+        profile_dir = tmp_path / profile.replace("-", "_")
+        profile_dir.mkdir()
+        with pytest.raises(A3BMTPBatchInstallError, match="throughput profile"):
+            install_a3b_mtp_batch_lane(
+                _runtime(profile_dir),
+                numerics=profile,
+                selfcheck=_passing_selfcheck,
+                profile_factories=_fake_profile_factories(),
+                cohort_slots=3,
+            )
+
+
+def test_installer_rejects_unsupported_cohort_width(tmp_path):
+    from mtplx.a3b_mtp_batch import (
+        A3BMTPBatchInstallError,
+        install_a3b_mtp_batch_lane,
+    )
+
+    with pytest.raises(A3BMTPBatchInstallError, match="width 5 is not supported"):
+        install_a3b_mtp_batch_lane(
+            _runtime(tmp_path),
+            selfcheck=_passing_selfcheck,
+            cohort_slots=5,
+        )
+
+
+def test_installing_both_widths_shares_one_idempotent_attention_route(tmp_path):
+    from mtplx.a3b_mtp_batch import install_a3b_mtp_batch_lane
+
+    runtime = _runtime(tmp_path)
+    lane_b8 = install_a3b_mtp_batch_lane(runtime, selfcheck=_passing_selfcheck)
+    attention_classes_after_b8 = {
+        type(layer.self_attn).__name__
+        for layer in runtime.model.language_model.model.layers
+        if layer.self_attn is not None
+    }
+    lane_b3 = install_a3b_mtp_batch_lane(
+        runtime,
+        selfcheck=_passing_selfcheck,
+        cohort_slots=3,
+    )
+    attention_classes_after_b3 = {
+        type(layer.self_attn).__name__
+        for layer in runtime.model.language_model.model.layers
+        if layer.self_attn is not None
+    }
+
+    # Second install must not re-wrap the wrapper (no doubled class names).
+    assert attention_classes_after_b8 == attention_classes_after_b3
+    assert all(
+        name.count("MTPLXQwen35B8Stock") == 1 for name in attention_classes_after_b3
+    )
+    assert lane_b8.geometry.cohort_slots == 8
+    assert lane_b3.geometry.cohort_slots == 3
+    assert lane_b8.route_id != lane_b3.route_id
+    # Both widths share one construction fingerprint family (numerics+route).
+    assert lane_b8.config_fingerprint.split(":")[0] == (
+        lane_b3.config_fingerprint.split(":")[0]
+    )
+
+
+def test_throughput_contract_scales_geometry_checks_with_report_width():
+    from mtplx.a3b_mtp_batch import _throughput_selfcheck_contract
+
+    b3_report = _passing_selfcheck(
+        SimpleNamespace(
+            geometry=SimpleNamespace(
+                cohort_slots=3,
+                verify_tokens=2,
+                projection_rows=6,
+            )
+        )
+    )
+    b3_report["cohort_slots"] = 3
+    assert _throughput_selfcheck_contract(b3_report) is True
+
+    mismatched = dict(b3_report)
+    mismatched["target_shape"] = [8, 2]
+    assert _throughput_selfcheck_contract(mismatched) is False
+
+    unsupported = dict(b3_report)
+    unsupported["cohort_slots"] = 5
+    unsupported["target_shape"] = [5, 2]
+    unsupported["projection_rows"] = 10
+    assert _throughput_selfcheck_contract(unsupported) is False
 
 
 def test_installer_rejects_mlx_lm_without_arrays_cache_fix(tmp_path, monkeypatch):
