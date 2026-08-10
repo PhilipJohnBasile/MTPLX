@@ -2356,6 +2356,10 @@ def install_a3b_mtp_batch_lane(
     report = dict(
         selfcheck(lane) if selfcheck is not None else _default_selfcheck(lane, runtime)
     )
+    # The installer knows the width it just built; stamp it for the width-aware
+    # contract so external selfcheck callables predating the key keep working.
+    # The default selfcheck's own stamp (always equal) wins via setdefault.
+    report.setdefault("cohort_slots", width)
     if selected_numerics is MTPBatchNumerics.B1_EXACT:
         # Exactness comes from the construction-bound service executor: it
         # never invokes these B8 callables and dispatches the unchanged B1 MTP
