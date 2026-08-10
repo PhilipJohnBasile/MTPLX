@@ -193,6 +193,19 @@ def _patch_smart_fan_hardware(monkeypatch, calls, *, set_results=None):
     )
     monkeypatch.setattr(thermal, "set_thermal_profile", fake_set)
     monkeypatch.setattr(thermal, "fan_summary", lambda: _RAMPED_SUMMARY)
+    # #227's heat-soak hold made the worker's restore path probe the real
+    # SoC die temperature (soc_temperature_c -> `thermalforge status`).
+    # Stub it like every other hardware touchpoint: on a machine whose die
+    # is above MTPLX_SMART_FAN_SOAK_RELEASE_C (75C) -- routine late in a
+    # full pytest battery -- the hold defers the restore, and any test that
+    # waits for "auto" without end_request's wait_for_restore soak bypass
+    # times out. "No usable reading" selects the legacy instant restore;
+    # soak-specific tests override this via _patch_soak_probe.
+    monkeypatch.setattr(
+        thermal,
+        "soc_temperature_c",
+        lambda: {"ok": False, "celsius": None, "sensor": None},
+    )
 
 
 def test_smart_fan_controller_keeps_max_until_final_request(monkeypatch):
