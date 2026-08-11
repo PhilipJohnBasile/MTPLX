@@ -94,6 +94,17 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Temperature-0 speculative output matches plain decoding again.** The
+  MTP lane's cold prefill fed the whole prompt through the model in one
+  window, while plain autoregressive decoding splits it into body plus a
+  final single-token step. The two shapes round differently at the last
+  bit, so the speculative lane started from a cache one ulp apart from the
+  AR lane's — enough to flip greedy argmax at a near-tie and break the
+  "temperature 0 output is token-identical" contract on the promotion gate.
+  All cold-prefill paths now partition the prompt identically; the Optimized
+  Speed V2 artifact, which surfaced the flip, passes its greedy exactness
+  gate at every depth again.
+
 - **Prefix restores no longer corrupt the session bank (#247).** Since the
   zero-copy cache work, restoring a banked prefix installed the entry's own
   KV state objects into the borrowing request's cache; the borrower's suffix
