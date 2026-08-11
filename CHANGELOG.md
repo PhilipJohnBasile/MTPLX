@@ -8,6 +8,45 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Added
 
+- **Concurrent MTP serving.** Until now speculative decoding was a
+  single-request feature: under concurrency the scheduler fell back to the
+  autoregressive batch lane and every simultaneous caller lost the MTP
+  speedup. `--scheduler-mode mtp_batch` serves independent requests through
+  fixed-width MTP cohorts — each row owns its state, drafts are verified in
+  one batched target forward, and rows join and leave mid-flight without
+  disturbing their neighbours. Two native cohort widths install side by side
+  (three-wide and eight-wide) and the scheduler seals each cohort at the
+  narrowest width that fits, so two concurrent agents no longer pay the
+  padding of an eight-lane launch. Measured on `Qwen3.6-35B-A3B` on an M5 Max,
+  the three-wide lane holds 1.7–1.8× the per-request decode of the padded
+  eight-lane shape, and the composite lane below adds warm-prefix restores on
+  top; against the previous production `ar_batch` route the same concurrent
+  agent workloads decode at 1.6–2.25× per lane, sampled at the model's
+  shipped settings.
+
+  The lane is exact where exactness is claimed and honest where it is not:
+  `--mtp-batch-numerics` selects between `throughput`, `balanced`, and
+  `b1-exact` profiles (documented trade-offs, install-time self-check), and
+  per-request stats now report each row's own truth — its own accepted-depth
+  histogram, its own cohort width, its own restore provenance — rather than
+  cohort-averaged numbers.
+
+  The session bank composes with the cohorts: a request whose prefix is
+  banked restores it at cohort admission (skipping the shared prefill for
+  the covered span), prefills only its uncovered suffix, and commits its own
+  prompt boundary before the merge, so agent fleets with shared system
+  prompts keep warm TTFT under concurrency. The plain `ar_batch` lane learned
+  the same trick: finished rows and prompt-only boundaries commit to the bank
+  from batch mode too.
+
+- **LiquidAI LFM2 / LFM2.5 support.** The LFM2 family serves natively with a
+  bit-exact ShortConv decode fast-path, a verified think/tool grammar
+  (parser stamp, native tool prompt, and the pythonic streaming dialect the
+  family emits), and a catalog lane for the `llama-ar` shape. IQuest-Coder
+  checkpoints serve target-only AR through the same registry honesty:
+  recognized, served without MTP claims, refused cleanly when a quantization
+  the runtime cannot execute is detected.
+
 - **Embedding and reranking endpoints.** `POST /v1/embeddings` (OpenAI shape)
   and `POST /v1/rerank` (Cohere/Jina shape) are now served by the same daemon
   as chat, so a retrieval-backed setup no longer needs a second inference
@@ -52,6 +91,43 @@ All notable user-facing changes to MTPLX. The format is based on
   meant to be shortened. A `dimensions` beyond the model's native width is a
   clear 400 rather than a silently full-width vector that no longer fits the
   index the client sized.
+
+### Fixed
+
+- **Artifacts launch at their measured depth again.** The typed runtime
+  contract kept only its schema fields, which silently dropped the
+  measured-depth map and every artifact's declared depth default — so
+  `quickstart`/`start` launched the 35B-A3B at its D3 *ceiling*, a measured
+  ~22% decode loss against its fastest depth. Identity and depth defaults now
+  resolve from the artifact's `mtplx_runtime.json` when the contract lacks
+  them: the 35B Speed artifact launches at its measured D2, and artifacts
+  declaring `recommended_mtp_depth` (Balance) are honored.
+
+- **`--reasoning-parser` is authoritative.** A set parser was silently
+  replaced by the backend's codec whenever they disagreed, which made the
+  flag a no-op on shared lanes and left thinking impossible to enable for
+  models whose templates fully support it. A parser resolved from family
+  policy or typed by the operator now wins; the codec fills in only when no
+  parser is set. Explicit `none` is still honored.
+
+- **Metal buffer-object leak in long decodes.** mlx-lm's `ArraysCache`
+  regrew Metal buffer objects on every `advance()`; over a long session that
+  is unbounded growth. The fix is vendored in-tree and installed on both the
+  server path and the batch lane, so pip installs against stock mlx-lm 0.31.x
+  get it too.
+
+- **Missing MTP heads degrade instead of refusing.** A checkpoint without
+  `mtp_heads` now serves target-only AR (with the degrade reason surfaced,
+  and propagated to the spawned server process) instead of being turned away.
+  Checkpoints that ship custom Python (`auto_map`) are refused with the
+  policy stated plainly — MTPLX never executes repository code — and
+  quantizations MLX cannot run are refused with the offending bit-width named
+  rather than failing later at load.
+
+- **AR batch hardening.** Cache-removal errors in the batch lane now fail
+  closed instead of corrupting the row; completed streams no longer starve
+  behind still-running neighbours; and the vendored Metal shader cache is
+  keyed by MLX ABI so an MLX upgrade cannot serve stale compiled kernels.
 
 ## [2.5.3] - 2026-08-06
 
