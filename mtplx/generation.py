@@ -1891,6 +1891,9 @@ class PromptState:
     # SessionBank.put so sub-prefix restores can land on a recurrent-true
     # boundary instead of reusing recurrent state from the stored end.
     gdn_boundaries: list = field(default_factory=list)
+    # Positions where recurrent snapshots really succeeded before geometric
+    # thinning. This content-free provenance is for offline placement replay.
+    gdn_capture_candidate_tokens: list[int] = field(default_factory=list)
 
 
 class PostcommitAbort(RuntimeError):
@@ -1996,6 +1999,7 @@ def _prefill_restored_prompt_suffix(
     cached_tokens: int = 0,
     chunk_started_s: float | None = None,
     gdn_boundary_sink: list[tuple[int, Any, Any]] | None = None,
+    gdn_capture_candidate_sink: list[int] | None = None,
     vision_splice: Any | None = None,
 ) -> tuple[Any, Any, float, float]:
     """Extend a restored SessionBank prefix without one giant suffix forward.
@@ -2249,6 +2253,7 @@ def _prefill_restored_prompt_suffix(
                         if hidden_chunk is not None
                         else None
                     ),
+                    capture_candidate_sink=gdn_capture_candidate_sink,
                 )
             if hidden_chunk is not None:
                 append_history(
@@ -2451,6 +2456,7 @@ def _restore_near_prefix_prompt_state(
 ) -> PromptState | None:
     if not _near_prefix_restore_enabled() or len(prompt_ids) < 2:
         return None
+    capture_candidate_metadata_enabled = _session_overlap_trace_enabled(session_bank)
     candidates = getattr(session_bank, "near_prefix_candidates", None)
     if not callable(candidates):
         return None
@@ -2691,6 +2697,11 @@ def _restore_near_prefix_prompt_state(
             # a fully-contained prompt — fall through to other candidates.)
             continue
         inherited_boundaries = _inherited_gdn_boundaries(entry, restore_point)
+        inherited_capture_candidates = (
+            _inherited_gdn_capture_candidates(entry, restore_point)
+            if capture_candidate_metadata_enabled
+            else []
+        )
         restored = SimpleNamespace(
             entry=SimpleNamespace(prefix_len=restore_point),
             cache=cache,
@@ -2733,11 +2744,17 @@ def _restore_near_prefix_prompt_state(
                 ssd_restore_s=ssd_restore_s,
                 restore_mode=restore_kind,
                 gdn_boundaries=inherited_boundaries,
+                gdn_capture_candidate_tokens=inherited_capture_candidates,
             )
         suffix_boundary_sink: list[tuple[int, Any, Any]] | None = (
             list(inherited_boundaries)
             if _gdn_boundary_capture_enabled()
             else None
+        )
+        suffix_capture_candidate_sink = _new_gdn_capture_candidate_sink(
+            session_bank,
+            vision_splice=None,
+            inherited=inherited_capture_candidates,
         )
         suffix_logits, suffix_hidden, suffix_time, mtp_history_time = (
             _prefill_restored_prompt_suffix(
@@ -2753,6 +2770,7 @@ def _restore_near_prefix_prompt_state(
                 cached_tokens=restore_point,
                 chunk_started_s=chunk_started_s,
                 gdn_boundary_sink=suffix_boundary_sink,
+                gdn_capture_candidate_sink=suffix_capture_candidate_sink,
             )
         )
         entry.hits += 1
@@ -2780,6 +2798,11 @@ def _restore_near_prefix_prompt_state(
                 if suffix_boundary_sink is not None
                 else inherited_boundaries
             ),
+            gdn_capture_candidate_tokens=(
+                suffix_capture_candidate_sink
+                if suffix_capture_candidate_sink is not None
+                else inherited_capture_candidates
+            ),
         )
     return None
 
@@ -2798,6 +2821,46 @@ def _gdn_boundary_capture_enabled() -> bool:
     """Interior recurrent boundary capture during cold prefill (kvcache-v2)."""
     raw = str(os.environ.get("MTPLX_GDN_BOUNDARY_CAPTURE", "1")).strip().lower()
     return raw not in {"0", "false", "off", "no"}
+
+
+def _session_overlap_trace_enabled(session_bank: Any | None) -> bool:
+    """Whether this request may retain overlap-replay-only provenance.
+
+    SessionBank's overlap trace is explicitly opt-in and defaults to a zero
+    event capacity.  Recurrent boundary snapshots serve normal cache restore
+    regardless of that setting, but the unthinned candidate-position metadata
+    exists solely for offline overlap replay and must not be collected when
+    tracing is disabled.  Unknown duck-typed banks fail closed.
+    """
+
+    if session_bank is None:
+        return False
+    try:
+        max_events = getattr(session_bank, "overlap_trace_max_events")
+    except Exception:
+        return False
+    return (
+        isinstance(max_events, int)
+        and not isinstance(max_events, bool)
+        and max_events > 0
+    )
+
+
+def _new_gdn_capture_candidate_sink(
+    session_bank: Any | None,
+    *,
+    vision_splice: Any | None,
+    inherited: list[int] | None = None,
+) -> list[int] | None:
+    """Create the replay-only candidate collector when tracing is enabled."""
+
+    if (
+        vision_splice is not None
+        or not _session_overlap_trace_enabled(session_bank)
+        or not _gdn_boundary_capture_enabled()
+    ):
+        return None
+    return list(inherited or [])
 
 
 def _gdn_boundary_max_count() -> int:
@@ -2894,6 +2957,8 @@ def _capture_gdn_boundary(
     tokens_done: int,
     cache: list[Any],
     hidden_last: Any | None = None,
+    *,
+    capture_candidate_sink: list[int] | None = None,
 ) -> None:
     """Append a recurrent-only snapshot at `tokens_done`, geometric retention.
 
@@ -2918,6 +2983,10 @@ def _capture_gdn_boundary(
         sink.append(
             (int(tokens_done), snapshot_untrimmable_cache(cache), hidden_leaf)
         )
+        # Preserve every successfully captured position before the retained
+        # snapshot set is geometrically thinned.
+        if capture_candidate_sink is not None:
+            capture_candidate_sink.append(int(tokens_done))
         cap = _gdn_boundary_max_count()
         if len(sink) > cap:
             sink[:] = _thin_gdn_boundary_records(sink, cap)
@@ -2967,6 +3036,19 @@ def _inherited_gdn_boundaries(entry: Any, restore_point: int) -> list:
         # hollowed out mid-prefix coverage on clone/lease chains.
         kept = _thin_gdn_boundary_records(kept, cap)
     return kept
+
+
+def _inherited_gdn_capture_candidates(entry: Any, restore_point: int) -> list[int]:
+    """Return only provenance positions that describe the restored prefix."""
+    positions: set[int] = set()
+    for value in getattr(entry, "capture_candidate_tokens", None) or ():
+        try:
+            position = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0 < position <= int(restore_point):
+            positions.add(position)
+    return sorted(positions)
 
 
 def _store_on_prefill_env_enabled() -> bool:
@@ -3069,6 +3151,7 @@ def restore_or_prefill_prompt_state(
     here — the only cost is the bank's snapshot copy, taken only when the
     new-prefill suffix is large enough to have been a real miss.
     """
+    capture_candidate_metadata_enabled = _session_overlap_trace_enabled(session_bank)
     bank_key_ids: list[int] | None = None
     if vision_splice is not None and session_bank is not None:
         # Image content is not represented in token ids, so raw prefix reuse
@@ -3173,6 +3256,9 @@ def restore_or_prefill_prompt_state(
                 snapshot_epoch=len(prompt_ids),
                 mtp_snapshot_epoch=len(prompt_ids) if mtp_snapshot is not None else None,
                 gdn_boundaries=list(getattr(state, "gdn_boundaries", None) or []),
+                capture_candidate_tokens=list(
+                    getattr(state, "gdn_capture_candidate_tokens", None) or []
+                ),
             )
         except Exception:
             # Cache priming must never break or slow the request path in a
@@ -3326,6 +3412,13 @@ def restore_or_prefill_prompt_state(
             inherited_boundaries = _inherited_gdn_boundaries(
                 restored.entry, restored.entry.prefix_len
             )
+            inherited_capture_candidates = (
+                _inherited_gdn_capture_candidates(
+                    restored.entry, restored.entry.prefix_len
+                )
+                if capture_candidate_metadata_enabled
+                else []
+            )
             if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
                 print(
                     f"[mtplx] exact-restore: entry_len={restored.entry.prefix_len} "
@@ -3357,6 +3450,7 @@ def restore_or_prefill_prompt_state(
                     ssd_restore_s=float(getattr(restored, "ssd_restore_s", 0.0) or 0.0),
                     restore_mode=restored.restore_mode,
                     gdn_boundaries=inherited_boundaries,
+                    gdn_capture_candidate_tokens=inherited_capture_candidates,
                 ))
 
             _check_postcommit_abort(abort_check)
@@ -3380,6 +3474,11 @@ def restore_or_prefill_prompt_state(
                 and vision_splice is None
                 and _gdn_boundary_capture_enabled()
                 else None
+            )
+            suffix_capture_candidate_sink = _new_gdn_capture_candidate_sink(
+                session_bank,
+                vision_splice=vision_splice,
+                inherited=inherited_capture_candidates,
             )
             if vision_splice is not None:
                 # Rows for pads inside the restored prefix are already baked
@@ -3405,6 +3504,7 @@ def restore_or_prefill_prompt_state(
                     cached_tokens=restored.entry.prefix_len,
                     chunk_started_s=prefill_started_s,
                     gdn_boundary_sink=suffix_boundary_sink,
+                    gdn_capture_candidate_sink=suffix_capture_candidate_sink,
                     vision_splice=vision_splice,
                 )
             )
@@ -3431,6 +3531,11 @@ def restore_or_prefill_prompt_state(
                     suffix_boundary_sink
                     if suffix_boundary_sink is not None
                     else inherited_boundaries
+                ),
+                gdn_capture_candidate_tokens=(
+                    suffix_capture_candidate_sink
+                    if suffix_capture_candidate_sink is not None
+                    else inherited_capture_candidates
                 ),
             ))
 
@@ -3466,6 +3571,10 @@ def restore_or_prefill_prompt_state(
         and _gdn_boundary_capture_enabled()
         else None
     )
+    gdn_capture_candidate_sink = _new_gdn_capture_candidate_sink(
+        session_bank,
+        vision_splice=vision_splice,
+    )
     if _mtp_history_uses_committed_cache(mtp_history_policy):
         if _sustained_prefill_enabled():
             (
@@ -3493,6 +3602,7 @@ def restore_or_prefill_prompt_state(
                 chunk_started_s=prefill_started_s,
                 vision_splice=vision_splice,
                 gdn_boundary_sink=gdn_boundary_sink,
+                gdn_capture_candidate_sink=gdn_capture_candidate_sink,
             )
             prompt_eval_time = target_time + prompt_history_time
         else:
@@ -3571,6 +3681,7 @@ def restore_or_prefill_prompt_state(
             abort_check=abort_check,
             vision_splice=vision_splice,
             gdn_boundary_sink=gdn_boundary_sink,
+            gdn_capture_candidate_sink=gdn_capture_candidate_sink,
         )
         prompt_eval_time = target_time
     return _emit_prefill_complete(PromptState(
@@ -3589,6 +3700,7 @@ def restore_or_prefill_prompt_state(
         if session_bank is not None
         else None,
         gdn_boundaries=list(gdn_boundary_sink or []),
+        gdn_capture_candidate_tokens=list(gdn_capture_candidate_sink or []),
     ))
 
 
@@ -4265,6 +4377,7 @@ def _prefill(
     abort_check: Callable[[], bool] | None = None,
     vision_splice: Any | None = None,
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
+    gdn_capture_candidate_sink: list[int] | None = None,
 ):
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
@@ -4310,7 +4423,12 @@ def _prefill(
             target_forward_time += time.perf_counter() - started
             target_forward_time += _prefill_chunk_cache_cleanup(rt)
             if capture_boundaries:
-                _capture_gdn_boundary(gdn_boundary_sink, end, cache)
+                _capture_gdn_boundary(
+                    gdn_boundary_sink,
+                    end,
+                    cache,
+                    capture_candidate_sink=gdn_capture_candidate_sink,
+                )
             _check_postcommit_abort(abort_check)
         if vision_splice is not None and vision_splice.remaining() > 0:
             raise ValueError(
@@ -4357,6 +4475,7 @@ def _prefill_committed_mtp_history_streaming(
     chunk_started_s: float | None = None,
     vision_splice: Any | None = None,
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
+    gdn_capture_candidate_sink: list[int] | None = None,
 ):
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
@@ -4540,7 +4659,11 @@ def _prefill_committed_mtp_history_streaming(
         target_forward_time += _prefill_chunk_cache_cleanup(rt)
         if capture_boundaries:
             _capture_gdn_boundary(
-                gdn_boundary_sink, cursor, cache, hidden_last=boundary_hidden
+                gdn_boundary_sink,
+                cursor,
+                cache,
+                hidden_last=boundary_hidden,
+                capture_candidate_sink=gdn_capture_candidate_sink,
             )
         del boundary_hidden
         _check_postcommit_abort(abort_check)
@@ -6302,6 +6425,10 @@ def _generate_mtpk_impl(
                 # skip% decayed (78%->52% over 12 turns in the replay).
                 gdn_boundaries=list(
                     getattr(prompt_state, "gdn_boundaries", None) or []
+                ),
+                capture_candidate_tokens=list(
+                    getattr(prompt_state, "gdn_capture_candidate_tokens", None)
+                    or []
                 ),
             )
             prompt_prefix_bank_commit = {

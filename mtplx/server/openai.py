@@ -22,6 +22,7 @@ import gc
 import hashlib
 import html
 import json
+import math
 import threading
 import logging
 import os
@@ -210,7 +211,7 @@ try:
         system_prompt_hash,
     )
     from mtplx.runtime import load
-    from mtplx.session_bank import CacheMissReason, common_prefix_len
+    from mtplx.session_bank import CacheMissReason, SessionBank, common_prefix_len
     from mtplx.cache_state import restore_cache, snapshot_cache
 
     _RUNTIME_IMPORT_ERROR: Exception | None = None
@@ -2060,7 +2061,9 @@ class _BatchedARJob:
         session_template_hash: str | None = None,
         session_draft_head_identity: str | None = None,
         session_policy_fingerprint: str | None = None,
+        background_request: bool = False,
         seed_is_explicit: bool = False,
+        overlap_request_scope: _SessionOverlapRequestScope | None = None,
     ) -> None:
         self.request_id = request_id
         self.prompt_ids = [int(token) for token in prompt_ids]
@@ -2081,6 +2084,26 @@ class _BatchedARJob:
         self.session_template_hash = session_template_hash
         self.session_draft_head_identity = session_draft_head_identity
         self.session_policy_fingerprint = session_policy_fingerprint
+        self.background_request = bool(background_request)
+        self.overlap_request_scope = overlap_request_scope
+        # The probe is owned by the request/job, rather than a prefill
+        # attempt.  A job can pass through restore, shared-prefix preparation,
+        # and cancellation paths, but it must contribute at most one trace
+        # event.
+        self.overlap_probe: Any | None = None
+        self.overlap_probe_started = False
+        self.overlap_probe_finalized = False
+        # A probe is deliberately started before admission cancellation is
+        # checked, but this flips only at the real SessionBank restore call.
+        self.overlap_bank_consulted = False
+        # Shared AR prefill can reuse a cohort-local cache after a SessionBank
+        # miss. Keep that operational cache accounting separate from overlap
+        # telemetry: only a successful SessionBank restore is a bank hit.
+        self.overlap_session_bank_hit = False
+        self.overlap_cached_tokens = 0
+        self.overlap_cache_source = "none"
+        self.overlap_restore_kind = "cold"
+        self.overlap_dispatch: _SessionOverlapDispatch | None = None
         self.future: Future = Future()
         self.tokens: list[int] = []
         # Completion-token histogram maintained by the sampler closure itself
@@ -2175,6 +2198,96 @@ class _BatchedARGenerationService:
                 )
             self._condition.notify_all()
         return job.future
+
+    def _begin_overlap_probe(self, job: _BatchedARJob) -> None:
+        """Start one passive probe before this job can restore from the bank."""
+
+        if job.overlap_probe_started:
+            return
+        job.overlap_probe_started = True
+        if job.overlap_request_scope is not None:
+            # The HTTP request owns the single event. This job only reports
+            # its restore/cost result back to that scope.
+            return
+        job.overlap_probe = _begin_session_overlap_probe(
+            self.state,
+            job.session_bank,
+            job.prompt_ids,
+            lane="ar_batch",
+            template_hash=job.session_template_hash,
+            # The batched-AR restore contract does not supply an MTP-history
+            # policy.  Keep telemetry compatibility aligned with that actual
+            # contract rather than manufacturing a "cycle" value.
+            mtp_history_policy=None,
+            draft_head_identity=job.session_draft_head_identity,
+            policy_fingerprint=job.session_policy_fingerprint,
+            background_request=job.background_request,
+            request_observability=job.request_observability,
+        )
+
+    def _finalize_overlap_probe(
+        self,
+        job: _BatchedARJob,
+        *,
+        terminal_status: str,
+        stats: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Best-effort, exact-once terminal record for a batched request."""
+
+        if job.overlap_probe_finalized:
+            return
+        job.overlap_probe_finalized = True
+        # The trace is passive instrumentation.  A malformed stats object
+        # must not turn a completed batched request into an error while its
+        # Future is still being settled.
+        try:
+            overlap_stats = dict(stats) if stats is not None else {}
+        except BaseException:
+            overlap_stats = {}
+        overlap_stats.update(
+            {
+                "session_overlap_cache_hit": bool(job.overlap_session_bank_hit),
+                "session_overlap_cached_tokens": int(job.overlap_cached_tokens),
+                "session_overlap_new_prefill_tokens": max(
+                    0, len(job.prompt_ids) - int(job.overlap_cached_tokens)
+                ),
+                "session_overlap_cache_source": str(
+                    job.overlap_cache_source or "none"
+                ),
+                "session_overlap_restore_kind": str(
+                    job.overlap_restore_kind or "cold"
+                ),
+            }
+        )
+        outcome = _session_overlap_outcome(
+            prompt_tokens=len(job.prompt_ids),
+            stats=overlap_stats,
+            fallback={
+                "cache_hit": bool(job.overlap_session_bank_hit),
+                "cached_tokens": int(job.overlap_cached_tokens),
+                "new_prefill_tokens": max(
+                    0, len(job.prompt_ids) - int(job.overlap_cached_tokens)
+                ),
+                "cache_source": str(job.overlap_cache_source or "none"),
+                "restore_kind": str(job.overlap_restore_kind or "cold"),
+            },
+        )
+        if job.overlap_request_scope is not None:
+            job.overlap_request_scope.record_dispatch(
+                dispatch=job.overlap_dispatch,
+                stats=outcome,
+                bank_consulted=job.overlap_bank_consulted,
+            )
+            return
+        if job.overlap_probe is None:
+            return
+        _finalize_session_overlap_probe(
+            job.session_bank,
+            job.overlap_probe,
+            terminal_status=terminal_status,
+            bank_consulted=job.overlap_bank_consulted,
+            outcome=outcome,
+        )
 
     def _make_sampler(self, job: _BatchedARJob) -> Callable[[Any], Any]:
         import mlx.core as mx
@@ -2306,6 +2419,7 @@ class _BatchedARGenerationService:
             return False
         started = time.perf_counter()
         try:
+            job.overlap_bank_consulted = True
             restored = job.session_bank.restore(
                 self.state.runtime,
                 job.prompt_ids,
@@ -2358,6 +2472,10 @@ class _BatchedARGenerationService:
         job.cache_miss_reason = None
         job.effective_restore_mode = str(restored.restore_mode)
         job.cache_source = str(getattr(restored, "cache_source", "ram") or "ram")
+        job.overlap_session_bank_hit = True
+        job.overlap_cached_tokens = prefix_len
+        job.overlap_cache_source = job.cache_source
+        job.overlap_restore_kind = job.effective_restore_mode
         job.ssd_cache_hit = bool(getattr(restored, "ssd_cache_hit", False))
         job.ssd_cached_tokens = int(getattr(restored, "ssd_cached_tokens", 0) or 0)
         job.ssd_restore_s = float(getattr(restored, "ssd_restore_s", 0.0) or 0.0)
@@ -2417,6 +2535,11 @@ class _BatchedARGenerationService:
             return
         bank_stored = False
         bank_error: str | None = None
+        # The snapshot intentionally does not encode cache-container classes.
+        # Preserve the producer's side-effect-free trimmability classification
+        # so a merge-capable recurrent cache cannot become attention-only when
+        # it enters SessionBank.
+        shared_prefix_has_recurrent = SessionBank.infer_has_recurrent(cache)
         bank_owner = next(
             (job for job in candidates if job.session_bank is not None),
             None,
@@ -2438,6 +2561,8 @@ class _BatchedARGenerationService:
                         template_hash=bank_owner.session_template_hash,
                         policy_fingerprint=bank_owner.session_policy_fingerprint,
                         snapshot_epoch=prefix_len,
+                        cache_ref=cache,
+                        has_recurrent=shared_prefix_has_recurrent,
                     )
                     bank_stored = entry is not None
             except Exception as exc:
@@ -2518,6 +2643,40 @@ class _BatchedARGenerationService:
                 )
         return jobs, []
 
+    def _terminalize_detached_job(
+        self,
+        job: _BatchedARJob,
+        *,
+        terminal_status: str,
+        exc: BaseException | None = None,
+    ) -> None:
+        """Finish a job after admission detached it but before it is active."""
+
+        self._finalize_overlap_probe(job, terminal_status=terminal_status)
+        if job.future.done():
+            return
+        error = exc if exc is not None else self._cancelled_error(job)
+        try:
+            job.future.set_exception(error)
+        except BaseException:
+            # Future.cancel() may win the narrow race after done() above. It
+            # is already terminal, and the probe was finalized before this.
+            pass
+
+    def _remove_cancelled_detached_jobs(
+        self, jobs: list[_BatchedARJob]
+    ) -> list[_BatchedARJob]:
+        remaining: list[_BatchedARJob] = []
+        for job in jobs:
+            if job.cancel_requested() or job.future.cancelled():
+                self._terminalize_detached_job(
+                    job,
+                    terminal_status="cancelled",
+                )
+            else:
+                remaining.append(job)
+        return remaining
+
     def _admit_pending(self, generator: Any, config_dict: dict[str, Any]) -> None:
         with self._condition:
             max_active = max(1, int(config_dict["max_active_requests"]))
@@ -2530,43 +2689,77 @@ class _BatchedARGenerationService:
         if not pending:
             return
         now = time.perf_counter()
-        cancelled = [job for job in pending if job.cancel_requested()]
-        pending = [job for job in pending if not job.cancel_requested()]
-        for job in cancelled:
-            if not job.future.done():
-                job.future.set_exception(self._cancelled_error(job))
-        pending = [job for job in pending if not job.future.cancelled()]
-        if not pending:
-            return
-        self._prepare_prompt_inputs(pending)
-        pending, requeued = self._split_unmergeable_history_batch(pending)
-        if requeued:
-            with self._condition:
-                self._pending = [*requeued, *self._pending]
-                self._condition.notify_all()
-        for job in pending:
-            job.admitted_s = now
-            job.prefill_started_s = now
-            job.emit_prefill(
-                {
-                    "phase": "started",
-                    "tokens_total": int(len(job.prompt_ids)),
-                    "started_s": now,
-                    "scheduler_lane": "ar_batch",
-                    "request_id": job.request_id,
-                }
+        try:
+            # Runs on the model-owner thread, before any SessionBank restore.
+            # Start cancelled jobs too: they are a real workload observation,
+            # but finalise them before they reach the restore path.
+            for job in pending:
+                self._begin_overlap_probe(job)
+            pending = self._remove_cancelled_detached_jobs(pending)
+            if not pending:
+                return
+
+            # A preparation or split failure happens after these jobs have
+            # left _pending but before they appear in _active. Keep `pending`
+            # as the exact local ownership set until a job is explicitly
+            # requeued, so every detached job has one terminal path.
+            self._prepare_prompt_inputs(pending)
+            pending = self._remove_cancelled_detached_jobs(pending)
+            if not pending:
+                return
+            pending, requeued = self._split_unmergeable_history_batch(pending)
+            requeued = self._remove_cancelled_detached_jobs(requeued)
+            if requeued:
+                with self._condition:
+                    self._pending = [*requeued, *self._pending]
+                    self._condition.notify_all()
+            pending = self._remove_cancelled_detached_jobs(pending)
+            if not pending:
+                return
+
+            for job in pending:
+                job.admitted_s = now
+                job.prefill_started_s = now
+                job.emit_prefill(
+                    {
+                        "phase": "started",
+                        "tokens_total": int(len(job.prompt_ids)),
+                        "started_s": now,
+                        "scheduler_lane": "ar_batch",
+                        "request_id": job.request_id,
+                    }
+                )
+            uids = generator.insert(
+                [job.insert_prompt_ids for job in pending],
+                max_tokens=[job.max_tokens for job in pending],
+                caches=[job.insert_cache for job in pending],
+                all_tokens=[job.insert_all_tokens for job in pending],
+                samplers=[self._make_sampler(job) for job in pending],
             )
-        uids = generator.insert(
-            [job.insert_prompt_ids for job in pending],
-            max_tokens=[job.max_tokens for job in pending],
-            caches=[job.insert_cache for job in pending],
-            all_tokens=[job.insert_all_tokens for job in pending],
-            samplers=[self._make_sampler(job) for job in pending],
-        )
+            admitted_uids = [int(uid) for uid in uids]
+            if len(admitted_uids) != len(pending):
+                raise RuntimeError(
+                    "BatchGenerator.insert returned a UID count that does not "
+                    "match the admitted job count"
+                )
+            if len(set(admitted_uids)) != len(admitted_uids):
+                raise RuntimeError("BatchGenerator.insert returned duplicate UIDs")
+        except BaseException as exc:
+            # These jobs have left _pending but are not active until both
+            # insert and UID validation succeed. Finalize only the locally
+            # owned jobs: already requeued work remains pending for its next
+            # admission attempt and must not be double-finalized here.
+            for job in pending:
+                self._terminalize_detached_job(
+                    job,
+                    terminal_status="error",
+                    exc=exc,
+                )
+            raise
         with self._condition:
-            for uid, job in zip(uids, pending):
-                job.uid = int(uid)
-                self._active[int(uid)] = job
+            for uid, job in zip(admitted_uids, pending):
+                job.uid = uid
+                self._active[uid] = job
             self._condition.notify_all()
 
     def _complete_job(self, job: _BatchedARJob, *, finish_reason: str) -> None:
@@ -2680,6 +2873,11 @@ class _BatchedARGenerationService:
                 "ar_batch_prompt_prepare_s": float(job.prompt_prepare_s),
             }
         )
+        self._finalize_overlap_probe(
+            job,
+            terminal_status="completed",
+            stats=stats,
+        )
         job.future.set_result(
             {
                 "text": text,
@@ -2699,6 +2897,33 @@ class _BatchedARGenerationService:
             }
         )
 
+    def _finish_active_job(
+        self,
+        uid: int,
+        job: _BatchedARJob,
+        *,
+        finish_reason: str,
+    ) -> None:
+        """Complete a live job without losing failure ownership mid-finish."""
+
+        # Keep the job discoverable until completion succeeds. Tokenizer decode
+        # and final result construction can still fail here; popping first
+        # used to orphan both the Future and its passive overlap probe.
+        try:
+            if job.cancel_requested() or job.future.cancelled():
+                self._finalize_overlap_probe(job, terminal_status="cancelled")
+                if not job.future.done():
+                    job.future.set_exception(self._cancelled_error(job))
+                return
+            self._complete_job(job, finish_reason=finish_reason)
+        except BaseException as exc:
+            self._finalize_overlap_probe(job, terminal_status="error")
+            if not job.future.done():
+                job.future.set_exception(exc)
+        finally:
+            with self._condition:
+                self._active.pop(int(uid), None)
+
     def _fail_all(self, exc: BaseException) -> None:
         with self._condition:
             pending = list(self._pending)
@@ -2707,6 +2932,12 @@ class _BatchedARGenerationService:
             self._active.clear()
             self._last_error = f"{type(exc).__name__}: {exc}"
         for job in [*pending, *active]:
+            self._finalize_overlap_probe(
+                job,
+                terminal_status=(
+                    "cancelled" if isinstance(exc, _StreamCancelled) else "error"
+                ),
+            )
             if not job.future.done():
                 job.future.set_exception(exc)
 
@@ -2810,13 +3041,14 @@ class _BatchedARGenerationService:
                         active_size = max(1, len(self._active))
                     if job is None:
                         continue
-                    if job.cancel_requested():
+                    if job.cancel_requested() or job.future.cancelled():
                         with self._condition:
                             self._active.pop(uid, None)
                         try:
                             generator.remove([uid])
                         except BaseException:
                             pass
+                        self._finalize_overlap_probe(job, terminal_status="cancelled")
                         if not job.future.done():
                             job.future.set_exception(self._cancelled_error(job))
                         continue
@@ -2830,14 +3062,17 @@ class _BatchedARGenerationService:
                     except BaseException as exc:
                         with self._condition:
                             self._active.pop(uid, None)
+                        self._finalize_overlap_probe(job, terminal_status="error")
                         if not job.future.done():
                             job.future.set_exception(exc)
                         continue
                     finish_reason = getattr(response, "finish_reason", None)
                     if finish_reason is not None:
-                        with self._condition:
-                            self._active.pop(uid, None)
-                        self._complete_job(job, finish_reason=str(finish_reason))
+                        self._finish_active_job(
+                            uid,
+                            job,
+                            finish_reason=str(finish_reason),
+                        )
                 mx.eval([])
         except BaseException as exc:
             self._fail_all(exc)
@@ -2863,7 +3098,7 @@ class _BatchedARGenerationService:
             cancelled = [
                 (uid, job)
                 for uid, job in list(self._active.items())
-                if job.cancel_requested()
+                if job.cancel_requested() or job.future.cancelled()
             ]
             for uid, _job in cancelled:
                 self._active.pop(uid, None)
@@ -2874,6 +3109,7 @@ class _BatchedARGenerationService:
         except BaseException:
             pass
         for _uid, job in cancelled:
+            self._finalize_overlap_probe(job, terminal_status="cancelled")
             if not job.future.done():
                 job.future.set_exception(self._cancelled_error(job))
 
@@ -16071,6 +16307,479 @@ def _session_bank_restore_mode(mode: str | None) -> str:
     return "clone"
 
 
+def _session_overlap_telemetry_enabled(
+    bank: Any | None,
+    *,
+    background_request: bool,
+    request_observability: Mapping[str, Any] | None,
+) -> bool:
+    """Whether a request may create a passive, content-free overlap probe."""
+
+    if bank is None or bool(background_request):
+        return False
+    observability = request_observability or {}
+    if bool(observability.get("warmup") or observability.get("background_request")):
+        return False
+    # A callable probe hook is not an opt-in.  Real SessionBank instances
+    # always expose this capacity, including their default-off ``0`` value.
+    # Treat missing or malformed capacity as disabled as well: a legacy bank
+    # must not acquire an observability side effect merely because it happens
+    # to implement a similarly named method.
+    try:
+        max_events = getattr(bank, "overlap_trace_max_events")
+        begin = getattr(bank, "begin_overlap_probe", None)
+    except Exception:
+        return False
+    if isinstance(max_events, bool) or not isinstance(max_events, int):
+        return False
+    return max_events > 0 and callable(begin)
+
+
+class _SessionBankConsultationMarker:
+    """Forward a SessionBank while recording its first restore-side lookup.
+
+    The passive overlap trace must distinguish a request that merely carries a
+    SessionBank from one that actually reaches the restore logic. Keeping the
+    marker at the server-to-generation boundary avoids changing the generation
+    contract or serving behavior. It is created only while a trace probe is
+    active, and only wraps the read-side methods generation.py uses to inspect
+    or restore a bank entry.
+    """
+
+    _LOOKUP_METHODS = frozenset(
+        {
+            "longest_prefix",
+            "near_prefix_candidates",
+            "restore_entry_prefix_cache",
+            "restore",
+        }
+    )
+
+    def __init__(self, bank: Any) -> None:
+        self._bank = bank
+        self._consulted = False
+
+    @property
+    def consulted(self) -> bool:
+        return bool(self._consulted)
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._bank, name)
+        if name not in self._LOOKUP_METHODS or not callable(value):
+            return value
+
+        def record_lookup(*args: Any, **kwargs: Any) -> Any:
+            self._consulted = True
+            return value(*args, **kwargs)
+
+        return record_lookup
+
+
+def _begin_session_overlap_probe(
+    state: Any,
+    bank: Any | None,
+    prompt_ids: list[int],
+    *,
+    lane: str,
+    template_hash: str | None,
+    mtp_history_policy: str | None,
+    draft_head_identity: str | None,
+    policy_fingerprint: str | None,
+    background_request: bool,
+    request_observability: Mapping[str, Any] | None,
+) -> Any | None:
+    """Start telemetry without making serving correctness depend on it."""
+
+    if not _session_overlap_telemetry_enabled(
+        bank,
+        background_request=background_request,
+        request_observability=request_observability,
+    ):
+        return None
+    begin = getattr(bank, "begin_overlap_probe", None)
+    if not callable(begin):  # Defensive: keep telemetry entirely fail-open.
+        return None
+    try:
+        runtime = getattr(state, "runtime", None)
+        model_path = getattr(runtime, "model_path", None)
+        return begin(
+            [int(token) for token in prompt_ids],
+            lane=str(lane),
+            model_path=(str(model_path) if model_path is not None else None),
+            mtp_enabled=bool(getattr(runtime, "mtp_enabled", False)),
+            hidden_variant=("post_norm" if lane == "solo_mtp" else None),
+            template_hash=template_hash,
+            mtp_history_policy=mtp_history_policy,
+            draft_head_identity=draft_head_identity,
+            policy_fingerprint=policy_fingerprint,
+        )
+    except Exception as exc:
+        LOGGER.debug(
+            "SessionBank overlap telemetry begin failed open: %s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _session_overlap_outcome(
+    *,
+    prompt_tokens: int,
+    stats: Mapping[str, Any] | None,
+    fallback: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Map existing server stats to the trace schema without adding timing work."""
+
+    def safe_int(value: Any, *, default: int = 0) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            return int(default)
+
+    def safe_seconds(value: Any) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return parsed if math.isfinite(parsed) and parsed > 0.0 else 0.0
+
+    def safe_text(value: Any, *, default: str) -> str:
+        if value is None:
+            return default
+        try:
+            text = str(value)
+        except BaseException:
+            return default
+        return text or default
+
+    # The trace is observability only. A hostile/incomplete stats object must
+    # never turn a successful generation into an HTTP error.
+    try:
+        source = dict(fallback or {})
+        source.update(dict(stats or {}))
+        cached_tokens = safe_int(
+            source.get("session_overlap_cached_tokens", source.get("cached_tokens"))
+        )
+        raw_new_prefill_tokens = source.get(
+            "session_overlap_new_prefill_tokens",
+            source.get("new_prefill_tokens"),
+        )
+        new_prefill_tokens = (
+            max(0, safe_int(prompt_tokens) - cached_tokens)
+            if raw_new_prefill_tokens is None
+            else safe_int(raw_new_prefill_tokens)
+        )
+        result: dict[str, Any] = {
+            "cache_hit": bool(
+                source.get("session_overlap_cache_hit")
+                if "session_overlap_cache_hit" in source
+                else (
+                    source.get("cache_hit")
+                    if "cache_hit" in source
+                    else source.get("session_cache_hit")
+                )
+            ),
+            "cached_tokens": cached_tokens,
+            "new_prefill_tokens": new_prefill_tokens,
+            "cache_source": safe_text(
+                source.get(
+                    "session_overlap_cache_source", source.get("cache_source")
+                ),
+                default="none",
+            ),
+            "restore_kind": safe_text(
+                source.get("session_overlap_restore_kind")
+                or source.get("restore_kind")
+                or source.get("session_restore_mode"),
+                default="cold",
+            ),
+            "cache_restore_time_s": max(
+                safe_seconds(source.get("cache_restore_time_s")),
+                safe_seconds(source.get("ssd_restore_s")),
+            ),
+            "target_prefill_time_s": max(
+                safe_seconds(source.get("prompt_target_prefill_time_s")),
+                safe_seconds(source.get("prompt_eval_time_s")),
+            ),
+            "mtp_history_time_s": safe_seconds(
+                source.get("prompt_mtp_history_time_s")
+            ),
+            "checkpoint_capture_time_s": max(
+                safe_seconds(source.get("checkpoint_capture_time_s")),
+                safe_seconds(source.get("sessionbank_checkpoint_capture_time_s")),
+            ),
+        }
+        for key in ("selected_entry_ordinal", "entry_ordinal"):
+            if source.get(key) is not None:
+                try:
+                    result["selected_entry_ordinal"] = max(0, int(source[key]))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                break
+        return result
+    except BaseException:
+        return {
+            "cache_hit": False,
+            "cached_tokens": 0,
+            "new_prefill_tokens": safe_int(prompt_tokens),
+            "cache_source": "none",
+            "restore_kind": "cold",
+            "cache_restore_time_s": 0.0,
+            "target_prefill_time_s": 0.0,
+            "mtp_history_time_s": 0.0,
+            "checkpoint_capture_time_s": 0.0,
+        }
+
+
+@dataclass(frozen=True)
+class _SessionOverlapDispatch:
+    """Identity and optional SessionBank marker for one internal dispatch."""
+
+    identifier: int
+    consultation_marker: _SessionBankConsultationMarker | None = None
+
+
+class _SessionOverlapRequestScope:
+    """One passive overlap trace owned by one HTTP request lifecycle.
+
+    The scope deliberately stays in-memory for the life of the request. It
+    owns no public request ID or prompt data after beginning the SessionBank
+    probe, and it lets internal inspection/repair dispatches merge into the
+    outer request's one terminal observation.
+    """
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._bank: Any | None = None
+        self._probe: Any | None = None
+        self._started = False
+        self._starting = False
+        self._finalized = False
+        self._probe_finalized = False
+        self._terminal_status = "cancelled"
+        self._bank_consulted = False
+        self._outcome: dict[str, Any] | None = None
+        self._prompt_tokens = 0
+        self._next_dispatch_identifier = 0
+        self._owner_dispatch_identifier: int | None = None
+
+    def _finalization_payload_locked(
+        self,
+    ) -> tuple[Any, Any, str, bool, dict[str, Any]] | None:
+        """Claim the one external finalizer after an in-flight begin settles."""
+
+        if (
+            not self._finalized
+            or self._starting
+            or self._probe_finalized
+            or self._probe is None
+            or self._bank is None
+        ):
+            return None
+        self._probe_finalized = True
+        return (
+            self._bank,
+            self._probe,
+            self._terminal_status,
+            self._bank_consulted,
+            dict(
+                self._outcome
+                or _session_overlap_outcome(
+                    prompt_tokens=self._prompt_tokens,
+                    stats=None,
+                )
+            ),
+        )
+
+    @staticmethod
+    def _run_finalization(
+        payload: tuple[Any, Any, str, bool, dict[str, Any]] | None,
+    ) -> None:
+        if payload is None:
+            return
+        bank, probe, terminal_status, bank_consulted, outcome = payload
+        _finalize_session_overlap_probe(
+            bank,
+            probe,
+            terminal_status=terminal_status,
+            bank_consulted=bank_consulted,
+            outcome=outcome,
+        )
+
+    def begin_dispatch(
+        self,
+        state: Any,
+        prompt_ids: list[int],
+        *,
+        lane: str,
+        mtp_history_policy: str | None,
+        kwargs: Mapping[str, Any],
+    ) -> _SessionOverlapDispatch | None:
+        """Register a dispatch without allowing a late worker to orphan a probe.
+
+        The first dispatch owns the prompt-shaped outcome and consultation
+        state. Internal repair/tool dispatches may continue serving normally,
+        but cannot overwrite that request-level provenance.
+        """
+
+        # Default-off telemetry must not touch a prompt-shaped iterable or
+        # allocate dispatch state.  Keep this gate before the defensive
+        # coercion below: a production SessionBank always has an explicit
+        # capacity, and unknown duck-typed banks fail closed.
+        bank = kwargs.get("session_bank")
+        if not _session_overlap_telemetry_enabled(
+            bank,
+            background_request=bool(kwargs.get("background_request", False)),
+            request_observability=kwargs.get("request_observability"),
+        ):
+            return None
+
+        # Coerce before mutating scope state.  The public callers already
+        # supply token IDs, but an unexpected hostile iterable must leave no
+        # half-started scope behind.
+        try:
+            first_prompt_ids = [int(token) for token in prompt_ids]
+        except BaseException:
+            return None
+
+        with self._lock:
+            if self._finalized:
+                # The stream owner has already ended. Do not begin telemetry
+                # from a late worker, because nobody remains to finalize it.
+                return None
+            self._next_dispatch_identifier += 1
+            dispatch_identifier = self._next_dispatch_identifier
+            begin_probe = not self._started
+            if begin_probe:
+                self._started = True
+                self._starting = True
+                self._owner_dispatch_identifier = dispatch_identifier
+                prompt_for_probe = first_prompt_ids
+            else:
+                bank = self._bank
+                prompt_for_probe = []
+
+        if begin_probe:
+            try:
+                probe = _begin_session_overlap_probe(
+                    state,
+                    bank,
+                    prompt_for_probe,
+                    lane=lane,
+                    template_hash=kwargs.get("session_template_hash"),
+                    mtp_history_policy=mtp_history_policy,
+                    draft_head_identity=kwargs.get("session_draft_head_identity"),
+                    policy_fingerprint=kwargs.get("session_policy_fingerprint"),
+                    background_request=bool(kwargs.get("background_request", False)),
+                    request_observability=kwargs.get("request_observability"),
+                )
+            except BaseException as exc:
+                # Overlap telemetry must remain entirely fail-open, including
+                # unusual failures from an instrumented bank implementation.
+                LOGGER.debug(
+                    "SessionBank overlap telemetry begin failed open: %s",
+                    type(exc).__name__,
+                )
+                probe = None
+            with self._lock:
+                self._bank = bank
+                self._probe = probe
+                self._prompt_tokens = len(prompt_for_probe)
+                self._starting = False
+                finalization_payload = self._finalization_payload_locked()
+                is_owner = (
+                    not self._finalized
+                    and self._owner_dispatch_identifier == dispatch_identifier
+                )
+                marker = (
+                    _SessionBankConsultationMarker(bank)
+                    if is_owner and probe is not None and bank is not None and lane == "solo_mtp"
+                    else None
+                )
+            self._run_finalization(finalization_payload)
+            if not is_owner:
+                return None
+            return _SessionOverlapDispatch(dispatch_identifier, marker)
+
+        with self._lock:
+            if self._finalized:
+                return None
+            # The first dispatch owns all prompt-shaped fields.  Later
+            # retries may still reach the real restore seam, so retain only
+            # that monotonic consultation fact without permitting their
+            # prompt or token accounting to overwrite the owner event.
+            marker = (
+                _SessionBankConsultationMarker(self._bank)
+                if self._probe is not None
+                and self._bank is not None
+                and lane == "solo_mtp"
+                else None
+            )
+        return _SessionOverlapDispatch(dispatch_identifier, marker)
+
+    def record_dispatch(
+        self,
+        *,
+        dispatch: _SessionOverlapDispatch | None,
+        stats: Mapping[str, Any] | None,
+        bank_consulted: bool = False,
+    ) -> None:
+        if dispatch is None:
+            return
+        with self._lock:
+            if self._finalized:
+                return
+            consultation_marker = dispatch.consultation_marker
+            if consultation_marker is not None:
+                self._bank_consulted = (
+                    self._bank_consulted or consultation_marker.consulted
+                )
+            self._bank_consulted = self._bank_consulted or bool(bank_consulted)
+            if dispatch.identifier != self._owner_dispatch_identifier:
+                return
+            self._outcome = _session_overlap_outcome(
+                prompt_tokens=self._prompt_tokens,
+                stats=stats,
+            )
+
+    def finalize(self, *, terminal_status: str) -> None:
+        with self._lock:
+            if self._finalized:
+                return
+            self._finalized = True
+            self._terminal_status = str(terminal_status)
+            finalization_payload = self._finalization_payload_locked()
+        self._run_finalization(finalization_payload)
+
+
+def _finalize_session_overlap_probe(
+    bank: Any | None,
+    probe: Any | None,
+    *,
+    terminal_status: str,
+    bank_consulted: bool,
+    outcome: Mapping[str, Any],
+) -> None:
+    """Finalize telemetry without allowing observability to affect a request."""
+
+    if bank is None or probe is None:
+        return
+    finalize = getattr(bank, "finalize_overlap_probe", None)
+    if not callable(finalize):
+        return
+    try:
+        finalize(
+            probe,
+            terminal_status=str(terminal_status),
+            bank_consulted=bool(bank_consulted),
+            outcome=dict(outcome),
+        )
+    except Exception as exc:
+        LOGGER.debug(
+            "SessionBank overlap telemetry finalization failed open: %s",
+            type(exc).__name__,
+        )
+
+
 def _resolve_seed(state: ServerState, request_seed: int | None) -> tuple[int, bool]:
     if request_seed is not None:
         return int(request_seed), True
@@ -16412,6 +17121,27 @@ def _run_generation_dispatched(
     response_id: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    supplied_overlap_scope = kwargs.pop("_session_overlap_scope", None)
+    overlap_trace_enabled = _session_overlap_telemetry_enabled(
+        kwargs.get("session_bank"),
+        background_request=bool(kwargs.get("background_request", False)),
+        request_observability=kwargs.get("request_observability"),
+    )
+    if isinstance(supplied_overlap_scope, _SessionOverlapRequestScope):
+        # A stream may have started an enabled trace before a later repair
+        # dispatch. Retain that owner so it can finalize exactly once, even if
+        # an operator disables tracing while the stream is in flight.
+        overlap_scope: _SessionOverlapRequestScope | None = supplied_overlap_scope
+        owns_overlap_scope = False
+    elif overlap_trace_enabled:
+        overlap_scope = _SessionOverlapRequestScope()
+        owns_overlap_scope = True
+    else:
+        # Do not even allocate request/dispatch telemetry state in the
+        # default-off path. The serving SessionBank remains available to the
+        # generation path; only the passive trace is absent.
+        overlap_scope = None
+        owns_overlap_scope = False
     effective_mode = _normalize_generation_mode(
         kwargs.get("generation_mode"),
         default=getattr(state.args, "generation_mode", "mtp"),
@@ -16495,6 +17225,15 @@ def _run_generation_dispatched(
         )
         if mtp_disabled_reason:
             request_observability["mtp_disabled_reason"] = mtp_disabled_reason
+        overlap_dispatch = None
+        if overlap_scope is not None and not owns_overlap_scope:
+            overlap_dispatch = overlap_scope.begin_dispatch(
+                state,
+                prompt_ids,
+                lane="ar_batch",
+                mtp_history_policy=None,
+                kwargs=kwargs,
+            )
         job = _BatchedARJob(
             request_id=response_id or f"arbatch-{uuid.uuid4().hex}",
             prompt_ids=prompt_ids,
@@ -16514,8 +17253,11 @@ def _run_generation_dispatched(
             session_template_hash=kwargs.get("session_template_hash"),
             session_draft_head_identity=kwargs.get("session_draft_head_identity"),
             session_policy_fingerprint=kwargs.get("session_policy_fingerprint"),
+            background_request=bool(kwargs.get("background_request", False)),
             seed_is_explicit=seed_is_explicit,
+            overlap_request_scope=(None if owns_overlap_scope else overlap_scope),
         )
+        job.overlap_dispatch = overlap_dispatch
         ar_request_id = response_id or job.request_id
         smart_fan_lease = _begin_smart_fan_request(
             state,
@@ -16552,7 +17294,63 @@ def _run_generation_dispatched(
         )
 
     def run() -> dict[str, Any]:
-        return _run_generation(state, prompt_ids, **kwargs)
+        # This closure executes on the single model-owner thread.  It wraps
+        # _run_generation's internal blank-retry loop, so a user request can
+        # contribute one (and only one) placement observation regardless of
+        # how many prefill attempts it needed.
+        serial_mode = _normalize_generation_mode(
+            kwargs.get("generation_mode"),
+            default=getattr(state.args, "generation_mode", "mtp"),
+        )
+        overlap_dispatch = (
+            overlap_scope.begin_dispatch(
+                state,
+                prompt_ids,
+                lane="solo_mtp" if serial_mode == "mtp" else "solo_ar",
+                mtp_history_policy=("committed" if serial_mode == "mtp" else None),
+                kwargs=kwargs,
+            )
+            if overlap_scope is not None
+            else None
+        )
+        consultation_marker = (
+            overlap_dispatch.consultation_marker
+            if overlap_dispatch is not None
+            else None
+        )
+        generation_kwargs = kwargs
+        if consultation_marker is not None:
+            generation_kwargs = dict(kwargs)
+            generation_kwargs["session_bank"] = consultation_marker
+
+        try:
+            generated = _run_generation(state, prompt_ids, **generation_kwargs)
+        except _StreamCancelled:
+            if overlap_scope is not None:
+                overlap_scope.record_dispatch(
+                    dispatch=overlap_dispatch,
+                    stats=None,
+                )
+            if owns_overlap_scope and overlap_scope is not None:
+                overlap_scope.finalize(terminal_status="cancelled")
+            raise
+        except BaseException:
+            if overlap_scope is not None:
+                overlap_scope.record_dispatch(
+                    dispatch=overlap_dispatch,
+                    stats=None,
+                )
+            if owns_overlap_scope and overlap_scope is not None:
+                overlap_scope.finalize(terminal_status="error")
+            raise
+        if overlap_scope is not None:
+            overlap_scope.record_dispatch(
+                dispatch=overlap_dispatch,
+                stats=generated.get("stats") if isinstance(generated, Mapping) else None,
+            )
+        if owns_overlap_scope and overlap_scope is not None:
+            overlap_scope.finalize(terminal_status="completed")
+        return generated
 
     scheduler = getattr(state, "model_scheduler", None)
     if scheduler is not None and hasattr(scheduler, "is_owner_thread") and scheduler.is_owner_thread():
@@ -21662,6 +22460,45 @@ def create_app(state: ServerState) -> FastAPI:
     def admin_sessions() -> dict[str, Any]:
         return state.sessions.list_sessions()
 
+    @app.get("/admin/session-overlap-trace")
+    def admin_session_overlap_trace() -> dict[str, Any]:
+        """Return the bounded, content-free checkpoint-placement trace."""
+
+        bank = getattr(state.sessions, "bank", None)
+        snapshot = getattr(bank, "overlap_trace_snapshot", None)
+        if not callable(snapshot):
+            return {
+                "schema_version": 2,
+                "enabled": False,
+                "max_events": 0,
+                "events_collected": 0,
+                "events_dropped": 0,
+                "bank_epoch": 0,
+                "events": [],
+                "reason": "session_overlap_trace_unavailable",
+            }
+        return snapshot()
+
+    @app.post("/admin/session-overlap-trace/clear")
+    def admin_clear_session_overlap_trace() -> dict[str, Any]:
+        """Clear trace observations without touching reusable model state."""
+
+        bank = getattr(state.sessions, "bank", None)
+        clear = getattr(bank, "clear_overlap_trace", None)
+        if not callable(clear):
+            return {
+                "schema_version": 2,
+                "enabled": False,
+                "cleared": 0,
+                "reason": "session_overlap_trace_unavailable",
+            }
+        result = clear()
+        if isinstance(result, dict):
+            return result
+        max_events = getattr(bank, "overlap_trace_max_events", 0)
+        enabled = isinstance(max_events, int) and not isinstance(max_events, bool) and max_events > 0
+        return {"schema_version": 2, "enabled": enabled, "cleared": int(result or 0)}
+
     @app.post("/admin/sessions/{session_id}/clear")
     def admin_clear_session(session_id: str) -> dict[str, Any]:
         return state.sessions.clear_session(session_id)
@@ -23018,6 +23855,20 @@ def create_app(state: ServerState) -> FastAPI:
 
                 queue: Queue[tuple[str, Any]] = Queue()
                 cancel_event = Event()
+                # One trace owner spans every internal inspection/tool/repair
+                # dispatch when tracing is enabled. It is deliberately private
+                # to this HTTP request, never keyed by a public response/session
+                # identifier. The default-off path creates no scope at all.
+                stream_overlap_scope = (
+                    _SessionOverlapRequestScope()
+                    if _session_overlap_telemetry_enabled(
+                        session_bank_for_generation,
+                        background_request=background,
+                        request_observability=request_observability,
+                    )
+                    else None
+                )
+                stream_overlap_terminal_status = "cancelled"
                 # Register this request in the dashboard's in-flight registry
                 # so external cancel (`POST /v1/mtplx/cancel/{id}`) can flip
                 # the same per-request cancel_event the worker already checks.
@@ -23177,6 +24028,7 @@ def create_app(state: ServerState) -> FastAPI:
                         prompt_ids,
                         batch_key="chat.stream.inspection_empty_retry",
                         response_id=response_id,
+                        _session_overlap_scope=stream_overlap_scope,
                         max_tokens=request_max_tokens,
                         temperature=sampler_temperature,
                         top_p=sampler_top_p,
@@ -23302,6 +24154,7 @@ def create_app(state: ServerState) -> FastAPI:
                         repair_prompt_ids,
                         batch_key="chat.stream.tool_fed_empty_retry",
                         response_id=response_id,
+                        _session_overlap_scope=stream_overlap_scope,
                         max_tokens=request_max_tokens,
                         temperature=sampler_temperature,
                         top_p=sampler_top_p,
@@ -23444,6 +24297,7 @@ def create_app(state: ServerState) -> FastAPI:
                         repair_prompt_ids,
                         batch_key="chat.stream.reasoning_completion_repair",
                         response_id=response_id,
+                        _session_overlap_scope=stream_overlap_scope,
                         max_tokens=request_max_tokens,
                         temperature=sampler_temperature,
                         top_p=sampler_top_p,
@@ -23620,6 +24474,7 @@ def create_app(state: ServerState) -> FastAPI:
                         repair_prompt_ids,
                         batch_key="chat.stream.stalled_agent_retry",
                         response_id=response_id,
+                        _session_overlap_scope=stream_overlap_scope,
                         max_tokens=request_max_tokens,
                         temperature=sampler_temperature,
                         top_p=sampler_top_p,
@@ -23781,6 +24636,7 @@ def create_app(state: ServerState) -> FastAPI:
                         repair_prompt_ids,
                         batch_key="chat.stream.read_only_force_answer_retry",
                         response_id=response_id,
+                        _session_overlap_scope=stream_overlap_scope,
                         max_tokens=request_max_tokens,
                         temperature=sampler_temperature,
                         top_p=sampler_top_p,
@@ -23861,6 +24717,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 prompt_ids,
                                 batch_key="chat.stream",
                                 response_id=response_id,
+                                _session_overlap_scope=stream_overlap_scope,
                                 max_tokens=request_max_tokens,
                                 temperature=sampler_temperature,
                                 top_p=sampler_top_p,
@@ -23913,6 +24770,7 @@ def create_app(state: ServerState) -> FastAPI:
                                     prompt_ids,
                                     batch_key="chat.stream",
                                     response_id=response_id,
+                                    _session_overlap_scope=stream_overlap_scope,
                                     max_tokens=request_max_tokens,
                                     temperature=sampler_temperature,
                                     top_p=sampler_top_p,
@@ -24657,6 +25515,7 @@ def create_app(state: ServerState) -> FastAPI:
                                     )
                                 )
                                 yield mark_sse_sent("data: [DONE]\n\n")
+                                stream_overlap_terminal_status = "error"
                                 return
                             if (
                                 not generation_future.done()
@@ -24780,11 +25639,13 @@ def create_app(state: ServerState) -> FastAPI:
                                             )
                                         )
                                         yield mark_sse_sent("data: [DONE]\n\n")
+                                        stream_overlap_terminal_status = "error"
                                         return
                             else:
                                 hidden_tool_guard_started_s = None
                                 hidden_tool_guard_started_tokens = None
                         elif kind == "done":
+                            stream_overlap_terminal_status = "completed"
                             generated = item
                             generated = attach_response_observability(generated)
                             if stop_monitor is not None and stop_monitor.stopped:
@@ -25087,6 +25948,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 if commit_kind == "committed":
                                     generated = commit_item
                                 elif commit_kind == "error":
+                                    stream_overlap_terminal_status = "error"
                                     yield mark_sse_sent(error_chunk(commit_item))
                                     yield mark_sse_sent("data: [DONE]\n\n")
                                     return
@@ -25187,6 +26049,7 @@ def create_app(state: ServerState) -> FastAPI:
                                         "session_postcommit_snapshot"
                                     ] = postcommit_snapshot
                                 else:
+                                    stream_overlap_terminal_status = "error"
                                     yield mark_sse_sent(
                                         error_chunk(
                                             RuntimeError(
@@ -25263,6 +26126,7 @@ def create_app(state: ServerState) -> FastAPI:
                             decoder = _IncrementalTokenDecoder(state.runtime.tokenizer)
                             continue
                         elif kind == "error":
+                            stream_overlap_terminal_status = "error"
                             yield mark_sse_sent(error_chunk(item))
                             yield mark_sse_sent("data: [DONE]\n\n")
                             return
@@ -25308,6 +26172,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 _merge_final_bridge_stats_into_latest_metrics(
                                     state, generated["stats"]
                                 )
+                                stream_overlap_terminal_status = "completed"
                                 break
                             if early_tool_cancel_used and streamed_assistant_tool_calls:
                                 generated = {
@@ -25350,9 +26215,11 @@ def create_app(state: ServerState) -> FastAPI:
                                 _merge_final_bridge_stats_into_latest_metrics(
                                     state, generated["stats"]
                                 )
+                                stream_overlap_terminal_status = "completed"
                                 break
                             return
                         else:
+                            stream_overlap_terminal_status = "error"
                             yield mark_sse_sent(
                                 error_chunk(
                                     RuntimeError(f"unexpected stream event: {kind}")
@@ -25365,10 +26232,15 @@ def create_app(state: ServerState) -> FastAPI:
                     _cancel_stream_generation(cancel_event, generation_future)
                     raise
                 except BaseException as exc:
+                    stream_overlap_terminal_status = "error"
                     yield mark_sse_sent(error_chunk(exc))
                     yield mark_sse_sent("data: [DONE]\n\n")
                     return
                 finally:
+                    if stream_overlap_scope is not None:
+                        stream_overlap_scope.finalize(
+                            terminal_status=stream_overlap_terminal_status
+                        )
                     nonlocal_cancel_reason = (
                         "client_disconnected"
                         if stream_cancelled_by_client

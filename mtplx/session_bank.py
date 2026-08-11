@@ -9,12 +9,15 @@ the warm result against a cold full prefill before any generation path uses it.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import sys
 import time
+from collections.abc import Mapping
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from threading import RLock
 from typing import Any, Callable
 
 import mlx.core as mx
@@ -72,6 +75,115 @@ DEFAULT_PER_SESSION_MAX_BYTES = 8 * GIB
 DEFAULT_IDLE_TTL_S = 60 * 60
 DEFAULT_PREFIX_BLOCK_SIZE = 256
 DEFAULT_BLOCK_PREFIX_MIN_MATCH_TOKENS = 512
+SESSION_OVERLAP_TRACE_SCHEMA_VERSION = 2
+DEFAULT_SESSION_OVERLAP_TRACE_MAX_EVENTS = 0
+MAX_SESSION_OVERLAP_TRACE_EVENTS = 4096
+MAX_SESSION_OVERLAP_TRACE_CANDIDATES = 16
+MAX_SESSION_OVERLAP_PENDING_PROBES = 256
+_OVERLAP_TRACE_LANES = frozenset({"solo_mtp", "solo_ar", "ar_batch", "unknown"})
+_OVERLAP_TRACE_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "error"})
+_OVERLAP_TRACE_CACHE_SOURCES = frozenset({"none", "ram", "ssd", "other"})
+_OVERLAP_TRACE_RESTORE_KINDS = frozenset(
+    {
+        "cold",
+        "clone",
+        "exact",
+        "near",
+        "block",
+        "boundary",
+        "reference",
+        "ssd_clone",
+        "other",
+    }
+)
+
+
+def _session_overlap_trace_max_events(value: Any | None) -> int:
+    raw = (
+        os.environ.get("MTPLX_SESSION_OVERLAP_TRACE_MAX_EVENTS", "0")
+        if value is None
+        else value
+    )
+    try:
+        return min(MAX_SESSION_OVERLAP_TRACE_EVENTS, max(0, int(str(raw).strip())))
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_OVERLAP_TRACE_MAX_EVENTS
+
+
+def _trace_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _trace_duration(value: Any) -> float:
+    try:
+        duration = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return max(0.0, duration) if math.isfinite(duration) else 0.0
+
+
+def _trace_choice(value: Any, choices: frozenset[str], default: str) -> str:
+    choice = str(value or default).strip().lower()
+    return choice if choice in choices else default
+
+
+def _trace_positions(value: Any, *, maximum: int) -> list[int]:
+    if isinstance(value, bool) or value is None:
+        return []
+    raw_values = value if isinstance(value, (list, tuple, set, frozenset)) else (value,)
+    positions = {
+        _trace_int(item) for item in raw_values if 0 < _trace_int(item) <= maximum
+    }
+    return sorted(positions)
+
+
+def _copy_overlap_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Copy only the fixed, content-free candidate schema."""
+    stored_prefix_tokens = _trace_int(candidate.get("stored_prefix_tokens"))
+    return {
+        "entry_ordinal": _trace_int(candidate.get("entry_ordinal")),
+        "stored_prefix_tokens": stored_prefix_tokens,
+        "common_prefix_tokens": _trace_int(candidate.get("common_prefix_tokens")),
+        "retained_checkpoint_tokens": _trace_positions(
+            candidate.get("retained_checkpoint_tokens"), maximum=stored_prefix_tokens
+        ),
+        "capture_candidate_tokens": _trace_positions(
+            candidate.get("capture_candidate_tokens"), maximum=stored_prefix_tokens
+        ),
+        "incumbent_interior_budget": _trace_int(
+            candidate.get("incumbent_interior_budget")
+        ),
+        "has_recurrent": bool(candidate.get("has_recurrent")),
+        "structurally_restorable": bool(candidate.get("structurally_restorable")),
+    }
+
+
+@dataclass
+class _OverlapProbe:
+    sequence: int
+    bank_epoch: int
+    lane: str
+    prompt_tokens: int
+    candidates: tuple[dict[str, Any], ...]
+    compatible_entry_count: int
+
+
+@dataclass(frozen=True)
+class _OverlapTracePlacement:
+    """Content-free placement metadata fixed for one trace entry ordinal."""
+
+    entry_ordinal: int
+    stored_prefix_tokens: int
+    retained_checkpoint_tokens: tuple[int, ...]
+    capture_candidate_tokens: tuple[int, ...]
+    incumbent_interior_budget: int
+    has_recurrent: bool
+    has_restorable_cache: bool
 
 
 class CacheMissReason(str, Enum):
@@ -189,6 +301,13 @@ class SessionBankEntry:
     # entries — recorded at put() time from the live cache, because only the
     # producer knows the container classes.
     has_recurrent: bool = False
+    # Exact, content-free provenance for recurrent snapshots captured while
+    # prefilling this token prefix.  Unlike ``gdn_boundaries`` this list is
+    # intentionally recorded before geometric thinning, so an offline
+    # placement oracle can distinguish actual capture opportunities from the
+    # smaller retained checkpoint set.  It remains RAM-only metadata: do not
+    # add it to the cold-tier payload or serialization format.
+    capture_candidate_tokens: list[int] = field(default_factory=list)
     # kvcache-v2: (token_count, recurrent-only CacheSnapshot, hidden_last)
     # captured at interior prefill boundaries, sorted ascending. Enables exact
     # sub-prefix restores on hybrid (GDN/conv) models: trim KV to boundary
@@ -325,6 +444,7 @@ class SessionBank:
         per_session_max_bytes: int = DEFAULT_PER_SESSION_MAX_BYTES,
         idle_ttl_s: float = DEFAULT_IDLE_TTL_S,
         cold_tier: Any | None = None,
+        overlap_trace_max_events: int | None = None,
     ) -> None:
         if max_entries < 1:
             raise ValueError("max_entries must be >= 1")
@@ -357,6 +477,509 @@ class SessionBank:
         self.last_restore_source: str | None = None
         self.last_ssd_restore_s: float = 0.0
         self.last_prefix_diagnostic: dict[str, Any] | None = None
+        self._overlap_trace_lock = RLock()
+        self.overlap_trace_max_events = _session_overlap_trace_max_events(
+            overlap_trace_max_events
+        )
+        self._overlap_trace: deque[dict[str, Any]] = deque(
+            maxlen=self.overlap_trace_max_events
+        )
+        self._overlap_trace_events_collected = 0
+        self._overlap_trace_events_dropped = 0
+        self._overlap_trace_sequence = 0
+        self._overlap_probe_sequence = 0
+        self._overlap_probes: dict[int, _OverlapProbe] = {}
+        self._overlap_entry_ordinals: dict[tuple[int, ...], int] = {}
+        self._overlap_entry_placements: dict[
+            tuple[int, ...], _OverlapTracePlacement
+        ] = {}
+        self._overlap_next_entry_ordinal = 1
+        self._bank_epoch = 0
+
+    @staticmethod
+    def _freeze_overlap_trace_placement(
+        entry: SessionBankEntry, ordinal: int
+    ) -> _OverlapTracePlacement:
+        """Capture trace placement metadata without hydrating lazy payloads."""
+        stored_prefix_tokens = entry.prefix_len
+        retained_checkpoint_tokens: list[int] = []
+        for record in entry.gdn_boundaries or ():
+            try:
+                position = _trace_int(record[0])
+            except (IndexError, TypeError):
+                continue
+            if 0 < position <= stored_prefix_tokens:
+                retained_checkpoint_tokens.append(position)
+        retained_checkpoint_tokens = sorted(
+            {*retained_checkpoint_tokens, stored_prefix_tokens}
+        )
+        capture_candidate_tokens = getattr(entry, "capture_candidate_tokens", None)
+        if not capture_candidate_tokens and isinstance(entry.extra_state, dict):
+            capture_candidate_tokens = entry.extra_state.get("capture_candidate_tokens")
+        capture_candidate_tokens = _trace_positions(
+            capture_candidate_tokens,
+            maximum=stored_prefix_tokens,
+        )
+        return _OverlapTracePlacement(
+            entry_ordinal=ordinal,
+            stored_prefix_tokens=stored_prefix_tokens,
+            retained_checkpoint_tokens=tuple(retained_checkpoint_tokens),
+            capture_candidate_tokens=tuple(capture_candidate_tokens),
+            incumbent_interior_budget=sum(
+                position < stored_prefix_tokens
+                for position in retained_checkpoint_tokens
+            ),
+            has_recurrent=bool(entry.has_recurrent),
+            has_restorable_cache=(
+                not entry.live_ref_only or entry.cache_ref is not None
+            ),
+        )
+
+    def _set_entry_for_overlap_trace(
+        self, tokens: tuple[int, ...], entry: SessionBankEntry
+    ) -> None:
+        """Install an entry and freeze its trace placement for a new ordinal."""
+        with self._overlap_trace_lock:
+            if self.overlap_trace_max_events <= 0:
+                self._entries[tokens] = entry
+                self._overlap_entry_ordinals.pop(tokens, None)
+                self._overlap_entry_placements.pop(tokens, None)
+                return
+            if self._entries.get(tokens) is not entry:
+                ordinal = self._overlap_next_entry_ordinal
+                self._overlap_next_entry_ordinal += 1
+                self._overlap_entry_ordinals[tokens] = ordinal
+                self._overlap_entry_placements[tokens] = (
+                    self._freeze_overlap_trace_placement(entry, ordinal)
+                )
+            else:
+                previous = self._overlap_entry_placements.get(tokens)
+                if previous is None:
+                    ordinal = self._entry_ordinal_for_overlap_trace(tokens)
+                else:
+                    unchanged = self._freeze_overlap_trace_placement(
+                        entry, previous.entry_ordinal
+                    ) == previous
+                    ordinal = previous.entry_ordinal
+                    if not unchanged:
+                        ordinal = self._overlap_next_entry_ordinal
+                        self._overlap_next_entry_ordinal += 1
+                        self._overlap_entry_ordinals[tokens] = ordinal
+                self._overlap_entry_placements[tokens] = (
+                    self._freeze_overlap_trace_placement(entry, ordinal)
+                )
+            self._entries[tokens] = entry
+
+    def _entry_ordinal_for_overlap_trace(self, tokens: tuple[int, ...]) -> int:
+        ordinal = self._overlap_entry_ordinals.get(tokens)
+        if ordinal is None:
+            ordinal = self._overlap_next_entry_ordinal
+            self._overlap_next_entry_ordinal += 1
+            self._overlap_entry_ordinals[tokens] = ordinal
+        return ordinal
+
+    def _overlap_trace_placement_for_entry(
+        self, entry: SessionBankEntry
+    ) -> _OverlapTracePlacement:
+        """Return a revision-aware, content-free trace identity for ``entry``.
+
+        Lazy SSD boundary loaders mutate ``SessionBankEntry`` in place.  A
+        token-keyed ordinal is therefore not sufficient: a later request must
+        not share the old identity if the entry gained or lost a retained
+        recurrent boundary, capture opportunity, or restorable-cache state.
+        Comparing only already-resident metadata keeps telemetry RAM-only and
+        never invokes the loader.
+        """
+        placement = self._overlap_entry_placements.get(entry.token_ids)
+        if placement is None:
+            ordinal = self._entry_ordinal_for_overlap_trace(entry.token_ids)
+            placement = self._freeze_overlap_trace_placement(entry, ordinal)
+            self._overlap_entry_placements[entry.token_ids] = placement
+            return placement
+
+        current = self._freeze_overlap_trace_placement(entry, placement.entry_ordinal)
+        if current == placement:
+            return placement
+
+        # Metadata has changed in place.  Allocate a fresh public identity
+        # rather than allowing fit/eval records to alias different placement
+        # choices under the same entry ordinal.
+        ordinal = self._overlap_next_entry_ordinal
+        self._overlap_next_entry_ordinal += 1
+        placement = self._freeze_overlap_trace_placement(entry, ordinal)
+        self._overlap_entry_ordinals[entry.token_ids] = ordinal
+        self._overlap_entry_placements[entry.token_ids] = placement
+        return placement
+
+    @staticmethod
+    def _overlap_entry_compatible(
+        entry: SessionBankEntry,
+        *,
+        model_path: str | None,
+        mtp_enabled: bool,
+        hidden_variant: str | None,
+        template_hash: str | None,
+        mtp_history_policy: str | None,
+        draft_head_identity: str | None,
+        policy_fingerprint: str | None,
+    ) -> bool:
+        if model_path is None or entry.model_path != str(model_path):
+            return False
+        if entry.mtp_enabled != bool(mtp_enabled):
+            return False
+        if hidden_variant is not None and entry.hidden_variant != hidden_variant:
+            return False
+        if template_hash is not None and entry.template_hash != template_hash:
+            return False
+        if mtp_history_policy is not None and not _mtp_history_policy_compatible(
+            entry.mtp_history_policy, mtp_history_policy
+        ):
+            return False
+        # Keep overlap telemetry's candidate contract aligned with the actual
+        # near-prefix restore path.  ``committed`` and ``last_window`` both
+        # require a real committed-MTP history payload; merely declaring a
+        # compatible policy is not enough to make the entry restorable.
+        if (
+            mtp_history_policy in _COMMITTED_CACHE_POLICIES
+            and entry.mtp_history_snapshot is None
+            and entry.mtp_history_cache_ref is None
+        ):
+            return False
+        if (
+            draft_head_identity is not None
+            and entry.draft_head_identity != draft_head_identity
+        ):
+            return False
+        if (
+            policy_fingerprint is not None
+            and entry.policy_fingerprint != policy_fingerprint
+        ):
+            return False
+        return entry.mtp_snapshot_epoch is None or int(entry.mtp_snapshot_epoch) == int(
+            entry.snapshot_epoch
+        )
+
+    @staticmethod
+    def _overlap_entry_is_available_for_restore(
+        entry: SessionBankEntry,
+        *,
+        now_s: float,
+        idle_ttl_s: float,
+    ) -> bool:
+        """Mirror RAM restore availability without mutating or hydrating state.
+
+        ``restore()`` starts by purging entries whose idle age is strictly
+        greater than the bank TTL.  A trace probe must not advertise one of
+        those entries as a candidate, but it must also not call that mutating
+        helper: probes are telemetry, never an eviction, cold-tier, or lazy
+        boundary-loading path.
+
+        A consumed live-reference lease is equally unavailable to the real
+        restore path.  When committed MTP history is marked present, its live
+        lease or durable snapshot must still be available as well.
+        """
+        try:
+            if now_s - float(entry.last_access_s) > idle_ttl_s:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if not entry.live_ref_only:
+            return True
+        if entry.cache_ref is None:
+            return False
+        return not (
+            entry.mtp_snapshot_epoch is not None
+            and entry.mtp_history_cache_ref is None
+            and entry.mtp_history_snapshot is None
+        )
+
+    def _overlap_candidate(
+        self, entry: SessionBankEntry, tokens: tuple[int, ...]
+    ) -> dict[str, Any]:
+        """Describe one RAM entry without loading snapshots or cache state."""
+        placement = self._overlap_trace_placement_for_entry(entry)
+        stored_prefix_tokens = placement.stored_prefix_tokens
+        common_prefix_tokens = common_prefix_len(tokens, entry.token_ids)
+        return {
+            "entry_ordinal": placement.entry_ordinal,
+            "stored_prefix_tokens": stored_prefix_tokens,
+            "common_prefix_tokens": common_prefix_tokens,
+            "retained_checkpoint_tokens": list(placement.retained_checkpoint_tokens),
+            "capture_candidate_tokens": list(placement.capture_candidate_tokens),
+            "incumbent_interior_budget": placement.incumbent_interior_budget,
+            "has_recurrent": placement.has_recurrent,
+            "structurally_restorable": (
+                placement.has_restorable_cache
+                and (
+                    not placement.has_recurrent
+                    or common_prefix_tokens == stored_prefix_tokens
+                    or any(
+                        position <= common_prefix_tokens
+                        for position in placement.retained_checkpoint_tokens
+                    )
+                )
+            ),
+        }
+
+    def begin_overlap_probe(
+        self,
+        token_ids: list[int] | tuple[int, ...],
+        *,
+        lane: str,
+        model_path: str | None,
+        mtp_enabled: bool,
+        hidden_variant: str | None,
+        template_hash: str | None,
+        mtp_history_policy: str | None,
+        draft_head_identity: str | None,
+        policy_fingerprint: str | None,
+    ) -> dict[str, Any] | None:
+        """Scan compatible RAM entries once for request-scoped telemetry.
+
+        This deliberately does not call legacy lookup helpers: those purge
+        entries, may consult the cold tier, and can hydrate boundary payloads.
+        """
+        if self.overlap_trace_max_events <= 0:
+            return None
+        try:
+            tokens = tuple(int(token) for token in token_ids)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        trace_lane = _trace_choice(lane, _OVERLAP_TRACE_LANES, "unknown")
+        with self._overlap_trace_lock:
+            now_s = time.time()
+            candidates = []
+            for entry in self._entries.values():
+                try:
+                    compatible = self._overlap_entry_compatible(
+                        entry,
+                        model_path=model_path,
+                        mtp_enabled=mtp_enabled,
+                        hidden_variant=hidden_variant,
+                        template_hash=template_hash,
+                        mtp_history_policy=mtp_history_policy,
+                        draft_head_identity=draft_head_identity,
+                        policy_fingerprint=policy_fingerprint,
+                    )
+                    if compatible and self._overlap_entry_is_available_for_restore(
+                        entry,
+                        now_s=now_s,
+                        idle_ttl_s=self.idle_ttl_s,
+                    ):
+                        candidates.append(self._overlap_candidate(entry, tokens))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            candidates.sort(
+                key=lambda candidate: (
+                    candidate["common_prefix_tokens"],
+                    candidate["stored_prefix_tokens"],
+                    candidate["entry_ordinal"],
+                ),
+                reverse=True,
+            )
+            compatible_entry_count = len(candidates)
+            candidates = candidates[:MAX_SESSION_OVERLAP_TRACE_CANDIDATES]
+            if len(self._overlap_probes) >= MAX_SESSION_OVERLAP_PENDING_PROBES:
+                self._overlap_probes.pop(next(iter(self._overlap_probes)))
+                self._overlap_trace_events_dropped += 1
+            self._overlap_probe_sequence += 1
+            probe_id = self._overlap_probe_sequence
+            # Allocate the public event sequence at request start, rather than
+            # at completion. Concurrent requests can finalize out of order;
+            # replay sorts retained events by this start-order sequence.
+            self._overlap_trace_sequence += 1
+            copied_candidates = tuple(
+                _copy_overlap_candidate(candidate) for candidate in candidates
+            )
+            self._overlap_probes[probe_id] = _OverlapProbe(
+                sequence=self._overlap_trace_sequence,
+                bank_epoch=self._bank_epoch,
+                lane=trace_lane,
+                prompt_tokens=len(tokens),
+                candidates=copied_candidates,
+                compatible_entry_count=compatible_entry_count,
+            )
+            return {
+                "schema_version": SESSION_OVERLAP_TRACE_SCHEMA_VERSION,
+                "probe_id": probe_id,
+                "bank_epoch": self._bank_epoch,
+                "lane": trace_lane,
+                "compatible_entry_count": compatible_entry_count,
+                "candidates": [
+                    _copy_overlap_candidate(candidate)
+                    for candidate in copied_candidates
+                ],
+            }
+
+    @staticmethod
+    def _overlap_outcome(
+        outcome: Mapping[str, Any] | None,
+        candidates: tuple[dict[str, Any], ...],
+    ) -> tuple[dict[str, Any], dict[str, float]]:
+        source = outcome if isinstance(outcome, Mapping) else {}
+        selected_was_supplied = (
+            "selected_entry_ordinal" in source or "entry_ordinal" in source
+        )
+        candidate_ordinals = {candidate["entry_ordinal"] for candidate in candidates}
+        selected_ordinal = _trace_int(
+            source.get("selected_entry_ordinal", source.get("entry_ordinal"))
+        )
+        if selected_ordinal not in candidate_ordinals:
+            selected_ordinal = None
+        outcome_fields = {
+            "selected_entry_ordinal": selected_ordinal,
+            "cache_hit": bool(source.get("cache_hit")),
+            "cached_tokens": _trace_int(source.get("cached_tokens")),
+            "new_prefill_tokens": _trace_int(source.get("new_prefill_tokens")),
+            "cache_source": _trace_choice(
+                source.get("cache_source"), _OVERLAP_TRACE_CACHE_SOURCES, "other"
+            ),
+            "restore_kind": _trace_choice(
+                source.get("restore_kind"), _OVERLAP_TRACE_RESTORE_KINDS, "other"
+            ),
+        }
+        if (
+            not selected_was_supplied
+            and outcome_fields["cache_hit"]
+            and outcome_fields["cache_source"] == "ram"
+        ):
+            cached_tokens = int(outcome_fields["cached_tokens"])
+            matching_candidates = []
+            for candidate in candidates:
+                common_prefix_tokens = int(candidate["common_prefix_tokens"])
+                stored_prefix_tokens = int(candidate["stored_prefix_tokens"])
+                is_exact_endpoint = (
+                    cached_tokens == stored_prefix_tokens
+                    and common_prefix_tokens >= cached_tokens
+                )
+                is_recurrent_checkpoint = (
+                    bool(candidate["has_recurrent"])
+                    and cached_tokens <= common_prefix_tokens
+                    and cached_tokens in candidate["retained_checkpoint_tokens"]
+                )
+                is_attention_prefix = (
+                    not bool(candidate["has_recurrent"])
+                    and cached_tokens == common_prefix_tokens
+                )
+                if is_exact_endpoint or is_recurrent_checkpoint or is_attention_prefix:
+                    matching_candidates.append(int(candidate["entry_ordinal"]))
+            if len(matching_candidates) == 1:
+                outcome_fields["selected_entry_ordinal"] = matching_candidates[0]
+        return (
+            outcome_fields,
+            {
+                "cache_restore_time_s": _trace_duration(
+                    source.get("cache_restore_time_s")
+                ),
+                "target_prefill_time_s": _trace_duration(
+                    source.get("target_prefill_time_s")
+                ),
+                "mtp_history_time_s": _trace_duration(source.get("mtp_history_time_s")),
+                "checkpoint_capture_time_s": _trace_duration(
+                    source.get("checkpoint_capture_time_s")
+                ),
+            },
+        )
+
+    def finalize_overlap_probe(
+        self,
+        probe: dict[str, Any] | None,
+        *,
+        terminal_status: str,
+        bank_consulted: bool,
+        outcome: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Finalize exactly one probe; retries cannot append duplicate events."""
+        if self.overlap_trace_max_events <= 0 or not isinstance(probe, dict):
+            return False
+        probe_id = probe.get("probe_id")
+        if isinstance(probe_id, bool) or not isinstance(probe_id, int):
+            return False
+        with self._overlap_trace_lock:
+            state = self._overlap_probes.pop(probe_id, None)
+            if state is None:
+                return False
+            outcome_fields, timing_fields = self._overlap_outcome(
+                outcome, state.candidates
+            )
+            if len(self._overlap_trace) >= self.overlap_trace_max_events:
+                self._overlap_trace_events_dropped += 1
+            event = {
+                "schema_version": SESSION_OVERLAP_TRACE_SCHEMA_VERSION,
+                "sequence": state.sequence,
+                "bank_epoch": state.bank_epoch,
+                "lane": state.lane,
+                "prompt_tokens": state.prompt_tokens,
+                "terminal_status": _trace_choice(
+                    terminal_status, _OVERLAP_TRACE_TERMINAL_STATUSES, "error"
+                ),
+                "bank_consulted": bool(bank_consulted),
+                "compatible_entry_count": state.compatible_entry_count,
+                "candidates": [
+                    _copy_overlap_candidate(candidate) for candidate in state.candidates
+                ],
+                "outcome": outcome_fields,
+                "timings": timing_fields,
+            }
+            self._overlap_trace.append(event)
+            self._overlap_trace_events_collected += 1
+        return True
+
+    def overlap_trace_snapshot(self) -> dict[str, Any]:
+        """Return retained events as copies, never the cache or probe state."""
+        with self._overlap_trace_lock:
+            return {
+                "schema_version": SESSION_OVERLAP_TRACE_SCHEMA_VERSION,
+                "enabled": self.overlap_trace_max_events > 0,
+                "max_events": self.overlap_trace_max_events,
+                "events_collected": self._overlap_trace_events_collected,
+                "events_dropped": self._overlap_trace_events_dropped,
+                "pending_probe_count": len(self._overlap_probes),
+                "sequence_high_watermark": self._overlap_trace_sequence,
+                "bank_epoch": self._bank_epoch,
+                "events": [
+                    {
+                        **event,
+                        "candidates": [
+                            _copy_overlap_candidate(candidate)
+                            for candidate in event["candidates"]
+                        ],
+                        "outcome": dict(event["outcome"]),
+                        "timings": dict(event["timings"]),
+                    }
+                    for event in self._overlap_trace
+                ],
+            }
+
+    def clear_overlap_trace(self) -> int:
+        """Drop telemetry only; cached entries and the bank epoch stay intact.
+
+        Pending probe ids stay globally monotonic so a stale request cannot
+        finalize a newly begun probe after clear.  The public event sequence
+        is trace-local, however: clearing first invalidates every pending
+        probe, then safely resets its high-watermark for the fresh snapshot.
+        """
+        with self._overlap_trace_lock:
+            count = len(self._overlap_trace)
+            self._overlap_trace.clear()
+            self._overlap_probes.clear()
+            self._overlap_trace_events_collected = 0
+            self._overlap_trace_events_dropped = 0
+            self._overlap_trace_sequence = 0
+            return count
+
+    def _overlap_trace_summary(self) -> dict[str, Any]:
+        with self._overlap_trace_lock:
+            return {
+                "schema_version": SESSION_OVERLAP_TRACE_SCHEMA_VERSION,
+                "enabled": self.overlap_trace_max_events > 0,
+                "max_events": self.overlap_trace_max_events,
+                "events_collected": self._overlap_trace_events_collected,
+                "events_dropped": self._overlap_trace_events_dropped,
+                "pending_probe_count": len(self._overlap_probes),
+                "sequence_high_watermark": self._overlap_trace_sequence,
+                "bank_epoch": self._bank_epoch,
+            }
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -387,6 +1010,7 @@ class SessionBank:
         nbytes_override: int | None = None,
         extra_state: dict[str, Any] | None = None,
         gdn_boundaries: list[tuple[int, CacheSnapshot]] | None = None,
+        capture_candidate_tokens: list[int] | None = None,
     ) -> SessionBankEntry | None:
         tokens = tuple(int(token) for token in token_ids)
         if not tokens:
@@ -404,6 +1028,9 @@ class SessionBank:
             ),
             key=lambda item: item[0],
         )
+        normalized_capture_candidates = _trace_positions(
+            capture_candidate_tokens, maximum=len(tokens)
+        )
         if os.environ.get("MTPLX_DEBUG_PREFIX_DIVERGENCE"):
             print(
                 f"[mtplx] bank-put: len={len(tokens)} "
@@ -412,6 +1039,11 @@ class SessionBank:
                 file=sys.stderr,
                 flush=True,
             )
+        prior = self._entries.get(tokens)
+        inherited_loader = (
+            getattr(prior, "gdn_boundary_loader", None) if prior is not None else None
+        )
+        prefix_donor: SessionBankEntry | None = None
         if not normalized_boundaries:
             # Same-key replacement must not lose interior boundaries: the idle
             # postcommit re-put of a prompt-boundary entry (which restores
@@ -420,12 +1052,8 @@ class SessionBank:
             # RAG-shape turn to a fail-closed cold prefill (found 2026-07-03).
             # Boundaries describe the token prefix, so an identical key keeps
             # them valid.
-            prior = self._entries.get(tokens)
             if prior is not None and prior.gdn_boundaries:
                 normalized_boundaries = list(prior.gdn_boundaries)
-            inherited_loader = (
-                getattr(prior, "gdn_boundary_loader", None) if prior is not None else None
-            )
             if not normalized_boundaries and inherited_loader is None:
                 # Prefix-entry inheritance (#121, 2026-07-16): boundary
                 # records describe token PREFIXES, so any stored entry that
@@ -444,6 +1072,23 @@ class SessionBank:
                     inherited_loader = getattr(
                         prefix_donor, "gdn_boundary_loader", None
                     )
+        if not normalized_capture_candidates:
+            if prior is not None:
+                normalized_capture_candidates = _trace_positions(
+                    getattr(prior, "capture_candidate_tokens", None),
+                    maximum=len(tokens),
+                )
+            if not normalized_capture_candidates:
+                if prefix_donor is None:
+                    prefix_donor = self.longest_prefix(tokens)
+                if prefix_donor is not None:
+                    # Capture candidates describe prefixes of the donor, so
+                    # every retained integer remains valid for this extension.
+                    normalized_capture_candidates = _trace_positions(
+                        getattr(prefix_donor, "capture_candidate_tokens", None),
+                        maximum=prefix_donor.prefix_len,
+                    )
+
         def live_ref_entry(reason: str, nbytes: int) -> SessionBankEntry | None:
             if not keep_live_ref or not cache:
                 return None
@@ -478,6 +1123,7 @@ class SessionBank:
                 ),
                 extra_state=_clone_tree(extra_state),
                 has_recurrent=cache_has_recurrent,
+                capture_candidate_tokens=list(normalized_capture_candidates),
                 gdn_boundaries=list(normalized_boundaries),
             )
             self.eviction_log.append(
@@ -491,7 +1137,7 @@ class SessionBank:
                     "fallback": "live_reference_lease",
                 }
             )
-            self._entries[tokens] = entry
+            self._set_entry_for_overlap_trace(tokens, entry)
             self._supersede_contained_prefixes(tokens)
             self._evict_if_needed(protected_tokens=tokens)
             return entry
@@ -601,16 +1247,32 @@ class SessionBank:
             extra_state=_clone_tree(extra_state),
             lazy_kv=lazy_kv,
             has_recurrent=cache_has_recurrent,
+            capture_candidate_tokens=list(normalized_capture_candidates),
             gdn_boundaries=list(normalized_boundaries),
             gdn_boundary_loader=(
                 inherited_loader if not normalized_boundaries else None
             ),
         )
         self._enqueue_cold_entry(entry)
-        self._entries[tokens] = entry
+        self._set_entry_for_overlap_trace(tokens, entry)
         self._supersede_contained_prefixes(tokens)
         self._evict_if_needed(protected_tokens=tokens)
         return entry
+
+    @staticmethod
+    def infer_has_recurrent(cache: list[Any] | tuple[Any, ...] | None) -> bool | None:
+        """Classify a live cache without reading or materializing its state.
+
+        ``None`` means the producer no longer has container provenance.  An
+        entry whose ``is_trimmable`` probe raises is conservatively recurrent
+        through ``_is_trimmable``; this helper never loads a lazy payload.
+        """
+        if cache is None:
+            return None
+        try:
+            return any(not _is_trimmable(entry) for entry in cache)
+        except Exception:
+            return None
 
     def put_snapshot(
         self,
@@ -632,12 +1294,37 @@ class SessionBank:
         snapshot_epoch: int = 0,
         mtp_snapshot_epoch: int | None = None,
         nbytes_override: int | None = None,
+        has_recurrent: bool | None = None,
     ) -> SessionBankEntry | None:
+        """Store a caller-owned cache snapshot without downcasting recurrence.
+
+        A ``CacheSnapshot`` deliberately contains values and metadata, not the
+        live cache-container classes that say whether a state can be trimmed.
+        Callers that still own those containers should pass ``has_recurrent``
+        (and may pass ``cache_ref`` for an independent, side-effect-free
+        check).  Legacy callers that have neither are accepted, but are
+        conservatively treated as recurrent: an unknown hybrid cache must not
+        acquire attention-only sub-prefix restore rights.
+        """
         tokens = tuple(int(token) for token in token_ids)
         if not tokens:
             raise ValueError("cannot store an empty prefix")
         if mtp_snapshot_epoch is not None and int(mtp_snapshot_epoch) != int(snapshot_epoch):
             raise ValueError("trunk and MTP snapshots must share the same commit boundary")
+        derived_has_recurrent = self.infer_has_recurrent(cache_ref)
+        if derived_has_recurrent is True:
+            # A live cache is stronger evidence than a caller declaration. In
+            # particular, do not let a stale false declaration downcast a
+            # recurrent snapshot to arbitrarily trimmable attention state.
+            resolved_has_recurrent = True
+        elif has_recurrent is not None:
+            resolved_has_recurrent = bool(has_recurrent)
+        elif derived_has_recurrent is False:
+            resolved_has_recurrent = False
+        else:
+            # CacheSnapshot has no portable container-type provenance. Fail
+            # closed rather than preserving the historic false default.
+            resolved_has_recurrent = True
         self.last_put_nbytes = 0
         self.last_put_skipped_oversized_snapshot = False
         computed_nbytes = (
@@ -688,9 +1375,10 @@ class SessionBank:
                 if mtp_snapshot_epoch is not None
                 else (int(snapshot_epoch) if mtp_history_snapshot is not None else None)
             ),
+            has_recurrent=resolved_has_recurrent,
         )
         self._enqueue_cold_entry(entry)
-        self._entries[tokens] = entry
+        self._set_entry_for_overlap_trace(tokens, entry)
         self._supersede_contained_prefixes(tokens)
         self._evict_if_needed(protected_tokens=tokens)
         return entry
@@ -1226,18 +1914,24 @@ class SessionBank:
         )
 
     def clear(self, *, session_id: str | None = None) -> int:
-        if session_id is None:
-            count = len(self._entries)
-            self._entries.clear()
-            return count
-        victims = [
-            tokens
-            for tokens, entry in self._entries.items()
-            if entry.session_id == session_id
-        ]
-        for tokens in victims:
-            self._entries.pop(tokens, None)
-        return len(victims)
+        with self._overlap_trace_lock:
+            self._bank_epoch += 1
+            if session_id is None:
+                count = len(self._entries)
+                self._entries.clear()
+                self._overlap_entry_ordinals.clear()
+                self._overlap_entry_placements.clear()
+                return count
+            victims = [
+                tokens
+                for tokens, entry in self._entries.items()
+                if entry.session_id == session_id
+            ]
+            for tokens in victims:
+                self._entries.pop(tokens, None)
+                self._overlap_entry_ordinals.pop(tokens, None)
+                self._overlap_entry_placements.pop(tokens, None)
+            return len(victims)
 
     def archive_cold_tier(self) -> dict[str, Any]:
         if self.cold_tier is None:
@@ -1267,6 +1961,7 @@ class SessionBank:
             "last_restore_source": self.last_restore_source,
             "last_ssd_restore_s": self.last_ssd_restore_s,
             "last_prefix_diagnostic": self.last_prefix_diagnostic,
+            "overlap_trace": self._overlap_trace_summary(),
             "cold_tier": (
                 self.cold_tier.stats()
                 if self.cold_tier is not None and hasattr(self.cold_tier, "stats")
@@ -1458,7 +2153,7 @@ class SessionBank:
             restore_cache(mtp_history_cache, entry.mtp_history_snapshot)
         entry.hits += 1
         entry.last_access_s = time.time()
-        self._entries[entry.token_ids] = entry
+        self._set_entry_for_overlap_trace(entry.token_ids, entry)
         self._evict_if_needed(protected_tokens=entry.token_ids)
         self.last_restore_source = "ssd"
         self.last_ssd_restore_s = float(getattr(record, "restore_s", 0.0) or 0.0)
@@ -1631,11 +2326,16 @@ class SessionBank:
 
     def _evict_entry(self, entry: SessionBankEntry, *, reason: str) -> None:
         entry.eviction_reason = reason
-        if self._entries.pop(entry.token_ids, None) is None:
-            for key, value in list(self._entries.items()):
-                if value is entry:
-                    self._entries.pop(key, None)
-                    break
+        with self._overlap_trace_lock:
+            if self._entries.pop(entry.token_ids, None) is None:
+                for key, value in list(self._entries.items()):
+                    if value is entry:
+                        self._entries.pop(key, None)
+                        self._overlap_entry_ordinals.pop(key, None)
+                        self._overlap_entry_placements.pop(key, None)
+                        break
+            self._overlap_entry_ordinals.pop(entry.token_ids, None)
+            self._overlap_entry_placements.pop(entry.token_ids, None)
         self.eviction_log.append(
             {
                 "reason": reason,
