@@ -278,6 +278,75 @@ def bind_batched_top_k_distributions(
     return partial(_fixed_batched_top_k_distributions, **common)
 
 
+def _device_serial_support_arrays(
+    logits: mx.array,
+    config: SamplerConfig,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Deterministic device top-k support with device float32 mass.
+
+    Serial-lane numerics. Support selection shares the bound route's
+    deterministic device selector (cutoff ties keep lower vocabulary ids,
+    matching the dense float64 host reference exactly); probability mass for
+    top-p decisions uses the device float32 full-vocab logsumexp normalizer
+    (the 2.5.4 serial lineage), so only the k-token support ever crosses the
+    host boundary. Materializing full vocab rows on the host per sampled
+    token was a measured 15-19% serve-lane decode regression (2026-08-11
+    four-arm sweep). The cohort bound route keeps the float64 host
+    reference; b1-exact binds these serial runners themselves, so no
+    contract requires the two lanes to be bitwise-identical to each other.
+
+    Returns (token_rows [N,k] int64, prob_rows [N,k] float64 with top-p
+    dropped entries exactly zero, vocab_size). Non-finite logits surface as
+    non-finite prob rows for the caller's fallback.
+    """
+    rows = logits.reshape(-1, logits.shape[-1]).astype(mx.float32)
+    vocab_size = int(rows.shape[-1])
+    k = min(int(config.top_k), vocab_size)
+    scaled = rows * (1.0 / float(config.temperature))
+    _, top_idx, top_vals = _fixed_top_k_support(scaled, top_k=k)
+    if 0.0 < float(config.top_p) < 1.0:
+        log_total = mx.logsumexp(scaled, axis=-1, keepdims=True)
+        probs = mx.exp(top_vals - log_total)
+    else:
+        probs = mx.softmax(top_vals, axis=-1)
+    mx.eval(top_idx, probs)
+    token_rows = np.asarray(top_idx, dtype=np.int64)
+    prob_rows = np.asarray(probs, dtype=np.float64)
+    if 0.0 < float(config.top_p) < 1.0:
+        order = np.lexsort((token_rows, -prob_rows), axis=1)
+        token_rows = np.take_along_axis(token_rows, order, axis=1)
+        prob_rows = np.take_along_axis(prob_rows, order, axis=1)
+        cumulative_before = np.concatenate(
+            (
+                np.zeros((prob_rows.shape[0], 1), dtype=np.float64),
+                np.cumsum(prob_rows[:, :-1], axis=1),
+            ),
+            axis=1,
+        )
+        prob_rows = np.where(
+            cumulative_before < float(config.top_p), prob_rows, 0.0
+        )
+    return token_rows, prob_rows, vocab_size
+
+
+def _serial_row_distribution(
+    token_ids: np.ndarray,
+    probs: np.ndarray,
+    vocab_size: int,
+) -> SparseDistribution | None:
+    """One SparseDistribution from a serial support row; None on bad mass."""
+    keep = probs > 0
+    kept_ids = token_ids[keep]
+    kept_probs = probs[keep]
+    total = kept_probs.sum()
+    if not np.isfinite(total) or total <= 0:
+        return None
+    order = np.argsort(kept_ids)
+    kept_ids = kept_ids[order]
+    kept_probs = kept_probs[order] / total
+    return SparseDistribution(kept_ids, kept_probs, vocab_size)
+
+
 def sparse_distribution_from_mlx_logits(
     logits: mx.array,
     config: SamplerConfig,
@@ -288,9 +357,9 @@ def sparse_distribution_from_mlx_logits(
     """Return an exact sparse distribution for top-p then top-k sampling.
 
     The Qwen coding sampler uses `top_k=20`, so the final support can never be
-    larger than 20 tokens. The float32 logits cross one host boundary, then the
-    NumPy reference arithmetic defines top-p mass, top-k ties, and RNG ordering
-    identically for solo and cohort requests.
+    larger than 20 tokens. Selection and RNG ordering match the dense host
+    reference; mass is the serial lane's device float32 numerics
+    (see ``_device_serial_support_arrays``).
 
     ``token_counts`` (completion tokens seen so far, scoped by the caller) applies
     the additive presence/frequency penalty to the raw logits BEFORE the
@@ -310,6 +379,12 @@ def sparse_distribution_from_mlx_logits(
         penalty_overlay=penalty_overlay,
     )
     row = row.astype(mx.float32)
+    token_rows, prob_rows, vocab_size = _device_serial_support_arrays(row, config)
+    dist = _serial_row_distribution(token_rows[0], prob_rows[0], vocab_size)
+    if dist is not None:
+        return dist
+    # Non-finite mass (NaN/inf logits): keep the host reference's one-hot
+    # fallback semantics.
     mx.eval(row)
     return _host_sparse_distribution(np.asarray(row, dtype=np.float32), config)
 
@@ -329,9 +404,20 @@ def sparse_distributions_from_mlx_logits(
         return None
 
     rows = logits.reshape(-1, logits.shape[-1]).astype(mx.float32)
-    mx.eval(rows)
-    host_rows = np.asarray(rows, dtype=np.float32)
-    return [_host_sparse_distribution(row, config) for row in host_rows]
+    token_rows, prob_rows, vocab_size = _device_serial_support_arrays(rows, config)
+    host_rows: np.ndarray | None = None
+    distributions: list[SparseDistribution] = []
+    for index in range(token_rows.shape[0]):
+        dist = _serial_row_distribution(
+            token_rows[index], prob_rows[index], vocab_size
+        )
+        if dist is None:
+            if host_rows is None:
+                mx.eval(rows)
+                host_rows = np.asarray(rows, dtype=np.float32)
+            dist = _host_sparse_distribution(host_rows[index], config)
+        distributions.append(dist)
+    return distributions
 
 
 def batched_sparse_distributions_from_mlx_logits(
@@ -348,6 +434,13 @@ def batched_sparse_distributions_from_mlx_logits(
     k = min(int(config.top_k), vocab_size)
     if k <= 0:
         return None
+    token_rows, prob_rows, _ = _device_serial_support_arrays(rows, config)
+    try:
+        return BatchedSparseDistributions._from_execution_arrays(
+            token_rows, prob_rows, vocab_size=vocab_size
+        )
+    except FloatingPointError:
+        pass
     mx.eval(rows)
     distributions = [
         _host_sparse_distribution(row, config)
