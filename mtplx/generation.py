@@ -4859,30 +4859,75 @@ def _prefill_with_hidden_sequence(
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
 
+    # Partitioning contract: every cold-prefill lane must forward the prompt
+    # as chunked body + final token alone (M=1), exactly like _prefill and the
+    # sustained streaming lane. KV/GDN writes are GEMM-shape-sensitive at the
+    # bf16 ulp level, so a lane that folds the last token into the prompt
+    # window builds a cache that disagrees with generate_ar's by one ulp —
+    # enough to flip greedy argmax at a near-tie row and break temp-0
+    # AR/MTP exactness (Speed-V2 4886-vs-15705 flip, 2026-08-11).
     cache = _make_target_prefill_cache(rt)
-    prompt_array = mx.array([prompt_ids])
-    prompt_embeddings = None
-    if vision_splice is not None:
-        from mtplx.vision.splice import spliced_chunk_embeddings
+    target_forward_time = 0.0
+    final_logits_only = _final_logits_prefill_enabled()
+    hidden_parts: list = []
+    body = prompt_ids[:-1]
+    if body:
+        body_array = mx.array([body])
+        for start, end in _iter_prefill_chunk_spans(len(body)):
+            chunk_array = body_array[:, start:end]
+            chunk_embeddings = None
+            if vision_splice is not None:
+                from mtplx.vision.splice import spliced_chunk_embeddings
 
-        prompt_embeddings = spliced_chunk_embeddings(
-            rt.embed_tokens, prompt_array, vision_splice
+                chunk_embeddings = spliced_chunk_embeddings(
+                    rt.embed_tokens, chunk_array, vision_splice
+                )
+            started = time.perf_counter()
+            with attention_phase("prefill"):
+                chunk_logits, chunk_hidden = rt.forward_ar(
+                    chunk_array,
+                    cache=cache,
+                    return_hidden=True,
+                    hidden_variant=hidden_variant,
+                    emit_logits=not final_logits_only,
+                    input_embeddings=chunk_embeddings,
+                )
+            if chunk_logits is None:
+                _eval(chunk_hidden)
+            else:
+                _eval(chunk_logits, chunk_hidden)
+            _runtime_count(rt, "prefill_chunks")
+            target_forward_time += time.perf_counter() - started
+            target_forward_time += _prefill_chunk_cache_cleanup(rt)
+            hidden_parts.append(chunk_hidden)
+    if vision_splice is not None and vision_splice.remaining() > 0:
+        # Same contract as _prefill: the final prompt token is forwarded
+        # without embeddings, so it may never be an image pad slot.
+        raise ValueError(
+            "vision splice overflow: request supplied more vision rows "
+            f"({vision_splice.total_rows}) than image pad tokens in the "
+            "prompt body"
         )
     started = time.perf_counter()
     with attention_phase("prefill"):
-        logits, hidden = rt.forward_ar(
-            prompt_array,
+        logits, final_hidden = rt.forward_ar(
+            mx.array([[prompt_ids[-1]]]),
             cache=cache,
             return_hidden=True,
             hidden_variant=hidden_variant,
             emit_logits=True,
-            logits_keep=1 if _final_logits_prefill_enabled() else None,
-            input_embeddings=prompt_embeddings,
+            logits_keep=1 if final_logits_only else None,
         )
-    _eval(logits, hidden)
-    target_forward_time = time.perf_counter() - started
+    _eval(logits, final_hidden)
+    target_forward_time += time.perf_counter() - started
+    hidden_parts.append(final_hidden[:, -1:, :])
+    hidden = (
+        mx.concatenate(hidden_parts, axis=1)
+        if len(hidden_parts) > 1
+        else hidden_parts[0]
+    )
     target_forward_time += _maybe_repage_target_prefill_cache(rt, cache)
-    return cache, logits[:, -1, :], hidden[:, -1:, :], hidden, target_forward_time
+    return cache, logits[:, -1, :], final_hidden[:, -1:, :], hidden, target_forward_time
 
 
 def _mtp_cache_offset(mtp_cache) -> int:
