@@ -5922,6 +5922,141 @@ def test_streaming_long_content_first_write_survives_hidden_tool_guard(monkeypat
     assert final[-1]["mtplx_stats"]["tool_parse_success"] is True
 
 
+def _tool_history_messages() -> list[dict]:
+    """History with a prior tool call + result: arms the orphan stream guard
+    (`tools_active and tool_result_history_present`), the #249 precondition."""
+    return [
+        {"role": "user", "content": "Read the file then write the fix."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": '{"filePath":"src/App.ts"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_read",
+            "content": '{"content":"export default 0"}',
+        },
+    ]
+
+
+def test_streaming_tool_args_not_duplicated_into_content_with_tool_history(
+    monkeypatch,
+):
+    """#249 (nol166): with a prior tool call + result in history, the streamed
+    tool markup lands in the orphan guard; its stripped remainder is the
+    argument VALUES and must not be forwarded to delta.content once the tool
+    parser claims the span — the tool_calls channel already carries them."""
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.args.stream_interval = 1
+    state.args.stats_footer = False
+    client = TestClient(create_app(state))
+    file_body = "const total = add(2, 3)\nexport default total"
+    text = (
+        "<tool_call>\n<function=write>\n"
+        "<parameter=filePath>\nsrc/App.ts\n</parameter>\n"
+        f"<parameter=content>\n{file_body}\n</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    monkeypatch.setattr(openai, "_run_generation", _fake_streaming_generation(text))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "messages": _tool_history_messages(),
+            "tools": [_write_tool_schema()],
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 512,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    payloads = _stream_payloads(body)
+    deltas = [
+        choice.get("delta", {})
+        for payload in payloads
+        for choice in payload.get("choices", [])
+    ]
+    arguments = "".join(
+        item.get("function", {}).get("arguments", "")
+        for delta in deltas
+        for item in delta.get("tool_calls", [])
+    )
+    parsed = json.loads(arguments)
+    assert parsed["content"] == file_body
+    assert parsed["filePath"] == "src/App.ts"
+    content = "".join(delta.get("content", "") or "" for delta in deltas)
+    reasoning = "".join(delta.get("reasoning_content", "") or "" for delta in deltas)
+    assert "const total = add(2, 3)" not in content
+    assert "src/App.ts" not in content
+    assert content.strip() == ""
+    assert reasoning == ""
+    final = [
+        payload
+        for payload in payloads
+        if payload.get("choices") and payload["choices"][0].get("finish_reason")
+    ]
+    assert final[-1]["choices"][0]["finish_reason"] == "tool_calls"
+    assert final[-1]["mtplx_stats"]["raw_tool_markup_suppressed"] is True
+
+
+def test_streaming_orphan_prose_remainder_still_surfaces_without_tool_call(
+    monkeypatch,
+):
+    """The protective half of the #249 fix: when no tool call claims the span,
+    an orphan fragment's stripped remainder is real prose and still surfaces
+    as content instead of being swallowed."""
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.args.stream_interval = 1
+    state.args.stats_footer = False
+    client = TestClient(create_app(state))
+    text = "</tool_call>\nRefactored the loop and verified the build."
+    monkeypatch.setattr(openai, "_run_generation", _fake_streaming_generation(text))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"x-mtplx-cache-mode": "bypass"},
+        json={
+            "messages": _tool_history_messages(),
+            "tools": [_write_tool_schema()],
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 512,
+            # Keeps the reasoning-only repair out of the fixture so the guard
+            # path is exercised in isolation (single generation pass).
+            "enable_thinking": False,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    payloads = _stream_payloads(body)
+    content = "".join(
+        choice.get("delta", {}).get("content", "") or ""
+        for payload in payloads
+        for choice in payload.get("choices", [])
+    )
+    assert "</tool_call>" not in content
+    assert content.strip() == "Refactored the loop and verified the build."
+    assert content.count("Refactored the loop") == 1
+
+
 def test_chat_stream_recovers_reasoning_only_completion_without_repair(monkeypatch):
     state = _fake_streaming_session_state()
     state.args.stats_footer = False

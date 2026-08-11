@@ -4843,6 +4843,7 @@ class _InitialOrphanToolControlStreamGuard:
     def __init__(self) -> None:
         self._buffer = ""
         self._mode = "undecided"
+        self._orphan_remainder = ""
         self.suppressed = False
 
     def feed(self, text: str) -> str:
@@ -4873,11 +4874,23 @@ class _InitialOrphanToolControlStreamGuard:
         self._buffer = ""
         if self._mode == "orphan":
             self.suppressed = True
-            if _looks_like_tool_control_payload_only(buffered):
-                return ""
-            return _strip_orphan_tool_control_markup(buffered)
+            if not _looks_like_tool_control_payload_only(buffered):
+                # Issue #249: the stripped remainder of an orphan fragment is
+                # usually a tool call's argument VALUES — forwarding it here
+                # duplicated them into delta.content while the end-of-stream
+                # extraction separately emitted the correct tool_calls.
+                # Whether the remainder may reach the content channel depends
+                # on whether the tool parser claims the span, a fact only
+                # known after extraction, so the caller collects it via
+                # take_orphan_remainder() and decides then.
+                self._orphan_remainder = _strip_orphan_tool_control_markup(buffered)
+            return ""
         self._mode = "pass"
         return buffered
+
+    def take_orphan_remainder(self) -> str:
+        remainder, self._orphan_remainder = self._orphan_remainder, ""
+        return remainder
 
 
 def _tool_parse_counters_for(state: Any) -> dict[str, int] | None:
@@ -24870,6 +24883,9 @@ def create_app(state: ServerState) -> FastAPI:
                 orphan_reasoning_stream_guard = _InitialOrphanToolControlStreamGuard()
                 orphan_content_stream_guard = _InitialOrphanToolControlStreamGuard()
                 stream_orphan_tool_markup_suppressed = False
+                # (field, stripped remainder) from orphan-mode guards, held
+                # until tool extraction decides their fate (#249).
+                deferred_orphan_stream_remainders: list[tuple[str, str]] = []
                 pending_stream_tokens: list[int] = []
                 commit_event = Event()
                 commit_state = {
@@ -25207,6 +25223,10 @@ def create_app(state: ServerState) -> FastAPI:
                             ),
                         }
                     )
+                    # The repair re-streams through the same guard objects; an
+                    # orphan-mode guard still holding the first pass would
+                    # accumulate both passes and emit the remainder twice.
+                    queue.put(("reset_orphan_stream_guards", None))
                     queue.put(("close_unclosed_reasoning_for_repair", None))
                     retry_generated = _run_generation_dispatched(
                         state,
@@ -26070,6 +26090,7 @@ def create_app(state: ServerState) -> FastAPI:
                         _InitialOrphanToolControlStreamGuard()
                     )
                     orphan_content_stream_guard = _InitialOrphanToolControlStreamGuard()
+                    deferred_orphan_stream_remainders.clear()
 
                 def apply_orphan_stream_guard(field: str, text: str) -> str:
                     nonlocal stream_orphan_tool_markup_suppressed
@@ -26221,6 +26242,11 @@ def create_app(state: ServerState) -> FastAPI:
                         flushed = guard.finish()
                         if guard.suppressed:
                             stream_orphan_tool_markup_suppressed = True
+                        remainder = guard.take_orphan_remainder()
+                        if remainder:
+                            deferred_orphan_stream_remainders.append(
+                                (field, remainder)
+                            )
                         if not flushed:
                             continue
                         chunks.extend(
@@ -26800,6 +26826,27 @@ def create_app(state: ServerState) -> FastAPI:
                                 if extraction is not None
                                 else None
                             )
+                            if deferred_orphan_stream_remainders:
+                                deferred_remainders = list(
+                                    deferred_orphan_stream_remainders
+                                )
+                                deferred_orphan_stream_remainders.clear()
+                                # A parser-claimed span means the stripped
+                                # remainder is the tool call's argument values
+                                # — emitting it duplicated them into
+                                # delta.content (#249). Only a turn with no
+                                # tool call gets its remainder forwarded, as
+                                # genuinely visible prose wrapped in stray
+                                # markup.
+                                if not assistant_tool_calls:
+                                    for field, remainder in deferred_remainders:
+                                        for chunk in stream_content_delta_chunks(
+                                            field,
+                                            remainder,
+                                            use_orphan_guard=False,
+                                            use_tool_translator=False,
+                                        ):
+                                            yield mark_sse_sent(chunk)
                             if content_tool_translator is not None:
                                 for (
                                     delta
