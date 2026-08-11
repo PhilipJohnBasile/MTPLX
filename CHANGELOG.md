@@ -94,6 +94,41 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Prefix restores no longer corrupt the session bank (#247).** Since the
+  zero-copy cache work, restoring a banked prefix installed the entry's own
+  KV state objects into the borrowing request's cache; the borrower's suffix
+  prefill and decode then wrote in place into pages the entry still
+  referenced. An interleaved near-prefix request could silently rewrite a
+  neighbour's banked span, and every later match served the poisoned pages,
+  so a byte-identical repeat could answer under another request's system
+  prompt. Restores now install fresh zero-copy views: the entry's stored
+  state can no longer be written through, the borrower's first divergent
+  write pays the single deferred copy the design always intended, and
+  commits stay zero-copy. Reproduced and fixed from the reporter's
+  reproducer, which ships as a regression test.
+
+- **Streaming tool calls no longer duplicate argument values into `content`
+  (#249).** When streaming with a prior tool call and result in history, the
+  initial-fragment guard stripped tool markup and forwarded the remainder,
+  which is the tool call's argument values, into `delta.content`, while the
+  parser separately emitted the correct `tool_calls`. Clients then echoed the
+  duplicated text back into context on every turn. Orphan remainders are now
+  held until tool extraction resolves: a parser-claimed span is dropped, and
+  only genuinely visible prose wrapped in stray markup still surfaces.
+
+- **Solo requests with penalties answer on the composite scheduler.** A solo
+  request carrying `presence_penalty` or `frequency_penalty` on the
+  `mtp_batch` daemon hit the compiled lane's sampler validator and returned
+  HTTP 500, while penalty cohorts already fell back to the host route. Solo
+  penalty requests now steer to the same host lane up front.
+
+- **`qwen3_5_mtp` checkpoints validate and serve again.** The injector
+  attached the MTP surface to the outer model wrapper while validation
+  inspects the inner TextModel, so validation failed and the forward pass
+  crashed. The surface now lives on the TextModel and is re-exposed on the
+  outer wrapper by delegation. Cherry-picked from PR #242 (thanks @davidtai)
+  together with its hermetic regression test.
+
 - **Artifacts launch at their measured depth again.** The typed runtime
   contract kept only its schema fields, which silently dropped the
   measured-depth map and every artifact's declared depth default — so
@@ -128,6 +163,49 @@ All notable user-facing changes to MTPLX. The format is based on
   closed instead of corrupting the row; completed streams no longer starve
   behind still-running neighbours; and the vendored Metal shader cache is
   keyed by MLX ABI so an MLX upgrade cannot serve stale compiled kernels.
+
+## [2.5.4] - 2026-08-07
+
+Agent sessions got the attention this cycle. If you drive MTPLX from Pi,
+OpenCode, or any tool-calling client, warm turns now stay warm. (This section
+was backfilled from the GitHub release notes, which carry the full narrative.)
+
+### Fixed
+
+- **Warm-turn cache reuse in agent sessions.** Tool rounds carried a short
+  transient hint that shifted the cached prefix by ~200 tokens per turn; the
+  engine now records the stable boundary and restores from it directly. A
+  postcommit within a bounded 0.6s of finishing is now awaited instead of
+  discarded (a measured 1,449-token re-prefill became 436 tokens, cutting
+  that turn's time-to-first-token from 2.7s to 1.1s). Background SSD cache
+  maintenance no longer drains ahead of a starting turn (the unexplained
+  ~0.8s stall at turn start), and the SSD tier skips hydrating candidates
+  that cannot beat a fresher in-RAM match.
+- **The session cache says what it is doing (#229, and the observability half
+  of #230).** The daemon prints the resolved cache budget at startup with the
+  override variables; outgrowing the per-session cap warns once with the
+  numbers and the setting that raises the ceiling; `MTPLX_SESSION_BANK_MAX_BYTES`
+  parses "8G"/"8GB"/"8GiB" and warns on unparseable values; the app no longer
+  drops explicit cache sizes set in Settings under the "target default"
+  policy.
+- **Long-context decode on 32k+ sessions (#228).** The app forced a
+  paged-attention route at 32k with launch-day thresholds that were never
+  re-measured; reporters measured 4-7x slower decode at 43k. The app now
+  defers to the engine's measured thresholds (64k on current kernels).
+- **Vision sessions.** The near-prefix restore lane is capped at the first
+  image token, so it can never resurrect cache computed from a different
+  image's pixels.
+- **Adaptive depth engages when it should.** The expected-value policy's cost
+  constants now reflect measured reality on current kernels; depth-3 drafting
+  fired on 13% of eligible rounds despite 65% acceptance.
+
+### Added
+
+- **`mtplx serve --no-auth` (#235).** Explicit auth off-switch for localhost
+  binds; non-localhost binds still require a key.
+- **llama.cpp-style `timings` object (#237).** Chat completion responses can
+  include prompt/decode throughput for clients that read it from the response
+  body (contributed).
 
 ## [2.5.3] - 2026-08-06
 
