@@ -3113,6 +3113,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_p.add_argument("--host", default="127.0.0.1")
     serve_p.add_argument("--port", type=int, default=8000)
+    serve_p.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable API-key auth for localhost binds (non-localhost still requires a key)",
+    )
     serve_p.add_argument("--depth", type=int, default=3)
     _add_mtp_toggle_args(serve_p)
     serve_p.add_argument(

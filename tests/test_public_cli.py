@@ -1186,6 +1186,30 @@ def test_serve_forwards_retrieval_flags_to_the_server_command(
     assert "--retrieval-trust-remote-code" in command
 
 
+def test_serve_no_auth_parses_and_forwards(monkeypatch, tmp_path, capsys):
+    """`mtplx serve --no-auth` — the exact spelling the 2.5.4 notes promised
+    (#235) — must parse at the public CLI and reach the server subprocess.
+    It previously existed only on the server module's parser, so the promised
+    command died with an argparse error before any handler ran."""
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
+    model_dir = tmp_path / "example-model"
+    model_dir.mkdir()
+    payload = _serve_dry_run_payload_for_model(
+        monkeypatch, capsys, model_dir, extra_args=("--no-auth",)
+    )
+    assert "--no-auth" in payload["server_command"]
+
+
+def test_serve_no_auth_still_requires_key_off_localhost(monkeypatch, tmp_path):
+    """--no-auth is a localhost convenience only: a non-localhost bind without
+    a key still refuses, exactly as the #235 close promised."""
+    monkeypatch.setattr(public, "_serve_should_onboard", lambda _args: False)
+    args = build_parser().parse_args(
+        ["serve", "--model", str(tmp_path), "--host", "0.0.0.0", "--no-auth", "--yes"]
+    )
+    assert public.cmd_serve_public(args) == 2
+
+
 def test_serve_does_not_grant_remote_code_trust_by_default(
     monkeypatch, tmp_path, capsys
 ):

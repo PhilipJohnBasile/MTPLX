@@ -8685,6 +8685,11 @@ def cmd_serve_public(args: Any) -> int:
             cmd.extend([flag, str(value)])
     if bool(getattr(args, "retrieval_trust_remote_code", False)):
         cmd.append("--retrieval-trust-remote-code")
+    # The 2.5.4 notes promised `mtplx serve --no-auth`; the flag lived only on
+    # the server module's parser until this forward existed, so the promised
+    # spelling died at this parser with an argparse error.
+    if bool(getattr(args, "no_auth", False)):
+        cmd.append("--no-auth")
     # The chat model is already an absolute path by this point, but retrieval
     # references are resolved inside the server, which has no cache directory
     # of its own — so a model pulled into a custom --cache-dir would not be

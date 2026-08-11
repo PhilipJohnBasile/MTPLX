@@ -122,6 +122,13 @@ All notable user-facing changes to MTPLX. The format is based on
   HTTP 500, while penalty cohorts already fell back to the host route. Solo
   penalty requests now steer to the same host lane up front.
 
+- **`mtplx serve --no-auth` actually parses (#235 follow-through).** The
+  2.5.4 notes promised that exact spelling, but the flag existed only on the
+  internal server module's parser; the public `mtplx serve` command rejected
+  it with an argparse error before anything ran. The flag now parses on
+  `serve` and is forwarded to the server. Non-localhost binds still require
+  a key.
+
 - **`qwen3_5_mtp` checkpoints validate and serve again.** The injector
   attached the MTP surface to the outer model wrapper while validation
   inspects the inner TextModel, so validation failed and the forward pass
