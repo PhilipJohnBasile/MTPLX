@@ -105,6 +105,16 @@ All notable user-facing changes to MTPLX. The format is based on
   Speed V2 artifact, which surfaced the flip, passes its greedy exactness
   gate at every depth again.
 
+- **Single-request decode speed under sampling recovered.** The eight-way
+  sampling unification routed the single-request lane's per-token sampling
+  through a full-vocabulary host reference (a NumPy partition and float64
+  softmax over 248k logits per sampled token), which measured as a 15-19%
+  decode regression against 2.5.4 on the serving lane. The single-request
+  lane now selects its top-k support on device with the same deterministic
+  tie-breaking as the batched route and moves only those k tokens to the
+  host. The batched cohort lanes keep their float64 host reference
+  unchanged.
+
 - **Prefix restores no longer corrupt the session bank (#247).** Since the
   zero-copy cache work, restoring a banked prefix installed the entry's own
   KV state objects into the borrowing request's cache; the borrower's suffix
