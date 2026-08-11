@@ -6271,15 +6271,26 @@ def generate_mtpk(
     from .context_copy import (
         context_copy_target_prefix_enabled as _cc_tp_enabled_early,
     )
+    _penalty_bearing_request = bool(sampler.presence_penalty) or bool(
+        sampler.frequency_penalty
+    )
     _ccopy_takes_over_lane = (
         target_prefix_verify
         and _cc_tp_enabled_early()
-        and not (bool(sampler.presence_penalty) or bool(sampler.frequency_penalty))
+        and not _penalty_bearing_request
         and not bool(getattr(rt, "a3b_whole_moe_installed", False))
     )
+    # Penalties are host-side sampler state (running token counts) that neither
+    # the ccopy takeover nor the compiled device-draft contract carries. Steer
+    # penalty-bearing requests to the eager host lane up front: letting them
+    # fall onto the compiled route hard-fails its sampler validator (solo
+    # requests 500'd on the composite daemon while penalty cohorts already took
+    # the batch scheduler's dense host fallback).
     exact_a3b_target_prefix_factory = (
         rt.a3b_compiled_target_prefix_factory
-        if target_prefix_verify and constraint is None and not _ccopy_takes_over_lane
+        if target_prefix_verify and constraint is None
+        and not _ccopy_takes_over_lane
+        and not _penalty_bearing_request
         else None
     )
     exact_a3b_target_prefix = exact_a3b_target_prefix_factory is not None

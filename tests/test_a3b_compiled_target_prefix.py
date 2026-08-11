@@ -798,3 +798,31 @@ def test_generation_exact_route_never_engages_under_grammar_constraint() -> None
         source.index("if rejection_correction is not None:", rejection_start)
     ]
     assert "committed.append(rejection_correction)" in exact_repair_block
+
+
+def test_generation_exact_route_never_engages_with_penalties() -> None:
+    """Penalties are host-side sampler state (running token counts). The
+    compiled device-draft validator hard-fails on them, so a penalty-bearing
+    request must steer to the eager host lane instead of the compiled route.
+    Regression: a solo presence_penalty request on the composite daemon
+    answered HTTP 500 (A3BCompiledTargetPrefixConfigError) because losing the
+    ccopy takeover dropped it onto the compiled factory — while a penalty
+    cohort worked fine via the batch scheduler's dense host fallback."""
+    from mtplx import generation
+
+    source = inspect.getsource(generation.generate_mtpk)
+    assert "_penalty_bearing_request = bool(sampler.presence_penalty) or bool(" in source
+    factory_block = source[
+        source.index("exact_a3b_target_prefix_factory = (") : source.index(
+            "exact_a3b_target_prefix = "
+        )
+    ]
+    assert "and not _penalty_bearing_request" in factory_block
+    # The ccopy takeover keeps its own penalty gate; both lanes decline and the
+    # request lands on the host target-prefix path, which samples penalties.
+    ccopy_block = source[
+        source.index("_ccopy_takes_over_lane = (") : source.index(
+            "exact_a3b_target_prefix_factory = ("
+        )
+    ]
+    assert "not _penalty_bearing_request" in ccopy_block
