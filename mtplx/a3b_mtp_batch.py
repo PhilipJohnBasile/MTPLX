@@ -25,6 +25,15 @@ from typing import Any
 import numpy as np
 import mlx.core as mx
 from mlx_lm.models.base import scaled_dot_product_attention
+
+from mtplx.arrays_cache_patch import install_arrays_cache_fix
+
+# The vendored ArraysCache leak fix must land before this module captures the
+# class name: importing first freezes the stock class into every later
+# reference here (probe, shadow lanes, merge tables), which is exactly how the
+# probe passed in full-battery order yet failed standalone. Idempotent.
+install_arrays_cache_fix()
+
 from mlx_lm.models.cache import ArraysCache
 
 from mtplx.artifacts import load_config
@@ -245,10 +254,12 @@ def _require_mlx_lm_arrays_cache_fix() -> None:
     environment where even the vendored install failed.
     """
 
-    from mtplx.arrays_cache_patch import install_arrays_cache_fix
-
     install_arrays_cache_fix()
-    cache = ArraysCache(1)
+    # Probe the *current* mlx_lm binding, not this module's import-time
+    # capture — the model side constructs caches through that binding.
+    from mlx_lm.models.cache import ArraysCache as _installed_arrays_cache
+
+    cache = _installed_arrays_cache(1)
     if hasattr(cache, "_lp_advance") and hasattr(cache, "_len_advance"):
         return
     python = shlex.quote(sys.executable)

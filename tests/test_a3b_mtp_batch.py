@@ -495,13 +495,19 @@ def test_throughput_contract_scales_geometry_checks_with_report_width():
 
 
 def test_installer_rejects_mlx_lm_without_arrays_cache_fix(tmp_path, monkeypatch):
+    import mlx_lm.models.cache as mlx_lm_cache
+
     import mtplx.a3b_mtp_batch as module
 
     class ReleasedArraysCache:
         def __init__(self, _size):
             pass
 
-    monkeypatch.setattr(module, "ArraysCache", ReleasedArraysCache)
+    # Simulate the broken environment at the layer the probe verifies: the
+    # live mlx_lm binding stays stock and the vendored installer cannot repair
+    # it. (The probe deliberately ignores this module's import-time capture.)
+    monkeypatch.setattr(module, "install_arrays_cache_fix", lambda: "noop")
+    monkeypatch.setattr(mlx_lm_cache, "ArraysCache", ReleasedArraysCache)
 
     with pytest.raises(module.A3BMTPBatchInstallError) as exc_info:
         module.install_a3b_mtp_batch_lane(
