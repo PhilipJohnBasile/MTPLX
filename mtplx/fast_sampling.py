@@ -303,19 +303,47 @@ def _device_serial_support_arrays(
     vocab_size = int(rows.shape[-1])
     k = min(int(config.top_k), vocab_size)
     scaled = rows * (1.0 / float(config.temperature))
-    _, top_idx, top_vals = _fixed_top_k_support(scaled, top_k=k)
-    if 0.0 < float(config.top_p) < 1.0:
+
+    # Hot path: ONE device argpartition to an M=4k candidate superset, then
+    # exact deterministic selection on the host over M values. In-loop this
+    # is ~5 kernel launches against the deterministic device selector's ~12
+    # (measured +0.25 ms/token inside the busy decode stream, 2026-08-11).
+    # A cutoff tie can only be truncated if a token OUTSIDE the candidate
+    # set ties the k-th selected value, and argpartition guarantees every
+    # outside token is <= the candidate minimum — so min(candidates) ==
+    # cutoff is the exact spillover condition, and those rows fall back to
+    # the deterministic device selector.
+    m = min(max(4 * k, k), vocab_size)
+    cand_idx = mx.argpartition(-scaled, kth=m - 1, axis=-1)[:, :m]
+    cand_vals = mx.take_along_axis(scaled, cand_idx, axis=-1)
+    top_p_active = 0.0 < float(config.top_p) < 1.0
+    if top_p_active:
         log_total = mx.logsumexp(scaled, axis=-1, keepdims=True)
-        probs = mx.exp(top_vals - log_total)
+        cand_probs = mx.exp(cand_vals - log_total)
+        mx.eval(cand_idx, cand_vals, cand_probs)
+        cand_prob_rows = np.asarray(cand_probs, dtype=np.float64)
     else:
-        probs = mx.softmax(top_vals, axis=-1)
-    mx.eval(top_idx, probs)
-    token_rows = np.asarray(top_idx, dtype=np.int64)
-    prob_rows = np.asarray(probs, dtype=np.float64)
-    if 0.0 < float(config.top_p) < 1.0:
-        order = np.lexsort((token_rows, -prob_rows), axis=1)
-        token_rows = np.take_along_axis(token_rows, order, axis=1)
-        prob_rows = np.take_along_axis(prob_rows, order, axis=1)
+        mx.eval(cand_idx, cand_vals)
+        cand_prob_rows = None
+    cand_ids = np.asarray(cand_idx, dtype=np.int64)
+    cand_val_rows = np.asarray(cand_vals, dtype=np.float32)
+
+    # Deterministic selection: value desc, then id asc — the same contract
+    # as _deterministic_mlx_top_k_support and the dense host reference.
+    order = np.lexsort((cand_ids, -cand_val_rows), axis=1)
+    cand_ids = np.take_along_axis(cand_ids, order, axis=1)
+    cand_val_rows = np.take_along_axis(cand_val_rows, order, axis=1)
+    if cand_prob_rows is not None:
+        cand_prob_rows = np.take_along_axis(cand_prob_rows, order, axis=1)
+    token_rows = cand_ids[:, :k]
+    if m > k:
+        cutoff = cand_val_rows[:, k - 1]
+        spill = np.nanmin(cand_val_rows, axis=1) >= cutoff
+    else:
+        spill = np.zeros(cand_ids.shape[0], dtype=bool)
+
+    if top_p_active:
+        prob_rows = cand_prob_rows[:, :k].copy()
         cumulative_before = np.concatenate(
             (
                 np.zeros((prob_rows.shape[0], 1), dtype=np.float64),
@@ -326,6 +354,43 @@ def _device_serial_support_arrays(
         prob_rows = np.where(
             cumulative_before < float(config.top_p), prob_rows, 0.0
         )
+    else:
+        vals64 = cand_val_rows[:, :k].astype(np.float64)
+        vals64 -= np.max(vals64, axis=1, keepdims=True)
+        prob_rows = np.exp(vals64)
+        prob_rows /= np.sum(prob_rows, axis=1, keepdims=True)
+        # Support order for top_p >= 1 stays value-desc (already sorted).
+
+    if spill.any():
+        # Exact path for rows whose cutoff tie group may extend beyond the
+        # candidate superset.
+        _, exact_idx, exact_vals = _fixed_top_k_support(scaled, top_k=k)
+        if top_p_active:
+            exact_probs = mx.exp(
+                exact_vals - mx.logsumexp(scaled, axis=-1, keepdims=True)
+            )
+        else:
+            exact_probs = mx.softmax(exact_vals, axis=-1)
+        mx.eval(exact_idx, exact_probs)
+        exact_ids = np.asarray(exact_idx, dtype=np.int64)
+        exact_prob_rows = np.asarray(exact_probs, dtype=np.float64)
+        if top_p_active:
+            ex_order = np.lexsort((exact_ids, -exact_prob_rows), axis=1)
+            exact_ids = np.take_along_axis(exact_ids, ex_order, axis=1)
+            exact_prob_rows = np.take_along_axis(exact_prob_rows, ex_order, axis=1)
+            ex_before = np.concatenate(
+                (
+                    np.zeros((exact_prob_rows.shape[0], 1), dtype=np.float64),
+                    np.cumsum(exact_prob_rows[:, :-1], axis=1),
+                ),
+                axis=1,
+            )
+            exact_prob_rows = np.where(
+                ex_before < float(config.top_p), exact_prob_rows, 0.0
+            )
+        token_rows = np.where(spill[:, None], exact_ids, token_rows)
+        prob_rows = np.where(spill[:, None], exact_prob_rows, prob_rows)
+
     return token_rows, prob_rows, vocab_size
 
 
