@@ -4090,7 +4090,10 @@ def test_chat_tools_are_passed_to_qwen_template_and_inherit_default_thinking(
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
-    state.args.reasoning_parser = "gemma4"
+    # Family-resolved parser, as start/serve set it. A set parser is
+    # authoritative (the codec no longer overrides it); precedence itself is
+    # covered in test_scoped_reasoning_history.py.
+    state.args.reasoning_parser = "qwen3"
     client = TestClient(create_app(state))
     seen: dict[str, object] = {}
 
