@@ -233,6 +233,8 @@ def inject_qwen3_5_mtp_support(
     from mlx_lm.models.cache import KVCache
     from mlx_lm.models.qwen3_5 import TextModelArgs
 
+    from .mtp_patch import _text_model
+
     if not is_qwen3_5_mtp_config(config):
         return False
 
@@ -245,21 +247,34 @@ def inject_qwen3_5_mtp_support(
         logger.warning("[Qwen3.5 MTP inject] no mtp.* weights found in %s", model_path)
         return False
 
+    # Operate at the qwen3_5 *TextModel* level (``.model`` inner trunk +
+    # ``.lm_head``), which is what ``_text_model`` returns and what
+    # ``validate_mtp_support`` inspects. For the standard mlx-lm outer
+    # ``qwen3_5_moe.Model`` this is ``model.language_model``; for a bare
+    # TextModel it is ``model`` itself. The MTP surface lives here so ``.mtp``
+    # sits where validate looks, and a thin delegating wrapper (below)
+    # re-exposes it on the outer model the runtime actually holds. The
+    # previous code set ``.mtp`` on the outer model and mixed
+    # TextModel-level ``self.model`` with outer-level
+    # ``self.language_model.lm_head`` on one object, so validate failed and
+    # forward hit AttributeError. (Cherry-picked from PR #242, davidtai.)
+    text_model = _text_model(model)
+
     mtp = _make_qwen3_5_mtp_module(args)
     _quantize_like_trunk(mtp, config, contract)
     _validate_load_coverage(mtp, weights)
     mtp.load_weights(list(weights.items()), strict=True)
     mx.eval(mtp.parameters())
 
-    model.mtp = mtp
-    model._mtplx_hidden_variant = "pre_norm"
-    model._mtplx_concat_order = "embedding_hidden"
+    text_model.mtp = mtp
+    text_model._mtplx_hidden_variant = "pre_norm"
+    text_model._mtplx_concat_order = "embedding_hidden"
 
-    original_class = model.__class__
+    original_text_class = text_model.__class__
 
-    class _MTPLXQwen35Model(original_class):
+    class _MTPLXQwen35TextModel(original_text_class):
         def _lm_logits(self, h):
-            lm = getattr(self.language_model, "lm_head", None)
+            lm = getattr(self, "lm_head", None)
             if lm is not None:
                 return lm(h)
             return self.model.embed_tokens.as_linear(h)
@@ -280,7 +295,7 @@ def inject_qwen3_5_mtp_support(
             # Expose the pre-final-norm residual stream: Qwen3_5TextModel applies
             # ``self.norm`` before returning, so temporarily swap it for identity
             # (avoids re-running the hybrid linear/full attention layer loop).
-            inner = self.model  # Qwen3_5TextModel (outer Model.model property)
+            inner = self.model  # Qwen3_5TextModel (the inner trunk)
             real_norm = inner.norm
             try:
                 inner.norm = lambda x: x
@@ -341,7 +356,46 @@ def inject_qwen3_5_mtp_support(
         def make_mtp_cache(self):
             return [KVCache()]
 
-    model.__class__ = _MTPLXQwen35Model
+    text_model.__class__ = _MTPLXQwen35TextModel
+
+    # The runtime holds the outer model (``self.model`` in MTPLXRuntime). When
+    # that is the mlx-lm ``qwen3_5_moe.Model`` wrapper, re-expose the MTP
+    # surface on it by delegating to the patched TextModel — same pattern as
+    # the generic ``inject_mtp_support``.
+    if getattr(model, "language_model", None) is text_model:
+        model.mtp = mtp
+        original_outer_class = model.__class__
+
+        class _MTPLXQwen35OuterModel(original_outer_class):
+            def __call__(
+                self,
+                inputs,
+                cache=None,
+                return_hidden: bool = False,
+                input_embeddings=None,
+                hidden_variant: str | None = None,
+                **kwargs,
+            ):
+                return self.language_model(
+                    inputs,
+                    cache=cache,
+                    return_hidden=return_hidden,
+                    input_embeddings=input_embeddings,
+                    hidden_variant=hidden_variant,
+                    **kwargs,
+                )
+
+            def mtp_forward(self, *args, **kwargs):
+                return self.language_model.mtp_forward(*args, **kwargs)
+
+            def mtp_update_cache(self, *args, **kwargs):
+                return self.language_model.mtp_update_cache(*args, **kwargs)
+
+            def make_mtp_cache(self):
+                return self.language_model.make_mtp_cache()
+
+        model.__class__ = _MTPLXQwen35OuterModel
+
     logger.info(
         "[Qwen3.5 MTP inject] native head bound (depth 1, %d tensors) for %s",
         len(weights),
