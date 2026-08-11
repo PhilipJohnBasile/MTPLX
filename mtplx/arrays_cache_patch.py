@@ -28,6 +28,11 @@ UPSTREAM_FIXED = "upstream_fixed"
 VENDORED_INSTALLED = "vendored_installed"
 ALREADY_INSTALLED = "already_installed"
 
+# The class the vendored install replaced, kept so leak-proof harnesses can
+# still reach the genuine stock behavior after the rebind — installs may now
+# happen as early as module import, before any test module snapshots it.
+STOCK_ARRAYS_CACHE: type | None = None
+
 
 def install_arrays_cache_fix() -> str:
     """Make ``mlx_lm.models.cache.ArraysCache`` leak-free. Idempotent.
@@ -52,6 +57,8 @@ def install_arrays_cache_fix() -> str:
     if hasattr(probe, "_lp_advance") and hasattr(probe, "_len_advance"):
         return UPSTREAM_FIXED
 
+    global STOCK_ARRAYS_CACHE
+    STOCK_ARRAYS_CACHE = current
     cache_module.ArraysCache = FixedArraysCache
     # save_prompt_cache records type(c).__name__ and load_prompt_cache
     # resolves it via this module's globals(); make "FixedArraysCache"

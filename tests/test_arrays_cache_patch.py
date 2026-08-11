@@ -42,10 +42,21 @@ from mtplx.vendored_arrays_cache import FixedArraysCache
 
 # Snapshot the pre-install state of the process. On the stock venv this is
 # the broken class; on a natively fixed mlx-lm it is the upstream fixed
-# class; and if some earlier test in the same process already installed
-# the vendored fix, it is FixedArraysCache itself.
+# class; and if the vendored fix installed before this module imported
+# (a3b_mtp_batch installs at import, and pytest collection imports it
+# first), recover the genuine stock class the installer preserved so the
+# leak-proof negative control keeps measuring real stock behavior.
+from mtplx import arrays_cache_patch as _patch_module
+
 _STOCK_CLASS = cache_module.ArraysCache
 _VENDORED_PREINSTALLED = _STOCK_CLASS is FixedArraysCache
+if _VENDORED_PREINSTALLED:
+    _preserved = getattr(_patch_module, "STOCK_ARRAYS_CACHE", None)
+    if _preserved is not None and _preserved is not FixedArraysCache:
+        # Keep _VENDORED_PREINSTALLED truthful (install-order assertions key
+        # on it); only the measurement target swaps to the genuine stock
+        # class so the leak negative control stays meaningful.
+        _STOCK_CLASS = _preserved
 _probe = _STOCK_CLASS(1)
 UPSTREAM_NATIVELY_FIXED = (
     not _VENDORED_PREINSTALLED
@@ -156,15 +167,20 @@ def test_installer_reports_upstream_fixed():
 def test_installer_state_transitions():
     """stock -> vendored_installed -> already_installed, with rebinding."""
     _skip_unless_stock()
-    first_in_process = not _install_results
-    if first_in_process and not _VENDORED_PREINSTALLED:
+    # "No install yet" must be judged process-wide, not per this module:
+    # other test modules (and a3b_mtp_batch's import) install too. The
+    # installer preserves the replaced class exactly when a vendored
+    # install happened, so that global is the truthful signal.
+    install_seen = (
+        _VENDORED_PREINSTALLED
+        or bool(_install_results)
+        or getattr(_patch_module, "STOCK_ARRAYS_CACHE", None) is not None
+    )
+    if not install_seen:
         assert qwen3_next_module.ArraysCache is _STOCK_CLASS
     result = _ensure_installed()
-    if first_in_process and not _VENDORED_PREINSTALLED:
-        assert result == VENDORED_INSTALLED
-    else:
-        assert result == ALREADY_INSTALLED
-    assert _VENDORED_PREINSTALLED or _install_results[0] == VENDORED_INSTALLED
+    assert result == (ALREADY_INSTALLED if install_seen else VENDORED_INSTALLED)
+    assert _install_results[0] in (VENDORED_INSTALLED, ALREADY_INSTALLED)
     assert cache_module.ArraysCache is FixedArraysCache
     # Already-imported ``from mlx_lm.models.cache import ArraysCache``
     # holders were rebound (models and the generate loop).
