@@ -84,8 +84,17 @@ def child_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
         str(key): str(value)
         for key, value in source.items()
         if not str(key).startswith(("MLX_SERVE_", "MLXSERVE_"))
+        and key != "MTPLX_DSV4_WIRED"
     }
-    child["MLX_SERVE_WIRED"] = "off"
+    # The `fit` wired-residency policy keeps the ~100 GB weight set resident
+    # while leaving transients unwired; measured streaming decode on the
+    # M5 Max with this model is stable (28.3 tok/s, no swap). `off` was the
+    # historical default and thrashes: unwired weights get evicted/reloaded
+    # under memory pressure (measured collapse to 0.46 tok/s). Allow a
+    # caller override via the non-filtered MTPLX_DSV4_WIRED variable.
+    child["MLX_SERVE_WIRED"] = str(
+        source.get("MTPLX_DSV4_WIRED", "fit")
+    ).strip() or "fit"
     child["MLX_SERVE_CACHE_LIMIT"] = str(DEFAULT_CACHE_LIMIT_BYTES)
     return child
 

@@ -237,7 +237,7 @@ def test_external_command_and_environment_are_closed(tmp_path: Path) -> None:
 
     assert env == {
         "PATH": "/usr/bin",
-        "MLX_SERVE_WIRED": "off",
+        "MLX_SERVE_WIRED": "fit",
         "MLX_SERVE_CACHE_LIMIT": "268435456",
     }
     assert command[0] == str(binary.resolve())
@@ -251,6 +251,19 @@ def test_external_command_and_environment_are_closed(tmp_path: Path) -> None:
         "--skip-mem-preflight",
     ):
         assert required in command
+
+
+def test_child_environment_wired_override(tmp_path: Path) -> None:
+    from mtplx.backends.deepseek_v4_mlxserve import child_environment
+
+    env = child_environment({"MTPLX_DSV4_WIRED": "max", "PATH": "/usr/bin"})
+    assert env["MLX_SERVE_WIRED"] == "max"
+    # the non-filtered override variable must not leak into the child
+    assert "MTPLX_DSV4_WIRED" not in env
+    # supplied MLX_SERVE_* vars stay filtered even when the override is set
+    env2 = child_environment(
+        {"MTPLX_DSV4_WIRED": "fit", "MLX_SERVE_WIRED": "off"})
+    assert env2["MLX_SERVE_WIRED"] == "fit"
 
 
 def test_external_command_rejects_invalid_context(tmp_path: Path) -> None:
@@ -329,7 +342,7 @@ def test_public_serve_dry_run_routes_to_external_backend(
     assert payload["generation_mode"] == "ar"
     assert payload["mtp_available"] is False
     assert payload["dspark_available"] is False
-    assert payload["env"]["MLX_SERVE_WIRED"] == "off"
+    assert payload["env"]["MLX_SERVE_WIRED"] == "fit"
     assert payload["env"]["MLX_SERVE_CACHE_LIMIT"] == "268435456"
     assert "--no-pld" in payload["argv"]
     assert "--no-load-mtp" not in payload["argv"]
