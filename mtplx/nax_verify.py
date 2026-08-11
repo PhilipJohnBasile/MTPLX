@@ -889,6 +889,11 @@ def install_nax_qlinear_patch() -> dict[str, object]:
     from .kernel_selfcheck import lane_disabled
 
     def patched(self, x: mx.array) -> mx.array:  # type: ignore[no-untyped-def]
+        # Every custom verify kernel below consumes the affine ``biases``
+        # tensor.  MLX non-affine modes (for example mxfp4/nvfp4) use a
+        # different quantization contract, so preserve their stock path.
+        if getattr(self, "mode", None) != "affine":
+            return original(self, x)
         bits = int(getattr(self, "bits", 0) or 0)
         group_size = int(getattr(self, "group_size", 0) or 0)
         if bits == 8 and x.ndim >= 2 and current_attention_phase() != "prefill":

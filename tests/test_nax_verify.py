@@ -139,6 +139,93 @@ def test_qlinear_patch_never_routes_in_prefill_phase() -> None:
         uninstall_nax_qlinear_patch()
 
 
+def test_qlinear_patch_fails_closed_for_non_affine_modes() -> None:
+    """Non-affine layouts must reach MLX stock before affine-only tensors."""
+    from mtplx import nax_verify, verify_kernels
+    from mtplx.attention_context import attention_phase
+
+    original_call = nn.QuantizedLinear.__call__
+    stock_calls = 0
+
+    def counting_stock(self, x):
+        nonlocal stock_calls
+        stock_calls += 1
+        return original_call(self, x)
+
+    def unexpected_custom_kernel(*args, **kwargs):
+        pytest.fail("non-affine QuantizedLinear reached a custom verify kernel")
+
+    originals = {
+        "nax_qmm_m4": nax_verify.nax_qmm_m4,
+        "nax_qmm_m6": nax_verify.nax_qmm_m6,
+        "nax_qmm_m16": nax_verify.nax_qmm_m16,
+        "vk_qmm_m4": verify_kernels.vk_qmm_m4,
+        "vk_qmm_m4_ksplit": verify_kernels.vk_qmm_m4_ksplit,
+        "vk_qmm_m6": verify_kernels.vk_qmm_m6,
+        "vk_qmm_m6_ksplit": verify_kernels.vk_qmm_m6_ksplit,
+    }
+    nn.QuantizedLinear.__call__ = counting_stock
+    for name in originals:
+        module = nax_verify if name.startswith("nax_") else verify_kernels
+        setattr(module, name, unexpected_custom_kernel)
+    try:
+        install_nax_qlinear_patch()
+        layers = [
+            nn.QuantizedLinear(
+                512, 2048, bias=False, group_size=16, bits=4, mode="nvfp4"
+            ),
+            nn.QuantizedLinear(
+                512, 2048, bias=False, group_size=32, bits=4, mode="mxfp4"
+            ),
+            nn.QuantizedLinear(
+                512, 2048, bias=False, group_size=32, bits=8, mode="mxfp8"
+            ),
+        ]
+
+        # MLX has no non-affine 6-bit layout. Simulate its mode boundary while
+        # retaining valid affine-6 tensors so the captured stock implementation
+        # can run and prove the common guard protects the 6-bit lane too.
+        class SimulatedNonAffineMode(str):
+            def __new__(cls):
+                return super().__new__(cls, "affine")
+
+            def __eq__(self, other):
+                return False if other == "affine" else super().__eq__(other)
+
+            def __ne__(self, other):
+                return not self.__eq__(other)
+
+        simulated_6bit = nn.QuantizedLinear(
+            512, 2048, bias=False, group_size=64, bits=6
+        )
+        simulated_6bit.mode = SimulatedNonAffineMode()
+        layers.append(simulated_6bit)
+
+        with attention_phase("decode_verify"):
+            for layer in layers:
+                x = (mx.random.normal((4, 512), dtype=mx.float32) * 0.5).astype(
+                    mx.float16
+                )
+                expected = original_call(layer, x)
+                actual = layer(x)
+                mx.eval(expected, actual)
+                assert (
+                    float(
+                        mx.abs(
+                            actual.astype(mx.float32) - expected.astype(mx.float32)
+                        ).max()
+                    )
+                    == 0.0
+                )
+        assert stock_calls == len(layers)
+    finally:
+        for name, original in originals.items():
+            module = nax_verify if name.startswith("nax_") else verify_kernels
+            setattr(module, name, original)
+        uninstall_nax_qlinear_patch()
+        nn.QuantizedLinear.__call__ = original_call
+
+
 def test_m6_kernel_matches_stock_within_tolerance() -> None:
     from mtplx.nax_verify import m6_ksplit_eligible, nax_qmm_m6
 
