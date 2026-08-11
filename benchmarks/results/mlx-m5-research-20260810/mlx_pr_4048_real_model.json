@@ -1,0 +1,103 @@
+{
+  "schema": "mtplx-mlx-pr4048-real-model-v1",
+  "date": "2026-08-11",
+  "status": "uncontrolled_order_confounded_no_patch_speed_claim",
+  "pull_request": {
+    "url": "https://github.com/ml-explore/mlx/pull/4048",
+    "state_at_measurement": "open_review_required",
+    "head_commit": "9fba0906eee536ec4ef358b93f128dbb4ed953e5",
+    "head_parent": "158118bb152f59ad1aef0d8c835c49317ff9637b",
+    "measurement_base_commit": "447bb0f9ef20789894c7786e23358578db2f247b",
+    "synthetic_rebase_commit": "a1eec62ef4abf815839fcde40590c00512bbfe25",
+    "synthetic_rebase_diff_sha256": "3ed5465a9565c37d41ee0a1a37a9bc3e7b86b620de0b20c64cdf596d84c81934",
+    "synthetic_rebase_changed_files": [
+      "mlx/backend/metal/device.cpp",
+      "mlx/backend/metal/device.h",
+      "mlx/backend/metal/eval.cpp"
+    ],
+    "mechanism": "Retain input and sibling buffers once per command buffer instead of installing one completion handler per evaluated operation."
+  },
+  "artifacts": {
+    "base_wheel_sha256": "b8c0e0a57c6424908785b70a145e63bb6acf8a08c9878886b9fed93295e6d190",
+    "synthetic_rebase_wheel_sha256": "36fdefc805f92fd899b98168cfc1a92c27eae3a8c7ecbdaaed7c7c64017ffa9f",
+    "base_liblmx_sha256": "ea614f060507a23537543145cdfea4ab793ce97645b12545bd3cab3b2999a8c2",
+    "synthetic_rebase_liblmx_sha256": "639fd2a8dbb937728d9fc1f312391a0f89a0d7c2fc119016d832ac3a7b9e6c52",
+    "shared_core_extension_sha256": "51c988be31d4db62ba117d8061031b30f1dd1bac17b3932fa6c38249153553bb",
+    "shared_metallib_sha256": "effeb02710843bbf07498cd01bf4541689078561171b3d4507d6443ca495cffd",
+    "benchmark_script_sha256": "27903a1d4db94ef9d3bb1a0ef2784dc69289f91e5e80beaef383725c5bed7511"
+  },
+  "focused_tests": {
+    "command": "python -m pytest -q tests/test_eval.py tests/test_memory.py tests/test_threads.py",
+    "result": "19_passed",
+    "scope_limit": "These tests cover focused eval, memory, and threading behavior. They do not prove long-generation lifetime safety or compatibility with other open device-lifetime patches."
+  },
+  "method": {
+    "order": "process_isolated_A_B_B_A",
+    "prompt_tokens": 2048,
+    "sampling": "greedy",
+    "qwen35_continuation_tokens": 128,
+    "qwen27_continuation_tokens": 64,
+    "weight_identity": "indexed shard manifest checked before and after every process",
+    "environment_limit": "Codex renderer and GPU-service processes remained materially active. The patch removes host completion-handler work, so contention can amplify the apparent gain."
+  },
+  "qwen36_35b_a3b": {
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+    "token_ids_sha256_all_runs": "54c0e91ea2d91bad9c8ab5bcae143e9e44ec346b5b8defe5a71290258152604a",
+    "last_logits_sha256_all_runs": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed",
+    "envelope_1": {
+      "runs": [
+        {"label": "base_a1", "prefill_median_ms": 1112.4307085, "decode_tok_s": 89.22982018434742},
+        {"label": "head_b1", "prefill_median_ms": 495.0634795, "decode_tok_s": 100.29127246797047},
+        {"label": "head_b2", "prefill_median_ms": 498.403979, "decode_tok_s": 99.92821762709664},
+        {"label": "base_a2", "prefill_median_ms": 507.8601255, "decode_tok_s": 99.22748411168159}
+      ],
+      "prefill_base_same_arm_max_over_min": 2.190427349272177,
+      "decode_base_same_arm_max_over_min": 1.1120439770771604,
+      "verdict": "failed_same_arm_stability_no_speed_claim"
+    },
+    "envelope_2": {
+      "runs": [
+        {"label": "base_a1", "prefill_median_ms": 1128.554771, "decode_tok_s": 86.65226229962664},
+        {"label": "head_b1", "prefill_median_ms": 531.838729, "decode_tok_s": 102.12901810086066},
+        {"label": "head_b2", "prefill_median_ms": 486.9122495, "decode_tok_s": 103.04812850752046},
+        {"label": "base_a2", "prefill_median_ms": 1102.011396, "decode_tok_s": 88.58855326293154}
+      ],
+      "decode_base_midpoint_tok_s": 87.62040778127908,
+      "decode_head_midpoint_tok_s": 102.58857330419056,
+      "decode_midpoint_speedup": 1.1708296720128888,
+      "decode_change_percent": 17.08296720128888,
+      "decode_base_same_arm_max_over_min": 1.022345532729539,
+      "decode_head_same_arm_max_over_min": 1.0089995030183498,
+      "prefill_head_same_arm_max_over_min": 1.092268123355151,
+      "verdict": "observed_difference_not_attributable_to_patch"
+    },
+    "interpretation": "The arithmetic of the second envelope is correct, but arm, fixed A/B/B/A position, host load, and thermal history are inseparable. The failed first envelope and a nearby source-equivalent comparison consistent with parity prevent attributing this difference to the patch."
+  },
+  "qwen36_27b_dense": {
+    "weight_manifest_sha256": "930c3899a7d1a7605f75ed330c1fc3f0fe92cd028523d8e0a5152600114a938b",
+    "token_ids_sha256_all_runs": "af8ede5d39ebecc5703aea9cdd0d77d3003395ffa1b13e756ace958fca72aa2c",
+    "last_logits_sha256_all_runs": "1805227605cbc25616accaffc5da92d4d2ca2d65fa72ae27769d64597cf6a6d0",
+    "runs": [
+      {"label": "base_a1", "prefill_median_ms": 2835.9067915, "decode_tok_s": 21.37348533399323},
+      {"label": "head_b1", "prefill_median_ms": 3161.5609375, "decode_tok_s": 20.678809269377876},
+      {"label": "head_b2", "prefill_median_ms": 3671.855271, "decode_tok_s": 19.718761428049266},
+      {"label": "base_a2", "prefill_median_ms": 3766.4880625, "decode_tok_s": 19.46150053955713}
+    ],
+    "decode_midpoint_speedup": 0.9892882251146672,
+    "decode_change_percent": -1.0711774885332814,
+    "decode_base_same_arm_max_over_min": 1.098244469410251,
+    "decode_head_same_arm_max_over_min": 1.048687025543246,
+    "verdict": "no_speed_claim_high_variance_near_parity"
+  },
+  "interaction_risks": [
+    "PR #4099 changes fence tracking for donated dynamic-slice offsets in the same lifetime neighborhood.",
+    "PR #4134 changes sticky Metal OOM error handling and overlaps device.cpp/device.h.",
+    "A combined long-generation and allocator-pressure matrix is required before promotion."
+  ],
+  "independent_audit": {
+    "verdict": "no_robust_speed_gain_established",
+    "reason": "Only two decode scalars exist per arm, candidate runs always occupied the middle positions, and a separate envelope failed same-arm stability. The result is an uncontrolled observation, not an identifiable patch effect.",
+    "required_rerun": "Rebase onto live main and use predeclared randomized balanced ABBA and BAAB blocks with quiet-host admission, raw per-block series, timestamps, thermal and memory pressure, competing-process snapshots, loaded-image provenance, and lifecycle stress."
+  },
+  "decision": "KEEP_AS_UNCONTROLLED_RESEARCH_OBSERVATION. No robust #4048 speed gain is established. Rebase onto live main, repeat with randomized balanced blocks on a quiet host, add long-generation donation/lifetime stress, and test the #4099/#4134 interaction stack. Do not change an MTPLX runtime default from this receipt."
+}

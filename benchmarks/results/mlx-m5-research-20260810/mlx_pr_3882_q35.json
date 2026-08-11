@@ -1,0 +1,125 @@
+{
+  "schema": "mtplx-mlx-pr-3882-q35-balanced-v1",
+  "date": "2026-08-11",
+  "status": "exact_output_protocol_no_model_speed_claim",
+  "scope": "Qwen3.6-35B-A3B Q35 only; no all-target or all-phase conclusion",
+  "comparison": {
+    "parent_commit": "8462ad9fd210518341f36f42e997cfafb7c528db",
+    "head_commit": "291e909f443d17509385ee88fded90e460016a86",
+    "head_parent_verified": true,
+    "commit_distance": 1,
+    "diff": {
+      "path": "mlx/backend/metal/device.cpp",
+      "description": "3-line std::swap change: preserve barrier-table buckets across epochs",
+      "removed_lines": [
+        "prev_inputs_ = std::move(next_inputs_);",
+        "prev_outputs_ = std::move(next_outputs_);"
+      ],
+      "added_lines": [
+        "// Preserve the hash tables' buckets for reuse across barrier epochs.",
+        "prev_inputs_.swap(next_inputs_);",
+        "prev_outputs_.swap(next_outputs_);"
+      ],
+      "numstat": {"added": 3, "removed": 2},
+      "diff_check": "passed"
+    },
+    "focused_tests": {
+      "parent": "23/23 passed",
+      "head": "23/23 passed"
+    },
+    "execution_order": [
+      "parent_a1",
+      "head_b1",
+      "head_b2",
+      "parent_a2",
+      "head_b3",
+      "parent_a3",
+      "parent_a4",
+      "head_b4"
+    ]
+  },
+  "protocol": {
+    "prompt_tokens": 2048,
+    "continuation_tokens": 128,
+    "prefill_repetitions_per_process": 2,
+    "processes_per_arm": 4,
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+    "weights_unchanged_during_each_run": true,
+    "public_safe_raw_receipt": "benchmarks/results/mlx-m5-research-20260810/raw/mlx_pr_3882_q35/public_cells.json"
+  },
+  "output_identity": {
+    "all_eight_prompt_hashes_identical": true,
+    "prompt_token_ids_sha256": "54b473fdaeabe1252cee16a28933431774663da601b35522a817f5daa6fe0d68",
+    "all_eight_greedy_next_ids_identical": true,
+    "greedy_next_id": 4739,
+    "all_eight_last_logit_hashes_identical": true,
+    "last_logits_sha256": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed",
+    "all_eight_continuation_hashes_identical": true,
+    "continuation_token_ids_sha256": "54c0e91ea2d91bad9c8ab5bcae143e9e44ec346b5b8defe5a71290258152604a"
+  },
+  "per_arm": {
+    "parent": {
+      "labels": ["parent_a1", "parent_a2", "parent_a3", "parent_a4"],
+      "prefill_process_means_ms": [484.051187, 482.7257085, 483.8247085, 481.7597295],
+      "prefill": {
+        "mean_ms": 483.090333375,
+        "midpoint_ms": 482.90545825,
+        "min_ms": 481.7597295,
+        "max_ms": 484.051187,
+        "range_ms": 2.2914575,
+        "max_over_min": 1.0047564322206387,
+        "range_over_mean_percent": 0.4743331302018107
+      },
+      "decode_tokens_per_second": [93.37796156789267, 88.9483979351715, 90.03985236181005, 100.04947659321145],
+      "decode": {
+        "mean_tokens_per_second": 93.10392211452142,
+        "midpoint_tokens_per_second": 94.49893726419148,
+        "min_tokens_per_second": 88.9483979351715,
+        "max_tokens_per_second": 100.04947659321145,
+        "range_tokens_per_second": 11.10107865803995,
+        "max_over_min": 1.124803581804034,
+        "range_over_mean_percent": 11.923320098572427
+      }
+    },
+    "head": {
+      "labels": ["head_b1", "head_b2", "head_b3", "head_b4"],
+      "prefill_process_means_ms": [486.323625, 489.600292, 486.0045, 485.488896],
+      "prefill": {
+        "mean_ms": 486.85432825,
+        "midpoint_ms": 487.544594,
+        "min_ms": 485.488896,
+        "max_ms": 489.600292,
+        "range_ms": 4.111396,
+        "max_over_min": 1.008468568558157,
+        "range_over_mean_percent": 0.8444817600324988
+      },
+      "decode_tokens_per_second": [91.05502663180287, 98.1717192394917, 91.34844508550496, 98.30151553095172],
+      "decode": {
+        "mean_tokens_per_second": 94.71917662193782,
+        "midpoint_tokens_per_second": 94.6782710813773,
+        "min_tokens_per_second": 91.05502663180287,
+        "max_tokens_per_second": 98.30151553095172,
+        "range_tokens_per_second": 7.24648889914885,
+        "max_over_min": 1.079583622861935,
+        "range_over_mean_percent": 7.65049819644494
+      }
+    }
+  },
+  "observed_ratios": {
+    "prefill_mean_latency_parent_over_head": 0.9922687451736751,
+    "prefill_midpoint_latency_parent_over_head": 0.9904846945139136,
+    "prefill_head_minus_parent_mean_ms": 3.763994875,
+    "decode_mean_throughput_head_over_parent": 1.0173489415991473,
+    "decode_midpoint_throughput_head_over_parent": 1.001897733692861,
+    "decode_head_minus_parent_mean_tokens_per_second": 1.615254507416395
+  },
+  "host_conditions": {
+    "all_eight_snapshots_reported_no_thermal_warning": true,
+    "all_eight_snapshots_reported_no_performance_warning": true,
+    "all_eight_snapshots_reported_no_cpu_power_status": true,
+    "quiet_host_not_established": true,
+    "unrelated_high_cpu_activity_observed": true,
+    "public_safe_host_extract": "process command lines are redacted to activity classes in the raw receipt"
+  },
+  "verdict": "Exact output in this protocol. Prefill is effectively flat and slightly adverse. The decode observation is confounded by within-arm spread and an active host, so it supports no model-speed claim."
+}

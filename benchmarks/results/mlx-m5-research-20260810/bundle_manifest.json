@@ -1,0 +1,645 @@
+{
+  "base_commit": "5262443fd4b4b04faab5690346d1225ce6ee5b0e",
+  "receipt_count": 83,
+  "receipts": [
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/compressed_artifact_sources.json",
+      "schema": "mtplx-q35-compressed-artifact-sources-v1",
+      "sha256": "d983fbdaff96456ffe4998e2a82b862345e5def51914287e7c0cde3b2da22c80",
+      "size_bytes": 5733
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dflash_ddtree_q35_m5.json",
+      "schema": "mtplx-dflash-ddtree-q35-m5-v1",
+      "sha256": "e65e4ffeff68fa0cbe2a1de9fdf5b97301c8420ab122b23cbac49a11e4cefa1e",
+      "size_bytes": 6049
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dispatch_matrix_v2.json",
+      "schema": "mtplx-m5-static-dispatch-audit-v5",
+      "sha256": "f85c00f764581df6a336aa1ebcdcfdbe9124d699b8943b01a4664bfad904a3c2",
+      "size_bytes": 194840
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dispatch_truth_table.json",
+      "schema": "mtplx-m5-static-dispatch-audit-v1",
+      "sha256": "fc75716e69dbfdca648ce5ed5e452f6c40d8dc2bd6343e66b5fc3204ccab33ed",
+      "size_bytes": 5733
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_humaneval_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-nll-comparison-v3",
+      "sha256": "1d504eec9cda8a4a3dc245eeffae584794398db2b4cd7c6c797dd21fa20f0afd",
+      "size_bytes": 10114
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_m5_fixed_work_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+      "sha256": "8dde62000d7e6ff989e5ce377ce6f0f70e11ffaaeca31a2d12263a882a1fe1bc",
+      "size_bytes": 8046
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_m5_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+      "sha256": "0dcc6635f61cc5e5199a823f09e4e69cdb22755b9364135acf30289a54b0f92f",
+      "size_bytes": 3581
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/exact_kernel_stack.json",
+      "schema": "mtplx-mlx-m5-exact-kernel-stack-v1",
+      "sha256": "b88e1ecd5cd63bcd25afadddc48f77a8ec41ee1b9274bd6bc5486a152d710dec",
+      "size_bytes": 10747
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/fusionml_stream_overlap_m5.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "5132b850dc2b986cdf853a457cd16533c815f07f0f11c2ae12756eaee85ad62d",
+      "size_bytes": 39326
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/hf_artifact_refresh.json",
+      "schema": "mtplx-hf-artifact-refresh-v1",
+      "sha256": "624c5e56708a88ae061a61b12b7475d42841096eb595667e52be4cdae40af9ac",
+      "size_bytes": 4488
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/mlx_lm_1709_exactness_reproducer.json",
+      "sha256": "086af89cd10f73680a5c6db6516befc5eb36e400473cd7e42bbcacffccc5b1e7",
+      "size_bytes": 4845
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/mlx_pr_3882_q35.json",
+      "schema": "mtplx-mlx-pr-3882-q35-balanced-v1",
+      "sha256": "cebe7b4e395dd2a0d86b8de2dbe45258cf5613a90845830364aeedd338eb0d03",
+      "size_bytes": 5214
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/mlx_pr_4048_real_model.json",
+      "schema": "mtplx-mlx-pr4048-real-model-v1",
+      "sha256": "476135b8dad9598b57ce5186a853e29f824850c3b85c81d2891847b110190b09",
+      "size_bytes": 6928
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_humaneval_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-nll-comparison-v3",
+      "sha256": "258642fb6a863ddf69c54354daed1b02ff1dc63ba51af70b89f2763e4d787aff",
+      "size_bytes": 10143
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_m5_fixed_work_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+      "sha256": "463b5e752c23101bbae0a0d57edfb33a51ddfbd5c7c8130fbe1f6a6d62a93b3b",
+      "size_bytes": 8109
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_m5_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+      "sha256": "373f85070978fc6111c22e14791d3389c9e5a21173b81953ffb1083d3e9c3bbf",
+      "size_bytes": 3525
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_humaneval_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-nll-comparison-v3",
+      "sha256": "bd9e31044ff89a6066cf230824f826312a1288d77d40b63fbfe7da4d0269ff2c",
+      "size_bytes": 10144
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_m5_fixed_work_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+      "sha256": "61d1978c4c8ac966901d927b443011ef55afedda443fc7b47f8c36b00b3ded30",
+      "size_bytes": 8084
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_m5_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+      "sha256": "9da016a9604dfb57932dad3536ccf040927a80520bd6ede2586dde2cd1487ce3",
+      "size_bytes": 3541
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_humaneval_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-nll-comparison-v3",
+      "sha256": "a58b0d773efe2e4e1291154fbacd228d29e6dd92ec1f179fb958a77f1dda5c11",
+      "size_bytes": 10139
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_m5_fixed_work_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+      "sha256": "598b0a599cc9bb3b94b276b1185525f04537348cbf2c3dc18209f065047165d9",
+      "size_bytes": 8028
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_m5_performance.json",
+      "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+      "sha256": "2decaff9736e25352ffa25612acdbcebabbdc77b6f0ab0e1be4062833b6629af",
+      "size_bytes": 3532
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/qwen36_norm_shift_spotcheck.json",
+      "schema": "mtplx-qwen36-norm-shift-spotcheck-v1",
+      "sha256": "f091c81fd9ecde283504129dfe5b7a9932828639ef9eae59654d92d41f949994",
+      "size_bytes": 6894
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq-candidate-b1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "0b2c86fe1c56de9034e266c707bfa60f9a1ffe9d3d3ce29848a9c1ecbf93e0e2",
+      "size_bytes": 6546
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq-candidate-b2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "dfa76f193c811fd8e26a186306b96beff49006ce2e6b1dc99c3fd2e83a7bf44b",
+      "size_bytes": 6538
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq-stock-a1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "5815cc1fcc0e54628f587855d729c897e178390d5708eb3a5a62972e5efa4c2d",
+      "size_bytes": 6541
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq-stock-a2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "81abb955a4712ad48bfb11f05ca640d115e778bfa0663ba09db356c7804e0163",
+      "size_bytes": 6541
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_candidate_b1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "c764a8e5481f524b87fef61c831b0ad4413845ed79c004829f306595129e7219",
+      "size_bytes": 9248
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_candidate_b1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "4e9e6265a08f99f814b224cc9e52e947f87309d7caf80fe0e1a7e3906c85ac54",
+      "size_bytes": 5021
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_candidate_b2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "8e3b2760b751e1495f59e51210d4ccbbc03d8a707db580f57d75fc5aeb1f17c3",
+      "size_bytes": 9250
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_candidate_b2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "8e4a425dd2d9fe8fa9c45c9e31acfafa3f66e768bfef58a7000abf9028636be4",
+      "size_bytes": 5033
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_stock_a1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "ea3b581115eabc0eb59c40bf53cc7adb1009e2761b3f745154c7544979ffeb56",
+      "size_bytes": 9262
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_stock_a1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "3ce4a32e7006ca573d8208d2abe289ce512498a1b44563258828e275de8d8fe0",
+      "size_bytes": 5021
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_stock_a2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "9f6cce5ffe5514955c760add0a9b4ab00eda11dc5eb9e4b37e8947aea9667caa",
+      "size_bytes": 9262
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/dwq_stock_a2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "e62ce9c7d151de356ef3071d0d82dd853ee9478984e952f4684201f1e22387f5",
+      "size_bytes": 5012
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv-candidate-b1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "194008a63fb209bab0a7c01589d863ac460e2bb10d94389c0273026a8514b5e9",
+      "size_bytes": 6549
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv-candidate-b2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "f9fd10dd8f8fa5570030f4de3af9eafb6d5de498527923f3037e1b19733dfb77",
+      "size_bytes": 6557
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv-stock-a1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "92d27cbdc104d65913b47b472ea8d4fb94ef9ea933655878639d37a8d0f81921",
+      "size_bytes": 6542
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv-stock-a2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "2b4777d50ac05241e16804d7e7e7686e3bc692f55617c3a05a54d9eb783732f3",
+      "size_bytes": 6540
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_candidate_b1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "12682a450fd68521c85ce0ebc78efec902ff8fe8870dcb80bbc854e92d15bca3",
+      "size_bytes": 9254
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_candidate_b1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "8b8e10bfce222276b621caf31e67226df06fbed84d60fb18378c808640079c18",
+      "size_bytes": 4995
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_candidate_b2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "14e182a5c600cdb78355baea3eee525bb669a9362575f9f65cc0e526940b7ffd",
+      "size_bytes": 9251
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_candidate_b2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "4fe6434adabe89151e6406d8f46b26c1d4c1047bef0fd3306cf07b30173ac474",
+      "size_bytes": 4993
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_stock_a1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "937c4c5c88498e2ace3f0b6e53efbd6ac8ff2819e49ea18b0864599f42ebe5dd",
+      "size_bytes": 9260
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_stock_a1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+      "size_bytes": 5013
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_stock_a2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "06062f84d58652a92e0ecf6830d91abb11ac15470415fd80a30283f1a4d90ce9",
+      "size_bytes": 9254
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/nv_stock_a2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "7232aa8e48407457a526fcc43fcb85c0fd99967fc65f55d4d6eeee107d6e5e59",
+      "size_bytes": 5015
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq-candidate-b1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "3fb827546a35368cc02d2a5bbc46b4c5f13cd4bd120972dd41751c0f3844c9a5",
+      "size_bytes": 6753
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq-candidate-b2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "c4e5ce276e67c4ac3ea847ebe27c6ffbe4b6c301009df042ace8522209652d61",
+      "size_bytes": 6751
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq-stock-a1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "3d3104e9c84bb4f48db7a889d3b79734d6fdfd43c3e0c9aac9da6c19d3fffca3",
+      "size_bytes": 6544
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq-stock-a2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "e0232c3989b45a811976d52bd9be5443f268ccd6b99e1ae8f048931f4b3e9df1",
+      "size_bytes": 6546
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_candidate_b1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "39bfd217c131bfdb8ae980c0e4466417704e4327e5e918981b1424ddbbc34d74",
+      "size_bytes": 9470
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_candidate_b1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "f8eea9cc9b128a0d6a71431ac4c784ef694031af74c9f3820cc044ffb192f777",
+      "size_bytes": 5214
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_candidate_b2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "e2ca5fa540eff6830ddabaec423f2c599c60376f4d92bde4164d26d02a8a9201",
+      "size_bytes": 9465
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_candidate_b2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "2e1cd90a59ca561ee894b94a5ff0bcab6b1d947e37506893a37a821887d4babe",
+      "size_bytes": 5216
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_stock_a1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "09acdd6c5d439f246a3cfec4719a2aac9571150b67e191633a1c3218a7548864",
+      "size_bytes": 9267
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_stock_a1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "3e679dcc71ff7ac17f7b3c0bec03a1b2d185ed008ba2e94fdfcda6c78fbd2272",
+      "size_bytes": 5010
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_stock_a2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "ce32cb36a874d5949f527be0d22e241cddba1dff0d3c7c4193277728eaa68f23",
+      "size_bytes": 9265
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/optiq_stock_a2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "b872bdde75fb8165e32ad70c8e865c6da536234a4b3f2fbf30e3fe33b8d6c4b5",
+      "size_bytes": 5015
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro-candidate-b1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "5a0112d980995225a85e775e5f2ee6eac7dcd65d764321919a549b7478b886e7",
+      "size_bytes": 5945
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro-candidate-b2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "848ec7a751c07a623a37f7b90c47359bae269d73a436a22aae1174c094f4e8f4",
+      "size_bytes": 5942
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro-stock-a1-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "3bac369c1136554fab08711862c39437206cd0599935b122e3cadead07370f8a",
+      "size_bytes": 6544
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro-stock-a2-fixed-perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v4",
+      "sha256": "ef890a7bd625e10077a6978a8f1e62a173ace3b03d97c996f4a235a477e85ab6",
+      "size_bytes": 6545
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_candidate_b1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "3d3a38cbef2ea2d01b44b0b8d6d8930bcd70ecf2f2b04e9ef5fc5064cba98afd",
+      "size_bytes": 8673
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_candidate_b1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "3645b03b00e979cdc7cc591dd4ffdb6e865b7f634b81ca5e176830b11a004c11",
+      "size_bytes": 4562
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_candidate_b2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "a364c00630f3bc9ed3a9e1386550d28ba5da0961d785231d23a33fe94172f6c2",
+      "size_bytes": 8678
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_candidate_b2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "6143e80cfdff145f41feea68b6bd71c344f313148caea436a4a348da94c40f66",
+      "size_bytes": 4580
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_stock_a1_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "323efd7b289ac5567ac36a57c8c9cd4ce5c984b6a286ec55c114181123082f01",
+      "size_bytes": 9273
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_stock_a1_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "b4bd085f112641798b68dd36a33bd1b4a19670206518ba7d3b09b5252b2b2605",
+      "size_bytes": 5013
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_stock_a2_nll.json",
+      "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+      "sha256": "fd1366a2c9c97780c253e9766cd00f92afc81eec745cb6479c288d262479b04a",
+      "size_bytes": 9261
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/compressed-artifacts/paro_stock_a2_perf.json",
+      "schema": "mtplx-q35-compressed-artifact-process-v2",
+      "sha256": "193920afb2c1b1607f09b4a059aad08b77e9d5e7de575dd4958fc7754ad97e70",
+      "size_bytes": 5022
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_mlx0321_ratio_005.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "ea617b68b97d476f7bb652793c4bbc54c6eaaee688c282d7392f0d4005e109f4",
+      "size_bytes": 39344
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_mlx0321_ratio_035.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "2352c68a04497439c37c8ad3ecc71dca30a4dd421c99625842d0f7fd219508ea",
+      "size_bytes": 39314
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_005.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "68a218643b7dda51be059f6e97eca7c1a7f4da91f0e49b1f6855f6ec740d561b",
+      "size_bytes": 39322
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_010.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "844d21941a55627a5e564c9ec7ab0b90b6496b81887b4265700d8ed8107aec80",
+      "size_bytes": 39273
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_015.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "631d2b59dc899ced57c817a7c2655c12297088724593a5603e646b0de1d8e951",
+      "size_bytes": 39291
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_020.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "b135bed4c5b07c147d37e4386dd6abbc6be8993e97d9c3e247ce192c0ebb3c33",
+      "size_bytes": 39290
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_025.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "356644e231302c1a3add50ad00565a524c06e5edc167096d81f3b611f2885c84",
+      "size_bytes": 39357
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/fusionml_stream_overlap_m5_ratio_030.json",
+      "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+      "sha256": "3a63eb8e9296cd29c9af683084c023fd31d7c6e2ae0eb1a6043661734c94785f",
+      "size_bytes": 39469
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/raw/mlx_pr_3882_q35/public_cells.json",
+      "schema": "mtplx-mlx-pr-3882-q35-public-safe-raw-v1",
+      "sha256": "5deed153f10062fea10656e42fa4fa68638f6f09977ef5a27d6a58853f1a2e6f",
+      "size_bytes": 12805
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/real_model_prefill.json",
+      "schema": "mtplx-mlx-m5-real-model-prefill-comparison-v1",
+      "sha256": "22ec4e6c6e93ace3cffb9c3260861e1c254d3184293ecee961c63d3120b0f347",
+      "size_bytes": 15506
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/rotating_staged_kv_cpu_oracle.json",
+      "sha256": "2f55d3aea32b70cf9d1c5f35dfb98520e838ad866af19c1962a0440c4506594a",
+      "size_bytes": 12915
+    },
+    {
+      "path": "benchmarks/results/mlx-m5-research-20260810/summary.json",
+      "schema": "mtplx-mlx-m5-research-v1",
+      "sha256": "7afbdc70f88764dc91a122bf3e51d07aa09355b09c88067547021c34046379a1",
+      "size_bytes": 57287
+    }
+  ],
+  "research_date": "2026-08-10-to-2026-08-11",
+  "schema": "mtplx-mlx-m5-research-bundle-manifest-v2",
+  "source_count": 23,
+  "sources": [
+    {
+      "path": "MANIFEST.in",
+      "sha256": "d7d99c0b14275c4a86e31d3445c148087e38eedec96a45a6700cdb9a367a85f6",
+      "size_bytes": 111
+    },
+    {
+      "path": "benchmarks/research_fusionml_stream_overlap.py",
+      "sha256": "3267b3d5ecd217a6e5f9ca7b5809da5c91c599ff19e37f389f52b4584d20a1b5",
+      "size_bytes": 22965
+    },
+    {
+      "path": "benchmarks/research_mlx_lm_1709_exactness.py",
+      "sha256": "e1cfc24513e7ac4f1e7d993a3197a6617a5b3c0972940ca494bd198bd7e71311",
+      "size_bytes": 17483
+    },
+    {
+      "path": "benchmarks/research_mlx_m5_bundle_manifest.py",
+      "sha256": "4296e85f7f6a65f2f4c95aef67012b7ea16c789aaad00ecb28505cbbc3d3196b",
+      "size_bytes": 9324
+    },
+    {
+      "path": "benchmarks/research_mlx_m5_dispatch_audit.py",
+      "sha256": "478a8202d7ba1e98cc123f77aaf7e19d62c43c1054763c85b0a5a92c298306ae",
+      "size_bytes": 29793
+    },
+    {
+      "path": "benchmarks/research_mlx_m5_exact_paths.py",
+      "sha256": "d7ce73eba35a4c9813b0bd7702019ef0619b08f0d9811e043fdf7c873fe63056",
+      "size_bytes": 12995
+    },
+    {
+      "path": "benchmarks/research_mlx_m5_model_prefill.py",
+      "sha256": "27903a1d4db94ef9d3bb1a0ef2784dc69289f91e5e80beaef383725c5bed7511",
+      "size_bytes": 8271
+    },
+    {
+      "path": "benchmarks/research_paroquant_q35.py",
+      "sha256": "8404bd2470349a15eca3a1ebfd6f66333d9667c59d892fa5a9dad457f479c2a8",
+      "size_bytes": 27855
+    },
+    {
+      "path": "benchmarks/research_paroquant_q35_nll.py",
+      "sha256": "2c129955aaba03ed29e30da0a5bed7d762d7d9b05288f8088b4e3898360c7278",
+      "size_bytes": 26864
+    },
+    {
+      "path": "benchmarks/research_qwen36_norm_shift_audit.py",
+      "sha256": "e14bfc9735be91e067f8b55cbaf19e084de68fc506b7b570f33e9b9b5fa13be9",
+      "size_bytes": 4980
+    },
+    {
+      "path": "benchmarks/research_rotating_staged_kv_cpu_oracle.py",
+      "sha256": "b08403d28a8cf201e3c833e948e0bbf1fd31c151001d31b898db548fdec32b27",
+      "size_bytes": 19917
+    },
+    {
+      "path": "tests/test_research_fusionml_stream_overlap.py",
+      "sha256": "df4766696d4b67c4d197fea8c4eaf8e3c9206b07ae571627fb8af7f5c666ee77",
+      "size_bytes": 4645
+    },
+    {
+      "path": "tests/test_research_mlx_m5_bundle_manifest.py",
+      "sha256": "b899b6f9732bcec8e66a264b0e2f52bfce5bf04b7517387d2e28750d894d8763",
+      "size_bytes": 7034
+    },
+    {
+      "path": "tests/test_research_mlx_m5_dispatch_audit.py",
+      "sha256": "f97c7591b4b789c3a09b90c2ad81fc393124df95ea25ed8d3b00d838f9fd400b",
+      "size_bytes": 6381
+    },
+    {
+      "path": "tests/test_research_paroquant_q35.py",
+      "sha256": "a928ad8df79772db91327adbbbe37873d94f4df68409845bcd70ef120762d336",
+      "size_bytes": 12533
+    },
+    {
+      "path": "tests/test_research_paroquant_q35_nll.py",
+      "sha256": "031352e270f4f780cd8390e1c8fb26c9a94dccb05add4e4e6ec584554a47bdfa",
+      "size_bytes": 10814
+    },
+    {
+      "path": "tests/test_research_qwen36_norm_shift_audit.py",
+      "sha256": "b18cf82c9de6360c4404209f46bc8e75b2f86846c92d7de20f4d9d8d10c602f5",
+      "size_bytes": 1718
+    },
+    {
+      "path": "tests/test_research_rotating_staged_kv_cpu_oracle.py",
+      "sha256": "f3f30e9698706556721d6cb84b5822db8679fb39e7ea065c6c096164b16865ae",
+      "size_bytes": 4263
+    },
+    {
+      "path": "docs/README.md",
+      "sha256": "bcae2e9d051dcf3b7a1a1224bf3e3ec28c2557eb218b8fc21d1fb9aa72fe0288",
+      "size_bytes": 518
+    },
+    {
+      "path": "docs/research/mlx-lm-1709-exactness-audit-20260810.md",
+      "sha256": "f3f5530ec7f092b7667a8ff50f9a26cc551bca6bf18316e243b8c054988be6e2",
+      "size_bytes": 6380
+    },
+    {
+      "path": "docs/research/mlx-m5max-speed-without-quality-loss-20260810.md",
+      "sha256": "f9c955a68871184d8734ff863ef6826450d465477007d687fd0234f725d3689a",
+      "size_bytes": 104755
+    },
+    {
+      "path": "benchmarks/provenance/README.md",
+      "sha256": "b02c637abc85199a4a69fee466cdc7f8783a55396013ee580b52d8942fbb7bfd",
+      "size_bytes": 584
+    },
+    {
+      "path": "benchmarks/provenance/research_paroquant_q35_fixed_work_v4_producer_1578f6f8.py",
+      "sha256": "1578f6f8cb860be2e6dcb27ea08f1253b069555f0e83da3c71a451a0bcf98d33",
+      "size_bytes": 20092
+    }
+  ],
+  "status": "identity_and_public_safety_manifest_not_release_evidence",
+  "validation": {
+    "json_duplicate_keys_rejected": true,
+    "manifest_excludes_itself": true,
+    "private_marker_classes": [
+      "user_home_path",
+      "private_tmp_path",
+      "macos_var_folders_path",
+      "hugging_face_env_token",
+      "hugging_face_access_token",
+      "github_env_token",
+      "github_classic_access_token",
+      "github_fine_grained_access_token",
+      "authorization_header",
+      "bearer_credential"
+    ],
+    "provenance_sources_included": [
+      "benchmarks/provenance/README.md",
+      "benchmarks/provenance/research_paroquant_q35_fixed_work_v4_producer_1578f6f8.py"
+    ],
+    "research_bundle_distribution_scope": "repository_only_excluded_from_sdist_and_wheel",
+    "summary_content_addressed_receipt_references_validated": 10
+  }
+}

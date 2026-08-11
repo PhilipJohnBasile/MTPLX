@@ -1,0 +1,222 @@
+{
+  "baseline": {
+    "campaign_arms": [
+      "stock-affine-w4",
+      "stock-affine-w4"
+    ],
+    "campaign_id": "q35-dwq-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      1,
+      4
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 105.78010314392986,
+    "decode_relative_range": 0.019496252091534227,
+    "decode_tokens_per_second_by_run": [
+      104.74894536534859,
+      106.81126092251114
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:11:47.282627+00:00",
+      "2026-08-11T08:12:39.540083+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "dwq-stock-a1-fixed",
+      "dwq-stock-a2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.59918675,
+      0.594317125
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 189.09339599999998,
+    "prefill_median_ms_by_run": [
+      190.218604,
+      187.968188
+    ],
+    "prefill_relative_range": 0.01190108193942427,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "5815cc1fcc0e54628f587855d729c897e178390d5708eb3a5a62972e5efa4c2d",
+      "81abb955a4712ad48bfb11f05ca640d115e778bfa0663ba09db356c7804e0163"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:11:30.887446+00:00",
+      "2026-08-11T08:12:23.214745+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "dwq-stock-a1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "dwq-stock-a2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock-affine-w4",
+  "candidate": {
+    "campaign_arms": [
+      "mlx-community-dwq",
+      "mlx-community-dwq"
+    ],
+    "campaign_id": "q35-dwq-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      2,
+      3
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 91.32217943512282,
+    "decode_relative_range": 0.003517031323648267,
+    "decode_tokens_per_second_by_run": [
+      91.48277091793139,
+      91.16158795231424
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:12:05.097339+00:00",
+      "2026-08-11T08:12:22.432026+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "dwq-candidate-b1-fixed",
+      "dwq-candidate-b2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.646716209,
+      0.606993625
+    ],
+    "peak_memory_bytes_by_run": [
+      22119377260,
+      22119377260
+    ],
+    "prefill_mean_ms": 190.95601050000002,
+    "prefill_median_ms_by_run": [
+      191.62595850000002,
+      190.2860625
+    ],
+    "prefill_relative_range": 0.007016778348540174,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "0b2c86fe1c56de9034e266c707bfa60f9a1ffe9d3d3ce29848a9c1ecbf93e0e2",
+      "dfa76f193c811fd8e26a186306b96beff49006ce2e6b1dc99c3fd2e83a7bf44b"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:11:48.079931+00:00",
+      "2026-08-11T08:12:05.897193+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "dwq-candidate-b1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "dwq-candidate-b2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "953160736915f9c44b66d17ce91564104b2dfffb7344173f89f9dc93429613dc"
+  },
+  "candidate_name": "mlx-community-dwq",
+  "comparison": {
+    "decode_percent_change": -13.667904718465673,
+    "decode_speedup_candidate_over_baseline": 0.8633209528153433,
+    "prefill_percent_change": -0.9754154871181919,
+    "prefill_speedup_candidate_over_baseline": 0.9902458451288181,
+    "same_decode_forward_count_across_artifacts": true,
+    "same_fixed_token_sequence_across_artifacts": true,
+    "same_routed_moe_work": "unobserved_not_established"
+  },
+  "comparison_script_sha256": "8404bd2470349a15eca3a1ebfd6f66333d9667c59d892fa5a9dad457f479c2a8",
+  "interpretation_limit": "This is a process-isolated, fixed-token and forward-count compressed-artifact performance comparison on one synthetic prompt. Teacher forcing does not equalize MoE routing because artifact-specific hidden states can change expert assignments; routing was not recorded. This is not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock-affine-w4",
+    "mlx-community-dwq",
+    "mlx-community-dwq",
+    "stock-affine-w4"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+  "status": "performance_only_not_quality_evidence"
+}

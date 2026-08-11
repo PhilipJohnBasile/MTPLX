@@ -1,0 +1,481 @@
+{
+  "contract": {
+    "accepted_prefix": "Every K in 1..16 accepts exactly 0..K staged rows.",
+    "chronology": "Visible K/V is sorted by absolute position, not physical ring slot.",
+    "next_token": "The mask is evaluated after the next token writes at offset % K.",
+    "rejection": "Rejected staged suffixes never enter the live ring or its mask plan.",
+    "timeline": "Commit advances the absolute offset by exactly its retained writes."
+  },
+  "limits": {
+    "capacity_range": [
+      1,
+      16
+    ],
+    "keep": 0,
+    "model_loading": "not performed",
+    "performance_measurement": "not performed"
+  },
+  "oracle_source_sha256": "b08403d28a8cf201e3c833e948e0bbf1fd31c151001d31b898db548fdec32b27",
+  "payload_sha256": "60217889423ae083b935eefa5da4555b2a96d497426c348bf876d8980ebbf2c1",
+  "result_kind": "cpu_reference_oracle",
+  "results": {
+    "bonus": {
+      "mtplx_gemma4_exact_round": {
+        "behavior": "deferred_next_primary_not_committed_in_this_round",
+        "cases": 16
+      },
+      "swift_516_staged_round": {
+        "behavior": "commit_bonus_with_accepted_prefix",
+        "cases": 16
+      }
+    },
+    "cleanup_and_reset": {
+      "cleanup_cases": 16,
+      "reset_cases": 16
+    },
+    "prefix_matrix": {
+      "accepted_prefixes": "0..K for every capacity K",
+      "capacities": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "case_count": 152,
+      "scenario_counts": {
+        "before_first_wrap": 16,
+        "exactly_at_first_wrap": 16,
+        "post_first_wrap": 120
+      },
+      "selected_capacity_4_traces": [
+        {
+          "accepted_prefix": 0,
+          "commit": {
+            "accepted_prefix": 0,
+            "bonus_committed": false,
+            "discarded_suffix": 4,
+            "writes": []
+          },
+          "scenario": "before_first_wrap",
+          "snapshot": {
+            "capacity": 4,
+            "next_token": {
+              "mask_by_slot": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "positions_by_slot": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "query_position": 3,
+              "visible_positions": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "write_slot": 3
+            },
+            "next_write_slot": 3,
+            "offset": 3,
+            "slots": [
+              {
+                "key": 401000,
+                "position": 0,
+                "tag": "prefill/k4/i0",
+                "value": -401017
+              },
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              },
+              null
+            ],
+            "staged_count": 0,
+            "visible": [
+              {
+                "key": 401000,
+                "position": 0,
+                "tag": "prefill/k4/i0",
+                "value": -401017
+              },
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              }
+            ]
+          }
+        },
+        {
+          "accepted_prefix": 1,
+          "commit": {
+            "accepted_prefix": 1,
+            "bonus_committed": false,
+            "discarded_suffix": 3,
+            "writes": [
+              {
+                "key": 402000,
+                "position": 3,
+                "slot": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              }
+            ]
+          },
+          "scenario": "exactly_at_first_wrap",
+          "snapshot": {
+            "capacity": 4,
+            "next_token": {
+              "mask_by_slot": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "positions_by_slot": [
+                4,
+                1,
+                2,
+                3
+              ],
+              "query_position": 4,
+              "visible_positions": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "write_slot": 0
+            },
+            "next_write_slot": 0,
+            "offset": 4,
+            "slots": [
+              {
+                "key": 401000,
+                "position": 0,
+                "tag": "prefill/k4/i0",
+                "value": -401017
+              },
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              },
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              }
+            ],
+            "staged_count": 0,
+            "visible": [
+              {
+                "key": 401000,
+                "position": 0,
+                "tag": "prefill/k4/i0",
+                "value": -401017
+              },
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              },
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              }
+            ]
+          }
+        },
+        {
+          "accepted_prefix": 2,
+          "commit": {
+            "accepted_prefix": 2,
+            "bonus_committed": false,
+            "discarded_suffix": 2,
+            "writes": [
+              {
+                "key": 402000,
+                "position": 3,
+                "slot": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              },
+              {
+                "key": 402001,
+                "position": 4,
+                "slot": 0,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              }
+            ]
+          },
+          "scenario": "post_first_wrap",
+          "snapshot": {
+            "capacity": 4,
+            "next_token": {
+              "mask_by_slot": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "positions_by_slot": [
+                4,
+                5,
+                2,
+                3
+              ],
+              "query_position": 5,
+              "visible_positions": [
+                2,
+                3,
+                4,
+                5
+              ],
+              "write_slot": 1
+            },
+            "next_write_slot": 1,
+            "offset": 5,
+            "slots": [
+              {
+                "key": 402001,
+                "position": 4,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              },
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              },
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              }
+            ],
+            "staged_count": 0,
+            "visible": [
+              {
+                "key": 401001,
+                "position": 1,
+                "tag": "prefill/k4/i1",
+                "value": -401018
+              },
+              {
+                "key": 401002,
+                "position": 2,
+                "tag": "prefill/k4/i2",
+                "value": -401019
+              },
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              },
+              {
+                "key": 402001,
+                "position": 4,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              }
+            ]
+          }
+        },
+        {
+          "accepted_prefix": 4,
+          "commit": {
+            "accepted_prefix": 4,
+            "bonus_committed": false,
+            "discarded_suffix": 0,
+            "writes": [
+              {
+                "key": 402000,
+                "position": 3,
+                "slot": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              },
+              {
+                "key": 402001,
+                "position": 4,
+                "slot": 0,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              },
+              {
+                "key": 402002,
+                "position": 5,
+                "slot": 1,
+                "tag": "proposal/k4/i2",
+                "value": -402019
+              },
+              {
+                "key": 402003,
+                "position": 6,
+                "slot": 2,
+                "tag": "proposal/k4/i3",
+                "value": -402020
+              }
+            ]
+          },
+          "scenario": "post_first_wrap",
+          "snapshot": {
+            "capacity": 4,
+            "next_token": {
+              "mask_by_slot": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "positions_by_slot": [
+                4,
+                5,
+                6,
+                7
+              ],
+              "query_position": 7,
+              "visible_positions": [
+                4,
+                5,
+                6,
+                7
+              ],
+              "write_slot": 3
+            },
+            "next_write_slot": 3,
+            "offset": 7,
+            "slots": [
+              {
+                "key": 402001,
+                "position": 4,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              },
+              {
+                "key": 402002,
+                "position": 5,
+                "tag": "proposal/k4/i2",
+                "value": -402019
+              },
+              {
+                "key": 402003,
+                "position": 6,
+                "tag": "proposal/k4/i3",
+                "value": -402020
+              },
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              }
+            ],
+            "staged_count": 0,
+            "visible": [
+              {
+                "key": 402000,
+                "position": 3,
+                "tag": "proposal/k4/i0",
+                "value": -402017
+              },
+              {
+                "key": 402001,
+                "position": 4,
+                "tag": "proposal/k4/i1",
+                "value": -402018
+              },
+              {
+                "key": 402002,
+                "position": 5,
+                "tag": "proposal/k4/i2",
+                "value": -402019
+              },
+              {
+                "key": 402003,
+                "position": 6,
+                "tag": "proposal/k4/i3",
+                "value": -402020
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "scope": {
+    "imports": "Python standard library only",
+    "metal": "not touched",
+    "mlx": "not imported",
+    "production_cache_integration": "not performed",
+    "production_performance_evidence": "not provided"
+  },
+  "semantics_read": {
+    "graphbank": "Rotating or indexed caches are excluded from tensor-offset promotion.",
+    "mtplx_gemma4": "Verified suffix is rolled back to primary plus accepted drafts; a bonus is the next primary token.",
+    "mtplx_laguna": "Ring index is normalized to the next legal write slot while absolute offset keeps advancing.",
+    "swift_516": "Staged rotating rows are read without live mutation; commit keeps a prefix and advances the timeline atomically."
+  },
+  "version": 1
+}

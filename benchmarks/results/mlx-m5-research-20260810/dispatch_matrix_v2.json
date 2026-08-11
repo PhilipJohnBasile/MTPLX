@@ -1,0 +1,4977 @@
+{
+  "canonical_matrix_sha256": "c0e042fe2f1f7d858303298ba6aa31333901f8ae0f94c587dcbec08c52ba9565",
+  "canonicalization": {
+    "encoding": "utf-8",
+    "hashed_value": "matrix",
+    "json": "sorted object keys, compact separators, ASCII escaping"
+  },
+  "consumer_call_geometry_source": {
+    "geometry": "qwen3_next selects top_k experts per token; SwitchGLU sorts when indices.size >= 64, expands one token row per routed assignment, and calls GatherQMM with inner M=1, B=verify_rows*top_k",
+    "revision": "254d153fdeb6f150edd4fc5a54f9828638481fa8",
+    "router": "mlx_lm/models/qwen3_next.py:308-344",
+    "router_file_sha256": "3c572fe3fbb36721efab4d80d1bb6af11beb4ad1caae18deefc9fc84cbcd9b79",
+    "switch_glu": "mlx_lm/models/switch_layers.py:176-199",
+    "switch_glu_file_sha256": "073a6a808d5c90bb699a2ecca0e559b06727ae96dbc1f0253e4c7e77e4ee1ef2"
+  },
+  "generator": {
+    "metal_calls": false,
+    "model_loading": false,
+    "path": "benchmarks/research_mlx_m5_dispatch_audit.py",
+    "script_sha256": "478a8202d7ba1e98cc123f77aaf7e19d62c43c1054763c85b0a5a92c298306ae"
+  },
+  "legacy_comparison": {
+    "changed_cell_count": null,
+    "changed_cell_count_status": "not_computable: v1 published only a digest, not the matrix or its canonicalization",
+    "legacy_canonical_sha256": "81fd28142b510df1cdeca26872e9b0f0fb7a50ddbe87813082cf2e709113a9ab",
+    "legacy_claimed_rows": 288,
+    "legacy_claimed_tests": 10,
+    "legacy_full_matrix_present": false,
+    "new_matrix_rows": 288,
+    "new_matrix_tests": 16,
+    "row_count_preserved": true,
+    "sha256_reproduced": false,
+    "sha256_status": "corrected transparent v5 canonicalization; legacy digest cannot be reproduced"
+  },
+  "matrix": [
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": false,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": false,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 48,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 48,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 8
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 54,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 54,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 9
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 60,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 60,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 10
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 66,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 66,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 11
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 72,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 72,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 12
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 78,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 78,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 13
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 84,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 84,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 14
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 90,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 90,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 15
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 96,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": false,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 96,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 6,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 16
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": false,
+        "generic_mlx_qmm_path": false,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": false,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": false,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": false,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "deepseek_v4_flash_0731",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": false,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "unrepresented_runtime_condition",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": false,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 80,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 80,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 8
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 90,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 90,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 9
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 100,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 100,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 10
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 110,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 110,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 11
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 120,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 120,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 12
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 130,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 130,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 13
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 140,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 140,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 14
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 150,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 150,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 15
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 160,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 160,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 10,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 16
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": true
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": false
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "laguna_s21_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": false,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "static source terms pass; runtime key-length relation remains required",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 8
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 9
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 10
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 11
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 12
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 13
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 14
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 15
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 0,
+        "batch_rows_b_at_least_16": false,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 0,
+        "gatherqmm_inner_rows_m": null,
+        "gatherqmm_inner_rows_m_is_one": false,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": false,
+        "routed_assignment_count": 0,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": false,
+        "target_has_routed_experts": false,
+        "target_top_k": 0,
+        "target_top_k_exposed": false,
+        "target_verify_token_rows": 16
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": false,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "false",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": false,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "one or more static m16 NAX terms fail",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_27b_8bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": false,
+        "threadgroup_simdgroups_at_most_32": true
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3838",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_supported": true,
+        "key_rows_at_least_query_rows": "unrepresented_runtime_condition",
+        "long_key_rows_at_least_1024": "not_required_for_this_head_dim",
+        "mask_and_causal_mode_do_not_gate_multirow_route": true,
+        "row_band_9_through_16": true,
+        "threadgroup_simdgroups_at_most_32": false
+      },
+      "reason": "one or more source predicate terms fail",
+      "source_availability": "closed_unmerged_historical_code_only",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_3842",
+      "eligibility": "false",
+      "predicate_terms": {
+        "head_dim_256": true,
+        "named_shape_is_full_attention_prefill": false,
+        "query_rows_at_least_1024": false,
+        "runtime_nax_and_call_contract_unverified": false
+      },
+      "reason": "this verify-width matrix cannot establish the prefill-only dispatch",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4020",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "runtime_dtype_and_mask_contract_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a prefill primitive is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 64,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 64,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 8
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 72,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 72,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 9
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 80,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 80,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 10
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 88,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 88,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 11
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 96,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 96,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 12
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 104,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 104,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 13
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 112,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 112,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 14
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 120,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 120,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 15
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4023",
+      "eligibility": "false",
+      "predicate_terms": {
+        "batch_rows_b": 128,
+        "batch_rows_b_at_least_16": true,
+        "batch_rows_per_expert_b_over_e_at_least_4": false,
+        "expert_count_e": 256,
+        "gatherqmm_inner_rows_m": 1,
+        "gatherqmm_inner_rows_m_is_one": true,
+        "generic_mlx_lm_moe_path": true,
+        "nax_available": "unrepresented_runtime_condition",
+        "right_sorted": true,
+        "routed_assignment_count": 128,
+        "switchglu_sort_threshold_assignments": 64,
+        "switchglu_sorts_routed_assignments": true,
+        "target_has_routed_experts": true,
+        "target_top_k": 8,
+        "target_top_k_exposed": true,
+        "target_verify_token_rows": 16
+      },
+      "reason": "one or more sorted-RHS GatherQMM predicate terms fail",
+      "source_availability": "merged_source_with_runtime_conditions",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4077",
+      "eligibility": "false",
+      "predicate_terms": {
+        "decode_single_row": false,
+        "gqa_factor_8": true,
+        "head_dim_64_or_128": false
+      },
+      "reason": "verify rows 8 through 16 are not decode single-row calls",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "false",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": false,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "one or more static QMM preconditions fail",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_pr_4171",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "affine_bits_supported_by_transposed_qmm_t_nax": true,
+        "generic_mlx_qmm_path": true,
+        "m5_large_projection_rows_at_least_13": true,
+        "quantization_declares_affine_group_size": true,
+        "runtime_call_is_transposed_qmm_unverified": false
+      },
+      "reason": "static row and supported-affine-quantization preconditions hold; actual QMM call remains required",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mlx_lm_pr_1559",
+      "eligibility": "false",
+      "predicate_terms": {
+        "named_shape_is_prefill": false,
+        "packed_cache_lifecycle_unverified": false,
+        "target_has_gated_deltanet": true
+      },
+      "reason": "a packed prefill proposal is not a verify-row dispatch claim",
+      "source_availability": "pinned_candidate_source",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 8
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 9
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 10
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 11
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 12
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 13
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 14
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 15
+    },
+    {
+      "candidate": "mtplx_private_nax",
+      "eligibility": "conditional",
+      "predicate_terms": {
+        "activation_dtype_is_bf16_or_fp16": "unrepresented_runtime_condition",
+        "attention_phase_is_not_prefill": "unrepresented_runtime_condition",
+        "earlier_lane_precedence": "m16_not_shadowed_by_earlier_4bit_lanes",
+        "group_size_is_32_64_or_128": true,
+        "input_k_is_multiple_of_256": "unrepresented_runtime_condition",
+        "m16_lane_not_disabled_by_selfcheck": "unrepresented_runtime_condition",
+        "mtplx_nax_patch_is_installed": "unrepresented_runtime_condition",
+        "nax_hardware_and_os_are_available": "unrepresented_runtime_condition",
+        "output_n_is_multiple_of_32": "unrepresented_runtime_condition",
+        "quantization_is_4_bit": true,
+        "target_uses_generic_mlx_quantizedlinear_path": true,
+        "verify_rows_in_installed_4bit_band": true
+      },
+      "reason": "static m16 NAX terms pass; runtime QuantizedLinear call conditions remain",
+      "source_availability": "private_source_not_generic_mlx_lm",
+      "target": "qwen36_35b_a3b_4bit",
+      "verify_rows": 16
+    }
+  ],
+  "method": {
+    "matrix_dimensions": {
+      "sources": 8,
+      "targets": 4,
+      "verify_widths": [
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ]
+    },
+    "metal_calls": false,
+    "model_loading": false,
+    "qualification": "true means all source terms represented by the matrix pass; conditional means static terms pass but a required call-shape or runtime condition is unrepresented; false means at least one static term fails"
+  },
+  "schema": "mtplx-m5-static-dispatch-audit-v5",
+  "source_predicates": {
+    "mlx_lm_pr_1559": {
+      "availability": "pinned_candidate_source",
+      "logic": "packed Gated DeltaNet is a prefill candidate; it is not a verify-row dispatch",
+      "predicate_location": "mlx_lm/models/gated_delta.py:423-432",
+      "revision": "e1cc9c51442aef48ab206d23400720a1e2022448"
+    },
+    "mlx_pr_3838": {
+      "availability": "closed_unmerged_historical_code_only",
+      "logic": "8 < verify_rows <= 16; supported D in {64,96,128,256}; GQA * ceil(verify_rows / (4 if D <= 128 else 2)) <= 32; verify_rows <= K; K >= 1024 is required only where the ordinary full kernel supports the head dimension",
+      "predicate_location": "mlx/backend/metal/scaled_dot_product_attention.cpp:591-617,823-882,999-1074",
+      "revision": "3df41a6ade727ffd1c84336fd556146a75a4737b"
+    },
+    "mlx_pr_3842": {
+      "availability": "pinned_candidate_source",
+      "logic": "full-attention prefill only: D=256, causal, no array mask, NAX available, non-float32-or-TF32, and query_rows >= 1024",
+      "predicate_location": "mlx/backend/metal/scaled_dot_product_attention.cpp:695-732",
+      "revision": "31f1555a80d529a0ab27441733293b37ada1223b"
+    },
+    "mlx_pr_4020": {
+      "availability": "pinned_candidate_source",
+      "logic": "Gated DeltaNet primitive is a prefill alternative; this matrix audits verify rows, so no verify-row dispatch is claimed",
+      "predicate_location": "mlx/backend/metal/gated_delta_update.cpp:15-41,80-93",
+      "revision": "4ad8724334f942dc95bdc0c962fb7bda9b59b77c"
+    },
+    "mlx_pr_4023": {
+      "availability": "merged_source_with_runtime_conditions",
+      "logic": "GatherQMM sorted-RHS route requires generic routed MoE, M == 1, B >= 16, B / E >= 4, right_sorted, and NAX. MLX-LM SwitchGLU flattens verify_rows*top_k routed assignments, so GatherQMM sees M=1 and B=verify_rows*top_k; it sorts when B >= 64. Qwen35 and Laguna verify rows 8..16 satisfy M/B/sorting but fail B/E >= 4",
+      "predicate_location": "mlx/backend/metal/quantized.cpp:1492-1495,1890-1920",
+      "revision": "dae83dff6f02b657d78e5557216e9f9d47004fb5"
+    },
+    "mlx_pr_4077": {
+      "availability": "pinned_candidate_source",
+      "logic": "decode only: verify_rows=1, GQA=8, and D in {64,128}",
+      "predicate_location": "mlx/backend/metal/scaled_dot_product_attention.cpp:509-511",
+      "revision": "c55982c0972c8ecee6f8bfcc5e71d933c662be5f"
+    },
+    "mlx_pr_4171": {
+      "availability": "pinned_candidate_source",
+      "logic": "transposed affine qmm_t_nax supports 2/3/4/5/6/8-bit modes; the recorded applegpu_g17s large-projection boundary is verify_rows >= 13",
+      "predicate_location": "mlx/backend/metal/quantized.cpp:85-95,814-843,1795-1826",
+      "revision": "46c9b8593fbefcbf8e789710655ce71a5ff50d8d"
+    },
+    "mtplx_private_nax": {
+      "availability": "private_source_not_generic_mlx_lm",
+      "logic": "installed MTPLX QuantizedLinear patch: generic 4-bit calls with 4 <= M <= 16 and phase != prefill. M=4 and M=5..6 can take earlier m4/m6 lanes; the m16 NAX tile is otherwise eligible for 1 <= M <= 16 when group size is 32/64/128, dtype is bf16/fp16, K % 256 == 0, N % 32 == 0, NAX is available, and the patch and m16 lane are enabled",
+      "predicate_location": "mtplx/nax_verify.py:29-61,733-741,818-827,875-1049",
+      "revision": "5262443fd4b4b04faab5690346d1225ce6ee5b0e"
+    }
+  },
+  "source_receipt": {
+    "path": "benchmarks/results/mlx-m5-research-20260810/dispatch_truth_table.json",
+    "sha256": "fc75716e69dbfdca648ce5ed5e452f6c40d8dc2bd6343e66b5fc3204ccab33ed"
+  },
+  "target_snapshots": {
+    "deepseek_v4_flash_0731": {
+      "config_sha256": "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+      "experts": 256,
+      "gqa": 64,
+      "head_dim": 512,
+      "heads": 64,
+      "kv_heads": 1,
+      "runtime": "source-faithful custom path",
+      "top_k": 6
+    },
+    "laguna_s21_4bit": {
+      "config_sha256": "de530f3a85f0dbef0b22c6e7caff51d21b6b75d1f04024b07947d103e22a630c",
+      "experts": 256,
+      "full_attention_layers": 12,
+      "gqa": 6,
+      "head_dim": 128,
+      "heads": 48,
+      "kv_heads": 8,
+      "quantization": "4-bit group-128",
+      "top_k": 10
+    },
+    "qwen36_27b_8bit": {
+      "config_sha256": "93f5fa0d6c683b2278a5505337d0d756bbf4e633f9432dd15633aac50a87e55e",
+      "full_attention_layers": 16,
+      "gdn_geometry": "Hk16,Hv48,Dk128,Dv128",
+      "gdn_layers": 48,
+      "gqa": 6,
+      "head_dim": 256,
+      "heads": 24,
+      "kv_heads": 4,
+      "quantization": "8-bit group-64"
+    },
+    "qwen36_35b_a3b_4bit": {
+      "config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+      "experts": 256,
+      "full_attention_layers": 10,
+      "gdn_geometry": "Hk16,Hv32,Dk128,Dv128",
+      "gdn_layers": 30,
+      "gqa": 8,
+      "head_dim": 256,
+      "heads": 16,
+      "kv_heads": 2,
+      "quantization": "4-bit group-64",
+      "top_k": 8
+    }
+  },
+  "tests": [
+    {
+      "name": "reference_schema_is_v1",
+      "passed": true
+    },
+    {
+      "name": "reference_claimed_288_rows",
+      "passed": true
+    },
+    {
+      "name": "reference_has_all_pinned_sources",
+      "passed": true
+    },
+    {
+      "name": "reference_revisions_match_pinned_predicates",
+      "passed": true
+    },
+    {
+      "name": "matrix_has_expected_288_coordinates",
+      "passed": true
+    },
+    {
+      "name": "matrix_coordinates_are_unique",
+      "passed": true
+    },
+    {
+      "name": "qwen27_3838_m9_m10_require_runtime_key_relation",
+      "passed": true
+    },
+    {
+      "name": "qwen35_3838_never_eligible",
+      "passed": true
+    },
+    {
+      "name": "laguna_3838_m9_through_m16_require_long_key_context",
+      "passed": true
+    },
+    {
+      "name": "qwen35_qmm_boundary",
+      "passed": true
+    },
+    {
+      "name": "qwen27_8bit_qmm_t_nax_supports_the_pinned_affine_mode_family",
+      "passed": true
+    },
+    {
+      "name": "qwen35_and_laguna_verify_geometry_is_sorted_but_below_density_gate",
+      "passed": true
+    },
+    {
+      "name": "private_nax_general_4bit_m8_through_m16_is_conditional",
+      "passed": true
+    },
+    {
+      "name": "private_nax_is_not_qwen_only",
+      "passed": true
+    },
+    {
+      "name": "private_nax_8bit_is_excluded",
+      "passed": true
+    },
+    {
+      "name": "private_nax_precedence_is_not_m16_only",
+      "passed": true
+    }
+  ]
+}

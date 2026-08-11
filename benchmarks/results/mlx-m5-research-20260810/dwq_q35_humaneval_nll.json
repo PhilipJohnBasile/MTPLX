@@ -1,0 +1,260 @@
+{
+  "baseline_name": "stock-affine-w4",
+  "candidate_name": "mlx-community-dwq",
+  "historical_input_sha256": "2c9fdefb7097b57cf2ab9d31cc4032fdc8cd9bac76fe7d7a41e90ef3cf92025d",
+  "historical_raw_producer_source": {
+    "reason": "The underlying artifact-local v1/v2 receipts do not preserve the exact producing script alongside tokenizer asset hashes or per-task prompt/solution token-ID hashes.",
+    "status": "unavailable"
+  },
+  "historical_unverified_numeric_output": {
+    "baseline": {
+      "aggregate_nlls": [
+        0.38672736090266024,
+        0.38672736090266024
+      ],
+      "exact_task_nll_repeat": true,
+      "labels": [
+        "dwq_stock_a1",
+        "dwq_stock_a2"
+      ],
+      "mean_nll_nats_per_token": 0.38672736090266024,
+      "perplexity": 1.472155069524691,
+      "receipt_sha256": [
+        "ef8653f63be6eb65782242e46c4d5a3dffbed3e80b52376431a65ce9f5f28a2c",
+        "37c29fead30c72038efd79bbcb7b3ce26c1088ab8d8e52a1082d4feefef7903c"
+      ],
+      "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+    },
+    "candidate": {
+      "aggregate_nlls": [
+        0.4006038041708107,
+        0.4006038041708107
+      ],
+      "exact_task_nll_repeat": true,
+      "labels": [
+        "dwq_candidate_b1",
+        "dwq_candidate_b2"
+      ],
+      "mean_nll_nats_per_token": 0.4006038041708107,
+      "perplexity": 1.4927257396149003,
+      "receipt_sha256": [
+        "4f16d690fef2f96c227b5072be473f21142ec41200a0585db9fd14c43fdf5037",
+        "ccbdce17317d082ca63dc8cd92f2c261dd61f7cda76ab81f06fa372e556a3465"
+      ],
+      "weight_manifest_sha256": "953160736915f9c44b66d17ce91564104b2dfffb7344173f89f9dc93429613dc"
+    },
+    "comparison": {
+      "mean_nll_delta_nats_per_token": 0.013876443268150462,
+      "mean_nll_percent_change": 3.588172100303799,
+      "mean_nll_ratio": 1.035881721003038,
+      "mean_task_delta_nats_per_token": 0.025107664499537823,
+      "median_task_delta_nats_per_token": 0.01200189345922223,
+      "tasks_equal": 0,
+      "tasks_improved": 11,
+      "tasks_worse": 21
+    },
+    "comparison_script_sha256": "492326bdbb06b1527627a3375a72c4e887378264fc78b74b0cb867cb5b1985d9",
+    "repeat_gate_pass": true,
+    "status": "directional_quality_regression",
+    "task_delta_basis": "per-task mean across all receipts in each arm",
+    "task_deltas_descending": [
+      {
+        "baseline_nll_nats_per_token": 0.5399307523454938,
+        "candidate_nll_nats_per_token": 0.7143393925258091,
+        "delta_nats_per_token": 0.17440864018031532,
+        "task_id": "HumanEval/29"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.5725533621651786,
+        "candidate_nll_nats_per_token": 0.7428297315325055,
+        "delta_nats_per_token": 0.17027636936732693,
+        "task_id": "HumanEval/7"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.6349787030901227,
+        "candidate_nll_nats_per_token": 0.7809442792619977,
+        "delta_nats_per_token": 0.145965576171875,
+        "task_id": "HumanEval/28"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.6172247992621528,
+        "candidate_nll_nats_per_token": 0.7137061225043403,
+        "delta_nats_per_token": 0.0964813232421875,
+        "task_id": "HumanEval/2"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.5268189034810881,
+        "candidate_nll_nats_per_token": 0.6117873773342226,
+        "delta_nats_per_token": 0.08496847385313455,
+        "task_id": "HumanEval/8"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.35291620663234163,
+        "candidate_nll_nats_per_token": 0.4274711608886719,
+        "delta_nats_per_token": 0.07455495425633024,
+        "task_id": "HumanEval/10"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.34471308390299477,
+        "candidate_nll_nats_per_token": 0.4007338205973307,
+        "delta_nats_per_token": 0.05602073669433594,
+        "task_id": "HumanEval/22"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.3754765125031167,
+        "candidate_nll_nats_per_token": 0.4313042417485663,
+        "delta_nats_per_token": 0.0558277292454496,
+        "task_id": "HumanEval/18"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.36705935278604196,
+        "candidate_nll_nats_per_token": 0.41252069695051324,
+        "delta_nats_per_token": 0.045461344164471285,
+        "task_id": "HumanEval/17"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.2700679302215576,
+        "candidate_nll_nats_per_token": 0.2975337505340576,
+        "delta_nats_per_token": 0.0274658203125,
+        "task_id": "HumanEval/16"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.3667284907126913,
+        "candidate_nll_nats_per_token": 0.3930833388348015,
+        "delta_nats_per_token": 0.026354848122110197,
+        "task_id": "HumanEval/5"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.2535384785045277,
+        "candidate_nll_nats_per_token": 0.2750910672274503,
+        "delta_nats_per_token": 0.021552588722922594,
+        "task_id": "HumanEval/0"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.24690065885844983,
+        "candidate_nll_nats_per_token": 0.26480248099879217,
+        "delta_nats_per_token": 0.017901822140342333,
+        "task_id": "HumanEval/21"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.6416312908304149,
+        "candidate_nll_nats_per_token": 0.6588935852050781,
+        "delta_nats_per_token": 0.0172622943746632,
+        "task_id": "HumanEval/26"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.40234508070834846,
+        "candidate_nll_nats_per_token": 0.41693997937579486,
+        "delta_nats_per_token": 0.014594898667446399,
+        "task_id": "HumanEval/12"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.45190742688301283,
+        "candidate_nll_nats_per_token": 0.46401062989846253,
+        "delta_nats_per_token": 0.012103203015449704,
+        "task_id": "HumanEval/25"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.3700687408447266,
+        "candidate_nll_nats_per_token": 0.38196932474772133,
+        "delta_nats_per_token": 0.011900583902994755,
+        "task_id": "HumanEval/30"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.24103119891622793,
+        "candidate_nll_nats_per_token": 0.2508859219758407,
+        "delta_nats_per_token": 0.009854723059612769,
+        "task_id": "HumanEval/19"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.1673558991530846,
+        "candidate_nll_nats_per_token": 0.17608563653353987,
+        "delta_nats_per_token": 0.008729737380455266,
+        "task_id": "HumanEval/4"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.3476717331830193,
+        "candidate_nll_nats_per_token": 0.35375213623046875,
+        "delta_nats_per_token": 0.006080403047449445,
+        "task_id": "HumanEval/3"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.5030731029724806,
+        "candidate_nll_nats_per_token": 0.5031195651279406,
+        "delta_nats_per_token": 4.6462155460003096e-05,
+        "task_id": "HumanEval/6"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.10866928100585938,
+        "candidate_nll_nats_per_token": 0.10419082641601562,
+        "delta_nats_per_token": -0.00447845458984375,
+        "task_id": "HumanEval/13"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.44766295750935875,
+        "candidate_nll_nats_per_token": 0.44242172241210936,
+        "delta_nats_per_token": -0.005241235097249386,
+        "task_id": "HumanEval/9"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.42090706203294836,
+        "candidate_nll_nats_per_token": 0.4146279874055282,
+        "delta_nats_per_token": -0.006279074627420167,
+        "task_id": "HumanEval/24"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.4006834463639693,
+        "candidate_nll_nats_per_token": 0.3930177688598633,
+        "delta_nats_per_token": -0.0076656775041060166,
+        "task_id": "HumanEval/31"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.2939390202158505,
+        "candidate_nll_nats_per_token": 0.285361476780213,
+        "delta_nats_per_token": -0.008577543435637491,
+        "task_id": "HumanEval/1"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.284310591848273,
+        "candidate_nll_nats_per_token": 0.2726837961297286,
+        "delta_nats_per_token": -0.011626795718544414,
+        "task_id": "HumanEval/15"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.3741250765525689,
+        "candidate_nll_nats_per_token": 0.356050394349179,
+        "delta_nats_per_token": -0.01807468220338987,
+        "task_id": "HumanEval/20"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.39771270751953125,
+        "candidate_nll_nats_per_token": 0.3771444956461589,
+        "delta_nats_per_token": -0.020568211873372377,
+        "task_id": "HumanEval/23"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.6063717695382925,
+        "candidate_nll_nats_per_token": 0.5836877822875977,
+        "delta_nats_per_token": -0.02268398725069487,
+        "task_id": "HumanEval/11"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.4878796168736049,
+        "candidate_nll_nats_per_token": 0.4326395307268415,
+        "delta_nats_per_token": -0.0552400861467634,
+        "task_id": "HumanEval/27"
+      },
+      {
+        "baseline_nll_nats_per_token": 0.6039623532976423,
+        "candidate_nll_nats_per_token": 0.4900308336530413,
+        "delta_nats_per_token": -0.11393151964460096,
+        "task_id": "HumanEval/14"
+      }
+    ]
+  },
+  "post_hoc_interpretation_correction": "No model was rerun or numeric result changed. The legacy aggregate is retained under historical_unverified_numeric_output, but equal token counts do not prove equal tokenization, so its percentage and per-task signs are not cross-artifact decision evidence.",
+  "promotion_decision": "not_decided_by_historical_nll",
+  "quality_evidence": "not_usable_for_cross_artifact_quality_direction",
+  "schema": "mtplx-q35-compressed-artifact-nll-comparison-v3",
+  "status": "historical_not_comparable_missing_tokenizer_and_token_id_provenance"
+}

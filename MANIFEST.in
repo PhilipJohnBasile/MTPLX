@@ -1,3 +1,4 @@
 include CITATION.cff
 include CHANGELOG.md
 recursive-include scripts *.py *.sh
+exclude tests/test_research_*.py

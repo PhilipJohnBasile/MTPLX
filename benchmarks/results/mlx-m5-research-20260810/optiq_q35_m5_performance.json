@@ -1,0 +1,98 @@
+{
+  "baseline": {
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_mean_tokens_per_second": 100.2488459268117,
+    "decode_relative_range": 0.004366987042124433,
+    "decode_tokens_per_second_by_run": [
+      100.02995322123654,
+      100.46773863238685
+    ],
+    "exact_continuation_repeat": true,
+    "labels": [
+      "optiq_stock_a1",
+      "optiq_stock_a2"
+    ],
+    "load_seconds_by_run": [
+      0.635625791,
+      0.604667959
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 189.06597925,
+    "prefill_median_ms_by_run": [
+      188.231375,
+      189.9005835
+    ],
+    "prefill_relative_range": 0.008828708933365632,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "3e679dcc71ff7ac17f7b3c0bec03a1b2d185ed008ba2e94fdfcda6c78fbd2272",
+      "b872bdde75fb8165e32ad70c8e865c6da536234a4b3f2fbf30e3fe33b8d6c4b5"
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock_affine_4bit",
+  "candidate": {
+    "continuation_token_ids_sha256": [
+      "1cd73bb47293cd7231c8dd83c803dfa1141e551015365875a2921d25275003fe",
+      "1cd73bb47293cd7231c8dd83c803dfa1141e551015365875a2921d25275003fe"
+    ],
+    "continuation_tokens": 128,
+    "decode_mean_tokens_per_second": 85.20949607392043,
+    "decode_relative_range": 0.02166898780779315,
+    "decode_tokens_per_second_by_run": [
+      84.28629430815344,
+      86.13269783968742
+    ],
+    "exact_continuation_repeat": true,
+    "labels": [
+      "optiq_candidate_b1",
+      "optiq_candidate_b2"
+    ],
+    "load_seconds_by_run": [
+      0.72901675,
+      0.708448708
+    ],
+    "peak_memory_bytes_by_run": [
+      23595772268,
+      23595772268
+    ],
+    "prefill_mean_ms": 194.101854,
+    "prefill_median_ms_by_run": [
+      193.8660625,
+      194.3376455
+    ],
+    "prefill_relative_range": 0.002429564634658305,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "f8eea9cc9b128a0d6a71431ac4c784ef694031af74c9f3820cc044ffb192f777",
+      "2e1cd90a59ca561ee894b94a5ff0bcab6b1d947e37506893a37a821887d4babe"
+    ],
+    "weight_manifest_sha256": "62e8cacacd8e7f0d38a80e1f08f7c6845b429bcea41f59d48e18164c582d79af"
+  },
+  "candidate_name": "optiq_mixed_4bit_8bit",
+  "comparison": {
+    "decode_percent_change": -15.002017942302281,
+    "decode_speedup_candidate_over_baseline": 0.8499798205769772,
+    "prefill_percent_change": -2.5944495872770035,
+    "prefill_speedup_candidate_over_baseline": 0.97405550412723,
+    "same_continuation_across_artifacts": false
+  },
+  "comparison_script_sha256": "1ba305399c9c674c0944497b0fda24cace1c6a9e5cbdb3cb12da3cc2a01f23a6",
+  "interpretation_limit": "This is a process-isolated compressed-artifact performance comparison. Matching greedy continuations on one synthetic prompt is a functional smoke, not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock_affine_4bit",
+    "optiq_mixed_4bit_8bit",
+    "optiq_mixed_4bit_8bit",
+    "stock_affine_4bit"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+  "status": "performance_only_not_quality_evidence"
+}

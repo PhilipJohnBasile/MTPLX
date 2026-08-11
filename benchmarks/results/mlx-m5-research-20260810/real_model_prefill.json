@@ -1,0 +1,285 @@
+{
+  "schema": "mtplx-mlx-m5-real-model-prefill-comparison-v1",
+  "date": "2026-08-10",
+  "last_upstream_refresh_date": "2026-08-11",
+  "status": "measured_quality_hold_not_release_evidence",
+  "hardware": {
+    "architecture": "applegpu_g17s",
+    "device": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "os": "macOS 27.0"
+  },
+  "method": {
+    "order": "process-isolated A/B/B/A",
+    "prompt": "deterministic 2048-token synthetic fixture",
+    "steady_samples_per_process": 4,
+    "first_touch_excluded": true,
+    "continuation": "16-token greedy continuation from the final prefill cache",
+    "aggregation": "midpoint of the two per-process steady-state medians",
+    "warning": "This is a numerical and performance probe, not a natural-language quality evaluation."
+  },
+  "provenance": {
+    "base": {
+      "commit": "6ffa7739a500970295f7be667437b5289dcacb0c",
+      "mlx_version": "0.32.1.dev20260810+6ffa7739a",
+      "wheel_sha256": "daaefcf94e9ef14638424facbafb7fe6a67a867105f8444eb8d80a00cabdc193",
+      "libmlx_sha256": "04bfeba07e0382592be112739b572d03c42a41be1c2ad121219a93fb878e6215"
+    },
+    "stack": {
+      "commit": "296277a9eaf0b6ff1684bbdaffe14b902b42f981",
+      "patches": [
+        "mlx#3838",
+        "mlx#4171",
+        "mlx#3842"
+      ],
+      "mlx_version": "0.32.1.dev20260810+296277a9e",
+      "wheel_sha256": "d48f31e3bb9eb63b4ae9abacd140b4e903a111ae564520e1269478cf14e26e88",
+      "libmlx_sha256": "e96c32f4a6bcfd917d39cf740e22e1a4105c1e98945e99569b8b2627fa0ab858"
+    },
+    "benchmark_script_sha256": "21fbc6cbfec74923c25625f55cb1774b518dac7b7e301f061fb5cd5af69f402d",
+    "hardened_reproducer_script_sha256": "27903a1d4db94ef9d3bb1a0ef2784dc69289f91e5e80beaef383725c5bed7511",
+    "current_upstream_mlx_pr_3842": {
+      "url": "https://github.com/ml-explore/mlx/pull/3842",
+      "state": "open",
+      "base_commit": "158118bb152f59ad1aef0d8c835c49317ff9637b",
+      "head_commit": "31f1555a80d529a0ab27441733293b37ada1223b",
+      "base_mlx_version": "0.32.1.dev20260810+158118bb1",
+      "head_mlx_version": "0.32.1.dev20260810+31f1555a8",
+      "base_wheel_sha256": "c8c848ea93d85853e16b626b92f4f5c2f193a1154fd25baa7b16fda78acdb880",
+      "head_wheel_sha256": "f76fffe8d7350abcb3b0fd53057cff894ca96ba12bb641d14a789b9323111a12",
+      "base_libmlx_sha256": "08e4ff57f0c6eab5c54e923cdab1993826fb8bd0b3371215ef27bb7f69f5bad3",
+      "head_libmlx_sha256": "6e4d46215b06038518fdbecbc60137ef1196e27760a6d518c19356809936bae3",
+      "core_extension_sha256_both_arms": "51c988be31d4db62ba117d8061031b30f1dd1bac17b3932fa6c38249153553bb",
+      "focused_tests": "2/2 passed"
+    }
+  },
+  "model_artifacts": {
+    "qwen36_27b_dense_6bit": {
+      "loaded_weight_manifest_algorithm": "SHA256 of sorted UTF-8 lines: filename\\0size_bytes\\0file_sha256\\n; only shards referenced by model.safetensors.index.json",
+      "loaded_weight_manifest_sha256": "930c3899a7d1a7605f75ed330c1fc3f0fe92cd028523d8e0a5152600114a938b",
+      "loaded_weight_shard_count": 6,
+      "loaded_weight_bytes": 22777879148,
+      "shards": [
+        {"name": "model-00001-of-00005.safetensors", "size_bytes": 5366732647, "sha256": "7f8d392d5452ddd409706972f0907f86aeab0630743a63163cfc89c3db2c6338"},
+        {"name": "model-00002-of-00005.safetensors", "size_bytes": 5344200019, "sha256": "ec05e282170f4b6d4d8f85e40bc3da31eeeec3516e80abf8f244ec2bc4de1241"},
+        {"name": "model-00003-of-00005.safetensors", "size_bytes": 5331479308, "sha256": "605e8494868419c7b33ab9e55ca25583720edafa269dac95cd54327273725db5"},
+        {"name": "model-00004-of-00005.safetensors", "size_bytes": 4780958327, "sha256": "a280f3c09cdae23f9e2d44f06f1ddc1dfd9ce7f93508ef81dc659a1ed33393b2"},
+        {"name": "model-00005-of-00005.safetensors", "size_bytes": 1033011548, "sha256": "dd74a610a58c43fcdf5d4d2fa1a15f4e5afc67d5bee0daa4ceb4a08e16192a49"},
+        {"name": "model-vision.safetensors", "size_bytes": 921497299, "sha256": "3f38404df2ece9cf60c833ac5649d39165e3b07d590ea5bcca9bebeafa548bcb"}
+      ]
+    },
+    "qwen36_35b_a3b_4bit": {
+      "loaded_weight_manifest_algorithm": "SHA256 of sorted UTF-8 lines: filename\\0size_bytes\\0file_sha256\\n; only shards referenced by model.safetensors.index.json",
+      "loaded_weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+      "loaded_weight_shard_count": 4,
+      "loaded_weight_bytes": 20402204271,
+      "shards": [
+        {"name": "model-00001-of-00004.safetensors", "size_bytes": 5288196018, "sha256": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8"},
+        {"name": "model-00002-of-00004.safetensors", "size_bytes": 5368472749, "sha256": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f"},
+        {"name": "model-00003-of-00004.safetensors", "size_bytes": 5368324139, "sha256": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03"},
+        {"name": "model-00004-of-00004.safetensors", "size_bytes": 4377211365, "sha256": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"}
+      ]
+    }
+  },
+  "current_upstream_mlx_pr_3842": {
+    "isolated_sdpa_q2048_k2048": {
+      "shape": "B1,Hq16,Hkv2,Q2048,K2048,D256,bfloat16,causal",
+      "fixture_sha256": "29b3acdd760f74efa527f13ae7e38a2376f9758efdac6b480a1b5516924bdfc4",
+      "base_process_medians_ms": [2.4672495, 2.428313],
+      "head_process_medians_ms": [1.198125, 1.195021],
+      "base_midpoint_ms": 2.44778125,
+      "head_midpoint_ms": 1.196573,
+      "speedup": 2.0456597716980074,
+      "base_output_sha256": "5c29e149d9cbbeac289a57cdc8ecdceb78bf73d135564942ff5cb3e6a393322c",
+      "head_output_sha256": "26812b915bde8dafaceea1349fc0ba02a1ab80592d80a5838ac0e47c51e05972"
+    },
+    "qwen36_35b_a3b_4bit": {
+      "base_process_medians_ms": [488.468417, 488.5839795],
+      "head_process_medians_ms": [474.655646, 472.9063335],
+      "base_samples_ms": [[484.023917, 492.775, 489.653, 487.283834], [492.314834, 499.525458, 482.241834, 484.853125]],
+      "head_samples_ms": [[473.09325, 476.218042, 477.566083, 471.616417], [466.347, 473.793125, 478.866625, 472.019542]],
+      "base_midpoint_ms": 488.52619825,
+      "head_midpoint_ms": 473.78098975,
+      "speedup": 1.0311224148266915,
+      "latency_reduction_percent": 3.01830455619787,
+      "base_last_logits_sha256": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed",
+      "head_last_logits_sha256": "7e5d0e225570548a5ee234026ff5f713c95d88714ed5841baa1cfbe7961ca2f5",
+      "greedy_next_id_both_arms": 4739,
+      "continuation_token_ids_sha256_both_arms": "872788ae30f5e0d2ee5d7b8f415f24b7f864f089db63dae9cdd3869423260b69",
+      "logit_comparison": {
+        "max_abs_difference": 1.1328125,
+        "mean_abs_difference": 0.11318335885772501,
+        "total_variation": 0.06815154363805212,
+        "top10_overlap": 1.0,
+        "reuse_basis": "Current base/head expanded-logit hashes exactly match the separately exported arrays used for this comparison."
+      },
+      "hardened_manifest_rerun_20260811": {
+        "benchmark_script_sha256": "27903a1d4db94ef9d3bb1a0ef2784dc69289f91e5e80beaef383725c5bed7511",
+        "expected_and_observed_weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+        "weights_unchanged_in_all_processes": true,
+        "continuation_tokens": 32,
+        "base_process_medians_ms": [764.1158335, 761.1111455],
+        "head_process_medians_ms": [692.1885, 723.5863125],
+        "base_midpoint_ms": 762.6134895,
+        "head_midpoint_ms": 707.88740625,
+        "speedup": 1.0773090222637367,
+        "latency_reduction_percent": 7.176123161141658,
+        "base_same_arm_max_over_min": 1.0039477650771047,
+        "head_same_arm_max_over_min": 1.0453602053486875,
+        "base_last_logits_sha256": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed",
+        "head_last_logits_sha256": "7e5d0e225570548a5ee234026ff5f713c95d88714ed5841baa1cfbe7961ca2f5",
+        "continuation_token_ids_sha256_both_arms": "2f4104d08e9fbc8d2921738597c6673ae99b9f89524409f9f6b6cbf951dc1be8",
+        "interpretation": "The exact indexed shards remained unchanged and the token continuation matched. The repeated speed direction is positive, but the head's 4.5 percent same-arm spread and the known logit delta prevent a precise magnitude or quality claim."
+      },
+      "verdict": "speed_direction_repeated_distribution_delta_requires_quality_gate"
+    },
+    "qwen36_27b_dense_6bit": {
+      "base_process_medians_ms": [3066.2673955, 3274.834584],
+      "head_process_medians_ms": [2836.974271, 3621.922542],
+      "base_midpoint_ms": 3170.55098975,
+      "head_midpoint_ms": 3229.4484065,
+      "unreliable_midpoint_speedup": 0.9817623911775599,
+      "head_process_median_ratio_max_over_min": 1.2766850158014704,
+      "greedy_next_id_both_arms": 4739,
+      "continuation_token_ids_sha256_both_arms": "619161e499aa3cf586ed83f13624599cea5531aba780f52321f212b61a9b9439",
+      "verdict": "thermal_stability_gate_failed_no_magnitude_claim"
+    }
+  },
+  "historical_combined_stack_targets": {
+    "qwen36_27b_dense_6bit": {
+      "model_identity": {
+        "identifier": "Fable-711-confirmed-ablation-6bit",
+        "config_sha256": "686e32aa8ec10406d799c5b0c1190da5ddfb33a42ef0232b16ddd81799e485fc",
+        "index_sha256": "1468a1029fb69ed9483ef2c7abc6a1c09e846d879bc33b9e39f7eace7ccd5d62"
+      },
+      "prompt_token_ids_sha256": "54b473fdaeabe1252cee16a28933431774663da601b35522a817f5daa6fe0d68",
+      "base": {
+        "process_medians_ms": [
+          2950.7238335,
+          2907.2865625
+        ],
+        "samples_ms": [
+          [2886.133459, 2892.21675, 3009.230917, 3091.8805],
+          [2919.466375, 2895.10675, 2871.880125, 2973.213084]
+        ],
+        "midpoint_ms": 2929.005198,
+        "last_logits_sha256": "1805227605cbc25616accaffc5da92d4d2ca2d65fa72ae27769d64597cf6a6d0",
+        "peak_memory_bytes": 29128170518
+      },
+      "stack": {
+        "process_medians_ms": [
+          2842.575792,
+          2882.9372505
+        ],
+        "samples_ms": [
+          [2832.264959, 2852.886625, 2825.261083, 2862.736333],
+          [2881.233459, 2873.416792, 2884.641042, 2951.023959]
+        ],
+        "midpoint_ms": 2862.75652125,
+        "last_logits_sha256": "e1f344245c753f3e779f15850d7324f4c63ba34a98c3b4c4e47ecf0345f7c27b",
+        "peak_memory_bytes": 29061045266
+      },
+      "speedup": 1.023141568714713,
+      "latency_reduction_percent": 2.261814925942631,
+      "greedy_next_id_both_arms": 4739,
+      "continuation_token_ids_sha256_both_arms": "619161e499aa3cf586ed83f13624599cea5531aba780f52321f212b61a9b9439",
+      "logit_comparison": {
+        "max_abs_difference": 0.125,
+        "mean_abs_difference": 0.023440262356763417,
+        "total_variation": 0.008922184574469413,
+        "top10_overlap": 0.9,
+        "base_top1_margin": 2.71875,
+        "stack_top1_margin": 2.65625
+      },
+      "verdict": "below_3_percent_speed_gate_and_not_distribution_identical"
+    },
+    "qwen36_35b_a3b_4bit": {
+      "model_identity": {
+        "identifier": "Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+        "index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea"
+      },
+      "prompt_token_ids_sha256": "54b473fdaeabe1252cee16a28933431774663da601b35522a817f5daa6fe0d68",
+      "base": {
+        "process_medians_ms": [
+          523.320521,
+          541.391292
+        ],
+        "samples_ms": [
+          [490.240292, 517.5885, 534.414208, 529.052542],
+          [497.73925, 550.04175, 542.783667, 539.998917]
+        ],
+        "midpoint_ms": 532.3559065,
+        "last_logits_sha256": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed",
+        "peak_memory_bytes": 24417229154
+      },
+      "stack": {
+        "process_medians_ms": [
+          506.2295625,
+          521.981854
+        ],
+        "samples_ms": [
+          [475.579416, 494.872166, 517.586959, 521.955042],
+          [479.42375, 530.89975, 524.819625, 519.144083]
+        ],
+        "midpoint_ms": 514.10570825,
+        "last_logits_sha256": "7e5d0e225570548a5ee234026ff5f713c95d88714ed5841baa1cfbe7961ca2f5",
+        "peak_memory_bytes": 24366356866
+      },
+      "speedup": 1.035498921636414,
+      "latency_reduction_percent": 3.4281949401081597,
+      "greedy_next_id_both_arms": 4739,
+      "continuation_token_ids_sha256_both_arms": "872788ae30f5e0d2ee5d7b8f415f24b7f864f089db63dae9cdd3869423260b69",
+      "logit_comparison": {
+        "max_abs_difference": 1.1328125,
+        "mean_abs_difference": 0.11318335885772501,
+        "total_variation": 0.06815154363805212,
+        "top10_overlap": 1.0,
+        "base_top1_margin": 1.8125,
+        "stack_top1_margin": 1.875
+      },
+      "verdict": "narrowly_above_speed_gate_but_distribution_delta_requires_quality_gate"
+    }
+  },
+  "historical_patch_isolation_qwen36_35b_a3b": {
+    "isolated_sdpa_q2048_k2048": {
+      "shape": "B1,Hq16,Hkv2,Q2048,K2048,D256,bfloat16,causal",
+      "fixture_sha256": "29b3acdd760f74efa527f13ae7e38a2376f9758efdac6b480a1b5516924bdfc4",
+      "base_midpoint_ms": 2.43520825,
+      "stack_midpoint_ms": 1.20435425,
+      "speedup": 2.0220032851629823,
+      "base_output_sha256": "5c29e149d9cbbeac289a57cdc8ecdceb78bf73d135564942ff5cb3e6a393322c",
+      "stack_output_sha256": "26812b915bde8dafaceea1349fc0ba02a1ab80592d80a5838ac0e47c51e05972",
+      "interpretation": "A 2.02x isolated attention gain became only 1.035x in the complete model, demonstrating the full-model Amdahl bound."
+    },
+    "mlx_pr_3842_only": {
+      "commit": "55662463c87f276eda7b76bdcabd38c2cc9e7416",
+      "wheel_sha256": "494c6909e67bc845fbe33bcf746cd00c41057a9b4a25e4818d67e28b56508e62",
+      "libmlx_sha256": "2a002bbd4dc212118d84d6a6a8e28852d1af65b89115f9c7ba994b5a43646a4a",
+      "base_midpoint_ms": 527.99792725,
+      "candidate_midpoint_ms": 508.1877395,
+      "speedup": 1.038982026149413,
+      "continuation_identical": true,
+      "last_logits_match_full_stack": true,
+      "verdict": "source_of_prefill_gain_and_numerical_change"
+    },
+    "mlx_pr_4171_only": {
+      "commit": "3050f307bb7d87202d048764b5d1789133ccc008",
+      "wheel_sha256": "96d82f43c863fd47f60a74463d2b9fa6b46907f918b54c232f21fa267af24c37",
+      "libmlx_sha256": "9f69ae160392ce7032a62ae8cd7e44154ffb8344b7451d8dcae6ee3bcde890fe",
+      "base_midpoint_ms": 520.0126975,
+      "candidate_midpoint_ms": 515.7627395,
+      "speedup": 1.0082401415893676,
+      "logits_and_continuation_identical": true,
+      "verdict": "noise_level_control_for_2048_row_prefill"
+    }
+  },
+  "discarded_thermal_stress_pilot": {
+    "reason": "Eight repeated prefills per process showed strong monotonic drift and contradicted a later short-run repeat. It is retained as evidence that long in-process loops are not a valid magnitude protocol on this machine.",
+    "qwen36_35b_a3b_process_medians_ms": {
+      "base": [619.240417, 558.177625],
+      "stack": [795.4137915, 774.151896]
+    }
+  },
+  "release_decision": "No default change. Two exact-current #3842 comparisons improved Qwen 35B 2K prefill by 1.031x and 1.077x, but the latter had a 4.5 percent head same-arm spread and the one-step distribution differs by 6.8 percent total variation. Multi-prompt task quality, state, memory, and long-generation gates remain mandatory. Qwen 27B failed the thermal-stability gate, so no current magnitude is claimed."
+}

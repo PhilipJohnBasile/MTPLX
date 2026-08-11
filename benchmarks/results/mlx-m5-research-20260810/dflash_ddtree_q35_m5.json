@@ -1,0 +1,128 @@
+{
+  "schema": "mtplx-dflash-ddtree-q35-m5-v1",
+  "date": "2026-08-11",
+  "status": "correctness_smoke_pass_performance_no_go",
+  "source": {
+    "repository": "https://github.com/bstnxbt/dflash-mlx",
+    "commit": "9ca002898b48e14c9727dec17299f497e8467870",
+    "release": "v0.1.10",
+    "tree_implementation_commit": "326fdf04777cf9e60abb6f5aa964650ac13e0536",
+    "files": {
+      "dflash_mlx/engine/ddtree.py": "37e168765375968d3b85b2043d588faed275ccb59ee3c474ff791051368e06f5",
+      "dflash_mlx/engine/target_qwen_gdn.py": "f8b8c2be5e5361441867f0d0097c243df1b2f3d5352a11ec33e5147261f78828",
+      "dflash_mlx/kernels.py": "ce897f7198d932e9888016004227fc216ade6b60bd7cc353b5418526f042205a"
+    },
+    "configuration_compatibility": {
+      "upstream_pull_request": "https://github.com/bstnxbt/dflash-mlx/pull/46",
+      "pull_request_head": "0ef0d7b83dd5ee354948b686350905754116e3b3",
+      "state_at_measurement": "open_mergeable_no_checks_no_reviews",
+      "local_equivalent_shim_diff_sha256": "c8e48e30b4357f493a1121c63294fbb5447d9008ad768f7d25f309211a7c28bc",
+      "scope": "Read rope_theta from rope_parameters and block_size from dflash_config for the June 2026 z-lab configuration layout.",
+      "publication_limit": "The shim was applied only in a disposable checkout. No duplicate pull request was opened."
+    }
+  },
+  "hardware": {
+    "chip": "Apple M5 Max",
+    "memory_gb": 128,
+    "python": "3.13.14",
+    "mlx": "0.31.2",
+    "mlx_lm": "0.31.3",
+    "thermal_pressure": "unknown"
+  },
+  "models": {
+    "target": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+    "target_config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+    "target_index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea",
+    "draft": "z-lab/Qwen3.6-35B-A3B-DFlash",
+    "draft_revision": "f181eece646affea2c38b2765f1aaa01a9734ccd",
+    "draft_config_sha256": "20784b063040f7871efec4bf63342e5cb941907925943540176dfbb8aaf186dc",
+    "draft_weights_sha256": "1fb90ef50a32bfb8dd2abfe601dd3608d6d5b59dc342820a98830f76f8cd72b7"
+  },
+  "focused_tests": {
+    "command": "python -m pytest -q tests/test_ddtree.py tests/test_gated_delta_tree_kernel.py tests/test_target_qwen_tree.py",
+    "result": "32_passed",
+    "warnings": 2,
+    "scope_limit": "These tests cover the planner, recurrent tree kernel, and Qwen tree path. They do not establish real-model distribution equality or performance."
+  },
+  "method": {
+    "prompt_suite": "smoke-default",
+    "prompt_tokens": 102,
+    "sampling": "greedy_seed_0",
+    "block_tokens": 16,
+    "copyspec_mode": "off",
+    "no_eos": true,
+    "only_dflash": true,
+    "primary_comparison": "process_isolated_adaptive_A_tree_B_tree_B_adaptive_A",
+    "environment_limit": "Thermal pressure was unavailable and the host was not isolated. Use the repeated direction and cost decomposition; do not treat either throughput magnitude as a clean-machine result."
+  },
+  "verify_cap_6_abba": {
+    "adaptive_runs": [
+      {
+        "generation_tps": 186.12199410598464,
+        "acceptance_ratio": 0.8046875,
+        "tokens_per_cycle": 5.12,
+        "draft_us": 552670.209,
+        "verify_us": 341308.212
+      },
+      {
+        "generation_tps": 201.08557082256038,
+        "acceptance_ratio": 0.8046875,
+        "tokens_per_cycle": 5.12,
+        "draft_us": 153924.998,
+        "verify_us": 248679.039
+      }
+    ],
+    "ddtree_runs": [
+      {
+        "generation_tps": 171.4479215270192,
+        "acceptance_ratio": 0.802734375,
+        "tokens_per_cycle": 5.069306930693069,
+        "draft_us": 710444.252,
+        "verify_us": 2089744.615
+      },
+      {
+        "generation_tps": 161.54443634535733,
+        "acceptance_ratio": 0.802734375,
+        "tokens_per_cycle": 5.069306930693069,
+        "draft_us": 759937.05,
+        "verify_us": 2224195.246
+      }
+    ],
+    "adaptive_midpoint_tps": 193.6037824642725,
+    "ddtree_midpoint_tps": 166.49617893618824,
+    "ddtree_over_adaptive": 0.8599841222984025,
+    "ddtree_change_percent": -14.001587770159752,
+    "interpretation": "Tree acceptance was fractionally lower and tree verification was 6.1x to 8.9x more expensive than the corresponding adaptive-chain runs."
+  },
+  "verify_cap_16_directional_pair": {
+    "chain": {
+      "generation_tps": 224.36315052148746,
+      "acceptance_ratio": 0.8671875,
+      "tokens_per_cycle": 7.529411764705882,
+      "draft_us": 59342.212,
+      "verify_us": 78195.831
+    },
+    "ddtree": {
+      "generation_tps": 156.94209365504113,
+      "acceptance_ratio": 0.87109375,
+      "tokens_per_cycle": 7.757575757575758,
+      "draft_us": 268562.833,
+      "verify_us": 1308343.628
+    },
+    "ddtree_over_chain": 0.6995003113936513,
+    "ddtree_change_percent": -30.04996886063487,
+    "acceptance_change_percentage_points": 0.390625,
+    "tokens_per_cycle_change": 0.22816399286987554,
+    "interpretation": "The tree found one additional accepted draft token in 256 outputs, but target-tree and branch-draft costs overwhelmed that gain. This pair is directional because it was not repeated."
+  },
+  "greedy_output_smoke": {
+    "max_tokens": 64,
+    "chain_generated_token_ids_sha256": "73a1e5c896f9a886b245a4fffd42cdb62659660497d0b14e075fcb3acc119b03",
+    "ddtree_generated_token_ids_sha256": "73a1e5c896f9a886b245a4fffd42cdb62659660497d0b14e075fcb3acc119b03",
+    "identical": true,
+    "chain_generation_tps": 264.18988648090817,
+    "ddtree_generation_tps": 210.87505735224948,
+    "scope_limit": "One deterministic prompt is a smoke test, not a sampled-distribution or broad quality proof."
+  },
+  "decision": "NO_GO_FOR_DEFAULT_Q35_DDTREE. Keep chain/adaptive verification for this target-drafter regime. The topology-aware mechanism exists and passed focused tests, but its measured acceptance benefit was negligible while recurrent tree verification and branch drafting were materially slower. Reconsider only for a drafter or workload with substantially lower chain acceptance, after profiling the full tree-size and expert-union cost curve."
+}

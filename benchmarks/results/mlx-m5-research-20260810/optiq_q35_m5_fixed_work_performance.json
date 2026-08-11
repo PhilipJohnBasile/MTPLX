@@ -1,0 +1,222 @@
+{
+  "baseline": {
+    "campaign_arms": [
+      "stock-affine-w4",
+      "stock-affine-w4"
+    ],
+    "campaign_id": "q35-optiq-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      1,
+      4
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 103.99647390987496,
+    "decode_relative_range": 0.00025640862486457595,
+    "decode_tokens_per_second_by_run": [
+      103.98314111344196,
+      104.00980670630796
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:10:35.524096+00:00",
+      "2026-08-11T08:11:30.100796+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "optiq-stock-a1-fixed",
+      "optiq-stock-a2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.600059042,
+      0.597393083
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 189.0094065,
+    "prefill_median_ms_by_run": [
+      186.8950625,
+      191.1237505
+    ],
+    "prefill_relative_range": 0.02237289708647387,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "3d3104e9c84bb4f48db7a889d3b79734d6fdfd43c3e0c9aac9da6c19d3fffca3",
+      "e0232c3989b45a811976d52bd9be5443f268ccd6b99e1ae8f048931f4b3e9df1"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:10:19.198667+00:00",
+      "2026-08-11T08:11:13.680482+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "optiq-stock-a1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "optiq-stock-a2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock-affine-w4",
+  "candidate": {
+    "campaign_arms": [
+      "optiq-mixed-4bit-8bit",
+      "optiq-mixed-4bit-8bit"
+    ],
+    "campaign_id": "q35-optiq-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      2,
+      3
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 89.52064822731427,
+    "decode_relative_range": 0.013553385929853015,
+    "decode_tokens_per_second_by_run": [
+      88.91399428025657,
+      90.12730217437198
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:10:54.503870+00:00",
+      "2026-08-11T08:11:12.895197+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "optiq-candidate-b1-fixed",
+      "optiq-candidate-b2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.682511417,
+      0.68054125
+    ],
+    "peak_memory_bytes_by_run": [
+      23595772268,
+      23595772268
+    ],
+    "prefill_mean_ms": 195.46415625,
+    "prefill_median_ms_by_run": [
+      195.46027099999998,
+      195.46804150000003
+    ],
+    "prefill_relative_range": 3.975409174309521e-05,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "3fb827546a35368cc02d2a5bbc46b4c5f13cd4bd120972dd41751c0f3844c9a5",
+      "c4e5ce276e67c4ac3ea847ebe27c6ffbe4b6c301009df042ace8522209652d61"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:10:36.323003+00:00",
+      "2026-08-11T08:10:55.323298+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "optiq-candidate-b1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "optiq-candidate-b2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "62e8cacacd8e7f0d38a80e1f08f7c6845b429bcea41f59d48e18164c582d79af"
+  },
+  "candidate_name": "optiq-mixed-4bit-8bit",
+  "comparison": {
+    "decode_percent_change": -13.919535094147218,
+    "decode_speedup_candidate_over_baseline": 0.8608046490585278,
+    "prefill_percent_change": -3.302267727155217,
+    "prefill_speedup_candidate_over_baseline": 0.9669773227284478,
+    "same_decode_forward_count_across_artifacts": true,
+    "same_fixed_token_sequence_across_artifacts": true,
+    "same_routed_moe_work": "unobserved_not_established"
+  },
+  "comparison_script_sha256": "8404bd2470349a15eca3a1ebfd6f66333d9667c59d892fa5a9dad457f479c2a8",
+  "interpretation_limit": "This is a process-isolated, fixed-token and forward-count compressed-artifact performance comparison on one synthetic prompt. Teacher forcing does not equalize MoE routing because artifact-specific hidden states can change expert assignments; routing was not recorded. This is not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock-affine-w4",
+    "optiq-mixed-4bit-8bit",
+    "optiq-mixed-4bit-8bit",
+    "stock-affine-w4"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+  "status": "performance_only_not_quality_evidence"
+}

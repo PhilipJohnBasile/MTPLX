@@ -1,0 +1,319 @@
+{
+  "schema": "mtplx-mlx-pr-3882-q35-public-safe-raw-v1",
+  "status": "scalar_extracts_and_hashes_from_eight_process_receipts",
+  "redaction": {
+    "absolute_paths_removed": true,
+    "process_commands_reduced_to_public_activity_classes": true,
+    "source_process_receipts_packaged": false,
+    "token_id_arrays_omitted_after_recording_their_sha256": true,
+    "logs_not_packaged": true
+  },
+  "common_identity": {
+    "model_identifier": "Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+    "config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+    "index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea",
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+    "weights_unchanged_during_each_run": true,
+    "prompt": {
+      "length_tokens": 2048,
+      "token_ids_sha256": "54b473fdaeabe1252cee16a28933431774663da601b35522a817f5daa6fe0d68",
+      "vocab_size": 248320
+    },
+    "continuation": {
+      "length_tokens": 128,
+      "forward_steps": 127,
+      "token_ids_sha256": "54c0e91ea2d91bad9c8ab5bcae143e9e44ec346b5b8defe5a71290258152604a"
+    },
+    "output": {
+      "greedy_next_id": 4739,
+      "last_logits_sha256": "4fa846162379d36297ef1c2bf60d36f164b49158df1a57250eb469662903a5ed"
+    },
+    "peak_memory_bytes_after_weight_residency": 24417229154,
+    "benchmark_script_sha256": "27903a1d4db94ef9d3bb1a0ef2784dc69289f91e5e80beaef383725c5bed7511"
+  },
+  "arm_provenance": {
+    "parent": {
+      "commit": "8462ad9fd210518341f36f42e997cfafb7c528db",
+      "mlx_version": "0.32.1.dev20260811+8462ad9fd",
+      "libmlx_sha256": "144477ae8f25936f20ada0e12001f0e5120bbac188b0eb54bc10d715ce47cde3",
+      "core_extension_sha256": "c851e5cdaac7d76d53a06a16975a6811d662f62a31c6dac4b178679c25df9e5e",
+      "metallib_sha256": "961dae27c7c67891258cd59fd82d5e07fb7d6fa85dc9fdf1f988a47cf657566a"
+    },
+    "head": {
+      "commit": "291e909f443d17509385ee88fded90e460016a86",
+      "mlx_version": "0.32.1.dev20260811+291e909f4",
+      "libmlx_sha256": "a1b574bf28b58bebe46328a62f50c398c566f40e43333861dbdd4a95081700f5",
+      "core_extension_sha256": "c851e5cdaac7d76d53a06a16975a6811d662f62a31c6dac4b178679c25df9e5e",
+      "metallib_sha256": "961dae27c7c67891258cd59fd82d5e07fb7d6fa85dc9fdf1f988a47cf657566a"
+    }
+  },
+  "cells_in_execution_order": [
+    {
+      "label": "parent_a1",
+      "lane": "parent",
+      "source": {
+        "receipt_filename": "parent_a1.json",
+        "receipt_sha256": "7a1f16f43b3b448419f50e6ec6f125cc29d112450624de17b13c9db23e7445ed",
+        "host_snapshot_filename": "parent_a1.host.txt",
+        "host_snapshot_sha256": "b5923430b17f936c18a7a268fe64f301b9297264075d995fac7a54e10e80a4bb"
+      },
+      "prefill": {
+        "first_touch_ms": 1079.629417,
+        "samples_ms": [480.371583, 487.730791],
+        "mean_ms": 484.051187,
+        "prompt_tokens_per_second": 4230.957499955474
+      },
+      "decode": {
+        "elapsed_ms": 1360.063958,
+        "tokens_per_second": 93.37796156789267
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:15:06Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 124.7},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 99.9},
+          {"kind": "window_server", "cpu_percent": 36.2},
+          {"kind": "codex_process", "cpu_percent": 28.4},
+          {"kind": "codex_process", "cpu_percent": 20.9}
+        ]
+      }
+    },
+    {
+      "label": "head_b1",
+      "lane": "head",
+      "source": {
+        "receipt_filename": "head_b1.json",
+        "receipt_sha256": "07cf3f65f93de69d572cb52d1c78f5c629c26f5397abda6374e7e7195ba420c7",
+        "host_snapshot_filename": "head_b1.host.txt",
+        "host_snapshot_sha256": "65efc8500d447e8e5a864e42507396c724ef9c8891b5d84fee12097030c96e2e"
+      },
+      "prefill": {
+        "first_touch_ms": 758.224917,
+        "samples_ms": [481.556041, 491.091209],
+        "mean_ms": 486.323625,
+        "prompt_tokens_per_second": 4211.187560546745
+      },
+      "decode": {
+        "elapsed_ms": 1394.761,
+        "tokens_per_second": 91.05502663180287
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:15:25Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 129.7},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 98.9},
+          {"kind": "unrelated_python_process", "cpu_percent": 88.9},
+          {"kind": "unrelated_python_process", "cpu_percent": 67.5},
+          {"kind": "window_server", "cpu_percent": 33.3},
+          {"kind": "codex_process", "cpu_percent": 24.0},
+          {"kind": "codex_process", "cpu_percent": 14.8},
+          {"kind": "codex_process", "cpu_percent": 10.8}
+        ]
+      }
+    },
+    {
+      "label": "head_b2",
+      "lane": "head",
+      "source": {
+        "receipt_filename": "head_b2.json",
+        "receipt_sha256": "76e34a5f649c3009558a6b481b22b8f11186e6ea3ed77015fc2629051fa47de1",
+        "host_snapshot_filename": "head_b2.host.txt",
+        "host_snapshot_sha256": "0967719be6a1c419ff58ceccd2a43bb0e70a301726b09dd35bf67fcc60141dbd"
+      },
+      "prefill": {
+        "first_touch_ms": 509.548375,
+        "samples_ms": [486.184709, 493.015875],
+        "mean_ms": 489.600292,
+        "prompt_tokens_per_second": 4183.00404118223
+      },
+      "decode": {
+        "elapsed_ms": 1293.651583,
+        "tokens_per_second": 98.1717192394917
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:15:45Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 123.5},
+          {"kind": "unrelated_python_process", "cpu_percent": 74.1},
+          {"kind": "unrelated_python_process", "cpu_percent": 62.9},
+          {"kind": "window_server", "cpu_percent": 34.7},
+          {"kind": "codex_process", "cpu_percent": 24.9}
+        ]
+      }
+    },
+    {
+      "label": "parent_a2",
+      "lane": "parent",
+      "source": {
+        "receipt_filename": "parent_a2.json",
+        "receipt_sha256": "42c79d8bc33e26cdf7b3262b9e2bca5d68b2da6c3afe209c2346b49b2a4b3135",
+        "host_snapshot_filename": "parent_a2.host.txt",
+        "host_snapshot_sha256": "682b348a2b0138f5c66a35ba16373dd279a956e623cc420a29d4fe961f489b4f"
+      },
+      "prefill": {
+        "first_touch_ms": 509.46825,
+        "samples_ms": [473.931292, 491.520125],
+        "mean_ms": 482.7257085,
+        "prompt_tokens_per_second": 4242.574952893771
+      },
+      "decode": {
+        "elapsed_ms": 1427.794125,
+        "tokens_per_second": 88.9483979351715
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:16:04Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 127.4},
+          {"kind": "unrelated_python_process", "cpu_percent": 94.1},
+          {"kind": "codex_process", "cpu_percent": 39.3},
+          {"kind": "window_server", "cpu_percent": 36.0},
+          {"kind": "codex_process", "cpu_percent": 24.1},
+          {"kind": "codex_process", "cpu_percent": 17.4}
+        ]
+      }
+    },
+    {
+      "label": "head_b3",
+      "lane": "head",
+      "source": {
+        "receipt_filename": "head_b3.json",
+        "receipt_sha256": "c5b8c32c7e5048c116c7b60c0f063e1a94dcdc72cec55190cf0392444c783e04",
+        "host_snapshot_filename": "head_b3.host.txt",
+        "host_snapshot_sha256": "47e40af375751114d6a02a564df4c807d18f446757cfd48be027133d07c20422"
+      },
+      "prefill": {
+        "first_touch_ms": 513.850334,
+        "samples_ms": [478.8575, 493.1515],
+        "mean_ms": 486.0045,
+        "prompt_tokens_per_second": 4213.952751466293
+      },
+      "decode": {
+        "elapsed_ms": 1390.280917,
+        "tokens_per_second": 91.34844508550496
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:16:24Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 123.2},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 99.2},
+          {"kind": "unrelated_python_process", "cpu_percent": 62.7},
+          {"kind": "unrelated_python_process", "cpu_percent": 53.1},
+          {"kind": "window_server", "cpu_percent": 36.7},
+          {"kind": "codex_process", "cpu_percent": 25.6}
+        ]
+      }
+    },
+    {
+      "label": "parent_a3",
+      "lane": "parent",
+      "source": {
+        "receipt_filename": "parent_a3.json",
+        "receipt_sha256": "71d828223a207ca810775e64bc548225d4179c2f023bdc03f1655ba19fe55487",
+        "host_snapshot_filename": "parent_a3.host.txt",
+        "host_snapshot_sha256": "cc53203da05c14d252fc674af9b48d1775b162a606bd1388e2f87a2ce956d6fe"
+      },
+      "prefill": {
+        "first_touch_ms": 508.410834,
+        "samples_ms": [476.314542, 491.334875],
+        "mean_ms": 483.8247085,
+        "prompt_tokens_per_second": 4232.938012507478
+      },
+      "decode": {
+        "elapsed_ms": 1410.486542,
+        "tokens_per_second": 90.03985236181005
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:16:44Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 120.6},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 99.9},
+          {"kind": "unrelated_python_process", "cpu_percent": 88.3},
+          {"kind": "window_server", "cpu_percent": 34.5},
+          {"kind": "codex_process", "cpu_percent": 24.3}
+        ]
+      }
+    },
+    {
+      "label": "parent_a4",
+      "lane": "parent",
+      "source": {
+        "receipt_filename": "parent_a4.json",
+        "receipt_sha256": "6cb05482d1731f1c0d27ea6d4fe48a03ff2a9a4e68d75d05d583c24545415349",
+        "host_snapshot_filename": "parent_a4.host.txt",
+        "host_snapshot_sha256": "988593ef856dbac6ec95006eea8702998e3ebfdf3081611110b73727ee39013f"
+      },
+      "prefill": {
+        "first_touch_ms": 504.671583,
+        "samples_ms": [476.280125, 487.239334],
+        "mean_ms": 481.7597295,
+        "prompt_tokens_per_second": 4251.081762532416
+      },
+      "decode": {
+        "elapsed_ms": 1269.371958,
+        "tokens_per_second": 100.04947659321145
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:17:03Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 124.3},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 98.5},
+          {"kind": "window_server", "cpu_percent": 33.9},
+          {"kind": "codex_process", "cpu_percent": 25.5}
+        ]
+      }
+    },
+    {
+      "label": "head_b4",
+      "lane": "head",
+      "source": {
+        "receipt_filename": "head_b4.json",
+        "receipt_sha256": "3aa879f2cd8c5f4e93a20fa248d7a1ffde05a3beaf405ac7a85781f86363561a",
+        "host_snapshot_filename": "head_b4.host.txt",
+        "host_snapshot_sha256": "9001887bf6cc6ce3eec0337e193ce4f1c075d94073b93d37e8bac11bc78cc74e"
+      },
+      "prefill": {
+        "first_touch_ms": 509.321833,
+        "samples_ms": [482.844125, 488.133667],
+        "mean_ms": 485.488896,
+        "prompt_tokens_per_second": 4218.42809768403
+      },
+      "decode": {
+        "elapsed_ms": 1291.943459,
+        "tokens_per_second": 98.30151553095172
+      },
+      "host_snapshot": {
+        "captured_at_utc": "2026-08-11T05:17:22Z",
+        "thermal_warning_recorded": false,
+        "performance_warning_recorded": false,
+        "cpu_power_status_recorded": false,
+        "high_cpu_activity_at_or_above_10_percent": [
+          {"kind": "codex_process", "cpu_percent": 122.8},
+          {"kind": "unrelated_mlx_serve_build", "cpu_percent": 100.0},
+          {"kind": "window_server", "cpu_percent": 34.5},
+          {"kind": "codex_process", "cpu_percent": 21.4}
+        ]
+      }
+    }
+  ]
+}

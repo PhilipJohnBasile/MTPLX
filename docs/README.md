@@ -12,3 +12,4 @@
 - [Troubleshooting](troubleshooting.md)
 - [Development](development.md)
 - [Research note](research/native-mtp-on-mlx.md)
+- [M5 Max speed with explicit target-quality gates](research/mlx-m5max-speed-without-quality-loss-20260810.md)

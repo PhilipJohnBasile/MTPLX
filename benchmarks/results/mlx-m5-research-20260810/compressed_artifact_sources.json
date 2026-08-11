@@ -1,0 +1,131 @@
+{
+  "schema": "mtplx-q35-compressed-artifact-sources-v1",
+  "status": "pinned_hugging_face_identity_not_quality_evidence",
+  "artifacts": {
+    "z_lab_paroquant": {
+      "config_sha256": "4b3703b7f76be5fa8e810e5f4fb53b49205d26ab7156deea1ed632ddab68b00b",
+      "local_weight_manifest_sha256": "f7eda81ef98e0d773f210cb7d5f2da15a14ba05ff2c72735f442899f6595549d",
+      "repository": "https://huggingface.co/z-lab/Qwen3.6-35B-A3B-PARO",
+      "revision": "0c62664e71c13b40130819e6ba689af36c23cdf0",
+      "runtime": {
+        "package": "paroquant",
+        "version": "0.1.16",
+        "wheel_sha256": "845f5ec32fe06cf6daa1bfd02235cd5f76a8e3db5752384be5c7fe2c6f9c89e0"
+      },
+      "shards": [
+        {
+          "filename": "model.safetensors",
+          "lfs_sha256": "bb2574c99c92dc0c6c728068e9a6e768965530d370b72bdc87053aadab194877",
+          "size_bytes": 20655904040
+        }
+      ],
+      "weight_bytes": 20655904040
+    },
+    "majentik_nvfp4": {
+      "repository": "https://huggingface.co/majentik/Qwen3.6-35B-A3B-MLX-NVFP4",
+      "revision": "660a8ceeaaf0bca3ad4373066d8dd768268b5153",
+      "weight_commit": "55b0b778953193473078c4418919d399e7bce694",
+      "weight_commit_date": "2026-04-21T04:10:18Z",
+      "latest_revision_scope": "README evaluation update only; weight shards are unchanged since the weight commit",
+      "conversion_card": "mlx_lm.convert with q_mode=nvfp4 and q_group_size=16",
+      "quantizer_provenance_boundary": "weight commit predates merged MLX #3934, which corrected per-16-lane NVFP4 scale reduction on 2026-07-30",
+      "local_weight_manifest_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8",
+      "weight_bytes": 19508964218,
+      "shards": [
+        {
+          "filename": "model-00001-of-00004.safetensors",
+          "size_bytes": 5343683394,
+          "lfs_sha256": "0e9ffa430d74977543f27bc2a440279a14dff4cb0a58bbfd2cd64f11aab29516"
+        },
+        {
+          "filename": "model-00002-of-00004.safetensors",
+          "size_bytes": 5367931423,
+          "lfs_sha256": "92d3c73bf5f790d71dd5f1b2a19ddd310a9854aa089225335f041f1631cf2ca7"
+        },
+        {
+          "filename": "model-00003-of-00004.safetensors",
+          "size_bytes": 5352054080,
+          "lfs_sha256": "53def3ed55a85c487769fe1547decf463ca928578ceb6cb19da4030fc0401135"
+        },
+        {
+          "filename": "model-00004-of-00004.safetensors",
+          "size_bytes": 3445295321,
+          "lfs_sha256": "55415a7d0432a5ae258c2c6364d13faecd91e52046fd8743fd00609de961811c"
+        }
+      ]
+    },
+    "optiq_mixed_4bit_8bit": {
+      "repository": "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit",
+      "revision": "70a3aa32c7feef511182bf16aa332f37e8d82014",
+      "local_weight_manifest_sha256": "62e8cacacd8e7f0d38a80e1f08f7c6845b429bcea41f59d48e18164c582d79af",
+      "weight_bytes": 22135575796,
+      "text_only_selection": true,
+      "omitted_optional_files": {
+        "optiq/mtp.safetensors": {
+          "size_bytes": 1644816498,
+          "lfs_sha256": "ab850c643a37cd0c0b88530a5d6251f72a26c3b1dbf56707b307f5454942b49f"
+        },
+        "optiq/optiq_vision.safetensors": {
+          "size_bytes": 893179469,
+          "lfs_sha256": "0125eeb6c29b935d0b1c6a6eb1a3c9ba13f9671680439c4e0aff16b95c7b8ab5"
+        }
+      },
+      "shards": [
+        {
+          "filename": "model-00001-of-00005.safetensors",
+          "size_bytes": 5354469690,
+          "lfs_sha256": "eebcbf65aeae9db53d72a1ac9239ed2ea2ab24ff4f91de6bd81bc4eb322fb81f"
+        },
+        {
+          "filename": "model-00002-of-00005.safetensors",
+          "size_bytes": 5367895914,
+          "lfs_sha256": "532e2b8e7c51e7c9e4da7d262f7457bb494c30196bd8a63464860411eb2ffe7a"
+        },
+        {
+          "filename": "model-00003-of-00005.safetensors",
+          "size_bytes": 5247553415,
+          "lfs_sha256": "5ab41a5838aed1083c224363c54bb707a3be180cdd88ae1583214a2344ee0945"
+        },
+        {
+          "filename": "model-00004-of-00005.safetensors",
+          "size_bytes": 5185753324,
+          "lfs_sha256": "be5be221a9989aae3736f30745c08eaf12c690634c0d4fb238a031588c7bbc6f"
+        },
+        {
+          "filename": "model-00005-of-00005.safetensors",
+          "size_bytes": 979903453,
+          "lfs_sha256": "942e8b6e192a43a918d0d4941e5ce551d29d9131d17660b7b790910b0c254871"
+        }
+      ]
+    },
+    "mlx_community_dwq": {
+      "repository": "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
+      "revision": "73c707af4243243b18193444467872d20cff9399",
+      "local_weight_manifest_sha256": "953160736915f9c44b66d17ce91564104b2dfffb7344173f89f9dc93429613dc",
+      "weight_bytes": 20659180849,
+      "shards": [
+        {
+          "filename": "model-00001-of-00004.safetensors",
+          "size_bytes": 5285642287,
+          "lfs_sha256": "daec009bd41cbaa87435c704821f6b6e258543b2bf558943d7bcdca8562b212d"
+        },
+        {
+          "filename": "model-00002-of-00004.safetensors",
+          "size_bytes": 5365584096,
+          "lfs_sha256": "7e9fb638217abaec1ceb799bb6eb6720a015f452787b8057bd97457810007188f"
+        },
+        {
+          "filename": "model-00003-of-00004.safetensors",
+          "size_bytes": 5248143931,
+          "lfs_sha256": "a63c4a282fcdca897f80915ffa36d2e5460011a21ff230af47f88e6934285271"
+        },
+        {
+          "filename": "model-00004-of-00004.safetensors",
+          "size_bytes": 4759810535,
+          "lfs_sha256": "e65332ba7ea895691e163d50362845b50b498faa43ef60d40db671d972698eab"
+        }
+      ]
+    }
+  },
+  "interpretation_limit": "Hub revisions, LFS hashes, and local manifests establish artifact identity only. They do not establish source-checkpoint fidelity, quality, or speed."
+}

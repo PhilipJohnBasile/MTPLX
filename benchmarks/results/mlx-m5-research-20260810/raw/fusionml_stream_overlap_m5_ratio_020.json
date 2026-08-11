@@ -1,0 +1,1549 @@
+{
+  "benchmark_script_sha256": "3267b3d5ecd217a6e5f9ca7b5809da5c91c599ff19e37f389f52b4584d20a1b5",
+  "cases": {
+    "gpu_materialized_boundary": {
+      "boundary": "explicit",
+      "family": "dependency",
+      "first_touch_ms": 2.272542,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": true,
+        "candidate_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "max_abs_delta": 0.0,
+        "mean_abs_delta": 0.0,
+        "reference_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "rms_delta": 0.0
+      },
+      "output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+      "stream_layout": "gpu_only",
+      "timing": {
+        "count": 16,
+        "max_ms": 3.148542,
+        "mean_ms": 1.8917345,
+        "median_ms": 1.7859165,
+        "min_ms": 1.452792,
+        "p95_ms": 3.148542,
+        "samples_ms": [
+          3.148542,
+          1.452792,
+          2.001125,
+          1.569,
+          1.751792,
+          1.779958,
+          1.838084,
+          1.791875,
+          1.892291,
+          2.72,
+          1.881834,
+          1.715959,
+          1.959625,
+          1.680667,
+          1.582208,
+          1.502
+        ],
+        "spread_percent_of_median": 94.95124772070811
+      }
+    },
+    "gpu_only_dependency": {
+      "boundary": "lazy",
+      "family": "dependency",
+      "first_touch_ms": 1.264167,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": true,
+        "candidate_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "max_abs_delta": 0.0,
+        "mean_abs_delta": 0.0,
+        "reference_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "rms_delta": 0.0
+      },
+      "output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+      "stream_layout": "gpu_only",
+      "timing": {
+        "count": 16,
+        "max_ms": 2.642291,
+        "mean_ms": 1.788932375,
+        "median_ms": 1.8644375000000002,
+        "min_ms": 1.201,
+        "p95_ms": 2.642291,
+        "samples_ms": [
+          1.718875,
+          1.201,
+          1.278708,
+          1.402042,
+          1.960125,
+          2.025959,
+          1.574625,
+          1.937209,
+          1.920875,
+          1.808,
+          2.047959,
+          1.932541,
+          1.393167,
+          2.642291,
+          1.451792,
+          2.32775
+        ],
+        "spread_percent_of_median": 77.30433441721699
+      }
+    },
+    "gpu_only_ready": {
+      "boundary": "none",
+      "family": "ready",
+      "first_touch_ms": 1.475542,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": true,
+        "candidate_output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+        "max_abs_delta": 0.0,
+        "mean_abs_delta": 0.0,
+        "reference_output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+        "rms_delta": 0.0
+      },
+      "output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+      "stream_layout": "gpu_only",
+      "timing": {
+        "count": 16,
+        "max_ms": 2.048542,
+        "mean_ms": 1.601528625,
+        "median_ms": 1.582458,
+        "min_ms": 1.066584,
+        "p95_ms": 2.048542,
+        "samples_ms": [
+          1.668458,
+          1.066584,
+          1.421209,
+          1.422916,
+          1.921375,
+          1.465458,
+          1.752833,
+          1.576791,
+          1.775542,
+          1.573833,
+          1.588125,
+          1.77425,
+          2.048542,
+          1.487917,
+          1.3175,
+          1.763125
+        ],
+        "spread_percent_of_median": 62.052705348262
+      }
+    },
+    "same_stream_lazy_dependency": {
+      "boundary": "lazy",
+      "family": "dependency",
+      "first_touch_ms": 1.867209,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": true,
+        "candidate_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "max_abs_delta": 0.0,
+        "mean_abs_delta": 0.0,
+        "reference_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "rms_delta": 0.0
+      },
+      "output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+      "stream_layout": "two_gpu_stream_ops",
+      "timing": {
+        "count": 16,
+        "max_ms": 3.113667,
+        "mean_ms": 2.1543541875,
+        "median_ms": 2.179646,
+        "min_ms": 1.318,
+        "p95_ms": 3.113667,
+        "samples_ms": [
+          1.983417,
+          1.732666,
+          1.318,
+          1.626833,
+          2.223459,
+          2.135833,
+          2.557125,
+          2.464625,
+          3.087209,
+          2.644292,
+          2.255042,
+          2.261958,
+          1.76225,
+          1.53525,
+          1.768041,
+          3.113667
+        ],
+        "spread_percent_of_median": 82.38342373027547
+      }
+    },
+    "same_stream_ready": {
+      "boundary": "none",
+      "family": "ready",
+      "first_touch_ms": 1.24,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": true,
+        "candidate_output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+        "max_abs_delta": 0.0,
+        "mean_abs_delta": 0.0,
+        "reference_output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+        "rms_delta": 0.0
+      },
+      "output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+      "stream_layout": "two_gpu_stream_ops",
+      "timing": {
+        "count": 16,
+        "max_ms": 3.014416,
+        "mean_ms": 1.87350525,
+        "median_ms": 1.7774584999999998,
+        "min_ms": 1.16875,
+        "p95_ms": 3.014416,
+        "samples_ms": [
+          1.950334,
+          1.16875,
+          1.290792,
+          1.5315,
+          1.886833,
+          1.64875,
+          2.423417,
+          2.0075,
+          2.415583,
+          3.014416,
+          2.21275,
+          1.649833,
+          2.0145,
+          1.668084,
+          1.447292,
+          1.64575
+        ],
+        "spread_percent_of_median": 103.8373610410595
+      }
+    },
+    "split_lazy_dependency": {
+      "boundary": "lazy",
+      "family": "dependency",
+      "first_touch_ms": 12.45125,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": false,
+        "candidate_output_sha256": "2168acb8e9dfa6d580c37fa289a652c541619cc95d3624ad15fceb73b9c662ef",
+        "max_abs_delta": 3.0517578125e-05,
+        "mean_abs_delta": 2.2451784786881035e-07,
+        "reference_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "rms_delta": 1.3589331047114683e-06
+      },
+      "output_sha256": "2168acb8e9dfa6d580c37fa289a652c541619cc95d3624ad15fceb73b9c662ef",
+      "stream_layout": "cpu_plus_gpu",
+      "timing": {
+        "count": 16,
+        "max_ms": 7.054458,
+        "mean_ms": 5.662375,
+        "median_ms": 5.535937499999999,
+        "min_ms": 4.985041,
+        "p95_ms": 7.054458,
+        "samples_ms": [
+          7.054458,
+          5.156209,
+          6.336542,
+          5.733167,
+          5.043542,
+          5.1225,
+          5.156,
+          5.512625,
+          5.57175,
+          5.465875,
+          4.985041,
+          6.806792,
+          6.079958,
+          5.040958,
+          5.55925,
+          5.973333
+        ],
+        "spread_percent_of_median": 37.38150945526392
+      }
+    },
+    "split_materialized_boundary": {
+      "boundary": "explicit",
+      "family": "dependency",
+      "first_touch_ms": 5.53525,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": false,
+        "candidate_output_sha256": "2168acb8e9dfa6d580c37fa289a652c541619cc95d3624ad15fceb73b9c662ef",
+        "max_abs_delta": 3.0517578125e-05,
+        "mean_abs_delta": 2.2451784786881035e-07,
+        "reference_output_sha256": "4e51163d49370ecea139f3f2dc275baa77949ab59ac5c7096c1067ff8211e30d",
+        "rms_delta": 1.3589331047114683e-06
+      },
+      "output_sha256": "2168acb8e9dfa6d580c37fa289a652c541619cc95d3624ad15fceb73b9c662ef",
+      "stream_layout": "cpu_plus_gpu",
+      "timing": {
+        "count": 16,
+        "max_ms": 6.512958,
+        "mean_ms": 5.5691900625,
+        "median_ms": 5.3822085,
+        "min_ms": 5.109083,
+        "p95_ms": 6.512958,
+        "samples_ms": [
+          5.169417,
+          5.11725,
+          5.214208,
+          5.238209,
+          5.286833,
+          5.597084,
+          5.6165,
+          5.195291,
+          6.512958,
+          5.395167,
+          6.085458,
+          5.109083,
+          5.36925,
+          6.507584,
+          5.580333,
+          6.112416
+        ],
+        "spread_percent_of_median": 26.08362347909785
+      }
+    },
+    "split_ready": {
+      "boundary": "none",
+      "family": "ready",
+      "first_touch_ms": 5.819042,
+      "numeric_delta_vs_family_gpu_reference": {
+        "bit_identical_float32_expansion": false,
+        "candidate_output_sha256": "dddddb9d1b996570542c8835177eecc20d251c0fc6cce438a077f9384e0f864b",
+        "max_abs_delta": 6.103515625e-05,
+        "mean_abs_delta": 3.1734140293337987e-07,
+        "reference_output_sha256": "2bd548da99fc1811984fba874f85bee83fac2d9057a9e1d586633a0f317341bd",
+        "rms_delta": 1.9191106730431784e-06
+      },
+      "output_sha256": "dddddb9d1b996570542c8835177eecc20d251c0fc6cce438a077f9384e0f864b",
+      "stream_layout": "cpu_plus_gpu",
+      "timing": {
+        "count": 16,
+        "max_ms": 5.546584,
+        "mean_ms": 5.1456380625,
+        "median_ms": 5.1446245,
+        "min_ms": 4.875166,
+        "p95_ms": 5.546584,
+        "samples_ms": [
+          5.546584,
+          5.51,
+          5.534625,
+          5.338042,
+          5.2215,
+          4.900792,
+          4.909083,
+          5.106166,
+          5.000709,
+          4.917417,
+          4.896917,
+          5.18775,
+          5.183083,
+          5.273625,
+          4.92875,
+          4.875166
+        ],
+        "spread_percent_of_median": 13.05086503397867
+      }
+    }
+  },
+  "environment": {},
+  "fixture": {
+    "columns": 6400,
+    "cpu_ratio": 0.2,
+    "cpu_rows": 409,
+    "dtype": "float16",
+    "gpu_rows": 1639,
+    "inner": 1600,
+    "input_sha256": "aeaac6497a66dd9e6252a158f10687c5d36408ae36a2cf26f5d4a01404dced63",
+    "rows": 2048,
+    "seed": 20260811,
+    "weight_sha256": "34dc2ae6c1ea0929f03ae1145d8f41b60cbffd84cfa48d612610415e6738982a"
+  },
+  "host_snapshots": {
+    "after": {
+      "processes": {
+        "aggregate_cpu_percent": 337.0,
+        "available": true,
+        "candidate_compute_processes": [
+          {
+            "cpu_percent": 71.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.1
+          },
+          {
+            "cpu_percent": 56.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.1
+          },
+          {
+            "cpu_percent": 28.5,
+            "executable_category": "serving_process",
+            "memory_percent": 0.3
+          },
+          {
+            "cpu_percent": 0.3,
+            "executable_category": "python_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          }
+        ],
+        "limitation": "This is a point-in-time host snapshot. It does not establish GPU ownership, process causality, or a quiet host.",
+        "process_count": 683
+      },
+      "thermal": {
+        "available": true,
+        "limitation": "This best-effort snapshot is not a calibrated die-temperature measurement and cannot prove a thermally quiet host.",
+        "raw": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+        "source": "pmset -g therm"
+      }
+    },
+    "before": {
+      "host": {
+        "cpu_brand": "Apple M5 Max",
+        "mac_model": "Mac17,6",
+        "machine": "arm64",
+        "memory_bytes": "137438953472",
+        "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+        "python": "3.13.14"
+      },
+      "processes": {
+        "aggregate_cpu_percent": 340.2,
+        "available": true,
+        "candidate_compute_processes": [
+          {
+            "cpu_percent": 93.6,
+            "executable_category": "python_process",
+            "memory_percent": 0.2
+          },
+          {
+            "cpu_percent": 39.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.1
+          },
+          {
+            "cpu_percent": 27.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.3
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "python_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          },
+          {
+            "cpu_percent": 0.0,
+            "executable_category": "serving_process",
+            "memory_percent": 0.0
+          }
+        ],
+        "limitation": "This is a point-in-time host snapshot. It does not establish GPU ownership, process causality, or a quiet host.",
+        "process_count": 683
+      },
+      "thermal": {
+        "available": true,
+        "limitation": "This best-effort snapshot is not a calibrated die-temperature measurement and cannot prove a thermally quiet host.",
+        "raw": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+        "source": "pmset -g therm"
+      }
+    }
+  },
+  "mechanism_observations": {
+    "interpretation_limit": "Ratios describe this synthetic fixture only. They are not a model speedup, a proof of overlap, or a recommendation to introduce an eager boundary into a production graph.",
+    "lazy_split_vs_dependency_gpu_only_ratio": 0.33678803274061536,
+    "materialized_split_vs_dependency_gpu_only_ratio": 0.3464075202586448,
+    "materialized_split_vs_lazy_split_ratio": 1.0285624386346235,
+    "ready_split_vs_gpu_only_ratio": 0.3075944609757233
+  },
+  "peak_memory_bytes_during_measurement": 367820800,
+  "raw_trials": [
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.169417,
+      "ordinal": 0,
+      "round": 0
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.983417,
+      "ordinal": 1,
+      "round": 0
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.668458,
+      "ordinal": 2,
+      "round": 0
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.718875,
+      "ordinal": 3,
+      "round": 0
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 3.148542,
+      "ordinal": 4,
+      "round": 0
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 7.054458,
+      "ordinal": 5,
+      "round": 0
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.546584,
+      "ordinal": 6,
+      "round": 0
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.950334,
+      "ordinal": 7,
+      "round": 0
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.732666,
+      "ordinal": 0,
+      "round": 1
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.201,
+      "ordinal": 1,
+      "round": 1
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.11725,
+      "ordinal": 2,
+      "round": 1
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.156209,
+      "ordinal": 3,
+      "round": 1
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.066584,
+      "ordinal": 4,
+      "round": 1
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.16875,
+      "ordinal": 5,
+      "round": 1
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.452792,
+      "ordinal": 6,
+      "round": 1
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.51,
+      "ordinal": 7,
+      "round": 1
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.278708,
+      "ordinal": 0,
+      "round": 2
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 6.336542,
+      "ordinal": 1,
+      "round": 2
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.318,
+      "ordinal": 2,
+      "round": 2
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.290792,
+      "ordinal": 3,
+      "round": 2
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.214208,
+      "ordinal": 4,
+      "round": 2
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.534625,
+      "ordinal": 5,
+      "round": 2
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.421209,
+      "ordinal": 6,
+      "round": 2
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 2.001125,
+      "ordinal": 7,
+      "round": 2
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.733167,
+      "ordinal": 0,
+      "round": 3
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.5315,
+      "ordinal": 1,
+      "round": 3
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.402042,
+      "ordinal": 2,
+      "round": 3
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.338042,
+      "ordinal": 3,
+      "round": 3
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.626833,
+      "ordinal": 4,
+      "round": 3
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.569,
+      "ordinal": 5,
+      "round": 3
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.238209,
+      "ordinal": 6,
+      "round": 3
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.422916,
+      "ordinal": 7,
+      "round": 3
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.886833,
+      "ordinal": 0,
+      "round": 4
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.2215,
+      "ordinal": 1,
+      "round": 4
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.043542,
+      "ordinal": 2,
+      "round": 4
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.751792,
+      "ordinal": 3,
+      "round": 4
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.960125,
+      "ordinal": 4,
+      "round": 4
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.921375,
+      "ordinal": 5,
+      "round": 4
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.223459,
+      "ordinal": 6,
+      "round": 4
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.286833,
+      "ordinal": 7,
+      "round": 4
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.900792,
+      "ordinal": 0,
+      "round": 5
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.779958,
+      "ordinal": 1,
+      "round": 5
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.64875,
+      "ordinal": 2,
+      "round": 5
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.465458,
+      "ordinal": 3,
+      "round": 5
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.1225,
+      "ordinal": 4,
+      "round": 5
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.597084,
+      "ordinal": 5,
+      "round": 5
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 2.025959,
+      "ordinal": 6,
+      "round": 5
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.135833,
+      "ordinal": 7,
+      "round": 5
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.838084,
+      "ordinal": 0,
+      "round": 6
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.752833,
+      "ordinal": 1,
+      "round": 6
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.909083,
+      "ordinal": 2,
+      "round": 6
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.6165,
+      "ordinal": 3,
+      "round": 6
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 2.423417,
+      "ordinal": 4,
+      "round": 6
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.557125,
+      "ordinal": 5,
+      "round": 6
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.156,
+      "ordinal": 6,
+      "round": 6
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.574625,
+      "ordinal": 7,
+      "round": 6
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.576791,
+      "ordinal": 0,
+      "round": 7
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.195291,
+      "ordinal": 1,
+      "round": 7
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.791875,
+      "ordinal": 2,
+      "round": 7
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.464625,
+      "ordinal": 3,
+      "round": 7
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.106166,
+      "ordinal": 4,
+      "round": 7
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.937209,
+      "ordinal": 5,
+      "round": 7
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 2.0075,
+      "ordinal": 6,
+      "round": 7
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.512625,
+      "ordinal": 7,
+      "round": 7
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 6.512958,
+      "ordinal": 0,
+      "round": 8
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 2.415583,
+      "ordinal": 1,
+      "round": 8
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.775542,
+      "ordinal": 2,
+      "round": 8
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.57175,
+      "ordinal": 3,
+      "round": 8
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.892291,
+      "ordinal": 4,
+      "round": 8
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.920875,
+      "ordinal": 5,
+      "round": 8
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.000709,
+      "ordinal": 6,
+      "round": 8
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 3.087209,
+      "ordinal": 7,
+      "round": 8
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 3.014416,
+      "ordinal": 0,
+      "round": 9
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.465875,
+      "ordinal": 1,
+      "round": 9
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.395167,
+      "ordinal": 2,
+      "round": 9
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.808,
+      "ordinal": 3,
+      "round": 9
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.573833,
+      "ordinal": 4,
+      "round": 9
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.644292,
+      "ordinal": 5,
+      "round": 9
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 2.72,
+      "ordinal": 6,
+      "round": 9
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.917417,
+      "ordinal": 7,
+      "round": 9
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 4.985041,
+      "ordinal": 0,
+      "round": 10
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 2.047959,
+      "ordinal": 1,
+      "round": 10
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 2.21275,
+      "ordinal": 2,
+      "round": 10
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.255042,
+      "ordinal": 3,
+      "round": 10
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 6.085458,
+      "ordinal": 4,
+      "round": 10
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.896917,
+      "ordinal": 5,
+      "round": 10
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.588125,
+      "ordinal": 6,
+      "round": 10
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.881834,
+      "ordinal": 7,
+      "round": 10
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.932541,
+      "ordinal": 0,
+      "round": 11
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 2.261958,
+      "ordinal": 1,
+      "round": 11
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 6.806792,
+      "ordinal": 2,
+      "round": 11
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.18775,
+      "ordinal": 3,
+      "round": 11
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.649833,
+      "ordinal": 4,
+      "round": 11
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.715959,
+      "ordinal": 5,
+      "round": 11
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.109083,
+      "ordinal": 6,
+      "round": 11
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.77425,
+      "ordinal": 7,
+      "round": 11
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.76225,
+      "ordinal": 0,
+      "round": 12
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.183083,
+      "ordinal": 1,
+      "round": 12
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.393167,
+      "ordinal": 2,
+      "round": 12
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.959625,
+      "ordinal": 3,
+      "round": 12
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 6.079958,
+      "ordinal": 4,
+      "round": 12
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 2.048542,
+      "ordinal": 5,
+      "round": 12
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 2.0145,
+      "ordinal": 6,
+      "round": 12
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.36925,
+      "ordinal": 7,
+      "round": 12
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 5.273625,
+      "ordinal": 0,
+      "round": 13
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.680667,
+      "ordinal": 1,
+      "round": 13
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.53525,
+      "ordinal": 2,
+      "round": 13
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.487917,
+      "ordinal": 3,
+      "round": 13
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 2.642291,
+      "ordinal": 4,
+      "round": 13
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 6.507584,
+      "ordinal": 5,
+      "round": 13
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.040958,
+      "ordinal": 6,
+      "round": 13
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.668084,
+      "ordinal": 7,
+      "round": 13
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.582208,
+      "ordinal": 0,
+      "round": 14
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.3175,
+      "ordinal": 1,
+      "round": 14
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.92875,
+      "ordinal": 2,
+      "round": 14
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 5.580333,
+      "ordinal": 3,
+      "round": 14
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 1.768041,
+      "ordinal": 4,
+      "round": 14
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.447292,
+      "ordinal": 5,
+      "round": 14
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 1.451792,
+      "ordinal": 6,
+      "round": 14
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.55925,
+      "ordinal": 7,
+      "round": 14
+    },
+    {
+      "case": "gpu_only_ready",
+      "elapsed_ms": 1.763125,
+      "ordinal": 0,
+      "round": 15
+    },
+    {
+      "case": "split_materialized_boundary",
+      "elapsed_ms": 6.112416,
+      "ordinal": 1,
+      "round": 15
+    },
+    {
+      "case": "gpu_materialized_boundary",
+      "elapsed_ms": 1.502,
+      "ordinal": 2,
+      "round": 15
+    },
+    {
+      "case": "same_stream_ready",
+      "elapsed_ms": 1.64575,
+      "ordinal": 3,
+      "round": 15
+    },
+    {
+      "case": "split_ready",
+      "elapsed_ms": 4.875166,
+      "ordinal": 4,
+      "round": 15
+    },
+    {
+      "case": "split_lazy_dependency",
+      "elapsed_ms": 5.973333,
+      "ordinal": 5,
+      "round": 15
+    },
+    {
+      "case": "same_stream_lazy_dependency",
+      "elapsed_ms": 3.113667,
+      "ordinal": 6,
+      "round": 15
+    },
+    {
+      "case": "gpu_only_dependency",
+      "elapsed_ms": 2.32775,
+      "ordinal": 7,
+      "round": 15
+    }
+  ],
+  "report_payload_sha256": "598385f8536ac01cd6717e1575678e7ea69809ca1a7ac7ccb491b6508b32c702",
+  "result_kind": "synthetic_stream_overlap_mechanism_probe",
+  "runtime_provenance": {
+    "device": {
+      "architecture": "applegpu_g17s",
+      "device_name": "Apple M5 Max",
+      "max_buffer_length": 86586540032,
+      "max_recommended_working_set_size": 127926272000,
+      "memory_size": 137438953472,
+      "resource_limit": 499000
+    },
+    "libmlx_filename": "libmlx.dylib",
+    "libmlx_sha256": "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd",
+    "metallib_filename": "mlx.metallib",
+    "metallib_sha256": "8c8bfcece8c0610745b68879771e5aa1b92b29fa5e17172e5508e4f5153d8d15",
+    "mlx_core_filename": "core.cpython-313-darwin.so",
+    "mlx_core_sha256": "516a6763ede87e0194174125d10a8ff82201285942d68522b5fa0c82b6adf9d5",
+    "mlx_python_sha256": "516a6763ede87e0194174125d10a8ff82201285942d68522b5fa0c82b6adf9d5",
+    "mlx_version": "0.31.2"
+  },
+  "schedule": {
+    "first_touch_order": [
+      "split_lazy_dependency",
+      "split_ready",
+      "gpu_materialized_boundary",
+      "same_stream_lazy_dependency",
+      "gpu_only_ready",
+      "gpu_only_dependency",
+      "split_materialized_boundary",
+      "same_stream_ready"
+    ],
+    "kind": "seeded_williams_balanced_latin_square",
+    "measurement_rounds": 16,
+    "measurement_schedule": [
+      [
+        "split_materialized_boundary",
+        "same_stream_lazy_dependency",
+        "gpu_only_ready",
+        "gpu_only_dependency",
+        "gpu_materialized_boundary",
+        "split_lazy_dependency",
+        "split_ready",
+        "same_stream_ready"
+      ],
+      [
+        "same_stream_lazy_dependency",
+        "gpu_only_dependency",
+        "split_materialized_boundary",
+        "split_lazy_dependency",
+        "gpu_only_ready",
+        "same_stream_ready",
+        "gpu_materialized_boundary",
+        "split_ready"
+      ],
+      [
+        "gpu_only_dependency",
+        "split_lazy_dependency",
+        "same_stream_lazy_dependency",
+        "same_stream_ready",
+        "split_materialized_boundary",
+        "split_ready",
+        "gpu_only_ready",
+        "gpu_materialized_boundary"
+      ],
+      [
+        "split_lazy_dependency",
+        "same_stream_ready",
+        "gpu_only_dependency",
+        "split_ready",
+        "same_stream_lazy_dependency",
+        "gpu_materialized_boundary",
+        "split_materialized_boundary",
+        "gpu_only_ready"
+      ],
+      [
+        "same_stream_ready",
+        "split_ready",
+        "split_lazy_dependency",
+        "gpu_materialized_boundary",
+        "gpu_only_dependency",
+        "gpu_only_ready",
+        "same_stream_lazy_dependency",
+        "split_materialized_boundary"
+      ],
+      [
+        "split_ready",
+        "gpu_materialized_boundary",
+        "same_stream_ready",
+        "gpu_only_ready",
+        "split_lazy_dependency",
+        "split_materialized_boundary",
+        "gpu_only_dependency",
+        "same_stream_lazy_dependency"
+      ],
+      [
+        "gpu_materialized_boundary",
+        "gpu_only_ready",
+        "split_ready",
+        "split_materialized_boundary",
+        "same_stream_ready",
+        "same_stream_lazy_dependency",
+        "split_lazy_dependency",
+        "gpu_only_dependency"
+      ],
+      [
+        "gpu_only_ready",
+        "split_materialized_boundary",
+        "gpu_materialized_boundary",
+        "same_stream_lazy_dependency",
+        "split_ready",
+        "gpu_only_dependency",
+        "same_stream_ready",
+        "split_lazy_dependency"
+      ],
+      [
+        "split_materialized_boundary",
+        "same_stream_ready",
+        "gpu_only_ready",
+        "split_lazy_dependency",
+        "gpu_materialized_boundary",
+        "gpu_only_dependency",
+        "split_ready",
+        "same_stream_lazy_dependency"
+      ],
+      [
+        "same_stream_ready",
+        "split_lazy_dependency",
+        "split_materialized_boundary",
+        "gpu_only_dependency",
+        "gpu_only_ready",
+        "same_stream_lazy_dependency",
+        "gpu_materialized_boundary",
+        "split_ready"
+      ],
+      [
+        "split_lazy_dependency",
+        "gpu_only_dependency",
+        "same_stream_ready",
+        "same_stream_lazy_dependency",
+        "split_materialized_boundary",
+        "split_ready",
+        "gpu_only_ready",
+        "gpu_materialized_boundary"
+      ],
+      [
+        "gpu_only_dependency",
+        "same_stream_lazy_dependency",
+        "split_lazy_dependency",
+        "split_ready",
+        "same_stream_ready",
+        "gpu_materialized_boundary",
+        "split_materialized_boundary",
+        "gpu_only_ready"
+      ],
+      [
+        "same_stream_lazy_dependency",
+        "split_ready",
+        "gpu_only_dependency",
+        "gpu_materialized_boundary",
+        "split_lazy_dependency",
+        "gpu_only_ready",
+        "same_stream_ready",
+        "split_materialized_boundary"
+      ],
+      [
+        "split_ready",
+        "gpu_materialized_boundary",
+        "same_stream_lazy_dependency",
+        "gpu_only_ready",
+        "gpu_only_dependency",
+        "split_materialized_boundary",
+        "split_lazy_dependency",
+        "same_stream_ready"
+      ],
+      [
+        "gpu_materialized_boundary",
+        "gpu_only_ready",
+        "split_ready",
+        "split_materialized_boundary",
+        "same_stream_lazy_dependency",
+        "same_stream_ready",
+        "gpu_only_dependency",
+        "split_lazy_dependency"
+      ],
+      [
+        "gpu_only_ready",
+        "split_materialized_boundary",
+        "gpu_materialized_boundary",
+        "same_stream_ready",
+        "split_ready",
+        "split_lazy_dependency",
+        "same_stream_lazy_dependency",
+        "gpu_only_dependency"
+      ]
+    ],
+    "measurement_schedule_sha256": "e6d19a3b2eee7a0b23eb55dc576b1a2f6f5a40e8f359629b620477192a8557d0",
+    "seed": 20260811,
+    "warmup_rounds": 4,
+    "warmup_schedule": [
+      [
+        "gpu_materialized_boundary",
+        "same_stream_ready",
+        "split_lazy_dependency",
+        "same_stream_lazy_dependency",
+        "gpu_only_ready",
+        "gpu_only_dependency",
+        "split_ready",
+        "split_materialized_boundary"
+      ],
+      [
+        "same_stream_ready",
+        "same_stream_lazy_dependency",
+        "gpu_materialized_boundary",
+        "gpu_only_dependency",
+        "split_lazy_dependency",
+        "split_materialized_boundary",
+        "gpu_only_ready",
+        "split_ready"
+      ],
+      [
+        "same_stream_lazy_dependency",
+        "gpu_only_dependency",
+        "same_stream_ready",
+        "split_materialized_boundary",
+        "gpu_materialized_boundary",
+        "split_ready",
+        "split_lazy_dependency",
+        "gpu_only_ready"
+      ],
+      [
+        "gpu_only_dependency",
+        "split_materialized_boundary",
+        "same_stream_lazy_dependency",
+        "split_ready",
+        "same_stream_ready",
+        "gpu_only_ready",
+        "gpu_materialized_boundary",
+        "split_lazy_dependency"
+      ]
+    ]
+  },
+  "schema": "mtplx-fusionml-stream-overlap-probe-v1",
+  "scope": {
+    "generation_run": false,
+    "model_loaded": false,
+    "quality_evaluated": false,
+    "speed_claim": "No model or MTPLX speed claim follows from this result. It tests only a synthetic MLX CPU/GPU dependency mechanism."
+  },
+  "source_provenance": {
+    "fusionml_benchmark_commit": "4e7121a8f9c70fd6512b233c5705374626323471",
+    "fusionml_main_commit": "2e36b64da1fc8e00ea90afa2ec7cc1b9744f0464",
+    "fusionml_repository": "https://github.com/ommo007/FusionML",
+    "upstream_script": "benchmarks/python/stream_parallelism_probe.py"
+  },
+  "status": "synthetic_measurement_not_model_or_quality_evidence"
+}

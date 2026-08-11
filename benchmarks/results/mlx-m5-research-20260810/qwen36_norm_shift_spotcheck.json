@@ -1,0 +1,185 @@
+{
+  "artifacts": [
+    {
+      "label": "stock-affine-4bit",
+      "model_identifier": "Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+      "tensors": {
+        "language_model.model.layers.0.input_layernorm.weight": {
+          "float32_sha256": "293b560dbafa261727f577ae2496205381d5c93a31841a95a03c86190ade2d10",
+          "max": 1.328125,
+          "mean": 1.0311603546142578,
+          "min": 0.921875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.layers.0.post_attention_layernorm.weight": {
+          "float32_sha256": "e69e82c8f617ca79b16f76cf40074427752ad73e966a6a223a33a7f0d016084b",
+          "max": 1.4765625,
+          "mean": 0.8950653076171875,
+          "min": 0.1875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.norm.weight": {
+          "float32_sha256": "c0152905938b7692692213e3457834e16eff027f82922474ee7b2e2a8281479a",
+          "max": 3.484375,
+          "mean": 2.6280593872070312,
+          "min": 0.765625,
+          "shape": [
+            2048
+          ]
+        }
+      },
+      "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+    },
+    {
+      "label": "majentik-nvfp4",
+      "model_identifier": "majentik--Qwen3.6-35B-A3B-MLX-NVFP4",
+      "tensors": {
+        "language_model.model.layers.0.input_layernorm.weight": {
+          "float32_sha256": "293b560dbafa261727f577ae2496205381d5c93a31841a95a03c86190ade2d10",
+          "max": 1.328125,
+          "mean": 1.0311603546142578,
+          "min": 0.921875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.layers.0.post_attention_layernorm.weight": {
+          "float32_sha256": "e69e82c8f617ca79b16f76cf40074427752ad73e966a6a223a33a7f0d016084b",
+          "max": 1.4765625,
+          "mean": 0.8950653076171875,
+          "min": 0.1875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.norm.weight": {
+          "float32_sha256": "c0152905938b7692692213e3457834e16eff027f82922474ee7b2e2a8281479a",
+          "max": 3.484375,
+          "mean": 2.6280593872070312,
+          "min": 0.765625,
+          "shape": [
+            2048
+          ]
+        }
+      },
+      "weight_manifest_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8"
+    },
+    {
+      "label": "optiq-mixed-4bit-8bit",
+      "model_identifier": "mlx-community--Qwen3.6-35B-A3B-OptiQ-4bit",
+      "tensors": {
+        "language_model.model.layers.0.input_layernorm.weight": {
+          "float32_sha256": "293b560dbafa261727f577ae2496205381d5c93a31841a95a03c86190ade2d10",
+          "max": 1.328125,
+          "mean": 1.0311603546142578,
+          "min": 0.921875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.layers.0.post_attention_layernorm.weight": {
+          "float32_sha256": "e69e82c8f617ca79b16f76cf40074427752ad73e966a6a223a33a7f0d016084b",
+          "max": 1.4765625,
+          "mean": 0.8950653076171875,
+          "min": 0.1875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.norm.weight": {
+          "float32_sha256": "c0152905938b7692692213e3457834e16eff027f82922474ee7b2e2a8281479a",
+          "max": 3.484375,
+          "mean": 2.6280593872070312,
+          "min": 0.765625,
+          "shape": [
+            2048
+          ]
+        }
+      },
+      "weight_manifest_sha256": "62e8cacacd8e7f0d38a80e1f08f7c6845b429bcea41f59d48e18164c582d79af"
+    },
+    {
+      "label": "mlx-community-dwq-4bit-8bit",
+      "model_identifier": "mlx-community--Qwen3.6-35B-A3B-4bit-DWQ",
+      "tensors": {
+        "language_model.model.layers.0.input_layernorm.weight": {
+          "float32_sha256": "293b560dbafa261727f577ae2496205381d5c93a31841a95a03c86190ade2d10",
+          "max": 1.328125,
+          "mean": 1.0311603546142578,
+          "min": 0.921875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.layers.0.post_attention_layernorm.weight": {
+          "float32_sha256": "e69e82c8f617ca79b16f76cf40074427752ad73e966a6a223a33a7f0d016084b",
+          "max": 1.4765625,
+          "mean": 0.8950653076171875,
+          "min": 0.1875,
+          "shape": [
+            2048
+          ]
+        },
+        "language_model.model.norm.weight": {
+          "float32_sha256": "c0152905938b7692692213e3457834e16eff027f82922474ee7b2e2a8281479a",
+          "max": 3.484375,
+          "mean": 2.6280593872070312,
+          "min": 0.765625,
+          "shape": [
+            2048
+          ]
+        }
+      },
+      "weight_manifest_sha256": "953160736915f9c44b66d17ce91564104b2dfffb7344173f89f9dc93429613dc"
+    }
+  ],
+  "comparison": {
+    "all_representative_tensors_match": true,
+    "baseline_label": "stock-affine-4bit",
+    "candidate_tensor_matches": {
+      "majentik-nvfp4": {
+        "language_model.model.layers.0.input_layernorm.weight": true,
+        "language_model.model.layers.0.post_attention_layernorm.weight": true,
+        "language_model.model.norm.weight": true
+      },
+      "mlx-community-dwq-4bit-8bit": {
+        "language_model.model.layers.0.input_layernorm.weight": true,
+        "language_model.model.layers.0.post_attention_layernorm.weight": true,
+        "language_model.model.norm.weight": true
+      },
+      "optiq-mixed-4bit-8bit": {
+        "language_model.model.layers.0.input_layernorm.weight": true,
+        "language_model.model.layers.0.post_attention_layernorm.weight": true,
+        "language_model.model.norm.weight": true
+      }
+    }
+  },
+  "interpretation_limit": "Matching representative norm tensors rules out candidate-specific drift at those keys. It does not prove that the shared values match the original source checkpoint or that every norm tensor is correct.",
+  "provenance": {
+    "benchmark_script_sha256": "e14bfc9735be91e067f8b55cbaf19e084de68fc506b7b570f33e9b9b5fa13be9",
+    "core_extension": "core.cpython-313-darwin.so",
+    "core_extension_sha256": "c851e5cdaac7d76d53a06a16975a6811d662f62a31c6dac4b178679c25df9e5e",
+    "device": {
+      "architecture": "applegpu_g17s",
+      "device_name": "Apple M5 Max",
+      "max_buffer_length": 86586540032,
+      "max_recommended_working_set_size": 127926272000,
+      "memory_size": 137438953472,
+      "resource_limit": 499000
+    },
+    "libmlx": "libmlx.dylib",
+    "libmlx_sha256": "a1b574bf28b58bebe46328a62f50c398c566f40e43333861dbdd4a95081700f5",
+    "metallib": "mlx.metallib",
+    "metallib_sha256": "961dae27c7c67891258cd59fd82d5e07fb7d6fa85dc9fdf1f988a47cf657566a",
+    "mlx_version": "0.32.1.dev20260811+291e909f4",
+    "package": "mlx",
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "3.13.14"
+  },
+  "schema": "mtplx-qwen36-norm-shift-spotcheck-v1",
+  "status": "cross_artifact_spotcheck_not_source_fidelity_proof"
+}

@@ -1,0 +1,164 @@
+{
+  "schema": "mtplx-m5-static-dispatch-audit-v1",
+  "date": "2026-08-10",
+  "status": "cpu_static_dispatch_evidence_only_historical_for_closed_pr_3838",
+  "method": {
+    "model_loading": false,
+    "metal_calls": false,
+    "rows_evaluated": 288,
+    "unit_tests_passed": 10,
+    "unit_tests_failed": 0,
+    "deterministic_full_matrix_sha256": "81fd28142b510df1cdeca26872e9b0f0fb7a50ddbe87813082cf2e709113a9ab",
+    "qualification": "true means all represented static terms pass; conditional means runtime requirements remain; false means a source predicate is disproved by the model config or named shape"
+  },
+  "sources": {
+    "mlx_pr_3838": {
+      "revision": "3df41a6ade727ffd1c84336fd556146a75a4737b",
+      "upstream_state_2026_08_11": "closed_unmerged",
+      "predicate": "mlx/backend/metal/scaled_dot_product_attention.cpp:591-617,823-882,999-1074"
+    },
+    "mlx_pr_3842": {
+      "revision": "31f1555a80d529a0ab27441733293b37ada1223b",
+      "predicate": "mlx/backend/metal/scaled_dot_product_attention.cpp:695-732"
+    },
+    "mlx_pr_4020": {
+      "revision": "4ad8724334f942dc95bdc0c962fb7bda9b59b77c",
+      "predicate": "mlx/backend/metal/gated_delta_update.cpp:15-41,80-93"
+    },
+    "mlx_pr_4023": {
+      "revision": "dae83dff6f02b657d78e5557216e9f9d47004fb5",
+      "predicate": "mlx/backend/metal/quantized.cpp:1492-1495,1890-1920"
+    },
+    "mlx_pr_4077": {
+      "revision": "c55982c0972c8ecee6f8bfcc5e71d933c662be5f",
+      "predicate": "mlx/backend/metal/scaled_dot_product_attention.cpp:509-511"
+    },
+    "mlx_pr_4171": {
+      "revision": "46c9b8593fbefcbf8e789710655ce71a5ff50d8d",
+      "predicate": "mlx/backend/metal/quantized.cpp:85-95,814-843,1795-1826"
+    },
+    "mlx_lm_pr_1559": {
+      "revision": "e1cc9c51442aef48ab206d23400720a1e2022448",
+      "predicate": "mlx_lm/models/gated_delta.py:423-432"
+    },
+    "mtplx_private_nax": {
+      "revision": "5262443fd4b4b04faab5690346d1225ce6ee5b0e",
+      "predicate": "mtplx/nax_verify.py:29-61,733-741,818-827,875-1049"
+    }
+  },
+  "target_snapshots": {
+    "qwen36_27b_8bit": {
+      "config_sha256": "93f5fa0d6c683b2278a5505337d0d756bbf4e633f9432dd15633aac50a87e55e",
+      "heads": 24,
+      "kv_heads": 4,
+      "head_dim": 256,
+      "gqa": 6,
+      "full_attention_layers": 16,
+      "gdn_layers": 48,
+      "gdn_geometry": "Hk16,Hv48,Dk128,Dv128",
+      "quantization": "8-bit group-64"
+    },
+    "qwen36_35b_a3b_4bit": {
+      "config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+      "heads": 16,
+      "kv_heads": 2,
+      "head_dim": 256,
+      "gqa": 8,
+      "full_attention_layers": 10,
+      "gdn_layers": 30,
+      "gdn_geometry": "Hk16,Hv32,Dk128,Dv128",
+      "experts": 256,
+      "top_k": 8,
+      "quantization": "4-bit group-64"
+    },
+    "laguna_s21_4bit": {
+      "config_sha256": "de530f3a85f0dbef0b22c6e7caff51d21b6b75d1f04024b07947d103e22a630c",
+      "heads": 48,
+      "kv_heads": 8,
+      "head_dim": 128,
+      "gqa": 6,
+      "full_attention_layers": 12,
+      "experts": 256,
+      "top_k": 10,
+      "quantization": "4-bit group-128"
+    },
+    "deepseek_v4_flash_0731": {
+      "config_sha256": "6c8f3d2d3b48707541b88f32f22ef3f0f8a6b57d8523281e2b8d3cdb0ae9a023",
+      "heads": 64,
+      "kv_heads": 1,
+      "head_dim": 512,
+      "gqa": 64,
+      "experts": 256,
+      "top_k": 6,
+      "runtime": "source-faithful custom path"
+    }
+  },
+  "key_results": [
+    {
+      "target": "Qwen3.6-27B",
+      "candidate": "mlx_pr_3842",
+      "shape": "full-attention prefill Q>=1024",
+      "verdict": "conditional",
+      "remaining": "candidate build, NAX, causal no-array-mask call, supported dtype"
+    },
+    {
+      "target": "Qwen3.6-27B",
+      "candidate": "mlx_pr_3838",
+      "shape": "verify M9-M10 only",
+      "verdict": "static_true",
+      "availability": "closed_unmerged_historical_code_only",
+      "reason": "GQA6*ceil(M/2)<=32 only through M10"
+    },
+    {
+      "target": "Qwen3.6-35B-A3B",
+      "candidate": "mlx_pr_3838",
+      "shape": "verify M9-M16",
+      "verdict": "false",
+      "availability": "closed_unmerged_historical_code_only",
+      "reason": "GQA8*ceil(9/2)=40 already exceeds 32"
+    },
+    {
+      "target": "Laguna-S-2.1",
+      "candidate": "mlx_pr_3838",
+      "shape": "verify M9-M16",
+      "verdict": "static_true",
+      "availability": "closed_unmerged_historical_code_only",
+      "reason": "head-dim128 permits four query rows per simdgroup"
+    },
+    {
+      "target": "Qwen3.6-27B/Qwen3.6-35B-A3B",
+      "candidate": "mlx_pr_4171",
+      "shape": "current D3/D5 verify M4/M6",
+      "verdict": "false",
+      "reason": "local M5 large-projection QMV/QMM boundary begins at M13"
+    },
+    {
+      "target": "Qwen3.6-27B 8-bit",
+      "candidate": "mtplx_private_nax",
+      "shape": "M16",
+      "verdict": "false",
+      "reason": "private M16 lane requires 4-bit weights"
+    },
+    {
+      "target": "Qwen3.6-35B-A3B/Laguna-S-2.1",
+      "candidate": "mlx_pr_4023",
+      "shape": "sorted MoE prefill",
+      "verdict": "conditional",
+      "remaining": "sorted router output, GatherQMM M1 path, NAX, current core"
+    },
+    {
+      "target": "DeepSeek-V4-Flash-0731",
+      "candidate": "all listed generic MLX-LM candidates",
+      "shape": "source-faithful runtime",
+      "verdict": "false",
+      "reason": "head-dim512 and custom Indexer/DSpark/MoE path bypass the advertised generic routes"
+    }
+  ],
+  "known_false_assumptions": [
+    "#3838 covers all M9-M16 Qwen verification",
+    "#4077 helps Qwen35 because its GQA factor is eight",
+    "#4171 helps current D3/D5 speculation",
+    "MTPLX M16 NAX helps the local 8-bit Qwen27",
+    "#4023 is an immediate drop-in DeepSeek V4 optimization"
+  ]
+}

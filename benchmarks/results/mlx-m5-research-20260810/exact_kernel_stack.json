@@ -1,0 +1,224 @@
+{
+  "schema": "mtplx-mlx-m5-exact-kernel-stack-v1",
+  "date": "2026-08-10",
+  "status": "historical_pinned_kernel_mechanism_evidence_not_current_upstream_or_release_evidence",
+  "hardware": {
+    "architecture": "applegpu_g17s",
+    "device": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "os": "macOS 27.0"
+  },
+  "method": {
+    "order": "process-isolated A/B/B/A for every shape",
+    "timing": "first touch separated; 5-10 convergence iterations; 20-40 synchronized steady-state iterations",
+    "aggregate": "mean of the two per-process steady-state medians in each arm",
+    "fixture_policy": "each deterministic fixture was generated once and loaded unchanged by both wheels",
+    "output_policy": "bfloat16 outputs were expanded exactly to float32 before content hashing"
+  },
+  "provenance": {
+    "base_commit": "6ffa7739a500970295f7be667437b5289dcacb0c",
+    "base_wheel_sha256": "6083146207955af6fee5cb9048a24ee5619d415ad2a06fe5792ef86359058d9a",
+    "base_core_extension_sha256": "146208f1513a8647795cbf491ff358aaba9d4d131163ab5cc077bb75b26f9556",
+    "base_liblmx_sha256": "5f3399a64af419848693595d8bdd622279ac2744c900b3ef6cc657e3f679aa98",
+    "base_metallib_sha256": "879674ee20b37641ee43fb4c086db95d7172c96039199915b73f4c5c8bc82a10",
+    "stack_commit": "296277a9eaf0b6ff1684bbdaffe14b902b42f981",
+    "stack_wheel_sha256": "8441c2393a4f6b3150cb95d808b44f289014844ff10c8875c0eda90d326f605e",
+    "stack_core_extension_sha256": "17e7b2b41750c727f05c1f941bd65050489cca7accdd6acf199bc95f0da58267",
+    "stack_liblmx_sha256": "9aaec0efea6020f250d6cc041a9de3bb5a314aebdd78b43fb70eca7cca700b2f",
+    "stack_metallib_sha256": "39ee3a64668dd347b6394911a9afbf711b79bb29cc221ebf01de35de974aa158",
+    "original_benchmark_script_sha256": "971258d42680cc00c9332e0d76a738c208993e5dde8c3b56ea2b912083aa7039",
+    "published_reproducer_script_sha256": "d7ce73eba35a4c9813b0bd7702019ef0619b08f0d9811e043fdf7c873fe63056",
+    "stack_commits": {
+      "mlx_pr_3838_multirow_sdpa": "0945b1898c545e2a9cfe7ed74737844cd4dbf5ad",
+      "mlx_pr_4171_qmm_32row": "109695bc0",
+      "mlx_pr_3842_head_dim_256_prefill": "afd5d2379",
+      "routing_format_only": "296277a9eaf0b6ff1684bbdaffe14b902b42f981"
+    },
+    "focused_tests": {
+      "command_scope": [
+        "TestFastSDPA.test_sdpa_multirow_query",
+        "TestFastSDPA.test_sdpa_full_head_dim_256",
+        "TestFastSDPA.test_sdpa_full_head_dim_256_tf32_disabled",
+        "TestQuantized.test_qmm_small_m_block"
+      ],
+      "passed": 4,
+      "failed": 0
+    },
+    "upstream_state_refresh_2026_08_11": {
+      "mlx_pr_3838": "closed_unmerged",
+      "mlx_pr_3842_current_head": "31f1555a80d529a0ab27441733293b37ada1223b",
+      "mlx_pr_3842_current_base": "158118bb152f59ad1aef0d8c835c49317ff9637b",
+      "current_pr_receipt": "benchmarks/results/mlx-m5-research-20260810/real_model_prefill.json"
+    }
+  },
+  "results": {
+    "qwen36_27b_prefill_q512_k8192": {
+      "shape": "B1,Hq24,Hkv4,Q512,K8192,D256,bfloat16,causal",
+      "fixture_sha256": "fb522e71ba48283aca7f10ecdc0504796ff4125a7fafb53be7e0608ccc22c577",
+      "base_medians_ms": [3.624125, 3.6775],
+      "stack_medians_ms": [3.7015205, 3.6370005],
+      "base_midpoint_ms": 3.6508125,
+      "stack_midpoint_ms": 3.6692605,
+      "speedup": 0.9949722839247854,
+      "output_identity": {
+        "exact_elements": 3145728,
+        "elements": 3145728,
+        "max_abs": 0.0
+      },
+      "interpretation": "Negative control: the head-dim-256 fused prefill route does not engage below its Q1024 threshold."
+    },
+    "qwen36_27b_prefill_q1024_k8192": {
+      "shape": "B1,Hq24,Hkv4,Q1024,K8192,D256,bfloat16,causal",
+      "fixture_sha256": "6dcb12d920b3a32e97583d0bdae984d15d0b946aa7e2435fff572973ceb265a8",
+      "base_medians_ms": [6.9506665, 6.935083],
+      "stack_medians_ms": [4.8658125, 4.8459585],
+      "base_midpoint_ms": 6.94287475,
+      "stack_midpoint_ms": 4.8558855,
+      "speedup": 1.4297855149179277,
+      "output_identity": {
+        "exact_elements": 3550094,
+        "elements": 6291456,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.000008447265827271622,
+        "p99_abs": 0.00006103515625,
+        "allclose_atol_rtol_1e_3": true
+      }
+    },
+    "qwen36_27b_prefill_q2048_k8192": {
+      "shape": "B1,Hq24,Hkv4,Q2048,K8192,D256,bfloat16,causal",
+      "fixture_sha256": "14a3d3fb3b12aa3a74019d99cc641a769d66129e686296021bfb4ccc8e6eb5aa",
+      "base_medians_ms": [13.7190205, 13.612042],
+      "stack_medians_ms": [9.1292295, 9.0694585],
+      "base_midpoint_ms": 13.66553125,
+      "stack_midpoint_ms": 9.099344,
+      "speedup": 1.5018149934764529,
+      "output_identity": {
+        "exact_elements": 7103004,
+        "elements": 12582912,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.000008709939720574766,
+        "p99_abs": 0.00006103515625,
+        "allclose_atol_rtol_1e_3": true
+      }
+    },
+    "qwen36_35b_a3b_prefill_q2048_k8192": {
+      "shape": "B1,Hq16,Hkv2,Q2048,K8192,D256,bfloat16,causal",
+      "fixture_sha256": "22eaa14266f64f6fd8173e06193650696955ccb3ed49562ba271229e63bc2a17",
+      "base_medians_ms": [9.660625, 9.4047085],
+      "stack_medians_ms": [6.0973335, 6.1923955],
+      "base_midpoint_ms": 9.53266675,
+      "stack_midpoint_ms": 6.1448645,
+      "speedup": 1.551322531196579,
+      "output_identity": {
+        "exact_elements": 4647272,
+        "elements": 8388608,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.000008688153684488498,
+        "p99_abs": 0.00006103515625,
+        "allclose_atol_rtol_1e_3": true
+      }
+    },
+    "qwen36_27b_verify_q9_k16384": {
+      "shape": "B1,Hq24,Hkv4,Q9,K16384,D256,bfloat16,causal",
+      "fixture_sha256": "3a77199c4ebe1a83a2c739b640e83d8b35db60ad27d1874cf133b68b13a43611",
+      "base_medians_ms": [1.520771, 1.7169585],
+      "stack_medians_ms": [0.996438, 1.0221665],
+      "base_midpoint_ms": 1.61886475,
+      "stack_midpoint_ms": 1.00930225,
+      "speedup": 1.603944457668652,
+      "output_identity": {
+        "exact_elements": 26175,
+        "elements": 55296,
+        "max_abs": 0.00006103515625,
+        "mean_abs": 0.000007752364581392612,
+        "p99_abs": 0.000030517578125,
+        "allclose_atol_rtol_1e_3": true
+      },
+      "interpretation": "The #3838 static predicate engages at Q9 for the Qwen 27B H24/Hkv4/D256 layout."
+    },
+    "qwen36_27b_verify_q16_k16384_control": {
+      "shape": "B1,Hq24,Hkv4,Q16,K16384,D256,bfloat16,causal",
+      "fixture_sha256": "b74dd99aeb28d6fd5c8b7b4dd9cf917ac278adfd18f2955f08b334c878bf30db",
+      "base_medians_ms": [1.1927915, 1.3972915],
+      "stack_medians_ms": [1.184917, 1.271459],
+      "base_midpoint_ms": 1.2950415,
+      "stack_midpoint_ms": 1.228188,
+      "speedup": 1.0544326275781883,
+      "output_identity": {
+        "exact_elements": 98304,
+        "elements": 98304,
+        "max_abs": 0.0
+      },
+      "interpretation": "Control, not #3838 evidence: GQA6*ceil(Q16/2)=48 exceeds the 32-simdgroup bound. The apparent 1.054x delta is session noise and the output is bit-identical."
+    },
+    "qwen36_35b_a3b_verify_q16_k16384_control": {
+      "shape": "B1,Hq16,Hkv2,Q16,K16384,D256,bfloat16,causal",
+      "fixture_sha256": "ee2ebcb4721e1c9b6d4718a6cb2bc0cc2adb458a22a6426e6693f20a3806c9fd",
+      "base_medians_ms": [0.873479, 0.8683545],
+      "stack_medians_ms": [0.8706455, 0.8834795],
+      "base_midpoint_ms": 0.87091675,
+      "stack_midpoint_ms": 0.8770625,
+      "speedup": 0.9929928026793985,
+      "output_sha256_both_arms": "79d9847be007db764f36f6152899ae2b76d219b275d90b33c68b4d2e9224f90d",
+      "interpretation": "Control, not #3838 evidence: Qwen35 GQA8 exceeds the 32-simdgroup bound throughout Q9-Q16."
+    },
+    "laguna_s21_verify_q9_k16384": {
+      "shape": "B1,Hq48,Hkv8,Q9,K16384,D128,bfloat16,causal",
+      "fixture_sha256": "797e76f3c0eda885a68aeac5fc9867e8f38bdd558ec76aa8a5be97f4385e5b56",
+      "base_medians_ms": [1.840771, 1.837937],
+      "stack_medians_ms": [1.289229, 1.292854],
+      "base_midpoint_ms": 1.839354,
+      "stack_midpoint_ms": 1.2910415,
+      "speedup": 1.424705557489825,
+      "output_identity": {
+        "exact_elements": 31595,
+        "elements": 55296,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.0000055369141591654625,
+        "p99_abs": 0.000030517578125,
+        "allclose_atol_rtol_1e_3": true
+      }
+    },
+    "laguna_s21_verify_q13_k16384": {
+      "shape": "B1,Hq48,Hkv8,Q13,K16384,D128,bfloat16,causal",
+      "fixture_sha256": "5c59a0508f4333270e36de48167f672f53fd2f66fa83087b728b853d41573233",
+      "base_medians_ms": [1.836, 1.8382085],
+      "stack_medians_ms": [1.6833955, 1.6146455],
+      "base_midpoint_ms": 1.83710425,
+      "stack_midpoint_ms": 1.6490205,
+      "speedup": 1.1140578604086486,
+      "output_identity": {
+        "exact_elements": 46125,
+        "elements": 79872,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.0000054349584388546646,
+        "p99_abs": 0.000030517578125,
+        "allclose_atol_rtol_1e_3": true
+      }
+    },
+    "laguna_s21_verify_q16_k16384": {
+      "shape": "B1,Hq48,Hkv8,Q16,K16384,D128,bfloat16,causal",
+      "fixture_sha256": "5b8f020e44ecda3d4218460223baf3d7606b252d38575809f241e0c2a50f45e1",
+      "base_medians_ms": [1.8910005, 1.867209],
+      "stack_medians_ms": [1.9483335, 1.878542],
+      "base_midpoint_ms": 1.87910475,
+      "stack_midpoint_ms": 1.91343775,
+      "speedup": 0.982056902556668,
+      "output_identity": {
+        "exact_elements": 56474,
+        "elements": 98304,
+        "max_abs": 0.0001220703125,
+        "mean_abs": 0.000005481692369357916,
+        "p99_abs": 0.000030517578125,
+        "allclose_atol_rtol_1e_3": true
+      },
+      "interpretation": "The static predicate engages, but this target shape is slightly slower."
+    }
+  },
+  "decisions": {
+    "mlx_pr_3842": "HISTORICAL PINNED RESULT: this stack advanced #3842 to real-model gates. The exact current PR head/base are measured separately in real_model_prefill.json and remain on quality hold.",
+    "mlx_pr_3838": "CLOSED UNMERGED: pinned Qwen27 Q9 measured 1.604x and Laguna Q9 measured 1.425x, but the arithmetic is not bit-identical. This remains historical mechanism evidence, not an available upstream integration path.",
+    "mlx_pr_4171": "HOLD unless a proposal source first proves that M14-M32 verification beats current narrow speculation. This SDPA receipt does not exercise the QMM patch.",
+    "stacking_claim": "The pinned commits were mechanically compatible, but #3838 and #4171 did not overlap on Qwen27 and #3838 excluded Qwen35. They overlapped only on Laguna Q13-Q16, where the attention gain shrank to 1.114x and then reversed. #3838 later closed unmerged; no current compound path or end-to-end gain is claimed."
+  }
+}

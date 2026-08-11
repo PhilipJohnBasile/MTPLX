@@ -1,0 +1,851 @@
+{
+  "compressed_q35_fixed_work": {
+    "artifacts": {
+      "majentik_nvfp4_prefixed": {
+        "candidate_decode_relative_range": 0.010105103053979065,
+        "decision": "no_speed_promotion_for_prefixed_artifact_corrected_nvfp4_untested",
+        "decode_percent_change": -3.209206378293905,
+        "historical_nll_status": "not_comparable_not_quality_decision_evidence",
+        "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_m5_fixed_work_performance.json",
+        "performance_receipt_sha256": "463b5e752c23101bbae0a0d57edfb33a51ddfbd5c7c8130fbe1f6a6d62a93b3b",
+        "prefill_percent_change": -1.4042572682250731
+      },
+      "mlx_community_dwq": {
+        "candidate_decode_relative_range": 0.003517031323648267,
+        "decision": "no_speed_promotion",
+        "decode_percent_change": -13.667904718465673,
+        "historical_nll_status": "not_comparable_not_quality_decision_evidence",
+        "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_m5_fixed_work_performance.json",
+        "performance_receipt_sha256": "8dde62000d7e6ff989e5ce377ce6f0f70e11ffaaeca31a2d12263a882a1fe1bc",
+        "prefill_percent_change": -0.9754154871181919
+      },
+      "optiq_mixed_4_8": {
+        "candidate_decode_relative_range": 0.013553385929853015,
+        "decision": "no_speed_promotion",
+        "decode_percent_change": -13.919535094147218,
+        "historical_nll_status": "not_comparable_not_quality_decision_evidence",
+        "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_m5_fixed_work_performance.json",
+        "performance_receipt_sha256": "61d1978c4c8ac966901d927b443011ef55afedda443fc7b47f8c36b00b3ded30",
+        "prefill_percent_change": -3.302267727155217
+      },
+      "paroquant": {
+        "candidate_decode_relative_range": 0.23208159333785355,
+        "decision": "no_speed_promotion_precise_penalty_indeterminate",
+        "decode_percent_change": -39.59979988236484,
+        "historical_nll_status": "not_comparable_not_quality_decision_evidence",
+        "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_m5_fixed_work_performance.json",
+        "performance_receipt_sha256": "598b0a599cc9bb3b94b276b1185525f04537348cbf2c3dc18209f065047165d9",
+        "prefill_percent_change": -4.497192920581239
+      }
+    },
+    "benchmark_script_sha256": "1578f6f8cb860be2e6dcb27ea08f1253b069555f0e83da3c71a451a0bcf98d33",
+    "historical_greedy_cross_artifact_decode": "retained_as_workload_confounded_behavioral_evidence_not_used_for_speed_comparison",
+    "historical_nll_boundary": "NOT COMPARABLE across artifacts: raw v1/v2 NLL receipts lack tokenizer-asset hashes, prompt/solution token-ID hashes, and the exact producing source. Their percentages and task signs are retained only in historical receipts and are not decision evidence.",
+    "historical_v4_producer_source": "benchmarks/provenance/research_paroquant_q35_fixed_work_v4_producer_1578f6f8.py",
+    "method": "process-isolated A/B/B/A; one 512-token synthetic prompt; 127 teacher-forced decode forwards; identical continuation token and source-receipt hashes in every arm. This fixes token IDs and forward count only; expert assignments were unobserved and may differ across artifact-specific hidden states.",
+    "quality_boundary": "No cross-artifact quality direction is established by the historical HumanEval NLL receipts. A future comparison must verify identical tokenizer assets and every prompt/solution token-ID sequence before source-relative quality evaluation.",
+    "status": "four_artifacts_no_speed_promotion_under_fixed_token_and_forward_count_measurement"
+  },
+  "current_upstream_exact_shortlist": {
+    "mlx_3843_d128_nax_unroll": {
+      "decision": "trace_then_measure_local_target_range_before_any_laguna_claim",
+      "merge_commit": "3541c66b9d5829264ccfc3b0323998e316df69ac",
+      "state": "merged",
+      "target_scope": "Laguna-S-2.1 D128 NAX attention only; the published kernel point is 8192 tokens, not a target-range whole-prefill result"
+    },
+    "mlx_3882_metal_barrier_table_reuse": {
+      "decision": "exact_output_q35_only_no_model_speed_claim",
+      "merge_commit": "291e909f443d17509385ee88fded90e460016a86",
+      "receipt": "benchmarks/results/mlx-m5-research-20260810/mlx_pr_3882_q35.json",
+      "state": "merged",
+      "target_scope": "measured Q35 only: 2048-token prefill and 128-token continuation"
+    },
+    "mlx_4023_adaptive_many_expert_nax": {
+      "decision": "measure only after traced B_and_B_over_E_dispatch_engagement",
+      "merge_commit": "a076a632596eb61b1e876c0512b54b781584f756",
+      "predicate": "sorted-RHS GatherQMM requires M == 1, B >= 16, B / E >= 4, right_sorted, and NAX. At pinned MLX-LM revision 254d153fdeb6f150edd4fc5a54f9828638481fa8, SwitchGLU flattens verify_rows*top_k routed assignments before GatherQMM, so target verification has M=1 and B=verify_rows*top_k; sorting starts at B=64. Only after the outer route passes does the BM32 subpredicate consider total routed rows / E < 64.",
+      "required_correctness_commits": [
+        "268ecd62e3ac830a37af6fef513c8a3c8b31ff70",
+        "8d666298652fdac2e7727ecdcf507b1d199bba16"
+      ],
+      "required_production_correctness_dependency": "MLX #3922 ragged sorted-RHS large-row correctness",
+      "state": "merged",
+      "target_scope": "Qwen3.6-35B-A3B and Laguna-S-2.1 256-expert sorted-MoE server prefill/high-concurrency only. Single-request verification rows 8..16 produce sorted GatherQMM B=64..128 for Q35 top-8 and B=80..160 for Laguna top-10, but remain ineligible because B/E is only 0.25..0.5 and 0.3125..0.625, below 4."
+    },
+    "mlx_lm_1559_packed_gdn": {
+      "decision": "repeat_thermal_envelope_reject_decode_below_3_percent",
+      "head_commit": "e1cc9c51442aef48ab206d23400720a1e2022448",
+      "state": "open_review_required",
+      "target_scope": "Qwen27 and Qwen35 GDN prefill"
+    }
+  },
+  "date": "2026-08-10",
+  "dflash_ddtree_qwen36_35b_a3b": {
+    "focused_tests": "32/32 passed",
+    "greedy_64_token_hash_identical": true,
+    "receipt": "benchmarks/results/mlx-m5-research-20260810/dflash_ddtree_q35_m5.json",
+    "receipt_sha256": "e65e4ffeff68fa0cbe2a1de9fdf5b97301c8420ab122b23cbac49a11e4cefa1e",
+    "source_commit": "9ca002898b48e14c9727dec17299f497e8467870",
+    "status": "correctness_smoke_pass_performance_no_go",
+    "verdict": "no_go_for_qwen35_default_keep_mechanism_as_low_acceptance_research_lane",
+    "verify_cap_16_acceptance_change_percentage_points": 0.390625,
+    "verify_cap_16_ddtree_over_chain": 0.6995003113936513,
+    "verify_cap_6_ddtree_over_adaptive": 0.8599841222984025
+  },
+  "exact_kernel_stack": {
+    "dispatch_generator_script_sha256": "478a8202d7ba1e98cc123f77aaf7e19d62c43c1054763c85b0a5a92c298306ae",
+    "dispatch_matrix_v2": "benchmarks/results/mlx-m5-research-20260810/dispatch_matrix_v2.json",
+    "dispatch_matrix_v2_canonical_matrix_sha256": "c0e042fe2f1f7d858303298ba6aa31333901f8ae0f94c587dcbec08c52ba9565",
+    "dispatch_matrix_v2_schema": "mtplx-m5-static-dispatch-audit-v5",
+    "dispatch_matrix_v2_sha256": "f85c00f764581df6a336aa1ebcdcfdbe9124d699b8943b01a4664bfad904a3c2",
+    "dispatch_truth_table": "benchmarks/results/mlx-m5-research-20260810/dispatch_truth_table.json",
+    "focused_tests": "4/4 passed",
+    "historical_stack_qwen36_27b_prefill_speedup": 1.023141568714713,
+    "historical_stack_qwen36_35b_a3b_prefill_speedup": 1.035498921636414,
+    "maximum_prefill_output_abs_difference": 0.0001220703125,
+    "mlx_pr_3838_upstream_state": "closed_unmerged_2026-08-06",
+    "mlx_pr_3842_base_commit": "158118bb152f59ad1aef0d8c835c49317ff9637b",
+    "mlx_pr_3842_comparison_kind": "exact_head_base_numerical_change_comparison",
+    "mlx_pr_3842_hardened_rerun_continuation_length_tokens": 32,
+    "mlx_pr_3842_hardened_rerun_head_same_arm_max_over_min": 1.0453602053486875,
+    "mlx_pr_3842_hardened_rerun_latency_reduction_percent": 7.176123161141658,
+    "mlx_pr_3842_hardened_rerun_prefill_speedup": 1.0773090222637367,
+    "mlx_pr_3842_hardened_rerun_weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5",
+    "mlx_pr_3842_head_commit": "31f1555a80d529a0ab27441733293b37ada1223b",
+    "mlx_pr_3842_initial_continuation_length_tokens": 16,
+    "mlx_pr_3842_one_step_max_absolute_logit_difference": 1.1328,
+    "mlx_pr_3842_one_step_total_variation": 0.06815154363805212,
+    "mlx_pr_3842_qwen36_27b_verdict": "thermal_stability_gate_failed_no_magnitude_claim",
+    "mlx_pr_3842_qwen36_35b_a3b_latency_reduction_percent": 3.01830455619787,
+    "mlx_pr_3842_qwen36_35b_a3b_prefill_speedup": 1.0311224148266915,
+    "original_benchmark_script_sha256": "971258d42680cc00c9332e0d76a738c208993e5dde8c3b56ea2b912083aa7039",
+    "published_reproducer_script_sha256": "d7ce73eba35a4c9813b0bd7702019ef0619b08f0d9811e043fdf7c873fe63056",
+    "qwen36_27b_prefill_q1024_speedup": 1.4297855149179277,
+    "qwen36_27b_prefill_q2048_speedup": 1.5018149934764529,
+    "qwen36_27b_q512_negative_control_speedup": 0.9949722839247854,
+    "qwen36_35b_a3b_prefill_q2048_speedup": 1.551322531196579,
+    "real_model_receipt": "benchmarks/results/mlx-m5-research-20260810/real_model_prefill.json",
+    "receipt": "benchmarks/results/mlx-m5-research-20260810/exact_kernel_stack.json",
+    "verdict": "current_3842_qwen35_speed_direction_repeated_quality_hold_qwen27_unstable"
+  },
+  "external_research_evidence": {
+    "basert_public_converter_audit": {
+      "awq_blockers": [
+        "converter rotates weights but does not persist inverse activation scales in tensor metadata",
+        "AwqProfile.check_fingerprint is never called by conversion",
+        "calib, calib_tokens, and awq_mode CLI fields do not feed QuantContext",
+        "clip_grid is defined but unused"
+      ],
+      "decision": "reuse profile and provenance ideas only; require a source-logit oracle before reusing the AWQ path",
+      "focused_tests": "base-awq 14 passed; selected base-quant 16 passed plus one ignored integration test",
+      "portable_value": "fail-closed tensor-glob profiles, source/calibration provenance fields, and canonical affine packers",
+      "qualification": "isolated unit tests do not prove end-to-end runtime equivalence; proprietary-engine benchmark claims are separate",
+      "repository_commit": "bbded2c2fdb5e8fc1893fbbc5853a9e131250034"
+    },
+    "bole_hybrid_tree_speculation": {
+      "decision": "reopens Bole-to-Metal feasibility; does not rescue the local materialized-state or one-prompt DDTree result",
+      "paper": "arXiv:2608.01651",
+      "published_result": "3.4-7.7x recurrent tree verification speed and 82-99x transient speculative-state memory reduction",
+      "published_scope": "tree-structured recurrent closed form and accepted-state reconstruction on non-Apple GPUs"
+    },
+    "deepseek_v4_source_lattice": {
+      "contract": "MXFP4 E2M1 routed-expert values with E8M0 group-32 scales; separate compressed-indexer FP4 simulation points; indexer KV stored BF16",
+      "decision": "generic affine repack is a new approximate target unless equivalence to trained lattice and rounding semantics is proved"
+    },
+    "domino_qwen36_27b": {
+      "apple_evidence": "none found",
+      "decision": "highest_priority_qwen27_drafter_ab_against_z_lab_dflash_at_blocks_8_and_16; kill below_10_percent_cost_per_committed_token_gain",
+      "mechanism": "DFlash-compatible block-parallel proposal with a lightweight causal GRU correction head",
+      "official_repository": "jianuo-huang/Domino",
+      "paper": "arXiv:2605.29707",
+      "public_checkpoint": "Huang2020/Qwen3.6-27B-Domino"
+    },
+    "escha_trellis_mlx": {
+      "artifact": "dogfoodai/Qwen3.6-35B-A3B-Escha-W2-trellis-mlx",
+      "artifact_revision": "c968c7c72de5f328f1d4818c092fb9e29f281bc9",
+      "artifact_size_claim": "approximately 12.1 GB",
+      "decision": "capacity_and_custom_backend_research_not_q35_intelligence_preserving_promotion",
+      "quality_boundary": "bit-exactness is relative to the Escha W2 runtime; the published task score is below FP8 and is not source-model preservation",
+      "runtime_pr": "jundot/omlx#2592",
+      "runtime_pr_head": "e40cf4d5869d6c20d702cc25fb9a0761900e116e",
+      "runtime_pr_state": "draft_mergeable_but_all_three_ci_jobs_fail_during_collection"
+    },
+    "fusionml_arxiv_2607_22785": {
+      "decision": "contended_host_adverse_observation_not_clean_m5_mechanism_no_go",
+      "local_m5_receipt": "benchmarks/results/mlx-m5-research-20260810/fusionml_stream_overlap_m5.json",
+      "local_result": "every tested 5-35 percent CPU split was 2.1-5.7x slower than GPU-only; explicit materialization changed split time by only 1.7 percent; unrelated host work consumed roughly 330-370 percent CPU",
+      "mechanism": "explicit mx.eval materialization boundary permits concurrent CPU/GPU row-split prefill",
+      "public_benchmarks_branch_commit": "4e7121a8f9c70fd6512b233c5705374626323471",
+      "published_results": "1.15-1.38x blocks and 1.18-1.25x Qwen2.5-7B TTFT; same greedy text and decode neutral",
+      "published_scope": "M1-M4 only; unquantized nn.Linear reference"
+    },
+    "hf_artifact_identity_refresh_20260811": {
+      "deepseek_v4_dspark_anchor": "official deepseek-ai checkpoint revision 7872f01b1d1fe23eabc4c98b48bffcef5a386062 contains all three mtp stages",
+      "laguna_dflash_license": "BF16 and INT4 payloads are distinct, but both repositories declare license other and contain no LICENSE file; technically testable but not redistribution-cleared",
+      "post_3934_nvfp4": "no Qwen27, Qwen35, or Laguna target artifact demonstrated weight regeneration after MLX #3934; later card updates do not count",
+      "qwen35_axq": {
+        "decision": "skip_pending_recertification",
+        "revision": "b057b2ecde64724b37d9130d34a000bf098bc731",
+        "risk": "current primary shard OIDs differ from the revision evaluated in the card"
+      },
+      "qwen35_dflash_mirror": "modal-labs and z-lab share the same weight OID; use z-lab as canonical",
+      "qwen35_escha_w2": {
+        "decision": "go_for_controlled_m5_measurement_not_quality_equivalent",
+        "quality_boundary": "published LiveCodeBench 62.6 versus 67.0 for FP8; exact BF16 source revision not pinned",
+        "revision": "6072a54913552616b64599c30f5e8a3c8fecad9c",
+        "size_gib": 11.45
+      },
+      "qwen35_wintermix58": {
+        "decision": "test_stock_mlx_compatibility_and_matched_perplexity_not_source_identity_or_broad_quality",
+        "revision": "a746d280f0830780b0bf139346168502676f4e11",
+        "size_gib": 24.28
+      }
+    },
+    "iq_mlx_deepseek_v4_allocator": {
+      "artifact": "ddalcu/DeepSeek-V4-Flash-0731-iQ-MLX-3.3bpw",
+      "artifact_revision": "8a1ae85f8da7a816fc70dbc9e91e409026e5b28d",
+      "decision": "closest Apple-native offline allocator baseline; MAPS may claim only the measured Metal-cost and exact proposal-interaction co-design beyond it",
+      "mechanism": "per-expert activation-weighted affine fitting and greedy layer/projection error-reduction-per-byte allocation to stock MLX affine packs",
+      "reproducibility_gap": "public package lacks the calibration corpus, imatrix hash, complete allocator trace, and source-relative task-quality gate",
+      "runtime_boundary": "approximately 118 GB resident; DSpark retained but does not safely fit beside the target on 128 GB"
+    },
+    "kv_cache_adverse_evidence": {
+      "decision": "separate steady-state residency from run peak and require first-request, wrap, trim, serialization, and restore gates",
+      "mlx_lm_1573": "server starts successfully but first real request can fail at RotatingKVCache.to_quantized",
+      "mlx_lm_1587": "M4 Max report: quantized KV raised whole-run peak and reduced decode at 8K and 32K because float attention scratch outweighed stored-byte savings",
+      "open_tq_metal": "compressed-domain INT4 attention is the strongest reusable Metal mechanism found, but M1-only kernel evidence and no representative M5 quality gate"
+    },
+    "majentik_rotor_turbo_q35": {
+      "card_quality": "200-example ARC-Easy and HellaSwag cells are not source-relative or agentic gates, and the Rotor/Turbo NVFP4 scores do not beat the plain NVFP4 sibling",
+      "decision": "do not spend another 20 GB benchmark until stronger evidence or a genuinely distinct checkpoint appears",
+      "identity": "RotorQuant and TurboQuant NVFP4 shards are byte-identical to each other; their affine cards say the names are release labels, not distinct quantization algorithms",
+      "nvfp4_revisions": {
+        "plain": "660a8ceeaaf0bca3ad4373066d8dd768268b5153",
+        "rotor": "19c4f043920b5713dd56d7b8a70276fed71773e5",
+        "turbo": "e931c025ce92df37069346d036b8543fdaf8e16e"
+      },
+      "state": "published_card_evidence_not_locally_measured"
+    },
+    "mlx_lm_1555_rotated_asymmetric_kv": {
+      "decision": "best gated smart-KV experiment for outlier-heavy Qwen and potentially Laguna; not for DeepSeek V4 MLA",
+      "head_commit": "0034164a2902693ca554f3f8a83e58ca3e2189c7",
+      "negative_controls": "rotated K4/V4 28.82; rotated K3 collapses; three MLA-like checkpoints show no benefit",
+      "published_decode_overhead": "approximately 2 percent on M3 Max",
+      "quality_boundary": "source-relative perplexity, not coding or agentic quality",
+      "qwen_4k": "FP16 22.39 perplexity; rotated K5/V4 23.15; rotated K6/V3 22.98 at 4.5 average cache bits",
+      "state": "published_model_specific_candidate_not_locally_measured"
+    },
+    "mlxcel_m5_max_ledger": {
+      "decision": "aggressive_KV_compression_is_capacity_work_until_a_fused_SDPA_inner_loop_proves_otherwise; turbo3_no_go; int8_conservative_capacity_not_speed_free",
+      "decode_interpretation": "approximately 99-100 percent median parity overall, not a broad speedup",
+      "fp16_fast_path_sidecars": "approximately 0.98-1.04x decode only by retaining full FP16 K/V, so not compressed-only",
+      "license": "Apache-2.0",
+      "model_qualification": "MTP Gemma data is model-specific and does not supersede local Qwen measurements",
+      "prefill_interpretation": "native_host_overhead_short_prompt_evidence_not_long_context_kernel_speed",
+      "repository_main_commit": "45dea248926c5d0a8f09bdfb2ce1d21aed8d504a",
+      "stale_prefill_comparison": "2.70-2.78x mlx-lm median uses a May same-host campaign, tiny Hello prompt, mlx-lm 0.31.3 and MLX 0.31.2; baseline was not rerun for v0.4.0",
+      "turboquant_decode_ratio_to_fp16": {
+        "context_16k": {
+          "delegated": 0.054,
+          "int8": 0.572,
+          "turbo3": 0.029,
+          "turbo4": 0.106,
+          "turbo4_asym": 0.061
+        },
+        "context_4k": {
+          "delegated": 0.269,
+          "int8": 0.719,
+          "turbo3": 0.063,
+          "turbo4": 0.205,
+          "turbo4_asym": 0.09
+        }
+      },
+      "turboquant_prefill_ratio": {
+        "context_8k": {
+          "delegated": 1.204,
+          "int8": 1.09
+        }
+      }
+    },
+    "optiq_ssd_streaming_extreme_quants": {
+      "decision": "capacity and fit controls, not speed-with-intelligence candidates",
+      "deepseek_v4_card": "92.5 GB disk, approximately 6.5 GB resident, approximately 2.5 tok/s on M3 Max, no capability score",
+      "laguna_s_card": "41 GB disk, approximately 9.4 GB resident, approximately 3 tok/s on M3 Max, no capability score",
+      "quality_boundary": "both cards explicitly describe 2-bit routed experts as lossy"
+    },
+    "progressive_bit_and_moe_cost_prior_art": {
+      "approximate_upper_bound": "AcceptMoE changes verifier expert eligibility and therefore the target distribution",
+      "dense_collision": "QSpec shares W4 weights and KV across lower-precision drafting and higher-precision verification; SPEQ derives draft weights from target bit planes",
+      "dense_decision": "prototype shared or progressive-bit Qwen27 drafting only if the draft forward is at least 1.25x faster and stochastic acceptance uses the true proposal law",
+      "dense_m5_primitive": "merged MLX #3764 qmv_wide reports M5 Max INT4 speedups of about 1.4x, 1.7x, and 1.6x at M=2,4,8 over per-vector QMV",
+      "kernel_kill_gate": "fused mixed-bit expert execution must beat split dispatch by at least 15 percent at M=2-6, gain at least 5 percent whole-model, and regress M=1 by no more than 2 percent",
+      "moe_collision": "Cascade already tunes speculation utility; EVICT selects cost-effective lossless MoE tree prefixes; EcoSpec prices marginal expert activation",
+      "moe_missing_variable": "per-layer routed-expert union and associated bytes under the actual target precision layout"
+    },
+    "sparse_prefix_caching": {
+      "decision": "trace overlap depths and simulate sparse placement plus saved_compute_per_byte admission before fixed interval or disk persistence",
+      "mechanism": "store exact recurrent states at selected prefix positions, restore the deepest hit, and recompute the unmatched suffix",
+      "paper": "arXiv:2605.05219"
+    },
+    "srft_int4_kv_arxiv_2605_05699": {
+      "claimed_repository": "AppleSiliconFFT",
+      "code_availability": "no SRFTInt4Cache, fused KV kernel, Python bridge, RESULTS, or raw cache data; no other branches or tags",
+      "current_main_commit": "5d0d51dbd983691ee99822ed74bc3f9a47136511",
+      "decision": "code_availability_mismatch_unreproduced_approximate_model_sensitive"
+    }
+  },
+  "hardware": {
+    "architecture": "applegpu_g17s",
+    "device": "Apple M5 Max",
+    "memory_bytes": 137438953472,
+    "os": "macOS 27.0"
+  },
+  "last_upstream_refresh_date": "2026-08-11",
+  "microbenchmarks": {
+    "baseline_liblmx_sha256": "1876795e05b3434925e745fbf6e9f0c8c0446b666224c9d881609ab353e94e51",
+    "baseline_mlx_version": "0.32.0",
+    "gather_fixture_sha256": "9251a62b41ce9e4ef9fe8327da5c33de5149e034b304b3360d64cc8d6c127f8c",
+    "gather_output_sha256": "4f7b53a8ba2e51ccc65b90fe89cafa495ff78b771aaf7bfa6209f7de425c0994",
+    "method": "process-isolated A/B/B/A; identical serialized fixtures; median of per-process steady-state medians",
+    "nvfp4_fixture_sha256": "c8b0ea11f4b6e02236c943f327c3fdea6f89677fd081294e4c10ff18e021fec8",
+    "nvfp4_output_sha256": "eed08aaadc121bb145ae20039784c8bb2e877ed0c9be67c39ecd337f4b6b761d",
+    "results": {
+      "nvfp4_qmv": {
+        "baseline_ms": 0.29618725,
+        "current_ms": 0.289427,
+        "latency_reduction_percent": 2.282424378497061,
+        "speedup": 1.0233573578138875
+      },
+      "presorted_gather_qmm_pair": {
+        "baseline_ms": 0.6327505,
+        "current_ms": 0.61195825,
+        "latency_reduction_percent": 3.286010836814823,
+        "speedup": 1.0339765825528129
+      },
+      "sorted_gather_pipeline": {
+        "baseline_ms": 0.71373975,
+        "current_ms": 0.5566775,
+        "latency_reduction_percent": 22.005534930624236,
+        "speedup": 1.2821422636984612
+      }
+    },
+    "warning": "The gather scopes are independently timed and are not nested. Do not subtract them or attribute the pipeline result to one commit."
+  },
+  "mlx_lm_pr_1709_exactness_audit": {
+    "head_commit": "a318a32c44c1fe7666160122d26e11b319248fd3",
+    "imports_exact_pr_code": false,
+    "negative_evidence_mode": "copied_pr_semantics_not_imported",
+    "positive_evidence_mode": "independent_rational_oracle_not_pr_code",
+    "receipt": "benchmarks/results/mlx-m5-research-20260810/mlx_lm_1709_exactness_reproducer.json",
+    "receipt_sha256": "086af89cd10f73680a5c6db6516befc5eb36e400473cd7e42bbcacffccc5b1e7",
+    "reproducer": "benchmarks/research_mlx_lm_1709_exactness.py",
+    "reproducer_script_sha256": "e1cfc24513e7ac4f1e7d993a3197a6617a5b3c0972940ca494bd198bd7e71311",
+    "verdict": "reject_merge_ready_keep_algorithm"
+  },
+  "mlx_pr_3882_q35": {
+    "focused_tests": "23/23 passed in both arms",
+    "head_commit": "291e909f443d17509385ee88fded90e460016a86",
+    "output_identity": "all prompt, token, and logit hashes identical across eight processes",
+    "parent_commit": "8462ad9fd210518341f36f42e997cfafb7c528db",
+    "public_safe_raw_receipt": "benchmarks/results/mlx-m5-research-20260810/raw/mlx_pr_3882_q35/public_cells.json",
+    "public_safe_raw_receipt_sha256": "5deed153f10062fea10656e42fa4fa68638f6f09977ef5a27d6a58853f1a2e6f",
+    "receipt": "benchmarks/results/mlx-m5-research-20260810/mlx_pr_3882_q35.json",
+    "receipt_sha256": "cebe7b4e395dd2a0d86b8de2dbe45258cf5613a90845830364aeedd338eb0d03",
+    "status": "exact_output_protocol_no_model_speed_claim",
+    "verdict": "exact_output_prefill_effectively_flat_slightly_adverse_decode_confounded_no_model_speed_claim"
+  },
+  "mlx_pr_4048_resource_retention": {
+    "focused_tests": "19/19 passed",
+    "measurement_base_commit": "447bb0f9ef20789894c7786e23358578db2f247b",
+    "outputs_identical_within_each_target": true,
+    "pr_head_commit": "9fba0906eee536ec4ef358b93f128dbb4ed953e5",
+    "qwen36_27b_dense_decode_speedup": 0.9892882251146672,
+    "qwen36_35b_a3b_observed_envelope_decode_change_percent": 17.08296720128888,
+    "qwen36_35b_a3b_observed_envelope_decode_ratio": 1.1708296720128888,
+    "qwen36_35b_a3b_other_envelope_verdict": "failed_same_arm_stability",
+    "receipt": "benchmarks/results/mlx-m5-research-20260810/mlx_pr_4048_real_model.json",
+    "receipt_sha256": "476135b8dad9598b57ce5186a853e29f824850c3b85c81d2891847b110190b09",
+    "status": "uncontrolled_order_confounded_no_patch_speed_claim",
+    "synthetic_rebase_commit": "a1eec62ef4abf815839fcde40590c00512bbfe25",
+    "synthetic_rebase_diff_sha256": "3ed5465a9565c37d41ee0a1a37a9bc3e7b86b620de0b20c64cdf596d84c81934",
+    "verdict": "no_robust_speed_gain_repeat_randomized_balanced_quiet_host_and_lifecycle_matrix",
+    "warning": "The host was heavily contended, the candidate always occupied the middle positions, and the patch removes host bookkeeping. Preserve both envelopes; do not attribute the observed 17.1 percent difference to the patch."
+  },
+  "mlx_pr_4171_qmm_t_m16": {
+    "base": {
+      "m16_median_ms": 0.50965625,
+      "m16_range_ms": [
+        0.509,
+        0.511208
+      ],
+      "m48_median_ms": 0.5092085000000001,
+      "normalized_m16_over_m48_median": 1.0011096976812803,
+      "normalized_range": [
+        0.9986511342734518,
+        1.0048719407858202
+      ],
+      "paired_normalized_cells": [
+        {
+          "label": "A3",
+          "m16_ms": 0.509,
+          "m16_over_m48": 0.9986511342734518,
+          "m48_ms": 0.5096875000000001
+        },
+        {
+          "label": "A4",
+          "m16_ms": 0.511208,
+          "m16_over_m48": 1.0048719407858202,
+          "m48_ms": 0.5087295000000001
+        },
+        {
+          "label": "A5",
+          "m16_ms": 0.5091875,
+          "m16_over_m48": 1.0029950735423023,
+          "m48_ms": 0.507667
+        },
+        {
+          "label": "A6",
+          "m16_ms": 0.510125,
+          "m16_over_m48": 0.9992243218202582,
+          "m48_ms": 0.510521
+        }
+      ]
+    },
+    "base_commit": "5ec30acd5aebfe92ea1653f192365cbe788c06a6",
+    "base_liblmx_sha256": "949583cdb916639ecfc4e13c8f2bef5a52dae91e1c2dacf9f611625731ff52be",
+    "base_wheel_sha256": "65345db97c9998f7b95057b428bce311f0c90d6a2ea57368efdf725f8e68cc59",
+    "current_upstream": {
+      "base_commit": "5ec30acd5aebfe92ea1653f192365cbe788c06a6",
+      "comments": 0,
+      "commit_count": 1,
+      "head_commit": "46c9b8593fbefcbf8e789710655ce71a5ff50d8d",
+      "reviews": 0,
+      "state": "open_mergeable"
+    },
+    "dispatch_scope": "On applegpu_g17s this shape has qmv_batch_limit=13. Current MTP D3/D5 verification rows M4/M6 stay on QMV and cannot use this patch; M16 engages the changed QMM tile.",
+    "fixture": {
+      "sha256": "7183f633a281f1cb8c90e4f7c85a1d871dedc1b00a75bd247a7387a3bc5454fe",
+      "shape": "Mmax=64, K=5120, N=17408, fp16 activations, affine 4-bit group-64 weights"
+    },
+    "head": {
+      "m16_median_ms": 0.53642725,
+      "m16_range_ms": [
+        0.4040415,
+        0.6944375
+      ],
+      "m48_median_ms": 0.59038575,
+      "normalized_m16_over_m48_median": 0.8961796183628049,
+      "normalized_range": [
+        0.7917848996260964,
+        1.0294635411841009
+      ],
+      "paired_normalized_cells": [
+        {
+          "label": "B3",
+          "m16_ms": 0.6944375,
+          "m16_over_m48": 1.0294635411841009,
+          "m48_ms": 0.6745625
+        },
+        {
+          "label": "B4",
+          "m16_ms": 0.408063,
+          "m16_over_m48": 0.8008427175777463,
+          "m48_ms": 0.509542
+        },
+        {
+          "label": "B5",
+          "m16_ms": 0.6647915,
+          "m16_over_m48": 0.9915165191478635,
+          "m48_ms": 0.6704795
+        },
+        {
+          "label": "B6",
+          "m16_ms": 0.4040415,
+          "m16_over_m48": 0.7917848996260964,
+          "m48_ms": 0.510292
+        }
+      ]
+    },
+    "head_commit": "46c9b8593fbefcbf8e789710655ce71a5ff50d8d",
+    "head_liblmx_sha256": "c478ce87548b9a148d5dbf035beecf0ea32d52020535e1f7d1a0c2624a365f3e",
+    "head_wheel_sha256": "752aff96e6b1438e3b9a90809e00f02c817582fabaff7b54320553d83bbb241e",
+    "historical_benchmark_patch_equivalent_commit": "109695bc",
+    "method": "process-isolated A/B/B/A repeated twice; 500 warmups and 3000 synchronized samples per cell; M16 normalized to the same-process ungated M48 control",
+    "normalized_midpoint_speedup": 1.117085991656637,
+    "output_sha256_m16_both_arms": "5a9a8a0ca9ea22d7728ce6d53f57919352a41995834a947bd6ee4aee6e272a4e",
+    "output_sha256_m48_both_arms": "c2f117caca737b475c3e60acb1e624044e50d85ad89e0aaeccefce778e60b6c3",
+    "status": "conditional_hold_only_wide_verify_rows_engage",
+    "warning": "The head was bimodal: two normalized runs saved about 20%, while two were approximately parity. The 1.117x midpoint is not a standalone speed claim, and the patch cannot improve current M4/M6 verification rows."
+  },
+  "mlx_runtime_correctness_watchlist": {
+    "mlx_3941_empty_nax_output_groups": {
+      "decision": "useful mobile-tail cleanup, not an M5 Max model-speed priority",
+      "state": "merged"
+    },
+    "mlx_4096_compiled_function_cache_lifecycle": {
+      "decision": "required lifecycle dependency for multithreaded compiled serving",
+      "risk": "cross-thread compiled-function destruction can leave stale cache entries and return another function's tape",
+      "state": "open_await_verification"
+    },
+    "mlx_4164_fp8_e4m3_decode": {
+      "decision": "required artifact-integrity gate for FP8 model loaders",
+      "risk": "current mx.from_fp8 maps E4M3 NaN bytes 0x7f and 0xff to finite values",
+      "state": "open"
+    },
+    "mlx_4174_metal_error_propagation": {
+      "decision": "required lifecycle dependency with delayed-error limitation retained",
+      "risk": "preserves command-buffer failures but can report an OOM on a later stream operation instead of the failing mx.eval",
+      "state": "open_replaces_closed_4134"
+    }
+  },
+  "packed_gdn": {
+    "focused_tests": "8/8 passed",
+    "prefill_2048": {
+      "midpoint_speedup_from_displayed_values": 1.082240081433389,
+      "off_run_average_prompt_tok_s": [
+        732.828,
+        654.318
+      ],
+      "on_run_average_prompt_tok_s": [
+        762.165,
+        739.06
+      ],
+      "warning": "Directional only: this ratio is recomputed from the displayed three-decimal input values, and the four-run sequence had severe monotonic thermal drift."
+    },
+    "short_prompt_qwen36_27b_dense_d3": {
+      "ar_decode_change_percent": 0.35041112958469345,
+      "mtp_decode_change_percent": -0.5530941809971712,
+      "token_sha256_all_arms": "afd0e303699284a1517a0cc8d657c0f5e32166f4f6539139635efe66c9693a6b",
+      "verdict": "no_go_for_decode"
+    },
+    "verdict": "retain_as_prefill_only_candidate"
+  },
+  "proposed_research_direction": {
+    "controller_baseline": "junainfinity/mlx-mtp hybrid.py at 1e26698c706e4356647e03d7ca6d1cff21f4904e",
+    "controller_falsifier": "run the deployment-fixed-layout by proposal-arm factorial and offline replay against the public MLX MTP-DFlash EWMA baseline; require at least 5 percent whole-request goodput interaction with its 95 percent confidence interval above zero; if the future-knowing oracle is under 10 percent above the strongest adaptive baseline, do not build the live controller",
+    "defensible_claim": "Search-bounded through 2026-08-11: Apple/Metal co-evaluation of one deployment-fixed target layout and exact proposal-arm/depth scheduling, with a statistically positive layout-by-arm interaction on measured cost per committed token.",
+    "expansion": "Measured Allocation and Proposal Scheduling for Apple Silicon",
+    "first_target": "Qwen3.6-35B-A3B",
+    "model_contract": "target mixed precision is approximate relative to the source model and requires a separate source-relative quality gate",
+    "name": "MAPS-MLX",
+    "online_expert_cost_rule": "online scheduling may use only causal predictions of target expert sets and multiplicities; actual target expert unions belong only to the offline oracle",
+    "phase_1_kill_gates": "observed dispatch must match every registered cell; held-out latency prediction <=5 percent median and <=10 percent p95; candidate prediction >=5 percent over stock and DWQ",
+    "phase_2_kill_gates": "source-relative NLL degradation <=0.5 percent; no material coding or agent regression; target-forward gain >=3 percent; mixed-workload goodput gain >=10 percent; no bucket regression >3 percent",
+    "phase_3_falsifier": "if each additional target requires hand-authored policy logic, MAPS is a benchmark collection rather than a general architecture",
+    "prior_art_boundary": "MxMoE co-designs MoE precision with sensitivity and profiled kernel cost; iQ-MLX already performs Apple-native per-expert activation-weighted fitting and greedy layer/projection error-per-byte allocation; CAS-Spec routes quantized or sparse self-drafters and prompt lookup; SpecKV makes depth compression-aware; QSpec and SpecMQuant combine quantization with lossless verification; Sequoia and CaDDTree optimize hardware-aware draft trees; EcoSpec prices marginal expert activation; MoE-SpeQ combines a low-bit MoE drafter with expert lookahead and hardware-aware depth; EVICT selects exact cost-effective MoE draft-tree prefixes; BASTION performs online hardware-cost control; public mlx-mtp already selects MTP versus DFlash per round on MLX. MAPS claims none of those components.",
+    "runtime_contract": "four independent gates: target-distribution exactness, serial numerical identity or explicit tolerance, lifecycle/state identity, and source-model fidelity",
+    "status": "hypothesis_not_implemented"
+  },
+  "provenance": {
+    "baseline_mlx_liblmx_sha256": "2ee6fbd32ff22e22e1301ebe3c3bece95584104ff9cbc900513d41a095211bbd",
+    "baseline_mtplx_mlx_version": "0.31.2",
+    "benchmark_main_snapshot_commit": "47a1bd613ebb67ed03da764c6ffedb8df9939997",
+    "gdn_pr_commit": "e1cc9c51442aef48ab206d23400720a1e2022448",
+    "gdn_source_sha256": "ff4b382f593a8c5b400a51f141e6ac2743a9a878dc08c91b5fbc99b601a93a52",
+    "live_freeze_check_mlx_c_main_commit": "fba4470b89073180056c9ea46c443051375f7399",
+    "live_freeze_check_mlx_lm_main_commit": "254d153fdeb6f150edd4fc5a54f9828638481fa8",
+    "live_freeze_check_mlx_main_commit": "66a040789e779a0c8e7585987a4fd3f832794fd8",
+    "live_freeze_check_mlx_swift_lm_main_commit": "5c1d95aae725db4cc34eaa60d5b820191940b685",
+    "mlx_3922_candidate_commit": "bd8c825c2cad3d5ae3a6462f599c1a2320eeb9dd",
+    "mlx_3922_candidate_liblmx_sha256": "5254ca3bc5bd830a6f7adbd42409e778be0320a0e0ad21e2f54dabb09d9366c0",
+    "mlx_3922_candidate_version": "0.32.1.dev20260810+bd8c825c2",
+    "mlx_lm_version": "0.31.3",
+    "mlx_main_delta_after_research_refresh": "twelve cleanup, CPU, distributed, diagnostic, and dispatch-preserving commits; #3941 merged but its M5 Max work ceiling remains immaterial; no new model-level speed path",
+    "research_refresh_mlx_main_commit": "7e8b4ccc2a518caa430351ff8fffa625bb674e0a"
+  },
+  "real_model_core_uplift": {
+    "method": "warmed A/B/B/A; greedy; one fixed coding prompt; max 192 tokens; compare target-only AR and MTPLX",
+    "qwen36_27b_dense_6bit": {
+      "ar_decode_tok_s": {
+        "baseline": 21.289072289848864,
+        "change_percent": 1.9495908067301393,
+        "current": 21.70412208604989
+      },
+      "artifact_identity": {
+        "config_sha256": "53a08bfcc8c19d488f301b775e919dfc5660273d9d5945037a36d3eacab25e24",
+        "index_sha256": "c55d6d247bd7dbd05d453d8cad957908f5efe8cfee122a751a3fdfaddfe12937",
+        "runtime_sha256": "a3c88c94ad032ec2507e296c893941acfd7d9456e204c7d91e47d65f3bf1f7d8"
+      },
+      "mtp_d3_decode_tok_s": {
+        "baseline": 45.496389908421904,
+        "change_percent": 1.8655215017838067,
+        "current": 46.34513484469891
+      },
+      "token_sha256_all_arms": "afd0e303699284a1517a0cc8d657c0f5e32166f4f6539139635efe66c9693a6b",
+      "verdict": "exact_on_one_prompt_below_default_promotion_magnitude"
+    },
+    "qwen36_35b_a3b_4bit": {
+      "ar_decode_tok_s": {
+        "baseline": 97.71325900884418,
+        "change_percent": 3.281119534455934,
+        "current": 100.91934783793688
+      },
+      "artifact_identity": {
+        "config_sha256": "1db02a3a8357137f1211774afefb757b5fccf65b0a472098819c433b48f1aa3d",
+        "index_sha256": "0b28df60e33753a14e816d3b31577ae2c93884c58430a4a6de6ae9ea483842ea",
+        "runtime_sha256": "fe2c406ebf56fd767ea8201eb90cc302fecf3a3d89bc639ad573e819f0f66856"
+      },
+      "baseline_ar_token_sha256": "f0569503e7b34cf445a1ca6c389263faaa2f9e6e94bcfe6f81695658d67ebce6",
+      "current_ar_token_sha256": "a03c5c93dbcc2a3dfdec967ff133d5aad0e48e60d2a1d20a9277ef69f12314b9",
+      "mtp_d1_decode_tok_s": {
+        "baseline": 113.4917897735884,
+        "change_percent": 4.703578511054607,
+        "current": 118.82996520919016
+      },
+      "mtp_token_sha256_both_arms": "a03c5c93dbcc2a3dfdec967ff133d5aad0e48e60d2a1d20a9277ef69f12314b9",
+      "verdict": "promising_hold_ar_implementation_identity_failed"
+    },
+    "sampler": {
+      "draft_temperature": 0.0,
+      "seed": 0,
+      "target_temperature": 0.0,
+      "thinking": false
+    }
+  },
+  "release_decision": "No runtime default changed. #3882 is exact on prompt, continuation, and logit hashes in the Q35 2048/128 protocol, but prefill is effectively flat/slightly adverse and decode has material within-arm spread on a non-quiet host, so there is no model-speed claim. #3842 changes target numerics and remains on the multi-prompt quality, state, memory, and long-generation gate. #4048 is order/host-confounded, packed GDN failed its decode gate, the one-prompt DDTree probe does not justify a Qwen35 default, #3838 is closed unmerged, and #4171 remains conditional. ParoQuant, the tested pre-#3934 Majentik NVFP4 artifact, OptiQ, and DWQ showed no speed promotion in the fixed-token/forward-count measurements; historical NLL is not cross-artifact quality evidence; corrected NVFP4 remains untested and additionally requires the #3912 dimension guard. The FusionML result is a contended-host adverse observation, not a clean mechanism NO-GO. The next exact A/B queue is traced high-concurrency #4023 with #3922/#4009 production correctness, thermally controlled #1559 prefill, traced local Laguna work for #3843, sparse complete-state checkpoint simulation, and #1547 session-concurrency validation. Domino versus DFlash is the highest-priority Qwen27 drafter test; Bole reopens hybrid-tree feasibility as a separate Metal co-design. Rotated asymmetric KV is the best published smart-compression experiment for outlier-heavy Qwen, but needs local coding and long-context gates. MAPS-MLX is a falsifiable interaction experiment, not a measured speedup or release candidate.",
+  "schema": "mtplx-mlx-m5-research-v1",
+  "status": "directional_research_not_release_evidence",
+  "upstream_candidate_dispositions": {
+    "deepseek_v4_flash_2_4bit_mixed": {
+      "card_performance": "92.8 GB disk, 84.4 GB short-context peak, 31.5-36.1 tok/s single-stream decode on M5 Max 128GB, all three DSpark blocks retained",
+      "card_quality": "MMLU-Pro 0.573 versus 0.647 for a hosted BF16/API reference; no source-relative code, agentic, or long-context quality gate",
+      "decision": "fit-and-run control, not no-intelligence-loss evidence",
+      "revision": "10001e0065f8394e03e968e652cbbe7cd2ca122c",
+      "state": "published_control_not_locally_measured"
+    },
+    "eigen_q35_w4_router8": {
+      "card_quality_smoke": "90.70 percent BF16 top-1 agreement, mean KL 0.2206 nat, final DeltaNet state relative error 0.139",
+      "decision": "reproducible MAPS calibration control, not a quality-preserving or speculative target",
+      "layout": "432 W4 group-64 modules and 80 W8 group-64 routers; vision and MTP removed",
+      "revision": "a52e548cb2f96f6e1180d50ee8e61b4018a4f921",
+      "state": "published_control_not_locally_measured",
+      "tensor_payload_bytes": 19508787456,
+      "vision_sibling": "revision 4cb5661d5273cb35e6bb8e261154f1eb156f63ea preserves all 333 source vision tensors in BF16 with a 19.00-GiB payload, shard hashes, and two pixel-grounded fixtures; it still omits MTP and lacks a population quality gate"
+    },
+    "majentik_nvfp4_q35": {
+      "historical_greedy_receipt": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_m5_performance.json",
+      "historical_nll": "NOT COMPARABLE across artifacts; retained receipt lacks tokenizer-asset and per-task token-ID provenance, so it is not quality decision evidence",
+      "method_decision": "close this exact artifact; reconvert from the pinned source with post-#3934 MLX and rerun before judging corrected NVFP4",
+      "performance": "fixed-work prefill -1.40 percent; decode -3.21 percent with 1.01 percent candidate spread",
+      "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_m5_fixed_work_performance.json",
+      "post_fix_public_mlx_search": "2026-08-11 Hugging Face API search found no Qwen3.6-27B or Qwen3.6-35B-A3B NVFP4 repository tagged for MLX that was created after #3934 merged",
+      "quality_receipt": "benchmarks/results/mlx-m5-research-20260810/nvfp4_q35_humaneval_nll.json",
+      "quantizer_provenance_boundary": "weights predate merged MLX #3934; the later pinned Hub revision changes only the README",
+      "revision": "660a8ceeaaf0bca3ad4373066d8dd768268b5153",
+      "status": "measured_pre_fix_artifact_no_speed_promotion_corrected_method_untested",
+      "weight_commit": "55b0b778953193473078c4418919d399e7bce694",
+      "weight_commit_date": "2026-04-21T04:10:18Z",
+      "weight_manifest_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8"
+    },
+    "mlx_3026_quantized_sdpa": {
+      "decision": "rebase and require M5 speed, source-relative quality, and peak-memory gates before experimentation",
+      "head_commit": "bfed86bfc2e84821dfc768465d13aaf26147d888",
+      "predicate": "query rows at most 8 and query_rows times GQA at most 32",
+      "state": "open_conflicting_no_checks",
+      "target_scope": "Qwen27 through 5 rows, Qwen35 through 4, Laguna through 5; DeepSeek V4 excluded"
+    },
+    "mlx_3791_m5_wider_speculative_qmv": {
+      "reason": "requires target-path numerical and end-to-end verification",
+      "status": "numerically_gated"
+    },
+    "mlx_3888_small_row_transposed_gemm": {
+      "reason": "no target identity proof",
+      "scope": "BF16/FP16 verify rows 2-15",
+      "status": "numerically_gated"
+    },
+    "mlx_3912_nvfp4_matrix_tail_correctness": {
+      "decision": "generic post-#3934 NVFP4 prerequisite unless every quantized reduction dimension is proven 32-aligned",
+      "head_commit": "3a755bfde21a108c1a003e5c254b449226a6971c",
+      "risk": "matrix-prefill and gather corruption when a legal NVFP4 quantized dimension is 16 modulo 32, while vector decode remains correct",
+      "state": "open_review_required_28_checks_successful"
+    },
+    "mlx_3934_nvfp4_scale_reduction": {
+      "bug": "NVFP4 SIMD groups after the first shared one maximum across two independently scaled 16-value groups",
+      "decision": "regenerate NVFP4 checkpoints created before this fix before judging the corrected method",
+      "merge_commit": "b400c6ced2209d133582066f1014cc72fd92f71a",
+      "merged_at": "2026-07-30T14:12:08Z",
+      "published_q35_wikitext2": "perplexity 6.848 before versus 6.778 after; BF16 6.432",
+      "state": "merged_conversion_correctness_dependency"
+    },
+    "mlx_4009_sorted_moe_ragged_k_correctness": {
+      "decision": "fall back to unsorted execution for ragged K until fixed",
+      "head_commit": "d9cbbdc38ced98cf0729af0ae7f28fdb40f21713",
+      "performance": "author reports no measurable change",
+      "risk": "M5 sorted gather_qmm corruption when K modulo 64 is nonzero; published examples differ in 94-97 percent of outputs",
+      "state": "open_review_required_no_checks"
+    },
+    "mlx_community_dwq_q35": {
+      "historical_greedy_receipt": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_m5_performance.json",
+      "historical_nll": "NOT COMPARABLE across artifacts; retained receipt lacks tokenizer-asset and per-task token-ID provenance, so it is not quality decision evidence",
+      "performance": "fixed-work prefill -0.98 percent; decode -13.67 percent with 0.35 percent candidate spread",
+      "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_m5_fixed_work_performance.json",
+      "quality_receipt": "benchmarks/results/mlx-m5-research-20260810/dwq_q35_humaneval_nll.json",
+      "quantization_map": "240 affine W4 modules and 272 affine W8 modules",
+      "repeat_gate": "passed exactly within each arm",
+      "revision": "73c707af4243243b18193444467872d20cff9399",
+      "status": "measured_no_speed_promotion",
+      "weight_manifest_sha256": "953160736915f9c44b66d17ce91564104b2dfffb7344173f89f9dc93429613dc"
+    },
+    "mlx_force_fused_sdpa_api": {
+      "contract": "force_fused=True bypasses heuristics and throws when no fused kernel supports the shape",
+      "decision": "build a narrow fail-closed instrumentation API, not a default speed feature",
+      "decision_comment": "https://github.com/ml-explore/mlx/issues/3658#issuecomment-5249947631",
+      "old_pr": "#3660 is conflicting and checkless; Qwen35 M4 rows are 13-22 percent slower despite lower peak memory",
+      "state": "maintainer_endorsed_api_direction_not_implemented_on_current_main"
+    },
+    "mlx_lm_1479_generation_batch_logprobs": {
+      "reason": "contract broken and no MTPLX direct-argmax gain",
+      "status": "rejected"
+    },
+    "mlx_lm_1502_1503_prompt_cache_guards": {
+      "contract": "reuse only when every layer completed the requested trim and no chunked window has slid past the keyed prefix",
+      "decision": "correctness prerequisites for generic prompt-cache acceleration; fail to a cache miss",
+      "heads": {
+        "partial_trim_guard": "24e1e96e4eeabef3f3418c0cc1a9408ac1ee85ff",
+        "slid_window_guard": "3538370813de40fe9ed7f0e5de4771a946119455"
+      },
+      "state": "open_review_required_no_checks"
+    },
+    "mlx_lm_1508_prompt_lookup": {
+      "gap": "no local M5 end-to-end receipt and recurrent ArraysCache remains unsupported",
+      "head_commit": "2621d370f4f0ea003e7c36747223f88a6821d011",
+      "mechanism": "verified prompt lookup with a default 4096-token lookback bound on the miss scan",
+      "state": "open"
+    },
+    "mlx_lm_1547_copy_on_write_prefix_forks": {
+      "boundaries": "plain KVCache only; no hybrid or quantized cache; transient peak approximately 1 GB higher from per-step prefix-tail concat; no bit-identical logit report",
+      "decision": "focused session-concurrency experiment after complete-state identity and concat-cost gates",
+      "head_commit": "15b344b1ef3604419097f0894e8d8f87ab21b61d",
+      "published_m5_max_fixture": "Qwen3-0.6B-4bit, one 8192-token prefix, eight consumers",
+      "published_result": "resident growth 7.73 GB to 0.21 GB; first continued-token median 15.6 ms to 7.2 ms; first tokens identical",
+      "state": "open_review_required_no_checks"
+    },
+    "mlx_lm_1584_rotating_quantized_cache": {
+      "decision": "approximate capacity research only",
+      "gap": "does not recursively convert hybrid CacheList leaves; current review evidence reports mixed cache cohorts and merge failures",
+      "head_commit": "ff1e8371e1899fadca5f1f0675f490ddb66f2baf",
+      "state": "open_blocked_for_hybrid_models"
+    },
+    "mlx_lm_1662_deepseek_v4_dead_cache_chain": {
+      "decision": "implement in the dedicated V4 runtime and require a beyond-threshold byte-identical lifecycle soak",
+      "exact_fix_scope": "for DeepSeek V4 K equals V, rebind cache.values to cache.keys after update",
+      "risk": "discarded RotatingKVCache values leave one unevaluated slice_update chain per layer and generated token, reaching the Metal buffer-count limit near 11.5K DeepSeek V4 output tokens",
+      "state": "open_report_with_13k_token_production_soak"
+    },
+    "mlx_lm_1700_dwq_fused_kl_overflow": {
+      "decision": "require fused-versus-reference loss and gradient parity before MAPS or DWQ calibration",
+      "risk": "fused Metal KL backward reportedly overflows and corrupts parameters above roughly 1B parameters on M5 Max",
+      "state": "open_report_not_locally_reproduced"
+    },
+    "mlx_swift_lm_351_qwen_mtp_correctness": {
+      "boundary": "nonzero temperature falls back to target-only generation; no stochastic exactness or M5 speed evidence",
+      "decision": "test and design reference only",
+      "fixes": "actual emitted-token history, per-stream private draft state, and caller cache ownership across copy and replay",
+      "head_commit": "c1a96af70a7e38dbcc86578d49a986a478bf7132",
+      "state": "open_review_required_two_checks_successful"
+    },
+    "mlx_swift_lm_467_compiled_qwen_decode": {
+      "already_present_mechanism": "compiled static decode trace segments around the untraceable KV write, with lifecycle-safe closures",
+      "gap": "M3-only evidence; prefill and quantized/turbo-cache fallbacks stay uncompiled, and there is no local M5 Q35 receipt",
+      "state": "merged"
+    },
+    "mlx_swift_lm_470_balanced_prefill_chunking": {
+      "already_present_mechanism": "PrefillParameters can divide a prompt into balanced chunks to avoid a degenerate final remainder",
+      "gap": "published on M3 at long context; no local M5 Q35 target-range receipt",
+      "state": "merged"
+    },
+    "mlx_swift_lm_475_complete_state_snapshots": {
+      "boundaries": "no large-model M5 speed receipt; batching unsupported; some Qwen2 paths still fail open",
+      "contract": "persist KV and continuation state together, version state-bearing files, and reject incomplete restores",
+      "decision": "checkpoint contract reference, not throughput evidence",
+      "head_commit": "80515c275661f0d49a60fd9947933f2c2f496d42",
+      "merge_commit": "4b0b41631337e28da84c194fac7e2620dfa0f1b1",
+      "state": "merged_approved_two_checks_successful"
+    },
+    "mlx_swift_lm_516_overlay_mtp": {
+      "already_present_mechanism": "KVCacheStorage already pairs trim with cache-timeline rollback atomically",
+      "candidate_mechanism": "transactional staged-cache overlay with commit of only accepted drafts and bonus token",
+      "gap": "not current-main production code and has no local Q35 M5 correctness, lifecycle, or speed evidence",
+      "state": "open"
+    },
+    "mlx_swift_lm_520_single_dispatch_turboflash": {
+      "decision": "short-context compressed-cache candidate exact only relative to the approximate TurboQuant target",
+      "merge_commit": "5c1d95aae725db4cc34eaa60d5b820191940b685",
+      "predicate": "context at most 128 tokens, head and value dimensions at most 256, and 2-4-bit K/V",
+      "published_result": "M2 Qwen3-4B median generation +5.39 percent",
+      "state": "merged",
+      "target_scope": "Qwen27, Qwen35, and Laguna are shape-eligible; DeepSeek V4 D512 is excluded"
+    },
+    "mlx_swift_lm_522_instruction_prefill_reuse": {
+      "decision": "require a warm-turn regression receipt proving that only the uncached suffix is prefetched",
+      "risk": "tagged releases reportedly re-prefill a large instructions prompt on every turn",
+      "state": "open_report_current_main_likely_fixed_without_dedicated_receipt"
+    },
+    "omlx_2568_deepseek_v4_wsdpa_first": {
+      "decision": "strongest current public DeepSeek V4 prefill reference; require an M5 rerun plus source-relative quality and long-context lifecycle gates before porting or promotion",
+      "generation_result": "reported unchanged",
+      "mechanisms": "WSDPA-first fused windowed plus pooled attention; discarded intermediate-chunk lm_head skip; capacity-grown pooled-cache append; standard causal-mask fold into the DSA indexer",
+      "merge_commit": "b128b23290392b4eab8df236a78308448c20642c",
+      "numerical_boundary": "temperature-zero output tokens change because the optimized reduction order differs; tolerance-level parity, not exact target identity",
+      "published_hardware": "M3 Ultra",
+      "published_prefill": {
+        "context_32k_tok_s": {
+          "base": 549.5,
+          "candidate": 588.3,
+          "change_percent": 7.061874431301189
+        },
+        "context_4k_tok_s": {
+          "base": 548.8,
+          "candidate": 630.6,
+          "change_percent": 14.905247813411073
+        }
+      },
+      "source_head": "9423196a44d10a3e3f2b5a3603f084c374eb4110",
+      "state": "merged_all_three_ci_jobs_green"
+    },
+    "optiq_mixed_q35": {
+      "historical_greedy_receipt": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_m5_performance.json",
+      "historical_nll": "NOT COMPARABLE across artifacts; retained receipt lacks tokenizer-asset and per-task token-ID provenance, so it is not quality decision evidence",
+      "performance": "fixed-work prefill -3.30 percent; decode -13.92 percent with 1.36 percent candidate spread",
+      "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_m5_fixed_work_performance.json",
+      "quality_receipt": "benchmarks/results/mlx-m5-research-20260810/optiq_q35_humaneval_nll.json",
+      "repeat_gate": "passed exactly within each arm",
+      "revision": "70a3aa32c7feef511182bf16aa332f37e8d82014",
+      "status": "measured_no_speed_promotion",
+      "weight_manifest_sha256": "62e8cacacd8e7f0d38a80e1f08f7c6845b429bcea41f59d48e18164c582d79af"
+    },
+    "paroquant_q35_checkpoint_load": {
+      "historical_greedy_receipt": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_m5_performance.json",
+      "historical_nll": "NOT COMPARABLE across artifacts; retained receipt lacks tokenizer-asset and per-task token-ID provenance, so it is not quality decision evidence",
+      "mechanism": "ParoQuant 0.1.16 applies 130 direct projection rotations plus 40 shared gate/up and 40 shared down MoE rotations before stock quantized matmul",
+      "performance": "fixed-work prefill -4.50 percent; decode -39.60 percent with 23.21 percent candidate spread; precise penalty indeterminate",
+      "performance_receipt": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_m5_fixed_work_performance.json",
+      "qualification": "compressed-artifact comparison, not source-BF16 quality or pass@1",
+      "quality_receipt": "benchmarks/results/mlx-m5-research-20260810/paroquant_q35_humaneval_nll.json",
+      "revision": "0c62664e71c13b40130819e6ba689af36c23cdf0",
+      "status": "measured_no_speed_promotion",
+      "weight_bytes": 20655904040,
+      "weight_bytes_vs_stock_percent_change": 1.24349195621285,
+      "weight_manifest_sha256": "f7eda81ef98e0d773f210cb7d5f2da15a14ba05ff2c72735f442899f6595549d"
+    },
+    "q4_0_source_lattice_calibration": {
+      "boundary": "no statistically significant benefit on Gemma 4 26B-A4B and no evidence for Qwen or DeepSeek",
+      "decision": "adopt source-trained lattice preservation as a conversion provenance rule, not as a generic Q4_0 speed claim",
+      "evidence": "four dense Gemma 4 targets improve BF16-relative KL and top-1 at identical size; packed codes and scales reproduce the shipped Q4_0 grid exactly",
+      "python_pr": "ml-explore/mlx-lm#1646",
+      "status": "open_opt_in_conversion_only",
+      "swift_pr": "ml-explore/mlx-swift-lm#507"
+    },
+    "qwen36_norm_shift_spotcheck": {
+      "receipt": "benchmarks/results/mlx-m5-research-20260810/qwen36_norm_shift_spotcheck.json",
+      "result": "stock affine 4-bit, majentik NVFP4, OptiQ, and DWQ match byte-for-byte after float32 expansion",
+      "scope": "layer-0 input norm, layer-0 post-attention norm, and final model norm",
+      "status": "representative_tensors_match_not_source_fidelity_proof"
+    },
+    "rejected_shortcuts_20260811": {
+      "mlx_4051_non_transposed_nax_qmm": "correctness and training acceleration for transpose=false; stock quantized inference transpose=true is outside its speed scope",
+      "mlx_lm_1676_gate_up_fusion": "closed after controlled reruns ranged from +4.7 to -2.1 percent; real-size independent projections already overlap",
+      "mlx_swift_lm_329_variance_normalized_kv": "author states current implementation is slower than default cache; capacity research only"
+    }
+  }
+}

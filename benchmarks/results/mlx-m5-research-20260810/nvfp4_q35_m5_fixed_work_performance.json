@@ -1,0 +1,222 @@
+{
+  "baseline": {
+    "campaign_arms": [
+      "stock-affine-w4",
+      "stock-affine-w4"
+    ],
+    "campaign_id": "q35-nv-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      1,
+      4
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 106.89521765271459,
+    "decode_relative_range": 0.008398000632928752,
+    "decode_tokens_per_second_by_run": [
+      106.44636459996231,
+      107.34407070546686
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:09:28.409011+00:00",
+      "2026-08-11T08:10:18.422793+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "nv-stock-a1-fixed",
+      "nv-stock-a2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.587726084,
+      0.594926375
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 188.15796899999998,
+    "prefill_median_ms_by_run": [
+      187.8049585,
+      188.5109795
+    ],
+    "prefill_relative_range": 0.0037522779595903946,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "92d27cbdc104d65913b47b472ea8d4fb94ef9ea933655878639d37a8d0f81921",
+      "2b4777d50ac05241e16804d7e7e7686e3bc692f55617c3a05a54d9eb783732f3"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:09:12.253559+00:00",
+      "2026-08-11T08:10:02.181124+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "nv-stock-a1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "nv-stock-a2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock-affine-w4",
+  "candidate": {
+    "campaign_arms": [
+      "majentik-nvfp4-prefixed-artifact",
+      "majentik-nvfp4-prefixed-artifact"
+    ],
+    "campaign_id": "q35-nv-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      2,
+      3
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 103.46472950971253,
+    "decode_relative_range": 0.010105103053979065,
+    "decode_tokens_per_second_by_run": [
+      103.98749038678638,
+      102.94196863263866
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:09:45.083957+00:00",
+      "2026-08-11T08:10:01.402516+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "nv-candidate-b1-fixed",
+      "nv-candidate-b2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.571702792,
+      0.584609416
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 190.837823,
+    "prefill_median_ms_by_run": [
+      189.1559375,
+      192.51970849999998
+    ],
+    "prefill_relative_range": 0.017626332909907415,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "194008a63fb209bab0a7c01589d863ac460e2bb10d94389c0273026a8514b5e9",
+      "f9fd10dd8f8fa5570030f4de3af9eafb6d5de498527923f3037e1b19733dfb77"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:09:29.189850+00:00",
+      "2026-08-11T08:09:45.849972+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "nv-candidate-b1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "nv-candidate-b2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8"
+  },
+  "candidate_name": "majentik-nvfp4-prefixed-artifact",
+  "comparison": {
+    "decode_percent_change": -3.209206378293905,
+    "decode_speedup_candidate_over_baseline": 0.967907936217061,
+    "prefill_percent_change": -1.4042572682250731,
+    "prefill_speedup_candidate_over_baseline": 0.9859574273177493,
+    "same_decode_forward_count_across_artifacts": true,
+    "same_fixed_token_sequence_across_artifacts": true,
+    "same_routed_moe_work": "unobserved_not_established"
+  },
+  "comparison_script_sha256": "8404bd2470349a15eca3a1ebfd6f66333d9667c59d892fa5a9dad457f479c2a8",
+  "interpretation_limit": "This is a process-isolated, fixed-token and forward-count compressed-artifact performance comparison on one synthetic prompt. Teacher forcing does not equalize MoE routing because artifact-specific hidden states can change expert assignments; routing was not recorded. This is not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock-affine-w4",
+    "majentik-nvfp4-prefixed-artifact",
+    "majentik-nvfp4-prefixed-artifact",
+    "stock-affine-w4"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+  "status": "performance_only_not_quality_evidence"
+}

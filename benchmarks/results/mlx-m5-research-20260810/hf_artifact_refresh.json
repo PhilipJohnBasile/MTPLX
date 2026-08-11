@@ -1,0 +1,86 @@
+{
+  "schema": "mtplx-hf-artifact-refresh-v1",
+  "status": "search_bounded_identity_and_card_audit_not_quality_or_speed_evidence",
+  "as_of_date": "2026-08-11",
+  "method": "Hugging Face Hub API, repository history, file metadata, shard sizes, and LFS OIDs; no new large-weight download",
+  "findings": {
+    "post_mlx_3934_nvfp4": {
+      "mlx_fix_merge_date": "2026-07-30",
+      "qwen36_27b": {
+        "repository": "https://huggingface.co/majentik/Qwen3.6-27B-MLX-NVFP4",
+        "revision": "3411ca87ecafe4fce12f6e2153a108074248a49e",
+        "weight_date": "2026-07-07",
+        "later_change_scope": "card_only"
+      },
+      "qwen36_35b_a3b": {
+        "repository": "https://huggingface.co/majentik/Qwen3.6-35B-A3B-MLX-NVFP4",
+        "revision": "660a8ceeaaf0bca3ad4373066d8dd768268b5153",
+        "weight_commit": "55b0b778953193473078c4418919d399e7bce694",
+        "weight_date": "2026-04-21",
+        "later_change_scope": "card_only"
+      },
+      "laguna_s_2_1": {
+        "repository": "https://huggingface.co/poolside/Laguna-S-2.1-NVFP4-mlx",
+        "revision": "e6a961c3bbebfffd8fa5b42f243e375504f41edd",
+        "last_modified": "2026-07-23"
+      },
+      "conclusion": "no audited target artifact demonstrates weight regeneration after MLX #3934"
+    },
+    "qwen35_rotor_turbo_identity": {
+      "rotor_repository": "https://huggingface.co/majentik/Qwen3.6-35B-A3B-RotorQuant-MLX-NVFP4",
+      "rotor_revision": "19c4f043920b5713dd56d7b8a70276fed71773e5",
+      "turbo_repository": "https://huggingface.co/majentik/Qwen3.6-35B-A3B-TurboQuant-MLX-NVFP4",
+      "turbo_revision": "e931c025ce92df37069346d036b8543fdaf8e16e",
+      "identity": "configs, indexes, shard sizes, and shard LFS OIDs match",
+      "decision": "one_weight_artifact_with_two_release_labels"
+    },
+    "qwen35_wintermix58": {
+      "repository": "https://huggingface.co/WinterCharm/Qwen3.6-35B-A3B-wMix58",
+      "revision": "a746d280f0830780b0bf139346168502676f4e11",
+      "size_gib": 24.28,
+      "card_evidence": "matched perplexity",
+      "gaps": "exact source revision and broad capability evaluation",
+      "decision": "test"
+    },
+    "qwen35_axq": {
+      "repository": "https://huggingface.co/AutomatosX/AX-Qwen3.6-35B-A3B-MLX-AXQ-4bit-MTP",
+      "revision": "b057b2ecde64724b37d9130d34a000bf098bc731",
+      "risk": "current primary shard OIDs differ from the revision evaluated in the card",
+      "decision": "skip_pending_recertification"
+    },
+    "qwen35_escha_w2": {
+      "repository": "https://huggingface.co/EschaLabs/Qwen3.6-35B-A3B-Escha-W2",
+      "revision": "6072a54913552616b64599c30f5e8a3c8fecad9c",
+      "size_gib": 11.45,
+      "card_quality_boundary": "LiveCodeBench 62.6 versus 67.0 for FP8; exact BF16 source revision not pinned",
+      "decision": "controlled_m5_measurement_not_quality_equivalence"
+    },
+    "qwen35_dflash_mirror": {
+      "canonical_repository": "https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash",
+      "canonical_revision": "f181eece646affea2c38b2765f1aaa01a9734ccd",
+      "mirror_repository": "https://huggingface.co/modal-labs/Qwen3.6-35B-A3B-DFlash",
+      "mirror_revision": "45197228fd8152743a4566620c7aa4014d35f773",
+      "identity": "same weight LFS OID",
+      "decision": "use_z_lab_as_canonical"
+    },
+    "laguna_dflash": {
+      "bf16_repository": "https://huggingface.co/poolside/Laguna-S-2.1-DFlash",
+      "bf16_revision": "b0486d1586daa0d56435c508108171fc1c8daff9",
+      "int4_repository": "https://huggingface.co/poolside/Laguna-S-2.1-DFlash-INT4",
+      "int4_revision": "69fae8d6212ca3cf788c1ce0887e52ec8cddf1ec",
+      "identity": "distinct weight LFS OIDs",
+      "license_boundary": "both repositories declare license other and contain no LICENSE file",
+      "decision": "technically_testable_not_redistribution_cleared"
+    },
+    "deepseek_v4": {
+      "official_repository": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
+      "official_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+      "official_identity": "contains all three mtp DSpark stages",
+      "extreme_fit_repository": "https://huggingface.co/steadfastgaze/DeepSeek-V4-Flash-0731-2.37bpw-MoEspressoV2",
+      "extreme_fit_revision": "ce83508ce89b9e2acd2a3fd31ea3c4919b8d1b38",
+      "extreme_fit_size_gib": 84.51,
+      "extreme_fit_boundary": "material source-relative quality loss and custom runtime",
+      "decision": "official_is_source_identity_anchor_moespressov2_is_extreme_fit_test_only"
+    }
+  }
+}

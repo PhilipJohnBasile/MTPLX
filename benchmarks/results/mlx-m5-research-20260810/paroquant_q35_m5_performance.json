@@ -1,0 +1,98 @@
+{
+  "baseline": {
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_mean_tokens_per_second": 102.24617761997621,
+    "decode_relative_range": 0.02014474738398083,
+    "decode_tokens_per_second_by_run": [
+      101.21631591041019,
+      103.27603932954224
+    ],
+    "exact_continuation_repeat": true,
+    "labels": [
+      "paro-stock-a1",
+      "paro-stock-a2"
+    ],
+    "load_seconds_by_run": [
+      0.609789833,
+      0.597810875
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 186.81633324999999,
+    "prefill_median_ms_by_run": [
+      187.6004165,
+      186.03224999999998
+    ],
+    "prefill_relative_range": 0.00839416164913952,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "b4bd085f112641798b68dd36a33bd1b4a19670206518ba7d3b09b5252b2b2605",
+      "193920afb2c1b1607f09b4a059aad08b77e9d5e7de575dd4958fc7754ad97e70"
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock-affine-4bit",
+  "candidate": {
+    "continuation_token_ids_sha256": [
+      "7ae237de9f8558a006ac71d0a627b4a37238927dd4bc24e8394967f126ed0aa7",
+      "7ae237de9f8558a006ac71d0a627b4a37238927dd4bc24e8394967f126ed0aa7"
+    ],
+    "continuation_tokens": 128,
+    "decode_mean_tokens_per_second": 56.824941871056126,
+    "decode_relative_range": 0.10743307614871236,
+    "decode_tokens_per_second_by_run": [
+      59.87738102464579,
+      53.772502717466466
+    ],
+    "exact_continuation_repeat": true,
+    "labels": [
+      "paro-candidate-b1",
+      "paro-candidate-b2-clean"
+    ],
+    "load_seconds_by_run": [
+      108.349110583,
+      105.025174583
+    ],
+    "peak_memory_bytes_by_run": [
+      20381802158,
+      20381802158
+    ],
+    "prefill_mean_ms": 210.798427,
+    "prefill_median_ms_by_run": [
+      200.030083,
+      221.56677100000002
+    ],
+    "prefill_relative_range": 0.10216721398969465,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "3645b03b00e979cdc7cc591dd4ffdb6e865b7f634b81ca5e176830b11a004c11",
+      "6143e80cfdff145f41feea68b6bd71c344f313148caea436a4a348da94c40f66"
+    ],
+    "weight_manifest_sha256": "f7eda81ef98e0d773f210cb7d5f2da15a14ba05ff2c72735f442899f6595549d"
+  },
+  "candidate_name": "paroquant",
+  "comparison": {
+    "decode_percent_change": -44.42340712015621,
+    "decode_speedup_candidate_over_baseline": 0.5557659287984379,
+    "prefill_percent_change": -11.37678970915661,
+    "prefill_speedup_candidate_over_baseline": 0.8862321029084339,
+    "same_continuation_across_artifacts": false
+  },
+  "comparison_script_sha256": "1ba305399c9c674c0944497b0fda24cace1c6a9e5cbdb3cb12da3cc2a01f23a6",
+  "interpretation_limit": "This is a process-isolated compressed-artifact performance comparison. Matching greedy continuations on one synthetic prompt is a functional smoke, not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock-affine-4bit",
+    "paroquant",
+    "paroquant",
+    "stock-affine-4bit"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v2",
+  "status": "performance_only_not_quality_evidence"
+}

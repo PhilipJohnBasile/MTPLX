@@ -1,0 +1,153 @@
+{
+  "all_required_results_passed": true,
+  "imports_exact_pr_code": false,
+  "pr": {
+    "head": "a318a32c44c1fe7666160122d26e11b319248fd3",
+    "url": "https://github.com/ml-explore/mlx-lm/commit/a318a32c44c1fe7666160122d26e11b319248fd3"
+  },
+  "purpose": "CPU-only reproducer for the MLX-LM #1709 audit claims",
+  "results": [
+    {
+      "bfloat16": {
+        "reported_total_variation": 0.0026887,
+        "sampler_distribution": [
+          0.0029463352462246804,
+          0.49549740105241435,
+          0.45826018331503926,
+          0.043296080386321635
+        ],
+        "total_variation": 0.0026887042643047856,
+        "verifier_distribution": [
+          0.002970091166636135,
+          0.4928475578340004,
+          0.4609251316589326,
+          0.043257219340430815
+        ]
+      },
+      "evidence_mode": "copied_pr_semantics_not_imported",
+      "expected_failure_reproduced": true,
+      "fixture": {
+        "dtype_input_values": [
+          -5.8125,
+          -2.234375,
+          -2.28125,
+          -3.9375
+        ],
+        "temperature": 0.7
+      },
+      "float16": {
+        "sampler_distribution": [
+          0.002967116390220976,
+          0.49317881628203636,
+          0.4605919194904616,
+          0.04326214783728119
+        ],
+        "total_variation": 0.0003361869448862591,
+        "verifier_distribution": [
+          0.002970091166636135,
+          0.4928475578340004,
+          0.4609251316589326,
+          0.043257219340430815
+        ]
+      },
+      "limitation": "Emulates dtype rounding in Python; it does not execute MLX kernels or the PR.",
+      "name": "temperature_dtype_order_mismatch",
+      "pr_source": [
+        "mlx_lm/sample_utils.py:290-292 (scale in current dtype)",
+        "mlx_lm/generate.py:475-481 (cast to float32 before scaling)"
+      ]
+    },
+    {
+      "analytic_repeat_probability": 0.5,
+      "copied_integration_joint_laws": {
+        "block": {
+          "00": "1/4",
+          "01": "1/4",
+          "10": "1/4",
+          "11": "1/4"
+        },
+        "residual": {
+          "00": "1/4",
+          "01": "1/4",
+          "10": "1/4",
+          "11": "1/4"
+        }
+      },
+      "deterministic_2000_trial_realization": {
+        "prng": "python.random.Random",
+        "repeat_count": 1034,
+        "repeat_rate": 0.517,
+        "reported_audit_rate": 0.517,
+        "seed": 256,
+        "trial_count": 2000
+      },
+      "evidence_mode": "copied_pr_semantics_not_imported",
+      "expected_failure_reproduced": true,
+      "limitation": "Copied control flow only; the 51.7% realization is not MLX PRNG or a live target forward.",
+      "name": "history_dependent_processor_conditioning_mismatch",
+      "pr_source": [
+        "mlx_lm/generate.py:695-719 (processor samples target rows in a loop)",
+        "mlx_lm/generate.py:782-787 (target forward is computed along draft tokens)"
+      ],
+      "target_ar_joint_law": {
+        "00": "1/2",
+        "11": "1/2"
+      }
+    },
+    {
+      "accepted_probability": "187/500",
+      "deterministic_trials": 2000,
+      "evidence_mode": "copied_pr_semantics_not_imported",
+      "expected_failure_reproduced": true,
+      "impossible_target_sampler_tokens": {
+        "block_k1": 748,
+        "residual": 748
+      },
+      "limitation": "No model or sampler from MLX-LM is imported; this isolates the forgeable capability contract.",
+      "name": "forgeable_custom_sampler_temp_marker",
+      "pr_source": [
+        "mlx_lm/generate.py:646-658 (acceptance capability inferred from sampler.temp)",
+        "mlx_lm/generate.py:750-770 (reconstructed soft distributions drive verification)"
+      ],
+      "proposal_token": 1,
+      "reported_audit_count": 748,
+      "sampler": {
+        "forged_temp": 1.0,
+        "guard_accepts": true,
+        "kind": "custom_top1"
+      },
+      "soft_target_probability_of_impossible_token": "187/500",
+      "target_sampler_token": 0
+    },
+    {
+      "contract": {
+        "draft_depth": 1,
+        "float32_or_exact_probabilities": true,
+        "no_logits_processors": true,
+        "one_sequence": true,
+        "plain_categorical_sampler": true,
+        "prefix_independent_fixture": true
+      },
+      "evidence_mode": "independent_rational_oracle_not_pr_code",
+      "joint_horizon_tokens": 2,
+      "law_total": {
+        "block_k1": "1",
+        "residual": "1"
+      },
+      "limitation": "This proves only independently re-derived K=1 arithmetic on a finite fixture, not the PR integration.",
+      "max_absolute_joint_probability_error": {
+        "block_k1": "0",
+        "residual": "0"
+      },
+      "name": "narrow_valid_contract_rational_joint_law",
+      "positive_oracle_passed": true,
+      "rules_checked": [
+        "residual",
+        "block_k1"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "uses_external_models": false,
+  "uses_gpu": false
+}

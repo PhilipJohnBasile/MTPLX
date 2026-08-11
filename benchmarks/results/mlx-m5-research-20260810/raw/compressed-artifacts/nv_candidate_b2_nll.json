@@ -1,0 +1,280 @@
+{
+  "aggregate": {
+    "max_task_nll_nats_per_token": 0.8076479775565011,
+    "mean_nll_nats_per_token": 0.4246074365946921,
+    "median_task_nll_nats_per_token": 0.43427836589324165,
+    "min_task_nll_nats_per_token": 0.12787208557128907,
+    "perplexity": 1.5289900762836397,
+    "scored_token_count": 1302,
+    "task_count": 32
+  },
+  "dataset": {
+    "path_name": "HumanEval-6d43fb980f9fee3c892a914eda09951f772ad10d.jsonl",
+    "selection": "first_32_file_order",
+    "sha256": "1d49078ba3e2b196b9344535bef34a43021f038fad9561d6ee7c53450609a6a2"
+  },
+  "interpretation_limit": "Historical artifact-local likelihood only. The exact producing source, tokenizer asset hashes, and prompt/solution token-ID hashes are unavailable, so this receipt is NOT COMPARABLE across artifacts and is not quality decision evidence.",
+  "label": "nv_candidate_b2",
+  "load_seconds": 1.3486835,
+  "loader": "stock",
+  "loader_source": "mlx_lm.utils.load",
+  "model_identifier": "majentik--Qwen3.6-35B-A3B-MLX-NVFP4",
+  "model_identity": {
+    "weight_manifest_after_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8",
+    "weight_manifest_before": {
+      "aggregate_sha256": "32d0c347a255d35b23e08a7888c493eb158e4769089436401f085c75fec6ebe8",
+      "algorithm": "sha256(sorted(filename\\0size_bytes\\0file_sha256\\n))",
+      "shard_count": 4,
+      "shards": [
+        {
+          "filename": "model-00001-of-00004.safetensors",
+          "sha256": "0e9ffa430d74977543f27bc2a440279a14dff4cb0a58bbfd2cd64f11aab29516",
+          "size_bytes": 5343683394
+        },
+        {
+          "filename": "model-00002-of-00004.safetensors",
+          "sha256": "92d3c73bf5f790d71dd5f1b2a19ddd310a9854aa089225335f041f1631cf2ca7",
+          "size_bytes": 5367931423
+        },
+        {
+          "filename": "model-00003-of-00004.safetensors",
+          "sha256": "53def3ed55a85c487769fe1547decf463ca928578ceb6cb19da4030fc0401135",
+          "size_bytes": 5352054080
+        },
+        {
+          "filename": "model-00004-of-00004.safetensors",
+          "sha256": "55415a7d0432a5ae258c2c6364d13faecd91e52046fd8743fd00609de961811c",
+          "size_bytes": 3445295321
+        }
+      ],
+      "total_size_bytes": 19508964218
+    },
+    "weights_unchanged_during_run": true
+  },
+  "peak_memory_bytes_after_weight_residency": 20112789630,
+  "post_hoc_interpretation_correction": "Post-hoc interpretation correction on 2026-08-11; no model run or NLL value changed. The receipt lacks tokenizer-asset hashes and per-task prompt/solution token-ID hashes, so it is an artifact-local historical observation and cannot support a cross-artifact likelihood direction. The exact producing source is not preserved in this bundle.",
+  "protocol": {
+    "candidate_code_executed": false,
+    "prompt_add_special_tokens": true,
+    "scored_region": "canonical_solution_tokens_only",
+    "solution_add_special_tokens": false,
+    "teacher_forcing": true
+  },
+  "provenance": {
+    "benchmark_script_sha256": "17fa8ccf1b2190dfff59fc9c832bde011401b3064abf9e6cb8d0f3f21e22fc12",
+    "core_extension": "core.cpython-313-darwin.so",
+    "core_extension_sha256": "c851e5cdaac7d76d53a06a16975a6811d662f62a31c6dac4b178679c25df9e5e",
+    "device": {
+      "architecture": "applegpu_g17s",
+      "device_name": "Apple M5 Max",
+      "max_buffer_length": 86586540032,
+      "max_recommended_working_set_size": 127926272000,
+      "memory_size": 137438953472,
+      "resource_limit": 499000
+    },
+    "libmlx": "libmlx.dylib",
+    "libmlx_sha256": "a1b574bf28b58bebe46328a62f50c398c566f40e43333861dbdd4a95081700f5",
+    "metallib": "mlx.metallib",
+    "metallib_sha256": "961dae27c7c67891258cd59fd82d5e07fb7d6fa85dc9fdf1f988a47cf657566a",
+    "mlx_version": "0.32.1.dev20260811+291e909f4",
+    "package": "mlx",
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "python": "3.13.14"
+  },
+  "schema": "mtplx-q35-compressed-artifact-humaneval-nll-v2",
+  "status": "historical_artifact_local_nll_not_cross_artifact_comparable",
+  "tasks": [
+    {
+      "canonical_solution_tokens": 55,
+      "elapsed_ms": 175.178584,
+      "nll_nats_per_token": 0.46359669078480115,
+      "task_id": "HumanEval/0"
+    },
+    {
+      "canonical_solution_tokens": 97,
+      "elapsed_ms": 187.089083,
+      "nll_nats_per_token": 0.36894815975857764,
+      "task_id": "HumanEval/1"
+    },
+    {
+      "canonical_solution_tokens": 9,
+      "elapsed_ms": 95.593167,
+      "nll_nats_per_token": 0.7731446160210503,
+      "task_id": "HumanEval/2"
+    },
+    {
+      "canonical_solution_tokens": 34,
+      "elapsed_ms": 144.255209,
+      "nll_nats_per_token": 0.38998042835908775,
+      "task_id": "HumanEval/3"
+    },
+    {
+      "canonical_solution_tokens": 29,
+      "elapsed_ms": 140.041209,
+      "nll_nats_per_token": 0.22673962034028153,
+      "task_id": "HumanEval/4"
+    },
+    {
+      "canonical_solution_tokens": 49,
+      "elapsed_ms": 137.033833,
+      "nll_nats_per_token": 0.41335763736647,
+      "task_id": "HumanEval/5"
+    },
+    {
+      "canonical_solution_tokens": 89,
+      "elapsed_ms": 180.888125,
+      "nll_nats_per_token": 0.5010065228751536,
+      "task_id": "HumanEval/6"
+    },
+    {
+      "canonical_solution_tokens": 14,
+      "elapsed_ms": 111.285625,
+      "nll_nats_per_token": 0.7741520745413644,
+      "task_id": "HumanEval/7"
+    },
+    {
+      "canonical_solution_tokens": 41,
+      "elapsed_ms": 148.432625,
+      "nll_nats_per_token": 0.5887851715087891,
+      "task_id": "HumanEval/8"
+    },
+    {
+      "canonical_solution_tokens": 60,
+      "elapsed_ms": 150.907291,
+      "nll_nats_per_token": 0.4203767776489258,
+      "task_id": "HumanEval/9"
+    },
+    {
+      "canonical_solution_tokens": 56,
+      "elapsed_ms": 169.033667,
+      "nll_nats_per_token": 0.4596191474369594,
+      "task_id": "HumanEval/10"
+    },
+    {
+      "canonical_solution_tokens": 52,
+      "elapsed_ms": 133.263167,
+      "nll_nats_per_token": 0.44959171001727766,
+      "task_id": "HumanEval/11"
+    },
+    {
+      "canonical_solution_tokens": 43,
+      "elapsed_ms": 143.20575,
+      "nll_nats_per_token": 0.37438641038051873,
+      "task_id": "HumanEval/12"
+    },
+    {
+      "canonical_solution_tokens": 20,
+      "elapsed_ms": 99.298583,
+      "nll_nats_per_token": 0.12787208557128907,
+      "task_id": "HumanEval/13"
+    },
+    {
+      "canonical_solution_tokens": 28,
+      "elapsed_ms": 91.858583,
+      "nll_nats_per_token": 0.5259261131286621,
+      "task_id": "HumanEval/14"
+    },
+    {
+      "canonical_solution_tokens": 19,
+      "elapsed_ms": 99.934709,
+      "nll_nats_per_token": 0.24457489816766037,
+      "task_id": "HumanEval/15"
+    },
+    {
+      "canonical_solution_tokens": 8,
+      "elapsed_ms": 86.988875,
+      "nll_nats_per_token": 0.284165620803833,
+      "task_id": "HumanEval/16"
+    },
+    {
+      "canonical_solution_tokens": 43,
+      "elapsed_ms": 163.187875,
+      "nll_nats_per_token": 0.3878923016925191,
+      "task_id": "HumanEval/17"
+    },
+    {
+      "canonical_solution_tokens": 47,
+      "elapsed_ms": 136.122834,
+      "nll_nats_per_token": 0.37852413096326465,
+      "task_id": "HumanEval/18"
+    },
+    {
+      "canonical_solution_tokens": 115,
+      "elapsed_ms": 194.296167,
+      "nll_nats_per_token": 0.328468654466712,
+      "task_id": "HumanEval/19"
+    },
+    {
+      "canonical_solution_tokens": 118,
+      "elapsed_ms": 222.700375,
+      "nll_nats_per_token": 0.4018826242220604,
+      "task_id": "HumanEval/20"
+    },
+    {
+      "canonical_solution_tokens": 38,
+      "elapsed_ms": 151.130916,
+      "nll_nats_per_token": 0.29729175567626953,
+      "task_id": "HumanEval/21"
+    },
+    {
+      "canonical_solution_tokens": 15,
+      "elapsed_ms": 110.163875,
+      "nll_nats_per_token": 0.5374937693277995,
+      "task_id": "HumanEval/22"
+    },
+    {
+      "canonical_solution_tokens": 6,
+      "elapsed_ms": 61.748625,
+      "nll_nats_per_token": 0.4724445343017578,
+      "task_id": "HumanEval/23"
+    },
+    {
+      "canonical_solution_tokens": 23,
+      "elapsed_ms": 86.830625,
+      "nll_nats_per_token": 0.45958436053732166,
+      "task_id": "HumanEval/24"
+    },
+    {
+      "canonical_solution_tokens": 78,
+      "elapsed_ms": 196.506292,
+      "nll_nats_per_token": 0.4452855525872646,
+      "task_id": "HumanEval/25"
+    },
+    {
+      "canonical_solution_tokens": 29,
+      "elapsed_ms": 116.0465,
+      "nll_nats_per_token": 0.6556939092175714,
+      "task_id": "HumanEval/26"
+    },
+    {
+      "canonical_solution_tokens": 7,
+      "elapsed_ms": 67.294625,
+      "nll_nats_per_token": 0.42327117919921875,
+      "task_id": "HumanEval/27"
+    },
+    {
+      "canonical_solution_tokens": 7,
+      "elapsed_ms": 74.3235,
+      "nll_nats_per_token": 0.8076479775565011,
+      "task_id": "HumanEval/28"
+    },
+    {
+      "canonical_solution_tokens": 14,
+      "elapsed_ms": 108.30875,
+      "nll_nats_per_token": 0.7465568270002093,
+      "task_id": "HumanEval/29"
+    },
+    {
+      "canonical_solution_tokens": 15,
+      "elapsed_ms": 127.9405,
+      "nll_nats_per_token": 0.49436073303222655,
+      "task_id": "HumanEval/30"
+    },
+    {
+      "canonical_solution_tokens": 44,
+      "elapsed_ms": 144.986042,
+      "nll_nats_per_token": 0.40076390179720794,
+      "task_id": "HumanEval/31"
+    }
+  ]
+}

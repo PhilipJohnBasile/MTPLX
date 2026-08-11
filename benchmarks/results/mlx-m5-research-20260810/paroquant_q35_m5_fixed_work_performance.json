@@ -1,0 +1,222 @@
+{
+  "baseline": {
+    "campaign_arms": [
+      "stock-affine-w4",
+      "stock-affine-w4"
+    ],
+    "campaign_id": "q35-paro-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      1,
+      4
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 105.88902585508613,
+    "decode_relative_range": 0.011837408932880234,
+    "decode_tokens_per_second_by_run": [
+      106.51575170536162,
+      105.26230000481064
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:12:56.571501+00:00",
+      "2026-08-11T08:17:20.881378+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "paro-stock-a1-fixed",
+      "paro-stock-a2-fixed"
+    ],
+    "load_seconds_by_run": [
+      0.586189958,
+      0.622056666
+    ],
+    "peak_memory_bytes_by_run": [
+      20969220460,
+      20969220460
+    ],
+    "prefill_mean_ms": 189.463771,
+    "prefill_median_ms_by_run": [
+      188.134084,
+      190.793458
+    ],
+    "prefill_relative_range": 0.014036319376330715,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "3bac369c1136554fab08711862c39437206cd0599935b122e3cadead07370f8a",
+      "ef890a7bd625e10077a6978a8f1e62a173ace3b03d97c996f4a235a477e85ab6"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:12:40.365684+00:00",
+      "2026-08-11T08:17:04.578646+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "paro-stock-a1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "paro-stock-a2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "aa94a5344b185a8505c789d3eb078fc4b9983f7b7b6a6727e1e394097c1230d5"
+  },
+  "baseline_name": "stock-affine-w4",
+  "candidate": {
+    "campaign_arms": [
+      "z-lab-paroquant",
+      "z-lab-paroquant"
+    ],
+    "campaign_id": "q35-paro-fixed-work-20260811-v2",
+    "campaign_ordinals": [
+      2,
+      3
+    ],
+    "continuation_token_ids_sha256": [
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+      "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+    ],
+    "continuation_tokens": 128,
+    "decode_forward_steps": 127,
+    "decode_mean_tokens_per_second": 63.957183519086456,
+    "decode_relative_range": 0.23208159333785355,
+    "decode_tokens_per_second_by_run": [
+      71.378826047342,
+      56.53554099083091
+    ],
+    "decode_workload": "teacher_forced_fixed_continuation",
+    "exact_continuation_repeat": true,
+    "finished_at_utc": [
+      "2026-08-11T08:14:59.588168+00:00",
+      "2026-08-11T08:17:03.217014+00:00"
+    ],
+    "fixed_work_source_receipt_sha256": "7b5137cdecfec92faa796dd32bd5c589a80fd03a182b5347f76bca8eae3faa6d",
+    "fixed_work_token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354",
+    "labels": [
+      "paro-candidate-b1-fixed",
+      "paro-candidate-b2-fixed"
+    ],
+    "load_seconds_by_run": [
+      105.39034325,
+      105.4730825
+    ],
+    "peak_memory_bytes_by_run": [
+      20381802158,
+      20381802158
+    ],
+    "prefill_mean_ms": 198.38555200000002,
+    "prefill_median_ms_by_run": [
+      191.7213125,
+      205.0497915
+    ],
+    "prefill_relative_range": 0.0671847262344991,
+    "prompt_token_ids_sha256": "0a2c1b63186c8564792b4eb57e6c80b6a96fc8cb39cfcd48a689a6aa373015d3",
+    "receipt_sha256": [
+      "5a0112d980995225a85e775e5f2ee6eac7dcd65d764321919a549b7478b886e7",
+      "848ec7a751c07a623a37f7b90c47359bae269d73a436a22aae1174c094f4e8f4"
+    ],
+    "started_at_utc": [
+      "2026-08-11T08:12:57.346828+00:00",
+      "2026-08-11T08:15:00.951765+00:00"
+    ],
+    "validated_receipt_count_contracts": [
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "paro-candidate-b1-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      },
+      {
+        "continuation_tokens": 128,
+        "decode_forward_steps": 127,
+        "expected_decode_forward_steps": 127,
+        "label": "paro-candidate-b2-fixed",
+        "validated_count_fields": [
+          "continuation.tokens",
+          "continuation.decode_forward_steps",
+          "campaign.command_contract.continuation_tokens",
+          "campaign.command_contract.prompt_length",
+          "campaign.command_contract.prefill_repetitions"
+        ]
+      }
+    ],
+    "validated_v4_continuations": [
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      },
+      {
+        "decode_forward_steps": 127,
+        "token_ids_count": 128,
+        "token_ids_sha256": "742ebfcbe948437ab5ca777aa9f98875a6a941a28d10f6a09f87a09e34d3b354"
+      }
+    ],
+    "weight_manifest_sha256": "f7eda81ef98e0d773f210cb7d5f2da15a14ba05ff2c72735f442899f6595549d"
+  },
+  "candidate_name": "z-lab-paroquant",
+  "comparison": {
+    "decode_percent_change": -39.59979988236484,
+    "decode_speedup_candidate_over_baseline": 0.6040020011763516,
+    "prefill_percent_change": -4.497192920581239,
+    "prefill_speedup_candidate_over_baseline": 0.9550280707941876,
+    "same_decode_forward_count_across_artifacts": true,
+    "same_fixed_token_sequence_across_artifacts": true,
+    "same_routed_moe_work": "unobserved_not_established"
+  },
+  "comparison_script_sha256": "8404bd2470349a15eca3a1ebfd6f66333d9667c59d892fa5a9dad457f479c2a8",
+  "interpretation_limit": "This is a process-isolated, fixed-token and forward-count compressed-artifact performance comparison on one synthetic prompt. Teacher forcing does not equalize MoE routing because artifact-specific hidden states can change expert assignments; routing was not recorded. This is not source-relative quality or intelligence evidence.",
+  "promotion_decision": "not_decided_by_performance_alone",
+  "run_order": [
+    "stock-affine-w4",
+    "z-lab-paroquant",
+    "z-lab-paroquant",
+    "stock-affine-w4"
+  ],
+  "schema": "mtplx-q35-compressed-artifact-performance-comparison-v3",
+  "status": "performance_only_not_quality_evidence"
+}
