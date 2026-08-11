@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib
 import json
 import os
@@ -20,7 +21,17 @@ from mtplx.models.laguna_config import (
     LAGUNA_S_2_1_REPO_BYTES,
     LAGUNA_S_2_1_REQUIRED_FILES,
     LAGUNA_S_2_1_REVISION,
+    LAGUNA_S_2_1_SIDECAR_SHA256,
     laguna_s_2_1_artifact_integrity_errors,
+)
+from mtplx.models.deepseek_v4_target_only_config import (
+    DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES,
+    DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+    DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES,
+    DEEPSEEK_V4_TARGET_ONLY_REVISION,
+    DEEPSEEK_V4_TARGET_ONLY_SHARD_SHA256,
+    DEEPSEEK_V4_TARGET_ONLY_SIDECAR_SHA256,
+    deepseek_v4_target_only_artifact_integrity_errors,
 )
 from mtplx.profiles import DEFAULT_PROFILE_NAME
 
@@ -52,11 +63,25 @@ def _effective_model_revision(repo_id: str, revision: str | None) -> str | None:
     if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
         if revision is not None and revision != LAGUNA_S_2_1_REVISION:
             raise ValueError(
-                "Laguna-S-2.1 support is pinned to revision "
-                f"{LAGUNA_S_2_1_REVISION}"
+                f"Laguna-S-2.1 support is pinned to revision {LAGUNA_S_2_1_REVISION}"
             )
         return LAGUNA_S_2_1_REVISION
+    if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        if revision is not None and revision != DEEPSEEK_V4_TARGET_ONLY_REVISION:
+            raise ValueError(
+                "DeepSeek V4 target-only support is pinned to revision "
+                f"{DEEPSEEK_V4_TARGET_ONLY_REVISION}"
+            )
+        return DEEPSEEK_V4_TARGET_ONLY_REVISION
     return revision
+
+
+def _pinned_source_identity(repo_id: str) -> tuple[str, str] | None:
+    if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        return LAGUNA_S_2_1_REPO_ID, LAGUNA_S_2_1_REVISION
+    if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        return DEEPSEEK_V4_TARGET_ONLY_REPO_ID, DEEPSEEK_V4_TARGET_ONLY_REVISION
+    return None
 
 
 def _source_marker_matches(
@@ -65,7 +90,8 @@ def _source_marker_matches(
     repo_id: str,
     revision: str | None,
 ) -> bool:
-    if repo_id.casefold() != LAGUNA_S_2_1_REPO_ID.casefold():
+    pinned = _pinned_source_identity(repo_id)
+    if pinned is None:
         return True
     try:
         payload = json.loads(
@@ -73,7 +99,15 @@ def _source_marker_matches(
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    return payload == {"repo_id": repo_id, "revision": revision}
+    canonical_repo_id, canonical_revision = pinned
+    return (
+        payload
+        == {
+            "repo_id": canonical_repo_id,
+            "revision": canonical_revision,
+        }
+        and revision == canonical_revision
+    )
 
 
 def _write_source_marker(
@@ -82,6 +116,9 @@ def _write_source_marker(
     repo_id: str,
     revision: str | None,
 ) -> None:
+    pinned = _pinned_source_identity(repo_id)
+    if pinned is not None:
+        repo_id, revision = pinned
     (destination / SOURCE_MARKER_FILE).write_text(
         json.dumps(
             {"repo_id": repo_id, "revision": revision},
@@ -99,22 +136,77 @@ def _validate_pinned_laguna_files(destination: Path, repo_id: str) -> None:
     if missing_or_wrong:
         raise RuntimeError(
             "pinned Laguna snapshot is incomplete or differs from revision "
-            f"{LAGUNA_S_2_1_REVISION}: "
+            f"{LAGUNA_S_2_1_REVISION}: " + ", ".join(sorted(missing_or_wrong))
+        )
+
+
+def _validate_pinned_deepseek_v4_files(destination: Path, repo_id: str) -> None:
+    if repo_id.casefold() != DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        return
+    missing_or_wrong = deepseek_v4_target_only_artifact_integrity_errors(destination)
+    if missing_or_wrong:
+        raise RuntimeError(
+            "pinned DeepSeek V4 target-only snapshot is incomplete or differs "
+            f"from revision {DEEPSEEK_V4_TARGET_ONLY_REVISION}: "
             + ", ".join(sorted(missing_or_wrong))
         )
 
 
-def _pull_validation(path: Path, repo_id: str) -> dict[str, Any]:
+def _validate_pinned_model_files(destination: Path, repo_id: str) -> None:
+    _validate_pinned_laguna_files(destination, repo_id)
+    _validate_pinned_deepseek_v4_files(destination, repo_id)
+
+
+def _pinned_artifact_integrity_errors(
+    destination: Path,
+    repo_id: str,
+) -> tuple[str, ...]:
+    """Return exact-file repair targets for a pinned artifact cache.
+
+    The generic Hub downloader treats a same-size local file as reusable.  That
+    is unsafe for identities that bind content hashes, so a failed pinned
+    integrity check must actively re-fetch the named file instead of merely
+    falling through to ``snapshot_download``.
+    """
+
+    if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        return laguna_s_2_1_artifact_integrity_errors(destination)
+    if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        return deepseek_v4_target_only_artifact_integrity_errors(destination)
+    return ()
+
+
+def _pinned_file_sha256(repo_id: str, path: str) -> str | None:
+    if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        return DEEPSEEK_V4_TARGET_ONLY_SHARD_SHA256.get(
+            path
+        ) or DEEPSEEK_V4_TARGET_ONLY_SIDECAR_SHA256.get(path)
+    if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        return LAGUNA_S_2_1_SIDECAR_SHA256.get(path)
+    return None
+
+
+def _pull_validation(
+    path: Path,
+    repo_id: str,
+    *,
+    pinned_integrity_checked: bool = False,
+) -> dict[str, Any]:
     validation = validate_mtplx_model_files(path)
-    if repo_id.casefold() != LAGUNA_S_2_1_REPO_ID.casefold():
+    if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        required_files = LAGUNA_S_2_1_REQUIRED_FILES
+    elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        required_files = DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES
+    else:
         return validation
-    _validate_pinned_laguna_files(path, repo_id)
+    if not pinned_integrity_checked:
+        _validate_pinned_model_files(path, repo_id)
     return {
         **validation,
         "ok": True,
         "missing_files": [],
         "contract_error": None,
-        "required_files": sorted(LAGUNA_S_2_1_REQUIRED_FILES),
+        "required_files": sorted(required_files),
         "mtp_supported": False,
         "runtime_compatibility": "native-ar-only",
     }
@@ -167,7 +259,9 @@ def _query_repo_files(repo_id: str, *, revision: str | None = None) -> list[Repo
         if not isinstance(name, str) or not name.strip():
             continue
         size = getattr(sibling, "size", None)
-        files.append(RepoFile(path=name, size_bytes=size if isinstance(size, int) else None))
+        files.append(
+            RepoFile(path=name, size_bytes=size if isinstance(size, int) else None)
+        )
     return files
 
 
@@ -235,7 +329,9 @@ def cached_model_path(repo_id: str, *, cache_dir: str | Path | None = None) -> P
 def hf_token_for_download() -> str | bool:
     """Use explicit env auth only; public pulls should never need HF login."""
 
-    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or False
+    return (
+        os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or False
+    )
 
 
 def _complete_indexed_weights(path: Path, index_name: str) -> bool:
@@ -250,9 +346,7 @@ def _complete_indexed_weights(path: Path, index_name: str) -> bool:
     if not isinstance(weight_map, dict):
         return False
     filenames = {
-        name
-        for name in weight_map.values()
-        if isinstance(name, str) and name.strip()
+        name for name in weight_map.values() if isinstance(name, str) and name.strip()
     }
     if not filenames:
         return False
@@ -358,7 +452,12 @@ def _repo_requires_qwen_mtplx_payload(repo_id: str) -> bool:
     return lower.startswith("youssofal/qwen3.") and "mtplx" in lower
 
 
-def _cached_model_ready_for_repo(path: Path, repo_id: str) -> bool:
+def _cached_model_ready_for_repo(
+    path: Path,
+    repo_id: str,
+    *,
+    pinned_integrity_errors: tuple[str, ...] | None = None,
+) -> bool:
     if not cached_model_is_complete(path):
         return False
     if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
@@ -368,9 +467,26 @@ def _cached_model_ready_for_repo(path: Path, repo_id: str) -> bool:
             revision=LAGUNA_S_2_1_REVISION,
         ):
             return False
-        try:
-            _validate_pinned_laguna_files(path, repo_id)
-        except RuntimeError:
+        errors = (
+            laguna_s_2_1_artifact_integrity_errors(path)
+            if pinned_integrity_errors is None
+            else pinned_integrity_errors
+        )
+        if errors:
+            return False
+    if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        if not _source_marker_matches(
+            path,
+            repo_id=repo_id,
+            revision=DEEPSEEK_V4_TARGET_ONLY_REVISION,
+        ):
+            return False
+        errors = (
+            deepseek_v4_target_only_artifact_integrity_errors(path)
+            if pinned_integrity_errors is None
+            else pinned_integrity_errors
+        )
+        if errors:
             return False
     if _repo_requires_qwen_mtplx_payload(repo_id):
         return bool(validate_mtplx_model_files(path).get("ok"))
@@ -387,14 +503,16 @@ def resolve_model_path(model_ref: str, *, cache_dir: str | Path | None = None) -
     cached = cached_model_path(repo_id, cache_dir=cache_dir)
     if _cached_model_ready_for_repo(cached, repo_id):
         return cached
-    raise FileNotFoundError(
-        f"Model {repo_id} is not cached. Run: mtplx pull {repo_id}"
-    )
+    raise FileNotFoundError(f"Model {repo_id} is not cached. Run: mtplx pull {repo_id}")
 
 
-def _configured_mtp_file(contract: dict[str, Any] | None, config: dict[str, Any] | None) -> str | None:
+def _configured_mtp_file(
+    contract: dict[str, Any] | None, config: dict[str, Any] | None
+) -> str | None:
     for source in (config, contract):
-        extra = source.get("mlx_lm_extra_tensors", {}) if isinstance(source, dict) else {}
+        extra = (
+            source.get("mlx_lm_extra_tensors", {}) if isinstance(source, dict) else {}
+        )
         if isinstance(extra, dict) and extra.get("mtp_file"):
             return str(extra["mtp_file"])
     if isinstance(contract, dict):
@@ -405,7 +523,9 @@ def _configured_mtp_file(contract: dict[str, Any] | None, config: dict[str, Any]
     return None
 
 
-def _mtp_sidecar_candidates(path: Path, contract: dict[str, Any] | None = None) -> list[str]:
+def _mtp_sidecar_candidates(
+    path: Path, contract: dict[str, Any] | None = None
+) -> list[str]:
     config: dict[str, Any] | None = None
     config_path = path / "config.json"
     if config_path.exists():
@@ -437,7 +557,9 @@ def _mtp_sidecar_exists(path: Path, contract: dict[str, Any] | None = None) -> b
 
 
 def validate_mtplx_model_files(path: Path) -> dict[str, Any]:
-    missing = [name for name in REQUIRED_MTPLX_MODEL_FILES if not (path / name).exists()]
+    missing = [
+        name for name in REQUIRED_MTPLX_MODEL_FILES if not (path / name).exists()
+    ]
     contract: dict[str, Any] | None = None
     contract_error: str | None = None
     contract_path = path / "mtplx_runtime.json"
@@ -456,7 +578,9 @@ def validate_mtplx_model_files(path: Path) -> dict[str, Any]:
         "mtp_sidecar_candidates": sidecar_candidates,
         "missing_files": missing,
         "contract_present": contract_path.exists(),
-        "contract_arch_id": contract.get("arch_id") if isinstance(contract, dict) else None,
+        "contract_arch_id": contract.get("arch_id")
+        if isinstance(contract, dict)
+        else None,
         "contract_error": contract_error,
     }
 
@@ -474,7 +598,9 @@ def directory_size_bytes(path: Path) -> int:
     return total
 
 
-def _emit_download_progress(callback: DownloadProgressCallback | None, payload: dict[str, Any]) -> None:
+def _emit_download_progress(
+    callback: DownloadProgressCallback | None, payload: dict[str, Any]
+) -> None:
     if callback is None:
         return
     try:
@@ -484,7 +610,13 @@ def _emit_download_progress(callback: DownloadProgressCallback | None, payload: 
         return
 
 
-def _hub_runtime() -> tuple[Any, Callable[..., str], Callable[[], Any], Callable[..., dict[str, str]], Callable[[Any], None]]:
+def _hub_runtime() -> tuple[
+    Any,
+    Callable[..., str],
+    Callable[[], Any],
+    Callable[..., dict[str, str]],
+    Callable[[Any], None],
+]:
     """Import the small Hub surface used by the app installer.
 
     Tests often patch ``huggingface_hub`` with a lightweight module object, so
@@ -495,7 +627,9 @@ def _hub_runtime() -> tuple[Any, Callable[..., str], Callable[[], Any], Callable
     try:
         hf_hub = importlib.import_module("huggingface_hub")
     except Exception as exc:
-        raise RuntimeError(f"huggingface_hub is required for mtplx pull: {exc}") from exc
+        raise RuntimeError(
+            f"huggingface_hub is required for mtplx pull: {exc}"
+        ) from exc
 
     try:
         from huggingface_hub.utils import build_hf_headers, hf_raise_for_status
@@ -509,7 +643,9 @@ def _hub_runtime() -> tuple[Any, Callable[..., str], Callable[[], Any], Callable
             if callable(raise_for_status):
                 raise_for_status()
             elif int(getattr(response, "status_code", 200)) >= 400:
-                raise RuntimeError(f"Hugging Face request failed with HTTP {response.status_code}")
+                raise RuntimeError(
+                    f"Hugging Face request failed with HTTP {response.status_code}"
+                )
 
     required = ["hf_hub_url", "get_session", "HfApi"]
     missing = [name for name in required if not hasattr(hf_hub, name)]
@@ -535,7 +671,9 @@ def _classify_pull_error(exc: BaseException, repo_id: str) -> str:
             "Sign in with an access token or request access, then retry."
         )
     if status_code == 404:
-        return f"Hugging Face could not find {repo_id}. Check the model name, then retry."
+        return (
+            f"Hugging Face could not find {repo_id}. Check the model name, then retry."
+        )
     if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
         return "Not enough disk space to finish the model download. Free space, then retry."
     return str(exc)
@@ -546,7 +684,9 @@ def _safe_destination_for_repo_file(destination: Path, repo_file: RepoFile) -> P
     try:
         target.relative_to(destination)
     except ValueError as exc:
-        raise RuntimeError(f"unsafe file path in Hugging Face repo: {repo_file.path}") from exc
+        raise RuntimeError(
+            f"unsafe file path in Hugging Face repo: {repo_file.path}"
+        ) from exc
     return target
 
 
@@ -610,6 +750,29 @@ def _iter_response_bytes(response: Any) -> Iterator[bytes]:
     raise RuntimeError("Hugging Face response does not support byte streaming")
 
 
+def _verify_downloaded_file(
+    path: Path,
+    *,
+    repo_file: RepoFile,
+    expected_sha256: str | None,
+) -> None:
+    if repo_file.size_bytes is not None and path.stat().st_size != repo_file.size_bytes:
+        raise RuntimeError(
+            f"incomplete download for {repo_file.path}: "
+            f"expected {repo_file.size_bytes} bytes, got {path.stat().st_size}"
+        )
+    if expected_sha256 is None:
+        return
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(DOWNLOAD_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise RuntimeError(
+            f"downloaded file failed pinned SHA-256 verification: {repo_file.path}"
+        )
+
+
 def _download_repo_file(
     repo_file: RepoFile,
     *,
@@ -626,21 +789,32 @@ def _download_repo_file(
     progress_interval_s: float,
     last_emit_at: float,
     last_emit_size: int,
+    force: bool = False,
+    expected_sha256: str | None = None,
 ) -> tuple[float, int]:
     target = _safe_destination_for_repo_file(destination, repo_file)
     target.parent.mkdir(parents=True, exist_ok=True)
     expected_size = repo_file.size_bytes
-    if expected_size is not None and target.exists() and target.stat().st_size == expected_size:
+    if not force and (
+        expected_size is not None
+        and target.exists()
+        and target.stat().st_size == expected_size
+    ):
         return last_emit_at, last_emit_size
-    if expected_size is None and target.exists() and target.stat().st_size > 0:
+    if (
+        not force
+        and expected_size is None
+        and target.exists()
+        and target.stat().st_size > 0
+    ):
         return last_emit_at, last_emit_size
 
     partial = target.with_name(target.name + ".incomplete")
-    if target.exists():
-        if not partial.exists():
-            target.replace(partial)
-        else:
-            target.unlink()
+    # Keep a bad-but-present destination in place until a complete, validated
+    # replacement has landed.  This matters for an exact pinned repair: the
+    # fallback copy remains available if the network request fails midway.
+    if force and partial.exists():
+        partial.unlink()
     existing = partial.stat().st_size if partial.exists() else 0
     if expected_size is not None and existing > expected_size:
         partial.unlink()
@@ -656,7 +830,17 @@ def _download_repo_file(
         if existing > 0 and status_code == 200:
             partial.unlink(missing_ok=True)
             existing = 0
-        elif existing > 0 and status_code == 416 and expected_size is not None and existing == expected_size:
+        elif (
+            existing > 0
+            and status_code == 416
+            and expected_size is not None
+            and existing == expected_size
+        ):
+            _verify_downloaded_file(
+                partial,
+                repo_file=repo_file,
+                expected_sha256=expected_sha256,
+            )
             partial.replace(target)
             return _emit_current_download_size(
                 callback,
@@ -687,11 +871,11 @@ def _download_repo_file(
                         last_emit_size=last_emit_size,
                         file_path=repo_file.path,
                     )
-    if expected_size is not None and partial.stat().st_size != expected_size:
-        raise RuntimeError(
-            f"incomplete download for {repo_file.path}: "
-            f"expected {expected_size} bytes, got {partial.stat().st_size}"
-        )
+    _verify_downloaded_file(
+        partial,
+        repo_file=repo_file,
+        expected_sha256=expected_sha256,
+    )
     partial.replace(target)
     return _emit_current_download_size(
         callback,
@@ -712,8 +896,11 @@ def _download_snapshot_with_structured_progress(
     destination: Path,
     progress_callback: DownloadProgressCallback | None,
     progress_interval_s: float,
+    force_paths: frozenset[str] = frozenset(),
 ) -> tuple[Path, int | None]:
-    HfApi, hf_hub_url, get_session, build_hf_headers, hf_raise_for_status = _hub_runtime()
+    HfApi, hf_hub_url, get_session, build_hf_headers, hf_raise_for_status = (
+        _hub_runtime()
+    )
     try:
         info = HfApi().model_info(
             repo_id=repo_id,
@@ -730,15 +917,22 @@ def _download_snapshot_with_structured_progress(
         if not isinstance(name, str) or not name.strip():
             continue
         size = getattr(sibling, "size", None)
-        repo_files.append(RepoFile(path=name, size_bytes=size if isinstance(size, int) else None))
+        repo_files.append(
+            RepoFile(path=name, size_bytes=size if isinstance(size, int) else None)
+        )
     if not repo_files:
-        raise RuntimeError(f"Hugging Face repo {repo_id} did not return downloadable files.")
+        raise RuntimeError(
+            f"Hugging Face repo {repo_id} did not return downloadable files."
+        )
 
-    total_bytes = sum(
-        repo_file.size_bytes
-        for repo_file in repo_files
-        if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes > 0
-    ) or None
+    total_bytes = (
+        sum(
+            repo_file.size_bytes
+            for repo_file in repo_files
+            if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes > 0
+        )
+        or None
+    )
     session = get_session()
     started_at = time.monotonic()
     last_emit_at = started_at
@@ -760,6 +954,12 @@ def _download_snapshot_with_structured_progress(
                 progress_interval_s=max(0.1, progress_interval_s),
                 last_emit_at=last_emit_at,
                 last_emit_size=last_emit_size,
+                force=repo_file.path in force_paths,
+                expected_sha256=(
+                    _pinned_file_sha256(repo_id, repo_file.path)
+                    if repo_file.path in force_paths
+                    else None
+                ),
             )
         except Exception as exc:
             raise RuntimeError(_classify_pull_error(exc, repo_id)) from exc
@@ -784,7 +984,9 @@ class CachedModel:
             "has_runtime_contract": self.has_runtime_contract,
             "has_config": self.has_config,
             "validation": self.validation,
-            "recommended_profile": DEFAULT_PROFILE_NAME if self.validation.get("ok") else None,
+            "recommended_profile": DEFAULT_PROFILE_NAME
+            if self.validation.get("ok")
+            else None,
             "delete_command": f"mtplx remove {self.repo_id}",
         }
 
@@ -798,6 +1000,14 @@ def list_cached_models(*, cache_dir: str | Path | None = None) -> list[CachedMod
         if not child.is_dir() or child.name.startswith("."):
             continue
         repo_id = child.name.replace("--", "/")
+        try:
+            validation = _pull_validation(child, repo_id)
+        except RuntimeError as exc:
+            validation = {
+                **validate_mtplx_model_files(child),
+                "ok": False,
+                "contract_error": str(exc),
+            }
         rows.append(
             CachedModel(
                 repo_id=repo_id,
@@ -805,15 +1015,13 @@ def list_cached_models(*, cache_dir: str | Path | None = None) -> list[CachedMod
                 size_bytes=directory_size_bytes(child),
                 has_runtime_contract=(child / "mtplx_runtime.json").exists(),
                 has_config=(child / "config.json").exists(),
-                validation=validate_mtplx_model_files(child),
+                validation=validation,
             )
         )
     return rows
 
 
-def _local_matches_remote_index(
-    path: Path, repo_id: str, revision: str | None
-) -> bool:
+def _local_matches_remote_index(path: Path, repo_id: str, revision: str | None) -> bool:
     """Best-effort remote freshness check for an explicit pull.
 
     A pull is a stated intent to sync, so a locally-complete copy must
@@ -850,16 +1058,37 @@ def pull_model(
 ) -> dict[str, Any]:
     repo_id = repo_id_from_model_ref(model_ref)
     if repo_id is None:
-        raise ValueError(f"pull requires a Hugging Face repo id or URL, got: {model_ref}")
+        raise ValueError(
+            f"pull requires a Hugging Face repo id or URL, got: {model_ref}"
+        )
     revision = _effective_model_revision(repo_id, revision)
     root = model_cache_dir(cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     destination = cached_model_path(repo_id, cache_dir=root)
 
     started_size = directory_size_bytes(destination)
+    pinned_integrity_errors = (
+        _pinned_artifact_integrity_errors(destination, repo_id)
+        if destination.is_dir() and _pinned_source_identity(repo_id) is not None
+        else None
+    )
+    repair_paths = (
+        frozenset(
+            error.partition(":")[0]
+            for error in pinned_integrity_errors
+            if error.partition(":")[0]
+        )
+        if pinned_integrity_errors
+        else frozenset()
+    )
+    pinned_integrity_checked = pinned_integrity_errors is not None
     if (
         destination.exists()
-        and _cached_model_ready_for_repo(destination, repo_id)
+        and _cached_model_ready_for_repo(
+            destination,
+            repo_id,
+            pinned_integrity_errors=pinned_integrity_errors,
+        )
         and _source_marker_matches(
             destination,
             repo_id=repo_id,
@@ -871,11 +1100,16 @@ def pull_model(
         reused_existing = True
         resumed_existing = False
         validation = validate_mtplx_model_files(resolved)
-        _validate_pinned_laguna_files(resolved, repo_id)
-        if repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx") and not validation["ok"]:
+        if (
+            repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx")
+            and not validation["ok"]
+        ):
             raise RuntimeError(
                 "cached MTPLX model is incomplete: "
-                + ", ".join(validation["missing_files"] or [str(validation.get("contract_error"))])
+                + ", ".join(
+                    validation["missing_files"]
+                    or [str(validation.get("contract_error"))]
+                )
             )
         _emit_download_progress(
             progress_callback,
@@ -895,6 +1129,8 @@ def pull_model(
         total_bytes = (
             LAGUNA_S_2_1_REPO_BYTES
             if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold()
+            else DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES
+            if repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold()
             else _query_repo_total_bytes(repo_id, revision=revision)
             if progress_callback is not None
             else None
@@ -921,13 +1157,22 @@ def pull_model(
             else contextlib.nullcontext()
         )
         with progress_suppression:
-            if progress_callback is not None:
-                resolved, total_bytes_from_download = _download_snapshot_with_structured_progress(
-                    repo_id=repo_id,
-                    revision=revision,
-                    destination=destination,
-                    progress_callback=progress_callback,
-                    progress_interval_s=progress_interval_s,
+            # ``snapshot_download`` can decide a same-size local file is
+            # already present.  For an exact pinned cache that is known bad,
+            # use the file-streaming path with explicit replacement instead:
+            # it writes ``*.incomplete``, verifies the new content, then
+            # atomically replaces the target.  This path is also used for the
+            # ordinary CLI flow, not only structured progress.
+            if progress_callback is not None or repair_paths:
+                resolved, total_bytes_from_download = (
+                    _download_snapshot_with_structured_progress(
+                        repo_id=repo_id,
+                        revision=revision,
+                        destination=destination,
+                        progress_callback=progress_callback,
+                        progress_interval_s=progress_interval_s,
+                        force_paths=repair_paths,
+                    )
                 )
                 if total_bytes_from_download:
                     total_bytes = total_bytes_from_download
@@ -961,13 +1206,20 @@ def pull_model(
             raise RuntimeError(
                 "downloaded model is incomplete: weight shards are missing or still partial"
             )
-        if repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx") and not validation["ok"]:
+        if (
+            repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx")
+            and not validation["ok"]
+        ):
             raise RuntimeError(
                 "downloaded MTPLX model is incomplete: "
-                + ", ".join(validation["missing_files"] or [str(validation.get("contract_error"))])
+                + ", ".join(
+                    validation["missing_files"]
+                    or [str(validation.get("contract_error"))]
+                )
             )
-        _validate_pinned_laguna_files(resolved, repo_id)
-        if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        _validate_pinned_model_files(resolved, repo_id)
+        pinned_integrity_checked = _pinned_source_identity(repo_id) is not None
+        if _pinned_source_identity(repo_id) is not None:
             _write_source_marker(
                 resolved,
                 repo_id=repo_id,
@@ -996,11 +1248,17 @@ def pull_model(
         "size_bytes": directory_size_bytes(resolved),
         "has_runtime_contract": (resolved / "mtplx_runtime.json").exists(),
         "has_config": (resolved / "config.json").exists(),
-        "validation": _pull_validation(resolved, repo_id),
+        "validation": _pull_validation(
+            resolved,
+            repo_id,
+            pinned_integrity_checked=pinned_integrity_checked,
+        ),
     }
 
 
-def remove_cached_model(model_ref: str, *, cache_dir: str | Path | None = None) -> dict[str, Any]:
+def remove_cached_model(
+    model_ref: str, *, cache_dir: str | Path | None = None
+) -> dict[str, Any]:
     repo_id = repo_id_from_model_ref(model_ref) or model_ref.replace("--", "/")
     path = cached_model_path(repo_id, cache_dir=cache_dir)
     existed = path.exists()
@@ -1017,7 +1275,9 @@ def remove_cached_model(model_ref: str, *, cache_dir: str | Path | None = None) 
 
 def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
     root = model_cache_dir(cache_dir)
-    token_present = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+    token_present = bool(
+        os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    )
     token_source = "environment" if token_present else None
     if not token_present:
         try:
@@ -1037,7 +1297,9 @@ def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
         "cache_exists": root.exists(),
         "cache_writable": os.access(root if root.exists() else root.parent, os.W_OK),
         "disk_free_bytes": free_bytes,
-        "disk_free_gb": round(free_bytes / 1_000_000_000, 3) if free_bytes is not None else None,
+        "disk_free_gb": round(free_bytes / 1_000_000_000, 3)
+        if free_bytes is not None
+        else None,
         "cached_models": len(list_cached_models(cache_dir=root)),
         "token_present": token_present,
         "token_source": token_source,

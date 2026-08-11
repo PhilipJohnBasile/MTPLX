@@ -12,6 +12,7 @@ from mtplx.profiles import DEFAULT_PROFILE_NAME, PROFILE_CHOICES, resolve_profil
 
 RUNTIME_CONTRACT_FILE = "mtplx_runtime.json"
 SUPPORTED_ARCH_IDS = {
+    "deepseek-v4-mlxserve-ar",
     "laguna-s-2.1-ar",
     "qwen3-next-mtp",
     "deepseek-v3-mtp",
@@ -92,7 +93,10 @@ class ArchitectureSupport:
     runtime_compatibility: str
     can_run_verified: bool = False
     aliases: tuple[str, ...] = ()
-    config_markers: tuple[str, ...] = ("mtp_num_hidden_layers", "num_nextn_predict_layers")
+    config_markers: tuple[str, ...] = (
+        "mtp_num_hidden_layers",
+        "num_nextn_predict_layers",
+    )
     family_gate: str = "none"
     references: tuple[str, ...] = ()
     notes: str = ""
@@ -115,6 +119,28 @@ class ArchitectureSupport:
 
 
 ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
+    "deepseek-v4-mlxserve-ar": ArchitectureSupport(
+        arch_id="deepseek-v4-mlxserve-ar",
+        display_name="DeepSeek V4 Flash 0731 target-only AR (mlx-serve)",
+        family="deepseek",
+        backend="deepseek_v4_mlxserve_ar",
+        support_level="experimental-external-native-ar-only",
+        runtime_compatibility="native-ar-only",
+        can_run_verified=True,
+        aliases=("DeepseekV4ForCausalLM", "deepseek_v4"),
+        config_markers=(),
+        family_gate="deepseek-v4-flash-0731-target-only-mlx-serve",
+        references=(
+            "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
+            "https://huggingface.co/philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly",
+        ),
+        notes=(
+            "Experimental target-only AR support for the exact 43-layer MLX artifact. "
+            "Execution is delegated to the separately installed native "
+            "mlx-serve DeepSeek-V4 runtime; no MTP or DSpark capability is claimed. "
+            "Representative streaming performance remains unapproved."
+        ),
+    ),
     "laguna-s-2.1-ar": ArchitectureSupport(
         arch_id="laguna-s-2.1-ar",
         display_name="Laguna-S-2.1 oQ4e (MLX)",
@@ -280,7 +306,11 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
             "MiniMaxM25ForCausalLM",
             "MiniMaxM26ForCausalLM",
         ),
-        config_markers=("num_mtp_modules", "num_nextn_predict_layers", "mtp_num_hidden_layers"),
+        config_markers=(
+            "num_mtp_modules",
+            "num_nextn_predict_layers",
+            "mtp_num_hidden_layers",
+        ),
         references=(
             "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/minimax_m2.py",
             "REFERENCES:TOOLS/mlx-lm/mlx_lm/models/minimax.py",
@@ -352,7 +382,9 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
         aliases=("ernie_mtp", "ernie4_5_moe"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/ernie_mtp.py",),
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/ernie_mtp.py",
+        ),
     ),
     "nemotron-h-mtp": ArchitectureSupport(
         arch_id="nemotron-h-mtp",
@@ -382,7 +414,9 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
         aliases=("exaone_moe_mtp", "exaone_moe"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/exaone_moe_mtp.py",),
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/exaone_moe_mtp.py",
+        ),
     ),
     "exaone4-5-mtp": ArchitectureSupport(
         arch_id="exaone4-5-mtp",
@@ -392,7 +426,9 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
         aliases=("exaone4_5_mtp", "exaone4_5"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/exaone4_5_mtp.py",),
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/exaone4_5_mtp.py",
+        ),
     ),
     "longcat-flash-mtp": ArchitectureSupport(
         arch_id="longcat-flash-mtp",
@@ -402,7 +438,9 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
         aliases=("longcat_flash_mtp", "longcat_flash"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/longcat_flash_mtp.py",),
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/longcat_flash_mtp.py",
+        ),
     ),
     "pangu-ultra-moe-mtp": ArchitectureSupport(
         arch_id="pangu-ultra-moe-mtp",
@@ -411,8 +449,15 @@ ARCHITECTURE_CATALOG: dict[str, ArchitectureSupport] = {
         backend="pangu_ultra_moe_mtp",
         support_level="recognized-backend-pending",
         runtime_compatibility="recognized-backend-pending",
-        aliases=("pangu_ultra_moe_mtp", "pangu_ultra_moe", "openpangu_mtp", "openpangu"),
-        references=("REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/openpangu_mtp.py",),
+        aliases=(
+            "pangu_ultra_moe_mtp",
+            "pangu_ultra_moe",
+            "openpangu_mtp",
+            "openpangu",
+        ),
+        references=(
+            "REFERENCES:TOOLS/vllm-official-main/vllm/model_executor/models/openpangu_mtp.py",
+        ),
     ),
     "step3p5-mtp": ArchitectureSupport(
         arch_id="step3p5-mtp",
@@ -530,11 +575,15 @@ class RuntimeContract:
             if key not in data
         ]
         if missing:
-            raise ValueError(f"runtime contract missing required keys: {', '.join(missing)}")
+            raise ValueError(
+                f"runtime contract missing required keys: {', '.join(missing)}"
+            )
         raw_profile = str(data["recommended_profile"])
         profile = resolve_profile_name(raw_profile)
         if profile not in PROFILE_CHOICES:
-            raise ValueError(f"runtime contract has invalid recommended_profile: {profile}")
+            raise ValueError(
+                f"runtime contract has invalid recommended_profile: {profile}"
+            )
         depth = int(data["mtp_depth_max"])
         if depth <= 0:
             raise ValueError("runtime contract mtp_depth_max must be positive")
@@ -556,10 +605,14 @@ class RuntimeContract:
         if data.get("mtp_contract") is not None:
             from mtplx.mtp_patch import MTPContract
 
-            mtp_contract = MTPContract().with_metadata(
-                data.get("mtp_contract"),
-                preserve_explicit=False,
-            ).to_dict()
+            mtp_contract = (
+                MTPContract()
+                .with_metadata(
+                    data.get("mtp_contract"),
+                    preserve_explicit=False,
+                )
+                .to_dict()
+            )
         runtime_env_overrides = None
         if data.get("runtime_env_overrides") is not None:
             from mtplx.profiles import normalize_runtime_env_overrides
@@ -651,7 +704,9 @@ def _contract_path(model_dir: Path) -> Path:
     return model_dir / RUNTIME_CONTRACT_FILE
 
 
-def load_runtime_contract(model_dir: Path | str) -> tuple[RuntimeContract | None, str | None]:
+def load_runtime_contract(
+    model_dir: Path | str,
+) -> tuple[RuntimeContract | None, str | None]:
     path = _contract_path(Path(model_dir))
     if not path.exists():
         return None, None
@@ -707,7 +762,9 @@ def _detect_arch_id(inspection: Any) -> str | None:
     )
     for support in supports:
         if _support_alias_matches(support, combined) and (
-            has_explicit_mtp or support.runtime_compatibility == "native-ar-only"
+            has_explicit_mtp
+            if support.runtime_compatibility != "native-ar-only"
+            else not has_explicit_mtp
         ):
             return support.arch_id
     if "mtp" in combined or "nextn" in combined:
@@ -723,7 +780,9 @@ def _has_mtp_markers(inspection: Any) -> bool:
     )
 
 
-def _passes_verified_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
+def _passes_verified_runtime_gate(
+    arch_id: str, inspection: Any, tensor_gate: bool
+) -> bool:
     return _passes_family_runtime_gate(arch_id, inspection, tensor_gate)
 
 
@@ -757,7 +816,9 @@ def _runtime_evidence_blocker(value: Any, *, section_name: str) -> str | None:
     status = _text(value.get("status"))
     if status and (
         status in BLOCKING_RUNTIME_STATUSES
-        or status.startswith(tuple(f"{prefix}_" for prefix in BLOCKING_RUNTIME_STATUS_PREFIXES))
+        or status.startswith(
+            tuple(f"{prefix}_" for prefix in BLOCKING_RUNTIME_STATUS_PREFIXES)
+        )
     ):
         return f"{section_name} status is {value.get('status')}"
     return None
@@ -831,7 +892,9 @@ def _has_marker_under_prefixes(
             if not key.startswith(prefix):
                 continue
             suffix = key.removeprefix(prefix)
-            if suffix.endswith(suffixes) or any(marker in suffix for marker in substrings):
+            if suffix.endswith(suffixes) or any(
+                marker in suffix for marker in substrings
+            ):
                 return True
     return False
 
@@ -842,7 +905,11 @@ def _has_all_suffixes_under_prefixes(
     suffixes: tuple[str, ...],
 ) -> bool:
     for suffix in suffixes:
-        if not any(key.startswith(prefix) and key.removeprefix(prefix).endswith(suffix) for key in keys for prefix in prefixes):
+        if not any(
+            key.startswith(prefix) and key.removeprefix(prefix).endswith(suffix)
+            for key in keys
+            for prefix in prefixes
+        ):
             return False
     return True
 
@@ -998,7 +1065,63 @@ def _passes_nemotron_h_gate(inspection: Any) -> bool:
     return _has_marker_under_prefixes(keys, last_prefixes, ("final_layernorm.weight",))
 
 
-def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool) -> bool:
+def _passes_family_runtime_gate(
+    arch_id: str, inspection: Any, tensor_gate: bool
+) -> bool:
+    if arch_id == "deepseek-v4-mlxserve-ar":
+        expected_files = {
+            *(f"model-layer-{idx}.safetensors" for idx in range(43)),
+            "model-top.safetensors",
+        }
+        quantization = getattr(inspection, "quantization", None)
+        if not isinstance(quantization, dict):
+            return False
+
+        def affine(name: str, bits: int, group_size: int) -> bool:
+            value = quantization.get(name)
+            return bool(
+                isinstance(value, dict)
+                and value.get("bits") == bits
+                and value.get("group_size") == group_size
+                and value.get("mode") == "affine"
+            )
+
+        if not (
+            bool(getattr(inspection, "deepseek_v4_target_only_match", False))
+            and bool(
+                getattr(
+                    inspection,
+                    "deepseek_v4_target_only_artifacts_complete",
+                    False,
+                )
+            )
+            and _compact(getattr(inspection, "architecture", None))
+            == "deepseekv4forcausallm"
+            and _text(getattr(inspection, "model_type", None)) == "deepseek_v4"
+            and int(getattr(inspection, "mtp_num_hidden_layers", 0) or 0) == 0
+            and int(getattr(inspection, "hidden_size", 0) or 0) == 4096
+            and int(getattr(inspection, "num_hidden_layers", 0) or 0) == 43
+            and int(getattr(inspection, "vocab_size", 0) or 0) == 129_280
+            and int(getattr(inspection, "num_experts_per_tok", 0) or 0) == 6
+            and set(getattr(inspection, "model_files", ()) or ()) == expected_files
+            and quantization.get("bits") == 8
+            and quantization.get("group_size") == 64
+            and quantization.get("mode") == "affine"
+            and affine("embed", 8, 64)
+            and affine("head", 8, 64)
+        ):
+            return False
+        for layer in range(43):
+            expected_bits = (2, 3, 2) if layer < 39 else (4, 4, 4)
+            expected_group = 128 if layer < 39 else 64
+            for projection, bits in zip(("w1", "w2", "w3"), expected_bits, strict=True):
+                if not affine(
+                    f"layers.{layer}.ffn.experts.{projection}",
+                    bits,
+                    expected_group,
+                ):
+                    return False
+        return True
     if arch_id == "laguna-s-2.1-ar":
         return bool(
             getattr(inspection, "laguna_s_2_1_mlx_4bit_match", False)
@@ -1028,9 +1151,10 @@ def _passes_family_runtime_gate(arch_id: str, inspection: Any, tensor_gate: bool
     if arch_id == "nemotron-h-mtp":
         return _passes_nemotron_h_gate(inspection)
     if arch_id == "gemma4-assistant-mtp":
-        return (
-            _text(getattr(inspection, "model_type", None)) == "gemma4_pair"
-            and isinstance(getattr(inspection, "gemma4_pair", None), dict)
+        return _text(
+            getattr(inspection, "model_type", None)
+        ) == "gemma4_pair" and isinstance(
+            getattr(inspection, "gemma4_pair", None), dict
         )
     return False
 
@@ -1056,7 +1180,11 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
     mtp_artifact_exists = bool(getattr(mtp_artifact, "exists", False))
     contract_path = getattr(inspection, "runtime_contract_path", None)
     if not contract_path:
-        contract_path = str(_contract_path(model_dir)) if _contract_path(model_dir).exists() else None
+        contract_path = (
+            str(_contract_path(model_dir))
+            if _contract_path(model_dir).exists()
+            else None
+        )
     body_blocker = _runtime_body_layout_blocker(detected_arch_id, inspection)
     if body_blocker:
         support = architecture_support_for(detected_arch_id)
@@ -1070,7 +1198,9 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
             message=body_blocker,
             recommended_backend=(support.backend if support else None),
             recommended_profile=(
-                contract.recommended_profile if contract is not None else DEFAULT_PROFILE_NAME
+                contract.recommended_profile
+                if contract is not None
+                else DEFAULT_PROFILE_NAME
             ),
             runtime_contract=contract,
             runtime_contract_path=contract_path,
@@ -1139,7 +1269,9 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
                 runtime_contract=contract,
                 runtime_contract_path=contract_path,
                 mtp_supported="yes",
-                runtime_compatibility=(support.runtime_compatibility if support else "native"),
+                runtime_compatibility=(
+                    support.runtime_compatibility if support else "native"
+                ),
                 support_level=(support.support_level if support else "verified-native"),
                 support_notes=(support.notes if support else None),
             )
@@ -1238,7 +1370,9 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
             if has_mtp
             else "Qwen3-Next architecture detected"
         )
-        if support is not None and _passes_family_runtime_gate(detected_arch_id, inspection, tensor_gate):
+        if support is not None and _passes_family_runtime_gate(
+            detected_arch_id, inspection, tensor_gate
+        ):
             return CompatibilityVerdict(
                 tier=TIER_FAMILY_COMPATIBLE_UNVERIFIED,
                 arch_id=detected_arch_id,
@@ -1424,8 +1558,7 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
                 ),
             )
         is_assistant = (
-            "assistant" in compact_architecture
-            or model_type_text == "gemma4_assistant"
+            "assistant" in compact_architecture or model_type_text == "gemma4_assistant"
         )
         folder_kind = "assistant" if is_assistant else "target"
         return CompatibilityVerdict(
@@ -1484,9 +1617,7 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
             recognized=support is not None,
             can_run=False,
             exit_code=EXIT_NO_MTP,
-            message=(
-                "Model has no MTP head. MTPLX requires an MTP-equipped model."
-            ),
+            message=("Model has no MTP head. MTPLX requires an MTP-equipped model."),
             mtp_supported="no",
             runtime_compatibility="unsupported",
             support_level=(support.support_level if support else "unsupported"),

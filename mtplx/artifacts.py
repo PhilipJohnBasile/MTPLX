@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -32,6 +34,13 @@ from .models.laguna_config import (
     LAGUNA_S_2_1_WEIGHT_SHARDS,
     is_laguna_s_2_1_mlx_4bit_config,
     laguna_s_2_1_artifact_integrity_errors,
+)
+from .models.deepseek_v4_target_only_config import (
+    DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+    DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES,
+    DEEPSEEK_V4_TARGET_ONLY_REVISION,
+    is_deepseek_v4_target_only_config,
+    deepseek_v4_target_only_artifact_integrity_errors,
 )
 from .profiles import (
     DEFAULT_FP16_HF_MODEL_ID,
@@ -153,7 +162,11 @@ def _qwen_moe_numbered_expert_keys(
                 if prequantized:
                     keys.add(f"{prefix}.scales")
                     keys.add(f"{prefix}.biases")
-    sidecar_format = "prequantized-mlx-affine-qwen-moe-experts" if prequantized else "bf16-qwen-moe-experts"
+    sidecar_format = (
+        "prequantized-mlx-affine-qwen-moe-experts"
+        if prequantized
+        else "bf16-qwen-moe-experts"
+    )
     return keys, len(keys), sidecar_format
 
 
@@ -192,13 +205,14 @@ def _mtp_expected_key_set(
 ) -> tuple[set[str], int, str]:
     mtp_quant = config.get("mtplx_mtp_quantization", {})
     prequantized = isinstance(mtp_quant, dict) and bool(mtp_quant.get("prequantized"))
-    quant_policy = str(mtp_quant.get("policy") or "") if isinstance(mtp_quant, dict) else ""
+    quant_policy = (
+        str(mtp_quant.get("policy") or "") if isinstance(mtp_quant, dict) else ""
+    )
     normalized = {normalize_mtp_key(key) for key in keys}
     if _is_qwen_moe_mtp_layout(config, normalized):
         if any(".mlp.switch_mlp." in key for key in normalized):
             has_prequantized_aux = any(
-                key.endswith(".scales") or key.endswith(".biases")
-                for key in normalized
+                key.endswith(".scales") or key.endswith(".biases") for key in normalized
             )
             if prequantized or has_prequantized_aux:
                 expected = _expected_prequantized_keys_for_present_aux(
@@ -217,8 +231,7 @@ def _mtp_expected_key_set(
             )
         if _has_numbered_moe_experts(normalized):
             has_prequantized_aux = any(
-                key.endswith(".scales") or key.endswith(".biases")
-                for key in normalized
+                key.endswith(".scales") or key.endswith(".biases") for key in normalized
             )
             return _qwen_moe_numbered_expert_keys(
                 config,
@@ -262,7 +275,9 @@ def _mtp_expected_key_set(
     return set(EXPECTED_MTP_KEYS), EXPECTED_MTP_TENSOR_COUNT, "bf16"
 
 
-def _observed_sidecar_format(sidecar_format: str, tensors: tuple[TensorInfo, ...]) -> str:
+def _observed_sidecar_format(
+    sidecar_format: str, tensors: tuple[TensorInfo, ...]
+) -> str:
     if sidecar_format != "bf16" or not tensors:
         return sidecar_format
     dtypes = {tensor.dtype.upper() for tensor in tensors}
@@ -279,7 +294,10 @@ def _is_qwen_moe_mtp_layout(config: dict[str, Any], normalized_keys: set[str]) -
         " ".join(str(item) for item in (config.get("architectures") or [])),
         " ".join(str(item) for item in (tcfg.get("architectures") or [])),
     )
-    if any("qwen3_5_moe" in marker.lower() or "qwen3_5moe" in marker.lower() for marker in markers):
+    if any(
+        "qwen3_5_moe" in marker.lower() or "qwen3_5moe" in marker.lower()
+        for marker in markers
+    ):
         return True
     return any(
         key.startswith("mtp.layers.0.mlp.experts.")
@@ -300,7 +318,9 @@ def text_config(config: dict[str, Any]) -> dict[str, Any]:
     return config.get("text_config", config)
 
 
-def expected_mtp_file(model_dir: Path | str, config: dict[str, Any] | None = None) -> Path:
+def expected_mtp_file(
+    model_dir: Path | str, config: dict[str, Any] | None = None
+) -> Path:
     model_path = Path(model_dir)
     config = config if config is not None else load_config(model_path)
     extra = config.get("mlx_lm_extra_tensors", {})
@@ -385,6 +405,8 @@ class ModelInspection:
     num_experts_per_tok: int | None = None
     laguna_s_2_1_mlx_4bit_match: bool = False
     laguna_s_2_1_artifacts_complete: bool = False
+    deepseek_v4_target_only_match: bool = False
+    deepseek_v4_target_only_artifacts_complete: bool = False
     mtp_pattern: str | None = None
     source: str = "local"
     quantization: dict[str, Any] = field(default_factory=dict)
@@ -416,9 +438,8 @@ class ModelInspection:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        runtime_contract_path = (
-            self.runtime_contract_path
-            or self.compatibility.get("runtime_contract_path")
+        runtime_contract_path = self.runtime_contract_path or self.compatibility.get(
+            "runtime_contract_path"
         )
         return {
             "model_dir": self.model_dir,
@@ -435,6 +456,8 @@ class ModelInspection:
             "num_experts_per_tok": self.num_experts_per_tok,
             "laguna_s_2_1_mlx_4bit_match": self.laguna_s_2_1_mlx_4bit_match,
             "laguna_s_2_1_artifacts_complete": self.laguna_s_2_1_artifacts_complete,
+            "deepseek_v4_target_only_match": self.deepseek_v4_target_only_match,
+            "deepseek_v4_target_only_artifacts_complete": self.deepseek_v4_target_only_artifacts_complete,
             "quantization": self.quantization,
             "sidecars": self.sidecars,
             "model_files": list(self.model_files),
@@ -463,7 +486,9 @@ class ModelInspection:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True)
 
 
-def inspect_mtp_tensors(model_dir: Path | str, config: dict[str, Any] | None = None) -> MTPInspection:
+def inspect_mtp_tensors(
+    model_dir: Path | str, config: dict[str, Any] | None = None
+) -> MTPInspection:
     mtp_path = expected_mtp_file(model_dir, config)
     expected_keys, expected_count, sidecar_format = _mtp_expected_key_set(config or {})
     if not mtp_path.exists():
@@ -569,7 +594,10 @@ def _hf_download_json(
 
 
 def _hf_download_cache_dir() -> Path | None:
-    if any(os.environ.get(name) for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE")):
+    if any(
+        os.environ.get(name)
+        for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE")
+    ):
         return None
     default = Path("~/.cache/huggingface").expanduser()
     if default.is_symlink() and not default.exists():
@@ -650,7 +678,9 @@ def _hf_fetch_prefix(repo_id: str, filename: str, *, end: int) -> bytes:
         return response.read()
 
 
-def _remote_safetensors_keys(repo_id: str, filename: str) -> tuple[tuple[str, ...], str | None]:
+def _remote_safetensors_keys(
+    repo_id: str, filename: str
+) -> tuple[tuple[str, ...], str | None]:
     try:
         prefix = _hf_fetch_prefix(repo_id, filename, end=16_383)
         if len(prefix) < 8:
@@ -658,7 +688,10 @@ def _remote_safetensors_keys(repo_id: str, filename: str) -> tuple[tuple[str, ..
         header_len = int.from_bytes(prefix[:8], "little")
         needed = 8 + header_len
         if needed > 1_000_000:
-            return (), f"safetensors header too large for metadata-only inspect: {needed} bytes"
+            return (
+                (),
+                f"safetensors header too large for metadata-only inspect: {needed} bytes",
+            )
         if len(prefix) < needed:
             prefix = _hf_fetch_prefix(repo_id, filename, end=needed - 1)
         header = json.loads(prefix[8:needed].decode("utf-8"))
@@ -675,7 +708,10 @@ def _safetensors_header_keys(path: Path) -> tuple[tuple[str, ...], str | None]:
                 return (), "safetensors header is shorter than 8 bytes"
             header_len = int.from_bytes(prefix, "little")
             if header_len > 1_000_000:
-                return (), f"safetensors header too large for metadata-only inspect: {header_len + 8} bytes"
+                return (
+                    (),
+                    f"safetensors header too large for metadata-only inspect: {header_len + 8} bytes",
+                )
             header = json.loads(handle.read(header_len).decode("utf-8"))
         return tuple(sorted(key for key in header if key != "__metadata__")), None
     except Exception as exc:
@@ -751,7 +787,9 @@ def _local_model_weight_keys(model_path: Path) -> tuple[tuple[str, ...], str | N
     return tuple(sorted(keys)), "; ".join(errors) if errors else None
 
 
-def _hf_model_weight_keys(repo_id: str, files: set[str]) -> tuple[tuple[str, ...], str | None]:
+def _hf_model_weight_keys(
+    repo_id: str, files: set[str]
+) -> tuple[tuple[str, ...], str | None]:
     if "model.safetensors.index.json" in files:
         index, _path, error = _hf_download_json(repo_id, "model.safetensors.index.json")
         if index is not None:
@@ -774,7 +812,9 @@ def _hf_model_weight_keys(repo_id: str, files: set[str]) -> tuple[tuple[str, ...
 
 
 def _embedded_mtp_keys(weight_keys: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(sorted(normalize_mtp_key(key) for key in weight_keys if is_mtp_key(key)))
+    return tuple(
+        sorted(normalize_mtp_key(key) for key in weight_keys if is_mtp_key(key))
+    )
 
 
 def _inspect_mtp_tensors_from_keys(
@@ -848,9 +888,7 @@ def _local_laguna_artifacts_complete(model_path: Path) -> bool:
         return False
     try:
         index = json.loads(
-            (model_path / "model.safetensors.index.json").read_text(
-                encoding="utf-8"
-            )
+            (model_path / "model.safetensors.index.json").read_text(encoding="utf-8")
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
@@ -860,12 +898,103 @@ def _local_laguna_artifacts_complete(model_path: Path) -> bool:
     return set(weight_map.values()) == set(LAGUNA_S_2_1_WEIGHT_SHARDS)
 
 
-def _inspect_hf_model(repo_id: str) -> ModelInspection:
-    revision = (
-        LAGUNA_S_2_1_REVISION
-        if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold()
-        else None
+def _remote_deepseek_v4_target_only_artifacts_complete(
+    repo_id: str, files: set[str]
+) -> bool:
+    return bool(
+        repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold()
+        and DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES.issubset(files)
     )
+
+
+def _local_deepseek_v4_target_only_artifacts_complete(model_path: Path) -> bool:
+    try:
+        source = json.loads(
+            (model_path / ".mtplx-source.json").read_text(encoding="utf-8")
+        )
+        source_ok = source == {
+            "repo_id": DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+            "revision": DEEPSEEK_V4_TARGET_ONLY_REVISION,
+        }
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        source_ok = False
+    if source_ok:
+        return not deepseek_v4_target_only_artifact_integrity_errors(model_path)
+
+    seal_path = model_path / ".dsv4-target-only-gold-view-SEAL.json"
+    try:
+        seal_bytes = seal_path.read_bytes()
+        if hashlib.sha256(seal_bytes).hexdigest() != (
+            "50cd20ae84b6c7ebe79c27e08da89c3e419fcde5b529fbd6c47f6387bbf0e79f"
+        ):
+            return False
+        seal = json.loads(seal_bytes)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    outputs = seal.get("outputs") if isinstance(seal, dict) else None
+    if not isinstance(outputs, list):
+        return False
+    expected_names = set(DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES) | {"README.md"}
+    observed_names: set[str] = set()
+    stat_fields = (
+        "device",
+        "inode",
+        "mode",
+        "mtime_ns",
+        "ctime_ns",
+        "nlink",
+        "size",
+        "st_blocks",
+    )
+    for output in outputs:
+        if not isinstance(output, dict):
+            return False
+        name = output.get("logical_path")
+        identity = output.get("path_identity")
+        sealed_stat = identity.get("stat") if isinstance(identity, dict) else None
+        if (
+            not isinstance(name, str)
+            or name in observed_names
+            or name not in expected_names
+            or not isinstance(sealed_stat, dict)
+        ):
+            return False
+        try:
+            current = os.lstat(model_path / name)
+        except OSError:
+            return False
+        if not stat.S_ISREG(current.st_mode):
+            return False
+        current_fields = {
+            "device": current.st_dev,
+            "inode": current.st_ino,
+            "mode": current.st_mode,
+            "mtime_ns": current.st_mtime_ns,
+            "ctime_ns": current.st_ctime_ns,
+            "nlink": current.st_nlink,
+            "size": current.st_size,
+            "st_blocks": current.st_blocks,
+        }
+        if any(
+            sealed_stat.get(field) != current_fields[field] for field in stat_fields
+        ):
+            return False
+        observed_names.add(name)
+    if observed_names != expected_names:
+        return False
+    return not deepseek_v4_target_only_artifact_integrity_errors(
+        model_path,
+        verify_shard_hashes=False,
+    )
+
+
+def _inspect_hf_model(repo_id: str) -> ModelInspection:
+    if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
+        revision = LAGUNA_S_2_1_REVISION
+    elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():
+        revision = DEEPSEEK_V4_TARGET_ONLY_REVISION
+    else:
+        revision = None
     revision_kwargs = {"revision": revision} if revision is not None else {}
     files, files_error = _hf_list_repo_files(repo_id, **revision_kwargs)
     config, config_path, config_error = _hf_download_json(
@@ -901,12 +1030,16 @@ def _inspect_hf_model(repo_id: str) -> ModelInspection:
             f"Could not inspect HF model {repo_id}: "
             f"config.json unavailable: {config_error or files_error}"
         )
-    runtime_contract_data, runtime_contract_path, runtime_contract_error = _hf_download_json(
-        repo_id,
-        "mtplx_runtime.json",
-        **revision_kwargs,
+    runtime_contract_data, runtime_contract_path, runtime_contract_error = (
+        _hf_download_json(
+            repo_id,
+            "mtplx_runtime.json",
+            **revision_kwargs,
+        )
     )
-    if runtime_contract_data is None and _looks_like_missing_hf_file(runtime_contract_error):
+    if runtime_contract_data is None and _looks_like_missing_hf_file(
+        runtime_contract_error
+    ):
         runtime_contract_error = None
         runtime_contract_path = None
     elif runtime_contract_data is None and runtime_contract_error:
@@ -993,6 +1126,10 @@ def _inspect_hf_model(repo_id: str) -> ModelInspection:
             repo_id,
             files,
         ),
+        deepseek_v4_target_only_match=is_deepseek_v4_target_only_config(config),
+        deepseek_v4_target_only_artifacts_complete=(
+            _remote_deepseek_v4_target_only_artifacts_complete(repo_id, files)
+        ),
         mtp_pattern=_mtp_pattern_from_config(config),
         quantization=quant,
         sidecars={name: name in files for name in MULTIMODAL_SIDECARS},
@@ -1022,6 +1159,8 @@ def _inspect_hf_model(repo_id: str) -> ModelInspection:
         num_experts_per_tok=inspection.num_experts_per_tok,
         laguna_s_2_1_mlx_4bit_match=inspection.laguna_s_2_1_mlx_4bit_match,
         laguna_s_2_1_artifacts_complete=inspection.laguna_s_2_1_artifacts_complete,
+        deepseek_v4_target_only_match=inspection.deepseek_v4_target_only_match,
+        deepseek_v4_target_only_artifacts_complete=inspection.deepseek_v4_target_only_artifacts_complete,
         mtp_pattern=inspection.mtp_pattern,
         quantization=inspection.quantization,
         sidecars=inspection.sidecars,
@@ -1068,7 +1207,10 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
             model_dir=str(model_path),
             source="local",
             config_exists=True,
-            architecture=str(payload.get("architecture") or (archs[0] if archs else "Gemma4AssistantPair")),
+            architecture=str(
+                payload.get("architecture")
+                or (archs[0] if archs else "Gemma4AssistantPair")
+            ),
             model_type=str(payload.get("model_type") or "gemma4_pair"),
             mtp_num_hidden_layers=1,
             hidden_size=tcfg.get("hidden_size"),
@@ -1076,16 +1218,19 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
             vocab_size=tcfg.get("vocab_size"),
             num_experts=tcfg.get("num_experts"),
             num_experts_per_tok=tcfg.get("num_experts_per_tok"),
-            laguna_s_2_1_mlx_4bit_match=is_laguna_s_2_1_mlx_4bit_config(
-                target_config
-            ),
+            laguna_s_2_1_mlx_4bit_match=is_laguna_s_2_1_mlx_4bit_config(target_config),
             laguna_s_2_1_artifacts_complete=_local_laguna_artifacts_complete(
                 Path(pair["target_model"])
             ),
             mtp_pattern="assistant-pair",
             quantization=target_quant,
             sidecars={name: False for name in MULTIMODAL_SIDECARS},
-            model_files=tuple(sorted(p.name for p in Path(pair["target_model"]).glob("model*.safetensors"))),
+            model_files=tuple(
+                sorted(
+                    p.name
+                    for p in Path(pair["target_model"]).glob("model*.safetensors")
+                )
+            ),
             runtime_model=payload.get("runtime_model"),
             assistant_model=payload.get("assistant_model"),
             recommended_sampler=payload.get("recommended_sampler")
@@ -1104,7 +1249,9 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
         )
     config_path = model_path / "config.json"
     config_exists = config_path.exists()
-    config: dict[str, Any] = json.loads(config_path.read_text()) if config_exists else {}
+    config: dict[str, Any] = (
+        json.loads(config_path.read_text()) if config_exists else {}
+    )
     tcfg = text_config(config)
     archs = config.get("architectures") or tcfg.get("architectures") or []
     architecture = archs[0] if archs else None
@@ -1120,7 +1267,9 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
         if sidecar_mtp.exists:
             mtp = sidecar_mtp
             weight_keys = tuple(
-                sorted(set(weight_keys).union(tensor.key for tensor in sidecar_mtp.tensors))
+                sorted(
+                    set(weight_keys).union(tensor.key for tensor in sidecar_mtp.tensors)
+                )
             )
         else:
             embedded = _embedded_mtp_keys(weight_keys)
@@ -1152,13 +1301,17 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
         num_experts=tcfg.get("num_experts"),
         num_experts_per_tok=tcfg.get("num_experts_per_tok"),
         laguna_s_2_1_mlx_4bit_match=is_laguna_s_2_1_mlx_4bit_config(config),
-        laguna_s_2_1_artifacts_complete=_local_laguna_artifacts_complete(
-            model_path
+        laguna_s_2_1_artifacts_complete=_local_laguna_artifacts_complete(model_path),
+        deepseek_v4_target_only_match=is_deepseek_v4_target_only_config(config),
+        deepseek_v4_target_only_artifacts_complete=(
+            _local_deepseek_v4_target_only_artifacts_complete(model_path)
         ),
         mtp_pattern=_mtp_pattern_from_config(config),
         quantization=quant,
         sidecars={name: (model_path / name).exists() for name in MULTIMODAL_SIDECARS},
-        model_files=tuple(sorted(p.name for p in model_path.glob("model*.safetensors"))),
+        model_files=tuple(
+            sorted(p.name for p in model_path.glob("model*.safetensors"))
+        ),
         weight_keys=weight_keys,
         mtp=mtp,
     )
@@ -1179,6 +1332,8 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
         num_experts_per_tok=inspection.num_experts_per_tok,
         laguna_s_2_1_mlx_4bit_match=inspection.laguna_s_2_1_mlx_4bit_match,
         laguna_s_2_1_artifacts_complete=inspection.laguna_s_2_1_artifacts_complete,
+        deepseek_v4_target_only_match=inspection.deepseek_v4_target_only_match,
+        deepseek_v4_target_only_artifacts_complete=inspection.deepseek_v4_target_only_artifacts_complete,
         mtp_pattern=inspection.mtp_pattern,
         quantization=inspection.quantization,
         sidecars=inspection.sidecars,

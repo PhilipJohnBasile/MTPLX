@@ -22,11 +22,17 @@ from mtplx.hf_loader import (
     safe_model_name,
     validate_mtplx_model_files,
 )
-from mtplx.profiles import DEFAULT_HF_MODEL_ID, LEGACY_OPTIMIZED_HF_MODEL_ID, QUALITY_HF_MODEL_ID
+from mtplx.profiles import (
+    DEFAULT_HF_MODEL_ID,
+    LEGACY_OPTIMIZED_HF_MODEL_ID,
+    QUALITY_HF_MODEL_ID,
+)
 
 
 class _FakeHubResponse:
-    def __init__(self, chunks: list[bytes | tuple[bytes, float]], status_code: int = 200):
+    def __init__(
+        self, chunks: list[bytes | tuple[bytes, float]], status_code: int = 200
+    ):
         self._chunks = chunks
         self.status_code = status_code
 
@@ -86,7 +92,15 @@ def _install_fake_hub(
             captured["model_info_token"] = kwargs.get("token")
             return SimpleNamespace(
                 siblings=[
-                    SimpleNamespace(rfilename=name, size=sum(len(item[0] if isinstance(item, tuple) else item) for item in payload) if isinstance(payload, list) else len(payload))
+                    SimpleNamespace(
+                        rfilename=name,
+                        size=sum(
+                            len(item[0] if isinstance(item, tuple) else item)
+                            for item in payload
+                        )
+                        if isinstance(payload, list)
+                        else len(payload),
+                    )
                     for name, payload in files.items()
                 ]
             )
@@ -129,22 +143,37 @@ def test_repo_id_from_model_ref_accepts_hf_url_and_repo_id():
 
 
 def test_repo_id_from_model_ref_maps_known_public_aliases():
-    assert repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Quality") == QUALITY_HF_MODEL_ID
-    assert repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Speed") == DEFAULT_HF_MODEL_ID
-    assert repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized") == LEGACY_OPTIMIZED_HF_MODEL_ID
+    assert (
+        repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Quality")
+        == QUALITY_HF_MODEL_ID
+    )
+    assert (
+        repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Speed")
+        == DEFAULT_HF_MODEL_ID
+    )
+    assert (
+        repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized")
+        == LEGACY_OPTIMIZED_HF_MODEL_ID
+    )
 
 
 def test_known_public_alias_wins_over_bare_cwd_folder(tmp_path: Path, monkeypatch):
     (tmp_path / "Qwen3.6-27B-MTPLX-Optimized-Quality").mkdir()
     monkeypatch.chdir(tmp_path)
 
-    assert repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Quality") == QUALITY_HF_MODEL_ID
+    assert (
+        repo_id_from_model_ref("Qwen3.6-27B-MTPLX-Optimized-Quality")
+        == QUALITY_HF_MODEL_ID
+    )
     assert repo_id_from_model_ref("./Qwen3.6-27B-MTPLX-Optimized-Quality") is None
 
 
 def test_safe_model_name_and_cache_path(tmp_path: Path):
     assert safe_model_name("mtplx/example") == "mtplx--example"
-    assert cached_model_path("mtplx/example", cache_dir=tmp_path) == tmp_path / "mtplx--example"
+    assert (
+        cached_model_path("mtplx/example", cache_dir=tmp_path)
+        == tmp_path / "mtplx--example"
+    )
 
 
 def test_resolve_model_path_uses_cache_for_hf_refs(tmp_path: Path):
@@ -166,6 +195,20 @@ def test_resolve_model_path_rejects_unpinned_laguna_cache(tmp_path: Path):
 
     with pytest.raises(FileNotFoundError, match="not cached"):
         resolve_model_path(LAGUNA_S_2_1_REPO_ID, cache_dir=tmp_path)
+
+
+def test_resolve_model_path_rejects_unpinned_deepseek_v4_cache(tmp_path: Path):
+    from mtplx.models.deepseek_v4_target_only_config import (
+        DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+    )
+
+    cached = cached_model_path(DEEPSEEK_V4_TARGET_ONLY_REPO_ID, cache_dir=tmp_path)
+    cached.mkdir()
+    (cached / "config.json").write_text("{}\n", encoding="utf-8")
+    (cached / "model.safetensors").write_bytes(b"weights")
+
+    with pytest.raises(FileNotFoundError, match="not cached"):
+        resolve_model_path(DEEPSEEK_V4_TARGET_ONLY_REPO_ID, cache_dir=tmp_path)
 
 
 def test_cached_model_is_complete_rejects_interrupted_indexed_download(tmp_path: Path):
@@ -190,7 +233,7 @@ def test_cached_model_is_complete_rejects_partial_index_even_with_one_shard(
         '{"weight_map": {'
         '"a": "model-00001-of-00002.safetensors", '
         '"b": "model-00002-of-00002.safetensors"'
-        '}}\n',
+        "}}\n",
         encoding="utf-8",
     )
     (cached / "model-00001-of-00002.safetensors").write_bytes(b"weights")
@@ -336,9 +379,7 @@ def test_pull_model_pins_laguna_revision_and_records_source(
     assert result["validation"]["missing_files"] == []
     assert result["validation"]["runtime_compatibility"] == "native-ar-only"
     marker = json.loads(
-        (Path(result["path"]) / ".mtplx-source.json").read_text(
-            encoding="utf-8"
-        )
+        (Path(result["path"]) / ".mtplx-source.json").read_text(encoding="utf-8")
     )
     assert marker == {
         "repo_id": LAGUNA_S_2_1_REPO_ID,
@@ -376,9 +417,174 @@ def test_pull_model_rejects_laguna_download_without_disk_headroom(
         pull_model(LAGUNA_S_2_1_REPO_ID, cache_dir=tmp_path)
 
 
-def test_pull_model_resumes_incomplete_destination(
+def test_pull_model_pins_deepseek_v4_revision_and_records_source(
     tmp_path: Path, monkeypatch
 ):
+    from mtplx import hf_loader
+    from mtplx.models.deepseek_v4_target_only_config import (
+        DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+        DEEPSEEK_V4_TARGET_ONLY_REVISION,
+    )
+
+    monkeypatch.setattr(
+        "mtplx.hf_loader.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=256 * 1024**3),
+    )
+    monkeypatch.setattr(
+        hf_loader,
+        "deepseek_v4_target_only_artifact_integrity_errors",
+        lambda _path: (),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_snapshot_download(**kwargs):
+        captured.update(kwargs)
+        destination = Path(kwargs["local_dir"])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "config.json").write_text("{}\n", encoding="utf-8")
+        (destination / "model-layer-0.safetensors").write_bytes(b"weights")
+        (destination / "model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        "model.embed_tokens.weight": "model-layer-0.safetensors"
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        return str(destination)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=fake_snapshot_download),
+    )
+
+    result = pull_model(DEEPSEEK_V4_TARGET_ONLY_REPO_ID, cache_dir=tmp_path)
+
+    assert captured["revision"] == DEEPSEEK_V4_TARGET_ONLY_REVISION
+    assert result["revision"] == DEEPSEEK_V4_TARGET_ONLY_REVISION
+    assert result["validation"]["ok"] is True
+    assert result["validation"]["runtime_compatibility"] == "native-ar-only"
+    marker = json.loads(
+        (Path(result["path"]) / ".mtplx-source.json").read_text(encoding="utf-8")
+    )
+    assert marker == {
+        "repo_id": DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+        "revision": DEEPSEEK_V4_TARGET_ONLY_REVISION,
+    }
+    cached_rows = list_cached_models(cache_dir=tmp_path)
+    assert len(cached_rows) == 1
+    assert cached_rows[0].validation["ok"] is True
+    assert cached_rows[0].validation["runtime_compatibility"] == "native-ar-only"
+
+    with pytest.raises(ValueError, match="pinned to revision"):
+        pull_model(
+            DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+            cache_dir=tmp_path,
+            revision="main",
+        )
+
+
+@pytest.mark.parametrize("structured_progress", [False, True])
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["model-layer-0.safetensors", "config.json"],
+)
+def test_pinned_deepseek_repair_replaces_same_size_corruption_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    structured_progress: bool,
+    artifact_name: str,
+) -> None:
+    """A pinned same-size mismatch must not be skipped by the Hub cache.
+
+    This is intentionally tiny: ``evil`` and ``good`` have identical sizes,
+    so it exercises the failure mode that size-only reuse otherwise misses for
+    both the ordinary CLI pull and structured-progress pull.
+    """
+
+    from mtplx import hf_loader
+    from mtplx.models.deepseek_v4_target_only_config import (
+        DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+        DEEPSEEK_V4_TARGET_ONLY_REVISION,
+    )
+
+    monkeypatch.setattr(
+        hf_loader.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=256 * 1024**3),
+    )
+    destination = cached_model_path(DEEPSEEK_V4_TARGET_ONLY_REPO_ID, cache_dir=tmp_path)
+    destination.mkdir()
+    good = b"good"
+    evil = b"evil"
+    index_payload = json.dumps(
+        {"weight_map": {"weight": "model-layer-0.safetensors"}}
+    ).encode()
+    remote_files = {
+        "config.json": good,
+        "model.safetensors.index.json": index_payload,
+        "model-layer-0.safetensors": good,
+    }
+    for name, payload in remote_files.items():
+        (destination / name).write_bytes(evil if name == artifact_name else payload)
+    (destination / ".mtplx-source.json").write_text(
+        json.dumps(
+            {
+                "repo_id": DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+                "revision": DEEPSEEK_V4_TARGET_ONLY_REVISION,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def synthetic_integrity_errors(path: Path) -> tuple[str, ...]:
+        return () if (path / artifact_name).read_bytes() == good else (artifact_name,)
+
+    monkeypatch.setattr(
+        hf_loader,
+        "deepseek_v4_target_only_artifact_integrity_errors",
+        synthetic_integrity_errors,
+    )
+    monkeypatch.setattr(
+        hf_loader,
+        "_pinned_file_sha256",
+        lambda _repo_id, path: (
+            hashlib.sha256(good).hexdigest() if path == artifact_name else None
+        ),
+    )
+    session = _install_fake_hub(monkeypatch, remote_files)
+    events: list[dict] = []
+
+    result = pull_model(
+        DEEPSEEK_V4_TARGET_ONLY_REPO_ID,
+        cache_dir=tmp_path,
+        progress_callback=events.append if structured_progress else None,
+        progress_interval_s=0,
+    )
+
+    assert result["reused_existing"] is False
+    assert (destination / artifact_name).read_bytes() == good
+    assert not (destination / f"{artifact_name}.incomplete").exists()
+    assert [request["url"] for request in session.requests] == [
+        f"fake://{artifact_name}"
+    ]
+    if structured_progress:
+        assert any(event["event"] == "verifying" for event in events)
+
+    repeated = pull_model(DEEPSEEK_V4_TARGET_ONLY_REPO_ID, cache_dir=tmp_path)
+
+    assert repeated["reused_existing"] is True
+    assert [request["url"] for request in session.requests] == [
+        f"fake://{artifact_name}"
+    ]
+
+
+def test_pull_model_resumes_incomplete_destination(tmp_path: Path, monkeypatch):
     cached = tmp_path / "mtplx--example"
     cached.mkdir()
     (cached / "config.json").write_text("{}\n", encoding="utf-8")
@@ -479,7 +685,9 @@ def test_pull_model_structured_stream_reports_written_bytes(
 
     progress_events = [event for event in events if event["event"] == "progress"]
     assert any(event.get("delta_bytes", 0) > 0 for event in progress_events)
-    assert all(event.get("message") == "Downloading model files" for event in progress_events)
+    assert all(
+        event.get("message") == "Downloading model files" for event in progress_events
+    )
 
 
 def test_hf_token_for_download_uses_explicit_env_only(monkeypatch):
@@ -589,7 +797,9 @@ def test_validate_mtplx_model_files_reports_required_payload(tmp_path: Path):
         "mtp.safetensors",
     ):
         (model / name).write_text("{}\n", encoding="utf-8")
-    (model / "mtplx_runtime.json").write_text('{"arch_id": "qwen3-next-mtp"}\n', encoding="utf-8")
+    (model / "mtplx_runtime.json").write_text(
+        '{"arch_id": "qwen3-next-mtp"}\n', encoding="utf-8"
+    )
 
     validation = validate_mtplx_model_files(model)
 
@@ -598,7 +808,9 @@ def test_validate_mtplx_model_files_reports_required_payload(tmp_path: Path):
     assert validation["contract_arch_id"] == "qwen3-next-mtp"
 
 
-def test_validate_mtplx_model_files_accepts_configured_nested_mtp_sidecar(tmp_path: Path):
+def test_validate_mtplx_model_files_accepts_configured_nested_mtp_sidecar(
+    tmp_path: Path,
+):
     model = tmp_path / "model"
     (model / "mtp").mkdir(parents=True)
     (model / "config.json").write_text(
@@ -607,7 +819,9 @@ def test_validate_mtplx_model_files_accepts_configured_nested_mtp_sidecar(tmp_pa
     )
     for name in ("tokenizer.json", "model.safetensors.index.json"):
         (model / name).write_text("{}\n", encoding="utf-8")
-    (model / "mtplx_runtime.json").write_text('{"arch_id": "qwen3-next-mtp"}\n', encoding="utf-8")
+    (model / "mtplx_runtime.json").write_text(
+        '{"arch_id": "qwen3-next-mtp"}\n', encoding="utf-8"
+    )
     (model / "mtp" / "weights.safetensors").write_bytes(b"mtp")
 
     validation = validate_mtplx_model_files(model)

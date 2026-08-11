@@ -125,6 +125,34 @@ memory (128 GiB is recommended). MTPLX defaults Laguna to a 32,768-token context
 and response cap, and checks larger explicit server contexts against the active
 Metal memory cap.
 
+[DeepSeek-V4-Flash-0731 MLX M5 Max Target-Only](https://huggingface.co/philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly)
+is recognized as a pinned AR-only artifact. Its MTPLX integration is
+experimental and delegates execution to the native `mlx-serve` DeepSeek-V4
+backend; it does not label the artifact as MTP or DSpark because those weights
+are intentionally absent:
+
+```bash
+mtplx pull philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly
+
+MTPLX_MLX_SERVE_BIN=/path/to/mlx-serve \
+mtplx serve \
+  --model philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly \
+  --no-mtp --host 127.0.0.1 --port 8000 --yes
+```
+
+If `mlx-serve` is already on `PATH`, the environment override is unnecessary.
+This route requires a 128 GB Apple Silicon Mac, defaults to an 8,192-token
+context, disables PLD and decode-attention quantization, and applies the
+reviewed unwired/256 MB MLX cache policy. A source build whose dylibs use
+cwd-relative paths is detected from the standard `zig-out/bin/mlx-serve`
+layout; `MTPLX_MLX_SERVE_CWD` remains available for nonstandard builds.
+The pull is pinned to the reviewed Hub revision and validates the exact 44
+weight shards plus config, index, generation, and tokenizer identities.
+Two small non-streaming smoke requests completed at roughly 23.5 tok/s, but two
+representative streaming attempts encountered severe slowdown with no Metal
+headroom. This route has no representative streaming or throughput approval;
+do not treat the smoke results as a speed claim.
+
 ## What MTPLX is not
 
 - Not an external-drafter system. The drafter is the target model's own MTP heads.

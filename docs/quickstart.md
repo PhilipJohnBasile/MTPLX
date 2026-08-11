@@ -44,4 +44,24 @@ space and at least 96 GiB unified memory; 128 GiB is recommended. Its default
 context and maximum response are 32,768 tokens. A larger explicit server
 context is accepted only when it fits the active Metal resident-memory cap.
 
+For the 128 GB DeepSeek-V4 target-only artifact, install or build `mlx-serve`
+and select AR explicitly:
+
+```bash
+mtplx pull philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly
+
+MTPLX_MLX_SERVE_BIN=/path/to/mlx-serve \
+mtplx serve \
+  --model philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly \
+  --no-mtp --yes
+```
+
+MTPLX strips ambient `MLX_SERVE_*` controls before launch, then installs the
+reviewed `MLX_SERVE_WIRED=off` and 256 MB cache policy. This backend is an
+experimental external native target runtime, not a speculative MTPLX backend.
+Two short non-streaming smokes were around 23.5 tok/s, but representative
+streaming attempts hit severe slowdown with no Metal headroom. Do not make a
+throughput claim from the smoke results; representative streaming remains
+unapproved.
+
 Use `mtplx doctor --deep --json` for exhaustive diagnostics and `mtplx doctor --bundle` to create a redacted support bundle.

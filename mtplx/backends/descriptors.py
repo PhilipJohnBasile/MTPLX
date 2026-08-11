@@ -49,7 +49,9 @@ class DraftSemantics:
         raw = self.default if value is None else int(value)
         return max(int(self.minimum), min(int(self.maximum), int(raw)))
 
-    def label_for_stats(self, value: int | None, *, generation_mode: str = "mtp") -> str:
+    def label_for_stats(
+        self, value: int | None, *, generation_mode: str = "mtp"
+    ) -> str:
         if str(generation_mode or "").lower() == "ar":
             return "AR"
         clamped = self.clamp(value)
@@ -59,7 +61,9 @@ class DraftSemantics:
 
     def to_dict(self) -> dict[str, Any]:
         if self.unit == "block":
-            labels = [f"Block {value}" for value in range(self.minimum, self.maximum + 1)]
+            labels = [
+                f"Block {value}" for value in range(self.minimum, self.maximum + 1)
+            ]
         else:
             labels = [f"D{value}" for value in range(self.minimum, self.maximum + 1)]
         return {
@@ -123,9 +127,7 @@ class KVQuantPolicy:
     modes: tuple[str, ...] = ("off",)
     restart_required: bool = True
     proof_level: str = "not_validated"
-    disabled_reason: str | None = (
-        "KV quantization is not supported for this model."
-    )
+    disabled_reason: str | None = "KV quantization is not supported for this model."
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -230,7 +232,9 @@ class TargetDistributionPolicy:
             "modes": list(self.modes),
             "default_mode": self.default_mode,
             "default_window_size": (
-                None if self.default_window_size is None else int(self.default_window_size)
+                None
+                if self.default_window_size is None
+                else int(self.default_window_size)
             ),
             "exact": exact if exact is None else bool(exact),
             "mode_metadata": [mode.to_dict() for mode in self.mode_metadata],
@@ -425,6 +429,72 @@ LAGUNA_AR_DESCRIPTOR = BackendDescriptor(
     notes=(
         "The checkpoint has no native MTP head.",
         "The bundled loader and native MLX cache path are pinned to Laguna-S-2.1 4-bit geometry.",
+    ),
+)
+
+
+DEEPSEEK_V4_MLXSERVE_AR_DESCRIPTOR = BackendDescriptor(
+    backend_id="deepseek_v4_mlxserve_ar",
+    architecture_id="deepseek-v4-mlxserve-ar",
+    model_family="deepseek",
+    display_name="DeepSeek V4 Flash 0731 target-only AR (mlx-serve)",
+    artifact_layout="single_mlx_folder_external_mlx_serve_target_only_ar",
+    runtime_capabilities=(
+        "target_logits",
+        "target_only_ar",
+        "external_mlx_serve",
+    ),
+    sampler_defaults=SamplerDefaults(temperature=0.6, top_p=0.95, top_k=20),
+    reasoning_codec=ReasoningCodec(
+        parser="none",
+        display_name="DeepSeek V4 native response channels",
+        default_mode="auto",
+        supported=True,
+        modes=("auto", "on", "off"),
+        history_policy="native_mlx_serve",
+        effort_levels=("low", "high", "max"),
+        default_effort="high",
+    ),
+    draft_semantics=DraftSemantics(
+        request_field="depth",
+        display_label="Target-only AR",
+        default=1,
+        minimum=1,
+        maximum=1,
+        unit="depth",
+    ),
+    uses_external_assistant=False,
+    uses_draft_lm_head=False,
+    tune_policy=TunePolicy(
+        supported=False,
+        supported_families=(),
+        unsupported_reason=(
+            "This artifact is target-only; DeepSeek V4 DSpark is a separate backend."
+        ),
+    ),
+    kv_quant_policy=KVQuantPolicy(
+        supported=False,
+        disabled_reason=(
+            "The reviewed target-only mlx-serve launch keeps decode-attention "
+            "quantization disabled."
+        ),
+    ),
+    context_window_policy=ContextWindowPolicy(
+        maximum=1_048_576,
+        default=8_192,
+        source="deepseek_v4_flash_0731_target_only_config",
+    ),
+    default_max_response_tokens=32_768,
+    default_tool_prompt_mode="native",
+    required_tool_prompt_mode="native",
+    allows_chat_template_path=False,
+    validation_status="external_runtime_experimental_performance_unapproved",
+    status="external_runtime_experimental_performance_unapproved",
+    profile_policy="external-runtime-owned",
+    notes=(
+        "The checkpoint has no MTP or DSpark weights.",
+        "MTPLX delegates serving to a separately installed mlx-serve binary.",
+        "Representative streaming performance is not approved; do not infer a speed claim from smoke tests.",
     ),
 )
 
@@ -690,6 +760,7 @@ GEMMA4_ASSISTANT_DESCRIPTOR = BackendDescriptor(
 DESCRIPTORS_BY_BACKEND_ID: dict[str, BackendDescriptor] = {
     QWEN3_NEXT_DESCRIPTOR.backend_id: QWEN3_NEXT_DESCRIPTOR,
     LAGUNA_AR_DESCRIPTOR.backend_id: LAGUNA_AR_DESCRIPTOR,
+    DEEPSEEK_V4_MLXSERVE_AR_DESCRIPTOR.backend_id: DEEPSEEK_V4_MLXSERVE_AR_DESCRIPTOR,
     NATIVE_CONTRACT_DESCRIPTOR.backend_id: NATIVE_CONTRACT_DESCRIPTOR,
     GEMMA4_ASSISTANT_DESCRIPTOR.backend_id: GEMMA4_ASSISTANT_DESCRIPTOR,
     STEP3P5_MTP_DESCRIPTOR.backend_id: STEP3P5_MTP_DESCRIPTOR,
@@ -775,9 +846,18 @@ def model_family_from_inspection(
         if descriptor is not None
         else backend_id_from_inspection(inspection)
     )
-    if backend_id == GEMMA4_ASSISTANT_DESCRIPTOR.backend_id or "gemma4" in text or "gemma-4" in text:
+    if (
+        backend_id == GEMMA4_ASSISTANT_DESCRIPTOR.backend_id
+        or "gemma4" in text
+        or "gemma-4" in text
+    ):
         return "gemma4"
-    if backend_id == STEP3P5_MTP_DESCRIPTOR.backend_id or "step3p5" in text or "step3p7" in text or "step-3.7" in text:
+    if (
+        backend_id == STEP3P5_MTP_DESCRIPTOR.backend_id
+        or "step3p5" in text
+        or "step3p7" in text
+        or "step-3.7" in text
+    ):
         return "step"
     if backend_id == DEEPSEEK_MTP_DESCRIPTOR.backend_id or "deepseek" in text:
         return "deepseek"
@@ -1047,8 +1127,12 @@ def descriptor_for_backend_id(value: str | None) -> BackendDescriptor:
 
 def backend_id_from_inspection(inspection: dict[str, Any] | None) -> str:
     data = inspection or {}
-    compatibility = data.get("compatibility") if isinstance(data.get("compatibility"), dict) else {}
-    backend = data.get("recommended_backend") or compatibility.get("recommended_backend")
+    compatibility = (
+        data.get("compatibility") if isinstance(data.get("compatibility"), dict) else {}
+    )
+    backend = data.get("recommended_backend") or compatibility.get(
+        "recommended_backend"
+    )
     if backend:
         return str(backend)
     arch_id = data.get("mtp_arch") or compatibility.get("arch_id")
@@ -1100,10 +1184,15 @@ def target_distribution_mode_from_args(
             normalized = text.strip().lower().replace("-", "_")
             for mode in descriptor.target_distribution_policy.mode_metadata:
                 names = (mode.name, *mode.aliases)
-                if normalized in {item.strip().lower().replace("-", "_") for item in names}:
+                if normalized in {
+                    item.strip().lower().replace("-", "_") for item in names
+                }:
                     return mode.name
         return text
-    if descriptor is not None and descriptor.default_target_distribution_mode != "backend_default":
+    if (
+        descriptor is not None
+        and descriptor.default_target_distribution_mode != "backend_default"
+    ):
         return descriptor.default_target_distribution_mode
     return None
 
@@ -1196,12 +1285,20 @@ def draft_default_from_inspection(inspection: dict[str, Any] | None) -> int:
             return descriptor.draft_semantics.clamp(int(benchmark["best_block_size"]))
         except (KeyError, TypeError, ValueError):
             pass
-    compatibility = data.get("compatibility") if isinstance(data.get("compatibility"), dict) else {}
-    contract = compatibility.get("runtime_contract") if isinstance(compatibility, dict) else None
+    compatibility = (
+        data.get("compatibility") if isinstance(data.get("compatibility"), dict) else {}
+    )
+    contract = (
+        compatibility.get("runtime_contract")
+        if isinstance(compatibility, dict)
+        else None
+    )
     if isinstance(contract, dict):
         try:
             if descriptor.backend_id != STEP3P5_MTP_DESCRIPTOR.backend_id:
-                return descriptor.draft_semantics.clamp(int(contract.get("mtp_depth_max")))
+                return descriptor.draft_semantics.clamp(
+                    int(contract.get("mtp_depth_max"))
+                )
         except (TypeError, ValueError):
             pass
     return descriptor.draft_semantics.default
