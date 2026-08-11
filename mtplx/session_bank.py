@@ -284,7 +284,9 @@ class SessionBankEntry:
     eviction_reason: str | None = None
     extra_state: dict[str, Any] | None = None
     # kvcache-v2: KV states held as zero-copy lazy views (recurrent still
-    # cloned). Restores install views as-is instead of re-cloning.
+    # cloned). Restores install fresh zero-copy views of the stored states —
+    # never the stored objects themselves, which would hand the borrower's
+    # in-place writes back into this entry (issue #247).
     lazy_kv: bool = False
     # kvcache-v2: whether the source cache carried non-trimmable (recurrent)
     # entries — recorded at put() time from the live cache, because only the

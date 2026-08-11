@@ -3549,19 +3549,27 @@ def restore_cache(
 ) -> None:
     for entry, state, meta_state in zip(cache, snapshot.states, snapshot.meta_states):
         if state is not None:
-            install_as_is = not clone_states and _is_trimmable(entry)
-            _restore_state_preserving_container(entry, state, clone=not install_as_is)
+            install_view = not clone_states and _is_trimmable(entry)
+            _restore_state_preserving_container(entry, state, clone=not install_view)
         if restore_meta_state and meta_state is not None:
             entry.meta_state = _clone_tree(meta_state)
 
 
 def _restore_state_preserving_container(entry: Any, state: Any, *, clone: bool = True) -> None:
-    # Lazy (view-based) snapshots install their states as-is into trimmable KV
-    # containers: those containers only rebind or setitem (both COW-safe with
-    # a retained reference), so the snapshot cannot be mutated through them.
+    # clone=False (lazy snapshots into trimmable KV) must still never install
+    # the snapshot's own array objects. A setitem-style container write
+    # (`self.keys[..., a:b, :] = tail`) mutates the installed *object* itself,
+    # and a rebind-style write may donate its buffer (the lone shared object
+    # counts as uniquely referenced) — either way the borrower's suffix
+    # prefill/decode lands inside the bank entry's stored span and every later
+    # restore serves the poisoned pages (issue #247). Installing a fresh
+    # zero-copy view keeps restore O(1) while restoring the two-object
+    # geometry commit relies on: the retained snapshot reference blocks buffer
+    # donation, so the borrower's first write pays the single deferred
+    # divergence copy (COW rules pinned by tests/test_lazy_snapshot_cow.py).
     # Containers with replace_state (owned recurrent) copy into owned buffers
-    # and must always receive a clone-or-view they are free to consume.
-    cloned = _clone_tree(state) if clone else state
+    # and must always receive a full clone they are free to consume.
+    cloned = _clone_tree(state) if clone else _lazy_state_view(state)
     if hasattr(entry, "replace_state"):
         entry.replace_state(cloned)
         return
