@@ -33,6 +33,7 @@ __all__ = [
     "geometric_tail_checkpoint_positions",
     "normalize_overlap_weights",
     "optimal_checkpoint_positions",
+    "optimal_checkpoint_positions_from_candidates",
 ]
 
 
@@ -135,25 +136,31 @@ def _legal_positions(prefix_length: int, block_size: int) -> tuple[int, ...]:
     return tuple(positions)
 
 
-def _validated_checkpoints(
-    checkpoints: Sequence[Integral], prefix_length: int
+def _validated_positions(
+    positions: Sequence[Integral], prefix_length: int, name: str
 ) -> tuple[int, ...]:
-    if isinstance(checkpoints, (str, bytes, bytearray)) or not isinstance(
-        checkpoints, Sequence
+    if isinstance(positions, (str, bytes, bytearray)) or not isinstance(
+        positions, Sequence
     ):
-        raise TypeError("checkpoints must be a sorted sequence of positions")
+        raise TypeError(f"{name} must be a sorted sequence of positions")
 
     result: list[int] = []
     previous = 0
-    for index, checkpoint in enumerate(checkpoints):
-        position = _integer(checkpoint, f"checkpoints[{index}]", minimum=1)
+    for index, position_value in enumerate(positions):
+        position = _integer(position_value, f"{name}[{index}]", minimum=1)
         if position > prefix_length:
-            raise ValueError("checkpoint positions must not exceed the prefix length")
+            raise ValueError(f"{name} must not exceed the prefix length")
         if position <= previous:
-            raise ValueError("checkpoint positions must be sorted and unique")
+            raise ValueError(f"{name} must be sorted and unique")
         result.append(position)
         previous = position
     return tuple(result)
+
+
+def _validated_checkpoints(
+    checkpoints: Sequence[Integral], prefix_length: int
+) -> tuple[int, ...]:
+    return _validated_positions(checkpoints, prefix_length, "checkpoints")
 
 
 def _prefix_sums(weights: tuple[int, ...]) -> tuple[list[int], list[int]]:
@@ -304,6 +311,146 @@ def optimal_checkpoint_positions(
         depth = checkpoint - 1
     result.reverse()
     return tuple(result)
+
+
+def optimal_checkpoint_positions_from_candidates(
+    weights: Sequence[Real],
+    budget: Integral,
+    candidate_positions: Sequence[Integral],
+    fixed_positions: Sequence[Integral] = (),
+) -> tuple[int, ...]:
+    """Return the exact placement constrained to irregular capture positions.
+
+    ``candidate_positions`` identifies sorted, unique, legal checkpoint
+    positions that may consume ``budget``.  ``fixed_positions`` has the same
+    validation contract, but every fixed position is mandatory and free.  A
+    position appearing in both inputs is therefore fixed and does not consume
+    a candidate slot.  The result contains the sorted union of both sets.
+
+    The objective is the same positional recompute objective used by
+    :func:`optimal_checkpoint_positions`: at overlap depth ``t``, restore the
+    latest saved position not greater than ``t``.  This matters for actual
+    capture grids because an absent position cannot be synthesized by a nearby
+    checkpoint.  Non-negative weights mean every distinct non-fixed candidate
+    available within the effective budget is selected.
+
+    The dynamic program scans only candidate/fixed boundaries (plus a terminal
+    sentinel), while exact prefix sums account for every depth weight.  Its
+    monotone lower hull is O(K * M) after O(N) prefix sums, where ``K`` is the
+    number of supplied positions and ``M`` is the effective candidate budget.
+    At equal objective values it retains the earlier predecessor, matching the
+    existing solver's reverse-lexicographic tie rule for ascending placements.
+    """
+    scaled = _exact_scaled_weights(weights)
+    prefix_length = len(scaled)
+    requested_budget = _integer(budget, "budget")
+    candidates = _validated_positions(
+        candidate_positions, prefix_length, "candidate_positions"
+    )
+    fixed = _validated_positions(fixed_positions, prefix_length, "fixed_positions")
+
+    fixed_set = set(fixed)
+    optional_candidates = tuple(
+        position for position in candidates if position not in fixed_set
+    )
+    effective_budget = min(max(requested_budget, 0), len(optional_candidates))
+    if not optional_candidates or effective_budget == 0:
+        return fixed
+
+    probability, weighted_depth = _prefix_sums(scaled)
+    candidate_set = set(optional_candidates)
+    fixed_set = set(fixed)
+    terminal = prefix_length + 1
+    nodes = tuple(sorted(candidate_set | fixed_set | {terminal}))
+
+    # ``hulls[count]`` contains exact predecessor states with ``count`` paid
+    # candidates.  A line for position ``p`` evaluates the recompute cost up
+    # to (but excluding) the next checkpoint boundary.  A fixed boundary
+    # resets every hull, which prevents a transition from skipping it.
+    hulls: list[deque[_Line]] = [deque() for _ in range(effective_budget + 1)]
+    hulls[0].append(_Line(slope=0, intercept=0, checkpoint=0))
+    parents: dict[tuple[int, int], tuple[int, int]] = {}
+
+    for position in nodes:
+        is_candidate = position in candidate_set
+        is_fixed = position in fixed_set
+        state_costs: list[int | None] = [None] * (effective_budget + 1)
+        state_parents: list[tuple[int, int] | None] = [None] * (effective_budget + 1)
+        query_mass = probability[position - 1]
+
+        for count in range(effective_budget + 1):
+            predecessor_count = count - 1 if is_candidate else count
+            if predecessor_count < 0:
+                continue
+            hull = hulls[predecessor_count]
+            if not hull:
+                continue
+            line = _query(hull, query_mass)
+            state_costs[count] = weighted_depth[position - 1] + line.value_at(
+                query_mass
+            )
+            state_parents[count] = (line.checkpoint, predecessor_count)
+
+        if position == terminal:
+            break
+
+        if is_fixed:
+            for count, cost in enumerate(state_costs):
+                hulls[count].clear()
+                parent = state_parents[count]
+                if cost is None or parent is None:
+                    continue
+                parents[(position, count)] = parent
+                hulls[count].append(
+                    _Line(
+                        slope=-position,
+                        intercept=(
+                            cost
+                            - weighted_depth[position]
+                            + position * probability[position]
+                        ),
+                        checkpoint=position,
+                    )
+                )
+            continue
+
+        # Candidate lines are appended only after every state at this boundary
+        # has been queried, so one capture position cannot consume two slots.
+        for count, cost in enumerate(state_costs):
+            parent = state_parents[count]
+            if cost is None or parent is None:
+                continue
+            parents[(position, count)] = parent
+            _add_line(
+                hulls[count],
+                _Line(
+                    slope=-position,
+                    intercept=(
+                        cost
+                        - weighted_depth[position]
+                        + position * probability[position]
+                    ),
+                    checkpoint=position,
+                ),
+            )
+
+    terminal_parent = state_parents[effective_budget]
+    if terminal_parent is None:
+        raise RuntimeError("candidate checkpoint placement reconstruction failed")
+    parents[(terminal, effective_budget)] = terminal_parent
+
+    selected: list[int] = []
+    position = terminal
+    count = effective_budget
+    while position != 0:
+        parent = parents.get((position, count))
+        if parent is None:
+            raise RuntimeError("candidate checkpoint placement reconstruction failed")
+        if position in candidate_set:
+            selected.append(position)
+        position, count = parent
+
+    return tuple(sorted(fixed_set | set(selected)))
 
 
 def balanced_checkpoint_positions(

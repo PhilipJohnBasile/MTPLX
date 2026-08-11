@@ -18,6 +18,7 @@ from mtplx.checkpoint_placement import (
     geometric_tail_checkpoint_positions,
     normalize_overlap_weights,
     optimal_checkpoint_positions,
+    optimal_checkpoint_positions_from_candidates,
 )
 
 
@@ -64,6 +65,33 @@ def _exact_recompute_numerator(
     return total
 
 
+def _brute_force_irregular_candidates(
+    weights: tuple[int, ...],
+    budget: int,
+    candidate_positions: tuple[int, ...],
+    fixed_positions: tuple[int, ...] = (),
+) -> tuple[int, tuple[int, ...]]:
+    """Independent exact oracle for the irregular-capture API contract."""
+    fixed = tuple(sorted(fixed_positions))
+    fixed_set = set(fixed)
+    optional = tuple(
+        position for position in candidate_positions if position not in fixed_set
+    )
+    count = min(max(budget, 0), len(optional))
+    placements = tuple(
+        tuple(sorted(fixed_set | set(selected)))
+        for selected in combinations(optional, count)
+    )
+    winner = min(
+        placements,
+        key=lambda placement: (
+            _exact_recompute_numerator(weights, placement),
+            tuple(reversed(placement)),
+        ),
+    )
+    return _exact_recompute_numerator(weights, winner), winner
+
+
 @pytest.mark.parametrize("length", range(1, 7))
 def test_monotone_hull_dp_matches_brute_force_for_every_small_ternary_distribution(
     length: int,
@@ -95,6 +123,87 @@ def test_monotone_hull_dp_matches_random_small_blocked_cases() -> None:
         assert actual == expected
         assert expected_recompute(weights, actual) == pytest.approx(
             numerator / sum(weights)
+        )
+
+
+def test_irregular_candidate_dp_matches_independent_random_brute_force() -> None:
+    rng = random.Random(1)
+    for _ in range(500):
+        length = rng.randint(1, 8)
+        weights = tuple(rng.randint(0, 7) for _ in range(length))
+        if not any(weights):
+            weights = (1,) + weights[1:]
+        candidates = tuple(
+            position for position in range(1, length + 1) if rng.choice((False, True))
+        )
+        fixed = tuple(
+            position
+            for position in range(1, length + 1)
+            if rng.choice((False, False, True))
+        )
+        budget = rng.randint(-2, length + 2)
+
+        numerator, expected = _brute_force_irregular_candidates(
+            weights, budget, candidates, fixed
+        )
+        actual = optimal_checkpoint_positions_from_candidates(
+            weights, budget, candidates, fixed
+        )
+        assert actual == expected
+        assert expected_recompute(weights, actual) == pytest.approx(
+            numerator / sum(weights)
+        )
+
+
+def test_irregular_candidates_use_a_free_fixed_endpoint_without_spending_budget() -> (
+    None
+):
+    weights = (1, 1, 1, 1)
+    candidates = (1, 2, 3, 4)
+    assert optimal_checkpoint_positions_from_candidates(
+        weights, 3, candidates, fixed_positions=(4,)
+    ) == (1, 2, 3, 4)
+    assert optimal_checkpoint_positions_from_candidates(
+        weights, 0, candidates, fixed_positions=(4,)
+    ) == (4,)
+
+
+def test_irregular_candidate_ties_remain_reverse_lexicographic_with_fixed_positions() -> (
+    None
+):
+    weights = (2, 3, 2, 0)
+    candidates = (1, 2, 3)
+    fixed = (4,)
+    assert _exact_recompute_numerator(weights, (1, 2, 4)) == _exact_recompute_numerator(
+        weights, (2, 3, 4)
+    )
+    assert optimal_checkpoint_positions_from_candidates(
+        weights, 2, candidates, fixed
+    ) == (1, 2, 4)
+
+
+@pytest.mark.parametrize(
+    ("candidate_positions", "fixed_positions", "error", "match"),
+    [
+        ((2, 1), (), ValueError, "candidate_positions must be sorted and unique"),
+        ((1, 1), (), ValueError, "candidate_positions must be sorted and unique"),
+        ((4,), (), ValueError, "candidate_positions must not exceed"),
+        ((), (2, 1), ValueError, "fixed_positions must be sorted and unique"),
+        ((), (1, 1), ValueError, "fixed_positions must be sorted and unique"),
+        ((), (4,), ValueError, "fixed_positions must not exceed"),
+        ("12", (), TypeError, "candidate_positions must be a sorted sequence"),
+        ((), "12", TypeError, "fixed_positions must be a sorted sequence"),
+    ],
+)
+def test_irregular_candidate_positions_validate_explicitly(
+    candidate_positions: object,
+    fixed_positions: object,
+    error: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error, match=match):
+        optimal_checkpoint_positions_from_candidates(
+            (1, 1, 1), 1, candidate_positions, fixed_positions
         )
 
 

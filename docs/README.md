@@ -5,6 +5,7 @@
 - [Model compatibility](model-compatibility.md)
 - [Profiles](profiles.md)
 - [Benchmarks](benchmarks.md)
+- [SessionBank checkpoint replay](checkpoint-replay.md)
 - [Server](server.md)
 - [API](api.md)
 - [Architecture](architecture.md)

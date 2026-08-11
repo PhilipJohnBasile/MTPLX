@@ -8,6 +8,7 @@ import os
 import platform
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from .constants import DEFAULT_RUNTIME_MODEL_DIR
@@ -1835,6 +1836,60 @@ def _cmd_session_bank(args: argparse.Namespace) -> int:
         write_session_bank_report(args.output, result)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["exact"] else 2
+
+
+def _cmd_checkpoint_replay(args: argparse.Namespace) -> int:
+    from .checkpoint_replay import replay_checkpoint_trace
+
+    trace_path = Path(args.trace).expanduser()
+    output_path = Path(args.output).expanduser() if args.output else None
+    if output_path is not None:
+        same_path = output_path.resolve() == trace_path.resolve()
+        try:
+            same_file = os.path.samefile(output_path, trace_path)
+        except FileNotFoundError:
+            same_file = False
+        if same_path or same_file:
+            raise ValueError("--output must not refer to --trace")
+    payload = json.loads(trace_path.read_text(encoding="utf-8"))
+    result = replay_checkpoint_trace(
+        payload,
+        block_size=args.block_size,
+        decay=args.decay,
+        min_events=args.min_events,
+        min_bucket_events=args.min_bucket_events,
+        bootstrap_iterations=args.bootstrap_iterations,
+        bootstrap_block_length=args.bootstrap_block_length,
+        seed=args.seed,
+    )
+    rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(rendered)
+            temporary_path = Path(temporary.name)
+        try:
+            os.replace(temporary_path, output_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    print(rendered, end="")
+    incumbent_provenance = result.get("incumbent_provenance")
+    return (
+        0
+        if result.get("status") == "passes_cpu_falsifier"
+        and result.get("canonical_gate") is True
+        and result.get("deployable_go_available") is True
+        and isinstance(incumbent_provenance, dict)
+        and incumbent_provenance.get("gate_eligible") is True
+        else 2
+    )
 
 
 class _FlagRecordingArgumentParser(argparse.ArgumentParser):
@@ -3866,6 +3921,21 @@ def build_parser() -> argparse.ArgumentParser:
     session_p.add_argument("--restore-mode", choices=["clone", "reference"], default="clone")
     session_p.add_argument("--output")
     session_p.set_defaults(func=_cmd_session_bank)
+
+    replay_p = sub.add_parser(
+        "checkpoint-replay",
+        help="Replay a content-free SessionBank overlap trace against checkpoint policies",
+    )
+    replay_p.add_argument("--trace", required=True, help="Admin trace snapshot JSON")
+    replay_p.add_argument("--output", help="Optional JSON report path")
+    replay_p.add_argument("--block-size", type=int, default=256)
+    replay_p.add_argument("--decay", type=float, default=1.0)
+    replay_p.add_argument("--min-events", type=int, default=100)
+    replay_p.add_argument("--min-bucket-events", type=int, default=20)
+    replay_p.add_argument("--bootstrap-iterations", type=int, default=10_000)
+    replay_p.add_argument("--bootstrap-block-length", type=int)
+    replay_p.add_argument("--seed", type=int, default=0)
+    replay_p.set_defaults(func=_cmd_checkpoint_replay)
 
     return parser
 

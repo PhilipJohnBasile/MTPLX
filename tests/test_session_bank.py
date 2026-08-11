@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from mtplx.cache_state import CacheSnapshot
 from mtplx.session_bank import SessionBank
 
 
@@ -42,6 +43,63 @@ class RuntimeWithCaches:
 
     def make_mtp_cache(self):
         return [TrimmableLiveCache(0)]
+
+
+class MergeableAttentionCache:
+    def merge(self, _entries):
+        return self
+
+    def is_trimmable(self) -> bool:
+        return True
+
+
+class MergeableRecurrentCache:
+    def merge(self, _entries):
+        return self
+
+    def is_trimmable(self) -> bool:
+        return False
+
+
+def test_put_snapshot_preserves_live_recurrence_or_fails_closed_without_it():
+    bank = SessionBank(max_entries=8, max_bytes=1024, per_session_max_bytes=1024)
+    runtime = SimpleNamespace(model_path=Path("models/example"), mtp_enabled=True)
+    snapshot = CacheSnapshot(states=(), meta_states=())
+
+    unknown = bank.put_snapshot(
+        runtime=runtime,
+        token_ids=[1],
+        cache_snapshot=snapshot,
+        nbytes_override=1,
+    )
+    attention = bank.put_snapshot(
+        runtime=runtime,
+        token_ids=[2],
+        cache_snapshot=snapshot,
+        cache_ref=[MergeableAttentionCache()],
+        nbytes_override=1,
+    )
+    recurrent = bank.put_snapshot(
+        runtime=runtime,
+        token_ids=[3],
+        cache_snapshot=snapshot,
+        cache_ref=[MergeableRecurrentCache()],
+        nbytes_override=1,
+    )
+    conflicting = bank.put_snapshot(
+        runtime=runtime,
+        token_ids=[4],
+        cache_snapshot=snapshot,
+        cache_ref=[MergeableRecurrentCache()],
+        has_recurrent=False,
+        nbytes_override=1,
+    )
+
+    assert unknown is not None and unknown.has_recurrent is True
+    assert attention is not None and attention.has_recurrent is False
+    assert recurrent is not None and recurrent.has_recurrent is True
+    # Live container provenance wins over a stale explicit false declaration.
+    assert conflicting is not None and conflicting.has_recurrent is True
 
 
 def test_session_bank_skips_single_oversized_snapshot_before_insert():

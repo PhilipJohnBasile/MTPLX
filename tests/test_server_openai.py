@@ -18,6 +18,7 @@ from mtplx import tool_semantic_hints as semantic_hints
 from mtplx.profiles import DEFAULT_HF_MODEL_ID, get_profile
 from mtplx.server import openai
 from mtplx.server.openai import _RateLimiter, create_app, parse_args
+from mtplx.session_bank import SessionBank
 from mtplx.tool_semantic_hints import (
     DisabledSemanticHintProvider,
     K1SemanticHintDraftSource,
@@ -479,9 +480,7 @@ def test_server_provider_request_mutation_cannot_change_canonical_target_tools()
             request.tools[0]["function"]["parameters"]["properties"].clear()
             request.messages[0]["content"] = "provider_mutated"
             future = Future()
-            future.set_result(
-                {"tool_index": 0, "arguments": {"path": "target.txt"}}
-            )
+            future.set_result({"tool_index": 0, "arguments": {"path": "target.txt"}})
             return future
 
     tools = [
@@ -945,9 +944,10 @@ def test_semantic_hint_tool_history_shapes_fall_back_before_disclosure(
     assert provider.requests == []
     assert captured.get("semantic_hint_draft_source") is None
     assert captured["generation_mode"] == "mtp"
-    assert captured["request_observability"]["tool_semantic_hints"][
-        "disabled_reason"
-    ] == "tool_history"
+    assert (
+        captured["request_observability"]["tool_semantic_hints"]["disabled_reason"]
+        == "tool_history"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1039,9 +1039,10 @@ def test_plain_assistant_history_requires_proven_target_render_prefix(
     source = captured.get("semantic_hint_draft_source")
     assert (source is not None) is (expected_reason is None)
     if expected_reason is not None:
-        assert captured["request_observability"]["tool_semantic_hints"][
-            "disabled_reason"
-        ] == expected_reason
+        assert (
+            captured["request_observability"]["tool_semantic_hints"]["disabled_reason"]
+            == expected_reason
+        )
 
 
 def test_first_yield_stream_disconnect_closes_unadopted_source():
@@ -1241,7 +1242,9 @@ def anthropic_semantic_stream_factory(monkeypatch):
         monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
         monkeypatch.delenv("MTPLX_COMPILED_TARGET_PREFIX", raising=False)
         monkeypatch.delenv("MTPLX_CONTEXT_COPY_TARGET_PREFIX", raising=False)
-        monkeypatch.setattr(openai, "_request_parallel_tool_calls", lambda _request: False)
+        monkeypatch.setattr(
+            openai, "_request_parallel_tool_calls", lambda _request: False
+        )
         monkeypatch.setattr(
             openai,
             "_encode_messages",
@@ -1465,7 +1468,9 @@ def test_owned_stream_close_does_not_mask_primary_iteration_error(close_error):
     assert delegated.close_calls == 1
 
 
-@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+@pytest.mark.parametrize(
+    "disconnect_error", [OSError, BrokenPipeError, ConnectionResetError]
+)
 def test_anthropic_outer_disconnect_before_upstream_iteration_cleans_owner(
     anthropic_semantic_stream_factory,
     disconnect_error,
@@ -1487,7 +1492,9 @@ def test_anthropic_outer_disconnect_before_upstream_iteration_cleans_owner(
     assert not future.worker_alive()
 
 
-@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+@pytest.mark.parametrize(
+    "disconnect_error", [OSError, BrokenPipeError, ConnectionResetError]
+)
 def test_anthropic_disconnect_after_message_start_cleans_before_openai_iteration(
     anthropic_semantic_stream_factory,
     disconnect_error,
@@ -1497,9 +1504,10 @@ def test_anthropic_disconnect_after_message_start_cleans_before_openai_iteration
     response, future, scope = anthropic_semantic_stream_factory()
 
     async def send(message):
-        if (
-            message["type"] == "http.response.body"
-            and b"event: message_start" in message.get("body", b"")
+        if message[
+            "type"
+        ] == "http.response.body" and b"event: message_start" in message.get(
+            "body", b""
         ):
             raise disconnect_error("synthetic post-message-start disconnect")
 
@@ -1563,7 +1571,11 @@ def test_anthropic_outer_normal_completion_is_exact_and_cleans_owner(
 
 @pytest.mark.parametrize(
     "disconnect_marker",
-    [b"event: content_block_start", b"event: content_block_delta", b"event: message_delta"],
+    [
+        b"event: content_block_start",
+        b"event: content_block_delta",
+        b"event: message_delta",
+    ],
 )
 def test_anthropic_disconnect_after_source_adoption_does_not_double_cancel(
     anthropic_semantic_stream_factory,
@@ -1620,7 +1632,9 @@ def test_anthropic_disconnect_after_source_adoption_does_not_double_cancel(
     assert not future.worker_alive()
 
 
-@pytest.mark.parametrize("disconnect_error", [OSError, BrokenPipeError, ConnectionResetError])
+@pytest.mark.parametrize(
+    "disconnect_error", [OSError, BrokenPipeError, ConnectionResetError]
+)
 def test_anthropic_send_failure_closes_adopted_blocked_generation_immediately(
     anthropic_semantic_stream_factory,
     disconnect_error,
@@ -1813,9 +1827,7 @@ def test_prompt_encoding_failure_never_submits_provider_payload(monkeypatch):
             headers={"x-mtplx-cache-mode": "bypass"},
             json={
                 "model": state.model_id,
-                "messages": [
-                    {"role": "user", "content": "Read the file."}
-                ],
+                "messages": [{"role": "user", "content": "Read the file."}],
                 "tools": [
                     {
                         "type": "function",
@@ -1923,9 +1935,10 @@ def test_endpoint_discloses_nothing_for_invalid_timeout_or_loop_guard(
     assert provider.calls == 0
     assert provider.requests == []
     assert captured.get("semantic_hint_draft_source") is None
-    assert captured["request_observability"]["tool_semantic_hints"][
-        "disabled_reason"
-    ] == expected_reason
+    assert (
+        captured["request_observability"]["tool_semantic_hints"]["disabled_reason"]
+        == expected_reason
+    )
 
 
 @pytest.mark.parametrize(
@@ -2051,9 +2064,10 @@ def test_semantic_hint_endpoint_matches_actual_repetition_stop_policy(
         assert source is not None
     else:
         assert source is None
-        assert captured["request_observability"]["tool_semantic_hints"][
-            "disabled_reason"
-        ] == expected_reason
+        assert (
+            captured["request_observability"]["tool_semantic_hints"]["disabled_reason"]
+            == expected_reason
+        )
 
 
 @pytest.mark.parametrize(
@@ -2276,7 +2290,9 @@ def test_laguna_fused_startup_line_carries_the_engagement_receipt():
 
     assert line is not None
     assert "[laguna-fused]" in line
-    assert json.loads(line.split("[laguna-fused] ", 1)[1]) == runtime.laguna_fused_report
+    assert (
+        json.loads(line.split("[laguna-fused] ", 1)[1]) == runtime.laguna_fused_report
+    )
 
 
 def test_laguna_fused_startup_line_stays_silent_without_a_report():
@@ -2590,6 +2606,103 @@ def test_ar_batch_detects_nonmergeable_history_cache_entries():
     )
 
 
+def test_ar_batch_shared_prefix_preserves_recurrent_snapshot_provenance(
+    monkeypatch,
+):
+    """Shared-prefix snapshots retain live cache recurrence in both trace arms."""
+
+    import sys
+
+    from mtplx.cache_state import CacheSnapshot
+    from mtplx.session_bank import SessionBank
+
+    class FakeMx:
+        @staticmethod
+        def array(value):
+            return value
+
+        @staticmethod
+        def eval(*_values):
+            return None
+
+    class MergeableCache:
+        def __init__(self, *, trimmable: bool):
+            self._trimmable = trimmable
+            self.state = None
+
+        def merge(self, _entries):
+            return self
+
+        def is_trimmable(self) -> bool:
+            return self._trimmable
+
+    class Runtime:
+        model_path = Path("models/shared-prefix")
+        mtp_enabled = False
+
+        def __init__(self):
+            self.trimmable = True
+
+        def make_cache(self):
+            return [MergeableCache(trimmable=self.trimmable)]
+
+        def forward_ar(self, _token_ids, *, cache, return_hidden):
+            assert return_hidden is False
+            assert len(cache) == 1
+            return None
+
+    monkeypatch.setenv("MTPLX_AR_BATCH_SHARED_PREFILL_MIN_TOKENS", "2")
+    monkeypatch.setitem(sys.modules, "mlx.core", FakeMx)
+    monkeypatch.setattr(
+        openai,
+        "snapshot_cache",
+        lambda _cache: CacheSnapshot(states=(), meta_states=()),
+    )
+    monkeypatch.setattr(openai, "restore_cache", lambda *_args: None)
+
+    runtime = Runtime()
+    bank = SessionBank(overlap_trace_max_events=4)
+    service = openai._BatchedARGenerationService(SimpleNamespace(runtime=runtime))
+    prefix_tokens = [1, 2, 3, 4]
+
+    def prepare_and_probe(*, trimmable: bool):
+        runtime.trimmable = trimmable
+        jobs = [_overlap_batch_job(bank), _overlap_batch_job(bank)]
+        for job in jobs:
+            job.prompt_ids = list(prefix_tokens)
+            job.insert_prompt_ids = list(prefix_tokens)
+        service._prepare_shared_prefix(jobs)
+
+        entry = bank.longest_prefix(prefix_tokens)
+        assert entry is not None
+        probe = bank.begin_overlap_probe(
+            prefix_tokens + [9],
+            lane="ar_batch",
+            model_path=str(runtime.model_path),
+            mtp_enabled=False,
+            hidden_variant=None,
+            template_hash="template",
+            mtp_history_policy=None,
+            draft_head_identity=None,
+            policy_fingerprint="policy",
+        )
+        assert probe is not None
+        return entry, probe["candidates"][0]
+
+    attention_entry, attention_candidate = prepare_and_probe(trimmable=True)
+    recurrent_entry, recurrent_candidate = prepare_and_probe(trimmable=False)
+
+    assert attention_entry.has_recurrent is False
+    assert attention_candidate["has_recurrent"] is False
+    assert recurrent_entry.has_recurrent is True
+    assert recurrent_candidate["has_recurrent"] is True
+    # The recurrence bit participates in the public placement fingerprint.
+    assert recurrent_candidate["entry_ordinal"] != attention_candidate["entry_ordinal"]
+    # Passing the source for classification must not turn a shared prefill
+    # into a durable live-reference lease.
+    assert recurrent_entry.cache_ref is None
+
+
 def test_long_prompt_commits_prompt_prefix_when_ssd_cache_is_enabled():
     state = SimpleNamespace(
         session_bank_cold_tier=SimpleNamespace(enabled=True, min_prefix_tokens=512)
@@ -2879,7 +2992,9 @@ def test_vision_splice_kwargs_always_match_callee_signatures():
     problems = []
     for filename, lineno, func in calls:
         if not isinstance(func, ast.Name):
-            problems.append(f"{filename}:{lineno} passes vision_splice to a non-plain callee")
+            problems.append(
+                f"{filename}:{lineno} passes vision_splice to a non-plain callee"
+            )
             continue
         declared, has_kwargs = defs.get(func.id, (False, False))
         if not (declared or has_kwargs):
@@ -3026,6 +3141,1018 @@ def _fake_final_state(tokens):
         safe_to_commit=True,
         finish_reason="stop",
     )
+
+
+def test_session_overlap_trace_admin_endpoints_are_isolated_from_cache_clear():
+    class TraceBank:
+        def __init__(self):
+            self.events = [{"schema_version": 2, "sequence": 7}]
+            self.cache_entries = ["warm-entry"]
+            self.overlap_trace_max_events = 8
+
+        def overlap_trace_snapshot(self):
+            return {
+                "schema_version": 2,
+                "enabled": True,
+                "max_events": 8,
+                "events_collected": len(self.events),
+                "events_dropped": 0,
+                "bank_epoch": 3,
+                "events": list(self.events),
+            }
+
+        def clear_overlap_trace(self):
+            cleared = len(self.events)
+            self.events.clear()
+            return cleared
+
+    state = _fake_state()
+    state.sessions.bank = TraceBank()
+    client = TestClient(create_app(state))
+
+    snapshot = client.get("/admin/session-overlap-trace")
+    assert snapshot.status_code == 200
+    assert snapshot.json()["events"] == [{"schema_version": 2, "sequence": 7}]
+
+    cleared = client.post("/admin/session-overlap-trace/clear")
+    assert cleared.status_code == 200
+    assert cleared.json() == {"schema_version": 2, "enabled": True, "cleared": 1}
+    assert state.sessions.bank.events == []
+    assert state.sessions.bank.cache_entries == ["warm-entry"]
+
+
+def test_session_overlap_trace_clear_reports_disabled_bank_without_mutating_cache():
+    class DisabledTraceBank:
+        def __init__(self):
+            self.cache_entries = ["warm-entry"]
+            self.overlap_trace_max_events = 0
+
+        def clear_overlap_trace(self):
+            return 0
+
+    state = _fake_state()
+    state.sessions.bank = DisabledTraceBank()
+    client = TestClient(create_app(state))
+
+    cleared = client.post("/admin/session-overlap-trace/clear")
+
+    assert cleared.status_code == 200
+    assert cleared.json() == {"schema_version": 2, "enabled": False, "cleared": 0}
+    assert state.sessions.bank.cache_entries == ["warm-entry"]
+
+
+class _OverlapTraceBank:
+    """Content-free SessionBank double for server lifecycle tests."""
+
+    def __init__(self):
+        self.overlap_trace_max_events = 8
+        self.begin_calls: list[dict] = []
+        self.finalize_calls: list[dict] = []
+        self.last_miss_reason = "new_session"
+
+    def begin_overlap_probe(self, token_ids, **kwargs):
+        probe = {"probe": len(self.begin_calls) + 1}
+        self.begin_calls.append({"token_ids": list(token_ids), **kwargs})
+        return probe
+
+    def finalize_overlap_probe(self, probe, **kwargs):
+        self.finalize_calls.append({"probe": probe, **kwargs})
+
+    def restore(self, *_args, **_kwargs):
+        return None
+
+
+def _overlap_trace_generation(*, mode="mtp", **stats):
+    return {
+        "text": "ok",
+        "tokens": [7],
+        "stats": {
+            "generation_mode": mode,
+            "session_cache_hit": True,
+            "cached_tokens": 12,
+            "new_prefill_tokens": 4,
+            "cache_source": "ram",
+            "session_restore_mode": "clone",
+            "cache_restore_time_s": 0.01,
+            "prompt_target_prefill_time_s": 0.02,
+            "prompt_mtp_history_time_s": 0.03,
+            "checkpoint_capture_time_s": 0.04,
+            **stats,
+        },
+        "prompt_tokens": 16,
+        "completion_tokens": 1,
+        "finish_reason": "stop",
+    }
+
+
+def test_disabled_real_session_bank_skips_overlap_probe_before_prompt_iteration(
+    monkeypatch,
+):
+    """Default-off tracing has no prompt-shaped work or dispatch ownership."""
+
+    class GuardedPrompt:
+        def __init__(self):
+            self.iterated = False
+
+        def __iter__(self):
+            self.iterated = True
+            raise AssertionError("disabled overlap tracing must not read the prompt")
+
+    class TrackingScope(openai._SessionOverlapRequestScope):
+        constructions = 0
+
+        def __init__(self):
+            type(self).constructions += 1
+            super().__init__()
+
+    state = _fake_state()
+    bank = SessionBank(overlap_trace_max_events=0)
+    prompt = GuardedPrompt()
+    seen: dict[str, object] = {}
+
+    def fail_if_started(*_args, **_kwargs):
+        raise AssertionError("disabled SessionBank must not begin an overlap probe")
+
+    def fake_run_generation(_state, prompt_ids, **kwargs):
+        seen["prompt_ids"] = prompt_ids
+        seen["session_bank"] = kwargs["session_bank"]
+        return _overlap_trace_generation()
+
+    monkeypatch.setattr(bank, "begin_overlap_probe", fail_if_started)
+    monkeypatch.setattr(openai, "_SessionOverlapRequestScope", TrackingScope)
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    result = openai._run_generation_dispatched(
+        state,
+        prompt,
+        batch_key="test.overlap.default-off",
+        generation_mode="mtp",
+        session_bank=bank,
+    )
+
+    assert result["text"] == "ok"
+    assert prompt.iterated is False
+    assert TrackingScope.constructions == 0
+    assert seen == {"prompt_ids": prompt, "session_bank": bank}
+    assert bank.overlap_trace_snapshot()["events"] == []
+    assert bank._overlap_probes == {}
+
+
+def test_overlap_trace_requires_explicit_capacity_for_duck_typed_bank():
+    class LegacyProbeBank:
+        def begin_overlap_probe(self, *_args, **_kwargs):
+            return object()
+
+    assert not openai._session_overlap_telemetry_enabled(
+        LegacyProbeBank(),
+        background_request=False,
+        request_observability=None,
+    )
+    assert openai._session_overlap_telemetry_enabled(
+        _OverlapTraceBank(),
+        background_request=False,
+        request_observability=None,
+    )
+
+
+def test_serial_overlap_trace_is_exactly_once_across_internal_retry_boundary(
+    monkeypatch,
+):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    generation_calls = 0
+
+    def fake_run_generation(*_args, **_kwargs):
+        nonlocal generation_calls
+        generation_calls += 1
+        # The real blank retry loop lives inside _run_generation. Its caller
+        # must see one boundary call, not one probe per prefill attempt.
+        return _overlap_trace_generation()
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    result = openai._run_generation_dispatched(
+        state,
+        [1, 2, 3, 4],
+        batch_key="test.overlap.serial",
+        generation_mode="mtp",
+        session_bank=bank,
+        session_template_hash="template",
+        session_draft_head_identity="head",
+        session_policy_fingerprint="policy",
+        request_observability={"blank_retry_attempts_simulated": 2},
+    )
+
+    assert result["text"] == "ok"
+    assert generation_calls == 1
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.begin_calls[0]["lane"] == "solo_mtp"
+    final = bank.finalize_calls[0]
+    assert final["terminal_status"] == "completed"
+    # Returning SessionBank-shaped stats is not evidence that the request
+    # reached the restore side of the bank. The fake generation deliberately
+    # skips that seam, so telemetry must record no consultation.
+    assert final["bank_consulted"] is False
+    assert final["outcome"] == {
+        "cache_hit": True,
+        "cached_tokens": 12,
+        "new_prefill_tokens": 4,
+        "cache_source": "ram",
+        "restore_kind": "clone",
+        "cache_restore_time_s": 0.01,
+        "target_prefill_time_s": 0.02,
+        "mtp_history_time_s": 0.03,
+        "checkpoint_capture_time_s": 0.04,
+    }
+
+
+def test_request_overlap_scope_merges_internal_dispatches_once(monkeypatch):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    scope = openai._SessionOverlapRequestScope()
+
+    def fake_run_generation(_state, dispatch_prompt_ids, **kwargs):
+        # Each internal dispatch reaches the real lookup seam. The outer
+        # HTTP-owner scope, not either dispatch, owns terminal finalization.
+        # Its contract must retain the first producer's prompt-shaped outcome,
+        # not the later repair dispatch's differently sized candidate.
+        kwargs["session_bank"].restore()
+        return _overlap_trace_generation(
+            session_cache_hit=False,
+            cached_tokens=0,
+            new_prefill_tokens=len(dispatch_prompt_ids),
+            cache_source="none",
+            session_restore_mode="cold",
+        )
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    for prompt_ids, batch_key in (
+        ([1, 2, 3], "test.stream.first"),
+        ([4, 5, 6, 7, 8, 9], "test.stream.retry"),
+    ):
+        openai._run_generation_dispatched(
+            state,
+            prompt_ids,
+            batch_key=batch_key,
+            generation_mode="mtp",
+            session_bank=bank,
+            _session_overlap_scope=scope,
+        )
+
+    scope.finalize(terminal_status="cancelled")
+
+    assert len(bank.begin_calls) == 1
+    assert bank.begin_calls[0]["token_ids"] == [1, 2, 3]
+    assert len(bank.finalize_calls) == 1
+    final = bank.finalize_calls[0]
+    assert final["terminal_status"] == "cancelled"
+    assert final["bank_consulted"] is True
+    assert final["outcome"] == {
+        "cache_hit": False,
+        "cached_tokens": 0,
+        "new_prefill_tokens": 3,
+        "cache_source": "none",
+        "restore_kind": "cold",
+        "cache_restore_time_s": 0.01,
+        "target_prefill_time_s": 0.02,
+        "mtp_history_time_s": 0.03,
+        "checkpoint_capture_time_s": 0.04,
+    }
+
+
+def test_request_overlap_scope_keeps_first_dispatch_fields_and_later_lookup(
+    monkeypatch,
+):
+    """A repair dispatch cannot create an impossible first-prompt event."""
+
+    class ReplaySchemaTraceBank(_OverlapTraceBank):
+        def __init__(self):
+            super().__init__()
+            self.events: list[dict] = []
+
+        def finalize_overlap_probe(self, probe, **kwargs):
+            super().finalize_overlap_probe(probe, **kwargs)
+            begin = self.begin_calls[int(probe["probe"]) - 1]
+            outcome = dict(kwargs["outcome"])
+            self.events.append(
+                {
+                    "schema_version": 2,
+                    "sequence": int(probe["probe"]),
+                    "bank_epoch": 0,
+                    "lane": str(begin["lane"]),
+                    "prompt_tokens": len(begin["token_ids"]),
+                    "terminal_status": str(kwargs["terminal_status"]),
+                    "bank_consulted": bool(kwargs["bank_consulted"]),
+                    "compatible_entry_count": 0,
+                    "candidates": [],
+                    "outcome": {
+                        "selected_entry_ordinal": None,
+                        "cache_hit": bool(outcome["cache_hit"]),
+                        "cached_tokens": int(outcome["cached_tokens"]),
+                        "new_prefill_tokens": int(outcome["new_prefill_tokens"]),
+                        "cache_source": str(outcome["cache_source"]),
+                        "restore_kind": str(outcome["restore_kind"]),
+                    },
+                    "timings": {
+                        "cache_restore_time_s": 0.0,
+                        "target_prefill_time_s": 0.0,
+                        "mtp_history_time_s": 0.0,
+                        "checkpoint_capture_time_s": 0.0,
+                    },
+                }
+            )
+
+        def overlap_trace_snapshot(self):
+            return {
+                "schema_version": 2,
+                "enabled": True,
+                "max_events": 8,
+                "events_collected": len(self.events),
+                "events_dropped": 0,
+                "pending_probe_count": 0,
+                "sequence_high_watermark": len(self.events),
+                "bank_epoch": 0,
+                "events": list(self.events),
+            }
+
+    state = _fake_state()
+    bank = ReplaySchemaTraceBank()
+    scope = openai._SessionOverlapRequestScope()
+    calls = 0
+
+    def fake_run_generation(_state, dispatch_prompt_ids, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            # The later repair performs the only lookup. Its consultation may
+            # be retained, but its larger prompt and hit-shaped stats may not.
+            kwargs["session_bank"].restore()
+            return _overlap_trace_generation(
+                session_cache_hit=True,
+                cached_tokens=len(dispatch_prompt_ids) - 1,
+                new_prefill_tokens=1,
+                cache_source="ram",
+                session_restore_mode="boundary",
+            )
+        return _overlap_trace_generation(
+            session_cache_hit=False,
+            cached_tokens=0,
+            new_prefill_tokens=len(dispatch_prompt_ids),
+            cache_source="none",
+            session_restore_mode="cold",
+        )
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+    for prompt_ids, batch_key in (
+        ([1, 2, 3], "test.stream.first-schema"),
+        ([4, 5, 6, 7, 8, 9], "test.stream.later-schema"),
+    ):
+        openai._run_generation_dispatched(
+            state,
+            prompt_ids,
+            batch_key=batch_key,
+            generation_mode="mtp",
+            session_bank=bank,
+            _session_overlap_scope=scope,
+        )
+    scope.finalize(terminal_status="completed")
+
+    assert len(bank.finalize_calls) == 1
+    event = bank.events[0]
+    assert event["prompt_tokens"] == 3
+    assert event["bank_consulted"] is True
+    assert event["outcome"] == {
+        "selected_entry_ordinal": None,
+        "cache_hit": False,
+        "cached_tokens": 0,
+        "new_prefill_tokens": 3,
+        "cache_source": "none",
+        "restore_kind": "cold",
+    }
+
+    # Check the emitted first-dispatch record against the actual replay parser
+    # rather than a hand-written approximation of its schema rules.
+    from mtplx import checkpoint_replay
+
+    parsed, _contract = checkpoint_replay._parse_payload(
+        bank.overlap_trace_snapshot()
+    )
+    assert len(parsed) == 1
+
+
+def test_request_overlap_scope_ignores_late_worker_after_outer_finalize(monkeypatch):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    scope = openai._SessionOverlapRequestScope()
+    scope.finalize(terminal_status="cancelled")
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: _overlap_trace_generation(),
+    )
+
+    result = openai._run_generation_dispatched(
+        state,
+        [1, 2, 3],
+        batch_key="test.overlap.late-worker",
+        generation_mode="mtp",
+        session_bank=bank,
+        _session_overlap_scope=scope,
+    )
+
+    assert result["text"] == "ok"
+    assert bank.begin_calls == []
+    assert bank.finalize_calls == []
+
+
+def test_request_overlap_scope_finalizes_begin_race_without_blocking(monkeypatch):
+    class BlockingBeginBank(_OverlapTraceBank):
+        def __init__(self):
+            super().__init__()
+            self.begin_started = Event()
+            self.release_begin = Event()
+
+        def begin_overlap_probe(self, token_ids, **kwargs):
+            self.begin_started.set()
+            assert self.release_begin.wait(timeout=2.0)
+            return super().begin_overlap_probe(token_ids, **kwargs)
+
+    state = _fake_state()
+    bank = BlockingBeginBank()
+    scope = openai._SessionOverlapRequestScope()
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: _overlap_trace_generation(),
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        worker = executor.submit(
+            openai._run_generation_dispatched,
+            state,
+            [1, 2, 3],
+            batch_key="test.overlap.begin-race",
+            generation_mode="mtp",
+            session_bank=bank,
+            _session_overlap_scope=scope,
+        )
+        assert bank.begin_started.wait(timeout=2.0)
+
+        # finalize() cannot wait for a blocked telemetry begin or join the
+        # worker. Once begin returns, it owns exactly one terminal event.
+        scope.finalize(terminal_status="cancelled")
+        assert bank.finalize_calls == []
+        bank.release_begin.set()
+        assert worker.result(timeout=2.0)["text"] == "ok"
+
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "cancelled"
+
+
+def test_request_overlap_scope_begin_finalize_race_is_exactly_once_under_repetition():
+    class BlockingBeginBank(_OverlapTraceBank):
+        def __init__(self):
+            super().__init__()
+            self.started = Event()
+            self.release = Event()
+
+        def begin_overlap_probe(self, token_ids, **kwargs):
+            self.started.set()
+            assert self.release.wait(timeout=2.0)
+            return super().begin_overlap_probe(token_ids, **kwargs)
+
+    state = _fake_state()
+    for _attempt in range(12):
+        bank = BlockingBeginBank()
+        scope = openai._SessionOverlapRequestScope()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            worker = executor.submit(
+                scope.begin_dispatch,
+                state,
+                [1, 2, 3],
+                lane="solo_mtp",
+                mtp_history_policy="committed",
+                kwargs={"session_bank": bank},
+            )
+            assert bank.started.wait(timeout=2.0)
+            scope.finalize(terminal_status="cancelled")
+            bank.release.set()
+            assert worker.result(timeout=2.0) is None
+        assert len(bank.begin_calls) == 1
+        assert len(bank.finalize_calls) == 1
+        assert bank.finalize_calls[0]["terminal_status"] == "cancelled"
+
+
+def test_serial_overlap_trace_stats_are_completely_fail_open(monkeypatch):
+    class HostileValue:
+        def __bool__(self):
+            raise ValueError("hostile bool")
+
+        def __int__(self):
+            raise ValueError("hostile int")
+
+        def __float__(self):
+            raise ValueError("hostile float")
+
+        def __str__(self):
+            raise ValueError("hostile str")
+
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    hostile = HostileValue()
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: _overlap_trace_generation(
+            cached_tokens=hostile,
+            new_prefill_tokens=hostile,
+            cache_source=hostile,
+            restore_kind=hostile,
+            cache_restore_time_s=float("nan"),
+            ssd_restore_s=hostile,
+            prompt_target_prefill_time_s=hostile,
+            prompt_mtp_history_time_s=hostile,
+            checkpoint_capture_time_s=hostile,
+            selected_entry_ordinal=hostile,
+        ),
+    )
+
+    result = openai._run_generation_dispatched(
+        state,
+        [1, 2, 3],
+        batch_key="test.overlap.hostile-stats",
+        generation_mode="mtp",
+        session_bank=bank,
+    )
+
+    assert result["text"] == "ok"
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "completed"
+    assert bank.finalize_calls[0]["outcome"] == {
+        "cache_hit": False,
+        "cached_tokens": 0,
+        "new_prefill_tokens": 3,
+        "cache_source": "none",
+        "restore_kind": "cold",
+        "cache_restore_time_s": 0.0,
+        "target_prefill_time_s": 0.0,
+        "mtp_history_time_s": 0.0,
+        "checkpoint_capture_time_s": 0.0,
+    }
+
+
+def test_solo_ar_overlap_trace_uses_no_mtp_history_policy_or_bank_restore(
+    monkeypatch,
+):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: _overlap_trace_generation(mode="ar"),
+    )
+
+    openai._run_generation_dispatched(
+        state,
+        [1, 2, 3, 4],
+        batch_key="test.overlap.solo_ar",
+        generation_mode="ar",
+        session_bank=bank,
+        session_template_hash="template",
+        session_draft_head_identity="head",
+        session_policy_fingerprint="policy",
+    )
+
+    assert len(bank.begin_calls) == 1
+    assert bank.begin_calls[0]["lane"] == "solo_ar"
+    assert bank.begin_calls[0]["mtp_history_policy"] is None
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["bank_consulted"] is False
+
+
+@pytest.mark.parametrize(
+    ("exc", "terminal_status"),
+    [
+        (openai._StreamCancelled("cancelled"), "cancelled"),
+        (RuntimeError("boom"), "error"),
+    ],
+)
+def test_serial_overlap_trace_finalizes_cancelled_or_error_once(
+    monkeypatch, exc, terminal_status
+):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+
+    def fail_generation(*_args, **_kwargs):
+        raise exc
+
+    monkeypatch.setattr(openai, "_run_generation", fail_generation)
+
+    with pytest.raises(type(exc)):
+        openai._run_generation_dispatched(
+            state,
+            [1, 2, 3],
+            batch_key="test.overlap.serial.fail",
+            generation_mode="mtp",
+            session_bank=bank,
+        )
+
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == terminal_status
+    assert bank.finalize_calls[0]["bank_consulted"] is False
+
+
+@pytest.mark.parametrize("restore_result", [None, object()])
+def test_serial_overlap_trace_marks_actual_session_bank_lookup(
+    monkeypatch, restore_result
+):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    restore_calls = 0
+
+    def restore(*_args, **_kwargs):
+        nonlocal restore_calls
+        restore_calls += 1
+        return restore_result
+
+    def fake_run_generation(*_args, **kwargs):
+        restored = kwargs["session_bank"].restore()
+        return _overlap_trace_generation(session_cache_hit=restored is not None)
+
+    bank.restore = restore
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    openai._run_generation_dispatched(
+        state,
+        [1, 2, 3],
+        batch_key="test.overlap.serial.consulted",
+        generation_mode="mtp",
+        session_bank=bank,
+    )
+
+    assert restore_calls == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "completed"
+    assert bank.finalize_calls[0]["bank_consulted"] is True
+
+
+@pytest.mark.parametrize(
+    "request_observability",
+    [{"warmup": True}, {"background_request": True}],
+)
+def test_serial_overlap_trace_skips_warmup_and_background(
+    monkeypatch, request_observability
+):
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    monkeypatch.setattr(
+        openai,
+        "_run_generation",
+        lambda *_args, **_kwargs: _overlap_trace_generation(),
+    )
+
+    openai._run_generation_dispatched(
+        state,
+        [1, 2, 3],
+        batch_key="test.overlap.skip",
+        generation_mode="mtp",
+        session_bank=bank,
+        request_observability=request_observability,
+        background_request=bool(request_observability.get("background_request")),
+    )
+
+    assert bank.begin_calls == []
+    assert bank.finalize_calls == []
+
+
+class _BatchGeneratorDouble:
+    def __init__(self):
+        self.inserted: list[dict] = []
+        self.removed: list[list[int]] = []
+
+    def insert(self, prompt_ids, **kwargs):
+        self.inserted.append({"prompt_ids": prompt_ids, **kwargs})
+        return list(range(100, 100 + len(prompt_ids)))
+
+    def remove(self, uids):
+        self.removed.append([int(uid) for uid in uids])
+
+
+class _InsertFailureBatchGeneratorDouble(_BatchGeneratorDouble):
+    def insert(self, prompt_ids, **kwargs):
+        self.inserted.append({"prompt_ids": prompt_ids, **kwargs})
+        raise RuntimeError("insert failed")
+
+
+class _HostileStats:
+    def __iter__(self):
+        raise RuntimeError("hostile trace stats")
+
+
+def _overlap_batch_job(bank, *, cancel_event=None):
+    return openai._BatchedARJob(
+        request_id="trace-job",
+        prompt_ids=[1, 2, 3, 4],
+        max_tokens=4,
+        sampler=openai.SamplerConfig(temperature=0.0, top_p=0.0, top_k=0),
+        seed=0,
+        stop_token_ids=set(),
+        token_callback=None,
+        prefill_callback=None,
+        request_observability={},
+        mtp_disabled_reason=None,
+        generation_limits={},
+        cancel_event=cancel_event,
+        session_id="s",
+        session_bank=bank,
+        session_restore_mode="clone",
+        session_template_hash="template",
+        session_draft_head_identity="head",
+        session_policy_fingerprint="policy",
+    )
+
+
+def test_batched_overlap_trace_completes_once_after_restore_path():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+    generator = _BatchGeneratorDouble()
+    service._pending.append(job)
+
+    service._admit_pending(generator, {"max_active_requests": 1})
+    job.tokens = [65]
+    job.prefill_done_s = time.perf_counter()
+    service._complete_job(job, finish_reason="stop")
+
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    final = bank.finalize_calls[0]
+    assert final["terminal_status"] == "completed"
+    assert final["bank_consulted"] is True
+    assert bank.begin_calls[0]["mtp_history_policy"] is None
+    assert final["outcome"]["cache_hit"] is False
+    assert final["outcome"]["restore_kind"] == "cold"
+
+
+def test_batched_overlap_trace_finalizes_pre_admission_cancellation_once():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    cancel_event = Event()
+    cancel_event.set()
+    job = _overlap_batch_job(bank, cancel_event=cancel_event)
+    generator = _BatchGeneratorDouble()
+    service._pending.append(job)
+
+    service._admit_pending(generator, {"max_active_requests": 1})
+
+    assert generator.inserted == []
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "cancelled"
+    assert bank.finalize_calls[0]["bank_consulted"] is False
+    assert job.future.done()
+
+
+def test_batched_overlap_trace_finalizes_pump_failure_once():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+    generator = _BatchGeneratorDouble()
+    service._pending.append(job)
+    service._admit_pending(generator, {"max_active_requests": 1})
+
+    service._fail_all(RuntimeError("pump failed"))
+
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "error"
+    assert bank.finalize_calls[0]["bank_consulted"] is True
+
+
+def test_batched_admission_insert_failure_finalizes_future_and_probe_once():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+    generator = _InsertFailureBatchGeneratorDouble()
+    service._pending.append(job)
+
+    with pytest.raises(RuntimeError, match="insert failed"):
+        service._admit_pending(generator, {"max_active_requests": 1})
+
+    # The pump re-raises this failure into _fail_all(). The admission handler
+    # has already made the job terminal, so that second path must not emit a
+    # duplicate probe event.
+    service._fail_all(RuntimeError("pump stopped after insert failure"))
+
+    assert job.future.done()
+    with pytest.raises(RuntimeError, match="insert failed"):
+        job.future.result()
+    assert job.uid is None
+    assert service.snapshot()["pending"] == 0
+    assert service.snapshot()["active"] == 0
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "error"
+    assert bank.finalize_calls[0]["bank_consulted"] is True
+
+
+@pytest.mark.parametrize(
+    ("seam", "message"),
+    [
+        ("_prepare_prompt_inputs", "prompt prepare failed"),
+        ("_prepare_session_bank_restore", "bank restore preparation failed"),
+        ("_prepare_shared_prefix", "shared prefix preparation failed"),
+        ("_split_unmergeable_history_batch", "batch split failed"),
+        ("_make_sampler", "sampler construction failed"),
+    ],
+)
+def test_batched_admission_preinsert_failures_terminalize_every_detached_job(
+    monkeypatch, seam, message
+):
+    state = _fake_state()
+    service = openai._BatchedARGenerationService(state)
+    banks = [_OverlapTraceBank(), _OverlapTraceBank()]
+    jobs = [_overlap_batch_job(bank) for bank in banks]
+    service._pending.extend(jobs)
+
+    def fail_seam(*_args, **_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(service, seam, fail_seam)
+
+    with pytest.raises(RuntimeError, match=message):
+        service._admit_pending(_BatchGeneratorDouble(), {"max_active_requests": 2})
+
+    for job, bank in zip(jobs, banks, strict=True):
+        assert job.future.done()
+        with pytest.raises(RuntimeError, match=message):
+            job.future.result()
+        assert len(bank.begin_calls) == 1
+        assert len(bank.finalize_calls) == 1
+        assert bank.finalize_calls[0]["terminal_status"] == "error"
+    assert service.snapshot()["pending"] == 0
+    assert service.snapshot()["active"] == 0
+
+
+def test_batched_admission_insert_failure_terminalizes_every_detached_job():
+    state = _fake_state()
+    service = openai._BatchedARGenerationService(state)
+    banks = [_OverlapTraceBank(), _OverlapTraceBank()]
+    jobs = [_overlap_batch_job(bank) for bank in banks]
+    service._pending.extend(jobs)
+
+    with pytest.raises(RuntimeError, match="insert failed"):
+        service._admit_pending(
+            _InsertFailureBatchGeneratorDouble(), {"max_active_requests": 2}
+        )
+
+    for job, bank in zip(jobs, banks, strict=True):
+        assert job.future.done()
+        with pytest.raises(RuntimeError, match="insert failed"):
+            job.future.result()
+        assert len(bank.begin_calls) == 1
+        assert len(bank.finalize_calls) == 1
+        assert bank.finalize_calls[0]["terminal_status"] == "error"
+    assert service.snapshot()["pending"] == 0
+    assert service.snapshot()["active"] == 0
+
+
+def test_batched_admission_insert_failure_preserves_requeued_job(monkeypatch):
+    state = _fake_state()
+    service = openai._BatchedARGenerationService(state)
+    admitted_bank = _OverlapTraceBank()
+    requeued_bank = _OverlapTraceBank()
+    admitted = _overlap_batch_job(admitted_bank)
+    requeued = _overlap_batch_job(requeued_bank)
+    service._pending.extend([admitted, requeued])
+
+    monkeypatch.setattr(
+        service,
+        "_split_unmergeable_history_batch",
+        lambda jobs: ([jobs[0]], [jobs[1]]),
+    )
+
+    with pytest.raises(RuntimeError, match="insert failed"):
+        service._admit_pending(
+            _InsertFailureBatchGeneratorDouble(),
+            {"max_active_requests": 2},
+        )
+
+    assert admitted.future.done()
+    with pytest.raises(RuntimeError, match="insert failed"):
+        admitted.future.result()
+    assert not requeued.future.done()
+    assert service.snapshot()["pending"] == 1
+    assert service.snapshot()["active"] == 0
+    assert len(admitted_bank.finalize_calls) == 1
+    assert requeued_bank.finalize_calls == []
+
+
+def test_batched_shared_prefill_is_not_reported_as_session_bank_hit():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+
+    service._begin_overlap_probe(job)
+    assert not service._prepare_session_bank_restore(job)
+    # This is the operational state after cohort-local shared prefill. It is
+    # useful for scheduler stats, but comes after the SessionBank miss above.
+    job.cached_tokens = 3
+    job.session_cache_hit = True
+    job.cache_source = "ram"
+    job.effective_restore_mode = "ar_batch_shared_prefix"
+    job.shared_prefix_tokens = 3
+
+    service._finalize_overlap_probe(
+        job,
+        terminal_status="completed",
+        stats={
+            "session_cache_hit": True,
+            "cached_tokens": 3,
+            "new_prefill_tokens": 1,
+            "cache_source": "ram",
+            "session_restore_mode": "ar_batch_shared_prefix",
+        },
+    )
+
+    assert job.session_cache_hit is True
+    assert job.cache_source == "ram"
+    assert len(bank.finalize_calls) == 1
+    final = bank.finalize_calls[0]
+    assert final["bank_consulted"] is True
+    assert final["outcome"]["cache_hit"] is False
+    assert final["outcome"]["cached_tokens"] == 0
+    assert final["outcome"]["new_prefill_tokens"] == 4
+    assert final["outcome"]["cache_source"] == "none"
+    assert final["outcome"]["restore_kind"] == "cold"
+    assert final["outcome"].get("selected_entry_ordinal") is None
+
+
+def test_batched_overlap_trace_hostile_stats_fail_open():
+    state = _fake_state()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+
+    service._begin_overlap_probe(job)
+    service._finalize_overlap_probe(
+        job,
+        terminal_status="completed",
+        stats=_HostileStats(),
+    )
+
+    assert len(bank.finalize_calls) == 1
+    final = bank.finalize_calls[0]
+    assert final["terminal_status"] == "completed"
+    assert final["outcome"] == {
+        "cache_hit": False,
+        "cached_tokens": 0,
+        "new_prefill_tokens": 4,
+        "cache_source": "none",
+        "restore_kind": "cold",
+        "cache_restore_time_s": 0.0,
+        "target_prefill_time_s": 0.0,
+        "mtp_history_time_s": 0.0,
+        "checkpoint_capture_time_s": 0.0,
+    }
+
+
+def test_batched_decode_failure_finalizes_future_probe_and_active_job_once():
+    class DecodeFailureTokenizer:
+        def decode(self, _tokens):
+            raise RuntimeError("decode failed")
+
+    state = _fake_state()
+    state.runtime.tokenizer = DecodeFailureTokenizer()
+    bank = _OverlapTraceBank()
+    service = openai._BatchedARGenerationService(state)
+    job = _overlap_batch_job(bank)
+    job.tokens = [65]
+    job.prefill_done_s = time.perf_counter()
+    service._begin_overlap_probe(job)
+    with service._condition:
+        job.uid = 71
+        service._active[job.uid] = job
+
+    service._finish_active_job(job.uid, job, finish_reason="stop")
+
+    assert job.future.done()
+    with pytest.raises(RuntimeError, match="decode failed"):
+        job.future.result()
+    assert service.snapshot()["pending"] == 0
+    assert service.snapshot()["active"] == 0
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "error"
 
 
 def test_mtplx_settings_endpoint_controls_server_reasoning():
@@ -3277,7 +4404,10 @@ def test_settings_emit_gemma_block_controls_and_tune_policy():
         "Block 8",
     ]
     assert controls["kv_quant"]["supported"] is False
-    assert controls["kv_quant"]["disabled_reason"] == "KV quantization is not supported for Gemma."
+    assert (
+        controls["kv_quant"]["disabled_reason"]
+        == "KV quantization is not supported for Gemma."
+    )
     assert controls["context_window"]["maximum"] == 262144
     assert response.json()["context_window_policy"]["maximum"] == 262144
 
@@ -3301,7 +4431,10 @@ def test_step_descriptor_is_experimental_and_not_qwen_tune():
     assert controls["reasoning"]["default_effort"] == "low"
     assert controls["tune"]["supported"] is False
     assert controls["kv_quant"]["supported"] is False
-    assert controls["kv_quant"]["disabled_reason"] == "KV quantization is not supported for Step."
+    assert (
+        controls["kv_quant"]["disabled_reason"]
+        == "KV quantization is not supported for Step."
+    )
 
 
 def test_step_backend_chat_policy_injects_language_anchor():
@@ -3317,7 +4450,9 @@ def test_step_backend_chat_policy_injects_language_anchor():
     assert [message.role for message in messages] == ["system", "user"]
     assert "MTPLX Step language policy:" in messages[0].content
     assert "Use English by default" in messages[0].content
-    assert "Never answer in Chinese for English or ambiguous input." in messages[0].content
+    assert (
+        "Never answer in Chinese for English or ambiguous input." in messages[0].content
+    )
     assert messages[1].content == "hi"
 
 
@@ -3335,7 +4470,9 @@ def test_step_backend_chat_policy_preserves_existing_system_prompt():
 
     assert changed is True
     assert [message.role for message in messages] == ["system", "user"]
-    assert messages[0].content.startswith("Client policy\n\nMTPLX Step language policy:")
+    assert messages[0].content.startswith(
+        "Client policy\n\nMTPLX Step language policy:"
+    )
     assert messages[1].content == "hi"
 
 
@@ -3452,7 +4589,10 @@ def test_openai_server_health_metrics_and_models_fake_state():
     assert "refreshDaemonSettings" in root.text
     assert "window.setInterval(() => refreshDaemonSettings(), 1500)" in root.text
     assert "JSON.stringify({system:" in root.text
-    assert 'const rawMode = payload.generation_mode == null ? "" : String(payload.generation_mode);' in root.text
+    assert (
+        'const rawMode = payload.generation_mode == null ? "" : String(payload.generation_mode);'
+        in root.text
+    )
     assert "Settings mirror the running MTPLX app." in root.text
     # Auto-detect of context length must be hooked up so the slider isn't
     # capped at a stale 32k for a 256k-context model.
@@ -4045,7 +5185,9 @@ def test_opencode_chitchat_history_reaches_model_with_tools_kept(monkeypatch):
     assert stats["request_filtered_tool_names"] == ["session_status"]
     assert stats["request_hidden_tool_names"] == []
     assert stats["request_tools_hidden_by_bridge"] is False
-    assert stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+    assert (
+        stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+    )
     assert stats["tool_contract_active"] is True
     assert stats["no_tools_contract_active"] is False
     assert stats["transcript_replaced_client_system_messages"] == 0
@@ -4096,7 +5238,10 @@ def test_opencode_initial_coding_request_uses_compact_mtplx_agent_prompt(monkeyp
         json={
             "messages": [
                 {"role": "system", "content": opencode_system_prompt},
-                {"role": "user", "content": "Inspect this project and read package files."},
+                {
+                    "role": "user",
+                    "content": "Inspect this project and read package files.",
+                },
             ],
             "tools": [_tool_schema()],
             "max_tokens": 16,
@@ -4127,7 +5272,9 @@ def test_chat_long_context_depth_cap_resolves_runtime_depth(monkeypatch):
     monkeypatch.setenv("MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY", "auto")
     monkeypatch.setenv("MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD", "12000")
     monkeypatch.setenv("MTPLX_LONG_CONTEXT_MTP_DEPTH", "2")
-    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 12506)
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 12506
+    )
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         captured.update(kwargs)
@@ -4175,7 +5322,9 @@ def test_opencode_short_context_preserves_depth3(monkeypatch):
     captured: dict[str, object] = {}
     client = TestClient(create_app(_fake_state()))
 
-    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000)
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
+    )
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         captured["depth"] = kwargs["depth"]
@@ -4213,7 +5362,9 @@ def test_opencode_short_context_depth_policy_respects_explicit_depth(monkeypatch
     captured: dict[str, object] = {}
     client = TestClient(create_app(_fake_state()))
 
-    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000)
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
+    )
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         captured["depth"] = kwargs["depth"]
@@ -4252,7 +5403,9 @@ def test_opencode_short_context_depth_policy_keeps_depth3_above_threshold(monkey
     captured: dict[str, object] = {}
     client = TestClient(create_app(_fake_state()))
 
-    monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 8000)
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 8000
+    )
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         captured["depth"] = kwargs["depth"]
@@ -4367,9 +5520,7 @@ def test_streaming_session_uses_generation_final_postcommit_without_retokenized_
             if streaming_response is None
             else bool(streaming_response)
         )
-        expected_batch_key = (
-            "chat.stream" if is_streaming else "chat.nonstream"
-        )
+        expected_batch_key = "chat.stream" if is_streaming else "chat.nonstream"
         assert scheduler.current_batch_key == expected_batch_key
         captured.setdefault(
             "commit_final_state_to_bank",
@@ -4523,9 +5674,10 @@ def test_streaming_unsafe_postcommit_releases_without_blocking_second_request(
         if metric.get("session_prompt_prefix_commit")
     ]
     assert metrics_with_frontier
-    assert metrics_with_frontier[-1]["session_prompt_prefix_commit"][
-        "boundary_kind"
-    ] == "postcommit_prompt_prefix"
+    assert (
+        metrics_with_frontier[-1]["session_prompt_prefix_commit"]["boundary_kind"]
+        == "postcommit_prompt_prefix"
+    )
     assert metrics_with_frontier[-1]["session_postcommit_snapshot"] == {
         "stored": False,
         "mode": "async_pending",
@@ -4954,7 +6106,9 @@ class StepTemplateIgnoringThinkingTokenizer(CaptureTokenizer):
         rendered = "<｜begin▁of▁sentence｜>"
         reasoning_effort = kwargs.get("reasoning_effort")
         if reasoning_effort:
-            rendered += f"<|im_start|>system\nReasoning: {reasoning_effort}\n\n<|im_end|>\n"
+            rendered += (
+                f"<|im_start|>system\nReasoning: {reasoning_effort}\n\n<|im_end|>\n"
+            )
         for message in messages:
             role = str(message.get("role") or "user")
             content = str(message.get("content") or "")
@@ -5243,9 +6397,7 @@ def _fake_streaming_generation(text: str, *, finish_reason: str | None = "stop")
             False,
             {
                 "type": "object",
-                "properties": {
-                    "nested": {"$id": "https://foreign.example/resource"}
-                },
+                "properties": {"nested": {"$id": "https://foreign.example/resource"}},
             },
             0,
             False,
@@ -5253,15 +6405,7 @@ def _fake_streaming_generation(text: str, *, finish_reason: str | None = "stop")
         (
             False,
             False,
-            {
-                "allOf": [
-                    {
-                        "$schema": (
-                            "https://json-schema.org/draft/2020-12/schema"
-                        )
-                    }
-                ]
-            },
+            {"allOf": [{"$schema": ("https://json-schema.org/draft/2020-12/schema")}]},
             0,
             False,
         ),
@@ -5287,9 +6431,7 @@ def _fake_streaming_generation(text: str, *, finish_reason: str | None = "stop")
             {
                 "$defs": {"value~2name": {"type": "string"}},
                 "type": "object",
-                "properties": {
-                    "value": {"$ref": "#/$defs/value~2name"}
-                },
+                "properties": {"value": {"$ref": "#/$defs/value~2name"}},
             },
             0,
             False,
@@ -5300,9 +6442,7 @@ def _fake_streaming_generation(text: str, *, finish_reason: str | None = "stop")
             {
                 "type": "object",
                 "properties": {
-                    "value": {
-                        "$ref": "https://foreign.example/schema#/$defs/value"
-                    }
+                    "value": {"$ref": "https://foreign.example/schema#/$defs/value"}
                 },
             },
             0,
@@ -5397,9 +6537,10 @@ def test_server_submits_only_after_full_semantic_lane_preflight(
         assert "tool_semantic_hints" not in captured["request_observability"]
         assert provider.future.cancelled()
     else:
-        assert captured["request_observability"].get(
-            "ar_batch_bypass_reason"
-        ) != "tool_semantic_hint"
+        assert (
+            captured["request_observability"].get("ar_batch_bypass_reason")
+            != "tool_semantic_hint"
+        )
 
 
 def test_server_disabled_provider_does_not_force_the_solo_semantic_lane(
@@ -5454,9 +6595,7 @@ def test_server_disabled_provider_does_not_force_the_solo_semantic_lane(
     assert request_observability["tool_semantic_hints"]["disabled_reason"] == (
         "provider_unavailable"
     )
-    assert request_observability.get("ar_batch_bypass_reason") != (
-        "tool_semantic_hint"
-    )
+    assert request_observability.get("ar_batch_bypass_reason") != ("tool_semantic_hint")
 
 
 def _stream_payloads(response_text: str) -> list[dict]:
@@ -5538,9 +6677,7 @@ def test_chat_tools_hide_task_when_latest_user_disallows_subagents(monkeypatch):
         "/v1/chat/completions",
         headers={"x-mtplx-cache-mode": "bypass"},
         json={
-            "messages": [
-                {"role": "user", "content": "Make the change. No subagents."}
-            ],
+            "messages": [{"role": "user", "content": "Make the change. No subagents."}],
             "tools": [_tool_schema(), _task_tool_schema(), _todowrite_tool_schema()],
             "tool_choice": "auto",
             "max_tokens": 8,
@@ -5733,7 +6870,9 @@ def test_chat_tools_opencode_client_toolset_passes_through(monkeypatch):
     assert stats["tool_prompt_mode"] == "compact"
 
 
-def test_chat_tools_keep_task_when_latest_user_explicitly_requests_subagent(monkeypatch):
+def test_chat_tools_keep_task_when_latest_user_explicitly_requests_subagent(
+    monkeypatch,
+):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
@@ -5768,7 +6907,9 @@ def test_chat_tools_keep_task_when_latest_user_explicitly_requests_subagent(monk
     assert tool_names == ["session_status", "Task"]
 
 
-def test_chat_tools_keep_todowrite_when_latest_user_explicitly_requests_plan(monkeypatch):
+def test_chat_tools_keep_todowrite_when_latest_user_explicitly_requests_plan(
+    monkeypatch,
+):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
@@ -6363,7 +7504,9 @@ def test_opencode_simple_chitchat_streams_reasoning_when_app_reasoning_on(monkey
     assert "visible_reasoning_policy" not in final[-1]["mtplx_stats"]
     # Chitchat keeps client tools (band-aid removal, 2026-06-09).
     assert final[-1]["mtplx_stats"]["request_tools_hidden_by_bridge"] is False
-    assert final[-1]["mtplx_stats"]["opencode_prompt_contract_profile"] == "opencode_agent"
+    assert (
+        final[-1]["mtplx_stats"]["opencode_prompt_contract_profile"] == "opencode_agent"
+    )
 
 
 def test_opencode_simple_chitchat_does_not_retry_or_cook_a_reply(monkeypatch):
@@ -6440,10 +7583,14 @@ def test_opencode_simple_chitchat_does_not_retry_or_cook_a_reply(monkeypatch):
     assert final[-1]["mtplx_stats"]["request_reasoning_mode"] == "off"
     # Chitchat keeps client tools (band-aid removal, 2026-06-09).
     assert final[-1]["mtplx_stats"]["request_tools_hidden_by_bridge"] is False
-    assert final[-1]["mtplx_stats"]["opencode_prompt_contract_profile"] == "opencode_agent"
+    assert (
+        final[-1]["mtplx_stats"]["opencode_prompt_contract_profile"] == "opencode_agent"
+    )
 
 
-def test_step_chat_request_encodes_language_policy_without_replacing_user_turn(monkeypatch):
+def test_step_chat_request_encodes_language_policy_without_replacing_user_turn(
+    monkeypatch,
+):
     captured: dict[str, object] = {}
     state = _fake_streaming_session_state()
     state.backend_descriptor = openai.descriptor_for_backend_id("step3p5_mtp")
@@ -6739,7 +7886,7 @@ def test_pi_tool_result_empty_template_sentinel_retries_final_answer(monkeypatch
                             "type": "function",
                             "function": {
                                 "name": "read",
-                                "arguments": "{\"filePath\":\"package.json\"}",
+                                "arguments": '{"filePath":"package.json"}',
                             },
                         }
                     ],
@@ -6747,7 +7894,7 @@ def test_pi_tool_result_empty_template_sentinel_retries_final_answer(monkeypatch
                 {
                     "role": "tool",
                     "tool_call_id": "call_read",
-                    "content": "{\"scripts\":{\"dev\":\"vite\"}}",
+                    "content": '{"scripts":{"dev":"vite"}}',
                 },
             ],
             "tools": [_tool_schema()],
@@ -6779,6 +7926,88 @@ def test_pi_tool_result_empty_template_sentinel_retries_final_answer(monkeypatch
     assert final[-1]["mtplx_stats"]["tool_fed_empty_retry_reason"] == (
         "empty_tool_fed_completion"
     )
+
+
+def test_streaming_retry_uses_one_request_scoped_overlap_event(monkeypatch):
+    state = _fake_streaming_session_state()
+    state.args.stream_interval = 1
+    state.args.stats_footer = False
+    bank = _OverlapTraceBank()
+    state.sessions.bank = bank
+    client = TestClient(create_app(state))
+    texts = ["<|third_empty|>", "</think>\n\nFinal answer after retry."]
+    calls = 0
+
+    def fake_run_generation(_state, prompt_ids, **kwargs):
+        nonlocal calls
+        text = texts[calls]
+        calls += 1
+        # Exercise the real restore-side marker through both dispatches.
+        kwargs["session_bank"].restore()
+        tokens = [ord(char) for char in text]
+        token_callback = kwargs.get("token_callback")
+        if token_callback is not None:
+            for token in tokens:
+                token_callback([token])
+        return {
+            "text": text,
+            "tokens": tokens,
+            "stats": {
+                **(kwargs.get("request_observability") or {}),
+                "generation_mode": kwargs["generation_mode"],
+                "mtp_depth": kwargs["depth"],
+                "completion_tokens": len(tokens),
+            },
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": len(tokens),
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"x-mtplx-client": "pi"},
+        json={
+            "messages": [
+                {"role": "user", "content": "Finish the task."},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": '{"filePath":"package.json"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_read",
+                    "content": '{"scripts":{"test":"pytest"}}',
+                },
+            ],
+            "tools": [_tool_schema()],
+            "tool_choice": "auto",
+            "stream": True,
+            "max_tokens": 128,
+            "enable_thinking": True,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "Final answer after retry." in body
+    assert calls == 2
+    assert len(bank.begin_calls) == 1
+    assert len(bank.finalize_calls) == 1
+    assert bank.finalize_calls[0]["terminal_status"] == "completed"
+    assert bank.finalize_calls[0]["bank_consulted"] is True
 
 
 def test_pi_tool_result_orphan_tool_tail_retries_without_stream_leak(monkeypatch):
@@ -6836,7 +8065,7 @@ def test_pi_tool_result_orphan_tool_tail_retries_without_stream_leak(monkeypatch
                             "type": "function",
                             "function": {
                                 "name": "read",
-                                "arguments": "{\"filePath\":\"src/Game.ts\"}",
+                                "arguments": '{"filePath":"src/Game.ts"}',
                             },
                         }
                     ],
@@ -6844,7 +8073,7 @@ def test_pi_tool_result_orphan_tool_tail_retries_without_stream_leak(monkeypatch
                 {
                     "role": "tool",
                     "tool_call_id": "call_read",
-                    "content": "{\"content\":\"export const score = 0\"}",
+                    "content": '{"content":"export const score = 0"}',
                 },
             ],
             "tools": [_tool_schema()],
@@ -6944,7 +8173,7 @@ def test_pi_tool_result_reasoning_only_final_turn_repairs_without_visible_leak(
                             "type": "function",
                             "function": {
                                 "name": "read",
-                                "arguments": "{\"filePath\":\"src/Game.ts\"}",
+                                "arguments": '{"filePath":"src/Game.ts"}',
                             },
                         }
                     ],
@@ -6952,7 +8181,7 @@ def test_pi_tool_result_reasoning_only_final_turn_repairs_without_visible_leak(
                 {
                     "role": "tool",
                     "tool_call_id": "call_read",
-                    "content": "{\"content\":\"export class Game {}\"}",
+                    "content": '{"content":"export class Game {}"}',
                 },
             ],
             "tools": [_tool_schema()],
@@ -7098,7 +8327,9 @@ def test_streaming_unclosed_tool_call_errors_instead_of_hidden_runaway(monkeypat
     monkeypatch.setattr(
         openai,
         "_run_generation",
-        _fake_streaming_generation("<tool_call>\n<function=session_status>\n" + "x" * 32),
+        _fake_streaming_generation(
+            "<tool_call>\n<function=session_status>\n" + "x" * 32
+        ),
     )
 
     with client.stream(
@@ -7128,7 +8359,9 @@ def test_streaming_long_content_first_write_survives_hidden_tool_guard(monkeypat
     client = TestClient(create_app(state))
     monkeypatch.setattr(openai, "STREAM_HIDDEN_TOOL_GUARD_TOKENS", 80)
     monkeypatch.setattr(openai, "STREAM_HIDDEN_TOOL_GUARD_S", 0.0)
-    long_content = "\n".join(["<!DOCTYPE html>", "<html>", "<body>", "x" * 80, "</body>", "</html>"] * 24)
+    long_content = "\n".join(
+        ["<!DOCTYPE html>", "<html>", "<body>", "x" * 80, "</body>", "</html>"] * 24
+    )
     text = (
         "<tool_call>\n<function=write>\n"
         f"<parameter=content>\n{long_content}\n</parameter>\n"
@@ -7299,9 +8532,7 @@ def test_gemma4_encoder_renders_assistant_tool_call_before_tool_result():
         "type": "function",
         "function": {
             "name": "bash",
-            "arguments": json.dumps(
-                {"command": "ls", "description": "List files"}
-            ),
+            "arguments": json.dumps({"command": "ls", "description": "List files"}),
         },
     }
 
@@ -7364,7 +8595,9 @@ def test_agent_transcript_canonicalization_preserves_tool_history_text():
         tools_active=True,
     )
 
-    assert canonical[1].content == "Let me continue:\nWrite the Sky, Game, and utils files"
+    assert (
+        canonical[1].content == "Let me continue:\nWrite the Sky, Game, and utils files"
+    )
     assert canonical[1].tool_calls == [tool_call]
     assert stats.stripped_tool_preamble_messages == 0
     assert stats.stripped_tool_preamble_chars == 0
@@ -7480,7 +8713,10 @@ def test_agent_transcript_canonicalization_compacts_digested_large_tool_results(
     assert stats.compacted_tool_result_chars == len(large_output) - len(compacted)
     metrics = stats.to_metrics()
     assert metrics["transcript_canonicalized"] is True
-    assert metrics["transcript_canonical_message_chars"] < metrics["transcript_raw_message_chars"]
+    assert (
+        metrics["transcript_canonical_message_chars"]
+        < metrics["transcript_raw_message_chars"]
+    )
 
 
 def test_agent_transcript_canonicalization_keeps_followup_tool_digests_small():
@@ -7655,7 +8891,10 @@ def test_agent_transcript_canonicalization_compacts_current_large_glob_output():
     assert "src/game/ObstacleManager.ts" in compacted
     assert "read_hint_count=2" in compacted
     assert "<next_read_hints>" in compacted
-    assert 'filePath="/Users/youssof/Documents/bow masters 3d/src/game/Arrow.ts"' in compacted
+    assert (
+        'filePath="/Users/youssof/Documents/bow masters 3d/src/game/Arrow.ts"'
+        in compacted
+    )
     assert "Avoid broad list/glob/grep repeats" in compacted
     assert len(compacted) < 6_000
     assert len(compacted) < len(large_output)
@@ -7714,12 +8953,17 @@ def test_agent_transcript_canonicalization_adds_read_ranges_for_build_output():
     assert "<next_read_hints>" in compacted
     assert 'filePath="src/game/ObstacleManager.ts" start="220" end="273"' in compacted
     assert 'filePath="src/game/HUD.ts" start="68" end="108"' in compacted
-    assert 'filePath="/Users/youssof/Documents/bow masters 3d/scripts/check.py" start="22" end="62"' in compacted
+    assert (
+        'filePath="/Users/youssof/Documents/bow masters 3d/scripts/check.py" start="22" end="62"'
+        in compacted
+    )
     assert "Do not rerun the broad tool command unchanged" in compacted
     assert "error TS2322" in compacted
     assert "error TS2554" in compacted
     assert stats.compacted_active_tool_result_messages == 1
-    assert stats.compacted_active_tool_result_chars == len(large_output) - len(compacted)
+    assert stats.compacted_active_tool_result_chars == len(large_output) - len(
+        compacted
+    )
     assert stats.to_metrics()["transcript_compacted_active_tool_result_read_hints"] == 3
 
 
@@ -7738,15 +8982,21 @@ def test_agent_transcript_canonicalization_compacts_current_large_read_outputs()
     ]
     for line_no in range(3, 380):
         if line_no == 240:
-            body_lines.append("240:   public checkArrowCollisions(arrow: Arrow): void {")
+            body_lines.append(
+                "240:   public checkArrowCollisions(arrow: Arrow): void {"
+            )
         elif line_no == 241:
             body_lines.append("241:     if (arrow.isEmbedded()) return;")
         elif line_no == 248:
-            body_lines.append("248:       const dist = arrowPos.distanceTo(obstacle.position);")
+            body_lines.append(
+                "248:       const dist = arrowPos.distanceTo(obstacle.position);"
+            )
         elif line_no == 252:
             body_lines.append("252:       if (dist < hitRadius) {")
         elif line_no == 253:
-            body_lines.append("253:         arrow.embedInTerrain(obstacle.position.y - 0.5);")
+            body_lines.append(
+                "253:         arrow.embedInTerrain(obstacle.position.y - 0.5);"
+            )
         elif line_no == 320:
             body_lines.append("320:   window.addEventListener('touchstart', flap);")
         elif line_no == 321:
@@ -7761,9 +9011,7 @@ def test_agent_transcript_canonicalization_compacts_current_large_read_outputs()
     large_read_output = (
         "<path>src/game/ObstacleManager.ts</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(body_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
     )
 
     canonical, stats = openai._canonicalize_agent_transcript(
@@ -7833,9 +9081,7 @@ def test_agent_transcript_canonicalization_uses_inspection_digest_for_review_rea
     read_output = (
         "<path>index.html</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(body_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
     )
 
     canonical, stats = openai._canonicalize_agent_transcript(
@@ -7946,9 +9192,7 @@ def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors(
     read_output = (
         "<path>index.html</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(body_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
     )
 
     canonical, stats = openai._canonicalize_agent_transcript(
@@ -7972,15 +9216,24 @@ def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors(
 
     compacted = str(canonical[2].content)
     assert compacted.startswith("<mtplx_read_inspection_digest")
-    assert 'line 5: <meta name="viewport" content="width=device-width, initial-scale=1.0">' in compacted
+    assert (
+        'line 5: <meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        in compacted
+    )
     assert "line 6: <title>Flappy Bird 3D</title>" in compacted
     assert "line 185: const relZ = Math.abs(birdZ - pipe.position.z);" in compacted
-    assert "line 188: if (Math.abs(birdY - pipe.userData.gapCenter) > pipe.userData.halfGap + 0.05) {" in compacted
+    assert (
+        "line 188: if (Math.abs(birdY - pipe.userData.gapCenter) > pipe.userData.halfGap + 0.05) {"
+        in compacted
+    )
     assert "line 189: return true;" in compacted
     assert "line 443: pipes.forEach(p => scene.remove(p));" in compacted
     assert "line 447: particles.forEach(p => scene.remove(p));" in compacted
     assert "line 448: particles.length = 0;" in compacted
-    assert "line 120: renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));" in compacted
+    assert (
+        "line 120: renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));"
+        in compacted
+    )
     assert 'line 222: window.addEventListener("keydown", (e) => {' in compacted
     assert 'line 223: if (e.code === "Space" || e.code === "ArrowUp") {' in compacted
     assert "line 224: e.preventDefault();" in compacted
@@ -7990,7 +9243,9 @@ def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors(
     assert "line 501: flap();" in compacted
     assert "line 502: }, { passive: false });" in compacted
     assert 'line 505: window.addEventListener("resize", () => {' in compacted
-    assert "line 506: camera.aspect = window.innerWidth / window.innerHeight;" in compacted
+    assert (
+        "line 506: camera.aspect = window.innerWidth / window.innerHeight;" in compacted
+    )
     assert "line 507: camera.updateProjectionMatrix();" in compacted
     assert "line 514: const dt = Math.min(clock.getDelta(), 0.05);" in compacted
     assert "line 553: for (let i = pipes.length - 1; i >= 0; i--) {" in compacted
@@ -8058,7 +9313,7 @@ def test_agent_transcript_canonicalization_compacts_plain_read_tool_output():
     compacted = str(canonical[2].content)
     assert compacted.startswith("<mtplx_read_inspection_digest")
     assert "<path>index.html</path>" in compacted
-    assert "line 81: \"three\": \"https://cdn.jsdelivr.net/npm/three@0.160.0" in compacted
+    assert 'line 81: "three": "https://cdn.jsdelivr.net/npm/three@0.160.0' in compacted
     assert "line 499: window.addEventListener" in compacted
     assert "line 514: const dt = Math.min(clock.getDelta(), 0.05);" in compacted
     assert len(compacted) < len(plain_read_output)
@@ -8098,16 +9353,12 @@ def test_agent_transcript_canonicalization_collapses_repeated_inspection_reads()
     full_read = (
         "<path>index.html</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(full_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(full_lines) + "\n</content>"
     )
     repeated_read = (
         "<path>index.html</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(full_lines[249:340])
-        + "\n</content>"
+        "<content>\n" + "\n".join(full_lines[249:340]) + "\n</content>"
     )
 
     canonical, stats = openai._canonicalize_agent_transcript(
@@ -8207,9 +9458,7 @@ def test_agent_transcript_canonicalization_budgets_multi_file_inspection_reads()
                 content=(
                     f"<path>{path}</path>\n"
                     "<type>file</type>\n"
-                    "<content>\n"
-                    + "\n".join(body_lines)
-                    + "\n</content>"
+                    "<content>\n" + "\n".join(body_lines) + "\n</content>"
                 ),
             )
         )
@@ -8227,8 +9476,7 @@ def test_agent_transcript_canonicalization_budgets_multi_file_inspection_reads()
     assert len(digests) == 6
     assert all(digest.startswith("<mtplx_read_inspection_digest") for digest in digests)
     evidence_counts = [
-        int(re.search(r'evidence_lines="(\d+)"', digest).group(1))
-        for digest in digests
+        int(re.search(r'evidence_lines="(\d+)"', digest).group(1)) for digest in digests
     ]
     assert all(3 <= count <= 16 for count in evidence_counts)
     assert all("requestAnimationFrame" in digest for digest in digests)
@@ -8389,8 +9637,7 @@ def test_agent_transcript_canonicalization_skips_stalled_tool_preamble():
         "function": {"name": "todowrite", "arguments": '{"todos":[]}'},
     }
     duplicate = (
-        "Almost there - just strict TypeScript checks. "
-        "Let me fix all remaining errors:"
+        "Almost there - just strict TypeScript checks. Let me fix all remaining errors:"
     )
 
     canonical, stats = openai._canonicalize_agent_transcript(
@@ -8430,7 +9677,9 @@ def test_agent_transcript_canonicalization_skips_stalled_tool_preamble():
         "tool",
         "user",
     ]
-    assert canonical[1].content == "Let me check what's left to fix and get this running."
+    assert (
+        canonical[1].content == "Let me check what's left to fix and get this running."
+    )
     assert canonical[3].content == duplicate
     assert stats.stripped_tool_preamble_messages == 0
     assert stats.skipped_repeated_assistant_messages == 0
@@ -8598,7 +9847,9 @@ def test_agent_transcript_canonicalization_marks_repeated_shell_timeouts():
                 tool_call_id="call_tsc_1",
                 content=timeout_output,
             ),
-            openai.ChatMessage(role="assistant", content="", tool_calls=[repeated_call]),
+            openai.ChatMessage(
+                role="assistant", content="", tool_calls=[repeated_call]
+            ),
             openai.ChatMessage(
                 role="tool",
                 tool_call_id="call_tsc_2",
@@ -8626,10 +9877,16 @@ def test_tool_contract_stabilizes_tool_schema_with_agent_tail_guardrail():
     assert "MTPLX tool contract:" in with_contract[0]["content"]
     assert "Read a file in ONE call" in with_contract[0]["content"]
     assert "Never print file contents" in with_contract[0]["content"]
-    assert "only inside the declared write/edit tool call arguments" in with_contract[0]["content"]
+    assert (
+        "only inside the declared write/edit tool call arguments"
+        in with_contract[0]["content"]
+    )
     assert "MTPLX coding-agent tool protocol reminder:" in with_contract[0]["content"]
     assert "emit one declared <tool_call> now" in with_contract[0]["content"]
-    assert "implementation payloads in the declared tool call arguments" in with_contract[0]["content"]
+    assert (
+        "implementation payloads in the declared tool call arguments"
+        in with_contract[0]["content"]
+    )
     assert "let me fix this" in with_contract[0]["content"]
     assert [message["role"] for message in with_contract] == ["system", "user"]
 
@@ -8649,7 +9906,9 @@ def test_native_tool_prompt_mode_keeps_template_tools_and_adds_agent_tail():
     )
 
     messages, kwargs = tokenizer.calls[-1]
-    rendered_content = "\n".join(str(message.get("content") or "") for message in messages)
+    rendered_content = "\n".join(
+        str(message.get("content") or "") for message in messages
+    )
     assert kwargs["tools"] == [_bash_tool_schema(), _tool_schema()]
     assert "MTPLX tool contract:" not in rendered_content
     assert "MTPLX coding-agent tool protocol reminder:" in rendered_content
@@ -8673,7 +9932,9 @@ def test_native_tool_prompt_mode_suppresses_agent_tail_for_chitchat():
     )
 
     messages, kwargs = tokenizer.calls[-1]
-    rendered_content = "\n".join(str(message.get("content") or "") for message in messages)
+    rendered_content = "\n".join(
+        str(message.get("content") or "") for message in messages
+    )
     assert kwargs["tools"] == [_bash_tool_schema(), _tool_schema()]
     assert "MTPLX tool contract:" not in rendered_content
     assert "MTPLX coding-agent tool protocol reminder:" not in rendered_content
@@ -8716,7 +9977,9 @@ def test_native_tool_prompt_mode_uses_continuation_hint_after_tool_result():
     )
 
     messages, kwargs = tokenizer.calls[-1]
-    rendered_content = "\n".join(str(message.get("content") or "") for message in messages)
+    rendered_content = "\n".join(
+        str(message.get("content") or "") for message in messages
+    )
     assert kwargs["tools"] == [_bash_tool_schema(), _tool_schema()]
     assert messages[-2]["role"] == "tool"
     assert "MTPLX tool-result continuation:" not in messages[-2]["content"]
@@ -8749,7 +10012,9 @@ def test_hybrid_tool_prompt_mode_keeps_legacy_contract_for_rollback():
     )
 
     messages, kwargs = tokenizer.calls[-1]
-    rendered_content = "\n".join(str(message.get("content") or "") for message in messages)
+    rendered_content = "\n".join(
+        str(message.get("content") or "") for message in messages
+    )
     assert kwargs["tools"] == [_bash_tool_schema(), _tool_schema()]
     assert "MTPLX tool contract:" in rendered_content
     assert "MTPLX coding-agent tool protocol reminder:" in rendered_content
@@ -8770,12 +10035,16 @@ def test_compact_tool_prompt_mode_omits_native_template_tools():
     )
 
     messages, kwargs = tokenizer.calls[-1]
-    rendered_content = "\n".join(str(message.get("content") or "") for message in messages)
+    rendered_content = "\n".join(
+        str(message.get("content") or "") for message in messages
+    )
     assert "tools" not in kwargs
     assert "MTPLX tool contract:" in rendered_content
     assert "MTPLX coding-agent tool protocol reminder:" in rendered_content
     assert "<function=" in rendered_content
-    assert "bash(command:string, description:string, timeout?:number)" in rendered_content
+    assert (
+        "bash(command:string, description:string, timeout?:number)" in rendered_content
+    )
     assert "read()" in rendered_content
 
 
@@ -8792,16 +10061,21 @@ def test_compact_tool_prompt_mode_still_validates_real_tool_schema():
         tools_active=True,
         tool_prompt_mode="compact",
     )
-    assert openai._template_tools_for_prompt_mode(
-        tools,
-        tool_prompt_mode="compact",
-    ) is None
+    assert (
+        openai._template_tools_for_prompt_mode(
+            tools,
+            tool_prompt_mode="compact",
+        )
+        is None
+    )
     assert [tool["function"]["name"] for tool in tools] == ["bash", "read"]
 
 
 def test_froggeric_template_profile_applies_from_vendored_file():
     tokenizer = SimpleNamespace(chat_template="official")
-    args = SimpleNamespace(chat_template_profile="froggeric_v19", chat_template_path=None)
+    args = SimpleNamespace(
+        chat_template_profile="froggeric_v19", chat_template_path=None
+    )
 
     report = openai._apply_chat_template_profile(tokenizer, args)
 
@@ -8819,7 +10093,9 @@ def test_tool_contract_suppresses_agent_tail_for_simple_chitchat():
     )
 
     assert "MTPLX tool contract:" in with_contract[0]["content"]
-    assert "MTPLX coding-agent tool protocol reminder:" not in with_contract[0]["content"]
+    assert (
+        "MTPLX coding-agent tool protocol reminder:" not in with_contract[0]["content"]
+    )
 
 
 def test_filter_tool_specs_preserves_tools_for_simple_chitchat():
@@ -9076,7 +10352,11 @@ def test_filter_tool_specs_keeps_mutating_tools_for_direct_upgrade_request():
 
 
 def test_filter_tool_specs_keeps_bash_when_static_review_requests_tests():
-    tools = [_bash_tool_schema(), _named_tool_schema("read"), _named_tool_schema("glob")]
+    tools = [
+        _bash_tool_schema(),
+        _named_tool_schema("read"),
+        _named_tool_schema("glob"),
+    ]
 
     filtered = openai._filter_tool_specs_for_request(
         tools,
@@ -9282,7 +10562,9 @@ def test_opencode_agent_tool_client_uses_compact_prompt_mode(monkeypatch):
     assert stats["tool_prompt_mode_source"] == "client:opencode"
     assert stats["tool_prompt_mode_client_repaired"] is True
     assert stats["tool_contract_active"] is True
-    assert stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+    assert (
+        stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+    )
     assert "tool_prompt_mode=compact" in seen["session_policy_fingerprint"]
 
 
@@ -9336,7 +10618,9 @@ def test_laguna_opencode_keeps_poolside_native_tool_protocol(monkeypatch):
 
 
 @pytest.mark.parametrize("client_hint", ["pi", "hermes"])
-def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(monkeypatch, client_hint):
+def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(
+    monkeypatch, client_hint
+):
     seen: dict[str, object] = {}
     state = _fake_state()
     foreground = ForegroundState()
@@ -9372,9 +10656,7 @@ def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(monkeypatch, cli
     messages, kwargs = state.runtime.tokenizer.calls[0]
     rendered = "\n".join(str(message.get("content") or "") for message in messages)
     stats = seen["request_observability"]
-    assert [tool["function"]["name"] for tool in kwargs["tools"]] == [
-        "session_status"
-    ]
+    assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["session_status"]
     assert "MTPLX tool contract:" in rendered
     assert stats["tool_prompt_mode"] == "hybrid"
     assert stats["tool_prompt_mode_launch"] == "native"
@@ -9384,7 +10666,8 @@ def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(monkeypatch, cli
     assert stats["tool_contract_active"] is True
     assert (
         stats["tool_contract_policy_version"].startswith("soft_schema_contract:")
-        or stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+        or stats["tool_contract_policy_version"]
+        == "compact_tool_contract:schema_free:v1"
     )
     assert "tool_prompt_mode=hybrid" in seen["session_policy_fingerprint"]
 
@@ -9453,7 +10736,8 @@ def test_opencode_chitchat_preserves_agent_tools_without_direct_reply_contract(
     assert stats["no_tools_contract_active"] is False
     assert (
         stats["tool_contract_policy_version"].startswith("soft_schema_contract:")
-        or stats["tool_contract_policy_version"] == "compact_tool_contract:schema_free:v1"
+        or stats["tool_contract_policy_version"]
+        == "compact_tool_contract:schema_free:v1"
     )
     assert stats["tool_contract_active"] is True
     assert stats["opencode_prompt_contract_profile"] == "opencode_agent"
@@ -9493,7 +10777,10 @@ def test_chat_tools_add_no_tool_contract_when_non_chitchat_disables_tools(monkey
         json={
             "messages": [
                 {"role": "system", "content": "You are OpenCode."},
-                {"role": "user", "content": "Summarize the project status without tools."},
+                {
+                    "role": "user",
+                    "content": "Summarize the project status without tools.",
+                },
             ],
             "tools": [_bash_tool_schema(), _tool_schema()],
             "tool_choice": "none",
@@ -9551,7 +10838,7 @@ def test_final_round_after_tools_gets_post_tool_answer_contract(monkeypatch):
                             "type": "function",
                             "function": {
                                 "name": "web_search",
-                                "arguments": "{\"query\": \"X vs Y\"}",
+                                "arguments": '{"query": "X vs Y"}',
                             },
                         }
                     ],
@@ -9559,7 +10846,7 @@ def test_final_round_after_tools_gets_post_tool_answer_contract(monkeypatch):
                 {
                     "role": "tool",
                     "tool_call_id": "call_1",
-                    "content": "{\"results\": [{\"title\": \"X vs Y\"}]}",
+                    "content": '{"results": [{"title": "X vs Y"}]}',
                 },
             ],
             "tools": [
@@ -9701,9 +10988,12 @@ def test_chat_tools_add_read_only_force_answer_contract_after_read_budget(monkey
     # loop — the old hybrid/schema switch rewrote the system prompt and forced
     # a fully cold re-prefill of the largest prompt in the session. The
     # conditioning lives in the appended user contract message only.
-    assert "tools" not in kwargs or kwargs["tools"] is None or [
-        tool["function"]["name"] for tool in kwargs["tools"]
-    ] == ["bash", "read", "glob", "grep"]
+    assert (
+        "tools" not in kwargs
+        or kwargs["tools"] is None
+        or [tool["function"]["name"] for tool in kwargs["tools"]]
+        == ["bash", "read", "glob", "grep"]
+    )
     assert "MTPLX read-only answer turn:" in rendered
     assert "MTPLX read-only final answer instruction:" in rendered
     assert "MTPLX direct reply turn:" not in rendered
@@ -9746,9 +11036,7 @@ def test_explicit_single_tool_then_answer_forces_final_after_tool_result(monkeyp
 
     def fake_run_generation(*_args, **kwargs):
         seen["request_observability"] = dict(kwargs["request_observability"])
-        return _fake_generation(
-            "opencode_project=/tmp/example; check=package.json"
-        )
+        return _fake_generation("opencode_project=/tmp/example; check=package.json")
 
     monkeypatch.setattr(openai, "_run_generation", fake_run_generation)
 
@@ -10261,8 +11549,7 @@ def test_read_only_force_answer_stream_starts_after_internal_marker(monkeypatch)
     assert response.status_code == 200
     payloads = _stream_payloads(response.text)
     content = "".join(
-        payload["choices"][0]["delta"].get("content", "")
-        for payload in payloads
+        payload["choices"][0]["delta"].get("content", "") for payload in payloads
     )
     final = [payload for payload in payloads if payload["choices"][0]["finish_reason"]]
     assert "QUALITY1321: final answer from gathered evidence." in content
@@ -10327,8 +11614,7 @@ def test_read_only_force_answer_stream_fallback_emits_without_marker(monkeypatch
     assert response.status_code == 200
     payloads = _stream_payloads(response.text)
     content = "".join(
-        payload["choices"][0]["delta"].get("content", "")
-        for payload in payloads
+        payload["choices"][0]["delta"].get("content", "") for payload in payloads
     )
     final = [payload for payload in payloads if payload["choices"][0]["finish_reason"]]
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
@@ -10462,27 +11748,25 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
         "read_only_force_answer_contract=0"
         in captured["generation_final_policy_fingerprint"]
     )
-    assert (
-        "tool_prompt_mode=compact"
-        in captured["generation_final_policy_fingerprint"]
-    )
+    assert "tool_prompt_mode=compact" in captured["generation_final_policy_fingerprint"]
     assert (
         "tool_contract=compact_tool_contract:schema_free:v1"
         in captured["generation_final_policy_fingerprint"]
     )
-    assert "read_only_force_answer:v1" not in captured[
-        "generation_final_policy_fingerprint"
-    ]
+    assert (
+        "read_only_force_answer:v1"
+        not in captured["generation_final_policy_fingerprint"]
+    )
     assert (
         "read_only_force_answer_contract=0"
         in captured["generation_session_policy_fingerprint"]
     )
-    assert "read_only_force_answer:v1" not in captured[
-        "generation_session_policy_fingerprint"
-    ]
     assert (
-        "read_only_force_answer_contract=0"
-        in captured["scheduled_policy_fingerprint"]
+        "read_only_force_answer:v1"
+        not in captured["generation_session_policy_fingerprint"]
+    )
+    assert (
+        "read_only_force_answer_contract=0" in captured["scheduled_policy_fingerprint"]
     )
     assert "tool_prompt_mode=compact" in captured["scheduled_policy_fingerprint"]
     assert (
@@ -10861,11 +12145,15 @@ def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
     ]
     for line_no in range(3, 380):
         if line_no == 240:
-            body_lines.append("240:   public checkArrowCollisions(arrow: Arrow): void {")
+            body_lines.append(
+                "240:   public checkArrowCollisions(arrow: Arrow): void {"
+            )
         elif line_no == 252:
             body_lines.append("252:       if (dist < hitRadius) {")
         elif line_no == 253:
-            body_lines.append("253:         arrow.embedInTerrain(obstacle.position.y - 0.5);")
+            body_lines.append(
+                "253:         arrow.embedInTerrain(obstacle.position.y - 0.5);"
+            )
         else:
             body_lines.append(
                 f"{line_no}:     filler line {line_no} with enough body text to "
@@ -10874,9 +12162,7 @@ def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
     large_read_output = (
         "<path>src/game/ObstacleManager.ts</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(body_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
     )
     raw_messages = [
         openai.ChatMessage(role="system", content="You are opencode."),
@@ -10963,9 +12249,7 @@ def test_postcommit_read_only_final_matches_next_turn_history_boundary():
     large_read_output = (
         "<path>src/game/Game.ts</path>\n"
         "<type>file</type>\n"
-        "<content>\n"
-        + "\n".join(body_lines)
-        + "\n</content>"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
     )
     raw_messages = [
         openai.ChatMessage(role="system", content="You are OpenCode."),
@@ -11711,13 +12995,13 @@ def test_chat_stream_tool_call_preamble_is_stored_for_postcommit(monkeypatch):
     )
 
     with TestClient(create_app(state)) as client:
-            response = client.post(
-                "/v1/chat/completions",
-                headers={
-                    "x-mtplx-session-id": "stream-tool-preamble",
-                    "x-mtplx-allow-client-controls": "1",
-                },
-                json={
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "x-mtplx-session-id": "stream-tool-preamble",
+                "x-mtplx-allow-client-controls": "1",
+            },
+            json={
                 "messages": [{"role": "user", "content": "Status."}],
                 "tools": [_tool_schema()],
                 "tool_choice": "auto",
@@ -11778,9 +13062,7 @@ def test_chat_stream_hermes_suppresses_tool_call_preamble(monkeypatch):
 
     assert response.status_code == 200
     payloads = _stream_payloads(response.text)
-    assert any(
-        payload["choices"][0]["delta"].get("tool_calls") for payload in payloads
-    )
+    assert any(payload["choices"][0]["delta"].get("tool_calls") for payload in payloads)
     assert not any(
         payload["choices"][0]["delta"].get("content") for payload in payloads
     )
@@ -11838,9 +13120,7 @@ def test_chat_stream_hermes_defers_content_until_native_tool_extraction(monkeypa
 
     assert response.status_code == 200
     payloads = _stream_payloads(response.text)
-    assert any(
-        payload["choices"][0]["delta"].get("tool_calls") for payload in payloads
-    )
+    assert any(payload["choices"][0]["delta"].get("tool_calls") for payload in payloads)
     assert not any(
         payload["choices"][0]["delta"].get("content") for payload in payloads
     )
@@ -12292,7 +13572,9 @@ def test_chat_tools_unknown_generated_tool_passes_through(monkeypatch):
     assert choice["message"]["content"] is None
     calls = choice["message"]["tool_calls"]
     assert [c["function"]["name"] for c in calls] == ["Agent"]
-    assert json.loads(calls[0]["function"]["arguments"]) == {"description": "List files"}
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "description": "List files"
+    }
     stats = response.json()["mtplx_stats"]
     assert stats["tool_parse_status"] == "parsed"
     assert stats["tool_calls_emitted"] == 1
@@ -12463,7 +13745,9 @@ def test_server_state_emits_startup_progress(monkeypatch, capsys):
     monkeypatch.setattr(
         openai, "_resolve_context_window", lambda _tokenizer, _model: 32768
     )
-    monkeypatch.setattr(openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace()
+    )
 
     args = parse_args(["--model", "models/example", "--warmup-tokens", "0"])
     state = openai.ServerState(args)
@@ -12518,7 +13802,9 @@ def test_server_state_applies_clear_cache_every_after_profile(monkeypatch):
         "_resolve_context_window",
         lambda _tokenizer, _model: 32768,
     )
-    monkeypatch.setattr(openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace()
+    )
 
     args = parse_args(
         [
@@ -12610,7 +13896,10 @@ def test_server_state_passes_step_adapter_quant_contract_to_load(monkeypatch):
     assert captured["contract"].mtp_quant_bits == 4
     assert captured["contract"].mtp_quant_group_size == 64
     assert captured["contract"].mtp_quant_mode == "affine"
-    assert captured["kwargs"]["mtp_adapter"] == "outputs/adapters/c4-mtp-adapter-20260603-134243-r4.npz"
+    assert (
+        captured["kwargs"]["mtp_adapter"]
+        == "outputs/adapters/c4-mtp-adapter-20260603-134243-r4.npz"
+    )
     assert captured["kwargs"]["merge_mtp_adapter"] is True
 
 
@@ -12691,9 +13980,7 @@ def test_chat_stream_stop_sequence_trims_and_cancels_generation(monkeypatch):
     )
     assert content == "Hello "
     final = [
-        payload
-        for payload in payloads
-        if payload["choices"][0].get("finish_reason")
+        payload for payload in payloads if payload["choices"][0].get("finish_reason")
     ]
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
     assert final[-1]["mtplx_stats"]["stop_sequence_hit"] is True
@@ -12751,9 +14038,7 @@ def test_chat_stream_stop_sequence_handles_generation_done_race(monkeypatch):
     )
     assert content == "Hello "
     final = [
-        payload
-        for payload in payloads
-        if payload["choices"][0].get("finish_reason")
+        payload for payload in payloads if payload["choices"][0].get("finish_reason")
     ]
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
     assert final[-1]["mtplx_stats"]["stop_sequence_hit"] is True
@@ -12872,9 +14157,7 @@ def test_anthropic_stop_sequences_trim_nonstream(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    text_blocks = [
-        block for block in body["content"] if block.get("type") == "text"
-    ]
+    text_blocks = [block for block in body["content"] if block.get("type") == "text"]
     assert text_blocks
     assert text_blocks[0]["text"] == "Hello "
     # A stop_sequences match must surface per the Anthropic wire contract
@@ -12928,14 +14211,10 @@ def test_completions_stream_is_incremental_with_terminal_finish_reason(monkeypat
     # the final text (the old pseudo-stream behavior).
     assert texts == [first_batch, second_batch]
     final = [
-        payload
-        for payload in payloads
-        if payload["choices"][0].get("finish_reason")
+        payload for payload in payloads if payload["choices"][0].get("finish_reason")
     ]
     assert final[-1]["choices"][0]["finish_reason"] == "length"
-    assert final[-1]["usage"]["completion_tokens"] == len(
-        first_batch + second_batch
-    )
+    assert final[-1]["usage"]["completion_tokens"] == len(first_batch + second_batch)
     assert "data: [DONE]" in response.text
 
 
@@ -12975,9 +14254,7 @@ def test_completions_stream_honors_stop_sequence(monkeypatch):
     ]
     assert texts == ["Hello "]
     final = [
-        payload
-        for payload in payloads
-        if payload["choices"][0].get("finish_reason")
+        payload for payload in payloads if payload["choices"][0].get("finish_reason")
     ]
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
     assert final[-1]["mtplx_stats"]["stop_sequence_hit"] is True
@@ -13067,9 +14344,7 @@ def test_anthropic_messages_bare_tools_first_request_completes(monkeypatch):
     # stream stall watchdog (MTPLX_STREAM_STALL_DEADLINE_S).
     client = TestClient(create_app(_fake_state()))
     monkeypatch.setattr(openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3])
-    monkeypatch.setattr(
-        openai, "_run_generation", _fake_streaming_generation("On it.")
-    )
+    monkeypatch.setattr(openai, "_run_generation", _fake_streaming_generation("On it."))
 
     response = client.post(
         "/v1/messages",
@@ -13188,6 +14463,8 @@ def test_thinking_guard_never_touches_plain_chat_even_opted_in(monkeypatch):
         },
     )
     assert no_tools is None and no_thinking is None
+
+
 # --- parallel_tool_calls wiring ---------------------------------------------
 
 
@@ -13196,7 +14473,7 @@ def _two_call_extraction(*_args, **_kwargs):
         return {
             "id": f"call_{name}",
             "type": "function",
-            "function": {"name": name, "arguments": "{\"q\": 1}"},
+            "function": {"name": name, "arguments": '{"q": 1}'},
         }
 
     return SimpleNamespace(
@@ -13213,7 +14490,9 @@ def _two_call_extraction(*_args, **_kwargs):
 def test_parallel_tool_calls_false_truncates_nonstream_tool_calls(monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
-    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("x"))
+    monkeypatch.setattr(
+        openai, "_run_generation", lambda *a, **k: _fake_generation("x")
+    )
     monkeypatch.setattr(
         openai, "omlx_extract_tool_calls_with_thinking", _two_call_extraction
     )
@@ -13236,7 +14515,9 @@ def test_parallel_tool_calls_false_truncates_nonstream_tool_calls(monkeypatch):
 def test_parallel_tool_calls_unset_keeps_all_nonstream_tool_calls(monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
-    monkeypatch.setattr(openai, "_run_generation", lambda *a, **k: _fake_generation("x"))
+    monkeypatch.setattr(
+        openai, "_run_generation", lambda *a, **k: _fake_generation("x")
+    )
     monkeypatch.setattr(
         openai, "omlx_extract_tool_calls_with_thinking", _two_call_extraction
     )
@@ -13261,20 +14542,33 @@ def test_single_tool_call_stream_policy_declared_field_wins():
         parallel_tool_calls=True, client_hint="pi", explicit_single_tool=True
     )
     # Unset falls back to the legacy client-hint heuristics.
-    assert policy(parallel_tool_calls=None, client_hint="pi", explicit_single_tool=False)
+    assert policy(
+        parallel_tool_calls=None, client_hint="pi", explicit_single_tool=False
+    )
     assert policy(
         parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=True
     )
     assert not policy(
         parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=False
     )
-    assert not policy(parallel_tool_calls=None, client_hint="", explicit_single_tool=False)
+    assert not policy(
+        parallel_tool_calls=None, client_hint="", explicit_single_tool=False
+    )
 
 
 def test_request_parallel_tool_calls_only_honors_booleans():
-    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=True)) is True
-    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=False)) is False
-    assert openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls="yes")) is None
+    assert (
+        openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=True))
+        is True
+    )
+    assert (
+        openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls=False))
+        is False
+    )
+    assert (
+        openai._request_parallel_tool_calls(SimpleNamespace(parallel_tool_calls="yes"))
+        is None
+    )
     assert openai._request_parallel_tool_calls(SimpleNamespace()) is None
 
 
@@ -13402,6 +14696,8 @@ def test_run_generation_passes_draft_core_from_serve_args(monkeypatch):
         session_policy_fingerprint="policy",
     )
     assert captured["draft_core"] == "stock"
+
+
 def _postcommit_route_state(*, mtp_enabled: bool):
     """A minimal ServerState stub for exercising the postcommit snapshot
     routing decision (mtp vs ar) without real generation."""
