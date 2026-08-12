@@ -149,16 +149,6 @@ def is_deepseek_v4_target_only_config(config: dict[str, Any]) -> bool:
 
     if not affine("embed", 8, 64) or not affine("head", 8, 64):
         return False
-    for layer in range(43):
-        bits = (2, 3, 2) if layer < 39 else (4, 4, 4)
-        group_size = 128 if layer < 39 else 64
-        for projection, projection_bits in zip(("w1", "w2", "w3"), bits, strict=True):
-            if not affine(
-                f"layers.{layer}.ffn.experts.{projection}",
-                projection_bits,
-                group_size,
-            ):
-                return False
     return True
 
 

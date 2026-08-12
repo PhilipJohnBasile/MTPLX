@@ -1104,23 +1104,21 @@ def _passes_family_runtime_gate(
             and int(getattr(inspection, "vocab_size", 0) or 0) == 129_280
             and int(getattr(inspection, "num_experts_per_tok", 0) or 0) == 6
             and set(getattr(inspection, "model_files", ()) or ()) == expected_files
-            and quantization.get("bits") == 8
+        ):
+            return False
+        # The published target-only Gold view is a UNIFORM 8-bit affine
+        # (g64) artifact (SEAL 50cd20ae...). Earlier drafts assumed a
+        # per-layer 2/3/2-bit mixed geometry that never shipped; the gate
+        # must pin the geometry that actually exists, which is strictly
+        # verifiable: global affine 8-bit g64 plus affine embed/head.
+        if not (
+            quantization.get("bits") == 8
             and quantization.get("group_size") == 64
             and quantization.get("mode") == "affine"
             and affine("embed", 8, 64)
             and affine("head", 8, 64)
         ):
             return False
-        for layer in range(43):
-            expected_bits = (2, 3, 2) if layer < 39 else (4, 4, 4)
-            expected_group = 128 if layer < 39 else 64
-            for projection, bits in zip(("w1", "w2", "w3"), expected_bits, strict=True):
-                if not affine(
-                    f"layers.{layer}.ffn.experts.{projection}",
-                    bits,
-                    expected_group,
-                ):
-                    return False
         return True
     if arch_id == "laguna-s-2.1-ar":
         return bool(

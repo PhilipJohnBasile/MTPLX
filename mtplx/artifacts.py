@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -936,48 +935,33 @@ def _local_deepseek_v4_target_only_artifacts_complete(model_path: Path) -> bool:
         return False
     expected_names = set(DEEPSEEK_V4_TARGET_ONLY_REQUIRED_FILES) | {"README.md"}
     observed_names: set[str] = set()
-    stat_fields = (
-        "device",
-        "inode",
-        "mode",
-        "mtime_ns",
-        "ctime_ns",
-        "nlink",
-        "size",
-        "st_blocks",
-    )
     for output in outputs:
         if not isinstance(output, dict):
             return False
         name = output.get("logical_path")
         identity = output.get("path_identity")
-        sealed_stat = identity.get("stat") if isinstance(identity, dict) else None
         if (
             not isinstance(name, str)
             or name in observed_names
             or name not in expected_names
-            or not isinstance(sealed_stat, dict)
+            or not isinstance(identity, dict)
         ):
+            return False
+        # Durable identity is CONTENT-first: the seal records a per-file
+        # sha256 and size, which is what proves the view is byte-identical
+        # to the sealed source. Stat fields (device/inode/ctime) change
+        # legitimately when an APFS clone view is materialized on a
+        # different snapshot or re-synced to a different device, so they
+        # must not gate admission of a content-identical tree.
+        sealed_sha = identity.get("sha256")
+        if not isinstance(sealed_sha, str):
             return False
         try:
-            current = os.lstat(model_path / name)
+            with open(model_path / name, "rb") as fh:
+                current_sha = hashlib.sha256(fh.read()).hexdigest()
         except OSError:
             return False
-        if not stat.S_ISREG(current.st_mode):
-            return False
-        current_fields = {
-            "device": current.st_dev,
-            "inode": current.st_ino,
-            "mode": current.st_mode,
-            "mtime_ns": current.st_mtime_ns,
-            "ctime_ns": current.st_ctime_ns,
-            "nlink": current.st_nlink,
-            "size": current.st_size,
-            "st_blocks": current.st_blocks,
-        }
-        if any(
-            sealed_stat.get(field) != current_fields[field] for field in stat_fields
-        ):
+        if current_sha != sealed_sha:
             return False
         observed_names.add(name)
     if observed_names != expected_names:

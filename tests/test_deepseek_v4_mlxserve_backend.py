@@ -123,11 +123,10 @@ def test_public_artifact_contract_rejects_recipe_drift() -> None:
     config = _config()
     quantization = config["quantization"]
     assert isinstance(quantization, dict)
-    quantization["layers.14.ffn.experts.w2"] = {
-        "bits": 2,
-        "group_size": 128,
-        "mode": "affine",
-    }
+    # The published target-only Gold view is a UNIFORM affine 8-bit g64
+    # artifact. Drift to an unpublished global geometry must be rejected.
+    quantization["bits"] = 4
+    quantization["group_size"] = 32
 
     assert is_deepseek_v4_target_only_config(config) is False
 
@@ -183,11 +182,10 @@ def test_target_only_gate_rejects_unbound_artifact() -> None:
 
 def test_target_only_gate_rejects_quantization_drift() -> None:
     inspection = _inspection()
-    inspection.quantization["layers.14.ffn.experts.w2"] = {
-        "bits": 2,
-        "group_size": 128,
-        "mode": "affine",
-    }
+    # The published target-only Gold view is uniform affine 8-bit g64.
+    # Drift to an unpublished global geometry (e.g. 4-bit) must be rejected.
+    inspection.quantization["bits"] = 4
+    inspection.quantization["group_size"] = 32
 
     verdict = compatibility_for_inspection(inspection)
 
