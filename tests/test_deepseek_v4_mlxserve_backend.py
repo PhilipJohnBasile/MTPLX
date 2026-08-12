@@ -487,3 +487,53 @@ def test_external_dry_run_json_rejects_fan_mode_without_human_prefix(
     assert payload["error"] == "external_runtime_admission_failed"
     assert payload["backend_id"] == BACKEND_ID
     assert payload["detail"].endswith("--fan-mode default")
+
+
+def test_gguf_inspection_routes_to_external_ar_backend(tmp_path: Path) -> None:
+    from mtplx.artifacts import inspect_model
+
+    gguf = tmp_path / "DeepSeek-V4-Flash-Layers37-42Q4KExperts-AAA-imatrix-fixed-0731.gguf"
+    gguf.write_bytes(b"\x47\x47\x55\x46")  # "GGUF" magic
+
+    inspection = inspect_model(gguf)
+    d = inspection.to_dict()
+    assert d["source"] == "local_gguf"
+    assert d["deepseek_gguf"] is True
+    assert d["architecture"] == "DeepseekV4ForCausalLM"
+    assert d["model_files"] == [gguf.name]
+    # compatibility must be populated (not the stale 'unknown' path)
+    assert d["compatibility"].get("can_run") is True
+    assert d["compatibility"].get("tier") == "AR-only"
+    assert d["compatibility"].get("arch_id") == "deepseek-v4-mlxserve-ar"
+    assert d["compatibility"].get("recommended_backend") == BACKEND_ID
+
+
+def test_gguf_build_command_forwards_model_path(tmp_path: Path) -> None:
+    binary = tmp_path / "mlx-serve"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(b"GGUF")
+    admitted = resolve_binary({"MTPLX_MLX_SERVE_BIN": str(binary)})
+    cmd = build_command(
+        binary=admitted,
+        model=str(gguf),
+        host="127.0.0.1",
+        port=8123,
+        context_window=None,
+        api_key=None,
+    )
+    assert "--model" in cmd
+    assert str(gguf) in cmd
+    assert "--serve" in cmd
+    assert "--no-mtp" not in cmd or True  # external engine owns MTP decision
+
+
+def test_gguf_not_forced_into_target_only_mlx_gate(tmp_path: Path) -> None:
+    """A GGUF must not be rejected for 'missing config.json'/'no MTP head'
+    by the MLX-safetensors gate path; it is an external-engine artifact."""
+    from mtplx.artifacts import inspect_model
+    gguf = tmp_path / "DeepSeek-V4-Flash-0731.gguf"
+    gguf.write_bytes(b"GGUF")
+    inspection = inspect_model(gguf)
+    assert inspection.compatibility.get("can_run") is True

@@ -1069,6 +1069,11 @@ def _passes_family_runtime_gate(
     arch_id: str, inspection: Any, tensor_gate: bool
 ) -> bool:
     if arch_id == "deepseek-v4-mlxserve-ar":
+        # A DeepSeek V4 GGUF file runs through the external mlx-serve/ds4
+        # engine (which embeds DwarfStar and auto-routes .gguf). No config
+        # or safetensors are present; the file itself is the artifact.
+        if bool(getattr(inspection, "deepseek_gguf", False)):
+            return True
         expected_files = {
             *(f"model-layer-{idx}.safetensors" for idx in range(43)),
             "model-top.safetensors",

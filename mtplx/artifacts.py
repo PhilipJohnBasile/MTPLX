@@ -7,7 +7,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclasses_replace
 from pathlib import Path
 from typing import Any
 
@@ -406,6 +406,7 @@ class ModelInspection:
     laguna_s_2_1_artifacts_complete: bool = False
     deepseek_v4_target_only_match: bool = False
     deepseek_v4_target_only_artifacts_complete: bool = False
+    deepseek_gguf: bool = False
     mtp_pattern: str | None = None
     source: str = "local"
     quantization: dict[str, Any] = field(default_factory=dict)
@@ -457,6 +458,7 @@ class ModelInspection:
             "laguna_s_2_1_artifacts_complete": self.laguna_s_2_1_artifacts_complete,
             "deepseek_v4_target_only_match": self.deepseek_v4_target_only_match,
             "deepseek_v4_target_only_artifacts_complete": self.deepseek_v4_target_only_artifacts_complete,
+            "deepseek_gguf": self.deepseek_gguf,
             "quantization": self.quantization,
             "sidecars": self.sidecars,
             "model_files": list(self.model_files),
@@ -536,6 +538,17 @@ def _is_local_like_model_ref(value: str) -> bool:
         return True
     first = value.split("/", 1)[0]
     return first in {"models", "outputs", "RESEARCH:PLANS", "REFERENCES:TOOLS"}
+
+
+def _gguf_architecture_hint(name: str) -> str:
+    """Infer the GGUF's family from its filename so the external runtime
+    gets a sane architecture label (ds4 GGUF names encode the model)."""
+    lower = name.lower()
+    if "glm" in lower or "ud-q" in lower:
+        return "glm_moe_dsa"
+    if "dspark" in lower or "d9" in lower:
+        return "deepseek_dspark"
+    return "DeepseekV4ForCausalLM"
 
 
 def _hf_repo_id_from_ref(value: Path | str) -> str | None:
@@ -1163,6 +1176,44 @@ def inspect_model(model_dir: Path | str) -> ModelInspection:
     if repo_id is not None:
         return _inspect_hf_model(repo_id)
     model_path = Path(model_dir)
+    # Direct .gguf path: the DeepSeek V4 (or GLM) GGUFs run through the
+    # external mlx-serve/ds4 engine, not MTPLX's own loader. Recognize the
+    # file so the deepseek-v4-mlxserve backend can forward it intact
+    # (mlx-serve embeds the DwarfStar engine and auto-routes .gguf).
+    if model_path.is_file() and model_path.suffix.lower() == ".gguf":
+        inspection = ModelInspection(
+            model_dir=str(model_path),
+            source="local_gguf",
+            config_exists=True,
+            architecture=_gguf_architecture_hint(model_path.name),
+            model_type="deepseek_v4",
+            mtp_num_hidden_layers=0,
+            hidden_size=4096,
+            num_hidden_layers=43,
+            vocab_size=129_280,
+            num_experts=256,
+            num_experts_per_tok=6,
+            deepseek_gguf=True,
+            quantization={},
+            model_files=(model_path.name,),
+            sidecars={name: False for name in MULTIMODAL_SIDECARS},
+        )
+        from .backends.registry import compatibility_for_inspection
+
+        verdict = compatibility_for_inspection(inspection)
+        return dataclasses_replace(inspection, compatibility={
+            "tier": verdict.tier,
+            "arch_id": verdict.arch_id,
+            "recognized": verdict.recognized,
+            "can_run": verdict.can_run,
+            "supported": verdict.supported,
+            "exit_code": verdict.exit_code,
+            "message": verdict.message,
+            "recommended_backend": verdict.recommended_backend,
+            "recommended_profile": verdict.recommended_profile,
+            "runtime_compatibility": verdict.runtime_compatibility,
+            "support_level": verdict.support_level,
+        })
     try:
         from .gemma4_pair import gemma4_pair_inspection, resolve_gemma4_pair_paths
     except Exception:
