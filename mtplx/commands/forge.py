@@ -2144,12 +2144,17 @@ def _start_max_session_if_requested(enabled: bool) -> Any | None:
     try:
         from mtplx.thermal import MaxSession
     except Exception as exc:
-        _err(f"[forge] max-fan contract calibration unavailable: {exc}")
-        return None
+        raise ForgeError(
+            f"verified max-fan mode is unavailable; refusing Forge model load: {exc}"
+        ) from exc
     session = MaxSession(log=lambda line: _err(f"[forge] {line}"))
     if not session.start():
-        _err("[forge] max-fan contract calibration did not verify; continuing without speed claims")
-        return None
+        verified = session.thermal.get("verified") or {}
+        detail = str(verified.get("message") or "fan ramp did not verify").strip()
+        raise ForgeError(
+            "verified max-fan mode did not start; refusing Forge model load: "
+            + detail
+        )
     return session
 
 
@@ -2356,6 +2361,8 @@ def _run_verify(
         str(prompt_suite),
         "--yes",
     ]
+    if max_fans:
+        command.append("--require-max-fans")
     if isinstance(mtp_contract, dict):
         base_hidden_variant = mtp_contract.get("base_hidden_variant")
         hidden_variant = mtp_contract.get("hidden_variant")

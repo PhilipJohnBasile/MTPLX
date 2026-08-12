@@ -1164,6 +1164,51 @@ def test_contract_calibration_default_prompt_path_is_absolute():
     assert path.exists()
 
 
+def test_requested_max_session_fails_closed_without_verified_ramp(monkeypatch):
+    class FailedSession:
+        def __init__(self, *, log):
+            self.log = log
+            self.thermal = {"verified": {"message": "actual RPM never ramped"}}
+
+        def start(self):
+            return False
+
+    import mtplx.thermal as thermal
+
+    monkeypatch.setattr(thermal, "MaxSession", FailedSession)
+
+    with pytest.raises(forge.ForgeError, match="refusing Forge model load"):
+        forge._start_max_session_if_requested(True)
+
+
+@pytest.mark.parametrize("max_fans", [False, True])
+def test_forge_verify_only_requires_verified_ramp_when_requested(
+    tmp_path, monkeypatch, max_fans
+):
+    captured: dict[str, list[str]] = {}
+
+    class FinishedProcess:
+        returncode = 1
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(command, **_kwargs):
+        captured["command"] = command
+        return FinishedProcess()
+
+    monkeypatch.setattr(forge.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(forge.ForgeError, match="mtplx tune failed"):
+        forge._run_verify(
+            tmp_path / "model",
+            tmp_path / "run",
+            max_fans=max_fans,
+        )
+
+    assert ("--require-max-fans" in captured["command"]) is max_fans
+
+
 def test_contract_calibration_fails_closed_on_probe_failure(tmp_path, monkeypatch):
     class FailedRun:
         returncode = 2

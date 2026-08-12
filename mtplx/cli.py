@@ -2690,6 +2690,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="Confirm unsafe non-interactive actions"
     )
     tune_p.add_argument(
+        "--require-max-fans",
+        action="store_true",
+        help="Fail before tuning if verified max-fan mode cannot start.",
+    )
+    tune_p.add_argument(
         "--temperature", type=float, default=0.6, help=argparse.SUPPRESS
     )
     tune_p.add_argument("--top-p", type=float, default=0.95, help=argparse.SUPPRESS)

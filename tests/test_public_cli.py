@@ -5080,6 +5080,7 @@ def test_chat_and_serve_default_to_sustained_mode():
     serve_app_args = parser.parse_args(
         ["serve", "--max", "--require-max-fans", "--app-launch-id", "native-123"]
     )
+    tune_strict_args = parser.parse_args(["tune", "--require-max-fans"])
     serve_no_footer_args = parser.parse_args(["serve", "--no-stats-footer"])
 
     assert run_args.profile == "sustained"
@@ -5093,6 +5094,7 @@ def test_chat_and_serve_default_to_sustained_mode():
     assert serve_args.profile == "sustained"
     assert serve_app_args.max is True
     assert serve_app_args.require_max_fans is True
+    assert tune_strict_args.require_max_fans is True
     assert serve_app_args.app_launch_id == "native-123"
     assert serve_args.reasoning is None
     assert serve_args.stock_ar is False
