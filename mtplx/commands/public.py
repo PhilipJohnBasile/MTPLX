@@ -943,9 +943,21 @@ def _model_contract_depth(
 ) -> int:
     contract = _profile_scoped_model_runtime_contract(inspection, profile)
     if not isinstance(contract, dict):
-        return int(fallback)
+        # A profile mismatch (artifact recommends another profile) hides the
+        # typed contract, but the measured depth default is a property of the
+        # ARTIFACT, not of the profile match: keep resolving from the
+        # top-level mtplx_runtime.json metadata. Repro: 3.8 Optimized
+        # Quality stamps recommended_profile=sustained + mtp_depth_default=2;
+        # serving --profile turbo used to early-return here and launch the
+        # measured-worst depth 3.
+        contract = {}
+    metadata_for_max = _artifact_runtime_metadata(inspection)
     try:
-        depth_max = int(contract.get("mtp_depth_max", fallback))
+        depth_max = int(
+            contract.get(
+                "mtp_depth_max", metadata_for_max.get("mtp_depth_max", fallback)
+            )
+        )
     except (TypeError, ValueError):
         return int(fallback)
     # ``mtp_depth_max`` is a CEILING (the deepest sidecar the artifact
