@@ -453,7 +453,7 @@ struct InferenceParamsOverlay: View {
         switch selectedModelFamily {
         case "gemma4": return "Gemma assistant MTP"
         case "step": return "Step experimental MTP"
-        case "qwen3_5", "qwen3_6": return "Qwen native MTP"
+        case "qwen3_5", "qwen3_6", "qwen3_8": return "Qwen native MTP"
         case "glm": return "GLM MTP"
         case "deepseek": return "DeepSeek MTP"
         default: return "Custom model"
@@ -474,6 +474,13 @@ struct InferenceParamsOverlay: View {
                 topP: 0.95,
                 topK: 20,
                 familyDefaultReason: "Step sampler defaults"
+            )
+        case "qwen3_8":
+            return SamplingDefaults(
+                temperature: 1.0,
+                topP: 0.95,
+                topK: 20,
+                familyDefaultReason: "Qwen 3.8 native sampler"
             )
         default:
             return SamplingDefaults(
@@ -539,6 +546,15 @@ struct InferenceParamsOverlay: View {
                 parser: "gemma4",
                 defaultMode: "auto",
                 historyPolicy: "preserve_when_enabled"
+            )
+        case "qwen3_8":
+            return ReasoningPolicy(
+                supported: true,
+                parser: "qwen3",
+                defaultMode: "auto",
+                historyPolicy: "preserve_when_enabled",
+                effortLevels: ["xhigh", "medium", "low"],
+                defaultEffort: "medium"
             )
         case "step", "unknown":
             if selectedModelFamily == "step" {
@@ -1321,7 +1337,7 @@ struct InferenceParamsOverlay: View {
         switch selectedModelFamily {
         case "gemma4": return "Gemma"
         case "step": return "Step"
-        case "qwen3_5", "qwen3_6": return "Qwen"
+        case "qwen3_5", "qwen3_6", "qwen3_8": return "Qwen"
         case "glm": return "GLM"
         case "deepseek": return "DeepSeek"
         default: return "this model"
@@ -1354,7 +1370,7 @@ struct InferenceParamsOverlay: View {
         let fallback = reasoningPolicy?.defaultEffort ?? levels.first ?? "auto"
         let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch value {
-        case .some(let effort) where ["low", "medium", "high"].contains(effort):
+        case .some(let effort) where ["low", "medium", "high", "xhigh"].contains(effort):
             return levels.contains(effort) ? effort : fallback
         case "auto":
             return levels.contains(fallback) ? fallback : levels.first ?? "auto"

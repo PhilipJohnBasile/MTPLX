@@ -1116,7 +1116,7 @@ public struct HermesIntegration: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch raw {
-        case "low", "medium", "high":
+        case "low", "medium", "high", "xhigh":
             return raw
         default:
             return nil

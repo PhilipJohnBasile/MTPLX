@@ -58,7 +58,7 @@ public enum ChatReasoningPolicy {
 
     private static func defaultMode(forFamily rawFamily: String?) -> String? {
         switch rawFamily?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "qwen3_5", "qwen3_6", "qwen", "step", "gemma4":
+        case "qwen3_5", "qwen3_6", "qwen3_8", "qwen", "step", "gemma4":
             return "auto"
         default:
             return nil

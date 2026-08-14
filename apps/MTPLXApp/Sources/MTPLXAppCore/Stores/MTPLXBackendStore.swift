@@ -1587,7 +1587,7 @@ public final class MTPLXBackendStore: ObservableObject {
     private func normalizedReasoningEffort(_ raw: String?) -> String? {
         guard let raw else { return nil }
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "auto", "low", "medium", "high":
+        case "auto", "low", "medium", "high", "xhigh":
             return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         default:
             return nil
@@ -1646,7 +1646,7 @@ public final class MTPLXBackendStore: ObservableObject {
         controlField: String
     ) -> Bool {
         switch (family, controlField) {
-        case ("qwen3_5", "depth"), ("qwen3_6", "depth"), ("step", "depth"):
+        case ("qwen3_5", "depth"), ("qwen3_6", "depth"), ("qwen3_8", "depth"), ("step", "depth"):
             return (1...3).contains(value)
         case ("gemma4", "draft_block_size"):
             return (2...8).contains(value)

@@ -885,7 +885,7 @@ struct ResolvedDaemonArgs {
     private static func normalizedReasoningEffort(_ raw: String?) -> String? {
         guard let raw else { return nil }
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "auto", "low", "medium", "high":
+        case "auto", "low", "medium", "high", "xhigh":
             return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         default:
             return nil

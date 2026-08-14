@@ -34,7 +34,7 @@ public enum TuneCandidate: String, CaseIterable, Equatable, Sendable {
 
     public static func candidates(forFamily family: String) -> [TuneCandidate] {
         switch family {
-        case "qwen3_5", "qwen3_6":
+        case "qwen3_5", "qwen3_6", "qwen3_8":
             return qwenCandidates
         case "gemma4":
             return gemmaCandidates

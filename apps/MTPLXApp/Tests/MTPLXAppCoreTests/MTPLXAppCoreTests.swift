@@ -1220,6 +1220,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
         XCTAssertTrue(MTPLXModelOption.supportsTune(family: "qwen3_8"))
         XCTAssertTrue(MTPLXModelOption.supportsOnboardingTune(family: "qwen3_8"))
+        XCTAssertEqual(TuneCandidate.candidates(forFamily: "qwen3_8"), [.ar, .d1, .d2, .d3])
         // The 3.6 flagship must NOT be swallowed by the 3.8 branch.
         XCTAssertEqual(
             MTPLXModelOption.modelFamily(for: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"),
@@ -1231,6 +1232,20 @@ final class MTPLXAppCoreTests: XCTestCase {
             ),
             "turbo"
         )
+    }
+
+    func testQwen38ExplicitXHighReasoningEffortReachesServeCommand() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
+                profile: "auto",
+                reasoningEffort: "xhigh"
+            )
+        )
+        XCTAssertTrue(command.arguments.containsInOrder(["--reasoning-effort", "xhigh"]))
     }
 
     func testOnboardingTuneUsesTurboForQwen27BOptimizedModels() {
@@ -2516,6 +2531,10 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertNil(ChatReasoningPolicy.enableThinking(
             explicitMode: "auto",
             modelFamily: "qwen3_6"
+        ))
+        XCTAssertNil(ChatReasoningPolicy.enableThinking(
+            explicitMode: "auto",
+            modelFamily: "qwen3_8"
         ))
         XCTAssertNil(ChatReasoningPolicy.enableThinking(
             explicitMode: "auto",
