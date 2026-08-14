@@ -97,6 +97,12 @@ from mtplx.profiles import (
     QWEN35_9B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID,
     QWEN35_9B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_BARE_SPEED_HF_MODEL_ID,
+    QWEN38_BARE_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_BALANCE_FP16_HF_MODEL_ID,
     QWEN36_35B_OPTIMIZED_BALANCE_FP16_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_BALANCE_HF_MODEL_ID,
@@ -1013,6 +1019,13 @@ _TURBO_DEFAULT_PUBLIC_MODEL_IDS = frozenset(
         # are exactness-proven, so both promote together.
         QWEN35_9B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
         QWEN35_9B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
+        # Qwen3.8 27B family (2026-08-14). Trunk geometry is identical to the
+        # Qwen3.6 27B flagships above, so the vk/NAX verify kernels and their
+        # quant-bits gates carry over; the day-one A/B on the real artifacts
+        # replaces this rationale with measured numbers before release.
+        QWEN38_BARE_SPEED_PUBLIC_MODEL_ID,
+        QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+        QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID,
     }
 )
 
@@ -8194,6 +8207,21 @@ def _model_ref_from_public_model_id(model_id: str | None) -> str | None:
         Path(
             QWEN36_35B_OPTIMIZED_BALANCE_FP16_HF_MODEL_ID
         ).name.lower(): QWEN36_35B_OPTIMIZED_BALANCE_FP16_HF_MODEL_ID,
+        QWEN38_BARE_SPEED_PUBLIC_MODEL_ID.lower(): QWEN38_BARE_SPEED_HF_MODEL_ID,
+        QWEN38_BARE_SPEED_HF_MODEL_ID.lower(): QWEN38_BARE_SPEED_HF_MODEL_ID,
+        Path(
+            QWEN38_BARE_SPEED_HF_MODEL_ID
+        ).name.lower(): QWEN38_BARE_SPEED_HF_MODEL_ID,
+        QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID.lower(): QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+        QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID.lower(): QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+        Path(
+            QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
+        ).name.lower(): QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+        QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID.lower(): QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
+        QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID.lower(): QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
+        Path(
+            QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID
+        ).name.lower(): QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
         "qwen3.6-35b-a3b-mtplx-official4-cyankiwimtp-cleanrecipe": QWEN36_35B_OPTIMIZED_SPEED_HF_MODEL_ID,
     }
     for candidate in lookup_keys:

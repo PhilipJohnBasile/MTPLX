@@ -104,7 +104,7 @@ class TunePolicy:
     supported: bool
     control_field: str = "depth"
     candidates: tuple[str, ...] = ("AR", "D1", "D2", "D3")
-    supported_families: tuple[str, ...] = ("qwen3_5", "qwen3_6", "gemma4")
+    supported_families: tuple[str, ...] = ("qwen3_5", "qwen3_6", "qwen3_8", "gemma4")
     unsupported_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -376,6 +376,62 @@ QWEN3_NEXT_DESCRIPTOR = BackendDescriptor(
     ),
     status="qa_verified",
 )
+
+
+# Qwen3.8 family overrides. Qwen3.8-27B shares the Qwen3.6 trunk geometry and
+# therefore the qwen3_next backend, but ships its own inference contract: the
+# official thinking-mode sampler (temperature 1.0, top_p 0.95, top_k 20),
+# reasoning_effort levels (xhigh default / medium / low), preserve_thinking
+# retained-history rendering, and a multi-step-trained MTP head (deeper draft
+# range than the depth-1-trained 3.6 head).
+QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20)
+QWEN3_8_REASONING_CODEC = ReasoningCodec(
+    parser="qwen3",
+    display_name="Qwen think tags",
+    default_mode="auto",
+    effort_levels=("xhigh", "medium", "low"),
+    default_effort="xhigh",
+)
+QWEN3_8_DRAFT_SEMANTICS = DraftSemantics(
+    request_field="depth",
+    display_label="Draft depth",
+    default=3,
+    minimum=1,
+    maximum=6,
+    unit="depth",
+)
+
+
+def sampler_defaults_for_model(
+    model_ref: str | None = None,
+    inspection: dict[str, Any] | None = None,
+    descriptor: BackendDescriptor | None = None,
+) -> SamplerDefaults:
+    resolved = descriptor or descriptor_from_inspection(inspection)
+    family = model_family_from_inspection(
+        inspection,
+        model_ref=model_ref,
+        descriptor=resolved,
+    )
+    if family == "qwen3_8":
+        return QWEN3_8_SAMPLER_DEFAULTS
+    return resolved.sampler_defaults
+
+
+def draft_semantics_for_model(
+    model_ref: str | None = None,
+    inspection: dict[str, Any] | None = None,
+    descriptor: BackendDescriptor | None = None,
+) -> DraftSemantics:
+    resolved = descriptor or descriptor_from_inspection(inspection)
+    family = model_family_from_inspection(
+        inspection,
+        model_ref=model_ref,
+        descriptor=resolved,
+    )
+    if family == "qwen3_8":
+        return QWEN3_8_DRAFT_SEMANTICS
+    return resolved.draft_semantics
 
 
 LAGUNA_AR_DESCRIPTOR = BackendDescriptor(
@@ -871,6 +927,8 @@ def _text_markers(model_ref: str | None, inspection: dict[str, Any] | None) -> s
 
 
 def _explicit_qwen_family_marker(text: str) -> str | None:
+    if "qwen3.8" in text or "qwen3_8" in text or "qwen38" in text:
+        return "qwen3_8"
     if "qwen3.6" in text or "qwen3_6" in text or "qwen36" in text:
         return "qwen3_6"
     if "qwen3.5" in text or "qwen3_5" in text or "qwen3-5" in text:
@@ -926,13 +984,19 @@ def tune_policy_for_model(
     )
     if family in {"qwen3_5", "qwen3_6"}:
         return TunePolicy(supported=True)
+    if family == "qwen3_8":
+        # Multi-step-trained MTP head: measure the deeper candidates too.
+        return TunePolicy(
+            supported=True,
+            candidates=("AR", "D1", "D2", "D3", "D4", "D5", "D6"),
+        )
     if family == "gemma4":
         return GEMMA4_ASSISTANT_DESCRIPTOR.tune_policy
     if family == "step":
         return STEP3P5_MTP_DESCRIPTOR.tune_policy
     return TunePolicy(
         supported=False,
-        unsupported_reason="Tune is supported for Qwen 3.5, Qwen 3.6, and Gemma 4 MTPLX models only.",
+        unsupported_reason="Tune is supported for Qwen 3.5, Qwen 3.6, Qwen 3.8, and Gemma 4 MTPLX models only.",
     )
 
 
@@ -947,7 +1011,7 @@ def kv_quant_policy_for_model(
         model_ref=model_ref,
         descriptor=descriptor,
     )
-    if family in {"qwen3_5", "qwen3_6"}:
+    if family in {"qwen3_5", "qwen3_6", "qwen3_8"}:
         return QWEN3_NEXT_DESCRIPTOR.kv_quant_policy
     if family == "gemma4":
         return GEMMA4_ASSISTANT_DESCRIPTOR.kv_quant_policy
@@ -991,7 +1055,7 @@ def context_window_policy_for_model(
         model_ref=model_ref,
         descriptor=descriptor,
     )
-    if family in {"qwen3_5", "qwen3_6"}:
+    if family in {"qwen3_5", "qwen3_6", "qwen3_8"}:
         base = QWEN3_NEXT_DESCRIPTOR.context_window_policy
     elif family == "gemma4":
         base = GEMMA4_ASSISTANT_DESCRIPTOR.context_window_policy
@@ -1017,6 +1081,8 @@ def reasoning_policy_for_model(
         model_ref=model_ref,
         descriptor=descriptor,
     )
+    if family == "qwen3_8":
+        return QWEN3_8_REASONING_CODEC
     if family in {"qwen3_5", "qwen3_6"}:
         return QWEN3_NEXT_DESCRIPTOR.reasoning_codec
     if family == "gemma4":
@@ -1056,7 +1122,7 @@ def model_controls_for_descriptor(
     kv_policy = kv_quant_policy_for_model(model_ref, inspection, descriptor)
     reasoning_policy = reasoning_policy_for_model(model_ref, inspection, descriptor)
     context_policy = context_window_policy_for_model(model_ref, inspection, descriptor)
-    sampler = descriptor.sampler_defaults.to_dict()
+    sampler = sampler_defaults_for_model(model_ref, inspection, descriptor).to_dict()
     return {
         "schema_version": 1,
         "model_ref": model_ref,
@@ -1065,16 +1131,22 @@ def model_controls_for_descriptor(
         "architecture_id": descriptor.architecture_id,
         "support_level": descriptor.status,
         "display_name": descriptor.display_name,
-        "draft_control": descriptor.draft_semantics.to_dict(),
+        "draft_control": draft_semantics_for_model(
+            model_ref, inspection, descriptor
+        ).to_dict(),
         "sampling": {
             **sampler,
             "family_default_reason": (
                 "Gemma assistant sampler"
                 if family == "gemma4"
                 else (
-                    "Qwen coding sampler"
-                    if family in {"qwen3_5", "qwen3_6"}
-                    else f"{descriptor.display_name} sampler"
+                    "Qwen3.8 official thinking sampler"
+                    if family == "qwen3_8"
+                    else (
+                        "Qwen coding sampler"
+                        if family in {"qwen3_5", "qwen3_6"}
+                        else f"{descriptor.display_name} sampler"
+                    )
                 )
             ),
         },
