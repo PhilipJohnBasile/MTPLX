@@ -2019,7 +2019,9 @@ def test_settings_report_effective_cache_and_kv_quant_controls(monkeypatch):
     assert "paged_kv_quantization" in body["restart_required_settings"]
     controls = body["model_controls"]
     assert controls["schema_version"] == 1
-    assert controls["model_family"] == "qwen3_6"
+    # The fake state serves the quickstart default, which is the Qwen 3.8
+    # Bare Speed flagship since the 2026-08-14 drop-day flip.
+    assert controls["model_family"] == "qwen3_8"
     assert controls["backend_id"] == "qwen3_next"
     assert controls["draft_control"]["minimum"] == 1
     assert controls["draft_control"]["maximum"] == 3
@@ -2304,7 +2306,7 @@ def test_openai_server_health_metrics_and_models_fake_state():
     assert health.json()["startup"]["pid"] > 0
     assert health.json()["startup"]["warmup"]["ran"] is False
     assert health.json()["startup"]["api_key_source"] == "none"
-    assert health.json()["startup"]["model_controls"]["model_family"] == "qwen3_6"
+    assert health.json()["startup"]["model_controls"]["model_family"] == "qwen3_8"
     assert health.json()["startup"]["model_controls"]["draft_control"]["maximum"] == 3
     assert health.json()["startup"]["tool_prompt_mode"] == "hybrid"
     assert health.json()["startup"]["tool_contract_active"] is True

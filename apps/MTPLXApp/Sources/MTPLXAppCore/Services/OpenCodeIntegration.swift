@@ -262,6 +262,20 @@ public struct OpenCodeIntegration: Sendable {
         {
             return "qwen3.5-4b-mtplx-optimized-speed"
         }
+        // Qwen 3.8 family before the generic qwen branches: a 3.8 name
+        // also contains "qwen"+"optimized-speed"/"optimized-quality" and
+        // would otherwise be claimed by the 3.6 ids below.
+        if lower.contains("qwen3.8") || lower.contains("qwen38") || lower.contains("qwen3-8") {
+            if lower.contains("bare-speed") {
+                return "mtplx-qwen38-27b-bare-speed"
+            }
+            if lower.contains("optimized-quality") {
+                return "mtplx-qwen38-27b-optimized-quality"
+            }
+            if lower.contains("optimized-speed") {
+                return "mtplx-qwen38-27b-optimized-speed"
+            }
+        }
         if lower.contains("qwen") && lower.contains("optimized-speed-v2") {
             return "mtplx-qwen36-27b-optimized-speed-v2"
         }

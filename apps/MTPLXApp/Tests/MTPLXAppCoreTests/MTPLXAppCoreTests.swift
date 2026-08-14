@@ -1194,12 +1194,14 @@ final class MTPLXAppCoreTests: XCTestCase {
             // Qwen3.8 27B launches turbo (trunk geometry identical to the
             // 3.6 27B flagships; the vk/NAX packs carry over) with the model
             // card's official thinking sampler — 1.0/0.95/20, NOT the
-            // 3.6-era 0.6 coding triple.
+            // 3.6-era 0.6 coding triple. Draft temperature is the drop-day
+            // sweep winner (0.6: 46.1 tok/s vs 42.4 at draft=target 1.0),
+            // deliberately NOT mirrored from the target temperature.
             XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "1.0"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]), model)
-            XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "1.0"]), model)
+            XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]), model)
             // reasoning_effort / preserve_thinking stay unpinned: the
             // server's qwen3_8 family policy owns them (xhigh, preserve).
             XCTAssertFalse(command.arguments.contains("--reasoning-effort"), model)
@@ -3213,7 +3215,7 @@ final class MTPLXAppCoreTests: XCTestCase {
     func testDefaultAppModelIsPortableHuggingFaceReference() throws {
         let model = MTPLXAppConfiguration.defaultLocalModelPath()
 
-        XCTAssertEqual(model, "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2")
+        XCTAssertEqual(model, "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed")
         XCTAssertFalse(model.contains("/Users/"))
         XCTAssertFalse(model.contains("Documents/MTPLX"))
     }
@@ -3430,6 +3432,19 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(quality.recommendedFor.contains(.legacyApple))
     }
 
+    func testOfficialModelCatalogIncludesQwen38BareSpeed() throws {
+        let bare = try XCTUnwrap(
+            MTPLXModelOption.option(matching: "mtplx-qwen38-27b-bare-speed")
+        )
+
+        XCTAssertEqual(bare.id, "qwen38-27b-bare-speed")
+        XCTAssertEqual(bare.hfModelID, "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed")
+        XCTAssertEqual(bare.displayName, "Qwen 3.8 27B Bare Speed")
+        XCTAssertEqual(bare.shortName, "Qwen 3.8 27B Bare Speed")
+        XCTAssertTrue(bare.recommendedFor.contains(.modernApple))
+        XCTAssertEqual(MTPLXModelOption.modelFamily(for: bare.hfModelID), "qwen3_8")
+    }
+
     func testFreshModernSmallMemoryCatalogLeadsWith9BAndOffersFourBPair() throws {
         // The rebuilt 4B pair (2026-07-19) is recommendable again: the 16 GB
         // tier leads with the 9B and offers both 4B lanes behind it.
@@ -3466,6 +3481,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         ).map(\.id)
 
         XCTAssertEqual(ids, [
+            "qwen38-27b-bare-speed",
             "optimized-speed-v2",
             "optimized-speed",
             "qwen35-9b-optimized-speed",
@@ -3479,7 +3495,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(ids.contains { $0.contains("step") })
     }
 
-    func testFreshModern36GiBCatalogLeadsWithOptimizedSpeedV2() throws {
+    func testFreshModern36GiBCatalogLeadsWithQwen38BareSpeed() throws {
         let m5 = DetectedHardware(
             chipName: "Apple M5 Pro",
             appleSiliconGeneration: "m5",
@@ -3491,7 +3507,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             includeInstalledOverrides: false
         ).map(\.id)
 
-        XCTAssertEqual(Array(ids.prefix(2)), ["optimized-speed-v2", "optimized-speed"])
+        XCTAssertEqual(Array(ids.prefix(2)), ["qwen38-27b-bare-speed", "optimized-speed-v2"])
     }
 
     func testFreshModernLargeMemoryCatalogUnlocksBalanceWithoutFP16Siblings() throws {
@@ -3507,6 +3523,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         ).map(\.id)
 
         XCTAssertEqual(ids, [
+            "qwen38-27b-bare-speed",
             "optimized-speed-v2",
             "optimized-speed",
             "optimized-quality",

@@ -653,6 +653,13 @@ def _public_depth_ceiling(args: Any) -> int:
             return draft_semantics_for_model(
                 str(ref), descriptor=descriptor
             ).maximum
+        # The artifact ref decides the ceiling. Once the default served
+        # name became the 3.8 id (2026-08-14 flip), letting the model_id
+        # alias widen the gate would grant D4-D6 to any non-3.8 artifact
+        # served under the default identity; keep the pre-3.8 ceiling and
+        # let the post-inspection contract path raise it when the real
+        # artifact supports it.
+        break
     return MAX_PUBLIC_SPECULATIVE_DEPTH
 
 
@@ -1005,7 +1012,11 @@ def _apply_model_contract_depth_default(
 # Gemma, and third-party artifacts keep the sustained default.
 _TURBO_DEFAULT_PUBLIC_MODEL_IDS = frozenset(
     {
-        DEFAULT_PUBLIC_MODEL_ID,  # 27B Optimized Speed V2 (hybrid 4-bit)
+        # 27B Optimized Speed V2 (hybrid 4-bit). Named explicitly: this
+        # entry used to ride on DEFAULT_PUBLIC_MODEL_ID, so the 2026-08-14
+        # default flip to Qwen 3.8 would have silently demoted V2 to
+        # sustained (the turbo-default-parity ledger class).
+        OPTIMIZED_SPEED_V2_PUBLIC_MODEL_ID,
         OPTIMIZED_SPEED_V1_PUBLIC_MODEL_ID,  # original 27B Optimized Speed
         QUALITY_PUBLIC_MODEL_ID,  # 27B Optimized-Quality (8-bit)
         LEGACY_OPTIMIZED_PUBLIC_MODEL_ID,  # 27B Optimized (gdn8 hybrid, 8/4-bit)

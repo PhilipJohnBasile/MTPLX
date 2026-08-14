@@ -404,6 +404,28 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             recommendedFor: [.legacyApple]
         ),
         MTPLXModelOption(
+            id: "qwen38-27b-bare-speed",
+            displayName: "Qwen 3.8 27B Bare Speed",
+            shortName: "Qwen 3.8 27B Bare Speed",
+            detail: "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP head (depths to D6). Runs the official thinking-mode sampler.",
+            hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
+            localCandidates: [
+                "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
+                "~/.mtplx/models/Qwen3.8-27B-MTPLX-Bare-Speed",
+            ],
+            aliases: [
+                "mtplx-qwen38-27b-bare-speed",
+                "Qwen3.8 27B Bare Speed",
+                "Qwen 3.8 Bare Speed",
+                "Bare Speed",
+            ],
+            // Exact local `du -sk` of the forge artifact (2026-08-14).
+            sizeBytes: 16_002_670_592,
+            // interim: 3.6 sibling measurement; replace with 3.8 32k probe
+            peakMemoryGiB: 17.0,
+            recommendedFor: [.modernApple]
+        ),
+        MTPLXModelOption(
             id: "optimized-speed-v2",
             displayName: "Qwen 3.6 27B Optimized Speed V2",
             shortName: "Qwen 3.6 27B Optimized Speed V2",
@@ -693,11 +715,14 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         case .intel:
             return []
         case .legacyApple:
+            // No FP16 sibling of the 3.8 flagship exists yet, so the
+            // legacy (M1/M2) matrix keeps its fp16-only entries.
             return recommendationIDs(
                 memoryGiB: hardware.unifiedMemoryGiB,
                 small: "qwen35-9b-optimized-speed-fp16",
                 speed27: "optimized-speed-fp16",
                 speed27V2: nil,
+                bareSpeed38: nil,
                 speed35: "qwen36-35b-a3b-optimized-speed-fp16",
                 balance35: "qwen36-35b-a3b-optimized-balance-fp16",
                 quality27: "optimized-quality-fp16"
@@ -712,6 +737,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 small: "qwen35-9b-optimized-speed",
                 speed27: "optimized-speed",
                 speed27V2: "optimized-speed-v2",
+                bareSpeed38: "qwen38-27b-bare-speed",
                 speed35: "qwen36-35b-a3b-optimized-speed",
                 balance35: "qwen36-35b-a3b-optimized-balance",
                 quality27: "optimized-quality"
@@ -730,6 +756,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     private static let modernTopRecommendationIDs = [
+        "qwen38-27b-bare-speed",
         "optimized-speed-v2",
         "optimized-speed",
         "optimized-quality",
@@ -744,6 +771,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         small: String,
         speed27: String,
         speed27V2: String?,
+        bareSpeed38: String?,
         speed35: String,
         balance35: String,
         quality27: String
@@ -755,9 +783,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             guard let speed27V2 else {
                 return [small, speed27, "gemma4-optimized-speed", speed35, quality27]
             }
-            return [speed27V2, speed27, small, "gemma4-optimized-speed", speed35, quality27]
+            // Qwen 3.8 Bare Speed is the recommended pick wherever it
+            // fits (2026-08-14 drop-day default flip).
+            return (bareSpeed38.map { [$0] } ?? [])
+                + [speed27V2, speed27, small, "gemma4-optimized-speed", speed35, quality27]
         }
-        return (speed27V2.map { [$0] } ?? [])
+        return (bareSpeed38.map { [$0] } ?? [])
+            + (speed27V2.map { [$0] } ?? [])
             + [speed27, quality27, speed35, balance35, "gemma4-optimized-speed", small]
     }
 

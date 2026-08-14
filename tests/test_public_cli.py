@@ -680,9 +680,9 @@ def test_start_default_openwebui_dry_run_uses_resolved_model(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert "Qwen3.6-27B-MTPLX-Optimized-Speed" in payload["model"]
+    assert "Qwen3.8-27B-MTPLX-Bare-Speed" in payload["model"]
     assert payload["openwebui"]["model_id"].startswith(
-        "mtplx-qwen36-27b-optimized-speed"
+        "mtplx-qwen38-27b-bare-speed"
     )
     assert payload["openwebui"]["model_id"] != "none"
     assert f"--model {payload['model']}" in payload["openwebui"]["server_command"]
@@ -2384,7 +2384,7 @@ def test_quickstart_default_missing_cache_is_not_legacy_models_path(tmp_path, ca
 
     captured = capsys.readouterr().out
     assert code == 1
-    assert "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed" in captured
+    assert "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed" in captured
     assert "models/Qwen3.6-27B-MTPLX-Optimized-Speed" not in captured
     assert "error: model cannot run with MTPLX" not in captured
     assert "tier: no-MTP" not in captured
@@ -2396,7 +2396,7 @@ def test_tune_default_dry_run_is_not_legacy_models_path(monkeypatch, tmp_path, c
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["model"].endswith("Qwen3.6-27B-MTPLX-Optimized-Speed-V2")
+    assert payload["model"].endswith("Qwen3.8-27B-MTPLX-Bare-Speed")
     first_command = payload["candidates"][0]["command"]
     assert "--model" in first_command
     assert first_command[first_command.index("--model") + 1] == payload["model"]
@@ -5215,11 +5215,11 @@ def test_product_helper_commands_parse():
     assert start_openwebui.strict_fast_path is False
     assert start_openwebui_strict.strict_fast_path is True
     assert quickstart.command == "quickstart"
-    assert quickstart.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert quickstart.model == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     assert quickstart.port == 18012
     assert quickstart.profile == "sustained"
     assert quickstart_alias.command == "quick-start"
-    assert quickstart_alias.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert quickstart_alias.model == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     assert quickstart_alias.port == 18013
     assert quickstart_alias.profile == "sustained"
     assert quickstart_dry_run.command == "quickstart"
@@ -5229,7 +5229,7 @@ def test_product_helper_commands_parse():
     assert setup.command == "setup"
     assert setup.dry_run is True
     assert pull_default.command == "pull"
-    assert pull_default.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert pull_default.model == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     assert ask.command == "ask"
     assert ask.prompt_arg == "hello"
     assert ask.quiet is True
@@ -5238,7 +5238,7 @@ def test_product_helper_commands_parse():
     assert serve_start.port == 18012
     assert serve_start.stats_footer is True
     assert tune.command == "tune"
-    assert tune.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert tune.model == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     assert tune.depths is None
     assert status.command == "status"
     assert status.deep is True
@@ -5260,8 +5260,8 @@ def test_product_helper_commands_parse():
     assert nightly.bench_action == "nightly"
     assert suite.bench_action == "suite"
     assert bench_tune.bench_action == "tune"
-    assert bench_tune.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
-    assert bench_tune.champion == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert bench_tune.model == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
+    assert bench_tune.champion == "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     assert nightly.output == "out.json"
     assert suite.output == "suite.json"
     assert nightly_json.json is True

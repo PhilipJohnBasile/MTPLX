@@ -85,6 +85,7 @@ from mtplx.backends.descriptors import (
     BackendDescriptor,
     assistant_target_distribution_choices,
     descriptor_for_backend_id,
+    descriptor_for_model,
     descriptor_from_runtime,
     model_controls_for_descriptor,
     model_family_from_inspection,
@@ -1287,11 +1288,25 @@ def _kernel_selfcheck_health_payload() -> dict[str, Any]:
 
 def _backend_descriptor(state: "ServerState") -> BackendDescriptor:
     descriptor = getattr(state, "backend_descriptor", None)
-    if descriptor is not None:
-        return descriptor
-    return descriptor_from_runtime(
-        getattr(state, "runtime", None),
-        getattr(state, "args", None),
+    if descriptor is None:
+        descriptor = descriptor_from_runtime(
+            getattr(state, "runtime", None),
+            getattr(state, "args", None),
+        )
+    model_ref = str(
+        getattr(getattr(state, "args", None), "model", None)
+        or getattr(state, "model_id", None)
+        or ""
+    )
+    model_context_window_max = getattr(state, "model_context_window_max", None)
+    return descriptor_for_model(
+        descriptor,
+        model_ref=model_ref,
+        inspection=(
+            {"model_context_window": int(model_context_window_max)}
+            if model_context_window_max
+            else None
+        ),
     )
 
 

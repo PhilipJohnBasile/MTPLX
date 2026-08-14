@@ -33,6 +33,7 @@ public enum ModelPickChoice: Equatable, Sendable, Hashable {
     case none
     case curatedQwen35FourBit
     case curatedQwen35NineBSpeed
+    case curatedQwen38BareSpeed
     case curatedSpeedV2
     case curatedSpeed
     case curatedQwen35BSpeed
@@ -175,6 +176,9 @@ public struct OnboardingFeatureState: Equatable, Sendable {
             let useFP16 = hardware?.tier == .legacyApple
             let id = useFP16 ? "qwen35-9b-optimized-speed-fp16" : "qwen35-9b-optimized-speed"
             return catalog.first { $0.id == id }
+        case .curatedQwen38BareSpeed:
+            // No FP16 sibling exists yet, so there is no chip-aware swap.
+            return catalog.first { $0.id == "qwen38-27b-bare-speed" }
         case .curatedSpeedV2:
             return catalog.first { $0.id == "optimized-speed-v2" }
         case .curatedSpeed:
@@ -212,6 +216,7 @@ public struct OnboardingFeatureState: Equatable, Sendable {
             return nil
         case .curatedQwen35FourBit,
              .curatedQwen35NineBSpeed,
+             .curatedQwen38BareSpeed,
              .curatedSpeedV2,
              .curatedSpeed,
              .curatedQwen35BSpeed,
@@ -294,6 +299,7 @@ public struct OnboardingFeatureState: Equatable, Sendable {
                 return false
             case .curatedQwen35FourBit,
                  .curatedQwen35NineBSpeed,
+                 .curatedQwen38BareSpeed,
                  .curatedSpeedV2,
                  .curatedSpeed,
                  .curatedQwen35BSpeed,

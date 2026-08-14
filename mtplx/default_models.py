@@ -59,6 +59,9 @@ _NEWER_APPLE_SPEED_GENERATIONS = frozenset({"m3", "m4", "m5"})
 SMALL_DEFAULT_MEMORY_FLOOR_GIB = 32.0
 # V2 peaks at about 21.5 GiB, leaving practical headroom on a 32 GiB Mac.
 OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB = 32.0
+# Qwen 3.8 Bare Speed interim peak is the 3.6-27B Speed sibling measurement
+# (17.0 GiB); the same 32 GiB floor as V2 is therefore conservative.
+QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB = 32.0
 QWEN35_9B_SPEED_DESCRIPTION = "Compact 6-bit model for smaller Macs"
 OPTIMIZED_SPEED_V1_LABEL = "Qwen 3.6 27B Optimized Speed"
 OPTIMIZED_SPEED_V1_DESCRIPTION = "Smaller 4-bit model that is a little faster for short chats"
@@ -68,11 +71,21 @@ OPTIMIZED_SPEED_V2_DESCRIPTION = (
     "and hand-tuned sensitive parts kept at up to 16-bit. Faster on long "
     "agent tasks, slightly larger, and a little slower for short chats"
 )
+QWEN38_BARE_SPEED_LABEL = "Qwen 3.8 27B Bare Speed"
+QWEN38_BARE_SPEED_DESCRIPTION = (
+    "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP head "
+    "and the official thinking-mode sampler"
+)
 # Backward-compatible names used by integrations that mean the current default.
-OPTIMIZED_SPEED_LABEL = OPTIMIZED_SPEED_V2_LABEL
-OPTIMIZED_SPEED_DESCRIPTION = OPTIMIZED_SPEED_V2_DESCRIPTION
+OPTIMIZED_SPEED_LABEL = QWEN38_BARE_SPEED_LABEL
+OPTIMIZED_SPEED_DESCRIPTION = QWEN38_BARE_SPEED_DESCRIPTION
 OPTIMIZED_QUALITY_LABEL = "Qwen3.6 27B MTPLX Optimized Quality"
 OPTIMIZED_QUALITY_DESCRIPTION = "Flat8 target with INT8 MTP sidecar"
+_QWEN38_BARE_SPEED_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
+    # Forge-local drop-day build (forge writes the branded name directly).
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Bare-Speed",
+)
 _OPTIMIZED_SPEED_V2_LOCAL_CANDIDATES = (
     "~/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
     "~/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
@@ -99,6 +112,8 @@ _OPTIMIZED_35B_SPEED_LOCAL_CANDIDATES = (
 )
 _VERIFIED_DEFAULT_LOCAL_NAMES = frozenset(
     {
+        "Qwen3.8-27B-MTPLX-Bare-Speed",
+        "Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
         "Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
         "Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
         "Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
@@ -130,7 +145,9 @@ class DefaultModelSelection:
             return "Qwen3.6 27B Optimized Speed FP16"
         if self.hf_model == OPTIMIZED_SPEED_V1_HF_MODEL_ID:
             return OPTIMIZED_SPEED_V1_LABEL
-        return OPTIMIZED_SPEED_V2_LABEL
+        if self.hf_model == OPTIMIZED_SPEED_V2_HF_MODEL_ID:
+            return OPTIMIZED_SPEED_V2_LABEL
+        return QWEN38_BARE_SPEED_LABEL
 
     @property
     def label(self) -> str:
@@ -206,8 +223,17 @@ def _optimized_speed_model_ref(
     return local or hf_model_id
 
 
+def qwen38_bare_speed_model_ref() -> str:
+    """Resolve the Qwen 3.8 Bare Speed default (2026-08-14 drop-day flip)."""
+
+    return _optimized_speed_model_ref(
+        hf_model_id=QWEN38_BARE_SPEED_HF_MODEL_ID,
+        local_candidates=_QWEN38_BARE_SPEED_LOCAL_CANDIDATES,
+    )
+
+
 def optimized_speed_model_ref() -> str:
-    """Resolve the current V2 coding default without relabeling a V1 folder."""
+    """Resolve the 3.6 V2 coding artifact without relabeling a V1 folder."""
 
     return _optimized_speed_model_ref(
         hf_model_id=OPTIMIZED_SPEED_V2_HF_MODEL_ID,
@@ -525,8 +551,8 @@ def select_default_model(
 
     Auto policy is intentionally simple and visible:
     M1/M2 -> FP16, under 32 GiB -> 9B, and modern Macs with at least 32 GiB
-    -> Optimized Speed V2. When memory is unknown, modern Apple Silicon gets
-    V2.
+    -> Qwen 3.8 Bare Speed (the 2026-08-14 drop-day default). When memory
+    is unknown, modern Apple Silicon gets the 3.8 default.
     """
 
     env_value = variant_override if variant_override is not None else os.environ.get(DEFAULT_MODEL_VARIANT_ENV)
@@ -567,12 +593,12 @@ def select_default_model(
     route_small = (
         memory_gib is not None and memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB
     )
-    use_v2 = (
+    use_qwen38 = (
         variant == "speed"
         and generation not in _LEGACY_APPLE_FP16_GENERATIONS
         and (
             memory_gib is None
-            or memory_gib >= OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB
+            or memory_gib >= QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB
         )
     )
     if route_small:
@@ -593,10 +619,10 @@ def select_default_model(
         model = DEFAULT_FP16_HF_MODEL_ID
         hf_model = DEFAULT_FP16_HF_MODEL_ID
         precision = "FP16"
-    elif use_v2:
-        model = optimized_speed_model_ref()
-        hf_model = OPTIMIZED_SPEED_V2_HF_MODEL_ID
-        precision = OPTIMIZED_SPEED_V2_DESCRIPTION
+    elif use_qwen38:
+        model = qwen38_bare_speed_model_ref()
+        hf_model = QWEN38_BARE_SPEED_HF_MODEL_ID
+        precision = QWEN38_BARE_SPEED_DESCRIPTION
         if model != hf_model:
             reason = f"{reason}; installed locally"
     else:
@@ -626,11 +652,16 @@ def select_default_model(
 
 def verified_default_refs() -> set[str]:
     root = _repo_root()
+    local_qwen38 = qwen38_bare_speed_model_ref()
     local_speed = optimized_speed_model_ref()
     refs = {
         DEFAULT_HF_MODEL_ID,
         DEFAULT_FP16_HF_MODEL_ID,
         DEFAULT_MODEL_ID,
+        local_qwen38,
+        # The 3.6 V2 flagship was the shipped default through 2.6.0; refs
+        # that name it still mean "the default" to existing launchers.
+        OPTIMIZED_SPEED_V2_HF_MODEL_ID,
         local_speed,
         str(DEFAULT_RUNTIME_MODEL_DIR),
         str((root / DEFAULT_RUNTIME_MODEL_DIR).resolve()),

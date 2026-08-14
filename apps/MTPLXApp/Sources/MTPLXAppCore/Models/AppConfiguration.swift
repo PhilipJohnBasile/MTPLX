@@ -326,7 +326,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// by the model catalog; the default configuration should never point at
     /// a developer machine path.
     public static func defaultLocalModelPath() -> String {
-        return "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+        return "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
     }
 
     public static func defaultHermesWorkspacePath() -> String {
