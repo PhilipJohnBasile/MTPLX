@@ -11587,6 +11587,11 @@ def _request_log_path(state: "ServerState") -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in {"0", "off", "false", "no", "none", "disabled"}:
         return None
+    if raw.lower() in {"1", "on", "true", "yes", "enabled"}:
+        # Truthy switch, not a path: MTPLX_REQUEST_LOG_JSONL=1 must mean
+        # "log to the default per-port file", not a file literally named 1
+        # in the daemon cwd.
+        raw = ""
     if raw:
         return raw
     # Default ON: agent-session incidents cannot be diagnosed after the fact
@@ -20090,11 +20095,30 @@ def _display_text(
     return f"{text}{separator}{footer}"
 
 
+def _prompt_opens_thinking(state: ServerState, prompt_ids: Any) -> bool:
+    """True when the rendered prompt ended inside an open <think> block.
+
+    Template truth, not family guesswork: Qwen 3.8 (and pre-open templates
+    generally) end the generation prompt with `<think>\n`, so a completion
+    that hits max_tokens before emitting `</think>` contains no marker at
+    all — the whole text is reasoning. Templates that never prefill an open
+    tag (lfm2) can never trip this.
+    """
+    try:
+        markers = think_marker_ids(getattr(state.runtime, "tokenizer", None))
+        if markers is None or not prompt_ids:
+            return False
+        return int(markers[0]) in {int(t) for t in list(prompt_ids)[-8:]}
+    except Exception:
+        return False
+
+
 def _nonstream_chat_message_parts(
     state: ServerState,
     generated: dict[str, Any],
     *,
     thinking_enabled: bool,
+    starts_in_think: bool = False,
     suppress_visible_reasoning: bool = False,
     footer_allowed: bool | None = None,
 ) -> tuple[str, str]:
@@ -20132,7 +20156,12 @@ def _nonstream_chat_message_parts(
             reasoning_text and display_text != raw_text
         )
     elif parser_enabled and parser in {"qwen3", "step3p5", "poolside_v1", "lfm2"}:
-        if thinking_enabled and has_qwen_style_reasoning_marker:
+        # starts_in_think covers the marker-less truncation case: the prompt
+        # pre-opened <think>, generation hit max_tokens before </think>, so
+        # the completion carries no tag yet is entirely reasoning (routine at
+        # Qwen 3.8 xhigh; the streaming path already handles it via splitter
+        # initial state).
+        if thinking_enabled and (has_qwen_style_reasoning_marker or starts_in_think):
             reasoning_text, display_text = _split_backend_reasoning_for_state(
                 state,
                 raw_text,
@@ -27616,6 +27645,7 @@ def create_app(state: ServerState) -> FastAPI:
                     state,
                     generated,
                     thinking_enabled=thinking_enabled,
+                    starts_in_think=_prompt_opens_thinking(state, prompt_ids),
                     suppress_visible_reasoning=suppress_visible_reasoning,
                     footer_allowed=_stats_footer_allowed(state, headers, metadata),
                 )
@@ -28955,9 +28985,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reasoning-effort",
-        choices=["auto", "low", "medium", "high"],
+        choices=["auto", "low", "medium", "high", "xhigh"],
         default="auto",
-        help="Backend reasoning effort. Step-3.7 Flash maps this to low/medium/high in its chat template.",
+        help=(
+            "Backend reasoning effort. Qwen 3.8 exposes xhigh/medium/low "
+            "(default xhigh); Step-3.7 Flash maps this to low/medium/high "
+            "in its chat template."
+        ),
     )
     parser.add_argument(
         "--preserve-thinking",
