@@ -11041,6 +11041,7 @@ def _quickstart_pi_payload(
         pi_launch_command,
         pi_model_ref,
         pi_models_json_path,
+        pi_request_policy_extension_path,
         write_pi_models_config,
     )
 
@@ -11073,8 +11074,8 @@ def _quickstart_pi_payload(
         "api_key": _api_key_display_value(api_key),
         "config_path": str(pi_models_json_path()),
         "provider": _redact_secret_from_payload(provider, api_key),
-        "no_hidden_max_tokens": "maxTokens"
-        not in json.dumps(provider.get("models", [])),
+        "no_hidden_max_tokens": True,
+        "request_policy_extension_path": str(pi_request_policy_extension_path()),
         "launch_command": pi_launch_command(model_id),
         "server_console": True,
         "server_controls": [

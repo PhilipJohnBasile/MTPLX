@@ -2850,7 +2850,12 @@ def test_quickstart_pi_dry_run_json(monkeypatch, tmp_path, capsys):
     assert payload["pi"]["provider"]["compat"]["maxTokensField"] == "max_tokens"
     assert payload["pi"]["provider"]["models"][0]["reasoning"] is True
     assert payload["pi"]["no_hidden_max_tokens"] is True
-    assert "maxTokens" not in json.dumps(payload["pi"]["provider"]["models"])
+    assert payload["pi"]["provider"]["models"][0]["maxTokens"] == payload["pi"][
+        "context_window"
+    ]
+    assert payload["pi"]["request_policy_extension_path"].endswith(
+        "/extensions/mtplx-request-policy.ts"
+    )
     assert "--api-key mtplx-local" in payload["pi"]["server_command"]
     assert "--default-top-p 0.95" in payload["pi"]["server_command"]
     assert "--draft-top-p 0.95" in payload["pi"]["server_command"]
@@ -2918,8 +2923,15 @@ def test_pi_models_config_merge_preserves_other_providers(tmp_path):
     assert payload["providers"]["mtplx"]["headers"] == {"x-mtplx-client": "pi"}
     assert payload["providers"]["mtplx"]["models"][0]["id"] == "mtplx-test-model"
     assert payload["providers"]["mtplx"]["models"][0]["reasoning"] is True
-    assert "maxTokens" not in payload["providers"]["mtplx"]["models"][0]
+    assert payload["providers"]["mtplx"]["models"][0]["maxTokens"] == 131072
     assert result["no_hidden_max_tokens"] is True
+    extension_path = config_path.parent / "extensions" / "mtplx-request-policy.ts"
+    assert result["request_policy_extension_path"] == str(extension_path)
+    extension_source = extension_path.read_text(encoding="utf-8")
+    assert 'delete request.max_tokens' in extension_source
+    assert 'delete request.max_completion_tokens' in extension_source
+    assert 'event.headers["x-mtplx-session-id"]' in extension_source
+    assert 'const mtplxModelID = "mtplx-test-model"' in extension_source
 
 
 def test_start_pi_handoff_writes_config_and_starts_authenticated_server(
