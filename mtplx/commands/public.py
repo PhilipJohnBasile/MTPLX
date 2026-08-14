@@ -941,6 +941,10 @@ def _model_contract_depth(
     profile: Any,
     fallback: int = 3,
 ) -> int:
+    if int(fallback) == 0:
+        # fallback 0 is the missing-MTP degrade pin (AR mode); artifact
+        # metadata must not resurrect a draft depth past it.
+        return 0
     contract = _profile_scoped_model_runtime_contract(inspection, profile)
     if not isinstance(contract, dict):
         # A profile mismatch (artifact recommends another profile) hides the
