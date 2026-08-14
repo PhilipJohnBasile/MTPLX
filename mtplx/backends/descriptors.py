@@ -385,12 +385,12 @@ QWEN3_NEXT_DESCRIPTOR = BackendDescriptor(
 # retained-history rendering, and a multi-step-trained MTP head (deeper draft
 # range than the depth-1-trained 3.6 head).
 QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20)
-# Sweep-calibrated on drop day (2026-08-14, Bare-Speed Q4, thermally gated
-# think-phase arms): draft 0.6 beats draft=target 1.0 (46.1 vs 42.4 tok/s,
-# pos-3 acceptance .339 vs .246) and beats the 3.6-era draft-greedy 0.1
-# (37.1). Exact ratio-acceptance keeps outputs distribution-identical for
-# any draft temperature, so this is a pure speed knob.
-QWEN3_8_DRAFT_TEMPERATURE = 0.6
+# Strict max-fan A/B on drop day (2026-08-14, Bare-Speed Q4, alternating
+# 2,000-token xhigh arms) kept the official target sampler for the draft:
+# draft 1.0 averaged 46.05 tok/s versus 42.79 at 0.6, with higher D2/D3
+# acceptance. The earlier 0.6 result was thermally uncontrolled and is not a
+# product receipt.
+QWEN3_8_DRAFT_TEMPERATURE = 1.0
 QWEN3_8_REASONING_CODEC = ReasoningCodec(
     parser="qwen3",
     display_name="Qwen think tags",
@@ -958,7 +958,7 @@ def model_family_from_inspection(
     if ref_family is not None:
         return ref_family
     backend_id = (
-        str(descriptor.backend_id)
+        str(getattr(descriptor, "backend_id", "") or "")
         if descriptor is not None
         else backend_id_from_inspection(inspection)
     )
@@ -975,10 +975,11 @@ def model_family_from_inspection(
     family = _explicit_qwen_family_marker(text)
     if family is not None:
         return family
-    if descriptor is not None and descriptor.model_family == "qwen":
+    descriptor_family = getattr(descriptor, "model_family", None)
+    if descriptor_family == "qwen":
         return "qwen3_6"
-    if descriptor is not None and descriptor.model_family not in {"native-mtp", "qwen"}:
-        return descriptor.model_family
+    if descriptor_family is not None and descriptor_family not in {"native-mtp", "qwen"}:
+        return str(descriptor_family)
     return "unknown"
 
 

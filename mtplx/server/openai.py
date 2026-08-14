@@ -15824,6 +15824,7 @@ def _store_retokenized_history_snapshot(
     assistant_content: str,
     assistant_tool_calls: list[dict[str, Any]] | None = None,
     thinking_enabled: bool,
+    reasoning_effort: str | None = None,
     policy_fingerprint: str,
     acquire_model_lock_blocking: bool = True,
     tool_specs: list[dict[str, Any]] | None = None,
@@ -15863,6 +15864,7 @@ def _store_retokenized_history_snapshot(
         assistant_content=assistant_content,
         assistant_tool_calls=assistant_tool_calls,
         thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
         tool_specs=tool_specs,
         tool_prompt_mode=tool_prompt_mode,
         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
@@ -16100,6 +16102,7 @@ def _history_ids_for_postcommit(
     assistant_content: str,
     assistant_tool_calls: list[dict[str, Any]] | None,
     thinking_enabled: bool,
+    reasoning_effort: str | None = None,
     tool_specs: list[dict[str, Any]] | None = None,
     tool_prompt_mode: str | None = None,
     strip_tool_call_preamble_text: bool = False,
@@ -16117,9 +16120,15 @@ def _history_ids_for_postcommit(
     worse, mis-matching) entries.
     """
 
+    # The retokenized history must render with the SAME effort the live
+    # request used: the xhigh/low effort instruction is part of the rendered
+    # prompt, so re-rendering at the state default poisons the boundary for
+    # every non-default-effort session (drop-day receipt: medium sessions
+    # ran the bank permanently cold while xhigh warm-hit).
     reasoning_effort = _reasoning_effort_for_state(
         state,
         thinking_enabled=thinking_enabled,
+        request_effort=reasoning_effort,
     )
     effective_tool_prompt_mode = _normalize_tool_prompt_mode(
         tool_prompt_mode,
@@ -16204,6 +16213,7 @@ def _generation_final_postcommit_compatibility(
     assistant_content: str,
     assistant_tool_calls: list[dict[str, Any]] | None = None,
     thinking_enabled: bool,
+    reasoning_effort: str | None = None,
     tool_specs: list[dict[str, Any]] | None = None,
     tool_prompt_mode: str | None = None,
     strip_tool_call_preamble_text: bool = False,
@@ -16264,6 +16274,7 @@ def _generation_final_postcommit_compatibility(
         assistant_content=assistant_content,
         assistant_tool_calls=assistant_tool_calls,
         thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
         tool_specs=tool_specs,
         tool_prompt_mode=tool_prompt_mode,
         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
@@ -16330,6 +16341,7 @@ def _store_generation_final_history_snapshot(
     assistant_content: str,
     assistant_tool_calls: list[dict[str, Any]] | None = None,
     thinking_enabled: bool,
+    reasoning_effort: str | None = None,
     policy_fingerprint: str,
     tool_specs: list[dict[str, Any]] | None = None,
     keep_live_ref: bool = True,
@@ -16347,6 +16359,7 @@ def _store_generation_final_history_snapshot(
         assistant_content=assistant_content,
         assistant_tool_calls=assistant_tool_calls,
         thinking_enabled=thinking_enabled,
+        reasoning_effort=reasoning_effort,
         tool_specs=tool_specs,
         tool_prompt_mode=tool_prompt_mode,
         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
@@ -16651,6 +16664,7 @@ def _schedule_idle_postcommit_snapshot(
                     assistant_content=assistant_content,
                     assistant_tool_calls=assistant_tool_calls,
                     thinking_enabled=thinking_enabled,
+                    reasoning_effort=reasoning_effort,
                     policy_fingerprint=policy_fingerprint,
                     acquire_model_lock_blocking=False,
                     tool_specs=tool_specs,
@@ -24748,6 +24762,7 @@ def create_app(state: ServerState) -> FastAPI:
                 assistant_content=assistant_content,
                 assistant_tool_calls=assistant_tool_calls,
                 thinking_enabled=thinking_enabled,
+                reasoning_effort=reasoning_effort,
                 tool_specs=postcommit_tool_specs,
                 tool_prompt_mode=postcommit_tool_prompt_mode,
                 strip_tool_call_preamble_text=opencode_client,
@@ -24809,6 +24824,7 @@ def create_app(state: ServerState) -> FastAPI:
                         assistant_content=assistant_content,
                         assistant_tool_calls=assistant_tool_calls,
                         thinking_enabled=thinking_enabled,
+                        reasoning_effort=reasoning_effort,
                         policy_fingerprint=postcommit_policy_fingerprint,
                         tool_specs=postcommit_tool_specs,
                         keep_live_ref=session_keep_live_ref,
@@ -25910,6 +25926,7 @@ def create_app(state: ServerState) -> FastAPI:
                                                     assistant_tool_calls
                                                 ),
                                                 thinking_enabled=thinking_enabled,
+                                                reasoning_effort=reasoning_effort,
                                                 policy_fingerprint=postcommit_policy_fingerprint,
                                                 tool_specs=postcommit_tool_specs,
                                                 keep_live_ref=session_keep_live_ref,
@@ -25939,6 +25956,7 @@ def create_app(state: ServerState) -> FastAPI:
                                             ),
                                             assistant_tool_calls=(assistant_tool_calls),
                                             thinking_enabled=thinking_enabled,
+                                            reasoning_effort=reasoning_effort,
                                             policy_fingerprint=postcommit_policy_fingerprint,
                                             tool_specs=postcommit_tool_specs,
                                             keep_live_ref=session_keep_live_ref,
@@ -25975,6 +25993,7 @@ def create_app(state: ServerState) -> FastAPI:
                                                         assistant_tool_calls
                                                     ),
                                                     thinking_enabled=thinking_enabled,
+                                                    reasoning_effort=reasoning_effort,
                                                     policy_fingerprint=postcommit_policy_fingerprint,
                                                     tool_specs=postcommit_tool_specs,
                                                     keep_live_ref=session_keep_live_ref,
