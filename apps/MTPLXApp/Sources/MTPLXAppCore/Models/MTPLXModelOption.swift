@@ -426,6 +426,48 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             recommendedFor: [.modernApple]
         ),
         MTPLXModelOption(
+            id: "qwen38-27b-optimized-speed",
+            displayName: "Qwen 3.8 27B Optimized Speed",
+            shortName: "Qwen 3.8 27B Optimized Speed",
+            detail: "Hand-calibrated mixed 4-bit build of Qwen 3.8: 8-bit vocab tensors, GDN output projections, and late MLP layers over a 4-bit/g32 body. Low KLD with the family's highest coding acceptance.",
+            hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
+            localCandidates: [
+                "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+                "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+            ],
+            aliases: [
+                "mtplx-qwen38-27b-optimized-speed",
+                "Qwen3.8 27B Optimized Speed",
+                "Qwen 3.8 Optimized Speed",
+            ],
+            // Exact local `du -sk` of the 2026-08-14 forge artifact.
+            sizeBytes: 20_392_468_480,
+            // interim: 3.6 Speed-V2 sibling measurement; replace with 3.8 32k probe
+            peakMemoryGiB: 21.5,
+            recommendedFor: [.modernApple]
+        ),
+        MTPLXModelOption(
+            id: "qwen38-27b-optimized-quality",
+            displayName: "Qwen 3.8 27B Optimized Quality",
+            shortName: "Qwen 3.8 27B Optimized Quality",
+            detail: "Flat 8-bit build of Qwen 3.8 for maximum output fidelity: near-teacher distribution with exact MTP calibration. Serves its measured best depth by default.",
+            hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            localCandidates: [
+                "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality",
+                "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            ],
+            aliases: [
+                "mtplx-qwen38-27b-optimized-quality",
+                "Qwen3.8 27B Optimized Quality",
+                "Qwen 3.8 Optimized Quality",
+            ],
+            // Exact local `du -sk` of the 2026-08-14 forge artifact.
+            sizeBytes: 29_449_355_264,
+            // interim: q8 27B sibling class; replace with the 3.8 32k probe
+            peakMemoryGiB: 30.5,
+            recommendedFor: [.modernApple]
+        ),
+        MTPLXModelOption(
             id: "optimized-speed-v2",
             displayName: "Qwen 3.6 27B Optimized Speed V2",
             shortName: "Qwen 3.6 27B Optimized Speed V2",

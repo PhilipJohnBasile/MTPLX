@@ -903,6 +903,14 @@ def _model_draft_sampler_spec(
 _MODEL_CONTRACT_DEPTH_DEFAULTS: dict[str, int] = {
     QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID: 2,
     QWEN36_35B_OPTIMIZED_BALANCE_PUBLIC_MODEL_ID: 2,
+    # Qwen3.8 27B Optimized Quality (8-bit): drop-day forge-verify
+    # (long-code-uncapped, fans max, 2026-08-14) measured
+    # D1 27.7 / D2 33.9 / D3 18.8 tok/s with acceptance D2 [.976/.936].
+    # The D3 round cost doubles on the q8 body (QL4 leaves the fast
+    # quantized-matmul path), so the ceiling is never the fastest mode.
+    # The artifact also stamps mtp_depth_default=2; this entry keeps the
+    # measured winner if the artifact is ever re-forged without the stamp.
+    QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID: 2,
 }
 
 

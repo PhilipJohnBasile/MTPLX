@@ -35,12 +35,14 @@ from mtplx.profiles import (
 )
 
 
-def test_catalog_has_sixteen_unique_entries():
+def test_catalog_has_eighteen_unique_entries():
+    # 18 = the 16-entry 2026-08-14 scaffold + the Qwen3.8 Optimized
+    # Speed/Quality pair forged on drop day.
     ids = [model.id for model in OFFICIAL_CATALOG]
-    assert len(ids) == 16
-    assert len(set(ids)) == 16
+    assert len(ids) == 18
+    assert len(set(ids)) == 18
     hf_ids = [model.hf_model_id for model in OFFICIAL_CATALOG]
-    assert len(set(hf_ids)) == 16
+    assert len(set(hf_ids)) == 18
 
 
 def test_catalog_matches_swift_official_catalog():

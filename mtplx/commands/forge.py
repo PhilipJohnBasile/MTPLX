@@ -1189,13 +1189,22 @@ def _convert_with_mlx_lm(
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     _write_progress(run, "convert", progress=0.05, label="to_mlx", finished=False)
-    command = _mlx_lm_convert_command(
-        source,
-        destination,
-        recipe=recipe,
-        source_format=source_format,
-    )
-    _err("[forge] converting with mlx-lm")
+    if recipe.get("module_overrides"):
+        command = _mixed_convert_command(
+            source,
+            destination,
+            recipe=recipe,
+            source_format=source_format,
+        )
+        _err("[forge] converting with mlx-lm (mixed-precision module overrides)")
+    else:
+        command = _mlx_lm_convert_command(
+            source,
+            destination,
+            recipe=recipe,
+            source_format=source_format,
+        )
+        _err("[forge] converting with mlx-lm")
     stdout_path = run / "convert.stdout.log"
     stderr_path = run / "convert.stderr.log"
     started = time.monotonic()
@@ -1231,6 +1240,42 @@ def _convert_with_mlx_lm(
         finished=True,
         elapsed_s=round(time.monotonic() - started, 3),
     )
+
+
+def _mixed_convert_command(
+    source: Path,
+    destination: Path,
+    *,
+    recipe: dict[str, Any],
+    source_format: str,
+) -> list[str]:
+    # module_overrides quantize per-module via a custom predicate, which only
+    # the in-process mlx-lm API supports; BF16-native sources only, because
+    # packed sources dequantize through dedicated lanes with their own params.
+    if source_format != SOURCE_BF16_NATIVE:
+        raise ForgeError(
+            "recipe module_overrides require a BF16/native source, got "
+            f"{source_format}",
+            code=2,
+        )
+    raw_body_bits = recipe.get("body_bits")
+    if int(4 if raw_body_bits is None else raw_body_bits) <= 0:
+        raise ForgeError("recipe module_overrides require body_bits > 0", code=2)
+    command = [
+        sys.executable,
+        "-P",
+        "-m",
+        "mtplx.commands.forge_mixed_convert",
+        "--source",
+        str(source),
+        "--destination",
+        str(destination),
+        "--recipe-json",
+        json.dumps(recipe, sort_keys=True),
+    ]
+    if _body_dtype(recipe) == "fp16":
+        command.extend(["--dtype", "float16"])
+    return command
 
 
 def _mlx_lm_convert_command(
