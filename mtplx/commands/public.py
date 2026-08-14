@@ -1291,9 +1291,9 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):
-        # qwen3_8 draws at target temp 1.0 where a colder draft wins the
-        # sweep (QWEN3_8_DRAFT_TEMPERATURE receipt in descriptors.py);
-        # other families keep the draft-matches-target convention.
+        # Qwen3.8 owns a measured family value even though it currently
+        # matches the target sampler. Keeping one policy owner prevents the
+        # app and CLI from drifting when later calibration changes it.
         family = model_family_from_inspection(
             inspection,
             descriptor=descriptor,

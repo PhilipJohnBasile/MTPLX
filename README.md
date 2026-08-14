@@ -20,11 +20,11 @@ There is no second draft model eating your RAM, and no greedy shortcut that quie
 
 **The Mac app** is the easiest way in. Download the DMG at [mtplx.com](https://mtplx.com/download), drag it to Applications, and the app takes care of everything else: it checks your hardware, recommends a model that actually fits your memory, downloads it, sets up its own Python engine (no Homebrew needed), installs fan control, puts `mtplx` on your PATH, and then measures your machine to pick the fastest decoding depth.
 
-**Recommended for coding:** Qwen 3.8 27B Bare Speed is the day-one flat
-4-bit build of Qwen 3.8 with the multi-step MTP head, running the official
-thinking-mode sampler. It is the new default on modern Macs. The Qwen 3.6
-pair (Optimized Speed V2, the dynamic 4-bit hybrid, and the original
-Optimized Speed) remains available directly below it in the app and CLI.
+**Recommended for coding:** Qwen 3.6 27B Optimized Speed V2 is a dynamic
+4-bit hybrid with hand-tuned sensitive parts kept at up to 16-bit. It is much
+higher quality than the original Optimized Speed model and faster on long agent
+tasks. It is slightly larger and a little slower for short chats. The original
+model remains available directly below it in the app and CLI.
 
 **The CLI** on its own:
 
@@ -36,8 +36,8 @@ mtplx start
 or `python3 -m pip install mtplx` if you prefer pip. All releases are listed at [mtplx.com/releases](https://mtplx.com/releases/).
 
 Requirements: Apple Silicon (M1 or newer), macOS 14+. 16 GB of memory runs the
-4B and 9B models comfortably. Qwen 3.8 27B Bare Speed is recommended on modern
-Macs with 32 GB or more. The app and CLI check this before recommending anything.
+4B and 9B models comfortably. Optimized Speed V2 is recommended on modern Macs
+with 32 GB or more. The app and CLI check this before recommending anything.
 
 ## The app
 
@@ -67,7 +67,7 @@ Forge takes a Hugging Face repo and turns it into an MTPLX-ready MTP model: conv
 
 MTPLX does not support attaching a separately supplied MTP sidecar to an arbitrary MLX trunk. Matching architecture fields, tensor shapes, or provenance labels cannot prove that the head was trained against those exact trunk weights. Use a complete model that already includes its matching MTP weights, or use Forge to build and verify an artifact from its original source checkpoint.
 
-The official catalog lives on Hugging Face under [Youssofal](https://huggingface.co/Youssofal): Qwen 3.8 (27B Bare Speed), Qwen 3.5 (4B, 9B), Qwen 3.6 (27B, 35B MoE) in speed and quality builds (the 35B MoE adds a balance build), plus Gemma 4. The app recommends from these based on your hardware.
+The official catalog lives on Hugging Face under [Youssofal](https://huggingface.co/Youssofal): Qwen 3.5 (4B, 9B), Qwen 3.6 (27B, 35B MoE) in speed and quality builds (the 35B MoE adds a balance build), plus Gemma 4. The app recommends from these based on your hardware.
 
 ## The server
 

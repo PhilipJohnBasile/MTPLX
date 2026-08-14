@@ -1318,13 +1318,10 @@ private struct TargetPreset {
         preset.temperature = 1.0
         preset.topP = 0.95
         preset.topK = 20
-        // Draft temperature is pinned to the drop-day sweep winner, NOT
-        // mirrored from the 1.0 target: exact ratio-acceptance is valid
-        // for any draft/target pair, and the 2026-08-14 live calibration
-        // on the Bare Speed artifact measured 46.1 tok/s at draft 0.6 vs
-        // 42.4 at draft 1.0 (engine family default QWEN3_8_DRAFT_TEMPERATURE
-        // carries the same value for flagless launches).
-        preset.draftTemperature = 0.6
+        // Strict max-fan A/B on the real Bare Speed artifact kept the draft
+        // on the official 1.0 sampler: 46.05 tok/s versus 42.79 at 0.6, with
+        // higher D2/D3 acceptance. Pinning it here preserves app/CLI parity.
+        preset.draftTemperature = 1.0
         preset.draftTopP = 0.95
         preset.draftTopK = 20
         return preset

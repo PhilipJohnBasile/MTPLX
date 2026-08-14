@@ -326,7 +326,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// by the model catalog; the default configuration should never point at
     /// a developer machine path.
     public static func defaultLocalModelPath() -> String {
-        return "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed"
+        return "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
     }
 
     public static func defaultHermesWorkspacePath() -> String {
@@ -939,8 +939,9 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case ("qwen3_5", "depth"), ("qwen3_6", "depth"):
             return (1...3).contains(value)
         case ("qwen3_8", "depth"):
-            // Multi-step-trained MTP head: the tune sweep ranges AR..D6.
-            return (1...6).contains(value)
+            // The artifact carries deeper training depths, but live serving
+            // is safety-capped at D3 until the D4 daemon death is root-caused.
+            return (1...3).contains(value)
         case ("gemma4", "draft_block_size"):
             return (2...8).contains(value)
         default:

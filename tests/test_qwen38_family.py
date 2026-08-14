@@ -188,7 +188,7 @@ def test_qwen38_serve_defaults_use_official_template_and_sampler() -> None:
 
     assert (args.temperature, args.top_p, args.top_k) == (1.0, 0.95, 20)
     assert (args.draft_temperature, args.draft_top_p, args.draft_top_k) == (
-        0.6,  # QWEN3_8_DRAFT_TEMPERATURE, sweep-calibrated drop day
+        1.0,  # QWEN3_8_DRAFT_TEMPERATURE, strict max-fan A/B winner
         0.95,
         20,
     )

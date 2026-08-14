@@ -8,11 +8,13 @@ from mtplx.default_models import (
     DEFAULT_MODEL_VARIANT_ENV,
     OPTIMIZED_SPEED_DESCRIPTION,
     QUALITY_MODEL_ENV,
+    QWEN38_BARE_SPEED_MODEL_ENV,
     SPEED_MODEL_ENV,
     is_verified_default_model_ref,
     optimized_quality_model_ref,
     optimized_speed_model_ref,
     public_model_id_for_ref,
+    qwen38_bare_speed_model_ref,
     select_default_model,
 )
 from mtplx import hardware as hardware_module
@@ -32,6 +34,7 @@ from mtplx.profiles import (
     QWEN36_35B_OPTIMIZED_BALANCE_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_BARE_SPEED_HF_MODEL_ID,
 )
 
 
@@ -206,6 +209,29 @@ def test_optimized_speed_prefers_complete_local_env_model(tmp_path, monkeypatch)
     assert selection.precision == OPTIMIZED_SPEED_DESCRIPTION
     assert "installed locally" in selection.reason
     assert "BF16" not in selection.label
+
+
+def test_auto_default_prefers_complete_local_qwen38_without_changing_public_default(
+    tmp_path, monkeypatch
+):
+    local_qwen38 = _make_complete_model(tmp_path / "Qwen3.8-27B-MTPLX-Bare-Speed")
+    monkeypatch.setenv(QWEN38_BARE_SPEED_MODEL_ENV, str(local_qwen38))
+    monkeypatch.delenv(SPEED_MODEL_ENV, raising=False)
+
+    selection = select_default_model(
+        hardware={
+            "chip": "Apple M5 Max",
+            "apple_silicon_generation": "m5",
+            "memory_gib": 64.0,
+        }
+    )
+
+    assert qwen38_bare_speed_model_ref() == str(local_qwen38)
+    assert selection.model == str(local_qwen38)
+    assert selection.hf_model == QWEN38_BARE_SPEED_HF_MODEL_ID
+    assert selection.variant == "speed"
+    assert "installed Qwen 3.8" in selection.reason
+    assert DEFAULT_HF_MODEL_ID != QWEN38_BARE_SPEED_HF_MODEL_ID
 
 
 def test_optimized_quality_prefers_complete_local_env_model(tmp_path, monkeypatch):

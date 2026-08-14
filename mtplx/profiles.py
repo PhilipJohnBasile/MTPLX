@@ -105,15 +105,15 @@ QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID = (
 QWEN38_BARE_SPEED_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-bare-speed"
 QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-optimized-speed"
 QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-optimized-quality"
-# Quickstart default flip (2026-08-14 drop day, founder ruling #7): the
-# Qwen 3.8 Bare Speed day-one build is the default on modern Apple
-# Silicon. M1/M2 keep the FP16 3.6 sibling via default_models routing.
-DEFAULT_HF_MODEL_ID = QWEN38_BARE_SPEED_HF_MODEL_ID
+# Keep the public default downloadable. The release-day Qwen3.8 artifact is
+# selected locally by default_models when its complete local build is present;
+# it must not become a fresh-install default until its weights are published.
+DEFAULT_HF_MODEL_ID = OPTIMIZED_SPEED_V2_HF_MODEL_ID
 QUALITY_MODEL_ID = QUALITY_HF_MODEL_ID
 DEFAULT_MODEL_ID = DEFAULT_HF_MODEL_ID
 OPTIMIZED_SPEED_V1_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed"
 OPTIMIZED_SPEED_V2_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed-v2"
-DEFAULT_PUBLIC_MODEL_ID = QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+DEFAULT_PUBLIC_MODEL_ID = OPTIMIZED_SPEED_V2_PUBLIC_MODEL_ID
 DEFAULT_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed-fp16"
 QUALITY_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality"
 QUALITY_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality-fp16"

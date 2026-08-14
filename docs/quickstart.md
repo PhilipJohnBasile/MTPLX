@@ -5,8 +5,8 @@ brew install youssofal/mtplx/mtplx
 
 mtplx help
 mtplx doctor --summary
-mtplx pull Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed
-mtplx inspect Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed --json
+mtplx pull Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2
+mtplx inspect Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2 --json
 ```
 
 Homebrew is the recommended macOS path. Python-only installs can use PyPI:

@@ -111,7 +111,6 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-4b-optimized-quality",
     ]
     assert recommended_catalog_ids(memory_gib=36, chip_tier=MODERN_TIER) == [
-        "qwen38-27b-bare-speed",
         "optimized-speed-v2",
         "optimized-speed",
         "qwen35-9b-optimized-speed",
@@ -122,11 +121,10 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-4b-optimized-quality",
     ]
     assert recommended_catalog_ids(memory_gib=32, chip_tier=MODERN_TIER)[:2] == [
-        "qwen38-27b-bare-speed",
         "optimized-speed-v2",
+        "optimized-speed",
     ]
     assert recommended_catalog_ids(memory_gib=64, chip_tier=MODERN_TIER) == [
-        "qwen38-27b-bare-speed",
         "optimized-speed-v2",
         "optimized-speed",
         "optimized-quality",
@@ -159,7 +157,6 @@ def test_recommended_ids_mirror_app_ram_tiers():
     assert recommended_catalog_ids(
         memory_gib=None, chip_tier=MODERN_TIER
     ) == [
-        "qwen38-27b-bare-speed",
         "optimized-speed-v2",
         "optimized-speed",
         "optimized-quality",
@@ -183,7 +180,7 @@ def test_recommended_models_filter_by_peak_memory():
         "qwen35-4b-optimized-quality",
     ]
     default = default_catalog_model(memory_gib=64, chip_tier=MODERN_TIER)
-    assert default is not None and default.id == "qwen38-27b-bare-speed"
+    assert default is not None and default.id == "optimized-speed-v2"
 
 
 def test_feasibility_verdicts_mirror_app_rules():
@@ -227,9 +224,9 @@ def test_catalog_model_matching_accepts_ids_repos_cache_dirs_and_aliases():
     speed_v2 = catalog_model_with_id("optimized-speed-v2")
     bare38 = catalog_model_with_id("qwen38-27b-bare-speed")
     assert catalog_model_matching("optimized-speed") == speed
-    # The quickstart default (Qwen 3.8 Bare Speed since 2026-08-14)
-    # must resolve to its own catalog entry in every spelling.
-    assert catalog_model_matching(DEFAULT_HF_MODEL_ID) == bare38
+    # The public quickstart remains the published V2 artifact while the
+    # local-only Qwen3.8 build resolves to its own entry in every spelling.
+    assert catalog_model_matching(DEFAULT_HF_MODEL_ID) == speed_v2
     assert catalog_model_matching("qwen38-27b-bare-speed") == bare38
     assert catalog_model_matching("mtplx-qwen38-27b-bare-speed") == bare38
     assert (
@@ -395,7 +392,7 @@ def test_select_default_model_keeps_27b_with_enough_memory(monkeypatch):
     assert "9B" not in selection.reason
 
 
-def test_select_default_model_uses_qwen38_at_32_gib_and_above(monkeypatch):
+def test_select_default_model_uses_public_v2_without_local_qwen38(monkeypatch):
     monkeypatch.delenv("MTPLX_DEFAULT_MODEL_VARIANT", raising=False)
     monkeypatch.setenv("MTPLX_OPTIMIZED_SPEED_MODEL", "off")
 

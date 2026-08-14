@@ -49,6 +49,7 @@ from mtplx.profiles import (
 
 DEFAULT_MODEL_VARIANT_ENV = "MTPLX_DEFAULT_MODEL_VARIANT"
 SPEED_MODEL_ENV = "MTPLX_OPTIMIZED_SPEED_MODEL"
+QWEN38_BARE_SPEED_MODEL_ENV = "MTPLX_QWEN38_BARE_SPEED_MODEL"
 QUALITY_MODEL_ENV = "MTPLX_OPTIMIZED_QUALITY_MODEL"
 DEFAULT_MODEL_VARIANTS = frozenset({"auto", "speed", "q4", "bf16", "fp16"})
 _LEGACY_APPLE_FP16_GENERATIONS = frozenset({"m1", "m2"})
@@ -76,9 +77,9 @@ QWEN38_BARE_SPEED_DESCRIPTION = (
     "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP head "
     "and the official thinking-mode sampler"
 )
-# Backward-compatible names used by integrations that mean the current default.
-OPTIMIZED_SPEED_LABEL = QWEN38_BARE_SPEED_LABEL
-OPTIMIZED_SPEED_DESCRIPTION = QWEN38_BARE_SPEED_DESCRIPTION
+# Backward-compatible names used by integrations that mean the public default.
+OPTIMIZED_SPEED_LABEL = OPTIMIZED_SPEED_V2_LABEL
+OPTIMIZED_SPEED_DESCRIPTION = OPTIMIZED_SPEED_V2_DESCRIPTION
 OPTIMIZED_QUALITY_LABEL = "Qwen3.6 27B MTPLX Optimized Quality"
 OPTIMIZED_QUALITY_DESCRIPTION = "Flat8 target with INT8 MTP sidecar"
 _QWEN38_BARE_SPEED_LOCAL_CANDIDATES = (
@@ -208,9 +209,12 @@ def _complete_local_model_ref(candidates: tuple[str, ...]) -> str | None:
 
 
 def _optimized_speed_model_ref(
-    *, hf_model_id: str, local_candidates: tuple[str, ...]
+    *,
+    hf_model_id: str,
+    local_candidates: tuple[str, ...],
+    env_name: str = SPEED_MODEL_ENV,
 ) -> str:
-    env_ref = str(os.environ.get(SPEED_MODEL_ENV) or "").strip()
+    env_ref = str(os.environ.get(env_name) or "").strip()
     candidates: tuple[str, ...]
     if env_ref:
         if _env_ref_disabled(env_ref):
@@ -224,11 +228,19 @@ def _optimized_speed_model_ref(
 
 
 def qwen38_bare_speed_model_ref() -> str:
-    """Resolve the Qwen 3.8 Bare Speed default (2026-08-14 drop-day flip)."""
+    """Resolve the complete local release-day Qwen 3.8 Bare Speed build."""
 
+    # The long-standing speed override's explicit value owns default model
+    # selection. A V2 path must never be mistaken for this Qwen3.8 artifact,
+    # hence the dedicated override below.
+    if QWEN38_BARE_SPEED_MODEL_ENV not in os.environ:
+        legacy_speed_override = str(os.environ.get(SPEED_MODEL_ENV) or "").strip()
+        if legacy_speed_override:
+            return QWEN38_BARE_SPEED_HF_MODEL_ID
     return _optimized_speed_model_ref(
         hf_model_id=QWEN38_BARE_SPEED_HF_MODEL_ID,
         local_candidates=_QWEN38_BARE_SPEED_LOCAL_CANDIDATES,
+        env_name=QWEN38_BARE_SPEED_MODEL_ENV,
     )
 
 
@@ -549,10 +561,10 @@ def select_default_model(
 ) -> DefaultModelSelection:
     """Select the verified default model for this machine.
 
-    Auto policy is intentionally simple and visible:
-    M1/M2 -> FP16, under 32 GiB -> 9B, and modern Macs with at least 32 GiB
-    -> Qwen 3.8 Bare Speed (the 2026-08-14 drop-day default). When memory
-    is unknown, modern Apple Silicon gets the 3.8 default.
+    Auto policy is intentionally simple and visible: M1/M2 -> FP16, under
+    32 GiB -> 9B, and modern Macs with at least 32 GiB -> the complete local
+    Qwen 3.8 release-day build when installed, otherwise published Qwen 3.6
+    Optimized Speed V2.
     """
 
     env_value = variant_override if variant_override is not None else os.environ.get(DEFAULT_MODEL_VARIANT_ENV)
@@ -593,12 +605,22 @@ def select_default_model(
     route_small = (
         memory_gib is not None and memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB
     )
+    qwen38_model = qwen38_bare_speed_model_ref()
     use_qwen38 = (
+        variant == "speed"
+        and generation not in _LEGACY_APPLE_FP16_GENERATIONS
+        and qwen38_model != QWEN38_BARE_SPEED_HF_MODEL_ID
+        and (
+            memory_gib is None
+            or memory_gib >= QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB
+        )
+    )
+    use_v2 = (
         variant == "speed"
         and generation not in _LEGACY_APPLE_FP16_GENERATIONS
         and (
             memory_gib is None
-            or memory_gib >= QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB
+            or memory_gib >= OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB
         )
     )
     if route_small:
@@ -620,9 +642,14 @@ def select_default_model(
         hf_model = DEFAULT_FP16_HF_MODEL_ID
         precision = "FP16"
     elif use_qwen38:
-        model = qwen38_bare_speed_model_ref()
+        model = qwen38_model
         hf_model = QWEN38_BARE_SPEED_HF_MODEL_ID
         precision = QWEN38_BARE_SPEED_DESCRIPTION
+        reason = f"{reason}; selected installed Qwen 3.8 release-day build"
+    elif use_v2:
+        model = optimized_speed_model_ref()
+        hf_model = OPTIMIZED_SPEED_V2_HF_MODEL_ID
+        precision = OPTIMIZED_SPEED_V2_DESCRIPTION
         if model != hf_model:
             reason = f"{reason}; installed locally"
     else:
@@ -658,14 +685,12 @@ def verified_default_refs() -> set[str]:
         DEFAULT_HF_MODEL_ID,
         DEFAULT_FP16_HF_MODEL_ID,
         DEFAULT_MODEL_ID,
-        local_qwen38,
-        # The 3.6 V2 flagship was the shipped default through 2.6.0; refs
-        # that name it still mean "the default" to existing launchers.
-        OPTIMIZED_SPEED_V2_HF_MODEL_ID,
         local_speed,
         str(DEFAULT_RUNTIME_MODEL_DIR),
         str((root / DEFAULT_RUNTIME_MODEL_DIR).resolve()),
     }
+    if local_qwen38 != QWEN38_BARE_SPEED_HF_MODEL_ID:
+        refs.add(local_qwen38)
     return {ref for ref in refs if ref}
 
 

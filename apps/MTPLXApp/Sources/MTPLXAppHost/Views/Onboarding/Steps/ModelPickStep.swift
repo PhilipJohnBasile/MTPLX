@@ -809,7 +809,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen38-27b-bare-speed",
         logo: .qwen,
         title: "Qwen 3.8 27B Bare Speed",
-        detail: "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP head (depths to D6). Runs the official thinking-mode sampler."
+        detail: "Day-one flat 4-bit build of Qwen 3.8 with native MTP. Live decoding is safety-capped at D3 and uses the official sampler."
     )
 
     static let qwen27SpeedV2 = RecommendedModelRow(

@@ -124,7 +124,8 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         display_name="Qwen 3.8 27B Bare Speed",
         detail=(
             "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP "
-            "head (depths to D6). Runs the official thinking-mode sampler."
+            "head. Live decoding is safety-capped at D3 and uses the official "
+            "thinking-mode sampler."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
         # Exact local `du -sk` of the forge artifact (2026-08-14 drop-day
@@ -314,7 +315,6 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
 # Mirrors `modernTopRecommendationIDs` in MTPLXModelOption.swift: the
 # fallback matrix when hardware is unknown.
 _MODERN_TOP_RECOMMENDATION_IDS = (
-    "qwen38-27b-bare-speed",
     "optimized-speed-v2",
     "optimized-speed",
     "optimized-quality",
@@ -384,9 +384,6 @@ def recommended_catalog_ids(
         small = "qwen35-9b-optimized-speed-fp16"
         speed27 = "optimized-speed-fp16"
         speed27_v2 = None
-        # No FP16 sibling of the 3.8 flagship exists yet, so the legacy
-        # (M1/M2) matrix keeps its fp16-only entries.
-        bare_speed38 = None
         speed35 = "qwen36-35b-a3b-optimized-speed-fp16"
         balance35 = "qwen36-35b-a3b-optimized-balance-fp16"
         quality27 = "optimized-quality-fp16"
@@ -394,7 +391,6 @@ def recommended_catalog_ids(
         small = "qwen35-9b-optimized-speed"
         speed27 = "optimized-speed"
         speed27_v2 = "optimized-speed-v2"
-        bare_speed38 = "qwen38-27b-bare-speed"
         speed35 = "qwen36-35b-a3b-optimized-speed"
         balance35 = "qwen36-35b-a3b-optimized-balance"
         quality27 = "optimized-quality"
@@ -417,10 +413,7 @@ def recommended_catalog_ids(
     if memory_gib < 48:
         if speed27_v2 is None:
             return [small, speed27, "gemma4-optimized-speed", speed35, quality27]
-        # Qwen 3.8 Bare Speed is the recommended pick wherever it fits
-        # (2026-08-14 drop-day default flip); the 3.6 pair follows it.
         return [
-            *([bare_speed38] if bare_speed38 else []),
             speed27_v2,
             speed27,
             small,
@@ -430,7 +423,6 @@ def recommended_catalog_ids(
             *tiny_ids,
         ]
     return [
-        *([bare_speed38] if bare_speed38 else []),
         *([speed27_v2] if speed27_v2 else []),
         speed27,
         quality27,
