@@ -87,6 +87,8 @@ from mtplx.backends.descriptors import (
     descriptor_for_backend_id,
     descriptor_from_runtime,
     model_controls_for_descriptor,
+    model_family_from_inspection,
+    reasoning_policy_for_model,
     set_draft_control_arg,
     sync_backend_arg_aliases,
     target_distribution_mode_from_args,
@@ -1306,6 +1308,43 @@ def _reasoning_parser_for_state(state: "ServerState") -> str:
     if parser:
         return str(parser)
     return _backend_descriptor(state).reasoning_codec.parser
+
+
+def _model_family_for_state(state: "ServerState") -> str:
+    """Family for the model this daemon is actually serving.
+
+    The lane descriptor is shared across families (qwen3_5/3_6/3_8 all ride
+    qwen3_next), so family-scoped policy must resolve from the model ref, the
+    same way the parent CLI's _apply_backend_serve_defaults does.
+    """
+    try:
+        model_ref = str(
+            getattr(state.args, "model", None)
+            or getattr(state, "model_id", None)
+            or ""
+        )
+        return model_family_from_inspection(
+            model_ref=model_ref,
+            descriptor=_backend_descriptor(state),
+        )
+    except Exception:
+        return "unknown"
+
+
+def _reasoning_codec_for_state(state: "ServerState") -> "ReasoningCodec":
+    """Family-resolved reasoning codec (effort levels live per-family)."""
+    descriptor = _backend_descriptor(state)
+    try:
+        return reasoning_policy_for_model(
+            model_ref=str(
+                getattr(state.args, "model", None)
+                or getattr(state, "model_id", None)
+                or ""
+            ),
+            descriptor=descriptor,
+        )
+    except Exception:
+        return descriptor.reasoning_codec
 
 
 def _open_browser_later(url: str, *, delay_s: float = 1.0) -> None:
@@ -3900,6 +3939,11 @@ def _anthropic_to_chat_request(
     for message in request.messages:
         messages.extend(_anthropic_message_to_chat_messages(message))
     enable_thinking = _anthropic_thinking_to_enable_thinking(request.thinking)
+    extra_fields: dict[str, Any] = {}
+    if isinstance(request.chat_template_kwargs, dict):
+        # Carry the Qwen-style kwargs across the translation so the
+        # chat-completions path can honor the known keys (enable_thinking).
+        extra_fields["chat_template_kwargs"] = dict(request.chat_template_kwargs)
     return ChatCompletionRequest(
         model=request.model,
         messages=messages,
@@ -3917,6 +3961,7 @@ def _anthropic_to_chat_request(
         gemma_draft_block_size=request.gemma_draft_block_size,
         generation_mode=request.generation_mode,
         stream=False,
+        **extra_fields,
     )
 
 
@@ -21588,6 +21633,19 @@ def _chat_ui_html(
     )
 
 
+def _request_chat_template_kwargs(request: Any) -> dict[str, Any]:
+    """Qwen-style ``chat_template_kwargs`` from the request body, if any.
+
+    The official Qwen3.8 quickstart sends thinking controls as
+    ``extra_body={"chat_template_kwargs": {"enable_thinking": ...}}`` (the
+    vLLM/SGLang convention). The request models allow extra fields, so the
+    dict rides along; honoring the known keys keeps card-copied client code
+    working against MTPLX unchanged.
+    """
+    raw = getattr(request, "chat_template_kwargs", None)
+    return raw if isinstance(raw, dict) else {}
+
+
 def _thinking_enabled_for_request(
     state: ServerState,
     request: ChatCompletionRequest,
@@ -21596,17 +21654,26 @@ def _thinking_enabled_for_request(
 ) -> bool:
     if _reasoning_parser_for_state(state) == "none":
         return False
+    requested = request.enable_thinking
+    if requested is None:
+        template_kwargs_value = _request_chat_template_kwargs(request).get(
+            "enable_thinking"
+        )
+        if isinstance(template_kwargs_value, bool):
+            requested = template_kwargs_value
     return (
         state.args.enable_thinking
-        if request.enable_thinking is None or not allow_client_controls
-        else bool(request.enable_thinking)
+        if requested is None or not allow_client_controls
+        else bool(requested)
     )
 
 
 def _normalize_reasoning_effort(value: Any, *, default: str = "auto") -> str:
     effort = str(value or default).strip().lower()
-    if effort not in {"auto", "low", "medium", "high"}:
-        raise ValueError("reasoning_effort must be one of: auto, low, medium, high")
+    if effort not in {"auto", "low", "medium", "high", "xhigh"}:
+        raise ValueError(
+            "reasoning_effort must be one of: auto, low, medium, high, xhigh"
+        )
     return effort
 
 
@@ -21619,8 +21686,8 @@ def _reasoning_effort_for_state(
 ) -> str | None:
     if not thinking_enabled:
         return None
-    backend = _backend_descriptor(state)
-    levels = set(backend.reasoning_codec.effort_levels)
+    codec = _reasoning_codec_for_state(state)
+    levels = set(codec.effort_levels)
     if not levels:
         return None
     raw = (
@@ -21630,11 +21697,11 @@ def _reasoning_effort_for_state(
     )
     effort = _normalize_reasoning_effort(
         raw,
-        default=backend.reasoning_codec.default_effort or "auto",
+        default=codec.default_effort or "auto",
     )
     if effort == "auto":
-        effort = backend.reasoning_codec.default_effort or "low"
-    return effort if effort in levels else backend.reasoning_codec.default_effort
+        effort = codec.default_effort or "low"
+    return effort if effort in levels else codec.default_effort
 
 
 _AGENT_THINKING_BUDGET_BY_EFFORT = {"low": 1536, "medium": 3072, "high": 6144}
@@ -21782,6 +21849,13 @@ def _reasoning_history_mode(state: "ServerState") -> str:
     if policy == "off":
         return _REASONING_HISTORY_STRIP
     if policy == "on":
+        return _REASONING_HISTORY_PRESERVE
+    if policy == "auto" and _model_family_for_state(state) == "qwen3_8":
+        # Qwen3.8's trained contract inverts the 3.6-era rolling checkpoint:
+        # preserve_thinking is on by default for all workloads (model card),
+        # keeping historical <think> blocks in the rendered conversation.
+        # Append-only histories are also what the session bank wants. An
+        # explicit "scoped" policy above still wins for operators who ask.
         return _REASONING_HISTORY_PRESERVE
     if getattr(state, "reasoning_history_scoped_capable", False):
         return _REASONING_HISTORY_SCOPED

@@ -38,6 +38,12 @@ from mtplx.profiles import (
     QWEN36_35B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_HF_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_BARE_SPEED_HF_MODEL_ID,
+    QWEN38_BARE_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
 )
 
 
@@ -395,6 +401,24 @@ def _public_model_id_from_name(value: str) -> str | None:
         # First-party local research build of the released 35B speed
         # artifact (listed in _OPTIMIZED_35B_SPEED_LOCAL_CANDIDATES).
         return QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
+    if QWEN38_BARE_SPEED_PUBLIC_MODEL_ID in components:
+        return QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+    if QWEN38_BARE_SPEED_HF_MODEL_ID.lower() in components:
+        return QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-bare-speed" in components:
+        return QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID in components:
+        return QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID.lower() in components:
+        return QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-optimized-quality" in components:
+        return QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID in components:
+        return QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID.lower() in components:
+        return QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-optimized-speed" in components:
+        return QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
     if "qwen3.6-27b-mtplx-optimized-quality-fp16" in components:
         return QUALITY_FP16_PUBLIC_MODEL_ID
     if "qwen3.6-27b-mtplx-optimized-quality" in components:

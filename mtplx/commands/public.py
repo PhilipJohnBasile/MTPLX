@@ -71,9 +71,11 @@ from mtplx.backends.descriptors import (
     descriptor_for_architecture_id,
     descriptor_for_backend_id,
     descriptor_from_inspection,
+    draft_semantics_for_model,
     model_controls_for_descriptor,
     model_family_from_inspection,
     reasoning_policy_for_model,
+    sampler_defaults_for_model,
     tune_policy_for_model,
 )
 from mtplx.profiles import (
@@ -1222,7 +1224,17 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         args.chat_template_profile = required_chat_template_profile
         args.chat_template_path = None
 
-    sampler = descriptor.sampler_defaults.to_dict()
+    # Family-aware for the same reason as the reasoning policy above: the
+    # qwen3_next lane serves qwen3_5/3_6 (0.6 coding sampler) and qwen3_8
+    # (official 1.0 thinking sampler) alike.
+    sampler = sampler_defaults_for_model(
+        inspection=inspection,
+        descriptor=descriptor,
+    ).to_dict()
+    draft_semantics = draft_semantics_for_model(
+        inspection=inspection,
+        descriptor=descriptor,
+    )
     if descriptor.default_max_response_tokens is not None:
         if (
             "max-tokens" not in cli_flags
@@ -1252,10 +1264,10 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         args.top_k = sampler["top_k"]
     if (
         "depth" not in cli_flags
-        and descriptor.draft_semantics.request_field == "depth"
+        and draft_semantics.request_field == "depth"
         and getattr(args, "depth", None) in (None, 3)
     ):
-        args.depth = descriptor.draft_semantics.default
+        args.depth = draft_semantics.default
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):

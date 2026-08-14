@@ -573,9 +573,12 @@ def _add_reasoning_arg(
 def _add_reasoning_effort_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--reasoning-effort",
-        choices=["auto", "low", "medium", "high"],
+        choices=["auto", "low", "medium", "high", "xhigh"],
         default="auto",
-        help="Reasoning effort for models that expose levels, such as Step-3.7 Flash.",
+        help=(
+            "Reasoning effort for models that expose levels, such as Qwen 3.8 "
+            "(xhigh/medium/low, default xhigh) or Step-3.7 Flash."
+        ),
     )
 
 
@@ -586,9 +589,10 @@ def _add_preserve_thinking_arg(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help=(
             "Reasoning-history policy for Qwen chat-template history. scoped keeps "
-            "reasoning only inside the active agent round (Qwen's trained contract); "
-            "on preserves all; off strips all. Default auto resolves to scoped for "
-            "checkpoint-capable templates."
+            "reasoning only inside the active agent round (Qwen 3.6's trained "
+            "contract); on preserves all; off strips all. Default auto resolves to "
+            "scoped for checkpoint-capable templates, except Qwen 3.8, whose "
+            "trained contract preserves thinking by default."
         ),
     )
     parser.add_argument(
