@@ -1,6 +1,13 @@
 import Foundation
 
 public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
+    // Not included in the recommended catalog: this target-only model needs a
+    // separately installed mlx-serve runtime and 128 GB Apple Silicon. The
+    // command builder still recognizes it so a saved/custom selection cannot
+    // launch as MTP.
+    private static let externalAROnlyReferences: Set<String> = [
+        "philipjohnbasile/deepseek-v4-flash-0731-mlx-m5max-targetonly",
+    ]
     public var id: String
     public var displayName: String
     public var shortName: String
@@ -92,9 +99,24 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     /// alias, HF id, or a local path) resolves to a target-only AR model.
     /// Used by the command builder so every app launch path carries the
     /// correct `--no-mtp` shape without each caller re-deriving it.
+    public static func isExternalAROnlyReference(_ reference: String) -> Bool {
+        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        if externalAROnlyReferences.contains(lower) { return true }
+        let externalTail = (trimmed as NSString).lastPathComponent.lowercased()
+        if externalTail == "deepseek-v4-flash-0731-mlx-m5max-targetonly"
+            || externalTail == "philipjohnbasile--deepseek-v4-flash-0731-mlx-m5max-targetonly"
+        {
+            return true
+        }
+        return false
+    }
+
     public static func isAROnlyReference(_ reference: String) -> Bool {
         let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if isExternalAROnlyReference(trimmed) { return true }
         let lower = trimmed.lowercased()
         for option in MTPLXModelOption.officialCatalog where option.arOnly {
             if option.id.lowercased() == lower { return true }

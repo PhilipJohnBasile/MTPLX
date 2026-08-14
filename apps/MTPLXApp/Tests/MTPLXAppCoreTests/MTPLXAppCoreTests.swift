@@ -1069,6 +1069,28 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(command.arguments.contains("--open-dashboard"))
     }
 
+    func testCommandBuilderAdmitsExternalDeepSeekTargetOnlyRouteAsAR() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let model = "philipjohnbasile/DeepSeek-V4-Flash-0731-MLX-M5Max-TargetOnly"
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: model,
+                fanMode: "max",
+                lastTunedDepth: 3
+            )
+        )
+
+        XCTAssertTrue(MTPLXModelOption.isExternalAROnlyReference(model))
+        XCTAssertTrue(MTPLXModelOption.isAROnlyReference(model))
+        XCTAssertFalse(MTPLXModelOption.officialCatalog.contains { $0.hfModelID == model })
+        XCTAssertTrue(command.arguments.contains("--no-mtp"))
+        XCTAssertFalse(command.arguments.contains("--depth"))
+        XCTAssertTrue(command.arguments.containsInOrder(["--fan-mode", "default"]))
+        XCTAssertFalse(command.arguments.contains("--require-max-fans"))
+    }
+
     func testCommandBuilderEmitsRestartRequiredRuntimeSettings() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
