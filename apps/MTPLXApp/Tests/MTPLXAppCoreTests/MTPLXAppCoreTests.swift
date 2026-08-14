@@ -1203,7 +1203,8 @@ final class MTPLXAppCoreTests: XCTestCase {
             XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "1.0"]), model)
             // reasoning_effort / preserve_thinking stay unpinned: the
-            // server's qwen3_8 family policy owns them (xhigh, preserve).
+            // server's qwen3_8 family policy owns them (measured coding
+            // default medium, preserve).
             XCTAssertFalse(command.arguments.contains("--reasoning-effort"), model)
         }
     }

@@ -29026,7 +29026,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help=(
             "Backend reasoning effort. Qwen 3.8 exposes xhigh/medium/low "
-            "(default xhigh); Step-3.7 Flash maps this to low/medium/high "
+            "(MTPLX coding default medium); Step-3.7 Flash maps this to low/medium/high "
             "in its chat template."
         ),
     )

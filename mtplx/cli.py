@@ -577,7 +577,7 @@ def _add_reasoning_effort_arg(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help=(
             "Reasoning effort for models that expose levels, such as Qwen 3.8 "
-            "(xhigh/medium/low, default xhigh) or Step-3.7 Flash."
+            "(xhigh/medium/low, MTPLX coding default medium) or Step-3.7 Flash."
         ),
     )
 

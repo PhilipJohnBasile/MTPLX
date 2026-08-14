@@ -3,9 +3,10 @@
 Qwen3.8-27B shares the qwen3_next lane with Qwen3.6/3.5 but ships its own
 inference contract (model card, 2026-08-14): thinking-mode sampler
 temperature=1.0/top_p=0.95/top_k=20, reasoning_effort levels
-xhigh (default)/medium/low, and preserve_thinking on by default for all
-workloads. These tests pin the family-scoped resolution added for the drop
-and — just as deliberately — that the qwen3_5/qwen3_6 behavior is untouched.
+xhigh/medium/low, and preserve_thinking on by default for all workloads.
+Upstream defaults to xhigh; MTPLX's measured coding default is medium. These
+tests pin that family-scoped resolution and — just as deliberately — that the
+qwen3_5/qwen3_6 behavior is untouched.
 """
 
 from __future__ import annotations
@@ -86,10 +87,10 @@ def test_qwen36_sampler_unchanged() -> None:
     assert (sampler.temperature, sampler.top_p, sampler.top_k) == (0.6, 0.95, 20)
 
 
-def test_qwen38_reasoning_effort_levels() -> None:
+def test_qwen38_reasoning_effort_levels_and_product_default() -> None:
     codec = reasoning_policy_for_model(BARE_SPEED, None, QWEN3_NEXT_DESCRIPTOR)
     assert codec.effort_levels == ("xhigh", "medium", "low")
-    assert codec.default_effort == "xhigh"
+    assert codec.default_effort == "medium"
     assert codec.parser == "qwen3"
 
 
@@ -192,7 +193,7 @@ def test_qwen38_serve_defaults_use_official_template_and_sampler() -> None:
         0.95,
         20,
     )
-    assert args.reasoning_effort == "xhigh"
+    assert args.reasoning_effort == "medium"
     assert args.chat_template_profile == "tokenizer"
 
 
@@ -207,14 +208,14 @@ def test_qwen38_model_controls_payload() -> None:
     assert controls["model_family"] == "qwen3_8"
     assert controls["sampling"]["temperature"] == 1.0
     assert controls["reasoning"]["effort_levels"] == ["xhigh", "medium", "low"]
-    assert controls["reasoning"]["default_effort"] == "xhigh"
+    assert controls["reasoning"]["default_effort"] == "medium"
     assert controls["draft_control"]["maximum"] == 3  # drop-day cap
 
 
 def test_qwen38_resolved_descriptor_matches_model_controls() -> None:
     descriptor = descriptor_for_model(QWEN3_NEXT_DESCRIPTOR, model_ref=BARE_SPEED)
     assert descriptor.sampler_defaults.temperature == 1.0
-    assert descriptor.reasoning_codec.default_effort == "xhigh"
+    assert descriptor.reasoning_codec.default_effort == "medium"
     assert descriptor.draft_semantics.maximum == 3  # drop-day cap
     assert descriptor.tune_policy.candidates[-1] == "D3"  # drop-day cap
 
@@ -301,7 +302,7 @@ def test_reasoning_effort_resolves_for_qwen38_state() -> None:
 
     state = _state(BARE_SPEED)
     assert (
-        srv._reasoning_effort_for_state(state, thinking_enabled=True) == "xhigh"
+        srv._reasoning_effort_for_state(state, thinking_enabled=True) == "medium"
     )
     assert (
         srv._reasoning_effort_for_state(

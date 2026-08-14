@@ -1313,7 +1313,8 @@ private struct TargetPreset {
         // model card's official thinking-mode triple (1.0/0.95/20), NOT the
         // 3.6-era 0.6 coding sampler. reasoning_effort and preserve_thinking
         // are deliberately not pinned here: the server's qwen3_8 family
-        // policy resolves them (xhigh, preserve) and stays the single owner.
+        // policy resolves them (measured coding default medium, preserve) and
+        // stays the single owner.
         preset.profile = "turbo"
         preset.temperature = 1.0
         preset.topP = 0.95

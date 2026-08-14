@@ -381,9 +381,11 @@ QWEN3_NEXT_DESCRIPTOR = BackendDescriptor(
 # Qwen3.8 family overrides. Qwen3.8-27B shares the Qwen3.6 trunk geometry and
 # therefore the qwen3_next backend, but ships its own inference contract: the
 # official thinking-mode sampler (temperature 1.0, top_p 0.95, top_k 20),
-# reasoning_effort levels (xhigh default / medium / low), preserve_thinking
-# retained-history rendering, and a multi-step-trained MTP head (deeper draft
-# range than the depth-1-trained 3.6 head).
+# official reasoning_effort levels (xhigh / medium / low), preserve_thinking
+# retained-history rendering, and a multi-step-trained MTP head. Upstream's
+# generic default is xhigh; MTPLX defaults coding sessions to medium after a
+# strict max-fan live A/B completed the same correct uncapped Aphanes task in
+# 51.52s versus 314.91s at xhigh (2026-08-14). Users can still select xhigh.
 QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20)
 # Strict max-fan A/B on drop day (2026-08-14, Bare-Speed Q4, alternating
 # 2,000-token xhigh arms) kept the official target sampler for the draft:
@@ -396,7 +398,7 @@ QWEN3_8_REASONING_CODEC = ReasoningCodec(
     display_name="Qwen think tags",
     default_mode="auto",
     effort_levels=("xhigh", "medium", "low"),
-    default_effort="xhigh",
+    default_effort="medium",
 )
 QWEN3_8_DRAFT_SEMANTICS = DraftSemantics(
     request_field="depth",
