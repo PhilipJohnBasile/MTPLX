@@ -9,8 +9,10 @@ the fans. The sidecar:
   2. Polls the parent PID every ``poll_seconds``.
   3. The moment the parent is gone (any cause: clean exit, SIGINT,
      SIGTERM, SIGHUP, SIGKILL, OOM, terminal closed, kernel panic
-     followed by reboot — well, except that last one), it runs
-     ``sudo -n <thermalforge-path> auto`` and exits.
+     followed by reboot — well, except that last one), it restores Auto
+     only if its ownership token still matches the global Max marker.
+     A newer MTPLX process can therefore take over without the old
+     watchdog undoing the new Max pin.
 
 This is the only piece of the crash-safety machinery that handles
 SIGKILL of the parent. The signal-handler / atexit path covers
@@ -31,7 +33,11 @@ import subprocess
 import sys
 import time
 
-from mtplx.thermal import _daemon_socket_send
+from mtplx.thermal import (
+    _daemon_socket_send,
+    _max_marker_lock,
+    _max_marker_owned_by,
+)
 
 
 def _detach_from_terminal() -> None:
@@ -117,11 +123,32 @@ def _clear_marker(marker_path: str | None) -> None:
         pass
 
 
+def _restore_owned_fans(
+    binary: str,
+    marker_path: str | None,
+    owner_token: str | None,
+) -> int:
+    """Restore only while this sidecar still owns the global Max lease."""
+
+    with _max_marker_lock(marker_path):
+        if not _max_marker_owned_by(marker_path, owner_token):
+            return 0
+        rc = _restore_fans(binary)
+        if rc == 0:
+            _clear_marker(marker_path)
+        return rc
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--binary", required=True, help="Path to thermalforge CLI")
     parser.add_argument("--marker", default=None, help="Marker file to delete after restore")
+    parser.add_argument(
+        "--owner-token",
+        default=None,
+        help="Opaque marker lease; prevents an old sidecar restoring a newer session",
+    )
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--max-lifetime-seconds", type=float, default=24 * 3600.0,
                         help="Hard ceiling on sidecar lifetime; ensures we eventually die even on bugs")
@@ -132,10 +159,11 @@ def main(argv: list[str] | None = None) -> int:
 
     while True:
         if not _parent_alive(args.parent_pid):
-            rc = _restore_fans(args.binary)
-            if rc == 0:
-                _clear_marker(args.marker)
-            return rc
+            return _restore_owned_fans(
+                args.binary,
+                args.marker,
+                args.owner_token,
+            )
         if (time.time() - started_at) > args.max_lifetime_seconds:
             return 0
         try:

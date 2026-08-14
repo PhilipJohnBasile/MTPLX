@@ -9,6 +9,7 @@ and driving its building blocks directly.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -173,6 +174,41 @@ def test_main_keeps_marker_when_restore_command_fails(monkeypatch, tmp_path):
     assert marker.exists()
 
 
+def test_old_sidecar_does_not_restore_newer_owner(monkeypatch, tmp_path):
+    """The old watchdog can observe parent death after a new daemon starts."""
+
+    marker = tmp_path / "active.json"
+    marker.write_text(json.dumps({"pid": 2, "owner_token": "new-owner"}))
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(thermal_sidecar, "_detach_from_terminal", lambda: None)
+    monkeypatch.setattr(thermal_sidecar, "_parent_alive", lambda pid: False)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *args, **kwargs: captured.append(list(cmd)),
+    )
+
+    rc = thermal_sidecar.main(
+        [
+            "--parent-pid",
+            "1",
+            "--binary",
+            "/path/to/thermalforge",
+            "--marker",
+            str(marker),
+            "--owner-token",
+            "old-owner",
+            "--poll-seconds",
+            "0.1",
+        ]
+    )
+
+    assert rc == 0
+    assert captured == []
+    assert json.loads(marker.read_text())["owner_token"] == "new-owner"
+
+
 def test_main_polls_until_parent_dies(monkeypatch, tmp_path):
     """Sidecar must keep polling while the parent is alive and only
     fire the restore once it's gone."""
@@ -244,8 +280,8 @@ def test_install_max_lifecycle_hooks_spawns_sidecar(monkeypatch, tmp_path):
     monkeypatch.setattr(thermal, "MAX_MARKER_FILE", tmp_path / "max-active.json")
     spawned: list[bool] = []
 
-    def fake_spawn():
-        spawned.append(True)
+    def fake_spawn(owner_token=None):
+        spawned.append(bool(owner_token))
         return None  # we don't care about the Popen return for this test
 
     monkeypatch.setattr(thermal, "_spawn_thermal_sidecar", fake_spawn)
@@ -260,3 +296,33 @@ def test_install_max_lifecycle_hooks_spawns_sidecar(monkeypatch, tmp_path):
 
     assert spawned == [True], "sidecar was not spawned by install_max_lifecycle_hooks"
     cleanup()
+
+
+def test_spawn_sidecar_passes_owner_token(monkeypatch, tmp_path):
+    """The detached watchdog must receive the same lease as its parent."""
+
+    from mtplx import thermal
+
+    captured: list[list[str]] = []
+
+    class _FakeProc:
+        pass
+
+    monkeypatch.setattr(thermal, "MAX_MARKER_FILE", tmp_path / "max-active.json")
+    monkeypatch.setattr(
+        thermal,
+        "detect_thermal_control",
+        lambda: {
+            "available": True,
+            "selected": {"kind": "thermalforge", "path": "/path/to/thermalforge"},
+        },
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda cmd, **kwargs: captured.append(list(cmd)) or _FakeProc(),
+    )
+
+    assert thermal._spawn_thermal_sidecar("lease-123") is not None
+    assert captured
+    assert captured[0][-2:] == ["--owner-token", "lease-123"]

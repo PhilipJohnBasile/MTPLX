@@ -115,7 +115,9 @@ def test_install_max_lifecycle_hooks_writes_marker_and_returns_cleanup(monkeypat
         "mtplx.thermal.restore_thermal_profile_verified",
         lambda **kw: restore_calls.append("restore") or {"ok": True},
     )
-    monkeypatch.setattr("mtplx.thermal._spawn_thermal_sidecar", lambda: None)
+    monkeypatch.setattr(
+        "mtplx.thermal._spawn_thermal_sidecar", lambda owner_token=None: None
+    )
     # Bypass real signal/atexit registration in the test thread.
     monkeypatch.setattr("mtplx.thermal.signal.signal", lambda *a, **kw: None)
     monkeypatch.setattr("mtplx.thermal.atexit.register", lambda *a, **kw: None)
@@ -135,6 +137,36 @@ def test_install_max_lifecycle_hooks_writes_marker_and_returns_cleanup(monkeypat
     # Cleanup is idempotent — calling twice does not re-set the profile.
     cleanup()
     assert restore_calls == ["restore"]
+
+
+def test_old_cleanup_does_not_restore_over_new_max_owner(monkeypatch):
+    """A previous daemon may exit after its replacement has pinned fans."""
+
+    from mtplx import thermal
+
+    restore_calls: list[str] = []
+    monkeypatch.setattr(
+        "mtplx.thermal.restore_thermal_profile_verified",
+        lambda **kw: restore_calls.append("restore") or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "mtplx.thermal._spawn_thermal_sidecar", lambda owner_token=None: None
+    )
+    monkeypatch.setattr("mtplx.thermal.signal.signal", lambda *a, **kw: None)
+    monkeypatch.setattr("mtplx.thermal.atexit.register", lambda *a, **kw: None)
+
+    old_cleanup = thermal.install_max_lifecycle_hooks()
+    thermal._write_max_marker(pid=999_999_999)  # replacement daemon's lease
+
+    result = old_cleanup()
+
+    assert result == {
+        "ok": True,
+        "skipped": True,
+        "reason": "max_owner_changed",
+    }
+    assert restore_calls == []
+    assert thermal._read_max_marker()["pid"] == 999_999_999
 
 
 def test_max_off_clears_marker(monkeypatch, tmp_path):

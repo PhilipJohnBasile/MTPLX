@@ -971,16 +971,65 @@ def remove_passwordless_sudoers_rule(*, streaming: bool = True) -> dict[str, Any
 # doesn't end up with a screaming Mac because of a previous crash.
 
 import atexit  # noqa: E402  (deferred until after main module body)
+import fcntl  # noqa: E402  (macOS process-wide marker coordination)
 import json as _json  # noqa: E402  (avoid clashing with local json imports)
+import secrets  # noqa: E402
 import signal  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 MAX_MARKER_FILE = Path("~/.mtplx/max-active.json").expanduser()
 
 
-def _write_max_marker(pid: int | None = None) -> None:
+@contextmanager
+def _max_marker_lock(marker_path: str | Path | None = None) -> Iterator[None]:
+    """Serialize fan-owner handoffs across overlapping MTPLX processes."""
+
+    handle = None
+    try:
+        target = Path(marker_path) if marker_path is not None else MAX_MARKER_FILE
+        lock_path = Path(f"{target}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        # Marker ownership is crash-safety, not permission to make `serve`
+        # unusable on an unusual filesystem. The marker write below remains
+        # best-effort, matching the historical behavior.
+        if handle is not None:
+            handle.close()
+        handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            handle.close()
+
+
+def _max_marker_owned_by(
+    marker_path: str | Path | None,
+    owner_token: str | None,
+) -> bool:
+    """True for legacy sidecars, or when the current lease is still theirs."""
+
+    if not owner_token:
+        return True
+    if marker_path is None:
+        return False
+    try:
+        loaded = _json.loads(Path(marker_path).read_text())
+        return isinstance(loaded, dict) and loaded.get("owner_token") == owner_token
+    except Exception:
+        return False
+
+
+def _write_max_marker(pid: int | None = None) -> str | None:
     if pid is None:
         pid = os.getpid()
+    owner_token = secrets.token_hex(16)
     binary = None
     try:
         selected = detect_thermal_control().get("selected")
@@ -988,36 +1037,51 @@ def _write_max_marker(pid: int | None = None) -> None:
             binary = selected.get("path")
     except Exception:
         binary = None
-    try:
-        MAX_MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MAX_MARKER_FILE.write_text(
-            _json.dumps(
-                {
-                    "pid": int(pid),
-                    "started_at": time.time(),
-                    "binary": binary or _find_thermalforge(),
-                }
+    with _max_marker_lock():
+        try:
+            MAX_MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MAX_MARKER_FILE.write_text(
+                _json.dumps(
+                    {
+                        "pid": int(pid),
+                        "owner_token": owner_token,
+                        "started_at": time.time(),
+                        "binary": binary or _find_thermalforge(),
+                    }
+                )
             )
-        )
-    except Exception:
-        pass  # marker is best-effort; don't crash --max because we can't write it
+            return owner_token
+        except Exception:
+            # Marker is best-effort; don't crash --max because we can't write it.
+            return None
+
+
+def _clear_max_marker_unlocked() -> None:
+    if MAX_MARKER_FILE.exists():
+        MAX_MARKER_FILE.unlink()
 
 
 def _clear_max_marker() -> None:
-    try:
-        if MAX_MARKER_FILE.exists():
-            MAX_MARKER_FILE.unlink()
-    except Exception:
-        pass
+    with _max_marker_lock():
+        try:
+            _clear_max_marker_unlocked()
+        except Exception:
+            pass
+
+
+def _read_max_marker_unlocked() -> dict[str, Any] | None:
+    if not MAX_MARKER_FILE.exists():
+        return None
+    loaded = _json.loads(MAX_MARKER_FILE.read_text())
+    return loaded if isinstance(loaded, dict) else None
 
 
 def _read_max_marker() -> dict[str, Any] | None:
-    try:
-        if not MAX_MARKER_FILE.exists():
+    with _max_marker_lock():
+        try:
+            return _read_max_marker_unlocked()
+        except Exception:
             return None
-        return _json.loads(MAX_MARKER_FILE.read_text())
-    except Exception:
-        return None
 
 
 def check_and_recover_stale_max() -> dict[str, Any]:
@@ -1028,33 +1092,43 @@ def check_and_recover_stale_max() -> dict[str, Any]:
     no marker exists.
     """
 
-    marker = _read_max_marker()
-    if not marker:
-        return {"recovered": False, "stale_pid": None, "still_running": False}
-    stale_pid = marker.get("pid")
-    if isinstance(stale_pid, int):
+    # Hold the ownership lock through restore. A newer daemon waits here,
+    # writes its own lease after Auto is confirmed, then commands Max; an old
+    # cleanup can no longer land between those steps and undo the new pin.
+    with _max_marker_lock():
         try:
-            os.kill(stale_pid, 0)
-            return {
-                "recovered": False,
-                "stale_pid": stale_pid,
-                "still_running": True,
-            }
-        except OSError:
-            pass  # process is gone, marker is stale
-    restore = restore_thermal_profile_verified()
-    if restore.get("ok"):
-        _clear_max_marker()
-    return {
-        "recovered": bool(restore.get("ok")),
-        "stale_pid": stale_pid,
-        "still_running": False,
-        "restore": restore,
-        "marker_cleared": bool(restore.get("ok")),
-    }
+            marker = _read_max_marker_unlocked()
+        except Exception:
+            marker = None
+        if not marker:
+            return {"recovered": False, "stale_pid": None, "still_running": False}
+        stale_pid = marker.get("pid")
+        if isinstance(stale_pid, int):
+            try:
+                os.kill(stale_pid, 0)
+                return {
+                    "recovered": False,
+                    "stale_pid": stale_pid,
+                    "still_running": True,
+                }
+            except OSError:
+                pass  # process is gone, marker is stale
+        restore = restore_thermal_profile_verified()
+        if restore.get("ok"):
+            try:
+                _clear_max_marker_unlocked()
+            except Exception:
+                pass
+        return {
+            "recovered": bool(restore.get("ok")),
+            "stale_pid": stale_pid,
+            "still_running": False,
+            "restore": restore,
+            "marker_cleared": bool(restore.get("ok")),
+        }
 
 
-def _spawn_thermal_sidecar() -> subprocess.Popen | None:
+def _spawn_thermal_sidecar(owner_token: str | None = None) -> subprocess.Popen | None:
     """Launch a detached fan-restore watchdog.
 
     Required because closing a macOS Terminal window sends SIGHUP and
@@ -1086,6 +1160,8 @@ def _spawn_thermal_sidecar() -> subprocess.Popen | None:
         "--marker",
         str(MAX_MARKER_FILE),
     ]
+    if owner_token:
+        cmd.extend(["--owner-token", owner_token])
     try:
         return subprocess.Popen(
             cmd,
@@ -1109,23 +1185,43 @@ def install_max_lifecycle_hooks() -> Any:
     belt-and-suspenders alongside the sidecar.
     """
 
-    _write_max_marker()
-    _sidecar = _spawn_thermal_sidecar()
+    owner_token = _write_max_marker()
+    _sidecar = _spawn_thermal_sidecar(owner_token)
     cleaned_up = [False]
 
     def cleanup() -> dict[str, Any]:
         if cleaned_up[0]:
             return {"ok": True, "already_cleaned": True}
         cleaned_up[0] = True
-        try:
-            restore = restore_thermal_profile_verified()
-        except Exception as exc:
-            restore = {"ok": False, "error": str(exc), "message": "fan restore raised"}
-        if restore.get("ok"):
-            _clear_max_marker()
+        with _max_marker_lock():
+            try:
+                marker = _read_max_marker_unlocked()
+            except Exception:
+                marker = None
+            if owner_token and (not marker or marker.get("owner_token") != owner_token):
+                # A newer Max session owns the machine (or the user already
+                # cleared our lease). Old cleanup must never switch it to Auto.
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "max_owner_changed",
+                }
+            try:
+                restore = restore_thermal_profile_verified()
+            except Exception as exc:
+                restore = {
+                    "ok": False,
+                    "error": str(exc),
+                    "message": "fan restore raised",
+                }
+            if restore.get("ok"):
+                try:
+                    _clear_max_marker_unlocked()
+                except Exception:
+                    pass
         # The sidecar will notice the parent is gone and re-issue auto
-        # too — that's intentional belt-and-suspenders. If the in-process
-        # cleanup succeeded, the sidecar's call is a harmless no-op.
+        # too when this lease is still current. If another process has already
+        # taken ownership, both cleanup paths leave its Max pin untouched.
         return restore
 
     def _signal_handler(signum: int, _frame: Any) -> None:
