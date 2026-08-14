@@ -1048,6 +1048,7 @@ private enum ModelLaunchFamily {
     case qwen36_27BOptimizedSpeed
     case qwen36_27BOptimizedQuality
     case qwen35_9BOptimizedSpeed
+    case qwen38_27B
     case gemma4
     case step
     case hy3
@@ -1073,6 +1074,16 @@ private enum ModelLaunchFamily {
             || normalized.contains("qwen35-9b-optimized-speed")
         {
             return .qwen35_9BOptimizedSpeed
+        }
+        // Qwen3.8 27B MTPLX family (Bare Speed / Optimized Speed /
+        // Optimized Quality). Trunk geometry is identical to the Qwen3.6
+        // 27B flagships, so the verify kernels and their quant-bits gates
+        // carry over; the launch contract (turbo + the official 1.0
+        // thinking sampler) is the model card's, not the 3.6 coding one.
+        if normalized.contains("qwen3.8-27b-mtplx")
+            || normalized.contains("qwen38-27b")
+        {
+            return .qwen38_27B
         }
         // 27B Speed family (4-bit affine, incl. the -FP16 sibling).
         if normalized.contains("qwen3.6-27b-mtplx-optimized-speed")
@@ -1236,6 +1247,8 @@ private struct TargetPreset {
             return applyingQwen36_27BOptimizedQualityDefaults()
         case .qwen35_9BOptimizedSpeed:
             return applyingQwen35_9BOptimizedSpeedDefaults()
+        case .qwen38_27B:
+            return applyingQwen38_27BDefaults()
         case .qwenDefault:
             return self
         case .gemma4:
@@ -1288,6 +1301,26 @@ private struct TargetPreset {
         // re-proves it on every user's silicon.
         preset.profile = "turbo"
         preset.applyQwen36ThinkingSampler()
+        return preset
+    }
+
+    private func applyingQwen38_27BDefaults() -> TargetPreset {
+        var preset = self
+        // Qwen3.8 27B rides the same 4/8-bit affine packs the vk/NAX verify
+        // kernels cover (trunk geometry identical to the 3.6 27B flagships),
+        // so it launches turbo like them; the day-one A/B on the real
+        // artifacts owns the final ruling before release. Sampler is the
+        // model card's official thinking-mode triple (1.0/0.95/20), NOT the
+        // 3.6-era 0.6 coding sampler. reasoning_effort and preserve_thinking
+        // are deliberately not pinned here: the server's qwen3_8 family
+        // policy resolves them (xhigh, preserve) and stays the single owner.
+        preset.profile = "turbo"
+        preset.temperature = 1.0
+        preset.topP = 0.95
+        preset.topK = 20
+        preset.draftTemperature = 1.0
+        preset.draftTopP = 0.95
+        preset.draftTopK = 20
         return preset
     }
 

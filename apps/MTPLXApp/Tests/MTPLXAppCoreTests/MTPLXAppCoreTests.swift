@@ -1176,6 +1176,60 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
     }
 
+    func testCommandBuilderResolvesAutoProfileToTurboForQwen38Family() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        for model in [
+            "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
+            "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
+            "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        ] {
+            let command = try builder.buildServeCommand(
+                configuration: MTPLXAppConfiguration(
+                    executablePath: fake.path,
+                    model: model,
+                    profile: "auto"
+                )
+            )
+            // Qwen3.8 27B launches turbo (trunk geometry identical to the
+            // 3.6 27B flagships; the vk/NAX packs carry over) with the model
+            // card's official thinking sampler — 1.0/0.95/20, NOT the
+            // 3.6-era 0.6 coding triple.
+            XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]), model)
+            XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "1.0"]), model)
+            XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]), model)
+            XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]), model)
+            XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "1.0"]), model)
+            // reasoning_effort / preserve_thinking stay unpinned: the
+            // server's qwen3_8 family policy owns them (xhigh, preserve).
+            XCTAssertFalse(command.arguments.contains("--reasoning-effort"), model)
+        }
+    }
+
+    func testQwen38FamilyDetectionAndTuneSupport() {
+        for ref in [
+            "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
+            "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+            "mtplx-qwen38-27b-bare-speed",
+            "Qwen/Qwen3.8-27B",
+        ] {
+            XCTAssertEqual(MTPLXModelOption.modelFamily(for: ref), "qwen3_8", ref)
+        }
+        XCTAssertTrue(MTPLXModelOption.supportsTune(family: "qwen3_8"))
+        XCTAssertTrue(MTPLXModelOption.supportsOnboardingTune(family: "qwen3_8"))
+        // The 3.6 flagship must NOT be swallowed by the 3.8 branch.
+        XCTAssertEqual(
+            MTPLXModelOption.modelFamily(for: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"),
+            "qwen3_6"
+        )
+        XCTAssertEqual(
+            MTPLXCommandBuilder.recommendedProfile(
+                for: "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed"
+            ),
+            "turbo"
+        )
+    }
+
     func testOnboardingTuneUsesTurboForQwen27BOptimizedModels() {
         for model in [
             "/Users/example/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed",

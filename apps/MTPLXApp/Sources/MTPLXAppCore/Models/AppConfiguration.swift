@@ -938,6 +938,9 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         switch (family, controlField) {
         case ("qwen3_5", "depth"), ("qwen3_6", "depth"):
             return (1...3).contains(value)
+        case ("qwen3_8", "depth"):
+            // Multi-step-trained MTP head: the tune sweep ranges AR..D6.
+            return (1...6).contains(value)
         case ("gemma4", "draft_block_size"):
             return (2...8).contains(value)
         default:

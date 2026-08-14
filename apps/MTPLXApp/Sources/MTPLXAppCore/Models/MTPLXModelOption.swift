@@ -877,6 +877,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         if normalized.contains("gemma4") || normalized.contains("gemma-4") {
             return "gemma4"
         }
+        if normalized.contains("qwen3.8") || normalized.contains("qwen38") || normalized.contains("qwen3-8") {
+            return "qwen3_8"
+        }
         if normalized.contains("qwen3.6") || normalized.contains("qwen36") || normalized.contains("qwen3-6") {
             return "qwen3_6"
         }
@@ -980,6 +983,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         if normalized.contains("step") { return "step" }
         if normalized.contains("deepseek") { return "deepseek" }
         if normalized.contains("glm") { return "glm" }
+        if normalized.contains("qwen3.8") || normalized.contains("qwen3_8") || normalized.contains("qwen3-8") {
+            return "qwen3_8"
+        }
         if normalized.contains("qwen3.5") || normalized.contains("qwen3_5") || normalized.contains("qwen3-5") {
             return "qwen3_5"
         }
@@ -1001,7 +1007,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static func supportsTune(family: String) -> Bool {
-        family == "qwen3_5" || family == "qwen3_6"
+        family == "qwen3_5" || family == "qwen3_6" || family == "qwen3_8"
     }
 
     public static func settingsFamiliesCompatible(stored: String, current: String) -> Bool {
@@ -1026,7 +1032,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
 
     public static func maxContextWindow(forFamily family: String) -> Int {
         switch family {
-        case "qwen3_5", "qwen3_6", "gemma4", "step", "glm", "deepseek":
+        case "qwen3_5", "qwen3_6", "qwen3_8", "gemma4", "step", "glm", "deepseek":
             return 262_144
         default:
             return 262_144

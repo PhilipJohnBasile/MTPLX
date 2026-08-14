@@ -621,7 +621,7 @@ struct InferenceParamsOverlay: View {
         var seen = Set<String>()
         return raw.compactMap { rawLevel in
             let level = rawLevel.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard ["low", "medium", "high"].contains(level), !seen.contains(level) else {
+            guard ["low", "medium", "high", "xhigh"].contains(level), !seen.contains(level) else {
                 return nil
             }
             seen.insert(level)
