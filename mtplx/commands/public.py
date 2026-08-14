@@ -68,6 +68,7 @@ from mtplx.backends.registry import (
     architecture_catalog,
 )
 from mtplx.backends.descriptors import (
+    QWEN3_8_DRAFT_TEMPERATURE,
     descriptor_for_architecture_id,
     descriptor_for_backend_id,
     descriptor_from_inspection,
@@ -640,10 +641,18 @@ def _looks_like_gemma4_model_ref(value: Any) -> bool:
 
 
 def _public_depth_ceiling(args: Any) -> int:
-    if _looks_like_gemma4_model_ref(
-        getattr(args, "model", None)
-    ) or _looks_like_gemma4_model_ref(getattr(args, "model_id", None)):
+    refs = (getattr(args, "model", None), getattr(args, "model_id", None))
+    if any(_looks_like_gemma4_model_ref(ref) for ref in refs):
         return MAX_GEMMA4_SPECULATIVE_DEPTH
+    for ref in refs:
+        if not ref:
+            continue
+        family = model_family_from_inspection(None, model_ref=str(ref))
+        if family == "qwen3_8":
+            descriptor = descriptor_for_architecture_id("qwen3-next-mtp")
+            return draft_semantics_for_model(
+                str(ref), descriptor=descriptor
+            ).maximum
     return MAX_PUBLIC_SPECULATIVE_DEPTH
 
 
@@ -961,11 +970,11 @@ def _model_contract_depth(
     except (TypeError, ValueError):
         depth = measured_default or depth_max
     depth = min(depth, depth_max)
-    depth_ceiling = (
-        MAX_GEMMA4_SPECULATIVE_DEPTH
-        if _inspection_is_gemma4_assistant(inspection)
-        else MAX_PUBLIC_SPECULATIVE_DEPTH
-    )
+    model_ref = inspection.get("model_dir") or inspection.get("runtime_model")
+    descriptor = descriptor_from_inspection(inspection)
+    depth_ceiling = draft_semantics_for_model(
+        str(model_ref or ""), inspection, descriptor
+    ).maximum
     return max(1, min(depth_ceiling, depth))
 
 
@@ -1271,7 +1280,17 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):
-        args.draft_temperature = sampler["temperature"]
+        # qwen3_8 draws at target temp 1.0 where a colder draft wins the
+        # sweep (QWEN3_8_DRAFT_TEMPERATURE receipt in descriptors.py);
+        # other families keep the draft-matches-target convention.
+        family = model_family_from_inspection(
+            inspection,
+            descriptor=descriptor,
+        )
+        if family == "qwen3_8":
+            args.draft_temperature = QWEN3_8_DRAFT_TEMPERATURE
+        else:
+            args.draft_temperature = sampler["temperature"]
     if "draft-top-p" not in cli_flags and getattr(args, "draft_top_p", None) is None:
         args.draft_top_p = sampler["top_p"]
     if "draft-top-k" not in cli_flags and getattr(args, "draft_top_k", None) in (
@@ -1281,7 +1300,12 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         args.draft_top_k = sampler["top_k"]
     if (
         "chat-template-profile" not in cli_flags
-        and descriptor.model_family not in {"qwen", "qwen3_5", "qwen3_6"}
+        and model_family_from_inspection(
+            inspection,
+            model_ref=str(getattr(args, "model", None) or ""),
+            descriptor=descriptor,
+        )
+        not in {"qwen3_5", "qwen3_6"}
         and getattr(args, "chat_template_profile", None) == "local_qwen36"
     ):
         args.chat_template_profile = "tokenizer"
@@ -2846,7 +2870,7 @@ def _tune_support_payload(
         inspection=inspection,
     )
     unsupported_reason = policy.unsupported_reason or (
-        "Tune is supported for Qwen 3.5, Qwen 3.6, and Gemma 4 MTPLX models only."
+        "Tune is supported for Qwen 3.5, Qwen 3.6, Qwen 3.8, and Gemma 4 MTPLX models only."
     )
     return {
         "ok": bool(policy.supported),
@@ -2866,7 +2890,10 @@ def _unsupported_tune_model_error(
     *,
     json_output: bool,
 ) -> int:
-    message = "Tune is supported for Qwen 3.5, Qwen 3.6, and Gemma 4 MTPLX models only."
+    message = (
+        "Tune is supported for Qwen 3.5, Qwen 3.6, Qwen 3.8, "
+        "and Gemma 4 MTPLX models only."
+    )
     family = str(payload.get("model_family") or "unknown")
     detail = str(payload.get("unsupported_reason") or message)
     body = {
@@ -2875,7 +2902,7 @@ def _unsupported_tune_model_error(
         "model": payload.get("model"),
         "model_family": family,
         "supported_families": payload.get("supported_families")
-        or ["qwen3_5", "qwen3_6", "gemma4"],
+        or ["qwen3_5", "qwen3_6", "qwen3_8", "gemma4"],
         "message": message,
         "detail": detail,
         "model_controls": payload.get("model_controls"),
@@ -2922,14 +2949,39 @@ def _tune_default_candidate_values(support_payload: dict[str, Any] | None) -> li
     return _parse_tune_depths(TUNE_DEFAULT_DEPTHS)
 
 
+def _apply_tune_sampling_defaults(
+    args: Any, support_payload: dict[str, Any] | None
+) -> None:
+    """Resolve tune sampling from the same family contract used by serve.
+
+    Parser defaults predate Qwen3.8 and are therefore not evidence that the
+    operator explicitly selected the legacy 0.6 sampler. Explicit CLI flags
+    always win.
+    """
+
+    controls = (support_payload or {}).get("model_controls")
+    sampling = controls.get("sampling") if isinstance(controls, dict) else None
+    if not isinstance(sampling, dict):
+        return
+    cli_flags = getattr(args, "_cli_flags", set()) or set()
+    for attribute, flag in (
+        ("temperature", "temperature"),
+        ("top_p", "top-p"),
+        ("top_k", "top-k"),
+    ):
+        if flag not in cli_flags and sampling.get(attribute) is not None:
+            setattr(args, attribute, sampling[attribute])
+
+
 def _parse_tune_candidate_values(
     raw: Any,
     *,
     support_payload: dict[str, Any] | None,
 ) -> list[int]:
     field = _tune_control_field(support_payload)
+    allowed_values = _tune_default_candidate_values(support_payload)
     if raw is None or str(raw).strip() == "":
-        return _tune_default_candidate_values(support_payload)
+        return allowed_values
     parts = [part.strip() for part in str(raw).split(",") if part.strip()]
     if not parts:
         raise ValueError("tune candidates must include at least one value")
@@ -2942,13 +2994,14 @@ def _parse_tune_candidate_values(
                 raise ValueError(
                     "Gemma tune blocks must be integers from 2 to 8"
                 ) from exc
-            raise ValueError("tune depths must be integers from 1 to 3") from exc
+            raise ValueError("tune depths must be integers") from exc
         if field == "draft_block_size":
             if value < 2 or value > 8:
                 raise ValueError("Gemma tune blocks must be between 2 and 8")
         else:
-            if value < 1 or value > MAX_PUBLIC_SPECULATIVE_DEPTH:
-                raise ValueError("tune depths must be between 1 and 3")
+            if value not in allowed_values:
+                allowed = ",".join(str(item) for item in allowed_values)
+                raise ValueError(f"tune depths must be one of {allowed}")
         if value not in values:
             values.append(value)
     return values
@@ -3007,6 +3060,7 @@ def _cmd_tune(
                 support_payload,
                 json_output=json_output or action == "bench tune",
             )
+        _apply_tune_sampling_defaults(args, support_payload)
         try:
             depths = _parse_tune_candidate_values(
                 getattr(args, "depths", None),
@@ -3056,6 +3110,7 @@ def _cmd_tune(
             support_payload,
             json_output=json_output,
         )
+    _apply_tune_sampling_defaults(args, support_payload)
     try:
         depths = _parse_tune_candidate_values(
             getattr(args, "depths", None),
@@ -3313,8 +3368,13 @@ def _cmd_tune_candidate(args: Any) -> int:
                 return _tune_error(
                     "Gemma tune blocks must be between 2 and 8", json_output=True
                 )
-        elif value < 1 or value > MAX_PUBLIC_SPECULATIVE_DEPTH:
-            return _tune_error("tune depths must be between 1 and 3", json_output=True)
+        elif value not in _tune_default_candidate_values(support_payload):
+            allowed = ",".join(
+                str(item) for item in _tune_default_candidate_values(support_payload)
+            )
+            return _tune_error(
+                f"tune depths must be one of {allowed}", json_output=True
+            )
     profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
     runtime_env = _runtime_env_with_external_overrides(
         _runtime_env_with_model_contract_overrides(
@@ -9266,13 +9326,14 @@ def _generate_one_shot_public(
         raise SystemExit(f"mtplx {command} requires a prompt")
     depth_error = _validate_public_depth(args, printer=lambda _line: None)
     if depth_error is not None:
+        depth_ceiling = _public_depth_ceiling(args)
         return (
             depth_error,
             {
                 "error": "invalid depth",
                 "detail": (
                     "--depth must be between "
-                    f"1 and {MAX_PUBLIC_SPECULATIVE_DEPTH} for the current MTPLX runtime"
+                    f"1 and {depth_ceiling} for the current MTPLX runtime"
                 ),
             },
             [],

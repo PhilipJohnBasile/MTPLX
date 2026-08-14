@@ -16,6 +16,7 @@ import pytest
 
 from mtplx.backends.descriptors import (
     QWEN3_NEXT_DESCRIPTOR,
+    descriptor_for_model,
     draft_semantics_for_model,
     model_controls_for_descriptor,
     model_family_from_inspection,
@@ -98,13 +99,101 @@ def test_qwen36_reasoning_codec_unchanged() -> None:
     assert codec.default_effort is None
 
 
-def test_qwen38_draft_range_extends_to_d6() -> None:
+def test_qwen38_draft_range_capped_at_d3_dropday() -> None:
     semantics = draft_semantics_for_model(BARE_SPEED, None, QWEN3_NEXT_DESCRIPTOR)
     assert semantics.default == 3
-    assert semantics.maximum == 6
+    assert semantics.maximum == 3  # capped drop-day: D4 live lane crash (see QWEN3_8_DRAFT_SEMANTICS)
     tune = tune_policy_for_model(BARE_SPEED, None, QWEN3_NEXT_DESCRIPTOR)
     assert tune.supported
-    assert tune.candidates == ("AR", "D1", "D2", "D3", "D4", "D5", "D6")
+    assert tune.candidates == ("AR", "D1", "D2", "D3")  # drop-day cap
+
+
+def test_qwen38_public_depth_and_tune_validation_follow_model_controls() -> None:
+    from mtplx.commands import public
+
+    qwen38_args = SimpleNamespace(model=BARE_SPEED, model_id=None)
+    qwen38_support = public._tune_support_payload(BARE_SPEED)
+    assert public._public_depth_ceiling(qwen38_args) == 3  # drop-day cap, D4 crash receipt
+    assert public._parse_tune_candidate_values(
+        "1,3", support_payload=qwen38_support
+    ) == [1, 3]
+    with pytest.raises(ValueError, match="one of 1,2,3"):
+        public._parse_tune_candidate_values(
+            "6", support_payload=qwen38_support
+        )
+
+    qwen36_args = SimpleNamespace(model=V2_36, model_id=None)
+    qwen36_support = public._tune_support_payload(V2_36)
+    assert public._public_depth_ceiling(qwen36_args) == 3
+    with pytest.raises(ValueError, match="one of 1,2,3"):
+        public._parse_tune_candidate_values(
+            "4", support_payload=qwen36_support
+        )
+
+
+def test_qwen38_tune_sampling_uses_family_defaults_unless_explicit() -> None:
+    from mtplx.commands import public
+
+    support = public._tune_support_payload(BARE_SPEED)
+    args = SimpleNamespace(
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        _cli_flags=set(),
+    )
+    public._apply_tune_sampling_defaults(args, support)
+    assert (args.temperature, args.top_p, args.top_k) == (1.0, 0.95, 20)
+
+    explicit = SimpleNamespace(
+        temperature=0.7,
+        top_p=0.8,
+        top_k=10,
+        _cli_flags={"temperature", "top-p", "top-k"},
+    )
+    public._apply_tune_sampling_defaults(explicit, support)
+    assert (explicit.temperature, explicit.top_p, explicit.top_k) == (
+        0.7,
+        0.8,
+        10,
+    )
+
+
+def test_qwen38_serve_defaults_use_official_template_and_sampler() -> None:
+    from mtplx.commands import public
+
+    args = SimpleNamespace(
+        model=BARE_SPEED,
+        temperature=0.6,
+        top_p=0.95,
+        top_k=20,
+        draft_temperature=0.6,
+        draft_top_p=None,
+        draft_top_k=20,
+        depth=3,
+        reasoning=None,
+        reasoning_parser="qwen3",
+        reasoning_effort=None,
+        tool_prompt_mode="hybrid",
+        chat_template_profile="local_qwen36",
+        chat_template_path=None,
+        adaptive_policy="none",
+        _cli_flags=set(),
+    )
+    inspection = {
+        "model_dir": BARE_SPEED,
+        "recommended_backend": "qwen3_next",
+    }
+
+    public._apply_backend_serve_defaults(args, inspection)
+
+    assert (args.temperature, args.top_p, args.top_k) == (1.0, 0.95, 20)
+    assert (args.draft_temperature, args.draft_top_p, args.draft_top_k) == (
+        0.6,  # QWEN3_8_DRAFT_TEMPERATURE, sweep-calibrated drop day
+        0.95,
+        20,
+    )
+    assert args.reasoning_effort == "xhigh"
+    assert args.chat_template_profile == "tokenizer"
 
 
 def test_qwen36_draft_range_unchanged() -> None:
@@ -119,7 +208,18 @@ def test_qwen38_model_controls_payload() -> None:
     assert controls["sampling"]["temperature"] == 1.0
     assert controls["reasoning"]["effort_levels"] == ["xhigh", "medium", "low"]
     assert controls["reasoning"]["default_effort"] == "xhigh"
-    assert controls["draft_control"]["maximum"] == 6
+    assert controls["draft_control"]["maximum"] == 3  # drop-day cap
+
+
+def test_qwen38_resolved_descriptor_matches_model_controls() -> None:
+    descriptor = descriptor_for_model(QWEN3_NEXT_DESCRIPTOR, model_ref=BARE_SPEED)
+    assert descriptor.sampler_defaults.temperature == 1.0
+    assert descriptor.reasoning_codec.default_effort == "xhigh"
+    assert descriptor.draft_semantics.maximum == 3  # drop-day cap
+    assert descriptor.tune_policy.candidates[-1] == "D3"  # drop-day cap
+
+    legacy = descriptor_for_model(QWEN3_NEXT_DESCRIPTOR, model_ref=V2_36)
+    assert legacy == QWEN3_NEXT_DESCRIPTOR
 
 
 # ------------------------------------------------------- public id resolution
@@ -212,6 +312,26 @@ def test_reasoning_effort_resolves_for_qwen38_state() -> None:
     assert (
         srv._reasoning_effort_for_state(state, thinking_enabled=False) is None
     )
+
+
+def test_qwen38_server_descriptor_and_request_validation_reach_d3_cap() -> None:
+    from mtplx.server import openai as srv
+
+    state = _state(BARE_SPEED, depth=3, generation_mode="mtp")
+    descriptor = srv._backend_descriptor(state)
+    assert descriptor.draft_semantics.maximum == 3  # drop-day cap
+    assert descriptor.sampler_defaults.temperature == 1.0
+    request = srv.ChatCompletionRequest(model="m", messages=[], depth=3)
+    assert srv._request_depth_for_generation(
+        state, request, generation_mode="mtp"
+    ) == 3
+    # Depth 4+ live serving killed the daemon on drop day (memory-kill
+    # signature); the family cap rejects it until the deep lane is fixed.
+    rejected = srv.ChatCompletionRequest(model="m", messages=[], depth=4)
+    with pytest.raises(srv.HTTPException, match="between 1 and 3"):
+        srv._request_depth_for_generation(
+            state, rejected, generation_mode="mtp"
+        )
 
 
 def test_reasoning_effort_still_none_for_qwen36_state() -> None:

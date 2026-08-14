@@ -385,6 +385,12 @@ QWEN3_NEXT_DESCRIPTOR = BackendDescriptor(
 # retained-history rendering, and a multi-step-trained MTP head (deeper draft
 # range than the depth-1-trained 3.6 head).
 QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20)
+# Sweep-calibrated on drop day (2026-08-14, Bare-Speed Q4, thermally gated
+# think-phase arms): draft 0.6 beats draft=target 1.0 (46.1 vs 42.4 tok/s,
+# pos-3 acceptance .339 vs .246) and beats the 3.6-era draft-greedy 0.1
+# (37.1). Exact ratio-acceptance keeps outputs distribution-identical for
+# any draft temperature, so this is a pure speed knob.
+QWEN3_8_DRAFT_TEMPERATURE = 0.6
 QWEN3_8_REASONING_CODEC = ReasoningCodec(
     parser="qwen3",
     display_name="Qwen think tags",
@@ -397,7 +403,12 @@ QWEN3_8_DRAFT_SEMANTICS = DraftSemantics(
     display_label="Draft depth",
     default=3,
     minimum=1,
-    maximum=6,
+    # The multi-step head trains for deeper drafts, but the live depth-4 serve
+    # lane killed the daemon on drop day (silent death mid-request, no crash
+    # report — memory-kill signature; receipt: scratchpad serve-d4-t0.6.log,
+    # warmup healthy at 88-92 tok/s then nothing). Cap at 3 until the deep
+    # lane is root-caused; reopen with the QL5-7 packed-verify extension.
+    maximum=3,
     unit="depth",
 )
 
@@ -985,10 +996,13 @@ def tune_policy_for_model(
     if family in {"qwen3_5", "qwen3_6"}:
         return TunePolicy(supported=True)
     if family == "qwen3_8":
-        # Multi-step-trained MTP head: measure the deeper candidates too.
+        # Multi-step-trained MTP head wants deeper candidates, but the live
+        # depth-4 lane killed the daemon on drop day (see
+        # QWEN3_8_DRAFT_SEMANTICS). Cap tune at D3 so an app Tune run cannot
+        # crash the daemon; restore AR..D6 with the deep-lane fix.
         return TunePolicy(
             supported=True,
-            candidates=("AR", "D1", "D2", "D3", "D4", "D5", "D6"),
+            candidates=("AR", "D1", "D2", "D3"),
         )
     if family == "gemma4":
         return GEMMA4_ASSISTANT_DESCRIPTOR.tune_policy
@@ -1155,6 +1169,42 @@ def model_controls_for_descriptor(
         "kv_quant": kv_policy.to_dict(),
         "context_window": context_policy.to_dict(),
     }
+
+
+def descriptor_for_model(
+    descriptor: BackendDescriptor,
+    *,
+    model_ref: str | None = None,
+    inspection: dict[str, Any] | None = None,
+) -> BackendDescriptor:
+    """Resolve family policy for a model sharing a backend lane.
+
+    Qwen3.8 deliberately reuses the qwen3_next runtime, but its official
+    sampler, reasoning controls, and multi-step MTP range differ from the
+    Qwen3.5/3.6 lane defaults.  Returning a descriptor view keeps server
+    validation and health telemetry on the same contract as model_controls.
+    """
+
+    family = model_family_from_inspection(
+        inspection,
+        model_ref=model_ref,
+        descriptor=descriptor,
+    )
+    if family != "qwen3_8":
+        return descriptor
+    return replace(
+        descriptor,
+        sampler_defaults=sampler_defaults_for_model(
+            model_ref, inspection, descriptor
+        ),
+        reasoning_codec=reasoning_policy_for_model(
+            model_ref, inspection, descriptor
+        ),
+        draft_semantics=draft_semantics_for_model(
+            model_ref, inspection, descriptor
+        ),
+        tune_policy=tune_policy_for_model(model_ref, inspection, descriptor),
+    )
 
 
 def assistant_target_distribution_choices() -> tuple[str, ...]:
