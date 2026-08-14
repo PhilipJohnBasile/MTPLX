@@ -76,6 +76,7 @@ public enum BenchmarkDaemonReadinessError: Error, Equatable, LocalizedError {
     case modelDownloadRequired(String)
     case startupFailed(String)
     case unreachable(URL)
+    case unsupportedExternalBackend
 
     public var errorDescription: String? {
         switch self {
@@ -85,6 +86,8 @@ public enum BenchmarkDaemonReadinessError: Error, Equatable, LocalizedError {
             return "Couldn't start MTPLX for the benchmark: \(reason)"
         case .unreachable(let url):
             return "Can't reach MTPLX at \(url.absoluteString)."
+        case .unsupportedExternalBackend:
+            return "MTPLX's benchmark, metrics, and live-control endpoints are unavailable for the external mlx-serve route."
         }
     }
 }
@@ -308,6 +311,25 @@ public final class MTPLXBackendStore: ObservableObject {
     private var cancelledLaunchIDs: Set<String> = []
     private let daemonStartupTimeoutSeconds: TimeInterval = 600
 
+    /// The DeepSeek target-only route is not an MTPLX daemon. Its raw native
+    /// server exposes OpenAI generation plus `/health`, but not the app's
+    /// mutable-settings, sessions, metrics, thermal, or benchmark surfaces.
+    /// Views use this to hide those controls instead of displaying controls
+    /// that would inevitably fail after a healthy launch.
+    public var isExternalMlxServeBackend: Bool {
+        MTPLXModelOption.isExternalAROnlyReference(configuration.model)
+    }
+
+    public var supportsMTPLXLiveControls: Bool {
+        !isExternalMlxServeBackend
+    }
+
+    private func daemonBackendKind(for configuration: MTPLXAppConfiguration) -> DaemonBackendKind {
+        MTPLXModelOption.isExternalAROnlyReference(configuration.model)
+            ? .externalMlxServe
+            : .mtplx
+    }
+
     public init(
         configuration: MTPLXAppConfiguration = MTPLXAppConfiguration(),
         settingsStore: MTPLXSettingsStore = MTPLXSettingsStore(),
@@ -377,7 +399,9 @@ public final class MTPLXBackendStore: ObservableObject {
         let launchID = UUID().uuidString
         let recoveryTarget = target
         do {
-            try await prepareRuntimeForDaemonStart()
+            if daemonBackendKind(for: next) == .mtplx {
+                try await prepareRuntimeForDaemonStart()
+            }
             if target == .openCode {
                 let result = try openCodeIntegration.sync(configuration: next)
                 await supervisor.logs.append(
@@ -417,6 +441,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 command: command,
                 healthBaseURL: baseURL,
                 apiKey: next.apiKey,
+                backendKind: daemonBackendKind(for: next),
                 probeHealth: true,
                 timeoutSeconds: daemonStartupTimeoutSeconds,
                 expectedLaunchID: launchID,
@@ -458,6 +483,10 @@ public final class MTPLXBackendStore: ObservableObject {
     public func attachExistingDaemonIfOwned() async {
         await awaitDaemonTeardown()
         guard !supervisor.isRunning() else { return }
+        // Native mlx-serve exposes no launch ID, so it is never safe to
+        // adopt a listener from a previous app session. The normal start
+        // path performs an ownership-preserving port preflight instead.
+        guard !isExternalMlxServeBackend else { return }
         do {
             let target = defaultLaunchTarget(for: configuration)
             let command = (try? commandBuilder.buildServeCommand(
@@ -557,7 +586,9 @@ public final class MTPLXBackendStore: ObservableObject {
         healthWatchTask = nil
         let launchID = UUID().uuidString
         do {
-            try await prepareRuntimeForDaemonStart()
+            if daemonBackendKind(for: configuration) == .mtplx {
+                try await prepareRuntimeForDaemonStart()
+            }
             // Pre-flight the configured port before any integration writes
             // its config: adoptable app-owned daemons are left for the
             // supervisor, stale app-owned daemons are replaced in place,
@@ -597,6 +628,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 command: command,
                 healthBaseURL: baseURL,
                 apiKey: configuration.apiKey,
+                backendKind: daemonBackendKind(for: configuration),
                 probeHealth: true,
                 timeoutSeconds: daemonStartupTimeoutSeconds,
                 expectedLaunchID: launchID,
@@ -701,7 +733,8 @@ public final class MTPLXBackendStore: ObservableObject {
     ) async {
         let occupant = await PortPreflight.classify(
             baseURL: baseURL,
-            apiKey: configuration.apiKey
+            apiKey: configuration.apiKey,
+            backendKind: daemonBackendKind(for: configuration)
         )
         let occupantDescription: String
         switch occupant {
@@ -731,6 +764,11 @@ public final class MTPLXBackendStore: ObservableObject {
                 return
             }
             occupantDescription = "an MTPLX server started outside the app"
+        case .externalMlxServeServer:
+            // Raw mlx-serve health carries no app launch identity. Never
+            // adopt or replace it; choosing a free port avoids a double-load
+            // while preserving the other process.
+            occupantDescription = "an external mlx-serve server"
         case .unauthorized:
             occupantDescription = "a server requiring a different API key"
         case .foreign:
@@ -782,10 +820,11 @@ public final class MTPLXBackendStore: ObservableObject {
         let occupiedPort = configuration.port
         let occupant = await PortPreflight.classify(
             baseURL: baseURL,
-            apiKey: configuration.apiKey
+            apiKey: configuration.apiKey,
+            backendKind: daemonBackendKind(for: configuration)
         )
         switch occupant {
-        case .mtplxServer, .unauthorized, .foreign:
+        case .mtplxServer, .externalMlxServeServer, .unauthorized, .foreign:
             await preflightConfiguredPort(target: target, launchID: launchID)
             return true
         case .free:
@@ -1029,6 +1068,9 @@ public final class MTPLXBackendStore: ObservableObject {
 
     @discardableResult
     public func ensureDaemonReadyForBenchmark() async throws -> HealthPayload {
+        guard supportsMTPLXLiveControls else {
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         if let existing = try? await apiClient.health(), existing.ok {
             health = existing
             currentFanMode = verifiedFanMode(from: existing)
@@ -1231,6 +1273,7 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func refreshStaticState() async throws {
+        guard supportsMTPLXLiveControls else { return }
         let client = apiClient
         do {
             async let health = client.health()
@@ -1255,6 +1298,7 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func refreshSnapshot() async throws {
+        guard supportsMTPLXLiveControls else { return }
         do {
             apply(snapshot: try await apiClient.snapshot())
         } catch is DecodingError {
@@ -1268,6 +1312,9 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func updateLiveSettings(_ next: MutableSettings) async throws {
+        guard supportsMTPLXLiveControls else {
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         let merged = mergedLiveSettingsPatch(next)
         let livePatch = Self.liveMutableSettingsPatch(from: next)
         // Only the caller's own patch counts as a depth choice; the
@@ -1301,6 +1348,7 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func refreshLiveSettingsFromDaemon(persist: Bool = false) async throws {
+        guard supportsMTPLXLiveControls else { return }
         guard daemonState == .running || supervisor.isRunning() else { return }
         adoptDaemonSettings(try await apiClient.settings(), persist: persist)
     }
@@ -1335,6 +1383,12 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     private func flushPendingLiveSettingsIfNeeded(target: LaunchTarget? = nil) async throws {
+        guard supportsMTPLXLiveControls else {
+            pendingLiveSettings = nil
+            pendingLiveSettingsModel = nil
+            settings = nil
+            return
+        }
         guard let pending = pendingLiveSettings else { return }
         guard Self.targetCarriesSettingsSampler(target) else {
             pendingLiveSettings = nil
@@ -1362,6 +1416,12 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     private func flushFreshLaunchLiveOnlySettingsIfNeeded() async throws {
+        guard supportsMTPLXLiveControls else {
+            pendingLiveSettings = nil
+            pendingLiveSettingsModel = nil
+            settings = nil
+            return
+        }
         guard let pending = pendingLiveSettings else { return }
         guard pendingLiveSettingsModel == nil || pendingLiveSettingsModel == configuration.model else {
             pendingLiveSettings = nil
@@ -1695,20 +1755,36 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func cancel(requestId: String) async throws {
+        guard supportsMTPLXLiveControls else {
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         _ = try await apiClient.cancel(requestId: requestId)
     }
 
     public func clearCache() async throws {
+        guard supportsMTPLXLiveControls else {
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         _ = try await apiClient.clearCache()
         self.sessions = try await apiClient.sessions()
     }
 
     public func clearSession(sessionId: String) async throws {
+        guard supportsMTPLXLiveControls else {
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         _ = try await apiClient.clearSession(sessionId: sessionId)
         self.sessions = try await apiClient.sessions()
     }
 
     public func startMetricsStream() {
+        guard supportsMTPLXLiveControls else {
+            streamTask?.cancel()
+            streamTask = nil
+            connectionState = .idle
+            startExternalMlxServeHealthWatchdog()
+            return
+        }
         streamTask?.cancel()
         let client = MetricsStreamClient(apiClient: apiClient)
         let interval = configuration.performanceLock ? 1000 : configuration.streamSnapshotIntervalMs
@@ -1810,6 +1886,55 @@ public final class MTPLXBackendStore: ObservableObject {
                 guard consecutiveMisses >= 2 else { continue }
                 self.markDaemonUnreachableIfNeeded(
                     reason: "MTPLX lost contact with the model server. Start it again."
+                )
+                return
+            }
+        }
+    }
+
+    /// Watch only the native raw-health contract after an external target-only
+    /// launch. The process was spawned by this supervisor and its port was
+    /// checked before launch; MTPLX admin routes are never used as a liveness
+    /// proxy for this backend.
+    private func startExternalMlxServeHealthWatchdog() {
+        healthWatchTask?.cancel()
+        let probeClient = ExternalMlxServeAdapter.livenessProbe(
+            baseURL: baseURL,
+            apiKey: configuration.apiKey
+        )
+        healthWatchTask = Task { @MainActor [weak self] in
+            defer { probeClient.session.finishTasksAndInvalidate() }
+            var consecutiveMisses = 0
+            var loggedUnauthorized = false
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.shouldProbeDaemonHealth else {
+                    consecutiveMisses = 0
+                    continue
+                }
+                switch await probeClient.livenessWithinDeadline(
+                    seconds: Self.watchdogProbeDeadlineSeconds
+                ) {
+                case .healthy:
+                    consecutiveMisses = 0
+                    continue
+                case .aliveUnauthorized:
+                    consecutiveMisses = 0
+                    if !loggedUnauthorized {
+                        loggedUnauthorized = true
+                        await self.supervisor.logs.append(
+                            "external mlx-serve rejected raw health authentication; listener is alive, check the API key",
+                            stream: .system
+                        )
+                    }
+                    continue
+                case .unreachable:
+                    consecutiveMisses += 1
+                }
+                guard consecutiveMisses >= 2 else { continue }
+                self.markDaemonUnreachableIfNeeded(
+                    reason: "The external mlx-serve backend stopped answering health checks. Start it again."
                 )
                 return
             }
@@ -2242,7 +2367,8 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     private func requiresStartupFanRamp(_ configuration: MTPLXAppConfiguration) -> Bool {
-        fanMode(for: configuration) == .max
+        daemonBackendKind(for: configuration) == .mtplx
+            && fanMode(for: configuration) == .max
     }
 
     private func modeRequiresFanRestore(_ mode: String?) -> Bool {
@@ -2266,6 +2392,12 @@ public final class MTPLXBackendStore: ObservableObject {
     /// pre-set the mode so the UI flips immediately; on failure
     /// `currentFanMode` is rolled back to the previous state.
     public func setFanMode(_ mode: String) async throws {
+        guard supportsMTPLXLiveControls else {
+            // The external mlx-serve launcher is fixed to its safe default
+            // fan contract. Persisting an MTPLX-only live request here would
+            // turn a healthy external server into a spurious 404.
+            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend
+        }
         let previous = currentFanMode
         let previousConfiguration = configuration
         let fanMode = MTPLXFanMode.normalized(mode)
@@ -2301,6 +2433,11 @@ public final class MTPLXBackendStore: ObservableObject {
     /// Pull thermal detection + current mode + fan summary. Used after
     /// daemon start so `FanModeToggle` can decide whether to render.
     public func refreshThermalStatus() async {
+        guard supportsMTPLXLiveControls else {
+            thermalStatus = nil
+            currentFanMode = nil
+            return
+        }
         thermalStatus = try? await apiClient.thermalStatus()
         if let mode = thermalStatus?.values["current_mode"]?.stringValue, !mode.isEmpty {
             currentFanMode = MTPLXFanMode.normalized(mode).rawValue
@@ -2309,6 +2446,7 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     private func shouldRestoreFanModeOnStop() -> Bool {
+        guard supportsMTPLXLiveControls else { return false }
         if fanRestoreRequiredOnStop {
             return true
         }
@@ -2526,6 +2664,27 @@ public final class MTPLXBackendStore: ObservableObject {
         target: LaunchTarget?,
         configuration: MTPLXAppConfiguration
     ) async {
+        guard daemonBackendKind(for: configuration) == .mtplx else {
+            // A raw mlx-serve target-only server is ready at this point, but
+            // it does not implement any MTPLX app endpoint. Do not turn the
+            // successful `/health {status: ok}` into a failure by probing
+            // capabilities, sessions, settings, metrics, thermal, or model
+            // inventory routes that belong exclusively to MTPLX.
+            health = nil
+            capabilities = nil
+            sessions = nil
+            sessionBank = nil
+            settings = nil
+            pendingLiveSettings = nil
+            pendingLiveSettingsModel = nil
+            connectionState = .idle
+            await supervisor.logs.append(
+                "external mlx-serve ready; MTPLX live controls and metrics are unavailable",
+                stream: .system
+            )
+            startExternalMlxServeHealthWatchdog()
+            return
+        }
         do {
             try await refreshStaticState()
         } catch {
@@ -2623,10 +2782,18 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     public func refreshPrefillHistory() async {
+        guard supportsMTPLXLiveControls else {
+            prefillHistory = nil
+            return
+        }
         prefillHistory = try? await apiClient.prefillHistory()
     }
 
     public func refreshModels() async {
+        guard supportsMTPLXLiveControls else {
+            models = nil
+            return
+        }
         models = try? await apiClient.models()
     }
 
@@ -2652,6 +2819,7 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     private func scheduleLateHealthRecovery(launchID: String, target: LaunchTarget?) {
+        guard supportsMTPLXLiveControls else { return }
         guard supervisor.isRunning() else { return }
         lateHealthRecoveryTask?.cancel()
         lateHealthRecoveryTask = Task { @MainActor [weak self] in
