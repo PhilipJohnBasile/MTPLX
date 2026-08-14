@@ -189,6 +189,8 @@ def test_write_opencode_config_installs_session_headers_plugin(tmp_path, monkeyp
         encoding="utf-8"
     )
     assert 'output.headers["x-mtplx-session-id"]' in plugin_source
+    assert '"chat.params"' in plugin_source
+    assert "output.maxOutputTokens = undefined" in plugin_source
     assert "process.stdout.write" not in plugin_source
     assert "message.updated" not in plugin_source
 

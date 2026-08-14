@@ -26,15 +26,26 @@ OPENCODE_SESSION_HEADERS_PLUGIN_NAME = "mtplx-session-headers.js"
 OPENCODE_DESKTOP_SETTINGS_STORE_NAME = "default.dat"
 OPENCODE_DESKTOP_SETTINGS_KEY = "settings.v3"
 OPENCODE_DESKTOP_GLOBAL_STORE_NAME = "opencode.global.dat"
-OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE = """export const MTPLXSessionHeaders = async () => ({
+OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE = """const mtplxProviderID = (input) =>
+  input?.model?.providerID || input?.provider?.id;
+
+export const MTPLXSessionHeaders = async () => ({
   "chat.headers": async (input, output) => {
     output.headers ||= {};
-    const providerID = input?.model?.providerID || input?.provider?.id;
+    const providerID = mtplxProviderID(input);
     if (providerID && providerID !== "mtplx") return;
     output.headers["x-mtplx-client"] = "opencode";
     if (input?.sessionID) {
       output.headers["x-mtplx-session-id"] = String(input.sessionID);
     }
+  },
+  "chat.params": async (input, output) => {
+    const providerID = mtplxProviderID(input);
+    if (providerID && providerID !== "mtplx") return;
+    // OpenCode otherwise injects a 32k output ceiling even when the configured
+    // model advertises a larger native context. Omit the field so MTPLX owns
+    // the uncapped generation contract and stops naturally at EOS.
+    output.maxOutputTokens = undefined;
   }
 });
 export default MTPLXSessionHeaders;
