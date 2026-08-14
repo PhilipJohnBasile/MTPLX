@@ -131,8 +131,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         # Exact local `du -sk` of the forge artifact (2026-08-14 drop-day
         # build; three trunk shards + bf16 MTP sidecar + tokenizer).
         size_bytes=16_002_670_592,
-        # interim: 3.6 sibling measurement; replace with 3.8 32k probe
-        peak_memory_gib=17.0,
+        # Measured 2026-08-14: request-log MLX high-water 19.6 GiB during
+        # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+        peak_memory_gib=20.0,
         recommended_tiers=frozenset({MODERN_TIER}),
         aliases=(
             "mtplx-qwen38-27b-bare-speed",
@@ -154,8 +155,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         # Exact local `du -sk` of the 2026-08-14 forge artifact
         # (module_overrides recipe, 5.807 bits/weight, bf16 MTP sidecar).
         size_bytes=20_392_468_480,
-        # interim: 3.6 Speed-V2 sibling measurement; replace with 3.8 32k probe
-        peak_memory_gib=21.5,
+        # Measured 2026-08-14: request-log MLX high-water 24.6 GiB during
+        # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+        peak_memory_gib=25.0,
         recommended_tiers=frozenset({MODERN_TIER}),
         aliases=(
             "mtplx-qwen38-27b-optimized-speed",
@@ -168,14 +170,14 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         display_name="Qwen 3.8 27B Optimized Quality",
         detail=(
             "Flat 8-bit build of Qwen 3.8 for maximum output fidelity: "
-            "near-teacher distribution with exact MTP calibration. Serves "
-            "its measured best depth by default."
+            "near-teacher distribution with exact MTP calibration."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
         # Exact local `du -sk` of the 2026-08-14 forge artifact.
         size_bytes=29_449_355_264,
-        # interim: q8 27B sibling class; replace with the 3.8 32k probe
-        peak_memory_gib=30.5,
+        # Measured 2026-08-14: request-log MLX high-water 32.9 GiB during
+        # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+        peak_memory_gib=33.0,
         recommended_tiers=frozenset({MODERN_TIER}),
         aliases=(
             "mtplx-qwen38-27b-optimized-quality",

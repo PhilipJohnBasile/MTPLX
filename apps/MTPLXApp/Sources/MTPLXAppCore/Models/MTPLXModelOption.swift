@@ -421,8 +421,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             ],
             // Exact local `du -sk` of the forge artifact (2026-08-14).
             sizeBytes: 16_002_670_592,
-            // interim: 3.6 sibling measurement; replace with 3.8 32k probe
-            peakMemoryGiB: 17.0,
+            // Measured 2026-08-14: request-log MLX high-water 19.6 GiB during
+            // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+            peakMemoryGiB: 20.0,
             recommendedFor: [.modernApple]
         ),
         MTPLXModelOption(
@@ -442,15 +443,16 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             ],
             // Exact local `du -sk` of the 2026-08-14 forge artifact.
             sizeBytes: 20_392_468_480,
-            // interim: 3.6 Speed-V2 sibling measurement; replace with 3.8 32k probe
-            peakMemoryGiB: 21.5,
+            // Measured 2026-08-14: request-log MLX high-water 24.6 GiB during
+            // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+            peakMemoryGiB: 25.0,
             recommendedFor: [.modernApple]
         ),
         MTPLXModelOption(
             id: "qwen38-27b-optimized-quality",
             displayName: "Qwen 3.8 27B Optimized Quality",
             shortName: "Qwen 3.8 27B Optimized Quality",
-            detail: "Flat 8-bit build of Qwen 3.8 for maximum output fidelity: near-teacher distribution with exact MTP calibration. Serves its measured best depth by default.",
+            detail: "Flat 8-bit build of Qwen 3.8 for maximum output fidelity: near-teacher distribution with exact MTP calibration.",
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality",
@@ -463,8 +465,9 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             ],
             // Exact local `du -sk` of the 2026-08-14 forge artifact.
             sizeBytes: 29_449_355_264,
-            // interim: q8 27B sibling class; replace with the 3.8 32k probe
-            peakMemoryGiB: 30.5,
+            // Measured 2026-08-14: request-log MLX high-water 32.9 GiB during
+            // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
+            peakMemoryGiB: 33.0,
             recommendedFor: [.modernApple]
         ),
         MTPLXModelOption(
