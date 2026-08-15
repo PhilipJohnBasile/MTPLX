@@ -47,7 +47,7 @@ def _detect_total_system_memory_bytes() -> int | None:
         try:
             total = int(
                 subprocess.check_output(
-                    ["sysctl", "-n", "hw.memsize"],
+                    ["/usr/sbin/sysctl", "-n", "hw.memsize"],
                     text=True,
                 ).strip()
             )

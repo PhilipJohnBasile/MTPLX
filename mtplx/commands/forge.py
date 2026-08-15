@@ -286,7 +286,7 @@ _BODY_DTYPE_ALIASES = {
 def _host_chip_brand() -> str:
     try:
         result = subprocess.run(
-            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"],
             capture_output=True,
             text=True,
             timeout=5,

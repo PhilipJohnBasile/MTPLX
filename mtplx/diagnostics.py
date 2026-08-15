@@ -26,7 +26,7 @@ from mtplx.profiles import DEFAULT_HF_MODEL_ID, DEFAULT_PROFILE_NAME
 
 
 GIB = 1024**3
-DEFAULT_SPEED_MODEL_SIZE_BYTES = 16_430_000_000
+DEFAULT_SPEED_MODEL_SIZE_BYTES = 20_392_433_868  # Qwen3.8-27B Optimized Speed (Hub bytes)
 MIN_RECOMMENDED_MEMORY_BYTES = 48 * GIB
 SUPPORT_MACOS_MAJOR = 14
 SUPPORT_PYTHON = (3, 11)
@@ -43,7 +43,7 @@ SUPPORT_MATRIX = {
         "M3 Max",
         "M4 Max",
         "M3 Ultra / Mac Studio",
-        "M5 Max developer machine",
+        "M5 Max",
     ],
 }
 DOCS = {
@@ -190,6 +190,73 @@ def host_report(*, model_cache: str | Path | None = None) -> dict[str, Any]:
     }
 
 
+def _default_model_memory_check(host: dict[str, Any]) -> dict[str, Any]:
+    """Memory verdict for the model ``mtplx start`` would pick on THIS Mac.
+
+    The old rule priced a fixed 27B against 80% of RAM and failed every Mac
+    under ~45 GiB, contradicting the product's own routing (< 32 GiB gets
+    the 9B, M1/M2 the FP16 build). This mirrors the app's feasibility rule
+    (mtplx.model_catalog.evaluate_feasibility): fail when the measured peak
+    exceeds unified memory, warn when memory is under 1.5x the peak.
+    """
+
+    from mtplx.default_models import select_default_model
+    from mtplx.model_catalog import (
+        catalog_model_matching,
+        chip_tier_for_generation,
+        evaluate_feasibility,
+    )
+
+    memory_bytes = host.get("memory_bytes")
+    memory_gib = (
+        float(memory_bytes) / GIB if isinstance(memory_bytes, int) and memory_bytes > 0 else None
+    )
+    hardware = {"chip": str(host.get("chip") or ""), "memory_gib": memory_gib}
+    try:
+        selection = select_default_model(hardware=hardware)
+        default_model = selection.hf_model
+        generation = selection.chip_generation
+    except Exception:
+        default_model = DEFAULT_HF_MODEL_ID
+        generation = None
+    row = catalog_model_matching(default_model)
+    if memory_gib is None or row is None:
+        return {
+            "status": "warn",
+            "default_model": default_model,
+            "estimated_peak_gib": row.peak_memory_gib if row else None,
+            "fix": "Could not read unified memory or the default model's measured peak; "
+            "run `mtplx start` and check the model picker's memory notes.",
+        }
+    verdict = evaluate_feasibility(
+        row,
+        chip_tier=chip_tier_for_generation(generation),
+        ram_gib=memory_gib,
+    )
+    if verdict.verdict == "insufficient_memory":
+        return {
+            "status": "fail",
+            "default_model": default_model,
+            "estimated_peak_gib": row.peak_memory_gib,
+            "fix": "Not enough unified memory for the default model; `mtplx start` "
+            "and the app offer smaller models (Qwen3.5 9B / 4B).",
+        }
+    if verdict.verdict == "tight_fit":
+        return {
+            "status": "warn",
+            "default_model": default_model,
+            "estimated_peak_gib": row.peak_memory_gib,
+            "fix": "Fits, but tight: close other heavy apps, keep the context window "
+            "modest, or pick a smaller model.",
+        }
+    return {
+        "status": "pass",
+        "default_model": default_model,
+        "estimated_peak_gib": row.peak_memory_gib,
+        "fix": None,
+    }
+
+
 def estimate_runtime_memory_bytes(
     *,
     model_size_bytes: int = DEFAULT_SPEED_MODEL_SIZE_BYTES,
@@ -305,29 +372,20 @@ def build_diagnostic_checks(
             "python3 -m pip install mlx",
         )
     )
-    memory_bytes = host.get("memory_bytes")
-    estimated = estimate_runtime_memory_bytes(profile=DEFAULT_PROFILE_NAME)
-    memory_status = "warn"
-    memory_fix = "Close other heavy apps or use a smaller model/profile."
-    if isinstance(memory_bytes, int):
-        if estimated > int(memory_bytes * 0.80):
-            memory_status = "fail"
-        elif memory_bytes < MIN_RECOMMENDED_MEMORY_BYTES:
-            memory_status = "warn"
-        else:
-            memory_status = "pass"
-            memory_fix = None
+    memory_check = _default_model_memory_check(host)
     checks.append(
         DiagnosticCheck(
             "resource.memory",
-            memory_status,
-            "error" if memory_status == "fail" else "warning",
+            memory_check["status"],
+            "error" if memory_check["status"] == "fail" else "warning",
             {
                 "unified_memory_gib": host.get("memory_gib"),
-                "estimated_peak_gib": round(estimated / GIB, 2),
+                "default_model": memory_check["default_model"],
+                "estimated_peak_gib": memory_check["estimated_peak_gib"],
             },
-            "estimated peak <= 80% of unified memory; 48 GiB+ recommended",
-            memory_fix,
+            "the model this Mac's default routes to fits: measured peak <= unified "
+            "memory (comfortable at 1.5x)",
+            memory_check["fix"],
         )
     )
     required_free = required_download_free_bytes()

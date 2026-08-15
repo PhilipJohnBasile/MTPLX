@@ -11,6 +11,13 @@ from importlib import metadata
 from typing import Any
 
 
+# Absolute tool paths: the app launches its subprocesses with a PATH that is
+# not guaranteed to carry /usr/sbin (see mistakes ledger, 2026-07 sanitized
+# PATH incident), and both tools live there on every macOS.
+_SYSCTL = "/usr/sbin/sysctl"
+_SYSTEM_PROFILER = "/usr/sbin/system_profiler"
+
+
 def _run_text(*cmd: str, timeout: float = 3.0) -> str:
     try:
         result = subprocess.run(
@@ -56,7 +63,7 @@ def _dist_version(name: str) -> str | None:
 
 
 def _sysctl_int(name: str) -> int | None:
-    raw = _run_text("sysctl", "-n", name) if platform.system() == "Darwin" else ""
+    raw = _run_text(_SYSCTL, "-n", name) if platform.system() == "Darwin" else ""
     try:
         return int(raw)
     except ValueError:
@@ -66,13 +73,13 @@ def _sysctl_int(name: str) -> int | None:
 def _hardware_json() -> dict[str, Any]:
     if platform.system() != "Darwin":
         return {}
-    return _run_json("system_profiler", "SPHardwareDataType", "-json", timeout=8.0)
+    return _run_json(_SYSTEM_PROFILER, "SPHardwareDataType", "-json", timeout=8.0)
 
 
 def _display_json() -> dict[str, Any]:
     if platform.system() != "Darwin":
         return {}
-    return _run_json("system_profiler", "SPDisplaysDataType", "-json", timeout=8.0)
+    return _run_json(_SYSTEM_PROFILER, "SPDisplaysDataType", "-json", timeout=8.0)
 
 
 def _first_item(payload: dict[str, Any], key: str) -> dict[str, Any]:
@@ -112,7 +119,7 @@ def total_memory_gib() -> float:
 
     if platform.system() != "Darwin":
         return 0.0
-    raw = _run_text("sysctl", "-n", "hw.memsize")
+    raw = _run_text(_SYSCTL, "-n", "hw.memsize")
     try:
         return int(raw) / 1_073_741_824.0
     except ValueError:
@@ -126,7 +133,7 @@ def detect_apple_silicon() -> dict[str, Any]:
     machine = platform.machine()
     chip = ""
     if system == "Darwin":
-        chip = _run_text("sysctl", "-n", "machdep.cpu.brand_string")
+        chip = _run_text(_SYSCTL, "-n", "machdep.cpu.brand_string")
         generation = classify_apple_silicon_generation(chip, system=system, machine=machine)
         if generation == "unknown":
             hardware = _first_item(_hardware_json(), "SPHardwareDataType")
@@ -156,11 +163,11 @@ def inspect_hardware() -> dict[str, Any]:
     display = _first_item(_display_json(), "SPDisplaysDataType")
     chip = (
         str(hardware.get("chip_type") or "")
-        or _run_text("sysctl", "-n", "machdep.cpu.brand_string")
+        or _run_text(_SYSCTL, "-n", "machdep.cpu.brand_string")
     )
     generation = classify_apple_silicon_generation(chip, system=system, machine=machine)
     ram_bytes = 0
-    raw_mem = _run_text("sysctl", "-n", "hw.memsize") if system == "Darwin" else ""
+    raw_mem = _run_text(_SYSCTL, "-n", "hw.memsize") if system == "Darwin" else ""
     try:
         ram_bytes = int(raw_mem)
     except ValueError:

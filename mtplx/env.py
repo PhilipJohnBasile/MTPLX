@@ -34,7 +34,27 @@ def _run(args: list[str], cwd: Path | None = None) -> str:
     return f"ERROR: {output}"
 
 
+def _inside_git_worktree(root: Path) -> bool:
+    """True when ``root`` or a parent carries a ``.git`` entry.
+
+    Checked before any ``git`` subprocess: on a Mac without the Xcode Command
+    Line Tools ``/usr/bin/git`` is Apple's install shim, which prints a
+    developer-tools notice and opens the CLT install dialog. ``mtplx tune``
+    and ``mtplx doctor`` collect this snapshot from an arbitrary user cwd
+    (the app runs tune during onboarding), so git must only ever run where a
+    repository actually is.
+    """
+
+    try:
+        candidates = [root.resolve(), *root.resolve().parents]
+    except OSError:
+        return False
+    return any((candidate / ".git").exists() for candidate in candidates)
+
+
 def _git_snapshot(root: Path) -> tuple[str, str]:
+    if not _inside_git_worktree(root):
+        return "not a git worktree", "not a git worktree"
     code, inside = _run_checked(["git", "rev-parse", "--is-inside-work-tree"], cwd=root)
     if code != 0 or inside.strip().lower() != "true":
         return "not a git worktree", "not a git worktree"
