@@ -50,6 +50,11 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # A/Bs (2026-07-17 the sweep needed a site-packages patch because the
         # profile stomped the env). Same precedent as DONATION above.
         "MTPLX_COMPILED_VERIFY_MAX_CONTEXT",
+        # Compiled-verify mode switch: parity/parity2 exactness gates must be
+        # launchable against the turbo profile itself (Gate A on the exact
+        # config being shipped), not only on profiles that leave the env
+        # unset. Same operator-A/B precedent as DONATION/MAX_CONTEXT.
+        "MTPLX_COMPILED_VERIFY",
     }
 )
 
@@ -498,7 +503,16 @@ TURBO_PROFILE = RuntimeProfile(
             # 6-bit 9B stay eager) and contexts above the router fall back
             # per call.
             "MTPLX_COMPILED_VERIFY": "1",
-            "MTPLX_COMPILED_VERIFY_MAX_CONTEXT": "12288",
+            # 12288 -> 32768 (2026-08-14 dropday verify-wall calibration):
+            # the 12288 fence predated donation A2.1 removing the full-attn
+            # KV copy tax it guarded against. Gated ABBA on Qwen3.8 Bare:
+            # compiled-at-32k beats the eager fallback at both 20k and 30k
+            # rungs in every paired epoch (clean window +6.9% @20k), peak
+            # memory flat-to-lower (the eager path spikes higher at 30k),
+            # and parity2 shows identical comparator behavior to the ship
+            # config (warmup ulp-level GDN capture diffs on BOTH, i.e. a
+            # comparator artifact, not an extension regression).
+            "MTPLX_COMPILED_VERIFY_MAX_CONTEXT": "32768",
             # Packed-GQA verify attention (speed-war Lane A, 2026-07-05):
             # one KV stream per simdgroup with all q=2..4 verify rows in
             # registers + a single float4 shuffle butterfly. Isolated
