@@ -16,6 +16,7 @@ from mtplx.cli import build_parser, main
 from mtplx.commands import public
 from mtplx.profiles import (
     DEFAULT_FP16_HF_MODEL_ID,
+    DEFAULT_HF_MODEL_ID,
     DEFAULT_PUBLIC_MODEL_ID,
     LEGACY_OPTIMIZED_PUBLIC_MODEL_ID,
     QUALITY_HF_MODEL_ID,
@@ -32,6 +33,7 @@ from mtplx.profiles import (
     QWEN36_35B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_HF_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
 )
 from mtplx.version import DISPLAY_VERSION, __version__
 
@@ -53,8 +55,13 @@ def _pin_big_apple_silicon(monkeypatch):
         },
     )
     # Keep parser/product-default tests independent of whichever local
-    # release-candidate artifacts happen to be installed on the host.
+    # release-candidate artifacts happen to be installed on the host: the
+    # default resolvers prefer a complete local build over the Hub id.
     monkeypatch.setenv("MTPLX_QWEN38_BARE_SPEED_MODEL", "off")
+    monkeypatch.setenv("MTPLX_QWEN38_OPTIMIZED_SPEED_MODEL", "off")
+    monkeypatch.setattr(
+        "mtplx.default_models._QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES", ()
+    )
 
 
 def test_version_metadata_matches_package_metadata():
@@ -668,9 +675,11 @@ def test_start_auto_default_can_route_to_fp16(monkeypatch, tmp_path, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["model"] == DEFAULT_FP16_HF_MODEL_ID
+    assert payload["model"] == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
     assert payload["default_model_selection"]["variant"] == "fp16"
-    assert payload["default_model_selection"]["precision"] == "FP16"
+    assert payload["default_model_selection"]["precision"].startswith(
+        "FP16 build for M1 and M2 Macs"
+    )
 
 
 def test_start_default_openwebui_dry_run_uses_resolved_model(
@@ -683,10 +692,8 @@ def test_start_default_openwebui_dry_run_uses_resolved_model(
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert "Qwen3.6-27B-MTPLX-Optimized-Speed" in payload["model"]
-    assert payload["openwebui"]["model_id"].startswith(
-        "mtplx-qwen36-27b-optimized-speed"
-    )
+    assert payload["model"] == DEFAULT_HF_MODEL_ID
+    assert payload["openwebui"]["model_id"] == DEFAULT_PUBLIC_MODEL_ID
     assert payload["openwebui"]["model_id"] != "none"
     assert f"--model {payload['model']}" in payload["openwebui"]["server_command"]
     assert "--model None" not in payload["openwebui"]["server_command"]
@@ -2371,7 +2378,10 @@ def test_serve_model_id_quality_without_model_loads_quality(tmp_path, capsys):
     assert "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed" not in captured
 
 
-def test_quickstart_default_missing_cache_is_not_legacy_models_path(tmp_path, capsys):
+def test_quickstart_default_missing_cache_is_not_legacy_models_path(
+    monkeypatch, tmp_path, capsys
+):
+    _pin_big_apple_silicon(monkeypatch)
     code = main(
         [
             "quickstart",
@@ -2387,7 +2397,8 @@ def test_quickstart_default_missing_cache_is_not_legacy_models_path(tmp_path, ca
 
     captured = capsys.readouterr().out
     assert code == 1
-    assert "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed" in captured
+    assert DEFAULT_HF_MODEL_ID in captured
+    assert "models/Qwen3.8-27B-MTPLX-Optimized-Speed" not in captured
     assert "models/Qwen3.6-27B-MTPLX-Optimized-Speed" not in captured
     assert "error: model cannot run with MTPLX" not in captured
     assert "tier: no-MTP" not in captured
@@ -2399,7 +2410,7 @@ def test_tune_default_dry_run_is_not_legacy_models_path(monkeypatch, tmp_path, c
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["model"].endswith("Qwen3.6-27B-MTPLX-Optimized-Speed-V2")
+    assert payload["model"] == DEFAULT_HF_MODEL_ID
     first_command = payload["candidates"][0]["command"]
     assert "--model" in first_command
     assert first_command[first_command.index("--model") + 1] == payload["model"]
@@ -5230,11 +5241,11 @@ def test_product_helper_commands_parse():
     assert start_openwebui.strict_fast_path is False
     assert start_openwebui_strict.strict_fast_path is True
     assert quickstart.command == "quickstart"
-    assert quickstart.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert quickstart.model == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     assert quickstart.port == 18012
     assert quickstart.profile == "sustained"
     assert quickstart_alias.command == "quick-start"
-    assert quickstart_alias.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert quickstart_alias.model == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     assert quickstart_alias.port == 18013
     assert quickstart_alias.profile == "sustained"
     assert quickstart_dry_run.command == "quickstart"
@@ -5244,7 +5255,7 @@ def test_product_helper_commands_parse():
     assert setup.command == "setup"
     assert setup.dry_run is True
     assert pull_default.command == "pull"
-    assert pull_default.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert pull_default.model == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     assert ask.command == "ask"
     assert ask.prompt_arg == "hello"
     assert ask.quiet is True
@@ -5253,7 +5264,7 @@ def test_product_helper_commands_parse():
     assert serve_start.port == 18012
     assert serve_start.stats_footer is True
     assert tune.command == "tune"
-    assert tune.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert tune.model == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     assert tune.depths is None
     assert status.command == "status"
     assert status.deep is True
@@ -5275,8 +5286,8 @@ def test_product_helper_commands_parse():
     assert nightly.bench_action == "nightly"
     assert suite.bench_action == "suite"
     assert bench_tune.bench_action == "tune"
-    assert bench_tune.model == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
-    assert bench_tune.champion == "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    assert bench_tune.model == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
+    assert bench_tune.champion == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     assert nightly.output == "out.json"
     assert suite.output == "suite.json"
     assert nightly_json.json is True

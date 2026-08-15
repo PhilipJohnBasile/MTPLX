@@ -4,6 +4,89 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-08-15
+
+Qwen3.8-27B shipped on 2026-08-14; this release serves it the same day, with
+three tuned MTPLX artifacts, FP16 siblings for M1 and M2, and the compiled
+verify path extended to 32k. The GitHub release notes carry the full narrative
+and every measurement.
+
+### Added
+
+- **Qwen3.8-27B, first-class.** A new `qwen3_8` model family carries the
+  official inference contract end to end: sampling at temperature 1.0 /
+  top-p 0.95 / top-k 20, reasoning-effort levels with `xhigh` as the model's
+  own default, preserved thinking on by default (reasoning tokens stay in
+  context and flow through MTP drafting like any others). Coding-agent
+  surfaces default to `medium`, the measured best end-to-end on real agent
+  turns.
+- **Three artifacts with their calibration stamped in.** Bare Speed (16.0 GB,
+  flat 4-bit: quickest burst chat speeds, lower quality and slower on long
+  coding tasks), Optimized Speed (20.4 GB, 4-bit dynamic quant: great coding
+  speeds and good quality, the recommended pick) and Optimized Quality
+  (29.4 GB, 8-bit dynamic quant: good coding speeds and perfect quality).
+  Each artifact states its recommended draft sampler, tuned MTP depth and
+  measured peak memory in its runtime metadata, and the runtime resolves that
+  metadata ahead of profile fallbacks.
+- **FP16 builds for M1 and M2 Macs.** Every 3.8 artifact ships an FP16
+  precision sibling (`…-FP16` on the Hub); the M1/M2 tier of the CLI and the
+  app routes to it automatically, with the same three picks, order and
+  descriptions. The siblings are the identical model: every quantized pack is
+  byte-for-byte the parent's and every 16-bit tensor is the bf16 value cast
+  to fp16 (99.992% exact; the rest are sub-7.6e-6 magnitudes rounded on the
+  fp16 subnormal grid, none overflow). All three launch turbo like their
+  parents.
+- **`mtplx pull` mirror hint (#259).** A network-shaped download failure with
+  no `HF_ENDPOINT` configured now names the mirror knob (and the app's
+  Settings → Advanced → HF download mirror). Troubleshooting docs cover both.
+
+### Changed
+
+- **Default model.** Fresh installs on the modern hardware tier with ≥ 32 GiB
+  now default to Qwen3.8 Optimized Speed; M1/M2 get its FP16 sibling;
+  under 32 GiB still routes to the 9B. `mtplx quickstart`, `mtplx start` and
+  the app's first-run picker offer the whole 3.8 line-up. Qwen3.6 Optimized
+  Speed V2 keeps its turbo standing.
+- **Compiled verify to 32k.** The compiled verify graph was fenced at 12,288
+  tokens of context since July; the KV copy tax that justified the fence is
+  gone, so turbo now compiles verify to 32,768 tokens (interleaved A/B on
+  Qwen3.8-27B Bare: +6.9% at 20k context, flat-to-lower peak memory).
+  `MTPLX_COMPILED_VERIFY` is now an operator-respected override.
+- **Agent surfaces uncapped and effort-aware.** OpenCode and Pi integrations
+  no longer send a default output cap; Pi sessions are cache-addressable; the
+  session bank's background re-render uses the request's own reasoning
+  effort in both the postcommit path and the idle scheduler lane.
+- **App.** Qwen3.8 launch family (turbo default, official sampler preset,
+  reasoning-effort toggle, depth tune range to D6). The draft sampler now
+  comes from the artifact metadata on both surfaces, so the app and the CLI
+  launch every 3.8 artifact identically.
+- **Thermal honesty.** Forge max-fan verification fails closed; a retiring
+  daemon can no longer undo the active max-fan lease of a daemon still
+  serving.
+
+### Fixed
+
+- **SSD session cache no longer walks its whole store on every write or every
+  `/health` poll.** On a long-lived bank (816,220 files, 89.9 GB) each walk
+  took 41.7 s; the cap check forced one per write and the app's health
+  poller kept another running back to back — most of a CPU core, forever,
+  under live decode. Reconciliation is now maintenance: only when the store
+  changed, at most 5% of the time, off the writer lock, yielding to live
+  traffic. Measured: idle CPU with a health poller 35% → 0.2%, per-write cap
+  gate 71–159 s → 3–6 s.
+- **macOS 27 crash in the inference settings overlay (#256, #257).** SwiftUI 8
+  traps on a slider whose range has no distinct values; the depth slider was
+  built with `1...1` for models without draft control, and the context-window
+  slider could hit `4096...4096`. Both are now built only when there is
+  something to slide. Reported and fixed by @joshlacal.
+- First-live-contact serve fixes for 3.8: xhigh boot no longer trips strict
+  warmup, truncated-think turns route correctly, the request-log env toggle
+  is honored on the family path.
+- Depth-default resolution honors artifact metadata across profile
+  mismatches; the degrade pin and the no-metadata legacy path both survive.
+- The public depth ceiling is decided by the artifact reference, not the
+  served-name alias.
+
 ## [2.6.0] - 2026-08-11
 
 ### Added
