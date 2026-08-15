@@ -3112,6 +3112,24 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(command.environment["MTPLX_TOOL_PROMPT_MODE"], "hybrid")
     }
 
+    func testCommandBuilderKeepsPagedKVQuantizationForQwen38() throws {
+        // 2.7.0 review: the KV-quant gate listed only qwen3_5/qwen3_6, so a
+        // Qwen 3.8 launch silently exported nothing while Settings showed q8.
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
+                profile: "turbo",
+                pagedKVQuantization: "q8"
+            ),
+            target: .openCode
+        )
+
+        XCTAssertEqual(command.environment["MTPLX_VLLM_METAL_PAGED_KV_QUANT"], "q8")
+    }
+
     func testOfficialModelCatalogIncludesOptimizedQuality() throws {
         let quality = try XCTUnwrap(
             MTPLXModelOption.option(matching: "mtplx-qwen36-27b-optimized-quality")

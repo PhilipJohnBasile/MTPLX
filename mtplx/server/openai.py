@@ -83,6 +83,7 @@ from mtplx.mtp_batch_numerics import (
 )
 from mtplx.backends.descriptors import (
     BackendDescriptor,
+    ReasoningCodec,
     assistant_target_distribution_choices,
     descriptor_for_backend_id,
     descriptor_for_model,
@@ -13287,9 +13288,9 @@ def _coerce_setting(name: str, value: Any) -> Any:
         return text
     if name == "reasoning_effort":
         text = str(value).strip().lower()
-        if text not in {"auto", "low", "medium", "high"}:
+        if text not in {"auto", "low", "medium", "high", "xhigh"}:
             raise ValueError(
-                "reasoning_effort must be 'auto', 'low', 'medium', or 'high'"
+                "reasoning_effort must be 'auto', 'low', 'medium', 'high', or 'xhigh'"
             )
         return text
     return value

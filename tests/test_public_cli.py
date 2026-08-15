@@ -6246,6 +6246,31 @@ def test_config_set_show_supports_app_era_runtime_keys(tmp_path, capsys):
     assert payload["paged_kv_quantization"] == "q8"
 
 
+def test_config_set_accepts_qwen38_xhigh_reasoning_effort(tmp_path, capsys):
+    config_path = tmp_path / "config.toml"
+
+    code = main(
+        [
+            "config",
+            "set",
+            "reasoning_effort",
+            "xhigh",
+            "--config",
+            str(config_path),
+        ]
+    )
+    assert code == 0
+    capsys.readouterr()
+
+    code = main(["config", "show", "--config", str(config_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["reasoning_effort"] == "xhigh"
+
+    with pytest.raises(SystemExit, match="reasoning_effort must be"):
+        main(["config", "set", "reasoning_effort", "ultra", "--config", str(config_path)])
+
+
 def test_public_cli_accepts_mtp_batch_scheduler_mode(tmp_path, capsys):
     serve = build_parser().parse_args(["serve", "--scheduler-mode", "mtp_batch"])
     assert serve.scheduler_mode == "mtp_batch"

@@ -585,7 +585,7 @@ struct InferenceParamsOverlay: View {
     }
     private var fallbackKVQuantPolicy: KVQuantPolicy {
         switch selectedModelFamily {
-        case "qwen3_5", "qwen3_6":
+        case "qwen3_5", "qwen3_6", "qwen3_8":
             return KVQuantPolicy(
                 supported: true,
                 modes: ["off", "q8", "q4"],

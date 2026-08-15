@@ -441,7 +441,7 @@ def build_diagnostic_checks(
             },
             "default model available in the HF cache or as the verified local startup model",
             model_cache_fix,
-            "https://huggingface.co/Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            f"https://huggingface.co/{DEFAULT_HF_MODEL_ID}",
             f"mtplx pull {DEFAULT_HF_MODEL_ID}",
         )
     )
@@ -452,9 +452,9 @@ def build_diagnostic_checks(
             "fail" if stale else "pass",
             "error",
             DEFAULT_HF_MODEL_ID,
-            "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "a published Youssofal/... repo (not a local mtplx/ or models/ path)",
             "Pull the default model, or pass --model to serve a different one.",
-            "https://huggingface.co/Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            f"https://huggingface.co/{DEFAULT_HF_MODEL_ID}",
             f"mtplx pull {DEFAULT_HF_MODEL_ID}",
         )
     )
@@ -481,7 +481,7 @@ def build_diagnostic_checks(
                 hf_observed,
                 "default Hugging Face repo is reachable from this machine",
                 "Check network/HF auth or verify the model repo is public.",
-                "https://huggingface.co/Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+                f"https://huggingface.co/{DEFAULT_HF_MODEL_ID}",
                 f"mtplx pull {DEFAULT_HF_MODEL_ID}",
             )
         )

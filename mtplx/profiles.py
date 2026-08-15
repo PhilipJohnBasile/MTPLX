@@ -553,8 +553,9 @@ TURBO_PROFILE = RuntimeProfile(
         "4-bit and 8-bit affine models; 6-bit models silently run the "
         "stock path.",
         "Compiled verify engages on 4-bit and 8-bit affine trunks at "
-        "contexts <= 12288 (parity2-validated on both); other "
-        "quantizations/contexts run the eager verify path unchanged.",
+        "contexts <= 32768 (parity2-validated on both; fence raised from "
+        "12288 in 2.7.0); other quantizations/contexts run the eager verify "
+        "path unchanged.",
         "Measured 2026-07-02/03 on M5 Max chat lane (app-launch flags, "
         "thinking on): 27B Optimized-Speed 44.7 -> 58-60 tok/s (vk_k "
         "within ~2% of the retired dflash-port kernel both directions); "

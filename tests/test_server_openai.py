@@ -1859,6 +1859,26 @@ def test_mtplx_settings_endpoint_controls_server_reasoning():
     assert effort.json()["reasoning_effort"] == "high"
     assert state.args.reasoning_effort == "high"
 
+    # Qwen 3.8's own top level must round-trip through the live surface too:
+    # the app posts it from the reasoning-effort picker (2.7.0 review found
+    # the coercer still stopped at "high", 400ing the flagship toggle).
+    xhigh = client.post(
+        "/v1/mtplx/settings",
+        json={"reasoning_effort": "xhigh"},
+        headers={"Authorization": "Bearer mtplx-local"},
+    )
+    assert xhigh.status_code == 200
+    assert xhigh.json()["reasoning_effort"] == "xhigh"
+    assert state.args.reasoning_effort == "xhigh"
+
+    bogus = client.post(
+        "/v1/mtplx/settings",
+        json={"reasoning_effort": "ultra"},
+        headers={"Authorization": "Bearer mtplx-local"},
+    )
+    assert bogus.status_code == 400
+    assert state.args.reasoning_effort == "xhigh"
+
 
 def test_mtplx_settings_endpoint_ignores_read_only_descriptor_echoes():
     state = _fake_state(api_key="mtplx-local")

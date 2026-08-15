@@ -14347,8 +14347,8 @@ def cmd_config_public(args: Any) -> int:
         )
     if key == "reasoning" and value not in {"auto", "on", "off"}:
         raise SystemExit("reasoning must be auto, on, or off")
-    if key == "reasoning_effort" and value not in {"auto", "low", "medium", "high"}:
-        raise SystemExit("reasoning_effort must be auto, low, medium, or high")
+    if key == "reasoning_effort" and value not in {"auto", "low", "medium", "high", "xhigh"}:
+        raise SystemExit("reasoning_effort must be auto, low, medium, high, or xhigh")
     if key in {
         "max_active_requests",
         "decode_batch_max",

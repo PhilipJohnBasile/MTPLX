@@ -1258,7 +1258,7 @@ struct SettingsTab: View {
 
     private func fallbackKVQuantPolicy(for family: String) -> KVQuantPolicy {
         switch family {
-        case "qwen3_5", "qwen3_6":
+        case "qwen3_5", "qwen3_6", "qwen3_8":
             return KVQuantPolicy(
                 supported: true,
                 modes: ["off", "q8", "q4"],
