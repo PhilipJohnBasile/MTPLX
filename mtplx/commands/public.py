@@ -5223,6 +5223,41 @@ def _tune_error(
     return 1
 
 
+_PULL_NETWORK_FAILURE_MARKERS = (
+    "timed out",
+    "timeout",
+    "connection",
+    "network",
+    "name resolution",
+    "unreachable",
+    "max retries",
+    "cannot find the requested files in the local cache",
+)
+
+
+def _pull_failure_hint(exc: BaseException) -> str | None:
+    """Mirror hint for network-shaped pull failures (#259, #96).
+
+    ``mtplx pull`` goes through ``huggingface_hub``, which honors
+    ``HF_ENDPOINT`` natively; the app exposes the same knob as Settings ->
+    Advanced -> HF download mirror. Users on networks where huggingface.co
+    is blocked only ever see the raw connection error, so name the knob at
+    the point of failure. Silent when an endpoint is already configured
+    (the mirror itself is what failed) or when the failure is not
+    network-shaped (a placeholder repo with missing shards, a bad repo id).
+    """
+    if os.environ.get("HF_ENDPOINT", "").strip():
+        return None
+    text = str(exc).lower()
+    if not any(marker in text for marker in _PULL_NETWORK_FAILURE_MARKERS):
+        return None
+    return (
+        "Hugging Face was unreachable. If huggingface.co is blocked on your "
+        "network, set HF_ENDPOINT=https://hf-mirror.com and rerun "
+        "(in the app: Settings -> Advanced -> HF download mirror)."
+    )
+
+
 def cmd_pull_public(args: Any) -> int:
     from mtplx.hf_loader import pull_model, repo_id_from_model_ref
 
@@ -5265,6 +5300,7 @@ def cmd_pull_public(args: Any) -> int:
         return 130
     except Exception as exc:
         finalize()
+        hint = _pull_failure_hint(exc)
         if progress_json:
             emit_progress_json(
                 {
@@ -5276,11 +5312,16 @@ def cmd_pull_public(args: Any) -> int:
                 }
             )
         elif json_mode:
-            _print({"error": "pull failed", "model": args.model, "detail": str(exc)})
+            payload = {"error": "pull failed", "model": args.model, "detail": str(exc)}
+            if hint:
+                payload["hint"] = hint
+            _print(payload)
         else:
             print("error: pull failed")
             print(f"model: {args.model}")
             print(f"detail: {exc}")
+            if hint:
+                print(f"hint: {hint}")
         return 1
     finalize()
     if progress_json:
