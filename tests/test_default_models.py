@@ -4,9 +4,14 @@ import json
 
 import pytest
 
+from mtplx import default_models as default_models_module
 from mtplx.default_models import (
     DEFAULT_MODEL_VARIANT_ENV,
+    QWEN38_FP16_SUFFIX,
+    QWEN38_OPTIMIZED_SPEED_DESCRIPTION,
+    QWEN38_OPTIMIZED_SPEED_MODEL_ENV,
     OPTIMIZED_SPEED_DESCRIPTION,
+    OPTIMIZED_SPEED_V2_DESCRIPTION,
     QUALITY_MODEL_ENV,
     QWEN38_BARE_SPEED_MODEL_ENV,
     SPEED_MODEL_ENV,
@@ -15,6 +20,7 @@ from mtplx.default_models import (
     optimized_speed_model_ref,
     public_model_id_for_ref,
     qwen38_bare_speed_model_ref,
+    qwen38_optimized_speed_model_ref,
     select_default_model,
 )
 from mtplx import hardware as hardware_module
@@ -35,7 +41,22 @@ from mtplx.profiles import (
     QWEN36_35B_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
     QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
     QWEN38_BARE_SPEED_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+    OPTIMIZED_SPEED_V2_HF_MODEL_ID,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_installed_qwen38(monkeypatch):
+    """Isolate default-model policy from whatever is installed on this Mac.
+
+    A complete local Qwen 3.8 build (bf16 or FP16) is legitimately preferred
+    over the Hub repo ("installed locally"); these tests pin the public
+    policy, so the local candidates are switched off unless a test opts in.
+    """
+    monkeypatch.setenv(QWEN38_OPTIMIZED_SPEED_MODEL_ENV, "off")
+    monkeypatch.setattr(default_models_module, "_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES", ())
 
 
 def _make_complete_model(path):
@@ -99,8 +120,11 @@ def test_auto_default_uses_fp16_for_m1_m2(monkeypatch, generation):
     )
 
     assert selection.variant == "fp16"
-    assert selection.precision == "FP16"
-    assert selection.model == DEFAULT_FP16_HF_MODEL_ID
+    assert selection.precision.startswith(QWEN38_FP16_SUFFIX)
+    assert QWEN38_OPTIMIZED_SPEED_DESCRIPTION in selection.precision
+    assert selection.model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+    assert selection.hf_model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+    assert selection.display_name == "Qwen 3.8 27B Optimized Speed FP16"
     assert "M1/M2" in selection.reason
     assert selection.auto_selected is True
 
@@ -118,8 +142,8 @@ def test_auto_default_uses_q4_speed_for_newer_unknown_and_intel(monkeypatch, gen
     )
 
     assert selection.variant == "speed"
-    assert selection.precision == OPTIMIZED_SPEED_DESCRIPTION
-    assert selection.model == DEFAULT_HF_MODEL_ID
+    assert selection.precision == QWEN38_OPTIMIZED_SPEED_DESCRIPTION
+    assert selection.model == DEFAULT_HF_MODEL_ID == QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
     assert "BF16" not in selection.label
     assert selection.auto_selected is True
 
@@ -135,7 +159,7 @@ def test_default_model_variant_env_override_forces_fp16(monkeypatch):
     )
 
     assert selection.variant == "fp16"
-    assert selection.model == DEFAULT_FP16_HF_MODEL_ID
+    assert selection.model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
     assert selection.auto_selected is False
 
 
@@ -168,7 +192,7 @@ def test_invalid_default_model_variant_env_falls_back_to_auto(monkeypatch):
     )
 
     assert selection.variant == "fp16"
-    assert selection.model == DEFAULT_FP16_HF_MODEL_ID
+    assert selection.model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
     assert "ignored invalid" in selection.reason
 
 
@@ -202,11 +226,14 @@ def test_optimized_speed_prefers_complete_local_env_model(tmp_path, monkeypatch)
         }
     )
 
+    # An explicit legacy MTPLX_OPTIMIZED_SPEED_MODEL points at a 3.6-era
+    # artifact and keeps the 3.6 V2 lane it was written for; it must never
+    # be relabeled as the Qwen 3.8 default.
     assert optimized_speed_model_ref() == str(local_speed)
     assert selection.model == str(local_speed)
-    assert selection.hf_model == DEFAULT_HF_MODEL_ID
+    assert selection.hf_model == OPTIMIZED_SPEED_V2_HF_MODEL_ID
     assert selection.variant == "speed"
-    assert selection.precision == OPTIMIZED_SPEED_DESCRIPTION
+    assert selection.precision == OPTIMIZED_SPEED_V2_DESCRIPTION
     assert "installed locally" in selection.reason
     assert "BF16" not in selection.label
 
@@ -214,8 +241,8 @@ def test_optimized_speed_prefers_complete_local_env_model(tmp_path, monkeypatch)
 def test_auto_default_prefers_complete_local_qwen38_without_changing_public_default(
     tmp_path, monkeypatch
 ):
-    local_qwen38 = _make_complete_model(tmp_path / "Qwen3.8-27B-MTPLX-Bare-Speed")
-    monkeypatch.setenv(QWEN38_BARE_SPEED_MODEL_ENV, str(local_qwen38))
+    local_qwen38 = _make_complete_model(tmp_path / "Qwen3.8-27B-MTPLX-Optimized-Speed")
+    monkeypatch.setenv(QWEN38_OPTIMIZED_SPEED_MODEL_ENV, str(local_qwen38))
     monkeypatch.delenv(SPEED_MODEL_ENV, raising=False)
 
     selection = select_default_model(
@@ -226,12 +253,47 @@ def test_auto_default_prefers_complete_local_qwen38_without_changing_public_defa
         }
     )
 
-    assert qwen38_bare_speed_model_ref() == str(local_qwen38)
+    assert qwen38_optimized_speed_model_ref() == str(local_qwen38)
     assert selection.model == str(local_qwen38)
-    assert selection.hf_model == QWEN38_BARE_SPEED_HF_MODEL_ID
+    assert selection.hf_model == QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID == DEFAULT_HF_MODEL_ID
     assert selection.variant == "speed"
-    assert "installed Qwen 3.8" in selection.reason
-    assert DEFAULT_HF_MODEL_ID != QWEN38_BARE_SPEED_HF_MODEL_ID
+    assert "installed locally" in selection.reason
+
+
+def test_auto_default_prefers_complete_local_qwen38_fp16_on_legacy_silicon(
+    tmp_path, monkeypatch
+):
+    local_fp16 = _make_complete_model(tmp_path / "Qwen3.8-27B-MTPLX-Optimized-Speed-FP16")
+    monkeypatch.setattr(
+        default_models_module,
+        "_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES",
+        (str(local_fp16),),
+    )
+
+    selection = select_default_model(
+        hardware={
+            "chip": "Apple M2 Ultra",
+            "apple_silicon_generation": "m2",
+            "memory_gib": 64.0,
+        }
+    )
+
+    assert selection.variant == "fp16"
+    assert selection.model == str(local_fp16)
+    assert selection.hf_model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+    assert "installed locally" in selection.reason
+
+
+def test_legacy_silicon_under_32_gib_routes_to_9b_fp16():
+    selection = select_default_model(
+        hardware={
+            "chip": "Apple M1 Pro",
+            "apple_silicon_generation": "m1",
+            "memory_gib": 16.0,
+        }
+    )
+    assert selection.variant == "fp16"
+    assert selection.model == "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16"
 
 
 def test_optimized_quality_prefers_complete_local_env_model(tmp_path, monkeypatch):

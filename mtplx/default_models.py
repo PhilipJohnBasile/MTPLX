@@ -44,12 +44,19 @@ from mtplx.profiles import (
     QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID,
     QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
     QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID,
+    QWEN38_BARE_SPEED_FP16_HF_MODEL_ID,
+    QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID,
 )
 
 
 DEFAULT_MODEL_VARIANT_ENV = "MTPLX_DEFAULT_MODEL_VARIANT"
 SPEED_MODEL_ENV = "MTPLX_OPTIMIZED_SPEED_MODEL"
 QWEN38_BARE_SPEED_MODEL_ENV = "MTPLX_QWEN38_BARE_SPEED_MODEL"
+QWEN38_OPTIMIZED_SPEED_MODEL_ENV = "MTPLX_QWEN38_OPTIMIZED_SPEED_MODEL"
 QUALITY_MODEL_ENV = "MTPLX_OPTIMIZED_QUALITY_MODEL"
 DEFAULT_MODEL_VARIANTS = frozenset({"auto", "speed", "q4", "bf16", "fp16"})
 _LEGACY_APPLE_FP16_GENERATIONS = frozenset({"m1", "m2"})
@@ -60,9 +67,13 @@ _NEWER_APPLE_SPEED_GENERATIONS = frozenset({"m3", "m4", "m5"})
 SMALL_DEFAULT_MEMORY_FLOOR_GIB = 32.0
 # V2 peaks at about 21.5 GiB, leaving practical headroom on a 32 GiB Mac.
 OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB = 32.0
-# Qwen 3.8 Bare Speed interim peak is the 3.6-27B Speed sibling measurement
-# (17.0 GiB); the same 32 GiB floor as V2 is therefore conservative.
+# Qwen 3.8 Bare Speed measured peak 17.0 GiB (installed app, 2026-08-14); the
+# same 32 GiB floor as V2 is therefore conservative.
 QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB = 32.0
+# Qwen 3.8 Optimized Speed measured peak 23.6 GiB (installed app, 2026-08-14),
+# two GiB above V2's 21.5 on the same instrument; it keeps V2's 32 GiB floor
+# (the app additionally hides any pick whose peak exceeds unified memory).
+QWEN38_OPTIMIZED_SPEED_MEMORY_FLOOR_GIB = 32.0
 QWEN35_9B_SPEED_DESCRIPTION = "Compact 6-bit model for smaller Macs"
 OPTIMIZED_SPEED_V1_LABEL = "Qwen 3.6 27B Optimized Speed"
 OPTIMIZED_SPEED_V1_DESCRIPTION = "Smaller 4-bit model that is a little faster for short chats"
@@ -72,20 +83,52 @@ OPTIMIZED_SPEED_V2_DESCRIPTION = (
     "and hand-tuned sensitive parts kept at up to 16-bit. Faster on long "
     "agent tasks, slightly larger, and a little slower for short chats"
 )
+# Qwen 3.8 trio wording (founder, 2026-08-15): plain human descriptions.
 QWEN38_BARE_SPEED_LABEL = "Qwen 3.8 27B Bare Speed"
 QWEN38_BARE_SPEED_DESCRIPTION = (
-    "Day-one flat 4-bit build of Qwen 3.8 with the multi-step MTP head "
-    "and the official thinking-mode sampler"
+    "Quickest burst chat speeds. Lower quality and slower on long coding tasks"
 )
+QWEN38_OPTIMIZED_SPEED_LABEL = "Qwen 3.8 27B Optimized Speed"
+QWEN38_OPTIMIZED_SPEED_DESCRIPTION = (
+    "4-bit dynamic quant. Great coding speeds and good quality. Recommended"
+)
+QWEN38_OPTIMIZED_QUALITY_LABEL = "Qwen 3.8 27B Optimized Quality"
+QWEN38_OPTIMIZED_QUALITY_DESCRIPTION = (
+    "8-bit dynamic quant. Good coding speeds and perfect quality"
+)
+QWEN38_BARE_SPEED_FP16_LABEL = "Qwen 3.8 27B Bare Speed FP16"
+QWEN38_OPTIMIZED_SPEED_FP16_LABEL = "Qwen 3.8 27B Optimized Speed FP16"
+QWEN38_OPTIMIZED_QUALITY_FP16_LABEL = "Qwen 3.8 27B Optimized Quality FP16"
+QWEN38_FP16_SUFFIX = "FP16 build for M1 and M2 Macs"
 # Backward-compatible names used by integrations that mean the public default.
-OPTIMIZED_SPEED_LABEL = OPTIMIZED_SPEED_V2_LABEL
-OPTIMIZED_SPEED_DESCRIPTION = OPTIMIZED_SPEED_V2_DESCRIPTION
+OPTIMIZED_SPEED_LABEL = QWEN38_OPTIMIZED_SPEED_LABEL
+OPTIMIZED_SPEED_DESCRIPTION = QWEN38_OPTIMIZED_SPEED_DESCRIPTION
 OPTIMIZED_QUALITY_LABEL = "Qwen3.6 27B MTPLX Optimized Quality"
 OPTIMIZED_QUALITY_DESCRIPTION = "Flat8 target with INT8 MTP sidecar"
 _QWEN38_BARE_SPEED_LOCAL_CANDIDATES = (
     "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
     # Forge-local drop-day build (forge writes the branded name directly).
     "~/.mtplx/models/Qwen3.8-27B-MTPLX-Bare-Speed",
+)
+_QWEN38_OPTIMIZED_SPEED_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+)
+_QWEN38_OPTIMIZED_QUALITY_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality",
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Quality",
+)
+_QWEN38_BARE_SPEED_FP16_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
+)
+_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
+)
+_QWEN38_OPTIMIZED_QUALITY_FP16_LOCAL_CANDIDATES = (
+    "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
+    "~/.mtplx/models/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
 )
 _OPTIMIZED_SPEED_V2_LOCAL_CANDIDATES = (
     "~/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
@@ -113,8 +156,12 @@ _OPTIMIZED_35B_SPEED_LOCAL_CANDIDATES = (
 )
 _VERIFIED_DEFAULT_LOCAL_NAMES = frozenset(
     {
+        "Qwen3.8-27B-MTPLX-Optimized-Speed",
+        "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
         "Qwen3.8-27B-MTPLX-Bare-Speed",
         "Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
+        "Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
+        "Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
         "Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
         "Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
         "Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
@@ -142,13 +189,17 @@ class DefaultModelSelection:
             if self.variant == "fp16":
                 return "Qwen3.5 9B Optimized Speed FP16"
             return "Qwen3.5 9B Optimized Speed"
+        if self.hf_model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID:
+            return QWEN38_OPTIMIZED_SPEED_FP16_LABEL
         if self.variant == "fp16":
             return "Qwen3.6 27B Optimized Speed FP16"
         if self.hf_model == OPTIMIZED_SPEED_V1_HF_MODEL_ID:
             return OPTIMIZED_SPEED_V1_LABEL
         if self.hf_model == OPTIMIZED_SPEED_V2_HF_MODEL_ID:
             return OPTIMIZED_SPEED_V2_LABEL
-        return QWEN38_BARE_SPEED_LABEL
+        if self.hf_model == QWEN38_BARE_SPEED_HF_MODEL_ID:
+            return QWEN38_BARE_SPEED_LABEL
+        return QWEN38_OPTIMIZED_SPEED_LABEL
 
     @property
     def label(self) -> str:
@@ -242,6 +293,78 @@ def qwen38_bare_speed_model_ref() -> str:
         local_candidates=_QWEN38_BARE_SPEED_LOCAL_CANDIDATES,
         env_name=QWEN38_BARE_SPEED_MODEL_ENV,
     )
+
+
+def _legacy_speed_override_active() -> bool:
+    """True when MTPLX_OPTIMIZED_SPEED_MODEL names a real 3.6-era artifact.
+
+    Disabled spellings ("off", "0", ...) only switch local resolution off;
+    they do not pin the 3.6 lane.
+    """
+
+    value = str(os.environ.get(SPEED_MODEL_ENV) or "").strip()
+    return bool(value) and not _env_ref_disabled(value)
+
+
+def _qwen38_speed_env_pins_artifact() -> bool:
+    """True when MTPLX_QWEN38_OPTIMIZED_SPEED_MODEL names an artifact.
+
+    A disabled spelling only switches the local 3.8 lookup off (Hub repo);
+    it does not silence an explicit legacy 3.6 override.
+    """
+
+    value = str(os.environ.get(QWEN38_OPTIMIZED_SPEED_MODEL_ENV) or "").strip()
+    return bool(value) and not _env_ref_disabled(value)
+
+
+def _legacy_speed_override_owns_default() -> bool:
+    """An explicit 3.6-era speed override keeps its lane unless a Qwen 3.8
+    artifact is pinned explicitly (the more specific pin wins)."""
+
+    return _legacy_speed_override_active() and not _qwen38_speed_env_pins_artifact()
+
+
+def qwen38_optimized_speed_model_ref() -> str:
+    """Resolve the Qwen 3.8 Optimized Speed default (complete local build or Hub)."""
+
+    # Same override discipline as the Bare resolver: an explicit legacy
+    # MTPLX_OPTIMIZED_SPEED_MODEL points at a 3.6-era artifact and must never
+    # be relabeled as this Qwen3.8 artifact.
+    if _legacy_speed_override_owns_default():
+        return QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
+    return _optimized_speed_model_ref(
+        hf_model_id=QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+        local_candidates=_QWEN38_OPTIMIZED_SPEED_LOCAL_CANDIDATES,
+        env_name=QWEN38_OPTIMIZED_SPEED_MODEL_ENV,
+    )
+
+
+def qwen38_optimized_quality_model_ref() -> str:
+    """Resolve the Qwen 3.8 Optimized Quality pick (complete local build or Hub)."""
+
+    local = _complete_local_model_ref(_QWEN38_OPTIMIZED_QUALITY_LOCAL_CANDIDATES)
+    return local or QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID
+
+
+def qwen38_optimized_speed_fp16_model_ref() -> str:
+    """Resolve the Qwen 3.8 Optimized Speed FP16 sibling (M1/M2 default)."""
+
+    local = _complete_local_model_ref(_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES)
+    return local or QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+
+
+def qwen38_bare_speed_fp16_model_ref() -> str:
+    """Resolve the Qwen 3.8 Bare Speed FP16 sibling (M1/M2)."""
+
+    local = _complete_local_model_ref(_QWEN38_BARE_SPEED_FP16_LOCAL_CANDIDATES)
+    return local or QWEN38_BARE_SPEED_FP16_HF_MODEL_ID
+
+
+def qwen38_optimized_quality_fp16_model_ref() -> str:
+    """Resolve the Qwen 3.8 Optimized Quality FP16 sibling (M1/M2)."""
+
+    local = _complete_local_model_ref(_QWEN38_OPTIMIZED_QUALITY_FP16_LOCAL_CANDIDATES)
+    return local or QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID
 
 
 def optimized_speed_model_ref() -> str:
@@ -439,6 +562,24 @@ def _public_model_id_from_name(value: str) -> str | None:
         # First-party local research build of the released 35B speed
         # artifact (listed in _OPTIMIZED_35B_SPEED_LOCAL_CANDIDATES).
         return QWEN36_35B_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
+    if QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID in components:
+        return QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID
+    if QWEN38_BARE_SPEED_FP16_HF_MODEL_ID.lower() in components:
+        return QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-bare-speed-fp16" in components:
+        return QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID in components:
+        return QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID.lower() in components:
+        return QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-optimized-quality-fp16" in components:
+        return QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID in components:
+        return QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID
+    if QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID.lower() in components:
+        return QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID
+    if "qwen3.8-27b-mtplx-optimized-speed-fp16" in components:
+        return QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID
     if QWEN38_BARE_SPEED_PUBLIC_MODEL_ID in components:
         return QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
     if QWEN38_BARE_SPEED_HF_MODEL_ID.lower() in components:
@@ -562,9 +703,10 @@ def select_default_model(
     """Select the verified default model for this machine.
 
     Auto policy is intentionally simple and visible: M1/M2 -> FP16, under
-    32 GiB -> 9B, and modern Macs with at least 32 GiB -> the complete local
-    Qwen 3.8 release-day build when installed, otherwise published Qwen 3.6
-    Optimized Speed V2.
+    32 GiB -> 9B, and modern Macs with at least 32 GiB -> Qwen 3.8 Optimized
+    Speed (the complete local build when installed, otherwise the published
+    Hub repo). An explicit legacy MTPLX_OPTIMIZED_SPEED_MODEL override keeps
+    the 3.6 Optimized Speed V2 lane it was written for.
     """
 
     env_value = variant_override if variant_override is not None else os.environ.get(DEFAULT_MODEL_VARIANT_ENV)
@@ -605,14 +747,15 @@ def select_default_model(
     route_small = (
         memory_gib is not None and memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB
     )
-    qwen38_model = qwen38_bare_speed_model_ref()
+    qwen38_model = qwen38_optimized_speed_model_ref()
+    legacy_speed_override = _legacy_speed_override_owns_default()
     use_qwen38 = (
         variant == "speed"
         and generation not in _LEGACY_APPLE_FP16_GENERATIONS
-        and qwen38_model != QWEN38_BARE_SPEED_HF_MODEL_ID
+        and not legacy_speed_override
         and (
             memory_gib is None
-            or memory_gib >= QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB
+            or memory_gib >= QWEN38_OPTIMIZED_SPEED_MEMORY_FLOOR_GIB
         )
     )
     use_v2 = (
@@ -638,14 +781,23 @@ def select_default_model(
             hf_model = QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
             precision = QWEN35_9B_SPEED_DESCRIPTION
     elif variant == "fp16":
-        model = DEFAULT_FP16_HF_MODEL_ID
-        hf_model = DEFAULT_FP16_HF_MODEL_ID
-        precision = "FP16"
+        if legacy_speed_override:
+            # An explicit 3.6-era speed override keeps its FP16 sibling.
+            model = DEFAULT_FP16_HF_MODEL_ID
+            hf_model = DEFAULT_FP16_HF_MODEL_ID
+            precision = "FP16"
+        else:
+            model = qwen38_optimized_speed_fp16_model_ref()
+            hf_model = QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+            precision = f"{QWEN38_FP16_SUFFIX}. {QWEN38_OPTIMIZED_SPEED_DESCRIPTION}"
+            if model != hf_model:
+                reason = f"{reason}; installed locally"
     elif use_qwen38:
         model = qwen38_model
-        hf_model = QWEN38_BARE_SPEED_HF_MODEL_ID
-        precision = QWEN38_BARE_SPEED_DESCRIPTION
-        reason = f"{reason}; selected installed Qwen 3.8 release-day build"
+        hf_model = QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
+        precision = QWEN38_OPTIMIZED_SPEED_DESCRIPTION
+        if model != hf_model:
+            reason = f"{reason}; installed locally"
     elif use_v2:
         model = optimized_speed_model_ref()
         hf_model = OPTIMIZED_SPEED_V2_HF_MODEL_ID
@@ -679,18 +831,26 @@ def select_default_model(
 
 def verified_default_refs() -> set[str]:
     root = _repo_root()
-    local_qwen38 = qwen38_bare_speed_model_ref()
+    local_qwen38_os = qwen38_optimized_speed_model_ref()
+    local_qwen38_bare = qwen38_bare_speed_model_ref()
     local_speed = optimized_speed_model_ref()
     refs = {
         DEFAULT_HF_MODEL_ID,
         DEFAULT_FP16_HF_MODEL_ID,
         DEFAULT_MODEL_ID,
+        OPTIMIZED_SPEED_V2_HF_MODEL_ID,
         local_speed,
         str(DEFAULT_RUNTIME_MODEL_DIR),
         str((root / DEFAULT_RUNTIME_MODEL_DIR).resolve()),
     }
-    if local_qwen38 != QWEN38_BARE_SPEED_HF_MODEL_ID:
-        refs.add(local_qwen38)
+    if local_qwen38_os != QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID:
+        refs.add(local_qwen38_os)
+    if local_qwen38_bare != QWEN38_BARE_SPEED_HF_MODEL_ID:
+        refs.add(local_qwen38_bare)
+    refs.add(QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID)
+    local_qwen38_os_fp16 = qwen38_optimized_speed_fp16_model_ref()
+    if local_qwen38_os_fp16 != QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID:
+        refs.add(local_qwen38_os_fp16)
     return {ref for ref in refs if ref}
 
 

@@ -266,14 +266,18 @@ public struct OpenCodeIntegration: Sendable {
         // also contains "qwen"+"optimized-speed"/"optimized-quality" and
         // would otherwise be claimed by the 3.6 ids below.
         if lower.contains("qwen3.8") || lower.contains("qwen38") || lower.contains("qwen3-8") {
+            // The FP16 precision siblings are served under the parent id
+            // plus "-fp16" (mirrors default_models._public_model_id_from_name),
+            // so the OpenCode config names the id the server advertises.
+            let precision = lower.contains("-fp16") ? "-fp16" : ""
             if lower.contains("bare-speed") {
-                return "mtplx-qwen38-27b-bare-speed"
+                return "mtplx-qwen38-27b-bare-speed" + precision
             }
             if lower.contains("optimized-quality") {
-                return "mtplx-qwen38-27b-optimized-quality"
+                return "mtplx-qwen38-27b-optimized-quality" + precision
             }
             if lower.contains("optimized-speed") {
-                return "mtplx-qwen38-27b-optimized-speed"
+                return "mtplx-qwen38-27b-optimized-speed" + precision
             }
         }
         if lower.contains("qwen") && lower.contains("optimized-speed-v2") {

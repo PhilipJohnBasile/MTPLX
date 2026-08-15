@@ -1183,6 +1183,10 @@ final class MTPLXAppCoreTests: XCTestCase {
             "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
             "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
             "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+            // FP16 precision siblings (M1/M2 routing targets) share the family.
+            "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
+            "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
+            "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
         ] {
             let command = try builder.buildServeCommand(
                 configuration: MTPLXAppConfiguration(
@@ -1194,14 +1198,16 @@ final class MTPLXAppCoreTests: XCTestCase {
             // Qwen3.8 27B launches turbo (trunk geometry identical to the
             // 3.6 27B flagships; the vk/NAX packs carry over) with the model
             // card's official thinking sampler — 1.0/0.95/20, NOT the
-            // 3.6-era 0.6 coding triple. A strict max-fan alternating A/B
-            // also proved target-matched draft 1.0 faster and more accepting
-            // than 0.6, so both target and draft carry the native sampler.
+            // 3.6-era 0.6 coding triple. The draft sampler is left to the
+            // artifact's `recommended_draft_sampler` stamp (the CLI's zero-flag
+            // path), so app and CLI serve the same draft sampler per artifact.
             XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "1.0"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]), model)
-            XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "1.0"]), model)
+            XCTAssertFalse(command.arguments.contains("--draft-temperature"), model)
+            XCTAssertFalse(command.arguments.contains("--draft-top-p"), model)
+            XCTAssertFalse(command.arguments.contains("--draft-top-k"), model)
             // reasoning_effort / preserve_thinking stay unpinned: the
             // server's qwen3_8 family policy owns them (measured coding
             // default medium, preserve).
@@ -3235,7 +3241,9 @@ final class MTPLXAppCoreTests: XCTestCase {
     func testDefaultAppModelIsPortableHuggingFaceReference() throws {
         let model = MTPLXAppConfiguration.defaultLocalModelPath()
 
-        XCTAssertEqual(model, "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2")
+        // Qwen 3.8 Optimized Speed is the recommended pick and fresh-install
+        // default (2026-08-15 release); mirrors DEFAULT_HF_MODEL_ID.
+        XCTAssertEqual(model, "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed")
         XCTAssertFalse(model.contains("/Users/"))
         XCTAssertFalse(model.contains("Documents/MTPLX"))
     }
@@ -3429,7 +3437,11 @@ final class MTPLXAppCoreTests: XCTestCase {
             includeInstalledOverrides: false
         ).map(\.id)
 
+        // The Qwen 3.8 trio leads as its FP16 precision siblings (2026-08-15).
         XCTAssertEqual(ids, [
+            "qwen38-27b-optimized-speed-fp16",
+            "qwen38-27b-bare-speed-fp16",
+            "qwen38-27b-optimized-quality-fp16",
             "optimized-speed-fp16",
             "optimized-quality-fp16",
             "qwen36-35b-a3b-optimized-speed-fp16",
@@ -3438,6 +3450,52 @@ final class MTPLXAppCoreTests: XCTestCase {
             "qwen35-9b-optimized-speed-fp16",
         ])
         XCTAssertFalse(ids.contains("optimized-quality"))
+        XCTAssertFalse(ids.contains("qwen38-27b-optimized-speed"))
+    }
+
+    func testFreshLegacy32GiBCatalogLeadsWithQwen38FP16AndDropsQualityFP16() throws {
+        // A 32 GiB M1/M2 keeps Optimized Speed FP16 (25 GiB peak) and Bare
+        // Speed FP16 (20 GiB) but not Optimized Quality FP16 (33 GiB peak).
+        let m1 = DetectedHardware(
+            chipName: "Apple M1 Max",
+            appleSiliconGeneration: "m1",
+            unifiedMemoryBytes: 32 * 1_073_741_824
+        )
+
+        let ids = MTPLXModelOption.hardwareAwareOfficialCatalog(
+            hardware: m1,
+            includeInstalledOverrides: false
+        ).map(\.id)
+
+        XCTAssertEqual(Array(ids.prefix(2)), ["qwen38-27b-optimized-speed-fp16", "qwen38-27b-bare-speed-fp16"])
+        XCTAssertFalse(ids.contains("qwen38-27b-optimized-quality-fp16"))
+        XCTAssertFalse(ids.contains("qwen38-27b-optimized-speed"))
+    }
+
+    func testQwen38FP16SiblingsMirrorParentsAndResolveOnLegacySilicon() throws {
+        for base in ["qwen38-27b-bare-speed", "qwen38-27b-optimized-speed", "qwen38-27b-optimized-quality"] {
+            let parent = try XCTUnwrap(MTPLXModelOption.option(matching: base))
+            let sibling = try XCTUnwrap(MTPLXModelOption.option(matching: "mtplx-\(base)-fp16"))
+            XCTAssertEqual(sibling.id, "\(base)-fp16")
+            XCTAssertEqual(sibling.hfModelID, parent.hfModelID + "-FP16")
+            XCTAssertEqual(sibling.peakMemoryGiB, parent.peakMemoryGiB)
+            XCTAssertEqual(sibling.recommendedFor, [.legacyApple])
+            XCTAssertEqual(parent.recommendedFor, [.modernApple])
+            XCTAssertTrue(sibling.detail.contains("FP16 build for M1 and M2 Macs"))
+        }
+        // The OpenCode config names the id the server advertises for the sibling.
+        XCTAssertEqual(
+            OpenCodeIntegration.modelID(for: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16"),
+            "mtplx-qwen38-27b-optimized-speed-fp16"
+        )
+        XCTAssertEqual(
+            OpenCodeIntegration.modelID(for: "/Users/example/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed-FP16"),
+            "mtplx-qwen38-27b-bare-speed-fp16"
+        )
+        XCTAssertEqual(
+            OpenCodeIntegration.modelID(for: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"),
+            "mtplx-qwen38-27b-optimized-quality"
+        )
     }
 
     func testOfficialModelCatalogIncludesOptimizedQualityFP16() throws {
@@ -3500,7 +3558,11 @@ final class MTPLXAppCoreTests: XCTestCase {
             includeInstalledOverrides: false
         ).map(\.id)
 
+        // 32 GiB: the Qwen 3.8 trio leads, minus Optimized Quality (33 GiB
+        // peak) which the peak-memory filter hides on this tier.
         XCTAssertEqual(ids, [
+            "qwen38-27b-optimized-speed",
+            "qwen38-27b-bare-speed",
             "optimized-speed-v2",
             "optimized-speed",
             "qwen35-9b-optimized-speed",
@@ -3514,7 +3576,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(ids.contains { $0.contains("step") })
     }
 
-    func testFreshModern36GiBCatalogLeadsWithOptimizedSpeedV2() throws {
+    func testFreshModern36GiBCatalogLeadsWithQwen38Trio() throws {
         let m5 = DetectedHardware(
             chipName: "Apple M5 Pro",
             appleSiliconGeneration: "m5",
@@ -3526,7 +3588,15 @@ final class MTPLXAppCoreTests: XCTestCase {
             includeInstalledOverrides: false
         ).map(\.id)
 
-        XCTAssertEqual(Array(ids.prefix(2)), ["optimized-speed-v2", "optimized-speed"])
+        // 36 GiB clears Optimized Quality's 33 GiB peak, so the whole trio
+        // leads, Optimized Speed (recommended) first, then the 3.6 V2 pair.
+        XCTAssertEqual(Array(ids.prefix(5)), [
+            "qwen38-27b-optimized-speed",
+            "qwen38-27b-bare-speed",
+            "qwen38-27b-optimized-quality",
+            "optimized-speed-v2",
+            "optimized-speed",
+        ])
     }
 
     func testFreshModernLargeMemoryCatalogUnlocksBalanceWithoutFP16Siblings() throws {
@@ -3542,6 +3612,9 @@ final class MTPLXAppCoreTests: XCTestCase {
         ).map(\.id)
 
         XCTAssertEqual(ids, [
+            "qwen38-27b-optimized-speed",
+            "qwen38-27b-bare-speed",
+            "qwen38-27b-optimized-quality",
             "optimized-speed-v2",
             "optimized-speed",
             "optimized-quality",

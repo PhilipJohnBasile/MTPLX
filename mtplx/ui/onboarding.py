@@ -31,12 +31,34 @@ from mtplx.default_models import (
     DefaultModelSelection,
     OPTIMIZED_QUALITY_DESCRIPTION,
     OPTIMIZED_QUALITY_LABEL,
+    QWEN38_BARE_SPEED_DESCRIPTION,
+    QWEN38_BARE_SPEED_LABEL,
+    QWEN38_OPTIMIZED_QUALITY_DESCRIPTION,
+    QWEN38_OPTIMIZED_QUALITY_LABEL,
+    QWEN38_OPTIMIZED_SPEED_DESCRIPTION,
+    QWEN38_OPTIMIZED_SPEED_LABEL,
+    QWEN38_BARE_SPEED_FP16_LABEL,
+    QWEN38_FP16_SUFFIX,
+    QWEN38_OPTIMIZED_QUALITY_FP16_LABEL,
+    QWEN38_OPTIMIZED_SPEED_FP16_LABEL,
     is_verified_default_model_ref,
     is_optimized_quality_model_ref,
     optimized_quality_model_ref,
+    qwen38_bare_speed_fp16_model_ref,
+    qwen38_bare_speed_model_ref,
+    qwen38_optimized_quality_fp16_model_ref,
+    qwen38_optimized_quality_model_ref,
     select_default_model,
 )
-from mtplx.profiles import DEFAULT_HF_MODEL_ID
+from mtplx.profiles import (
+    DEFAULT_HF_MODEL_ID,
+    QWEN38_BARE_SPEED_FP16_HF_MODEL_ID,
+    QWEN38_BARE_SPEED_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
+    QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID,
+)
 from mtplx.server_urls import bind_label, is_wildcard_bind, local_url_for_bind
 
 DEFAULT_HF_MODEL = DEFAULT_HF_MODEL_ID
@@ -931,6 +953,38 @@ def screen_model(
     verified_row_index: int | None = None
     verified_covered_by_install = False
     quality_covered_by_install = False
+    # Qwen 3.8 trio (2026-08-15 release): on modern Macs the verified default
+    # is Qwen 3.8 Optimized Speed, and the two siblings are offered right
+    # under it so a fresh user sees the whole 3.8 line-up. M1/M2 and <32 GiB
+    # Macs keep their FP16 / 9B routing and the 3.6 Quality row.
+    qwen38_fp16 = verified_selection.hf_model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
+    offers_qwen38 = qwen38_fp16 or (
+        verified_selection.hf_model == QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
+    )
+    memory_gib = verified_selection.memory_gib
+    offers_qwen38_quality = offers_qwen38 and (
+        memory_gib is None or memory_gib >= 33.0
+    )
+    if qwen38_fp16:
+        # M1/M2: the whole line-up is the FP16 sibling set.
+        qwen38_speed_label = QWEN38_OPTIMIZED_SPEED_FP16_LABEL
+        qwen38_bare_label = QWEN38_BARE_SPEED_FP16_LABEL
+        qwen38_quality_label = QWEN38_OPTIMIZED_QUALITY_FP16_LABEL
+        qwen38_bare_hf_id = QWEN38_BARE_SPEED_FP16_HF_MODEL_ID
+        qwen38_quality_hf_id = QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID
+        qwen38_bare_ref = qwen38_bare_speed_fp16_model_ref
+        qwen38_quality_ref = qwen38_optimized_quality_fp16_model_ref
+        qwen38_suffix = f"  ·  {QWEN38_FP16_SUFFIX}"
+    else:
+        qwen38_speed_label = QWEN38_OPTIMIZED_SPEED_LABEL
+        qwen38_bare_label = QWEN38_BARE_SPEED_LABEL
+        qwen38_quality_label = QWEN38_OPTIMIZED_QUALITY_LABEL
+        qwen38_bare_hf_id = QWEN38_BARE_SPEED_HF_MODEL_ID
+        qwen38_quality_hf_id = QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID
+        qwen38_bare_ref = qwen38_bare_speed_model_ref
+        qwen38_quality_ref = qwen38_optimized_quality_model_ref
+        qwen38_suffix = ""
+    covered_hf_ids: set[str] = set()
     for item in installed_rows:
         catalog = getattr(item, "catalog", None)
         title = str(item.display_name)
@@ -943,6 +997,8 @@ def screen_model(
             verified_covered_by_install = True
         if catalog is not None and catalog.id == "optimized-quality":
             quality_covered_by_install = True
+        if catalog is not None:
+            covered_hf_ids.add(catalog.hf_model_id)
         rows.append((title, f"installed  ·  {_pretty_path(item.path)}", str(item.path)))
         if app_row_index is None and _installed_matches_model_ref(item, app_model):
             app_row_index = len(rows) - 1
@@ -955,9 +1011,34 @@ def screen_model(
             ("Use your configured model", _pretty_path(configured), str(configured))
         )
     if not verified_covered_by_install:
-        rows.append(("Verified default for this Mac", verified_label, verified_default))
+        if offers_qwen38:
+            rows.append(
+                (
+                    f"{qwen38_speed_label}  ·  verified default",
+                    f"{QWEN38_OPTIMIZED_SPEED_DESCRIPTION}{qwen38_suffix}",
+                    verified_default,
+                )
+            )
+        else:
+            rows.append(("Verified default for this Mac", verified_label, verified_default))
         verified_row_index = len(rows) - 1
-    if not quality_covered_by_install:
+    if offers_qwen38 and qwen38_bare_hf_id not in covered_hf_ids:
+        rows.append(
+            (
+                qwen38_bare_label,
+                f"{QWEN38_BARE_SPEED_DESCRIPTION}{qwen38_suffix}",
+                qwen38_bare_ref(),
+            )
+        )
+    if offers_qwen38_quality and qwen38_quality_hf_id not in covered_hf_ids:
+        rows.append(
+            (
+                qwen38_quality_label,
+                f"{QWEN38_OPTIMIZED_QUALITY_DESCRIPTION}{qwen38_suffix}",
+                qwen38_quality_ref(),
+            )
+        )
+    if not quality_covered_by_install and not offers_qwen38:
         rows.append(
             ("Optimized Quality", _optimized_quality_label(), "__quality__")
         )

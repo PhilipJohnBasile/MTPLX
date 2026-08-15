@@ -350,7 +350,7 @@ def _format_verbose_help() -> str:
   mtplx quickstart --profile sustained --port 8000  Run the API server only
   mtplx connect openwebui           Print Open WebUI integration settings
   mtplx ask "Write a tiny FastAPI app"
-  mtplx inspect Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2
+  mtplx inspect Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed
 
 {_heading("Help subtopics")}
 

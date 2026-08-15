@@ -326,7 +326,10 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// by the model catalog; the default configuration should never point at
     /// a developer machine path.
     public static func defaultLocalModelPath() -> String {
-        return "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+        // Qwen 3.8 Optimized Speed is the recommended pick and fresh-install
+        // default (2026-08-15 release); mirrors DEFAULT_HF_MODEL_ID in
+        // mtplx/profiles.py.
+        return "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     }
 
     public static func defaultHermesWorkspacePath() -> String {

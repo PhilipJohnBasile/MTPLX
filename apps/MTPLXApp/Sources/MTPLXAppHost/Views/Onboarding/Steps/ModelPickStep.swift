@@ -197,6 +197,12 @@ struct ModelPickStep: View {
                 : row.modelID
         } else if row.choice == .curatedSpeed {
             id = hardware?.tier == .legacyApple ? "optimized-speed-fp16" : row.modelID
+        } else if row.choice == .curatedQwen38OptimizedSpeed
+            || row.choice == .curatedQwen38BareSpeed
+            || row.choice == .curatedQwen38OptimizedQuality
+        {
+            // Qwen 3.8 trio: legacy (M1/M2) Macs get the FP16 precision sibling.
+            id = hardware?.tier == .legacyApple ? "\(row.modelID)-fp16" : row.modelID
         } else if row.choice == .curatedQwen35BSpeed {
             id = hardware?.tier == .legacyApple
                 ? "qwen36-35b-a3b-optimized-speed-fp16"
@@ -205,6 +211,8 @@ struct ModelPickStep: View {
             id = hardware?.tier == .legacyApple
                 ? "qwen36-35b-a3b-optimized-balance-fp16"
                 : row.modelID
+        } else if row.choice == .curatedQuality {
+            id = hardware?.tier == .legacyApple ? "optimized-quality-fp16" : row.modelID
         } else {
             id = row.modelID
         }
@@ -769,8 +777,12 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         switch catalogID {
         case "qwen35-9b-optimized-speed", "qwen35-9b-optimized-speed-fp16":
             return .qwen9B
-        case "qwen38-27b-bare-speed":
+        case "qwen38-27b-optimized-speed", "qwen38-27b-optimized-speed-fp16":
+            return .qwen38OptimizedSpeed
+        case "qwen38-27b-bare-speed", "qwen38-27b-bare-speed-fp16":
             return .qwen38BareSpeed
+        case "qwen38-27b-optimized-quality", "qwen38-27b-optimized-quality-fp16":
+            return .qwen38OptimizedQuality
         case "optimized-speed-v2":
             return .qwen27SpeedV2
         case "optimized-speed", "optimized-speed-fp16":
@@ -779,7 +791,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
             return .qwen35Speed
         case "qwen36-35b-a3b-optimized-balance", "qwen36-35b-a3b-optimized-balance-fp16":
             return .qwen35Balance
-        case "optimized-quality":
+        case "optimized-quality", "optimized-quality-fp16":
             return .qwen27Quality
         case "gemma4-optimized-speed":
             return .gemma31
@@ -804,12 +816,28 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         detail: "Smaller 4-bit model. A little faster for short chats."
     )
 
+    static let qwen38OptimizedSpeed = RecommendedModelRow(
+        choice: .curatedQwen38OptimizedSpeed,
+        modelID: "qwen38-27b-optimized-speed",
+        logo: .qwen,
+        title: "Qwen 3.8 27B Optimized Speed",
+        detail: "4-bit dynamic quant. Great coding speeds and good quality. Recommended."
+    )
+
     static let qwen38BareSpeed = RecommendedModelRow(
         choice: .curatedQwen38BareSpeed,
         modelID: "qwen38-27b-bare-speed",
         logo: .qwen,
         title: "Qwen 3.8 27B Bare Speed",
-        detail: "Day-one flat 4-bit build of Qwen 3.8 with native MTP. Live decoding is safety-capped at D3 and uses the official sampler."
+        detail: "Quickest burst chat speeds. Lower quality and slower on long coding tasks."
+    )
+
+    static let qwen38OptimizedQuality = RecommendedModelRow(
+        choice: .curatedQwen38OptimizedQuality,
+        modelID: "qwen38-27b-optimized-quality",
+        logo: .qwen,
+        title: "Qwen 3.8 27B Optimized Quality",
+        detail: "8-bit dynamic quant. Good coding speeds and perfect quality."
     )
 
     static let qwen27SpeedV2 = RecommendedModelRow(

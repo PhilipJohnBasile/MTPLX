@@ -12,7 +12,7 @@
 
 </div>
 
-MTPLX is a native Mac app and a command line for running local language models with multi-token prediction. Modern models like Qwen 3.5/3.6 ship with built-in MTP heads. Almost no runtime uses them. MTPLX does: the model drafts several tokens ahead of itself, verifies them in one batched forward pass, and keeps only what passes exact rejection sampling. Same model, same output distribution, measured 1.6x faster on a 16 GB M4 Mac mini and 2.24x on an M5 Max.
+MTPLX is a native Mac app and a command line for running local language models with multi-token prediction. Modern models like Qwen 3.5/3.6/3.8 ship with built-in MTP heads. Almost no runtime uses them. MTPLX does: the model drafts several tokens ahead of itself, verifies them in one batched forward pass, and keeps only what passes exact rejection sampling. Same model, same output distribution, measured 1.6x faster on a 16 GB M4 Mac mini and 2.24x on an M5 Max.
 
 There is no second draft model eating your RAM, and no greedy shortcut that quietly changes what the model would have said at real sampling settings. The acceptance math is the Leviathan and Chen rejection sampling theorem with residual correction, so `temperature=0.6, top_p=0.95` behaves exactly like normal decoding, just faster.
 
@@ -20,11 +20,12 @@ There is no second draft model eating your RAM, and no greedy shortcut that quie
 
 **The Mac app** is the easiest way in. Download the DMG at [mtplx.com](https://mtplx.com/download), drag it to Applications, and the app takes care of everything else: it checks your hardware, recommends a model that actually fits your memory, downloads it, sets up its own Python engine (no Homebrew needed), installs fan control, puts `mtplx` on your PATH, and then measures your machine to pick the fastest decoding depth.
 
-**Recommended for coding:** Qwen 3.6 27B Optimized Speed V2 is a dynamic
-4-bit hybrid with hand-tuned sensitive parts kept at up to 16-bit. It is much
-higher quality than the original Optimized Speed model and faster on long agent
-tasks. It is slightly larger and a little slower for short chats. The original
-model remains available directly below it in the app and CLI.
+**Recommended for coding:** Qwen 3.8 27B Optimized Speed is a 4-bit dynamic
+quant with great coding speeds and good quality. Its two siblings sit right
+under it in the app and CLI: Bare Speed (quickest burst chat speeds, lower
+quality and slower on long coding tasks) and Optimized Quality (8-bit dynamic
+quant, good coding speeds and perfect quality). Qwen 3.6 Optimized Speed V2
+remains available directly below them.
 
 **The CLI** on its own:
 
@@ -36,8 +37,10 @@ mtplx start
 or `python3 -m pip install mtplx` if you prefer pip. All releases are listed at [mtplx.com/releases](https://mtplx.com/releases/).
 
 Requirements: Apple Silicon (M1 or newer), macOS 14+. 16 GB of memory runs the
-4B and 9B models comfortably. Optimized Speed V2 is recommended on modern Macs
-with 32 GB or more. The app and CLI check this before recommending anything.
+4B and 9B models comfortably. Qwen 3.8 Optimized Speed is recommended on Macs
+with 32 GB or more; on M1 and M2 the app and CLI pick its FP16 build (same
+weights, native precision for those chips) automatically. Both check your Mac
+before recommending anything.
 
 ## The app
 

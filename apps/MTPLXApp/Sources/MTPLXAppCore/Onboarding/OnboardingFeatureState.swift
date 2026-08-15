@@ -33,7 +33,9 @@ public enum ModelPickChoice: Equatable, Sendable, Hashable {
     case none
     case curatedQwen35FourBit
     case curatedQwen35NineBSpeed
+    case curatedQwen38OptimizedSpeed
     case curatedQwen38BareSpeed
+    case curatedQwen38OptimizedQuality
     case curatedSpeedV2
     case curatedSpeed
     case curatedQwen35BSpeed
@@ -176,9 +178,21 @@ public struct OnboardingFeatureState: Equatable, Sendable {
             let useFP16 = hardware?.tier == .legacyApple
             let id = useFP16 ? "qwen35-9b-optimized-speed-fp16" : "qwen35-9b-optimized-speed"
             return catalog.first { $0.id == id }
+        case .curatedQwen38OptimizedSpeed:
+            // The 3.8 trio has FP16 precision siblings (2026-08-15): same
+            // quantized packs, 16-bit tensors cast to fp16, so M1/M2 Macs
+            // get the identical model on the chip's native precision.
+            let useFP16 = hardware?.tier == .legacyApple
+            let id = useFP16 ? "qwen38-27b-optimized-speed-fp16" : "qwen38-27b-optimized-speed"
+            return catalog.first { $0.id == id }
         case .curatedQwen38BareSpeed:
-            // No FP16 sibling exists yet, so there is no chip-aware swap.
-            return catalog.first { $0.id == "qwen38-27b-bare-speed" }
+            let useFP16 = hardware?.tier == .legacyApple
+            let id = useFP16 ? "qwen38-27b-bare-speed-fp16" : "qwen38-27b-bare-speed"
+            return catalog.first { $0.id == id }
+        case .curatedQwen38OptimizedQuality:
+            let useFP16 = hardware?.tier == .legacyApple
+            let id = useFP16 ? "qwen38-27b-optimized-quality-fp16" : "qwen38-27b-optimized-quality"
+            return catalog.first { $0.id == id }
         case .curatedSpeedV2:
             return catalog.first { $0.id == "optimized-speed-v2" }
         case .curatedSpeed:
@@ -216,7 +230,9 @@ public struct OnboardingFeatureState: Equatable, Sendable {
             return nil
         case .curatedQwen35FourBit,
              .curatedQwen35NineBSpeed,
+             .curatedQwen38OptimizedSpeed,
              .curatedQwen38BareSpeed,
+             .curatedQwen38OptimizedQuality,
              .curatedSpeedV2,
              .curatedSpeed,
              .curatedQwen35BSpeed,
@@ -299,7 +315,9 @@ public struct OnboardingFeatureState: Equatable, Sendable {
                 return false
             case .curatedQwen35FourBit,
                  .curatedQwen35NineBSpeed,
+                 .curatedQwen38OptimizedSpeed,
                  .curatedQwen38BareSpeed,
+                 .curatedQwen38OptimizedQuality,
                  .curatedSpeedV2,
                  .curatedSpeed,
                  .curatedQwen35BSpeed,

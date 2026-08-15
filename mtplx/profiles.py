@@ -110,15 +110,33 @@ QWEN38_OPTIMIZED_QUALITY_HF_MODEL_ID = (
 QWEN38_BARE_SPEED_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-bare-speed"
 QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-optimized-speed"
 QWEN38_OPTIMIZED_QUALITY_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-optimized-quality"
-# Keep the public default downloadable. The release-day Qwen3.8 artifact is
-# selected locally by default_models when its complete local build is present;
-# it must not become a fresh-install default until its weights are published.
-DEFAULT_HF_MODEL_ID = OPTIMIZED_SPEED_V2_HF_MODEL_ID
+# FP16 precision siblings of the Qwen 3.8 trio (2026-08-15): byte-identical
+# INT packs with the bf16 floats cast to fp16, the M1/M2 routing targets
+# (same policy as the 3.6 -FP16 siblings).
+QWEN38_BARE_SPEED_FP16_HF_MODEL_ID = "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed-FP16"
+QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID = (
+    "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16"
+)
+QWEN38_OPTIMIZED_QUALITY_FP16_HF_MODEL_ID = (
+    "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16"
+)
+QWEN38_BARE_SPEED_FP16_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-bare-speed-fp16"
+QWEN38_OPTIMIZED_SPEED_FP16_PUBLIC_MODEL_ID = "mtplx-qwen38-27b-optimized-speed-fp16"
+QWEN38_OPTIMIZED_QUALITY_FP16_PUBLIC_MODEL_ID = (
+    "mtplx-qwen38-27b-optimized-quality-fp16"
+)
+# Public default (2026-08-15, founder ruling on the Qwen3.8 release): the
+# Qwen 3.8 Optimized Speed dynamic 4-bit build is the recommended pick and the
+# fresh-install default on modern Apple Silicon. Its weights are published on
+# the Hub (release-day upload), so quickstart, pull, onboarding, and clean
+# machines resolve a downloadable repo. M1/M2 keep the FP16 3.6 sibling and
+# <32 GiB Macs keep the 9B route via default_models.
+DEFAULT_HF_MODEL_ID = QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID
 QUALITY_MODEL_ID = QUALITY_HF_MODEL_ID
 DEFAULT_MODEL_ID = DEFAULT_HF_MODEL_ID
 OPTIMIZED_SPEED_V1_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed"
 OPTIMIZED_SPEED_V2_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed-v2"
-DEFAULT_PUBLIC_MODEL_ID = OPTIMIZED_SPEED_V2_PUBLIC_MODEL_ID
+DEFAULT_PUBLIC_MODEL_ID = QWEN38_OPTIMIZED_SPEED_PUBLIC_MODEL_ID
 DEFAULT_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-speed-fp16"
 QUALITY_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality"
 QUALITY_FP16_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized-quality-fp16"

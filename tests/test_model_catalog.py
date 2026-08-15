@@ -28,6 +28,8 @@ from mtplx.model_catalog import (
     recommended_models,
     scan_installed_models,
 )
+from mtplx import default_models as default_models_module
+from mtplx.default_models import QWEN38_OPTIMIZED_SPEED_MODEL_ENV
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
     QWEN35_9B_OPTIMIZED_SPEED_FP16_HF_MODEL_ID,
@@ -35,14 +37,37 @@ from mtplx.profiles import (
 )
 
 
-def test_catalog_has_eighteen_unique_entries():
-    # 18 = the 16-entry 2026-08-14 scaffold + the Qwen3.8 Optimized
-    # Speed/Quality pair forged on drop day.
+@pytest.fixture(autouse=True)
+def _no_installed_qwen38(monkeypatch):
+    # Pin the public policy: a complete local Qwen 3.8 build on this Mac is
+    # legitimately preferred ("installed locally"), so switch it off here.
+    monkeypatch.setenv(QWEN38_OPTIMIZED_SPEED_MODEL_ENV, "off")
+    monkeypatch.setattr(default_models_module, "_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES", ())
+
+
+def test_catalog_has_twenty_one_unique_entries():
+    # 21 = the 16-entry 2026-08-14 scaffold + the Qwen3.8 Optimized
+    # Speed/Quality pair forged on drop day + the three Qwen3.8 FP16
+    # precision siblings for M1/M2 Macs (2026-08-15).
     ids = [model.id for model in OFFICIAL_CATALOG]
-    assert len(ids) == 18
-    assert len(set(ids)) == 18
+    assert len(ids) == 21
+    assert len(set(ids)) == 21
     hf_ids = [model.hf_model_id for model in OFFICIAL_CATALOG]
-    assert len(set(hf_ids)) == 18
+    assert len(set(hf_ids)) == 21
+
+
+def test_qwen38_fp16_siblings_mirror_their_parents():
+    # Same packs, same peak; only the tier, id suffix and HF repo differ.
+    for base in ("qwen38-27b-bare-speed", "qwen38-27b-optimized-speed", "qwen38-27b-optimized-quality"):
+        parent = catalog_model_with_id(base)
+        sibling = catalog_model_with_id(f"{base}-fp16")
+        assert parent is not None and sibling is not None
+        assert sibling.hf_model_id == f"{parent.hf_model_id}-FP16"
+        assert sibling.peak_memory_gib == parent.peak_memory_gib
+        assert sibling.recommended_tiers == frozenset({LEGACY_TIER})
+        assert parent.recommended_tiers == frozenset({MODERN_TIER})
+        assert "FP16 build for M1 and M2 Macs" in sibling.detail
+        assert f"mtplx-{base}-fp16" in sibling.aliases
 
 
 def test_catalog_matches_swift_official_catalog():
@@ -112,7 +137,16 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-4b-optimized-speed",
         "qwen35-4b-optimized-quality",
     ]
+    # Qwen 3.8 trio (2026-08-15): Optimized Speed leads every tier with at
+    # least 32 GiB, then Bare Speed, then Optimized Quality.
+    trio38 = [
+        "qwen38-27b-optimized-speed",
+        "qwen38-27b-bare-speed",
+        "qwen38-27b-optimized-quality",
+    ]
+    trio38_fp16 = [f"{model_id}-fp16" for model_id in trio38]
     assert recommended_catalog_ids(memory_gib=36, chip_tier=MODERN_TIER) == [
+        *trio38,
         "optimized-speed-v2",
         "optimized-speed",
         "qwen35-9b-optimized-speed",
@@ -122,11 +156,9 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-4b-optimized-speed",
         "qwen35-4b-optimized-quality",
     ]
-    assert recommended_catalog_ids(memory_gib=32, chip_tier=MODERN_TIER)[:2] == [
-        "optimized-speed-v2",
-        "optimized-speed",
-    ]
+    assert recommended_catalog_ids(memory_gib=32, chip_tier=MODERN_TIER)[:3] == trio38
     assert recommended_catalog_ids(memory_gib=64, chip_tier=MODERN_TIER) == [
+        *trio38,
         "optimized-speed-v2",
         "optimized-speed",
         "optimized-quality",
@@ -137,7 +169,10 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-4b-optimized-speed",
         "qwen35-4b-optimized-quality",
     ]
+    # Legacy (M1/M2) silicon sees the same trio as its FP16 precision
+    # siblings, same order, ahead of the 3.6 fp16 lane.
     assert recommended_catalog_ids(memory_gib=64, chip_tier=LEGACY_TIER) == [
+        *trio38_fp16,
         "optimized-speed-fp16",
         # Quality on legacy silicon resolves the FP16 sibling (2.0.1,
         # 2026-07-07) so an M1/M2 quality pick gets the fp16-activation
@@ -149,6 +184,7 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "qwen35-9b-optimized-speed-fp16",
     ]
     assert recommended_catalog_ids(memory_gib=36, chip_tier=LEGACY_TIER) == [
+        *trio38_fp16,
         "qwen35-9b-optimized-speed-fp16",
         "optimized-speed-fp16",
         "gemma4-optimized-speed",
@@ -159,6 +195,7 @@ def test_recommended_ids_mirror_app_ram_tiers():
     assert recommended_catalog_ids(
         memory_gib=None, chip_tier=MODERN_TIER
     ) == [
+        *trio38,
         "optimized-speed-v2",
         "optimized-speed",
         "optimized-quality",
@@ -167,6 +204,9 @@ def test_recommended_ids_mirror_app_ram_tiers():
         "gemma4-optimized-speed",
         "qwen35-9b-optimized-speed",
     ]
+    assert recommended_catalog_ids(
+        memory_gib=None, chip_tier=LEGACY_TIER
+    )[:3] == trio38_fp16
 
 
 def test_recommended_models_filter_by_peak_memory():
@@ -182,7 +222,18 @@ def test_recommended_models_filter_by_peak_memory():
         "qwen35-4b-optimized-quality",
     ]
     default = default_catalog_model(memory_gib=64, chip_tier=MODERN_TIER)
-    assert default is not None and default.id == "optimized-speed-v2"
+    assert default is not None and default.id == "qwen38-27b-optimized-speed"
+    # Legacy (M1/M2) silicon defaults to the FP16 precision sibling; a
+    # 32 GiB M1/M2 keeps it (25 GiB peak fits) while Optimized Quality
+    # (33 GiB peak) drops out until 48 GiB.
+    legacy_default = default_catalog_model(memory_gib=32, chip_tier=LEGACY_TIER)
+    assert legacy_default is not None and legacy_default.id == "qwen38-27b-optimized-speed-fp16"
+    legacy_32 = [model.id for model in recommended_models(memory_gib=32, chip_tier=LEGACY_TIER)]
+    assert legacy_32[:2] == ["qwen38-27b-optimized-speed-fp16", "qwen38-27b-bare-speed-fp16"]
+    assert "qwen38-27b-optimized-quality-fp16" not in legacy_32
+    assert "qwen38-27b-optimized-quality-fp16" in [
+        model.id for model in recommended_models(memory_gib=48, chip_tier=LEGACY_TIER)
+    ]
 
 
 def test_feasibility_verdicts_mirror_app_rules():
@@ -225,10 +276,19 @@ def test_catalog_model_matching_accepts_ids_repos_cache_dirs_and_aliases():
     speed = catalog_model_with_id("optimized-speed")
     speed_v2 = catalog_model_with_id("optimized-speed-v2")
     bare38 = catalog_model_with_id("qwen38-27b-bare-speed")
+    os38 = catalog_model_with_id("qwen38-27b-optimized-speed")
     assert catalog_model_matching("optimized-speed") == speed
-    # The public quickstart remains the published V2 artifact while the
-    # local-only Qwen3.8 build resolves to its own entry in every spelling.
-    assert catalog_model_matching(DEFAULT_HF_MODEL_ID) == speed_v2
+    # The public quickstart default is Qwen 3.8 Optimized Speed (2026-08-15);
+    # every 3.8 build resolves to its own entry in every spelling, and the
+    # FP16 siblings resolve to theirs (never to the parent).
+    assert catalog_model_matching(DEFAULT_HF_MODEL_ID) == os38
+    assert catalog_model_matching("Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2") == speed_v2
+    for base in ("qwen38-27b-bare-speed", "qwen38-27b-optimized-speed", "qwen38-27b-optimized-quality"):
+        sibling = catalog_model_with_id(f"{base}-fp16")
+        assert catalog_model_matching(f"{base}-fp16") == sibling
+        assert catalog_model_matching(f"mtplx-{base}-fp16") == sibling
+        assert catalog_model_matching(sibling.hf_model_id) == sibling
+        assert catalog_model_matching(f"~/.mtplx/models/{sibling.hf_model_id.replace('/', '--')}") == sibling
     assert catalog_model_matching("qwen38-27b-bare-speed") == bare38
     assert catalog_model_matching("mtplx-qwen38-27b-bare-speed") == bare38
     assert (

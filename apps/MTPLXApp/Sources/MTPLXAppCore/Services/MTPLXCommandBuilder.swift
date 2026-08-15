@@ -1319,12 +1319,15 @@ private struct TargetPreset {
         preset.temperature = 1.0
         preset.topP = 0.95
         preset.topK = 20
-        // Strict max-fan A/B on the real Bare Speed artifact kept the draft
-        // on the official 1.0 sampler: 46.05 tok/s versus 42.79 at 0.6, with
-        // higher D2/D3 acceptance. Pinning it here preserves app/CLI parity.
-        preset.draftTemperature = 1.0
-        preset.draftTopP = 0.95
-        preset.draftTopK = 20
+        // The draft sampler is deliberately NOT pinned for this family. Each
+        // 3.8 artifact stamps its measured `recommended_draft_sampler` in
+        // mtplx_runtime.json (Bare Speed: 0.6 from the drop-day strict
+        // max-fan A/B; Optimized Speed/Quality: the target sampler) and the
+        // server resolves it from the stamp — the same path `mtplx serve`
+        // takes with zero flags. One owner, so the app and the CLI serve the
+        // same draft sampler for the same artifact (incl. the FP16 siblings)
+        // and a stamp change never needs an app release. A user-set sampler
+        // in Settings still carries to the draft, as for every family.
         return preset
     }
 
