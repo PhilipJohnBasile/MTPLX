@@ -26,7 +26,7 @@ from mtplx.profiles import DEFAULT_HF_MODEL_ID, DEFAULT_PROFILE_NAME
 
 
 GIB = 1024**3
-DEFAULT_SPEED_MODEL_SIZE_BYTES = 20_392_433_868  # Qwen3.8-27B Optimized Speed (Hub bytes)
+DEFAULT_SPEED_MODEL_SIZE_BYTES = 21_313_949_792  # Qwen3.8-27B Optimized Speed (Hub bytes, incl. restored vision tower #263)
 MIN_RECOMMENDED_MEMORY_BYTES = 48 * GIB
 SUPPORT_MACOS_MAJOR = 14
 SUPPORT_PYTHON = (3, 11)

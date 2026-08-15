@@ -1028,6 +1028,9 @@ def _cmd_build(args: Any) -> int:
     if _cancel_requested(args.run_id):
         raise ForgeError("forge cancelled", code=130)
 
+    _ensure_vision_tower(source_path, destination)
+    _validate_vision_payload(source_path, destination)
+
     _calibrate_sidecar(
         source_path,
         destination,
@@ -1765,6 +1768,51 @@ def _validate_mtp_sidecar_payload(destination: Path) -> dict[str, Any] | None:
     config["mtplx_mtp_payload_audit"] = audit
     atomic_write_json(config_path, config)
     return audit
+
+
+def _ensure_vision_tower(source: Path, destination: Path) -> None:
+    """Restore the vision tower that text-only convert lanes drop.
+
+    ``mlx_lm.convert`` serializes only the text model, so multimodal sources
+    lose their vision tensors, ``vision_config``, and preprocessor sidecars
+    (issue #263). Graft them back from the source directory. A no-op for
+    text-only sources and for lanes (mirror, compressed-tensors) that already
+    preserved the tower.
+    """
+    if not source.is_dir():
+        return
+    from mtplx.vision_graft import VisionGraftError, graft_vision_tower
+
+    try:
+        report = graft_vision_tower(source, destination, verify_load=True)
+    except VisionGraftError as exc:
+        raise ForgeError(f"vision tower graft failed: {exc}") from exc
+    if report.get("status") == "grafted":
+        _err(
+            f"[forge] restored vision tower: {report.get('tensors')} tensors "
+            f"({report.get('bytes')} bytes) in {report.get('vision_file')}"
+        )
+
+
+def _validate_vision_payload(source: Path, destination: Path) -> None:
+    """Fail closed when a multimodal source produced a blind artifact."""
+    if not source.is_dir():
+        return
+    try:
+        source_config = _load_json(source / "config.json")
+    except Exception:
+        return
+    if not isinstance(source_config, dict) or not isinstance(
+        source_config.get("vision_config"), dict
+    ):
+        return
+    from mtplx.vision import vision_spec_for_model_dir
+
+    if vision_spec_for_model_dir(destination) is None:
+        raise ForgeError(
+            "source declares vision_config but the forged artifact resolves no "
+            "vision tower; the convert lane dropped it (issue #263)"
+        )
 
 
 def _audit_mtp_sidecar_payload(mtp_path: Path) -> dict[str, Any]:
@@ -2922,6 +2970,9 @@ def _stamp_runtime_metadata(
         metadata["mtp_sidecar"] = inspection.mtp.sidecar_format
     else:
         metadata.setdefault("mtp_sidecar", "mtp.safetensors")
+    vision_stamp = _vision_metadata_stamp(model_path)
+    if vision_stamp is not None:
+        metadata["vision"] = vision_stamp
     metadata["base_trunk"] = source_repo
     metadata.setdefault("artifact_role", "forge-local")
     metadata["forge_provenance"] = {
@@ -2937,6 +2988,32 @@ def _stamp_runtime_metadata(
         "published_to_hf": None,
     }
     return metadata
+
+
+def _vision_metadata_stamp(model_path: Path) -> dict[str, Any] | None:
+    """Provenance for artifacts that carry a vision tower, or None."""
+    from mtplx.vision import resolve_vision_prefix
+
+    index_path = model_path / "model.safetensors.index.json"
+    if not index_path.exists():
+        return None
+    try:
+        index = _load_json(index_path)
+    except Exception:
+        return None
+    weight_map = index.get("weight_map") if isinstance(index, dict) else None
+    if not isinstance(weight_map, dict):
+        return None
+    prefix = resolve_vision_prefix(weight_map)
+    if prefix is None:
+        return None
+    vision_keys = [key for key in weight_map if str(key).startswith(prefix)]
+    shards = sorted({str(weight_map[key]) for key in vision_keys})
+    return {
+        "tensor_count": len(vision_keys),
+        "prefix": prefix,
+        "shards": shards,
+    }
 
 
 def _speed_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:

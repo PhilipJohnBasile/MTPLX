@@ -420,7 +420,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Bare Speed",
             ],
             // Exact byte sum of the published HF repo files (2026-08-15 tree API).
-            sizeBytes: 16_002_648_138,
+            sizeBytes: 16_924_164_062,
             // Measured 2026-08-14: request-log MLX high-water 19.6 GiB during
             // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
             peakMemoryGiB: 20.0,
@@ -442,7 +442,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen 3.8 Optimized Speed",
             ],
             // Exact byte sum of the published HF repo files (2026-08-15 tree API).
-            sizeBytes: 20_392_433_868,
+            sizeBytes: 21_313_949_792,
             // Measured 2026-08-14: request-log MLX high-water 24.6 GiB during
             // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
             peakMemoryGiB: 25.0,
@@ -464,7 +464,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen 3.8 Optimized Quality",
             ],
             // Exact byte sum of the published HF repo files (2026-08-15 tree API).
-            sizeBytes: 29_449_324_149,
+            sizeBytes: 30_370_840_073,
             // Measured 2026-08-14: request-log MLX high-water 32.9 GiB during
             // quiet-window 2.4k-context serving (boot + Flappy arms + rung).
             peakMemoryGiB: 33.0,
@@ -493,7 +493,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Bare Speed FP16",
             ],
             // Exact byte sum of the local sibling at build time (2026-08-15).
-            sizeBytes: 16_003_127_584,
+            sizeBytes: 16_924_647_669,
             // Same packs and tensor bytes as the parent; peak carried over.
             peakMemoryGiB: 20.0,
             recommendedFor: [.legacyApple]
@@ -514,7 +514,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen 3.8 Optimized Speed FP16",
             ],
             // Exact byte sum of the local sibling at build time (2026-08-15).
-            sizeBytes: 20_392_914_234,
+            sizeBytes: 21_314_434_309,
             // Same packs and tensor bytes as the parent; peak carried over.
             peakMemoryGiB: 25.0,
             recommendedFor: [.legacyApple]
@@ -535,7 +535,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
                 "Qwen 3.8 Optimized Quality FP16",
             ],
             // Exact byte sum of the local sibling at build time (2026-08-15).
-            sizeBytes: 29_449_805_992,
+            sizeBytes: 30_371_326_040,
             // Same packs and tensor bytes as the parent; peak carried over.
             peakMemoryGiB: 33.0,
             recommendedFor: [.legacyApple]

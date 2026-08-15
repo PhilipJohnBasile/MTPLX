@@ -637,10 +637,12 @@ def _download_repo_file(
 
     partial = target.with_name(target.name + ".incomplete")
     if target.exists():
-        if not partial.exists():
-            target.replace(partial)
-        else:
-            target.unlink()
+        # A size-mismatched final file is a stale version of a file that
+        # changed upstream (e.g. a repaired index gaining vision entries),
+        # not an interrupted download. Resuming from it would append the
+        # remote tail onto old content and corrupt the file, so discard it.
+        # Only a leftover *.incomplete partial may be range-resumed.
+        target.unlink()
     existing = partial.stat().st_size if partial.exists() else 0
     if expected_size is not None and existing > expected_size:
         partial.unlink()

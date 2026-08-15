@@ -2409,6 +2409,91 @@ def test_pull_refreshes_when_remote_index_changed(monkeypatch, tmp_path):
     assert hf_loader._local_matches_remote_index(local, "org/repo", None) is True
 
 
+class _FakeHubResponse:
+    def __init__(self, headers: dict, remote_content: bytes):
+        range_header = headers.get("Range")
+        if range_header:
+            offset = int(range_header.split("=")[1].rstrip("-"))
+            self.payload = remote_content[offset:]
+            self.status_code = 206
+        else:
+            self.payload = remote_content
+            self.status_code = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_content(self, chunk_size):
+        yield self.payload
+
+
+def _run_download_repo_file(monkeypatch, destination, remote_content: bytes, filename: str):
+    from mtplx import hf_loader
+
+    seen_headers: list[dict] = []
+
+    def fake_stream(session, url, headers):
+        seen_headers.append(dict(headers))
+        return _FakeHubResponse(headers, remote_content)
+
+    monkeypatch.setattr(hf_loader, "_open_hub_stream", fake_stream)
+    repo_file = hf_loader.RepoFile(path=filename, size_bytes=len(remote_content))
+    hf_loader._download_repo_file(
+        repo_file,
+        repo_id="org/repo",
+        revision=None,
+        destination=destination,
+        session=None,
+        hf_hub_url=lambda repo_id, filename, revision=None: "https://example.invalid/f",
+        build_hf_headers=lambda token=None: {},
+        hf_raise_for_status=lambda response: None,
+        callback=None,
+        total_bytes=None,
+        started_at=0.0,
+        progress_interval_s=3600.0,
+        last_emit_at=0.0,
+        last_emit_size=0,
+    )
+    return seen_headers
+
+
+def test_download_repo_file_discards_stale_complete_file(monkeypatch, tmp_path):
+    # A file that changed upstream (a repaired index/config gaining vision
+    # entries, issue #263) must be re-fetched from scratch. Range-resuming
+    # from the stale *complete* local copy appends the remote tail onto old
+    # content and corrupts the JSON — the upgrade rehearsal caught exactly
+    # this, leaving the local model unloadable.
+    old_content = b'{"old": true}' + b" " * 8
+    new_content = b'{"new": true, "vision": "restored"}' + b" " * 32
+    destination = tmp_path / "model"
+    destination.mkdir()
+    (destination / "config.json").write_bytes(old_content)
+
+    seen = _run_download_repo_file(monkeypatch, destination, new_content, "config.json")
+
+    assert (destination / "config.json").read_bytes() == new_content
+    assert all("Range" not in headers for headers in seen)
+    assert not (destination / "config.json.incomplete").exists()
+
+
+def test_download_repo_file_still_resumes_incomplete_partial(monkeypatch, tmp_path):
+    # Genuine interrupted downloads (*.incomplete staging files) must keep
+    # their byte-range resume.
+    new_content = b'{"new": true, "vision": "restored"}' + b" " * 32
+    destination = tmp_path / "model"
+    destination.mkdir()
+    (destination / "config.json.incomplete").write_bytes(new_content[:11])
+
+    seen = _run_download_repo_file(monkeypatch, destination, new_content, "config.json")
+
+    assert (destination / "config.json").read_bytes() == new_content
+    assert any(headers.get("Range") == "bytes=11-" for headers in seen)
+    assert not (destination / "config.json.incomplete").exists()
+
+
 def test_served_public_ids_resolve_to_first_party_repos():
     """The exact ids /v1/models advertises must resolve for serve/run/pull.
 

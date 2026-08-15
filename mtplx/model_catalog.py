@@ -128,8 +128,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
         # Exact byte sum of the published HF repo files (2026-08-15 tree API;
-        # three trunk shards + bf16 MTP sidecar + tokenizer + card).
-        size_bytes=16_002_648_138,
+        # three trunk shards + bf16 MTP sidecar + restored bf16 vision tower
+        # (#263) + tokenizer + card).
+        size_bytes=16_924_164_062,
         # Measured 2026-08-14: request-log MLX high-water 19.6 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=20.0,
@@ -150,8 +151,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
         # Exact byte sum of the published HF repo files (2026-08-15 tree API;
-        # module_overrides recipe, 5.807 bits/weight, bf16 MTP sidecar).
-        size_bytes=20_392_433_868,
+        # module_overrides recipe, 5.807 bits/weight, bf16 MTP sidecar,
+        # restored bf16 vision tower (#263)).
+        size_bytes=21_313_949_792,
         # Measured 2026-08-14: request-log MLX high-water 24.6 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=25.0,
@@ -169,8 +171,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "8-bit dynamic quant. Good coding speeds and perfect quality."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
-        # Exact byte sum of the published HF repo files (2026-08-15 tree API).
-        size_bytes=29_449_324_149,
+        # Exact byte sum of the published HF repo files (2026-08-15 tree API;
+        # includes the restored bf16 vision tower, #263).
+        size_bytes=30_370_840_073,
         # Measured 2026-08-14: request-log MLX high-water 32.9 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=33.0,
@@ -193,8 +196,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "coding tasks. FP16 build for M1 and M2 Macs."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
-        # Exact byte sum of the local sibling at build time (2026-08-15).
-        size_bytes=16_003_127_584,
+        # Exact byte sum of the published HF repo files (2026-08-15 tree API;
+        # includes the restored bf16 vision tower, #263).
+        size_bytes=16_924_647_669,
         # Same packs and tensor bytes as the parent; peak carried over.
         peak_memory_gib=20.0,
         recommended_tiers=frozenset({LEGACY_TIER}),
@@ -213,8 +217,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "FP16 build for M1 and M2 Macs. Recommended."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
-        # Exact byte sum of the local sibling at build time (2026-08-15).
-        size_bytes=20_392_914_234,
+        # Exact byte sum of the published HF repo files (2026-08-15 tree API;
+        # includes the restored bf16 vision tower, #263).
+        size_bytes=21_314_434_309,
         # Same packs and tensor bytes as the parent; peak carried over.
         peak_memory_gib=25.0,
         recommended_tiers=frozenset({LEGACY_TIER}),
@@ -232,8 +237,9 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
             "FP16 build for M1 and M2 Macs."
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
-        # Exact byte sum of the local sibling at build time (2026-08-15).
-        size_bytes=29_449_805_992,
+        # Exact byte sum of the published HF repo files (2026-08-15 tree API;
+        # includes the restored bf16 vision tower, #263).
+        size_bytes=30_371_326_040,
         # Same packs and tensor bytes as the parent; peak carried over.
         peak_memory_gib=33.0,
         recommended_tiers=frozenset({LEGACY_TIER}),

@@ -4,6 +4,41 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Qwen 3.8 Hugging Face artifacts can see again (#263).** All six
+  published 3.8 repos (Bare Speed, Optimized Speed, Optimized Quality and
+  their FP16 siblings) shipped without their vision towers: the forge
+  `mlx_lm.convert` lane serializes only the text model, so the 333
+  `model.visual.*` tensors, `vision_config`, and the preprocessor sidecars
+  were silently dropped. The repos were re-published on 2026-08-15 with the
+  official bf16 tower grafted back as an index-registered
+  `model-vision.safetensors` (byte-for-byte from `Qwen/Qwen3.8-27B`; language
+  and MTP tensors untouched). Existing installs pick the delta up with
+  `mtplx pull`; images, `/health` `vision.enabled`, prompt caching with
+  images, and MTP decode were verified on all six builds. Thanks to
+  @kjellix for the report and the proven graft procedure.
+- **Forge keeps vision towers from now on.** `mtplx forge build` grafts the
+  source's vision tower, `vision_config`, and preprocessor sidecars into the
+  converted artifact on every lane (`mtplx/vision_graft.py`), and fails
+  closed when a source that declares `vision_config` would produce a blind
+  artifact. A repair script for already-forged artifacts ships as
+  `scripts/graft_vision_tower.py`, and the pillar gate now asserts
+  `vision.enabled` before the vision-cache check so a blind build fails
+  loudly with the real cause.
+- **`mtplx pull` no longer corrupts files that changed upstream.** The
+  progress downloader treated a size-mismatched *complete* local file as a
+  resumable partial and byte-range-appended the remote tail onto the old
+  content — updating a repo in place (for example the restored 3.8 vision
+  indexes) corrupted `config.json` and `model.safetensors.index.json` and
+  left the local copy unloadable until re-downloaded. Stale files are now
+  discarded and re-fetched whole; genuine `*.incomplete` partials still
+  resume. **Users on ≤2.7.1 should upgrade before pulling repaired repos**;
+  a failed pull from an older build is recovered by deleting the corrupt
+  `config.json` + `model.safetensors.index.json` and pulling again.
+
 ## [2.7.1] - 2026-08-15
 
 Clears the 2.7.0 known-issues list: `xhigh` is now selectable everywhere it is
