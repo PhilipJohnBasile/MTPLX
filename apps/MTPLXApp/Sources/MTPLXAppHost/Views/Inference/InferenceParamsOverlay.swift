@@ -793,23 +793,25 @@ struct InferenceParamsOverlay: View {
                         .foregroundStyle(Brand.typeSecondary)
                         .monospacedDigit()
                 }
-                Slider(
-                    value: Binding(
-                        get: { Double(contextWindow) },
-                        set: { newValue in
-                            let clamped = clampContextWindow(Int(newValue.rounded()))
-                            if clamped != contextWindow {
-                                Haptics.tick(.alignment)
+                if let sliderRange = contextWindowSliderRange {
+                    Slider(
+                        value: Binding(
+                            get: { Double(contextWindow) },
+                            set: { newValue in
+                                let clamped = clampContextWindow(Int(newValue.rounded()))
+                                if clamped != contextWindow {
+                                    Haptics.tick(.alignment)
+                                }
+                                contextWindow = clamped
+                                contextWindowDirty = clamped != currentContextWindow
                             }
-                            contextWindow = clamped
-                            contextWindowDirty = clamped != currentContextWindow
-                        }
-                    ),
-                    in: Double(Self.contextWindowMin)...Double(modelMaxContext),
-                    step: 1024
-                )
-                .tint(Brand.typeBody)
-                .controlHoverLift(motionEnabled: motionEnabled)
+                        ),
+                        in: Double(sliderRange.lowerBound)...Double(sliderRange.upperBound),
+                        step: 1024
+                    )
+                    .tint(Brand.typeBody)
+                    .controlHoverLift(motionEnabled: motionEnabled)
+                }
             }
             contextPresetChips
             Text("Max for \(contextWindowModelLabel): \(Self.formatTokensVerbose(modelMaxContext)).")
@@ -1343,6 +1345,15 @@ struct InferenceParamsOverlay: View {
         let reported = contextWindowPolicy?.maximum
             ?? MTPLXModelOption.maxContextWindow(forFamily: selectedModelFamily)
         return max(Self.contextWindowMin, reported)
+    }
+
+    /// Same contract as `depthSliderRange`: a `Slider` needs two distinct
+    /// detents, and SwiftUI's `Normalizing` traps on a zero-width interval.
+    /// A model whose window is pinned at the floor keeps the value row and
+    /// the `Max` chip; there is simply nothing to slide.
+    private var contextWindowSliderRange: ClosedRange<Int>? {
+        guard modelMaxContext > Self.contextWindowMin else { return nil }
+        return Self.contextWindowMin...modelMaxContext
     }
 
     private var compatibleConfigurationContextWindow: Int? {
