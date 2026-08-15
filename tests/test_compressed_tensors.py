@@ -547,3 +547,27 @@ def test_nvfp4_converter_preserves_glm_key_layout(tmp_path):
     assert report["audit"]["passed"] is True
     assert f"{prefix}.weight" in index["weight_map"]
     assert f"language_model.{prefix}.weight" not in index["weight_map"]
+
+
+def test_mlx_key_preserves_vision_tower_prefixes():
+    # The model.visual.* -> vision_tower.* remap is what keeps multimodal
+    # checkpoints sighted through the compressed-tensors lane (issue #263).
+    from mtplx.compressed_tensors import _mlx_key
+
+    assert (
+        _mlx_key("model.visual.blocks.0.attn.qkv.weight")
+        == "vision_tower.blocks.0.attn.qkv.weight"
+    )
+    assert (
+        _mlx_key("model.visual.patch_embed.proj.weight")
+        == "vision_tower.patch_embed.proj.weight"
+    )
+    assert (
+        _mlx_key("vision_tower.merger.linear_fc1.weight")
+        == "vision_tower.merger.linear_fc1.weight"
+    )
+    assert (
+        _mlx_key("model.language_model.layers.0.mlp.gate_proj.weight")
+        == "language_model.model.layers.0.mlp.gate_proj.weight"
+    )
+    assert _mlx_key("lm_head.weight") == "language_model.lm_head.weight"

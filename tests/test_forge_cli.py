@@ -2211,3 +2211,181 @@ def test_publish_reads_one_token_line_and_keeps_artifacts_secret_free(tmp_path, 
     assert "hf_secret" not in publish_json
     assert "hf_secret" not in runtime_json
     assert json.loads(runtime_json)["forge_provenance"]["published_to_hf"]["repo"] == "owner/Fixture-MTPLX-Speed"
+
+
+def _tiny_vision_config() -> dict:
+    return {
+        "model_type": "qwen3_5",
+        "depth": 1,
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_heads": 2,
+        "out_hidden_size": 4,
+        "patch_size": 2,
+        "spatial_merge_size": 2,
+        "temporal_patch_size": 1,
+        "in_channels": 3,
+        "num_position_embeddings": 4,
+        "deepstack_visual_indexes": [],
+    }
+
+
+def _write_multimodal_source(source: Path) -> dict[str, object]:
+    """Synthetic multimodal checkpoint: language + model.visual.* weights.
+
+    The vision weights are dumped from a real (miniature) tower so the
+    graft's strict verification load has an exact key/shape match.
+    """
+    from mlx.utils import tree_flatten
+
+    from mtplx.vision.qwen3_vl_tower import Qwen3VLVisionConfig, Qwen3VLVisionTower
+
+    vision_config = _tiny_vision_config()
+    tower = Qwen3VLVisionTower(Qwen3VLVisionConfig.from_dict(vision_config))
+    tensors: dict[str, object] = {
+        "model.visual." + name: value for name, value in tree_flatten(tower.parameters())
+    }
+    tensors["model.language_model.layers.0.self_attn.q_proj.weight"] = mx.zeros(
+        (2, 2), dtype=mx.bfloat16
+    )
+    _write_json(
+        source / "config.json",
+        {
+            "model_type": "qwen3_5",
+            "vision_config": vision_config,
+            "image_token_id": 248056,
+            "video_token_id": 248057,
+            "vision_start_token_id": 248053,
+            "vision_end_token_id": 248054,
+        },
+    )
+    _write_json(
+        source / "model.safetensors.index.json",
+        {"weight_map": {key: "model.safetensors" for key in tensors}},
+    )
+    mx.save_safetensors(str(source / "model.safetensors"), tensors)
+    _write_json(source / "preprocessor_config.json", {"patch_size": 2, "merge_size": 2})
+    _write_json(source / "video_preprocessor_config.json", {"patch_size": 2})
+    return tensors
+
+
+def _write_text_only_destination(destination: Path) -> None:
+    _write_json(destination / "config.json", {"model_type": "qwen3_5"})
+    _write_json(
+        destination / "model.safetensors.index.json",
+        {
+            "metadata": {"total_size": 8},
+            "weight_map": {
+                "language_model.model.layers.0.self_attn.q_proj.weight": "model-00001-of-00001.safetensors"
+            },
+        },
+    )
+    mx.save_safetensors(
+        str(destination / "model-00001-of-00001.safetensors"),
+        {
+            "language_model.model.layers.0.self_attn.q_proj.weight": mx.zeros(
+                (2, 2), dtype=mx.bfloat16
+            )
+        },
+    )
+
+
+def test_forge_preserves_vision_tower(tmp_path):
+    from mtplx.vision_graft import graft_vision_tower
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    source_tensors = _write_multimodal_source(source)
+    _write_text_only_destination(destination)
+
+    forge._ensure_vision_tower(source, destination)
+
+    index = json.loads(
+        (destination / "model.safetensors.index.json").read_text(encoding="utf-8")
+    )
+    vision_keys = [
+        key for key in index["weight_map"] if key.startswith("vision_tower.")
+    ]
+    expected = sum(1 for key in source_tensors if key.startswith("model.visual."))
+    assert len(vision_keys) == expected
+    assert all(
+        index["weight_map"][key] == "model-vision.safetensors" for key in vision_keys
+    )
+    assert index["metadata"]["total_size"] > 8
+
+    config = json.loads((destination / "config.json").read_text(encoding="utf-8"))
+    assert isinstance(config.get("vision_config"), dict)
+    assert config["image_token_id"] == 248056
+    assert (destination / "model-vision.safetensors").exists()
+    assert (destination / "preprocessor_config.json").exists()
+    assert (destination / "video_preprocessor_config.json").exists()
+
+    grafted = mx.load(str(destination / "model-vision.safetensors"))
+    assert sorted(grafted) == sorted(
+        "vision_tower." + key[len("model.visual.") :]
+        for key in source_tensors
+        if key.startswith("model.visual.")
+    )
+
+    # The fail-closed validator must accept the repaired artifact.
+    forge._validate_vision_payload(source, destination)
+
+    # Provenance stamp resolves the grafted tower.
+    stamp = forge._vision_metadata_stamp(destination)
+    assert stamp == {
+        "tensor_count": expected,
+        "prefix": "vision_tower.",
+        "shards": ["model-vision.safetensors"],
+    }
+
+    # Idempotent: a second pass must be a no-op.
+    report = graft_vision_tower(source, destination)
+    assert report["status"] == "already-present"
+
+
+def test_forge_vision_noop_for_text_only_source(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    _write_json(source / "config.json", {"model_type": "qwen3_5"})
+    _write_json(
+        source / "model.safetensors.index.json",
+        {"weight_map": {"model.layers.0.self_attn.q_proj.weight": "model.safetensors"}},
+    )
+    _write_text_only_destination(destination)
+    index_before = (destination / "model.safetensors.index.json").read_text(
+        encoding="utf-8"
+    )
+    config_before = (destination / "config.json").read_text(encoding="utf-8")
+
+    forge._ensure_vision_tower(source, destination)
+    forge._validate_vision_payload(source, destination)
+
+    assert not (destination / "model-vision.safetensors").exists()
+    assert (destination / "model.safetensors.index.json").read_text(
+        encoding="utf-8"
+    ) == index_before
+    assert (destination / "config.json").read_text(encoding="utf-8") == config_before
+    assert forge._vision_metadata_stamp(destination) is None
+
+
+def test_forge_vision_validation_fails_closed_on_blind_artifact(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    # Source declares vision_config, but its index carries no vision tensors,
+    # so the graft cannot restore anything: the build must fail, not ship blind.
+    _write_json(
+        source / "config.json",
+        {"model_type": "qwen3_5", "vision_config": _tiny_vision_config()},
+    )
+    _write_json(
+        source / "model.safetensors.index.json",
+        {"weight_map": {"model.layers.0.self_attn.q_proj.weight": "model.safetensors"}},
+    )
+    _write_text_only_destination(destination)
+
+    forge._ensure_vision_tower(source, destination)
+    with pytest.raises(forge.ForgeError, match="vision"):
+        forge._validate_vision_payload(source, destination)

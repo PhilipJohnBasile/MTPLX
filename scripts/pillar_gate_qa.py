@@ -147,6 +147,22 @@ class Client:
 
 
 def gate_vision_cache(client: Client, report: dict[str, Any]) -> bool:
+    # Preflight: a blind artifact (dropped vision tower, issue #263) must fail
+    # this gate loudly with the real cause, not a confusing mid-gate HTTP 400.
+    with urllib.request.urlopen(client.base_url + "/health", timeout=15) as resp:
+        health = json.loads(resp.read())
+    vision_enabled = bool((health.get("vision") or {}).get("enabled"))
+    if not vision_enabled:
+        report["vision_cache"] = {
+            "health_vision_enabled": False,
+            "fail_reason": (
+                "served model reports vision.enabled=false: the artifact has "
+                "no vision tower (issue #263 class of miss)"
+            ),
+            "pass": False,
+        }
+        return False
+
     msgs = build_context(9000)
     r1 = client.chat(msgs, max_tokens=250)
     msgs.append({"role": "assistant", "content": r1["text"] or "(styles)"})
