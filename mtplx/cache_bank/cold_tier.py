@@ -72,6 +72,15 @@ DEFAULT_COLD_TIER_MAX_BYTES = 100 * 1024**3
 DEFAULT_COLD_TIER_MIN_PREFIX_TOKENS = 512
 DEFAULT_BLOCK_SIZE = 256
 DISK_USAGE_CACHE_TTL_S = 30.0
+# A rescan is due only when the store changed since the last scan AND at
+# least DUTY_DIVISOR x the last scan's own duration has passed, so the
+# reconciliation walk can never occupy more than 1/DUTY_DIVISOR of a core
+# regardless of how many blobs a long-lived bank has accumulated
+# (measured 2026-08-15: 816k files, 41.7 s per walk on an M5 Max — under the
+# previous 30 s TTL that walk ran back to back whenever /health was polled).
+DISK_USAGE_SCAN_DUTY_DIVISOR = 20
+# The walk yields to foreground traffic every this many files.
+DISK_USAGE_SCAN_YIELD_EVERY_FILES = 4096
 _COMMITTED_CACHE_POLICIES = frozenset({"committed", "last_window"})
 
 
@@ -353,6 +362,11 @@ class SessionBankColdTier:
         self._disk_usage_lock = threading.Lock()
         self._disk_usage_cache: dict[str, int | float] | None = None
         self._disk_usage_scan_running = False
+        # Bumped by every store mutation (write commit, eviction, archive,
+        # orphan cleanup). A snapshot records the generation it was taken
+        # at; a snapshot whose generation still matches is exact no matter
+        # how old it is, and a rescan is only ever due for a changed store.
+        self._store_generation = 0
         self._orphan_cleanup_running = False
         self._stats_lock = threading.Lock()
         self._stats: dict[str, int | float | str | bool | None] = {
@@ -1057,6 +1071,11 @@ class SessionBankColdTier:
                 pending.entry_id,
             )
             return False
+        # Phase 0 (no lock): make sure one reconciliation snapshot exists so
+        # the admission gate below can price orphan bytes without walking the
+        # store itself. Cold start only: a bank that already has a snapshot
+        # pays nothing here. The walk yields to foreground traffic.
+        self._ensure_disk_usage_snapshot()
         # Phase 0 (no lock): pause-aware digest planning. This is where the
         # real per-entry cost lives once blob dedupe kicks in — hashing a
         # ~2.5 GB payload is ~0.8 s of CPU/memory traffic even when every
@@ -1231,48 +1250,61 @@ class SessionBankColdTier:
         return min(int(self.max_bytes), int(free // 4)), None
 
     def _current_bytes_for_cap(self, required_bytes: int = 0) -> int:
+        """Bytes the cap gate must account for: manifest bytes plus orphans.
+
+        The manifest SUM is exact for every tracked entry and costs one SQLite
+        query. Orphan bytes (crash leftovers, untracked entry dirs) come from
+        the last reconciliation snapshot as a delta over the manifest bytes
+        that snapshot saw; that delta survives evictions unchanged, so a
+        snapshot of any age is a sound estimate here. This gate used to force
+        a synchronous full walk of the store on every write (41.7 s per write
+        on an 816k-file bank), which is what the reconciliation walk exists
+        to avoid.
+        """
         required = max(0, int(required_bytes))
         manifest_bytes = self._current_bytes()
-        try:
-            usage = self._managed_disk_usage(force=True)
-        except Exception as exc:
-            logger.warning(
-                "SessionBank SSD disk usage scan failed during cap check: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            return manifest_bytes
-        managed_file_bytes = int(usage.get("managed_file_bytes", 0) or 0)
-        database_file_bytes = int(usage.get("database_file_bytes", 0) or 0)
-        managed_cache_bytes = max(0, managed_file_bytes - database_file_bytes)
-        untracked_bytes = max(
-            0,
-            managed_cache_bytes - manifest_bytes,
-        )
+        untracked_bytes = self._untracked_bytes_estimate()
         if (
             self.enabled
-            and managed_cache_bytes + required > self.max_bytes
+            and manifest_bytes + untracked_bytes + required > self.max_bytes
             and untracked_bytes > 0
         ):
             try:
                 cleanup = self._cleanup_untracked_cache_once()
                 self._record_orphan_cleanup_result(cleanup)
-                usage = self._managed_disk_usage(force=True)
-                managed_file_bytes = int(usage.get("managed_file_bytes", 0) or 0)
-                database_file_bytes = int(
-                    usage.get("database_file_bytes", 0) or 0
-                )
-                managed_cache_bytes = max(
-                    0,
-                    managed_file_bytes - database_file_bytes,
-                )
+                # Cleanup deletes everything the manifest does not reference,
+                # so the orphan delta is zero by construction until the next
+                # reconciliation measures otherwise.
+                self._note_orphans_cleaned()
+                untracked_bytes = 0
             except Exception as exc:
                 logger.warning(
                     "SessionBank SSD orphan cleanup failed during cap check: %s: %s",
                     type(exc).__name__,
                     exc,
                 )
-        return max(manifest_bytes, managed_cache_bytes)
+        return manifest_bytes + untracked_bytes
+
+    def _untracked_bytes_estimate(self) -> int:
+        with self._disk_usage_lock:
+            cached = self._disk_usage_cache
+            if cached is None:
+                return 0
+            managed_file_bytes = int(cached.get("managed_file_bytes", 0) or 0)
+            database_file_bytes = int(cached.get("database_file_bytes", 0) or 0)
+            manifest_at_scan = int(cached.get("manifest_physical_bytes_at_scan", 0) or 0)
+        return max(0, managed_file_bytes - database_file_bytes - manifest_at_scan)
+
+    def _note_orphans_cleaned(self) -> None:
+        with self._disk_usage_lock:
+            cached = self._disk_usage_cache
+            if cached is None:
+                return
+            managed_file_bytes = int(cached.get("managed_file_bytes", 0) or 0)
+            database_file_bytes = int(cached.get("database_file_bytes", 0) or 0)
+            cached["manifest_physical_bytes_at_scan"] = max(
+                0, managed_file_bytes - database_file_bytes
+            )
 
     def _delete_entry_row(self, row: sqlite3.Row) -> None:
         entry_id = str(row["entry_id"])
@@ -1810,27 +1842,58 @@ class SessionBankColdTier:
         return int(row[0] or 0)
 
     def _managed_disk_usage(self, *, force: bool = False) -> dict[str, int | float]:
+        """Return the reconciliation snapshot; schedule a rescan only when due.
+
+        A snapshot is exact while the store generation it recorded still
+        matches. A rescan is due when the store has changed AND the adaptive
+        interval has elapsed: max(DISK_USAGE_CACHE_TTL_S, DUTY_DIVISOR x the
+        last walk's duration). Reads never block; ``force`` walks now.
+        """
+        if force:
+            return self._refresh_disk_usage_now()
         now = time.time()
         with self._disk_usage_lock:
             cached = self._disk_usage_cache
-            if (
-                not force
-                and cached is not None
-                and now - float(cached["disk_usage_last_scan_s"]) < DISK_USAGE_CACHE_TTL_S
-            ):
-                fresh = dict(cached)
-                fresh["disk_usage_scan_pending"] = False
-                fresh["disk_usage_stale"] = False
-                return fresh
-            if not force:
+            if cached is None:
                 self._start_disk_usage_scan_locked()
-                if cached is not None:
-                    stale = dict(cached)
-                    stale["disk_usage_scan_pending"] = True
-                    stale["disk_usage_stale"] = True
-                    return stale
                 return self._empty_disk_usage(scan_pending=True)
-        return self._refresh_disk_usage_now()
+            view = dict(cached)
+            changed = int(cached.get("disk_usage_generation", -1)) != self._store_generation
+            if changed and self._rescan_interval_elapsed_locked(cached, now):
+                self._start_disk_usage_scan_locked()
+            view["disk_usage_scan_pending"] = bool(self._disk_usage_scan_running)
+            view["disk_usage_stale"] = bool(cached.get("disk_usage_stale")) or changed
+            return view
+
+    def _rescan_interval_elapsed_locked(self, cached: dict[str, int | float], now: float) -> bool:
+        interval = max(
+            DISK_USAGE_CACHE_TTL_S,
+            DISK_USAGE_SCAN_DUTY_DIVISOR * float(cached.get("disk_usage_scan_s", 0.0) or 0.0),
+        )
+        return now - float(cached.get("disk_usage_last_scan_s", 0.0) or 0.0) >= interval
+
+    def _ensure_disk_usage_snapshot(self) -> None:
+        """Cold start only: take the first snapshot synchronously (off-lock).
+
+        Later writes reuse the snapshot; if a background scan is already
+        running the caller proceeds on manifest bytes alone rather than
+        waiting for it.
+        """
+        with self._disk_usage_lock:
+            if self._disk_usage_cache is not None or self._disk_usage_scan_running:
+                return
+            self._disk_usage_scan_running = True
+        try:
+            self._refresh_disk_usage_now()
+        except Exception as exc:
+            logger.warning(
+                "SessionBank SSD disk usage scan failed at cold start: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        finally:
+            with self._disk_usage_lock:
+                self._disk_usage_scan_running = False
 
     def _start_disk_usage_scan_locked(self) -> None:
         if self._disk_usage_scan_running:
@@ -1845,26 +1908,41 @@ class SessionBankColdTier:
     def _disk_usage_scan_worker(self) -> None:
         try:
             self._refresh_disk_usage_now()
+        except Exception as exc:  # pragma: no cover - defensive background task
+            logger.warning(
+                "SessionBank SSD disk usage scan failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
         finally:
             with self._disk_usage_lock:
                 self._disk_usage_scan_running = False
 
     def _refresh_disk_usage_now(self) -> dict[str, int | float]:
-        # The writer mutates entry directories, blobs, and the manifest as one
-        # logical transaction under ``_base_lock``. Scanning without the same
-        # lock could cache a half-written view as fresh, making disk telemetry
-        # briefly report phantom untracked bytes and potentially trigger an
-        # unnecessary orphan cleanup. The scan already runs off the hot path;
-        # waiting for the current write keeps the snapshot coherent.
-        with self._base_lock:
-            manifest_bytes_at_scan = self._current_bytes()
-            usage = self._scan_managed_disk_usage()
-            usage["manifest_physical_bytes_at_scan"] = manifest_bytes_at_scan
-            # Keep the writer excluded until the coherent snapshot has been
-            # installed. Otherwise a write can invalidate the old cache in
-            # the gap and this older scan can overwrite it as fresh.
-            with self._disk_usage_lock:
-                self._disk_usage_cache = dict(usage)
+        # The walk runs without _base_lock so a 40 s reconciliation of a large
+        # bank never stalls the writer or blocks archive/cleanup. Coherence
+        # comes from the store generation instead: the walk records the
+        # generation it started at, and a snapshot taken across a mutation is
+        # installed as an estimate (stale=True) rather than as truth — stats
+        # will not trigger orphan cleanup from it, and the next due rescan
+        # replaces it. The manifest total is captured before and after; the
+        # larger of the two is paired with the physical bytes so an entry
+        # committed mid-walk can never masquerade as orphan bytes.
+        with self._disk_usage_lock:
+            generation = self._store_generation
+        manifest_before = self._current_bytes()
+        usage = self._scan_managed_disk_usage()
+        if self._stop.is_set():
+            # Interrupted by close(): a partial walk is not a snapshot.
+            usage["disk_usage_stale"] = True
+            return usage
+        manifest_after = self._current_bytes()
+        with self._disk_usage_lock:
+            torn = self._store_generation != generation
+            usage["manifest_physical_bytes_at_scan"] = max(manifest_before, manifest_after)
+            usage["disk_usage_generation"] = int(generation)
+            usage["disk_usage_stale"] = bool(torn)
+            self._disk_usage_cache = dict(usage)
         return dict(usage)
 
     @staticmethod
@@ -1879,6 +1957,7 @@ class SessionBankColdTier:
             "managed_dir_count": 0,
             "disk_usage_scan_s": 0.0,
             "disk_usage_last_scan_s": 0.0,
+            "disk_usage_generation": -1,
             "disk_usage_scan_pending": bool(scan_pending),
             "disk_usage_stale": bool(scan_pending),
         }
@@ -1901,6 +1980,13 @@ class SessionBankColdTier:
                 except FileNotFoundError:
                     continue
                 file_count += 1
+                if file_count % DISK_USAGE_SCAN_YIELD_EVERY_FILES == 0:
+                    # Reconciliation is maintenance: give way to live traffic
+                    # (bounded pause, same policy as blob writes) and stop
+                    # early on close.
+                    self._pause_for_foreground()
+                    if self._stop.is_set():
+                        break
                 file_bytes += int(stat.st_size)
                 blocks = int(getattr(stat, "st_blocks", 0) or 0)
                 allocated = blocks * 512 if blocks > 0 else int(stat.st_size)
@@ -1908,6 +1994,8 @@ class SessionBankColdTier:
                 if filename.startswith("manifest.sqlite"):
                     database_file_bytes += int(stat.st_size)
                     database_disk_bytes += int(allocated)
+            if self._stop.is_set():
+                break
         usage: dict[str, int | float] = {
             "managed_file_bytes": int(file_bytes),
             "managed_disk_bytes": int(disk_bytes),
@@ -1923,9 +2011,13 @@ class SessionBankColdTier:
         return usage
 
     def _invalidate_disk_usage_cache(self) -> None:
+        # Every store mutation lands here. The snapshot is kept (its orphan
+        # delta stays a sound estimate for the cap gate); it is only marked
+        # as belonging to an older generation so a rescan becomes due once
+        # the adaptive interval has passed.
         with self._disk_usage_lock:
+            self._store_generation += 1
             if self._disk_usage_cache is not None:
-                self._disk_usage_cache["disk_usage_last_scan_s"] = 0.0
                 self._disk_usage_cache["disk_usage_stale"] = True
 
     def _insert_manifest(self, metadata: dict[str, Any]) -> None:
@@ -1986,6 +2078,14 @@ class SessionBankColdTier:
     def _set_last_miss(self, reason: str) -> None:
         with self._stats_lock:
             self._stats["last_miss_reason"] = reason
+
+    @property
+    def last_miss_reason(self) -> str | None:
+        """Cheap request-path accessor. ``stats()`` is observability and may
+        schedule a reconciliation walk; a lookup miss must never do that."""
+        with self._stats_lock:
+            value = self._stats.get("last_miss_reason")
+        return str(value) if value else None
 
 
 def _normalize_mode(mode: str) -> str:

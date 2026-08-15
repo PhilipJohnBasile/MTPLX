@@ -1775,13 +1775,21 @@ class SessionBank:
             policy_fingerprint=policy_fingerprint,
         )
         if record is None:
-            if hasattr(self.cold_tier, "stats"):
-                cold_stats = self.cold_tier.stats()
-                cold_miss = cold_stats.get("last_miss_reason")
-                if cold_miss:
-                    self.last_miss_reason = str(cold_miss)
-                    if self.last_prefix_diagnostic is not None:
-                        self.last_prefix_diagnostic["miss_reason"] = self.last_miss_reason
+            # Read the miss reason through the cheap accessor: stats() is the
+            # observability surface and may schedule a store reconciliation
+            # walk, which has no place on a lookup miss (a 41 s walk per cold
+            # miss on a large bank, 2026-08-15). Duck-typed doubles that only
+            # expose stats() keep working.
+            if hasattr(self.cold_tier, "last_miss_reason"):
+                cold_miss = self.cold_tier.last_miss_reason
+            elif hasattr(self.cold_tier, "stats"):
+                cold_miss = self.cold_tier.stats().get("last_miss_reason")
+            else:
+                cold_miss = None
+            if cold_miss:
+                self.last_miss_reason = str(cold_miss)
+                if self.last_prefix_diagnostic is not None:
+                    self.last_prefix_diagnostic["miss_reason"] = self.last_miss_reason
             return None
         if hidden_variant is not None and (
             getattr(record, "logits", None) is None
