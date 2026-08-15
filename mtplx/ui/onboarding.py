@@ -44,6 +44,7 @@ from mtplx.default_models import (
     is_verified_default_model_ref,
     is_optimized_quality_model_ref,
     optimized_quality_model_ref,
+    public_model_id_for_ref,
     qwen38_bare_speed_fp16_model_ref,
     qwen38_bare_speed_model_ref,
     qwen38_optimized_quality_fp16_model_ref,
@@ -1680,21 +1681,46 @@ def _quickstart_state_is_reusable(last: dict) -> bool:
 
 
 def _normalize_quickstart_state(last: dict) -> dict:
-    """Refresh saved verified-default refs while preserving custom models."""
+    """Refresh saved verified-default refs while preserving custom models.
+
+    A user whose last run used the verified default follows the default when
+    it moves; that is how the default lane upgrades. When it does move, the
+    model they actually ran last time is kept under ``previous_default_model``
+    so the "Welcome back" panel states the change instead of labeling the new
+    default as last time's model. The note is shown once: the key is dropped
+    again as soon as the saved model and the current default agree.
+    """
 
     if not is_verified_default_model_ref(last.get("model")):
         return last
     selection = _verified_default_selection()
     refreshed = dict(last)
+    refreshed.pop("previous_default_model", None)
+    previous = str(last.get("model") or "")
+    if previous and public_model_id_for_ref(previous) != public_model_id_for_ref(
+        selection.model
+    ):
+        refreshed["previous_default_model"] = previous
     refreshed["model"] = selection.model
     refreshed["model_selection"] = selection.to_dict()
     return refreshed
+
+
+def _default_moved_note(last: dict) -> str | None:
+    previous = last.get("previous_default_model")
+    if not previous:
+        return None
+    return (
+        f"The recommended default moved here from {_model_display(previous)}; "
+        "it downloads on first use if it is not installed yet."
+    )
 
 
 def confirm_same_as_last(last: dict) -> bool:
     """Ask the user whether to reuse the last configuration."""
 
     model_display = _model_display(last.get("model")) or "?"
+    moved_note = _default_moved_note(last)
     try:
         from rich.panel import Panel
         from rich.table import Table
@@ -1703,6 +1729,8 @@ def confirm_same_as_last(last: dict) -> bool:
         print()
         print("  Last time you used:")
         print(f"    Model:     {model_display}")
+        if moved_note:
+            print(f"               {moved_note}")
         print(f"    Mode:      {mode_label(last)}")
         print(f"    Interface: {interface_label(last.get('target'))}")
         print()
@@ -1714,6 +1742,8 @@ def confirm_same_as_last(last: dict) -> bool:
         print()
         print("  Last time you used:")
         print(f"    Model:     {model_display}")
+        if moved_note:
+            print(f"               {moved_note}")
         print(f"    Mode:      {mode_label(last)}")
         print(f"    Interface: {interface_label(last.get('target'))}")
         print()
@@ -1724,6 +1754,8 @@ def confirm_same_as_last(last: dict) -> bool:
     table.add_column(style="dim", justify="right", no_wrap=True)
     table.add_column(no_wrap=False)
     table.add_row("Model", model_display)
+    if moved_note:
+        table.add_row("", Text(moved_note, style="dim"))
     table.add_row("Mode", mode_label(last))
     table.add_row("Interface", interface_label(last.get("target")))
     panel = Panel(

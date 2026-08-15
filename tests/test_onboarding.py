@@ -90,6 +90,66 @@ def test_state_round_trip(tmp_path, monkeypatch):
         json.load(handle)
 
 
+def _pin_modern_64gib(monkeypatch):
+    monkeypatch.setattr(
+        default_models_module,
+        "detect_apple_silicon",
+        lambda: {
+            "apple_silicon_generation": "m5",
+            "chip": "Apple M5 Max",
+            "memory_gib": 64.0,
+        },
+    )
+
+
+def test_normalize_state_states_a_moved_default_once(monkeypatch):
+    """A saved verified default follows the current default; when that moves
+    the model, the panel is told what the user actually ran last time, and
+    the note disappears once saved model and default agree again."""
+
+    _pin_modern_64gib(monkeypatch)
+    last = {"model": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2", "target": "cli"}
+
+    refreshed = onboarding._normalize_quickstart_state(last)
+
+    assert refreshed["model"] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
+    assert refreshed["previous_default_model"] == (
+        "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
+    )
+    note = onboarding._default_moved_note(refreshed)
+    assert note is not None
+    assert "Qwen3.6-27B-MTPLX-Optimized-Speed-V2" in note
+    assert "moved here" in note
+
+    # Next run: the saved model already is the default -> no note, key dropped.
+    again = onboarding._normalize_quickstart_state(refreshed)
+    assert again["model"] == "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
+    assert "previous_default_model" not in again
+    assert onboarding._default_moved_note(again) is None
+
+
+def test_normalize_state_leaves_custom_models_alone(monkeypatch):
+    _pin_modern_64gib(monkeypatch)
+    last = {"model": "someone/custom-model", "target": "cli"}
+    assert onboarding._normalize_quickstart_state(last) is last
+    assert onboarding._default_moved_note(last) is None
+
+
+def test_confirm_same_as_last_prints_the_moved_default_note(monkeypatch, capsys):
+    monkeypatch.setattr(onboarding, "_console", lambda: None)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "")
+    last = {
+        "model": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
+        "previous_default_model": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
+        "profile": "turbo",
+        "target": "cli",
+    }
+    assert onboarding.confirm_same_as_last(last) is True
+    out = capsys.readouterr().out
+    assert "Qwen3.8-27B-MTPLX-Optimized-Speed" in out
+    assert "moved here from Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2" in out
+
+
 def test_mode_label_covers_all_modes():
     """Mode labels explain runtime mechanics and hardware-neutral speed gain."""
     stable = onboarding.mode_label({"profile": "stable", "max": False})
