@@ -5,7 +5,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/apps/MTPLXApp"
 BUILD_SCRIPT="$APP_ROOT/script/build_and_run.sh"
 VERSION="${MTPLX_RELEASE_VERSION:-$(/usr/bin/awk -F'"' '/^version = / { print $2; exit }' "$ROOT/pyproject.toml")}"
-APP_BUILD="${MTPLX_RELEASE_BUILD:-10000}"
+# Left empty, the build script derives it from VERSION; the appcast then reads
+# the number back off the built bundle so the feed cannot rank a release
+# differently from the app it ships.
+APP_BUILD="${MTPLX_RELEASE_BUILD:-}"
 RELEASE_TAG="${MTPLX_RELEASE_TAG:-v$VERSION}"
 GITHUB_REPO="${MTPLX_GITHUB_REPO:-youssofal/mtplx}"
 GITHUB_ASSET_BASE="${MTPLX_GITHUB_ASSET_BASE:-https://github.com/$GITHUB_REPO/releases/download/$RELEASE_TAG}"
@@ -177,6 +180,9 @@ MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE=1 \
 MTPLX_REQUIRE_THERMALFORGE_RESOURCE=1 \
 MTPLX_CODESIGN_IDENTITY="$CODESIGN_IDENTITY" \
 "$BUILD_SCRIPT" --no-launch
+
+APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_BUNDLE/Contents/Info.plist")"
+echo "Built MTPLX.app $VERSION ($APP_BUILD)"
 
 /usr/bin/codesign --verify --deep --strict --verbose=4 "$APP_BUNDLE"
 

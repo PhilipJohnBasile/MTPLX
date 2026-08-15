@@ -28,6 +28,12 @@ offered, and the app's KV cache quantization toggle reaches Qwen 3.8.
 - **`mtplx doctor` names the model it actually checks** instead of hardcoding
   the previous default, and turbo's profile note reports the real compiled
   verify fence (32,768, raised from 12,288 in 2.7.0) rather than the stale one.
+- **A built app can no longer rank below the release it supersedes.** Sparkle
+  orders updates by `CFBundleVersion` alone, and the number derived from the
+  version was narrow enough that 2.7.1 computed lower than the 2.7.0 that
+  shipped — so a fresh build offered 2.7.0 to itself as an update. The
+  derivation now has room for the whole version and the appcast reads its
+  number back off the built bundle instead of being told one separately.
 
 ### Still open from 2.7.0
 

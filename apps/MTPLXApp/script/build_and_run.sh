@@ -30,6 +30,10 @@ BUNDLED_PYTHON_DIR="${MTPLX_BUNDLED_PYTHON_DIR:-}"
 REQUIRE_BUNDLED_PYTHON_RESOURCE="${MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE:-0}"
 APP_VERSION="${MTPLX_APP_VERSION:-$(/usr/bin/awk -F'"' '/^version = / { print $2; exit }' "$REPO_ROOT/pyproject.toml" 2>/dev/null || true)}"
 APP_VERSION="${APP_VERSION:-1.0.0}"
+# Sparkle ranks updates by CFBundleVersion alone, so this must rise with every
+# release. Widths give minor/patch 999 each so a bump can never carry into the
+# field above it; the floor keeps derived numbers above the hand-typed builds
+# shipped before this was derived (2.7.0 went out as 27000).
 semantic_build_number() {
   local version="$1"
   local major=0
@@ -42,7 +46,10 @@ semantic_build_number() {
   if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]]; then
     return 1
   fi
-  printf '%d' "$((major * 10000 + minor * 100 + patch))"
+  if (( minor > 999 || patch > 999 )); then
+    return 1
+  fi
+  printf '%d' "$((major * 1000000 + minor * 1000 + patch))"
 }
 APP_BUILD="${MTPLX_APP_BUILD:-$(semantic_build_number "$APP_VERSION" 2>/dev/null || true)}"
 APP_BUILD="${APP_BUILD:-$(/bin/date +%Y%m%d%H%M)}"
