@@ -65,6 +65,11 @@ one M5 Max; nothing was measured on M1 or M2).
   it; Forge refuses to benchmark when verified max-fan mode cannot start.
 - **`mtplx doctor`** judges memory against the model this Mac would actually
   default to; M5 Max listed in the support matrix.
+- **Attribution is now required, not preferred.** MTPLX stays Apache-2.0, and
+  the NOTICE file (which Apache-2.0 section 4(d) carries with every copy) now
+  requires products built on MTPLX to show "Powered by MTPLX" inside the
+  product, where a user can see it. A mention in a repo or on a website does
+  not cover it.
 
 ### Fixed
 
