@@ -15,7 +15,6 @@ import pytest
 from mtplx.cli import build_parser, main
 from mtplx.commands import public
 from mtplx.profiles import (
-    DEFAULT_FP16_HF_MODEL_ID,
     DEFAULT_HF_MODEL_ID,
     DEFAULT_PUBLIC_MODEL_ID,
     LEGACY_OPTIMIZED_PUBLIC_MODEL_ID,
