@@ -10,6 +10,21 @@ mtplx doctor --json
 
 `doctor` should report missing MLX as an actionable runtime dependency issue, not as a traceback. Help, inspect, and init should still work.
 
+## Downloads Fail: huggingface.co Unreachable
+
+Model downloads go through `huggingface_hub`, which honors `HF_ENDPOINT`. On
+networks where huggingface.co is blocked, point it at a mirror:
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com mtplx pull Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed
+```
+
+The same variable applies to `mtplx start` / `mtplx serve` when they pull on
+first use. In the app, set Settings → Advanced → HF download mirror; the app
+passes it to the daemon and to every pull, and your Hugging Face token is
+never sent to a mirror. `mtplx pull` names this knob in its hint whenever a
+download fails for a network reason and no endpoint is configured.
+
 ## Model Refuses To Run
 
 Run:

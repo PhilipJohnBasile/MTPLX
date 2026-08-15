@@ -7565,6 +7565,57 @@ def test_pull_progress_json_emits_ndjson_events(tmp_path, monkeypatch, capsys):
     assert events[-1]["ok"] is True
 
 
+_PULL_OFFLINE_ERROR = (
+    "An error happened while trying to locate the file on the Hub and we "
+    "cannot find the requested files in the local cache. Please check your "
+    "connection and try again."
+)
+
+
+@pytest.mark.parametrize(
+    ("error_text", "hf_endpoint", "expect_hint"),
+    [
+        # huggingface_hub's offline error, no mirror configured -> name the knob.
+        (_PULL_OFFLINE_ERROR, None, True),
+        ("HTTPSConnectionPool(host='huggingface.co'): Max retries exceeded", None, True),
+        # A mirror is already configured: the mirror is what failed, no hint.
+        (_PULL_OFFLINE_ERROR, "https://hf-mirror.com", False),
+        # Not network-shaped (placeholder repo, #258): no hint.
+        ("downloaded model is incomplete: weight shards are missing or still partial", None, False),
+    ],
+)
+def test_pull_failure_names_hf_mirror_only_for_network_failures(
+    tmp_path, monkeypatch, capsys, error_text, hf_endpoint, expect_hint
+):
+    import mtplx.hf_loader as hf_loader
+
+    if hf_endpoint is None:
+        monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    else:
+        monkeypatch.setenv("HF_ENDPOINT", hf_endpoint)
+
+    def failing_pull_model(model, **kwargs):
+        raise RuntimeError(error_text)
+
+    monkeypatch.setattr(hf_loader, "pull_model", failing_pull_model)
+
+    code = main(["pull", "mtplx/example", "--cache-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "error: pull failed" in out
+    assert f"detail: {error_text}" in out
+    assert ("hint: " in out) is expect_hint
+    if expect_hint:
+        assert "HF_ENDPOINT=https://hf-mirror.com" in out
+
+    code = main(["pull", "mtplx/example", "--cache-dir", str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["error"] == "pull failed"
+    assert payload["detail"] == error_text
+    assert ("hint" in payload) is expect_hint
+
+
 def test_model_cache_commands_parse():
     parser = build_parser()
 
