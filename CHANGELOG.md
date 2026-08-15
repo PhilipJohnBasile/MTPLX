@@ -6,86 +6,98 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ## [2.7.0] - 2026-08-15
 
-Qwen3.8-27B shipped on 2026-08-14; this release serves it the same day, with
-three tuned MTPLX artifacts, FP16 siblings for M1 and M2, and the compiled
-verify path extended to 32k. The GitHub release notes carry the full narrative
-and every measurement.
+Qwen3.8 support 🎉. Qwen3.8-27B came out on 2026-08-14; this release runs it
+the way the model card says, with three tuned MTPLX builds, FP16 versions for
+M1 and M2, and the compiled verify window extended to 32k. The release notes
+at docs/releases/v2.7.0.md carry the full story and every measurement (all on
+one M5 Max; nothing was measured on M1 or M2).
 
 ### Added
 
-- **Qwen3.8-27B, first-class.** A new `qwen3_8` model family carries the
-  official inference contract end to end: sampling at temperature 1.0 /
-  top-p 0.95 / top-k 20, reasoning-effort levels with `xhigh` as the model's
-  own default, preserved thinking on by default (reasoning tokens stay in
-  context and flow through MTP drafting like any others). Coding-agent
-  surfaces default to `medium`, the measured best end-to-end on real agent
-  turns.
-- **Three artifacts with their calibration stamped in.** Bare Speed (16.0 GB,
-  flat 4-bit: quickest burst chat speeds, lower quality and slower on long
-  coding tasks), Optimized Speed (20.4 GB, 4-bit dynamic quant: great coding
-  speeds and good quality, the recommended pick) and Optimized Quality
-  (29.4 GB, 8-bit dynamic quant: good coding speeds and perfect quality).
-  Each artifact states its recommended draft sampler, tuned MTP depth and
-  measured peak memory in its runtime metadata, and the runtime resolves that
-  metadata ahead of profile fallbacks.
-- **FP16 builds for M1 and M2 Macs.** Every 3.8 artifact ships an FP16
-  precision sibling (`…-FP16` on the Hub); the M1/M2 tier of the CLI and the
-  app routes to it automatically, with the same three picks, order and
-  descriptions. The siblings are the identical model: every quantized pack is
-  byte-for-byte the parent's and every 16-bit tensor is the bf16 value cast
-  to fp16 (99.992% exact; the rest are sub-7.6e-6 magnitudes rounded on the
-  fp16 subnormal grid, none overflow). All three launch turbo like their
-  parents.
+- **Qwen 3.8 model family** (`qwen3_8`) with the official inference contract:
+  temperature 1.0 / top-p 0.95 / top-k 20, reasoning effort `xhigh`, `medium`
+  and `low` (coding sessions default to `medium`: 51.5 s against 314.9 s at
+  xhigh on the same correct agent task), thinking preserved in history by
+  default, `chat_template_kwargs.enable_thinking` honored. Live serving is
+  capped at depth 3 for now (depth 4 killed the daemon on drop day).
+- **Three Qwen 3.8 builds.** Bare Speed (16.0 GB, flat 4-bit: quickest burst
+  chat speeds, lower quality and slower on long coding tasks), Optimized
+  Speed (20.4 GB, 4-bit dynamic quant: great coding speeds and good quality,
+  recommended), Optimized Quality (29.4 GB, 8-bit dynamic quant: good coding
+  speeds and perfect quality; KL to the bf16 teacher 0.00105). Each build
+  states its recommended draft sampler, tuned depth (3) and measured peak in
+  its own metadata; the runtime reads that ahead of profile fallbacks, and
+  the app and CLI launch every build identically.
+- **FP16 builds for M1 and M2.** Every 3.8 build has an FP16 sibling on the
+  Hub (`-FP16`): the same quantized packs byte for byte, every 16-bit tensor
+  cast bf16 to fp16 (99.992% exact, none overflow). The M1/M2 tier of the CLI
+  and the app routes to them automatically, same picks, order and text.
 - **`mtplx pull` mirror hint (#259).** A network-shaped download failure with
-  no `HF_ENDPOINT` configured now names the mirror knob (and the app's
-  Settings → Advanced → HF download mirror). Troubleshooting docs cover both.
+  no `HF_ENDPOINT` set now names the mirror knob (CLI env, or Settings,
+  Advanced, HF download mirror in the app). Troubleshooting docs cover both.
+- **`mtplx tune --require-max-fans`** and a Forge `module_overrides` recipe
+  lane (per-module quantization in one conversion pass; it built Optimized
+  Speed).
 
 ### Changed
 
-- **Default model.** Fresh installs on the modern hardware tier with ≥ 32 GiB
-  now default to Qwen3.8 Optimized Speed; M1/M2 get its FP16 sibling;
-  under 32 GiB still routes to the 9B. `mtplx quickstart`, `mtplx start` and
-  the app's first-run picker offer the whole 3.8 line-up. Qwen3.6 Optimized
-  Speed V2 keeps its turbo standing.
-- **Compiled verify to 32k.** The compiled verify graph was fenced at 12,288
-  tokens of context since July; the KV copy tax that justified the fence is
-  gone, so turbo now compiles verify to 32,768 tokens (interleaved A/B on
-  Qwen3.8-27B Bare: +6.9% at 20k context, flat-to-lower peak memory).
-  `MTPLX_COMPILED_VERIFY` is now an operator-respected override.
-- **Agent surfaces uncapped and effort-aware.** OpenCode and Pi integrations
-  no longer send a default output cap; Pi sessions are cache-addressable; the
-  session bank's background re-render uses the request's own reasoning
-  effort in both the postcommit path and the idle scheduler lane.
-- **App.** Qwen3.8 launch family (turbo default, official sampler preset,
-  reasoning-effort toggle, depth tune range to D6). The draft sampler now
-  comes from the artifact metadata on both surfaces, so the app and the CLI
-  launch every 3.8 artifact identically.
-- **Thermal honesty.** Forge max-fan verification fails closed; a retiring
-  daemon can no longer undo the active max-fan lease of a daemon still
-  serving.
+- **Default model.** Fresh installs on M3/M4/M5 with 32 GB or more default to
+  Qwen 3.8 Optimized Speed; M1/M2 get its FP16 sibling; under 32 GB still
+  routes to the 9B. `mtplx quickstart`, `mtplx start` and the app's first-run
+  picker offer the whole 3.8 line-up. `mtplx start` says once when the
+  recommended default moved. Qwen 3.6 Optimized Speed V2 keeps turbo.
+- **Compiled verify to 32k.** The compiled verify graph stopped at 12,288
+  tokens of context since July; that fence's reason is gone, so turbo now
+  compiles verify to 32,768 tokens (interleaved A/B on Qwen 3.8 Bare Speed:
+  +6.9% at 20k, peak memory flat at 20k and lower at 30k).
+  `MTPLX_COMPILED_VERIFY` can be set by hand.
+- **Coding agents.** OpenCode and Pi no longer send an output cap of any kind
+  for MTPLX models; Pi sessions carry their real session id so banked
+  prefixes restore from RAM; the session bank's background re-render uses the
+  effort the request ran with; reasoning cut off before the closing think tag
+  is routed as reasoning.
+- **App.** Qwen 3.8 launch family (turbo, official sampler preset, reasoning
+  effort control with xhigh, Tune AR to D3, exact sizes and measured peaks);
+  the first-run picker shows the trio (FP16 on M1/M2); the Qwen 3.6 Optimized
+  Quality row on M1/M2 resolves to its FP16 build.
+- **Thermal honesty.** Max-fan sessions hold an ownership token, so a daemon
+  shutting down behind its replacement cannot switch fans back to Auto under
+  it; Forge refuses to benchmark when verified max-fan mode cannot start.
+- **`mtplx doctor`** judges memory against the model this Mac would actually
+  default to; M5 Max listed in the support matrix.
 
 ### Fixed
 
-- **SSD session cache no longer walks its whole store on every write or every
-  `/health` poll.** On a long-lived bank (816,220 files, 89.9 GB) each walk
-  took 41.7 s; the cap check forced one per write and the app's health
-  poller kept another running back to back — most of a CPU core, forever,
-  under live decode. Reconciliation is now maintenance: only when the store
-  changed, at most 5% of the time, off the writer lock, yielding to live
-  traffic. Measured: idle CPU with a health poller 35% → 0.2%, per-write cap
-  gate 71–159 s → 3–6 s.
+- **SSD session cache CPU drain.** The cache walked its whole store on every
+  write and every `/health` poll (816,220 files, 89.9 GB, 41.7 s per walk).
+  Reconciliation is now maintenance: only when the store changed, at most 5%
+  of the time, off the writer lock, yielding to live traffic. Idle CPU with a
+  health poller 35% down to 0.2%; per-write cap gate 71 to 159 s down to
+  3 to 6 s.
 - **macOS 27 crash in the inference settings overlay (#256, #257).** SwiftUI 8
-  traps on a slider whose range has no distinct values; the depth slider was
-  built with `1...1` for models without draft control, and the context-window
-  slider could hit `4096...4096`. Both are now built only when there is
-  something to slide. Reported and fixed by @joshlacal.
-- First-live-contact serve fixes for 3.8: xhigh boot no longer trips strict
-  warmup, truncated-think turns route correctly, the request-log env toggle
-  is honored on the family path.
+  traps on a slider with no distinct values; the depth and context-window
+  sliders are now built only when there is something to slide. Reported and
+  fixed by @joshlacal.
+- Hardware detection uses absolute `/usr/sbin/sysctl` and
+  `/usr/sbin/system_profiler` paths; `doctor` and `tune` no longer run `git`
+  outside a repository (no Xcode Command Line Tools dialog on a clean Mac).
 - Depth-default resolution honors artifact metadata across profile
-  mismatches; the degrade pin and the no-metadata legacy path both survive.
-- The public depth ceiling is decided by the artifact reference, not the
-  served-name alias.
+  mismatches; the degrade pin and the no-metadata path both survive. The
+  public depth ceiling follows the artifact reference, not the served-name
+  alias; `tune` validates depths against what the model supports and takes
+  its sampler from the same family contract as `serve`.
+- `MTPLX_REQUEST_LOG_JSONL=1` logs to the default file instead of a file
+  named `1`. xhigh boot no longer trips strict warmup.
+
+### Known issues (fixed in 2.7.1)
+
+- Choosing `xhigh` in the app's Inference settings while the model is running
+  is rejected by the server, as is `mtplx config set reasoning_effort xhigh`;
+  set it before starting the model or pass `--reasoning-effort xhigh`.
+- The app's KV cache quantization toggle is not applied to Qwen 3.8 models.
+- With reasoning off in a plain chat with no tools, Qwen 3.8 emitted a stray
+  tool call and cut the turn short on about half of our coding prompts; keep
+  thinking on (the default).
 
 ## [2.6.0] - 2026-08-11
 
