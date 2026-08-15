@@ -26,6 +26,7 @@ from mtplx.backends.descriptors import (
     tune_policy_for_model,
 )
 from mtplx.default_models import public_model_id_for_ref
+from mtplx.reasoning_effort import REASONING_EFFORT_CHOICES
 from mtplx.profiles import (
     QWEN38_BARE_SPEED_HF_MODEL_ID,
     QWEN38_BARE_SPEED_PUBLIC_MODEL_ID,
@@ -348,6 +349,61 @@ def test_normalize_reasoning_effort_accepts_xhigh() -> None:
     assert srv._normalize_reasoning_effort("xhigh") == "xhigh"
     with pytest.raises(ValueError):
         srv._normalize_reasoning_effort("ultra")
+
+
+def test_reasoning_effort_vocabulary_covers_every_family() -> None:
+    """No family may advertise a level the writing surfaces would reject.
+
+    The app renders ReasoningCodec.effort_levels verbatim into its picker, so
+    a level outside the shared vocabulary is one the user can select and no
+    validator will accept. 2.7.0 shipped exactly that: the request path knew
+    `xhigh`, the live-settings POST and `mtplx config set` did not, and
+    because the settings POST is all-or-nothing the app's whole payload 400'd
+    and the picker snapped back to medium.
+    """
+
+    from mtplx.backends import descriptors
+
+    codecs = [
+        value
+        for value in vars(descriptors).values()
+        if isinstance(value, descriptors.ReasoningCodec)
+    ] + [
+        value.reasoning_codec
+        for value in vars(descriptors).values()
+        if isinstance(value, descriptors.BackendDescriptor)
+    ]
+    assert codecs, "found no ReasoningCodec — this walk stopped covering anything"
+    for codec in codecs:
+        declared = set(codec.effort_levels)
+        if codec.default_effort is not None:
+            declared.add(codec.default_effort)
+        assert declared <= set(REASONING_EFFORT_CHOICES), codec
+
+
+def test_every_effort_writing_surface_accepts_the_whole_vocabulary() -> None:
+    from mtplx.commands import public
+    from mtplx.server import openai as srv
+
+    def config_set(value: str) -> int:
+        return public.cmd_config_public(
+            SimpleNamespace(
+                config=None,
+                config_action="set",
+                key="reasoning_effort",
+                value=value,
+                dry_run=True,
+            )
+        )
+
+    for effort in REASONING_EFFORT_CHOICES:
+        assert srv._coerce_setting("reasoning_effort", effort) == effort
+        assert config_set(effort) == 0
+
+    with pytest.raises(ValueError, match="reasoning_effort must be one of"):
+        srv._coerce_setting("reasoning_effort", "ultra")
+    with pytest.raises(SystemExit, match="reasoning_effort must be"):
+        config_set("ultra")
 
 
 def test_reasoning_history_auto_preserves_for_qwen38() -> None:

@@ -4,6 +4,36 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.1] - 2026-08-15
+
+Clears the 2.7.0 known-issues list: `xhigh` is now selectable everywhere it is
+offered, and the app's KV cache quantization toggle reaches Qwen 3.8.
+
+### Fixed
+
+- **`xhigh` no longer bounces back to `medium` in the app.** Choosing it in
+  Inference settings while the model was running, or running
+  `mtplx config set reasoning_effort xhigh`, was rejected: those two writing
+  surfaces carried their own hardcoded effort list that stopped at `high`,
+  while the request path already knew `xhigh`. Because the live-settings POST
+  is all-or-nothing, one unknown level threw away the whole payload and the
+  picker snapped back to the family default. All four writing surfaces
+  (serve/CLI `--reasoning-effort`, `mtplx config set`, the live-settings POST)
+  now read one shared vocabulary in `mtplx/reasoning_effort.py`, and narrowing
+  to what the loaded model actually supports stays where it belongs — the
+  family's own `effort_levels`.
+- **The app's KV cache quantization toggle now applies to Qwen 3.8.** The
+  launch gate listed only `qwen3_5`/`qwen3_6`, so a 3.8 launch exported
+  nothing while Settings showed `q8`.
+- **`mtplx doctor` names the model it actually checks** instead of hardcoding
+  the previous default, and turbo's profile note reports the real compiled
+  verify fence (32,768, raised from 12,288 in 2.7.0) rather than the stale one.
+
+### Still open from 2.7.0
+
+- With reasoning switched off in a plain chat with no tools, Qwen 3.8 can
+  still emit a stray tool call and cut the turn short. Keep thinking on.
+
 ## [2.7.0] - 2026-08-15
 
 Qwen3.8 support 🎉. Qwen3.8-27B came out on 2026-08-14; this release runs it

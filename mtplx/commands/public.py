@@ -125,6 +125,7 @@ from mtplx.profiles import (
     restore_profile_env,
     runtime_env_with_contract_overrides,
 )
+from mtplx.reasoning_effort import REASONING_EFFORT_CHOICES
 from mtplx.server_urls import (
     bind_label,
     connect_host_for_bind,
@@ -14347,8 +14348,10 @@ def cmd_config_public(args: Any) -> int:
         )
     if key == "reasoning" and value not in {"auto", "on", "off"}:
         raise SystemExit("reasoning must be auto, on, or off")
-    if key == "reasoning_effort" and value not in {"auto", "low", "medium", "high", "xhigh"}:
-        raise SystemExit("reasoning_effort must be auto, low, medium, high, or xhigh")
+    if key == "reasoning_effort" and value not in REASONING_EFFORT_CHOICES:
+        raise SystemExit(
+            "reasoning_effort must be " + ", ".join(REASONING_EFFORT_CHOICES)
+        )
     if key in {
         "max_active_requests",
         "decode_batch_max",

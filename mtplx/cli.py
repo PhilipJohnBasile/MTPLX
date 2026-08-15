@@ -23,6 +23,7 @@ from .profiles import (
     list_profiles,
     resolve_profile_name,
 )
+from .reasoning_effort import REASONING_EFFORT_CHOICES
 from .runtime_options import canonicalize_flag_tokens, normalize_paged_kv_quantization
 from .version import DISPLAY_VERSION, __version__
 
@@ -573,7 +574,7 @@ def _add_reasoning_arg(
 def _add_reasoning_effort_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--reasoning-effort",
-        choices=["auto", "low", "medium", "high", "xhigh"],
+        choices=list(REASONING_EFFORT_CHOICES),
         default="auto",
         help=(
             "Reasoning effort for models that expose levels, such as Qwen 3.8 "

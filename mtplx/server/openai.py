@@ -112,6 +112,10 @@ from mtplx.gemma4_pair import (
     resolve_gemma4_pair_paths,
 )
 from mtplx.model_scheduler import ModelWorkScheduler
+from mtplx.reasoning_effort import (
+    REASONING_EFFORT_CHOICES,
+    normalize_reasoning_effort as _normalize_reasoning_effort,
+)
 from mtplx.retrieval import RetrievalError, RetrievalTrustError
 from mtplx.sampling import SamplerConfig
 from mtplx.profiles import (
@@ -13287,12 +13291,7 @@ def _coerce_setting(name: str, value: Any) -> Any:
             )
         return text
     if name == "reasoning_effort":
-        text = str(value).strip().lower()
-        if text not in {"auto", "low", "medium", "high", "xhigh"}:
-            raise ValueError(
-                "reasoning_effort must be 'auto', 'low', 'medium', 'high', or 'xhigh'"
-            )
-        return text
+        return _normalize_reasoning_effort(value)
     return value
 
 
@@ -21728,15 +21727,6 @@ def _thinking_enabled_for_request(
     )
 
 
-def _normalize_reasoning_effort(value: Any, *, default: str = "auto") -> str:
-    effort = str(value or default).strip().lower()
-    if effort not in {"auto", "low", "medium", "high", "xhigh"}:
-        raise ValueError(
-            "reasoning_effort must be one of: auto, low, medium, high, xhigh"
-        )
-    return effort
-
-
 def _reasoning_effort_for_state(
     state: ServerState,
     *,
@@ -29023,7 +29013,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reasoning-effort",
-        choices=["auto", "low", "medium", "high", "xhigh"],
+        choices=list(REASONING_EFFORT_CHOICES),
         default="auto",
         help=(
             "Backend reasoning effort. Qwen 3.8 exposes xhigh/medium/low "

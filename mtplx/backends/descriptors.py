@@ -82,6 +82,10 @@ class ReasoningCodec:
     supported: bool = True
     modes: tuple[str, ...] = ("auto", "on", "off")
     history_policy: str = "preserve_when_enabled"
+    # Drawn from mtplx.reasoning_effort.REASONING_EFFORT_LEVELS: the app
+    # renders these verbatim, so a level outside that vocabulary is one the
+    # user can pick and no writing surface will accept
+    # (test_reasoning_effort_vocabulary_covers_every_family pins it).
     effort_levels: tuple[str, ...] = ()
     default_effort: str | None = None
 
