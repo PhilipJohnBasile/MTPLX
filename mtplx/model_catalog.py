@@ -130,7 +130,7 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
         # Exact local `du -sk` of the forge artifact (2026-08-14 drop-day
         # build; three trunk shards + bf16 MTP sidecar + tokenizer).
-        size_bytes=16_002_670_592,
+        size_bytes=16_002_643_024,
         # Measured 2026-08-14: request-log MLX high-water 19.6 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=20.0,
@@ -154,7 +154,7 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
         # Exact local `du -sk` of the 2026-08-14 forge artifact
         # (module_overrides recipe, 5.807 bits/weight, bf16 MTP sidecar).
-        size_bytes=20_392_468_480,
+        size_bytes=20_392_427_501,
         # Measured 2026-08-14: request-log MLX high-water 24.6 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=25.0,
@@ -174,7 +174,7 @@ OFFICIAL_CATALOG: tuple[CatalogModel, ...] = (
         ),
         hf_model_id="Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
         # Exact local `du -sk` of the 2026-08-14 forge artifact.
-        size_bytes=29_449_355_264,
+        size_bytes=29_449_319_425,
         # Measured 2026-08-14: request-log MLX high-water 32.9 GiB during
         # quiet-window 2.4k-context serving (boot + Flappy arms + rung).
         peak_memory_gib=33.0,
