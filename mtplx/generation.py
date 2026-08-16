@@ -423,6 +423,15 @@ def _attach_runtime_diagnostics(
     stats.paged_kv_quant_dequant_tokens = int(
         owned_attn.get("kv_quant_dequant_tokens") or 0
     )
+    stats.paged_kv_quant_dequant_memo_hits = int(
+        owned_attn.get("kv_quant_dequant_memo_hits") or 0
+    )
+    stats.paged_kv_quant_dequant_memo_rebuilds = int(
+        owned_attn.get("kv_quant_dequant_memo_rebuilds") or 0
+    )
+    stats.paged_kv_quant_kernel_calls = int(
+        owned_attn.get("kv_quant_kernel_calls") or 0
+    )
     stats.paged_gqa_sdpa_calls = int(owned_attn.get("gqa_sdpa_calls") or 0)
     gqa_by_route = owned_attn.get("gqa_sdpa_calls_by_route") or {}
     stats.paged_gqa_sdpa_calls_by_route = (
@@ -1632,6 +1641,9 @@ class GenerationStats:
     paged_kv_quant_dequant_calls: int = 0
     paged_kv_quant_dequant_time_s: float = 0.0
     paged_kv_quant_dequant_tokens: int = 0
+    paged_kv_quant_dequant_memo_hits: int = 0
+    paged_kv_quant_dequant_memo_rebuilds: int = 0
+    paged_kv_quant_kernel_calls: int = 0
     paged_gqa_sdpa_calls: int = 0
     paged_gqa_sdpa_calls_by_route: dict[str, int] = field(default_factory=dict)
     paged_gqa_sdpa_calls_by_phase: dict[str, int] = field(default_factory=dict)
