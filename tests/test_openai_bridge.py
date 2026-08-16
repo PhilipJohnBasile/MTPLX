@@ -623,6 +623,106 @@ def test_anthropic_request_translates_to_openai_chat_request():
     ]
 
 
+def test_anthropic_missing_max_tokens_is_recorded_not_rejected():
+    """Anthropic's API requires max_tokens; our bridges tolerate its absence.
+    The defaulting is recorded for observability instead of 400ing (which
+    would break those bridges)."""
+
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat = _anthropic_to_chat_request(request)
+    assert getattr(chat, "anthropic_max_tokens_defaulted", False) is True
+
+    capped = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat_capped = _anthropic_to_chat_request(capped)
+    assert getattr(chat_capped, "anthropic_max_tokens_defaulted", False) is False
+
+
+def test_request_observability_records_anthropic_max_tokens_defaulted():
+    from mtplx.server.openai import _request_observability
+
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat = _anthropic_to_chat_request(request)
+    observability = _request_observability(
+        chat,
+        headers={},
+        metadata={},
+        session_source=None,
+        request_generation_mode="mtp",
+        request_depth=3,
+    )
+    assert observability["anthropic_max_tokens_defaulted"] is True
+
+    capped = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    observability_capped = _request_observability(
+        _anthropic_to_chat_request(capped),
+        headers={},
+        metadata={},
+        session_source=None,
+        request_generation_mode="mtp",
+        request_depth=3,
+    )
+    assert "anthropic_max_tokens_defaulted" not in observability_capped
+
+
+def test_anthropic_disable_parallel_tool_use_maps_to_parallel_tool_calls():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "auto"
+    assert chat.parallel_tool_calls is False
+
+
+def test_anthropic_disable_parallel_tool_use_false_allows_parallel():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "any", "disable_parallel_tool_use": False},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "required"
+    assert chat.parallel_tool_calls is True
+
+
+def test_anthropic_tool_choice_without_parallel_preference_stays_none():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "auto"},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "auto"
+    assert chat.parallel_tool_calls is None
+
+
 def test_anthropic_request_translates_claude_code_tools_and_history():
     request = AnthropicMessagesRequest(
         model="mtplx",
@@ -1001,8 +1101,74 @@ def test_anthropic_stream_translates_openai_sse_events():
     assert events[2][1]["delta"] == {"type": "text_delta", "text": "Hel"}
     assert events[3][1]["delta"] == {"type": "text_delta", "text": "lo"}
     assert events[5][1]["delta"]["stop_reason"] == "end_turn"
-    assert events[5][1]["usage"] == {"output_tokens": 2}
+    assert events[5][1]["usage"] == {
+        "input_tokens": 5,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 0,
+    }
     assert events[5][1]["mtplx_stats"] == {"tok_s": 12.5}
+
+
+def test_anthropic_stream_and_nonstream_usage_parity():
+    """Streamed and non-streamed /v1/messages must report identical usage for
+    the same upstream OpenAI usage payload — including the session-cache
+    prefix hit (cache_read_input_tokens), which the stream path used to drop.
+    """
+
+    upstream_usage = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 34,
+        "prompt_tokens_details": {"cached_tokens": 1024},
+    }
+
+    nonstream = _anthropic_payload_from_openai(
+        {
+            "model": "mtplx",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Hello"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": dict(upstream_usage),
+        }
+    )
+
+    async def upstream():
+        yield (
+            'data: {"choices":[{"delta":{"content":"Hello"},'
+            '"finish_reason":null}]}\n\n'
+        )
+        yield (
+            'data: '
+            + json.dumps(
+                {
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": dict(upstream_usage),
+                }
+            )
+            + "\n\n"
+        )
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in _anthropic_stream_from_openai_sse(
+                upstream(),
+                model="mtplx",
+            )
+        ]
+
+    events = _anthropic_stream_events(asyncio.run(collect()))
+    message_delta = next(data for event, data in events if event == "message_delta")
+
+    assert nonstream["usage"] == {
+        "input_tokens": 1200,
+        "output_tokens": 34,
+        "cache_read_input_tokens": 1024,
+    }
+    assert message_delta["usage"] == nonstream["usage"]
 
 
 def test_anthropic_stream_translates_openai_tool_call_deltas():

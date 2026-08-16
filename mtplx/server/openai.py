@@ -843,6 +843,11 @@ class ChatCompletionRequest(BaseModel):
     response_format: Any = None
     metadata: dict[str, Any] | None = None
     user: str | None = None
+    # Declared so a logprobs request fails loudly (400) instead of being
+    # silently swallowed by extra="allow" — clients were reading absent
+    # logprobs as "model returned none" rather than "server ignored me".
+    logprobs: Any = None
+    top_logprobs: int | None = None
 
 
 @dataclass
@@ -3975,6 +3980,20 @@ def _anthropic_thinking_to_enable_thinking(thinking: Any) -> bool | None:
     return None
 
 
+def _anthropic_disable_parallel_tool_use(tool_choice: Any) -> bool | None:
+    """Anthropic's parallel-tools preference rides as a sibling key on
+    tool_choice (``{"type": "auto", "disable_parallel_tool_use": true}``).
+    Surface it so the OpenAI-lane single-tool enforcement applies; None when
+    the client did not state a preference."""
+
+    if not isinstance(tool_choice, dict):
+        return None
+    raw = tool_choice.get("disable_parallel_tool_use")
+    if raw is None:
+        return None
+    return bool(raw)
+
+
 def _anthropic_to_chat_request(
     request: AnthropicMessagesRequest,
 ) -> ChatCompletionRequest:
@@ -3990,7 +4009,8 @@ def _anthropic_to_chat_request(
         # Carry the Qwen-style kwargs across the translation so the
         # chat-completions path can honor the known keys (enable_thinking).
         extra_fields["chat_template_kwargs"] = dict(request.chat_template_kwargs)
-    return ChatCompletionRequest(
+    disable_parallel = _anthropic_disable_parallel_tool_use(request.tool_choice)
+    chat_request = ChatCompletionRequest(
         model=request.model,
         messages=messages,
         max_tokens=request.max_tokens,
@@ -3999,6 +4019,9 @@ def _anthropic_to_chat_request(
         top_k=request.top_k,
         tools=_anthropic_tools_to_openai(request.tools),
         tool_choice=_anthropic_tool_choice_to_openai(request.tool_choice),
+        parallel_tool_calls=(
+            None if disable_parallel is None else not disable_parallel
+        ),
         stop=request.stop_sequences,
         metadata=request.metadata,
         enable_thinking=enable_thinking,
@@ -4009,6 +4032,12 @@ def _anthropic_to_chat_request(
         stream=False,
         **extra_fields,
     )
+    if request.max_tokens is None:
+        # Anthropic's API requires max_tokens; tolerate its absence for our
+        # own bridges but record the defaulting for observability instead of
+        # rejecting (a 400 here would break those bridges).
+        chat_request.anthropic_max_tokens_defaulted = True
+    return chat_request
 
 
 def _anthropic_tool_input_from_arguments(arguments: Any) -> dict[str, Any]:
@@ -4071,6 +4100,27 @@ def _matched_stop_sequence(openai_payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _anthropic_usage_from_openai_usage(usage: Any) -> dict[str, int]:
+    """One translation of OpenAI usage to Anthropic usage, both dialects.
+
+    The streaming path used to keep only prompt/completion counts, dropping
+    prompt_tokens_details — so streamed /v1/messages never reported
+    cache_read_input_tokens and Claude Code/Pi (which always stream) saw the
+    prefix-cache win as zero.
+    """
+
+    data = usage if isinstance(usage, dict) else {}
+    return {
+        "input_tokens": int(data.get("prompt_tokens") or 0),
+        "output_tokens": int(data.get("completion_tokens") or 0),
+        # Anthropic-native mirror of the session-cache prefix hit
+        # (#121/#144); Claude Code and Pi read this field directly.
+        "cache_read_input_tokens": int(
+            (data.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+        ),
+    }
+
+
 def _anthropic_payload_from_openai(openai_payload: dict[str, Any]) -> dict[str, Any]:
     choices = openai_payload.get("choices") or []
     choice = choices[0] if choices else {}
@@ -4112,15 +4162,7 @@ def _anthropic_payload_from_openai(openai_payload: dict[str, Any]) -> dict[str, 
         "content": content,
         "stop_reason": stop_reason,
         "stop_sequence": matched_stop,
-        "usage": {
-            "input_tokens": int(usage.get("prompt_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or 0),
-            # Anthropic-native mirror of the session-cache prefix hit
-            # (#121/#144); Claude Code and Pi read this field directly.
-            "cache_read_input_tokens": int(
-                (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
-            ),
-        },
+        "usage": _anthropic_usage_from_openai_usage(usage),
         "mtplx_stats": openai_payload.get("mtplx_stats"),
     }
 
@@ -4165,7 +4207,7 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
     opened_any_block = False
     opened_tool_block = False
     stop_reason = "end_turn"
-    usage = {"input_tokens": 0, "output_tokens": 0}
+    usage = _anthropic_usage_from_openai_usage(None)
     mtplx_stats: dict[str, Any] | None = None
     tool_blocks: dict[int, dict[str, Any]] = {}
 
@@ -4233,11 +4275,7 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
                 )
                 return
             if payload.get("usage"):
-                upstream_usage = payload.get("usage") or {}
-                usage = {
-                    "input_tokens": int(upstream_usage.get("prompt_tokens") or 0),
-                    "output_tokens": int(upstream_usage.get("completion_tokens") or 0),
-                }
+                usage = _anthropic_usage_from_openai_usage(payload.get("usage"))
             if payload.get("mtplx_stats") is not None:
                 mtplx_stats = payload.get("mtplx_stats")
             for choice in payload.get("choices") or []:
@@ -4401,7 +4439,11 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
             "stop_reason": stop_reason,
             "stop_sequence": _matched_stop_sequence({"mtplx_stats": mtplx_stats}),
         },
-        "usage": {"output_tokens": usage["output_tokens"]},
+        # Full cumulative usage, not output-only: message_start necessarily
+        # streamed zeros (usage is only known at end of generation on this
+        # bridge), so clients that merge message_delta.usage fields must find
+        # input_tokens and cache_read_input_tokens here or they account 0.
+        "usage": dict(usage),
     }
     if mtplx_stats is not None:
         delta_payload["mtplx_stats"] = mtplx_stats
@@ -15276,6 +15318,11 @@ def _request_observability(
         "request_depth": int(request_depth),
         "request_last_user_preview": user_texts[-1][:180] if user_texts else None,
         "request_last_user_chars": len(user_texts[-1]) if user_texts else 0,
+        **(
+            {"anthropic_max_tokens_defaulted": True}
+            if getattr(request, "anthropic_max_tokens_defaulted", False)
+            else {}
+        ),
     }
 
 
@@ -23683,6 +23730,14 @@ def create_app(state: ServerState) -> FastAPI:
     ) -> Any:
         if not request.messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
+        if bool(request.logprobs) or int(request.top_logprobs or 0) > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "logprobs/top_logprobs are not supported on "
+                    "/v1/chat/completions; omit them (support is planned)"
+                ),
+            )
         headers = dict(raw_request.headers)
         metadata = _request_metadata(request)
         request_max_tokens = _request_max_tokens(request)

@@ -2609,6 +2609,30 @@ def test_anthropic_messages_rejects_empty_request_before_generation():
     assert response.json()["error"]["message"] == "messages must not be empty"
 
 
+@pytest.mark.parametrize(
+    "body_extra",
+    [{"logprobs": True}, {"logprobs": 1}, {"top_logprobs": 3}],
+)
+def test_chat_completions_rejects_logprobs_with_clear_400(body_extra):
+    """logprobs used to be swallowed by extra="allow" and silently ignored;
+    clients read the missing data as model behavior. Interim contract: a
+    clean 400 until logprob support ships."""
+
+    client = TestClient(create_app(_fake_state()))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "mtplx-test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            **body_extra,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "logprobs" in response.json()["error"]["message"]
+
+
 def test_chat_ui_uses_server_depth_default():
     state = _fake_state()
     state.args.depth = 2
