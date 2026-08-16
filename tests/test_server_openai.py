@@ -2609,6 +2609,110 @@ def test_anthropic_messages_rejects_empty_request_before_generation():
     assert response.json()["error"]["message"] == "messages must not be empty"
 
 
+def test_completions_prompt_scoring_contract(monkeypatch):
+    """echo+logprobs+max_tokens=0 returns the KL-lane shape: all-dict
+    top_logprobs where entry i predicts token i+1 (llama.cpp-compatible,
+    kl_capture.py-consumable), token_logprobs for tokens 1..n-1."""
+
+    state = _prompt_scoring_state()
+    prompt = "abcd"  # CaptureTokenizer: 1 char = 1 token (ords)
+
+    def fake_score(runtime, prompt_ids, *, top_k):
+        n = len(prompt_ids)
+        positions = [
+            [(prompt_ids[i + 1], -0.1), (prompt_ids[0], -2.0)]
+            for i in range(n - 1)
+        ]
+        return {
+            "positions": positions,
+            "token_logprobs": [-0.1] * (n - 1),
+            "prompt_tokens": n,
+            "elapsed_s": 0.01,
+        }
+
+    monkeypatch.setattr(openai, "score_prompt_logprobs", fake_score)
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/completions",
+        json={
+            "prompt": prompt,
+            "echo": True,
+            "logprobs": 2,
+            "max_tokens": 0,
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    choice = body["choices"][0]
+    assert choice["text"] == "abcd"
+    logprobs = choice["logprobs"]
+    assert logprobs["tokens"] == ["a", "b", "c", "d"]
+    assert len(logprobs["top_logprobs"]) == 3
+    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"])
+    # Position i predicts token i+1 and entries are token-string keyed.
+    assert logprobs["top_logprobs"][0]["b"] == pytest.approx(-0.1)
+    assert logprobs["top_logprobs"][1]["c"] == pytest.approx(-0.1)
+    assert logprobs["token_logprobs"] == [-0.1, -0.1, -0.1]
+    assert logprobs["text_offset"] == [0, 1, 2, 3]
+    assert body["usage"] == {
+        "prompt_tokens": 4,
+        "completion_tokens": 0,
+        "total_tokens": 4,
+    }
+    assert body["mtplx_stats"]["mode"] == "prompt_scoring"
+    assert body["mtplx_stats"]["scored_positions"] == 3
+
+
+def _prompt_scoring_state():
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.begin_foreground = lambda: None
+    state.end_foreground = lambda: None
+    state.requests_completed = 0
+    state.last_request_at = 0.0
+    return state
+
+
+def test_completions_echo_logprobs_requires_zero_max_tokens():
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "echo": True, "logprobs": 4, "max_tokens": 8},
+    )
+
+    assert response.status_code == 400
+    assert "max_tokens to 0" in response.json()["error"]["message"]
+
+
+def test_completions_logprobs_without_echo_rejected():
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "logprobs": 4, "max_tokens": 0},
+    )
+
+    assert response.status_code == 400
+    assert "echo=true" in response.json()["error"]["message"]
+
+
+def test_completions_prompt_scoring_top_k_capped(monkeypatch):
+    monkeypatch.setenv("MTPLX_PROMPT_LOGPROBS_MAX", "16")
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "echo": True, "logprobs": 64, "max_tokens": 0},
+    )
+
+    assert response.status_code == 400
+    assert "MTPLX_PROMPT_LOGPROBS_MAX" in response.json()["error"]["message"]
+
+
 @pytest.mark.parametrize(
     "body_extra",
     [{"logprobs": True}, {"logprobs": 1}, {"top_logprobs": 3}],

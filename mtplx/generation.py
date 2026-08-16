@@ -5056,6 +5056,97 @@ def _append_mtp_history(
     return time.perf_counter() - started
 
 
+def score_prompt_logprobs(
+    rt: MTPLXRuntime,
+    prompt_ids: list[int],
+    *,
+    top_k: int,
+    chunk_size: int = 256,
+) -> dict[str, Any]:
+    """Teacher-forced prompt scoring: per-position next-token top-K logprobs.
+
+    One prefill-shaped pass over the prompt, chunked so at most
+    ``chunk_size x vocab`` logits are resident at once — the full-prompt
+    logits tensor was the 32k memory-balloon root cause and must never come
+    back. Position ``i`` of the result describes the model's distribution
+    AFTER prefix ``prompt_ids[:i+1]`` (i.e. it predicts token ``i+1``): the
+    alignment Ivan's kl_capture consumes and llama.cpp's echo+logprobs
+    emits. Zero decode-hot-path cost: nothing here touches generation.
+    """
+
+    import numpy as np
+
+    if not prompt_ids:
+        raise ValueError("prompt_ids must not be empty")
+    top_k = max(1, int(top_k))
+    chunk_size = max(16, int(chunk_size))
+    cache = _make_target_prefill_cache(rt)
+    n = len(prompt_ids)
+    prompt_array = mx.array([prompt_ids])
+    token_logprobs: list[float | None] = []
+    top_entries: list[list[tuple[int, float]]] = []
+    started = time.perf_counter()
+    for start in range(0, n, chunk_size):
+        end = min(n, start + chunk_size)
+        chunk = prompt_array[:, start:end]
+        with attention_phase("prefill"):
+            logits, _hidden = _forward_ar_optional_hidden(
+                rt,
+                chunk,
+                cache=cache,
+                hidden_variant=None,
+                emit_logits=True,
+            )
+        logprobs = logits[0].astype(mx.float32)
+        logprobs = logprobs - mx.logsumexp(logprobs, axis=-1, keepdims=True)
+        k = min(top_k, int(logprobs.shape[-1]))
+        top_idx = mx.argpartition(-logprobs, kth=k - 1, axis=-1)[..., :k]
+        top_vals = mx.take_along_axis(logprobs, top_idx, axis=-1)
+        # Positions start..end-1 predict prompt tokens start+1..end; the
+        # final prompt position has no target inside the prompt.
+        target_rows = min(end, n - 1) - start
+        if target_rows > 0:
+            targets = mx.array(
+                [prompt_ids[start + 1 : start + 1 + target_rows]]
+            )[0][:, None]
+            target_lp = mx.take_along_axis(
+                logprobs[:target_rows], targets, axis=-1
+            )[:, 0]
+        else:
+            target_lp = None
+        if target_lp is not None:
+            mx.eval(top_idx, top_vals, target_lp)
+        else:
+            mx.eval(top_idx, top_vals)
+        idx_np = np.array(top_idx)
+        vals_np = np.array(top_vals)
+        # Sort each row descending by logprob.
+        order = np.argsort(-vals_np, axis=-1)
+        idx_np = np.take_along_axis(idx_np, order, axis=-1)
+        vals_np = np.take_along_axis(vals_np, order, axis=-1)
+        rows = end - start
+        for row in range(rows):
+            # The last prompt position's distribution predicts a token
+            # outside the prompt; keep its top-K out of the echoed contract.
+            if start + row >= n - 1:
+                break
+            top_entries.append(
+                [
+                    (int(idx_np[row, col]), float(vals_np[row, col]))
+                    for col in range(idx_np.shape[1])
+                ]
+            )
+        if target_lp is not None:
+            token_logprobs.extend(float(v) for v in np.array(target_lp))
+        del logits, logprobs, top_idx, top_vals
+    return {
+        "positions": top_entries,
+        "token_logprobs": token_logprobs,
+        "prompt_tokens": n,
+        "elapsed_s": time.perf_counter() - started,
+    }
+
+
 def generate_ar(
     rt: MTPLXRuntime,
     prompt_ids: list[int],

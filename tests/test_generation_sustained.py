@@ -535,6 +535,35 @@ def test_generate_ar_does_not_request_hidden_by_default(monkeypatch):
     assert all(call["return_hidden"] is False for call in model.calls)
 
 
+def test_score_prompt_logprobs_alignment_and_normalization():
+    """Prompt scoring: position i predicts token i+1; per-row logprobs are a
+    valid distribution slice (sorted descending, <= 0); token_logprobs match
+    the target token's entry when it appears in the top-K."""
+
+    from mtplx.generation import score_prompt_logprobs
+
+    rt = _runtime(TinyModel(), mtp_enabled=True)
+    prompt = [0, 1, 2, 3]
+
+    scored = score_prompt_logprobs(rt, prompt, top_k=4, chunk_size=2)
+
+    assert scored["prompt_tokens"] == 4
+    assert len(scored["positions"]) == 3
+    assert len(scored["token_logprobs"]) == 3
+    for index, entries in enumerate(scored["positions"]):
+        values = [logprob for _token, logprob in entries]
+        assert values == sorted(values, reverse=True)
+        assert all(value <= 1e-6 for value in values)
+        # top_k == vocab here, so the target token must be present and its
+        # entry must equal the reported token logprob.
+        target = prompt[index + 1]
+        by_token = dict(entries)
+        assert target in by_token
+        assert by_token[target] == pytest.approx(
+            scored["token_logprobs"][index], abs=1e-5
+        )
+
+
 def test_generate_ar_restores_warm_prefix_from_session_bank():
     """#246: the AR lane used to full-prefill unconditionally and hardcode
     cached_tokens 0 / cache_hit false. With a bank hit it must restore the
