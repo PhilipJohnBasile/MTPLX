@@ -3520,6 +3520,14 @@ def restore_or_prefill_prompt_state(
                     else None
                 ),
                 cache_factory=restore_cache_factory,
+                # Tool-round prefix stability (defect A): the suffix prefill
+                # behind this lane must treat the pre-nudge stable edge as a
+                # mandatory chunk boundary so a recurrent snapshot exists
+                # exactly where the next request's history diverges from the
+                # committed stream. Lane 2 below has always forwarded this;
+                # omitting it here left the hottest tool-round path
+                # block-rounding down ~one 256-token block per round.
+                stable_prefix_len=stable_prefix_len,
             )
             if near_prompt_state is not None:
                 return _emit_prefill_complete(near_prompt_state)
