@@ -44,7 +44,7 @@ from enum import Enum
 from pathlib import Path
 from queue import Empty
 from threading import Condition, Event, Lock, Thread, Timer
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -10825,6 +10825,7 @@ def _message_to_template_dict(
     *,
     strip_assistant_reasoning_history: bool,
     include_reasoning_content: bool = False,
+    allow_committed_reasoning: bool = False,
 ) -> dict[str, Any] | None:
     if not message.role:
         return None
@@ -10850,6 +10851,15 @@ def _message_to_template_dict(
             if reasoning:
                 item["reasoning_content"] = str(reasoning)
                 break
+    if allow_committed_reasoning and message.role == "assistant":
+        # Server-built canonicalization only: the committed-think field is
+        # set by _maybe_canonicalize_committed_reasoning (inbound copies are
+        # scrubbed there), and it flows to the template ONLY on encode paths
+        # that opt in via this flag — client-sent reasoning fields keep the
+        # exact legacy preserve/strip behavior above.
+        committed = _message_extra(message, _COMMITTED_REASONING_FIELD)
+        if committed:
+            item["reasoning_content"] = str(committed)
     if message.name:
         item["name"] = message.name
     if message.tool_call_id:
@@ -11055,6 +11065,221 @@ def _qwen_assistant_generation_boundaries(rendered: str) -> list[int]:
             boundaries.append(boundary)
         search_from = boundary
     return boundaries
+
+
+_COMMITTED_REASONING_FIELD = "_mtplx_committed_reasoning"
+_COMMITTED_TURN_OPEN = "<|im_start|>assistant\n"
+_COMMITTED_TURN_CLOSE = "<|im_end|>"
+_COMMITTED_THINK_OPEN = "<think>\n"
+_COMMITTED_THINK_CLOSE = "</think>"
+
+
+def _committed_reasoning_canonicalization_enabled() -> bool:
+    raw = os.environ.get("MTPLX_COMMITTED_THINK_CANONICALIZATION", "on")
+    return str(raw).strip().lower() not in {"off", "0", "false", "no"}
+
+
+def _common_prefix_len(a: Sequence[int], b: Sequence[int]) -> int:
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
+
+
+def _committed_assistant_turns(
+    committed_text: str,
+) -> list[tuple[str | None, str]]:
+    """Per assistant turn of a decoded committed stream, in order:
+    (think_interior, visible_content_gate).
+
+    think_interior is the exact bytes between ``<think>\\n`` and the next
+    ``</think>`` (None when the turn opens without a think scaffold — e.g. a
+    reasoning-off turn); the gate is the post-think text before any
+    ``<tool_call`` markup, stripped, used to refuse substitution onto a turn
+    the client has rewritten. Parsing is marker-based on the same template
+    specials the boundary helpers above rely on.
+    """
+    turns: list[tuple[str | None, str]] = []
+    search_from = 0
+    while True:
+        turn_at = committed_text.find(_COMMITTED_TURN_OPEN, search_from)
+        if turn_at < 0:
+            break
+        body_start = turn_at + len(_COMMITTED_TURN_OPEN)
+        turn_end = committed_text.find(_COMMITTED_TURN_CLOSE, body_start)
+        body = (
+            committed_text[body_start:turn_end]
+            if turn_end >= 0
+            else committed_text[body_start:]
+        )
+        think_interior: str | None = None
+        content_part = body
+        if body.startswith(_COMMITTED_THINK_OPEN):
+            close_at = body.find(_COMMITTED_THINK_CLOSE, len(_COMMITTED_THINK_OPEN))
+            if close_at >= 0:
+                interior = body[len(_COMMITTED_THINK_OPEN) : close_at]
+                # The template re-renders '<think>\n' + rc|trim + '\n</think>':
+                # a generated interior of the shape '{rc}\n' round-trips
+                # byte-exactly with rc stripped of the single trailing newline.
+                think_interior = interior[:-1] if interior.endswith("\n") else interior
+                content_part = body[close_at + len(_COMMITTED_THINK_CLOSE) :]
+        gate = content_part.split("<tool_call", 1)[0].strip()
+        turns.append((think_interior, gate))
+        search_from = body_start if turn_end < 0 else turn_end
+        if turn_end < 0:
+            break
+    return turns
+
+
+def _scrub_inbound_committed_reasoning(message: ChatMessage) -> ChatMessage:
+    """Drop a client-supplied canonicalization field so only server-built
+    substitutions ever reach the template (deterministic vs today, where the
+    preserve mode drops client reasoning fields entirely)."""
+    if _message_extra(message, _COMMITTED_REASONING_FIELD) is None:
+        return message
+    try:
+        data = message.model_dump()
+    except AttributeError:
+        data = message.dict()
+    data.pop(_COMMITTED_REASONING_FIELD, None)
+    return ChatMessage(**data)
+
+
+def _maybe_canonicalize_committed_reasoning(
+    state: "ServerState",
+    *,
+    messages: list[ChatMessage],
+    prompt_ids: list[int],
+    headers: Mapping[str, str],
+    metadata: Mapping[str, Any],
+    request: "ChatCompletionRequest",
+    thinking_enabled: bool,
+    reasoning_effort: str | None,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: Any,
+    tool_prompt_mode: str,
+    template_observability: dict[str, Any],
+    request_observability: dict[str, Any] | None = None,
+) -> tuple[list[ChatMessage], list[int]] | None:
+    """Session-owned committed-think canonicalization (2.8 headline, defect B).
+
+    When a resent conversation matches the session's committed transcript
+    modulo think-block interiors, substitute the committed think bytes before
+    encode so the encoded prompt extends the committed stream byte-exactly and
+    restores track the live frontier. Self-heals every client that strips,
+    truncates, or summarizes reasoning history (OpenCode, OMP, Pi, Cline).
+
+    Fail-open by construction: the canonicalized encode is served ONLY when it
+    demonstrably matches the committed stream further than the raw encode —
+    otherwise the raw encode stands and behavior is byte-identical to today.
+    Preserve-mode only; per-turn substitution is gated on the visible content
+    matching the committed turn, so a client-rewritten turn (and everything
+    after it) is never mixed with stale reasoning.
+    """
+    if not _committed_reasoning_canonicalization_enabled():
+        return None
+    if not thinking_enabled:
+        return None
+    if getattr(state.args, "strip_assistant_reasoning_history", False):
+        return None
+    if _reasoning_history_scoped_active(state):
+        return None
+    sessions = getattr(state, "sessions", None)
+    if sessions is None:
+        return None
+    try:
+        session_id, _source = sessions.resolve_session_id(
+            headers=headers,
+            metadata=metadata,
+            user=_request_extra(request, "user"),
+            chat_id=_request_extra(request, "chat_id"),
+            conversation_id=_request_extra(request, "conversation_id"),
+            prompt_ids=prompt_ids,
+        )
+        session = sessions.peek(session_id)
+    except Exception:
+        return None
+    committed = tuple(getattr(session, "committed_token_ids", ()) or ())
+    if not committed:
+        return None
+    cp_raw = _common_prefix_len(prompt_ids, committed)
+    if cp_raw >= min(len(committed), len(prompt_ids)):
+        return None  # already extends (or is contained in) the committed stream
+    try:
+        committed_text = state.runtime.tokenizer.decode(list(committed))
+    except Exception:
+        return None
+    committed_turns = _committed_assistant_turns(committed_text)
+    if not any(interior for interior, _gate in committed_turns):
+        return None
+
+    canon_messages: list[ChatMessage] = []
+    substituted = 0
+    assistant_ordinal = 0
+    substitution_open = True
+    for message in messages:
+        message = _scrub_inbound_committed_reasoning(message)
+        if message.role != "assistant":
+            canon_messages.append(message)
+            continue
+        ordinal = assistant_ordinal
+        assistant_ordinal += 1
+        if not substitution_open or ordinal >= len(committed_turns):
+            canon_messages.append(message)
+            continue
+        interior, gate = committed_turns[ordinal]
+        incoming_gate = _content_to_text(message.content).strip()
+        if incoming_gate != gate:
+            # Client rewrote this turn's visible content: stop substituting
+            # here and for every later turn (prefix rule, mirrors restore).
+            substitution_open = False
+            canon_messages.append(message)
+            continue
+        if not interior:
+            canon_messages.append(message)
+            continue
+        canon_messages.append(
+            _copy_chat_message(message, **{_COMMITTED_REASONING_FIELD: interior})
+        )
+        substituted += 1
+
+    outcome: dict[str, Any] = {
+        "applied": False,
+        "turns_substituted": int(substituted),
+        "cp_raw": int(cp_raw),
+        "committed_len": int(len(committed)),
+    }
+    if substituted == 0:
+        if request_observability is not None:
+            request_observability["committed_reasoning_canonicalization"] = outcome
+        return None
+    canon_observability: dict[str, Any] = {}
+    canon_ids = _encode_messages(
+        state.runtime.tokenizer,
+        canon_messages,
+        enable_thinking=thinking_enabled,
+        reasoning_effort=reasoning_effort,
+        strip_assistant_reasoning_history=False,
+        scoped_reasoning_history=False,
+        tools=tools,
+        tool_choice=tool_choice,
+        tool_prompt_mode=tool_prompt_mode,
+        template_observability=canon_observability,
+        allow_committed_reasoning=True,
+    )
+    cp_canon = _common_prefix_len(canon_ids, committed)
+    outcome["cp_canon"] = int(cp_canon)
+    if cp_canon <= cp_raw:
+        if request_observability is not None:
+            request_observability["committed_reasoning_canonicalization"] = outcome
+        return None
+    outcome["applied"] = True
+    template_observability.clear()
+    template_observability.update(canon_observability)
+    if request_observability is not None:
+        request_observability["committed_reasoning_canonicalization"] = outcome
+    return canon_messages, canon_ids
 
 
 def _qwen_plain_assistant_content_boundaries(rendered: str) -> list[int]:
@@ -11304,6 +11529,7 @@ def _encode_messages(
     tool_choice: Any = None,
     tool_prompt_mode: str = _TOOL_PROMPT_MODE_HYBRID,
     template_observability: dict[str, Any] | None = None,
+    allow_committed_reasoning: bool = False,
 ) -> list[int]:
     """Memoizing front for :func:`_encode_messages_uncached`.
 
@@ -11325,6 +11551,7 @@ def _encode_messages(
             tool_choice=tool_choice,
             tool_prompt_mode=tool_prompt_mode,
             template_observability=template_observability,
+            allow_committed_reasoning=allow_committed_reasoning,
         )
     try:
         tokenizer_key = _chat_encode_tokenizer_key(tokenizer)
@@ -11344,6 +11571,7 @@ def _encode_messages(
                 "tools": tools,
                 "tool_choice": tool_choice,
                 "tool_prompt_mode": tool_prompt_mode,
+                "committed_reasoning": bool(allow_committed_reasoning),
                 # The rendered prompt embeds the current date (tool contract's
                 # _current_date_line; strftime_now-style templates). Without a
                 # date component, an exact repeat across local midnight would
@@ -11379,6 +11607,7 @@ def _encode_messages(
         tool_choice=tool_choice,
         tool_prompt_mode=tool_prompt_mode,
         template_observability=fresh_observability,
+        allow_committed_reasoning=allow_committed_reasoning,
     )
     if key is not None:
         GLOBAL_CHAT_ENCODE_CACHE.put(key, ids, fresh_observability)
@@ -11401,6 +11630,7 @@ def _encode_messages_uncached(
     tool_choice: Any = None,
     tool_prompt_mode: str = _TOOL_PROMPT_MODE_HYBRID,
     template_observability: dict[str, Any] | None = None,
+    allow_committed_reasoning: bool = False,
 ) -> list[int]:
     # Scoped mode keeps reasoning_content on the normalized messages and
     # passes preserve_thinking=False so the template's own rolling checkpoint
@@ -11415,6 +11645,7 @@ def _encode_messages_uncached(
             message,
             strip_assistant_reasoning_history=strip_assistant_reasoning_history,
             include_reasoning_content=scoped_reasoning_history,
+            allow_committed_reasoning=allow_committed_reasoning,
         )
         if item is not None:
             prepared_messages.append(item)
@@ -11485,6 +11716,57 @@ def _encode_messages_uncached(
     )
     if segmented_tool_history is not None:
         return segmented_tool_history
+    if allow_committed_reasoning:
+        # Canonicalized encodes must be token-compatible with the committed
+        # stream at each assistant generation start: generation began right
+        # after '<think>\n', so a single-pass BPE of the substituted render
+        # could merge that newline with the think's first bytes and diverge
+        # in TOKENS while matching in bytes. Splitting the encode at the
+        # generation boundaries (the same merge-safe seam the tool-history
+        # path uses) reproduces the committed tokenization exactly.
+        rendered = _render_messages_with_chat_template(
+            tokenizer,
+            normalized,
+            add_generation_prompt=add_generation_prompt,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            preserve_thinking=template_preserve_thinking,
+            tools=template_tools,
+            template_observability=template_observability,
+        )
+        if rendered:
+            canon_boundaries = _qwen_assistant_generation_boundaries(rendered)
+            if canon_boundaries:
+                hint_injected = bool(
+                    template_observability is not None
+                    and template_observability.get(
+                        "tool_result_continuation_hint_injected"
+                    )
+                    is True
+                )
+                hint_boundary = (
+                    _trailing_tool_hint_char_boundary(rendered)
+                    if hint_injected
+                    else None
+                )
+                if hint_boundary is None:
+                    return _encode_rendered_chat_text_segmented(
+                        tokenizer, rendered, canon_boundaries
+                    )
+                token_counts: dict[int, int] = {hint_boundary: -1}
+                token_ids = _encode_rendered_chat_text_segmented(
+                    tokenizer,
+                    rendered,
+                    [*canon_boundaries, hint_boundary],
+                    token_counts_at=token_counts,
+                )
+                stable_prefix_len = int(token_counts.get(hint_boundary, -1))
+                if (
+                    template_observability is not None
+                    and 0 < stable_prefix_len < len(token_ids)
+                ):
+                    template_observability["stable_prefix_len"] = stable_prefix_len
+                return token_ids
     if not enable_thinking:
         rendered = _render_messages_with_chat_template(
             tokenizer,
@@ -11715,6 +11997,12 @@ def _postcommit_next_turn_prefix_ids(
             message,
             strip_assistant_reasoning_history=strip_assistant_reasoning_history,
             include_reasoning_content=scoped_reasoning_history,
+            # Postcommit predicts the NEXT turn's render: when this request
+            # served canonicalized history (committed-think substitution),
+            # the prediction must render the same substituted bytes or the
+            # banked entry diverges from every future canonicalized encode.
+            # The field only exists on server-built message copies.
+            allow_committed_reasoning=True,
         )
         if item is not None:
             normalized.append(item)
@@ -24613,6 +24901,36 @@ def create_app(state: ServerState) -> FastAPI:
             tool_prompt_mode=template_tool_prompt_mode,
             template_observability=template_observability,
         )
+        if (
+            not background
+            and not cache_bypass
+            and not vision_images
+            and not aime_visible_working
+        ):
+            # Defect B (2.8 headline): if this conversation's session holds a
+            # committed stream the raw encode diverges from inside a think
+            # block, substitute the committed think bytes and re-encode so
+            # restores track the live frontier. Served only when the
+            # canonicalized encode provably matches the committed stream
+            # further than the raw one; every derivation below runs on the
+            # final ids exactly once.
+            _canonicalized = _maybe_canonicalize_committed_reasoning(
+                state,
+                messages=messages_for_generation,
+                prompt_ids=prompt_ids,
+                headers=headers,
+                metadata=metadata,
+                request=request,
+                thinking_enabled=thinking_enabled,
+                reasoning_effort=reasoning_effort,
+                tools=tool_specs if tools_active else None,
+                tool_choice=request.tool_choice,
+                tool_prompt_mode=template_tool_prompt_mode,
+                template_observability=template_observability,
+                request_observability=request_observability,
+            )
+            if _canonicalized is not None:
+                messages_for_generation, prompt_ids = _canonicalized
         if vision_images:
             try:
                 prompt_ids, vision_splice = _materialize_vision_splice(

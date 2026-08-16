@@ -1356,6 +1356,13 @@ class EngineSessionManager:
             session.touch()
             return session
 
+    def peek(self, session_id: str) -> EngineSession | None:
+        """Read-only lookup: no creation, no touch. Pre-encode consumers
+        (committed-reasoning canonicalization) must not mint sessions or
+        refresh TTLs for requests that may never adopt the id."""
+        with self._lock:
+            return self._sessions.get(session_id)
+
     def _sessions_snapshot(self) -> list[EngineSession]:
         with self._lock:
             return list(self._sessions.values())
