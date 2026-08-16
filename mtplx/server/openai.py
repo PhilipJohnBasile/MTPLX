@@ -122,6 +122,7 @@ from mtplx.server.request_policy import (
     BackgroundBusyBypass,
     resolve_request_policy,
 )
+from mtplx.server.response_envelope import build_generation_result
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
     DEFAULT_PROFILE_NAME,
@@ -27835,19 +27836,15 @@ def create_app(state: ServerState) -> FastAPI:
                                 # through the normal cancellation path, but for
                                 # the client this is a successful completion
                                 # that ended at the stop string.
-                                generated = {
-                                    "text": streamed_history_content(),
-                                    "tokens": list(streamed_token_ids),
-                                    "prompt_tokens": len(prompt_ids),
-                                    "completion_tokens": int(streamed_progress_tokens),
-                                    "finish_reason": "stop",
-                                    "stats": {
-                                        "generation_mode": request_generation_mode,
-                                        "mtp_depth": request_depth,
-                                        "prompt_tokens": len(prompt_ids),
-                                        "completion_tokens": int(
-                                            streamed_progress_tokens
-                                        ),
+                                generated = build_generation_result(
+                                    text=streamed_history_content(),
+                                    tokens=list(streamed_token_ids),
+                                    prompt_tokens=len(prompt_ids),
+                                    completion_tokens=int(streamed_progress_tokens),
+                                    finish_reason="stop",
+                                    generation_mode=request_generation_mode,
+                                    mtp_depth=request_depth,
+                                    stats_extra={
                                         "stop_sequence_hit": True,
                                         "stop_sequence_matched": (
                                             stop_monitor.matched_stop
@@ -27857,7 +27854,7 @@ def create_app(state: ServerState) -> FastAPI:
                                         "hidden_generation_repair_used": False,
                                         "early_tool_cancel_used": False,
                                     },
-                                }
+                                )
                                 generated = attach_response_observability(generated)
                                 _attach_dashboard_progress_stats(
                                     state,
@@ -28037,26 +28034,23 @@ def create_app(state: ServerState) -> FastAPI:
             # session postcommit is skipped, matching the streaming stop path.
             assert nonstream_stop_monitor is not None
             stop_reasoning_text = "".join(nonstream_stop_reasoning_chunks).strip()
-            stop_generated: dict[str, Any] = {
-                "text": nonstream_stop_monitor.emitted_text,
-                "tokens": [],
-                "prompt_tokens": len(prompt_ids),
-                "completion_tokens": int(nonstream_completion_tokens),
-                "finish_reason": "stop",
-                "stats": {
-                    "generation_mode": request_generation_mode,
-                    "mtp_depth": request_depth,
-                    "prompt_tokens": len(prompt_ids),
-                    "completion_tokens": int(nonstream_completion_tokens),
+            stop_generated: dict[str, Any] = build_generation_result(
+                text=nonstream_stop_monitor.emitted_text,
+                tokens=[],
+                prompt_tokens=len(prompt_ids),
+                completion_tokens=int(nonstream_completion_tokens),
+                finish_reason="stop",
+                generation_mode=request_generation_mode,
+                mtp_depth=request_depth,
+                stats_extra={
                     "stop_sequence_hit": True,
                     "stop_sequence_matched": (nonstream_stop_monitor.matched_stop),
                     "openai_bridge_mode": "omlx_style",
                     "legacy_bridge_used": False,
                     "hidden_generation_repair_used": False,
                     "early_tool_cancel_used": False,
-                    "finish_reason": "stop",
                 },
-            }
+            )
             stop_generated = attach_response_observability(stop_generated)
             _merge_final_bridge_stats_into_latest_metrics(
                 state, stop_generated["stats"]
@@ -28607,23 +28601,17 @@ def create_app(state: ServerState) -> FastAPI:
                             break
                         elif kind == "cancelled":
                             if stop_hit:
-                                generated = {
-                                    "text": stop_monitor.emitted_text,
-                                    "tokens": [],
-                                    "prompt_tokens": len(prompt_ids),
-                                    "completion_tokens": int(
+                                generated = build_generation_result(
+                                    text=stop_monitor.emitted_text,
+                                    tokens=[],
+                                    prompt_tokens=len(prompt_ids),
+                                    completion_tokens=int(
                                         streamed_completion_tokens
                                     ),
-                                    "finish_reason": "stop",
-                                    "stats": {
-                                        "generation_mode": request_generation_mode,
-                                        "mtp_depth": request_depth,
-                                        "prompt_tokens": len(prompt_ids),
-                                        "completion_tokens": int(
-                                            streamed_completion_tokens
-                                        ),
-                                    },
-                                }
+                                    finish_reason="stop",
+                                    generation_mode=request_generation_mode,
+                                    mtp_depth=request_depth,
+                                )
                                 break
                             return
                         elif kind == "error":
@@ -28734,21 +28722,19 @@ def create_app(state: ServerState) -> FastAPI:
             # the match as a normal completion instead of burning tokens
             # until EOS/max_tokens.
             assert nonstream_stop_monitor is not None
-            generated = {
-                "text": nonstream_stop_monitor.emitted_text,
-                "tokens": [],
-                "prompt_tokens": len(prompt_ids),
-                "completion_tokens": int(nonstream_completion_tokens),
-                "finish_reason": "stop",
-                "stats": {
-                    "generation_mode": request_generation_mode,
-                    "mtp_depth": request_depth,
-                    "prompt_tokens": len(prompt_ids),
-                    "completion_tokens": int(nonstream_completion_tokens),
+            generated = build_generation_result(
+                text=nonstream_stop_monitor.emitted_text,
+                tokens=[],
+                prompt_tokens=len(prompt_ids),
+                completion_tokens=int(nonstream_completion_tokens),
+                finish_reason="stop",
+                generation_mode=request_generation_mode,
+                mtp_depth=request_depth,
+                stats_extra={
                     "stop_sequence_hit": True,
                     "stop_sequence_matched": (nonstream_stop_monitor.matched_stop),
                 },
-            }
+            )
         finish_reason = str(generated.get("finish_reason") or "stop")
         if stop_sequences and not generated.get("stats", {}).get("stop_sequence_hit"):
             # Post-trim safety net for matches the incremental monitor cannot
