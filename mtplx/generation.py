@@ -6871,7 +6871,10 @@ def generate_mtpk(
         0.0, prompt_eval_time - prompt_state.prompt_mtp_history_time_s
     )
     target_time = prompt_target_prefill_time
-    draft_time += prompt_state.prompt_mtp_history_time_s
+    # Prompt-phase MTP-history time is reported in prompt_mtp_history_time_s
+    # only. draft_time_s stays a decode-window bucket, matching generate_mtp1
+    # and generate_mtpa (folding it here made exported stats show
+    # draft > decode-elapsed at long context).
     graphbank = (
         SpecDecodeGraphBank(rt, capture_backend=verify_core_backend)
         if verify_strategy in {"graphbank", "graphbank_capture_commit"}
@@ -7385,7 +7388,8 @@ def generate_mtpk(
         target_time += max(
             0.0, rebased.prompt_eval_time_s - rebased.prompt_mtp_history_time_s
         )
-        draft_time += rebased.prompt_mtp_history_time_s
+        # The rebase replay's MTP-history share stays inside
+        # state_rebase_time_s (captured above); draft_time_s is decode-only.
 
     def maybe_clear_mlx_cache() -> None:
         nonlocal clear_cache_tokens_since, clear_cache_observed_tokens

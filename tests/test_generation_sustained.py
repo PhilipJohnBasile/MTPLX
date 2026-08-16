@@ -890,6 +890,48 @@ def test_trim_commit_keeps_rejected_verify_prefix_without_reforward(monkeypatch)
     assert "repair_forward" not in out.stats.events[0].get("timing_s", {})
 
 
+def test_mtpk_draft_time_is_decode_only_and_excludes_prompt_mtp_history(monkeypatch):
+    """draft_time_s must be a decode-window bucket.
+
+    Prefill MTP-history time is already reported separately in
+    prompt_mtp_history_time_s (and subtracted from prompt_target_prefill).
+    Folding it into draft_time_s as well made exported stats look impossible
+    at long context (256k Ivan-ladder row: draft 83s inside a 19s decode
+    window) and disagreed with generate_mtp1/generate_mtpa, which both report
+    decode-only draft time.
+    """
+    import mtplx.generation as generation_mod
+
+    real_restore = generation_mod.restore_or_prefill_prompt_state
+
+    def fake_restore(*args, **kwargs):
+        state = real_restore(*args, **kwargs)
+        state.prompt_mtp_history_time_s = 123.0
+        return state
+
+    monkeypatch.setattr(
+        generation_mod, "restore_or_prefill_prompt_state", fake_restore
+    )
+
+    out = generate_mtpk(
+        _runtime(AcceptingTinyMTPModel(), mtp_enabled=True),
+        [0],
+        max_tokens=5,
+        sampler=SamplerConfig(temperature=0.6, top_p=1.0, top_k=1),
+        speculative_depth=3,
+        mtp_history_policy="committed",
+        verify_strategy="batched",
+        stop_token_ids=set(),
+    )
+
+    # The prompt-side bucket carries the injected time untouched...
+    assert out.stats.prompt_mtp_history_time_s == 123.0
+    # ...and the decode-side draft bucket does not absorb it.
+    assert out.stats.draft_time_s < 60.0
+    # prompt_eval here is tiny, so the target-prefill share clamps to zero.
+    assert out.stats.prompt_target_prefill_time_s == 0.0
+
+
 def test_sustained_prefill_chunks_without_full_prompt_logits(monkeypatch):
     monkeypatch.setenv("MTPLX_SUSTAINED_PREFILL", "1")
     monkeypatch.setenv("MTPLX_PREFILL_CHUNK_SIZE", "2")
