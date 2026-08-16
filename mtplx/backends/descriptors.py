@@ -397,6 +397,30 @@ QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20
 # acceptance. The earlier 0.6 result was thermally uncontrolled and is not a
 # product receipt.
 QWEN3_8_DRAFT_TEMPERATURE = 1.0
+# Per-family dynamic draft-temperature curves: (target_temperature,
+# draft_temperature) points, piecewise-linear, flat extrapolation
+# (draft_sampling.resolve_draft_temperature). An absent family means the
+# identity policy — the static per-family draft temperature above. Curves
+# are stamped ONLY from a measured max-fan ABBA calibration campaign (see
+# MEASUREMENTS.md); never invent offsets. Target temp 0 is handled by
+# greedy draft coupling in the server resolver, not by these curves.
+DRAFT_TEMPERATURE_CURVES: dict[str, tuple[tuple[float, float], ...]] = {}
+
+
+def draft_temperature_curve_for_model(
+    model_ref: str | None = None,
+    inspection: dict[str, Any] | None = None,
+    descriptor: "BackendDescriptor | None" = None,
+) -> tuple[tuple[float, float], ...] | None:
+    """The measured draft-temperature curve for the model's family, or None
+    (identity) when no calibration has been stamped."""
+
+    family = model_family_from_inspection(
+        inspection,
+        model_ref=model_ref,
+        descriptor=descriptor,
+    )
+    return DRAFT_TEMPERATURE_CURVES.get(family)
 QWEN3_8_REASONING_CODEC = ReasoningCodec(
     parser="qwen3",
     display_name="Qwen think tags",

@@ -5,6 +5,46 @@ from __future__ import annotations
 from typing import Any
 
 
+def resolve_draft_temperature(
+    curve: Any,
+    target_temperature: float | None,
+    *,
+    default: float,
+) -> float:
+    """Map an effective target temperature to a draft temperature.
+
+    ``curve`` is a sequence of (target_temperature, draft_temperature)
+    points; interpolation is piecewise linear with flat extrapolation at the
+    ends. An empty/None curve or unknown target returns ``default`` — the
+    identity policy (today's static draft temperature). Correctness never
+    depends on this value: probability-ratio acceptance derives p and q
+    independently, so any draft temperature preserves the output marginal.
+    """
+
+    if not curve or target_temperature is None:
+        return float(default)
+    try:
+        points = sorted(
+            (float(target), float(draft)) for target, draft in curve
+        )
+    except (TypeError, ValueError):
+        return float(default)
+    if not points:
+        return float(default)
+    t = float(target_temperature)
+    if t <= points[0][0]:
+        return points[0][1]
+    if t >= points[-1][0]:
+        return points[-1][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= t <= x1:
+            if x1 == x0:
+                return y1
+            frac = (t - x0) / (x1 - x0)
+            return y0 + frac * (y1 - y0)
+    return float(default)
+
+
 def normalize_draft_sampler_spec(
     value: Any,
     *,

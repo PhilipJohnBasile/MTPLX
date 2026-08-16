@@ -217,6 +217,7 @@ try:
         generate_mtpk,
         prefill_chunk_size_override,
         restore_or_prefill_prompt_state,
+        score_prompt_logprobs,
     )
     from mtplx.native_mlp import native_mlp_stats
     from mtplx.thinking_guard import (
@@ -245,6 +246,7 @@ except Exception as exc:
 
     generate_ar = _missing_runtime
     generate_mtpk = _missing_runtime
+    score_prompt_logprobs = _missing_runtime
     think_marker_ids = _missing_runtime
     thinking_guard_config_from_env = _missing_runtime
     prefill_chunk_size_override = nullcontext
@@ -1139,6 +1141,11 @@ class CompletionRequest(BaseModel):
     seed: int | None = None
     stop: Any = None
     stream: bool = False
+    # Prompt scoring (echo + logprobs + max_tokens 0): one teacher-forced
+    # pass returning per-position top-K logprobs — the lane KL-divergence
+    # harnesses consume. Decode-time logprobs remain unsupported.
+    echo: bool = False
+    logprobs: int | None = None
 
 
 class EmbeddingsRequest(BaseModel):
@@ -2170,6 +2177,23 @@ class ServerState:
             )
             if args.draft_temperature is not None
             else None
+        )
+        # Draft-sampler policy state (dynamic draft temperature):
+        # - pinned: a user-typed launch flag or an explicit live-settings
+        #   draft value disables the per-family curve; injected defaults and
+        #   the app's boilerplate launch flag are curve anchors, and the
+        #   live-settings implicit temperature->draft mirror never pins.
+        # - curve: measured per-family (target -> draft) temperature map;
+        #   None means identity (today's static behavior).
+        self.draft_sampler_pinned = (
+            str(getattr(args, "draft_sampler_source", "default") or "default")
+            == "explicit"
+        )
+        from mtplx.backends.descriptors import draft_temperature_curve_for_model
+
+        self.draft_temperature_curve = draft_temperature_curve_for_model(
+            model_ref=str(getattr(args, "model", "") or "") or None,
+            descriptor=self.backend_descriptor,
         )
         self.model_context_window_max = _resolve_context_window(
             self.runtime.tokenizer,
@@ -13636,6 +13660,12 @@ def _mtplx_apply_settings_payload(
                 top_p=float(draft_top_p),
                 top_k=int(draft_top_k),
             )
+            if {"draft_temperature", "draft_top_p", "draft_top_k"} & set(applied):
+                # An explicit live-settings draft value pins the sampler and
+                # disables the family curve. The implicit temperature->draft
+                # mirror above deliberately does NOT pin: it is bookkeeping,
+                # not a user decision about draft policy.
+                state.draft_sampler_pinned = True
     return applied
 
 
@@ -13675,6 +13705,39 @@ def _effective_ram_session_cache_settings() -> dict[str, Any]:
         "ram_session_cache_max_entries": entries,
         "ram_session_cache_max_size": max_bytes,
         "ram_session_cache_per_session_max_size": per_session_bytes,
+    }
+
+
+def _paged_kv_quantization_detail() -> dict[str, Any]:
+    """Honest contract surface for the KV-quantization mode.
+
+    KV quant is a decode-memory feature with real tradeoffs: it detaches the
+    compiled-verify graph bank and the dense two-pass/dense-prefill layouts,
+    and prefill still runs unquantized (peak prefill memory is unchanged).
+    Hiding those tradeoffs made the toggle look free; state them where the
+    app and dashboard read health.
+    """
+
+    mode = _effective_paged_kv_quantization()
+    if mode == "off":
+        return {"mode": "off"}
+    q8_kernel_enabled = (
+        os.environ.get("MTPLX_KV_QUANT_2PASS_KERNEL") or "1"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "mode": mode,
+        "decode_kernel": (
+            "sdpa_2pass_paged_q8"
+            if mode == "q8" and q8_kernel_enabled
+            else "dequant_fallback_memoized"
+        ),
+        "detached_fast_paths": [
+            "compiled_verify_graphbank",
+            "dense_two_pass_paged",
+            "dense_decode_prefill_layout",
+        ],
+        "prefill": "unquantized (peak prefill memory unchanged)",
+        "contract": "decode-memory feature; long-context decode KV bytes shrink",
     }
 
 
@@ -17896,12 +17959,9 @@ def _run_mtp_batch_generation_dispatched(
             ),
         }
     )
-    explicit_draft_sampler = kwargs.get("draft_sampler") is not None
-    draft_sampler = _couple_draft_sampler_to_greedy_target(
-        kwargs.get("draft_sampler")
-        if explicit_draft_sampler
-        else getattr(state, "draft_sampler", None),
-        explicit_draft_sampler=explicit_draft_sampler,
+    draft_sampler = _resolve_draft_sampler_for_request(
+        state,
+        request_draft_sampler=kwargs.get("draft_sampler"),
         target_temperature=kwargs.get("temperature"),
         request_observability=request_observability,
     )
@@ -17923,6 +17983,14 @@ def _run_mtp_batch_generation_dispatched(
             str(getattr(lane, "route_id", "")),
             omit_bonus,
             "cold_full_prompt",
+            # Dynamic draft temperature: one cohort binds one draft sampler
+            # pair, so requests resolved to different draft samplers must
+            # not share a cohort.
+            (
+                float(getattr(draft_sampler, "temperature", 0.0)),
+                float(getattr(draft_sampler, "top_p", 0.0)),
+                int(getattr(draft_sampler, "top_k", 0)),
+            ),
         ),
         generation_limits=generation_limits,
         solo_runner=lambda _job: _run_generation(state, prompt_ids, **solo_kwargs),
@@ -18078,6 +18146,121 @@ class _SmartFanArrivalMiddleware:
             await self.app(scope, receive, send)
         finally:
             _end_smart_fan_request(self.state, lease)
+
+
+async def _prompt_scoring_response(
+    state: "ServerState",
+    *,
+    prompt_ids: list[int],
+    top_k: int,
+    model: str,
+    response_id: str,
+    created: int,
+    request_observability: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """/v1/completions echo+logprobs+max_tokens=0: teacher-forced prompt scoring.
+
+    The KL-divergence lane contract (kl_capture.py, llama.cpp-compatible):
+    ``logprobs.top_logprobs[i]`` is a token->logprob dict for the model's
+    distribution AFTER prefix tokens[..i] (it predicts token i+1); no null
+    placeholder entries. One prefill-shaped pass, chunk-bounded logits,
+    zero decode-hot-path involvement.
+    """
+
+    max_top_k = _env_int("MTPLX_PROMPT_LOGPROBS_MAX", 128) or 128
+    if top_k > max_top_k:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"logprobs={top_k} exceeds the prompt-scoring limit of "
+                f"{max_top_k} (MTPLX_PROMPT_LOGPROBS_MAX)"
+            ),
+        )
+    max_positions = _env_int("MTPLX_PROMPT_SCORE_MAX_TOKENS", 8192) or 8192
+    if len(prompt_ids) > max_positions:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"prompt has {len(prompt_ids)} tokens; prompt scoring is "
+                f"limited to {max_positions} (MTPLX_PROMPT_SCORE_MAX_TOKENS)"
+            ),
+        )
+
+    tokenizer = state.runtime.tokenizer
+
+    def _score_under_lock() -> dict[str, Any]:
+        state.begin_foreground()
+        state.lock.acquire()
+        try:
+            return score_prompt_logprobs(
+                state.runtime,
+                list(prompt_ids),
+                top_k=int(top_k),
+            )
+        finally:
+            state.lock.release()
+            state.end_foreground()
+
+    scored = await asyncio.to_thread(_score_under_lock)
+
+    token_strings = [tokenizer.decode([int(token)]) for token in prompt_ids]
+    text_offsets: list[int] = []
+    offset = 0
+    for token_text in token_strings:
+        text_offsets.append(offset)
+        offset += len(token_text)
+    top_logprob_dicts: list[dict[str, float]] = []
+    for entries in scored["positions"]:
+        row: dict[str, float] = {}
+        for token_id, logprob in entries:
+            token_text = tokenizer.decode([int(token_id)])
+            # Distinct ids can decode to the same display string; keep the
+            # highest logprob (entries arrive sorted descending).
+            if token_text not in row:
+                row[token_text] = float(logprob)
+        top_logprob_dicts.append(row)
+
+    if request_observability is not None:
+        request_observability["prompt_scoring"] = True
+        request_observability["prompt_scoring_positions"] = len(top_logprob_dicts)
+        request_observability["prompt_scoring_top_k"] = int(top_k)
+
+    payload = {
+        "id": response_id,
+        "object": "text_completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "text": tokenizer.decode(list(prompt_ids)),
+                "finish_reason": "length",
+                "logprobs": {
+                    "tokens": token_strings,
+                    "token_logprobs": [
+                        float(value) for value in scored["token_logprobs"]
+                    ],
+                    "top_logprobs": top_logprob_dicts,
+                    "text_offset": text_offsets,
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": 0,
+            "total_tokens": len(prompt_ids),
+        },
+        "mtplx_stats": {
+            "mode": "prompt_scoring",
+            "prompt_tokens": len(prompt_ids),
+            "scored_positions": len(top_logprob_dicts),
+            "top_k": int(top_k),
+            "prompt_eval_time_s": float(scored["elapsed_s"]),
+        },
+    }
+    state.last_request_at = time.time()
+    state.requests_completed += 1
+    return JSONResponse(payload)
 
 
 def _run_generation_dispatched(
@@ -18318,6 +18501,88 @@ def _couple_draft_sampler_to_greedy_target(
     return replace(draft_sampler, temperature=0.0)
 
 
+def _resolve_draft_sampler_for_request(
+    state: "ServerState",
+    *,
+    request_draft_sampler: Any | None,
+    target_temperature: float | None,
+    request_observability: dict[str, Any] | None = None,
+) -> Any:
+    """The single per-request draft-sampler resolution, serial and batch.
+
+    Policy order (correctness-free choice: probability-ratio acceptance
+    derives p and q independently, so any draft temperature preserves the
+    output marginal — this only moves speed):
+
+    1. request_explicit — a request-supplied draft sampler is honored as-is.
+    2. pinned — a user-typed launch flag or explicit live-settings draft
+       value freezes the launch sampler and disables the family curve.
+    3. family_curve — the measured per-family curve maps the effective
+       target temperature to a draft temperature (identity when no curve
+       has been stamped).
+    4. greedy coupling — target temp 0 forces greedy drafts (the curve's
+       temp-0 row; keeps its own env off-switch).
+
+    Telemetry: draft_sampler_policy, draft_sampler_policy_source,
+    draft_sampler_resolved_temperature in request observability, so a
+    desync is visible per request instead of silent.
+    """
+
+    if request_draft_sampler is not None:
+        resolved = request_draft_sampler
+        source = "request_explicit"
+        policy = "request_explicit"
+    else:
+        base = getattr(state, "draft_sampler", None)
+        if base is None:
+            if request_observability is not None:
+                request_observability["draft_sampler_policy"] = "none"
+                request_observability["draft_sampler_policy_source"] = "none"
+                request_observability["draft_sampler_resolved_temperature"] = None
+            return None
+        pinned = bool(getattr(state, "draft_sampler_pinned", False))
+        curve = getattr(state, "draft_temperature_curve", None)
+        if pinned or not curve:
+            resolved = base
+            source = "launch_pinned" if pinned else "family_default"
+            policy = "static"
+        else:
+            from mtplx.draft_sampling import resolve_draft_temperature
+
+            draft_temperature = resolve_draft_temperature(
+                curve,
+                target_temperature,
+                default=float(getattr(base, "temperature", 0.0)),
+            )
+            if float(draft_temperature) == float(
+                getattr(base, "temperature", 0.0)
+            ):
+                resolved = base
+            else:
+                resolved = replace(base, temperature=float(draft_temperature))
+            source = "family_curve"
+            policy = "curve"
+    coupled = _couple_draft_sampler_to_greedy_target(
+        resolved,
+        explicit_draft_sampler=request_draft_sampler is not None,
+        target_temperature=target_temperature,
+        request_observability=request_observability,
+    )
+    if request_observability is not None:
+        request_observability["draft_sampler_policy"] = policy
+        request_observability["draft_sampler_policy_source"] = (
+            source + "+greedy_coupled"
+            if coupled is not resolved
+            else source
+        )
+        request_observability["draft_sampler_resolved_temperature"] = (
+            float(getattr(coupled, "temperature", 0.0))
+            if coupled is not None
+            else None
+        )
+    return coupled
+
+
 def _run_generation(
     state: ServerState,
     prompt_ids: list[int],
@@ -18373,9 +18638,9 @@ def _run_generation(
         prompt_ids=prompt_ids,
         request_observability=request_observability,
     )
-    effective_draft_sampler = _couple_draft_sampler_to_greedy_target(
-        draft_sampler if draft_sampler is not None else state.draft_sampler,
-        explicit_draft_sampler=draft_sampler is not None,
+    effective_draft_sampler = _resolve_draft_sampler_for_request(
+        state,
+        request_draft_sampler=draft_sampler,
         target_temperature=temperature,
         request_observability=request_observability,
     )
@@ -22688,6 +22953,7 @@ def create_app(state: ServerState) -> FastAPI:
                 getattr(state.args, "api_key_source", "none") or "none"
             ),
             "paged_kv_quantization": _effective_paged_kv_quantization(),
+            "paged_kv_quantization_detail": _paged_kv_quantization_detail(),
             "kernel_selfcheck": _kernel_selfcheck_health_payload(),
             "rate_limit_per_minute": int(state.args.rate_limit),
             "stream_interval": int(state.args.stream_interval),
@@ -28237,6 +28503,36 @@ def create_app(state: ServerState) -> FastAPI:
         response_id = f"cmpl-{uuid.uuid4().hex}"
         created = int(time.time())
 
+        requested_logprobs = int(request.logprobs or 0)
+        if bool(request.echo) and requested_logprobs > 0:
+            if int(request.max_tokens or 0) != 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "echo+logprobs is supported as prompt scoring only: "
+                        "set max_tokens to 0 (decode-time logprobs are not "
+                        "supported yet)"
+                    ),
+                )
+            return await _prompt_scoring_response(
+                state,
+                prompt_ids=prompt_ids,
+                top_k=requested_logprobs,
+                model=model,
+                response_id=response_id,
+                created=created,
+                request_observability=request_observability,
+            )
+        if requested_logprobs > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "logprobs on /v1/completions requires echo=true with "
+                    "max_tokens=0 (prompt scoring); decode-time logprobs are "
+                    "not supported yet"
+                ),
+            )
+
         if request.stream:
             # Real incremental streaming: tokens flow through a queue from the
             # generation worker and are decoded as they arrive, mirroring the
@@ -29494,6 +29790,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--draft-temperature", type=float)
     parser.add_argument("--draft-top-p", type=float, default=0.95)
     parser.add_argument("--draft-top-k", type=int, default=20)
+    parser.add_argument(
+        "--draft-sampler-source",
+        choices=["explicit", "default"],
+        default="default",
+        help=(
+            "Provenance of the launch draft sampler: 'explicit' (user-typed "
+            "flag; pins the draft sampler and disables the per-family "
+            "dynamic draft-temperature curve) or 'default' (injected/model "
+            "default; treated as the curve anchor)."
+        ),
+    )
     parser.add_argument(
         "--mlx-cache-limit",
         help=(

@@ -8998,6 +8998,18 @@ def cmd_serve_public(args: Any) -> int:
             ):
                 cmd.extend([flag, str(getattr(args, attr))])
     if draft_sampler is not None:
+        # Provenance for the dynamic draft-temperature curve: only a
+        # user-typed CLI draft flag pins the sampler. Injected measured
+        # defaults and the app's boilerplate launch flag (the app always
+        # emits --draft-temperature from its preset/target mirror,
+        # identified by --app-launch-id) are curve anchors, not pins.
+        user_typed_draft = any(
+            flag in (getattr(args, "_cli_flags", set()) or set())
+            for flag in _DRAFT_SAMPLER_FLAG_ATTRS
+        )
+        launched_by_app = bool(
+            str(getattr(args, "app_launch_id", "") or "").strip()
+        )
         cmd.extend(
             [
                 "--draft-temperature",
@@ -9006,6 +9018,12 @@ def cmd_serve_public(args: Any) -> int:
                 str(float(draft_sampler["top_p"])),
                 "--draft-top-k",
                 str(int(draft_sampler["top_k"])),
+                "--draft-sampler-source",
+                (
+                    "explicit"
+                    if user_typed_draft and not launched_by_app
+                    else "default"
+                ),
             ]
         )
     if getattr(args, "tool_prompt_mode", None):
