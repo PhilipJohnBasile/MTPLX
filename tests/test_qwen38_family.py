@@ -276,6 +276,31 @@ def test_qwen38_turbo_default_promotion() -> None:
     assert pinned.profile == "sustained"
 
 
+def test_qwen38_no_silent_sustained_side_doors() -> None:
+    # 2026-08-16 redp314 board lesson: serve resolved turbo but `mtplx run`
+    # and the no-flag bench actions fell back to the raw sustained default,
+    # so exactly the people producing public numbers hit the slow profile.
+    from mtplx.commands.public import (
+        _bench_run_profile_name,
+        _resolved_default_profile_name,
+    )
+
+    flagship = QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+    args = SimpleNamespace(profile=None, _cli_flags=set(), model=flagship)
+    assert _resolved_default_profile_name(args) == "turbo"
+    # Speed suites follow the launch rule for the flagship...
+    assert _bench_run_profile_name(args, suite="long_code") == "turbo"
+    # ...and so do context suites (founder order 2026-08-16: our models
+    # default turbo across every feature).
+    assert _bench_run_profile_name(args, suite="python_modules_long") == "turbo"
+    # ...while the deliberate memory-safe context defaults stay sustained
+    # and an explicit flag always wins.
+    pinned = SimpleNamespace(
+        profile="sustained", _cli_flags={"profile"}, model=flagship
+    )
+    assert _bench_run_profile_name(pinned, suite="long_code") == "sustained"
+
+
 # ------------------------------------------------------------- server behavior
 
 

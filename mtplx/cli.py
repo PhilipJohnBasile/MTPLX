@@ -1110,12 +1110,19 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_profiles(args: argparse.Namespace) -> int:
-    payload = {"default": DEFAULT_PROFILE_NAME, "profiles": list_profiles()}
+    payload = {
+        "default": DEFAULT_PROFILE_NAME,
+        "flagship_default": "turbo",
+        "profiles": list_profiles(),
+    }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     print(f"library default: {DEFAULT_PROFILE_NAME}")
-    print("start default: sustained")
+    print(
+        "start/serve default: resolves per model — turbo for the quantized "
+        "27B/9B flagships, sustained otherwise"
+    )
     for profile in payload["profiles"]:
         print(f"{profile['name']}: {profile['summary']}")
     return 0
@@ -2021,7 +2028,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_flow_p = sub.add_parser(
         "start",
         help="Interactive setup → chat (model · mode · web/CLI/Pi/OpenCode/Swival/Hermes/Dashboard)",
-        usage="mtplx start [cli|web|pi|opencode|swival|hermes|dashboard] [--fresh] [--max] [--profile sustained] [--model PATH_OR_REPO] [--prompt TEXT]",
+        usage="mtplx start [cli|web|pi|opencode|swival|hermes|dashboard] [--fresh] [--max] [--profile NAME] [--model PATH_OR_REPO] [--prompt TEXT]",
         description="Walk through model / mode / surface in three quick steps, then chat. Returning users get a 'same as last time?' prompt. Use --fresh to redo the onboarding, or pass any of --model / --profile / --max / cli|web|pi|opencode|swival|hermes|dashboard to skip it entirely.",
     )
     start_flow_p.add_argument(
@@ -2181,7 +2188,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_fan_mode_args(
         start_flow_p,
-        max_help="Compatibility alias for --fan-mode max; with the start default this is Sustained Max",
+        max_help="Compatibility alias for --fan-mode max; combined with the sustained profile this is Sustained Max",
     )
     start_flow_p.add_argument(
         "--max-idle-min",
@@ -2510,7 +2517,7 @@ def build_parser() -> argparse.ArgumentParser:
         quickstart_server_p,
         max_help=(
             "Compatibility alias for --fan-mode max for the server lifetime; "
-            "with the quickstart default this is Sustained Max"
+            "combined with the sustained profile this is Sustained Max"
         ),
     )
     quickstart_server_p.add_argument(
@@ -3417,7 +3424,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         choices=(*PROFILE_CHOICES, "native-mtp-60"),
         help=(
-            "Runtime profile for product benchmark actions. Defaults to Sustained for context runs; "
+            "Runtime profile for product benchmark actions. Default follows the launch rule: "
+            "Turbo for the quantized 27B/9B flagships across every suite; Sustained otherwise "
+            "(context and long-generation suites stay Sustained for non-flagship models); "
             "native-mtp-60 is a legacy alias for performance-cold."
         ),
     )

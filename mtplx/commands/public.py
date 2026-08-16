@@ -5584,6 +5584,14 @@ def _bench_run_profile_name(args: Any, *, suite: str) -> str:
     requested = getattr(args, "profile", None)
     if requested:
         return str(requested)
+    # Founder order (2026-08-16, redp314 board): our flagship models default
+    # to turbo across EVERY feature — context suites included. The old bare
+    # sustained defaults here meant exactly the people producing public
+    # numbers benchmarked the slow profile. Explicit --profile always wins;
+    # non-flagship models keep the memory-safe sustained defaults below.
+    resolved = _resolved_default_profile_name(args)
+    if resolved == "turbo":
+        return "turbo"
     if suite in BENCH_SUSTAINED_DEFAULT_SUITES:
         return "sustained"
     try:
@@ -5595,7 +5603,7 @@ def _bench_run_profile_name(args: Any, *, suite: str) -> str:
         and max_tokens > BENCH_SUSTAINED_MAX_TOKENS_THRESHOLD
     ):
         return "sustained"
-    return DEFAULT_PROFILE_NAME
+    return resolved
 
 
 def _direct_http_bench_command(
@@ -8731,7 +8739,7 @@ def cmd_serve_public(args: Any) -> int:
             f"try: mtplx {server_command}{profile_arg}{max_arg} --port {int(args.port) + 1}"
         )
         return 2
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     cache_dir = getattr(args, "cache_dir", None)
     if bool(getattr(args, "download", False)) and not dry_run:
         try:
@@ -9507,7 +9515,11 @@ def _generate_one_shot_public(
             [],
         )
     _apply_backend_serve_defaults(args, inspection)
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    # Per-model default, same rule as serve: turbo for the quantized
+    # flagships unless --profile was given. The raw sustained fallback here
+    # made `mtplx run` silently benchmark the slow profile (2026-08-16
+    # redp314 board investigation).
+    profile = get_profile(_resolved_default_profile_name(args))
     apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
     draft_lm_head = (
@@ -11304,7 +11316,7 @@ def _quickstart_opencode_payload(
         else ""
     )
     api_key_suffix = _api_key_command_suffix(args)
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     generation_mode = _generation_mode_from_args(args)
     target_sampler = {
         "temperature": float(getattr(args, "temperature", 0.6)),
@@ -11799,7 +11811,7 @@ def _quickstart_apply_local_model_defaults(
         unsafe_force_unverified=bool(getattr(args, "unsafe_force_unverified", False)),
         yes=bool(getattr(args, "yes", False)),
     )
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     _apply_model_contract_depth_default(args, inspection, profile)
     _apply_backend_serve_defaults(args, inspection)
     if gate_exit is not None:
@@ -12502,7 +12514,7 @@ def _quickstart_run_terminal_chat_body(
     _apply_model_default_profile(
         args, _public_model_id_for_args(args, str(runtime_model))
     )
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
     draft_lm_head = (
@@ -13328,7 +13340,7 @@ def cmd_quickstart_public(args: Any) -> int:
     )
     if mode_exit is not None:
         return mode_exit
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     _apply_model_contract_depth_default(args, inspection, profile)
     _apply_backend_serve_defaults(args, inspection)
     _quickstart_apply_tuned_depth(
