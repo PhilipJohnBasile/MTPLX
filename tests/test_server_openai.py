@@ -3836,9 +3836,12 @@ def test_completion_request_controls_are_server_owned_without_override(monkeypat
     assert response.status_code == 200
     assert captured["generation_mode"] == "mtp"
     assert captured["depth"] == 3
-    assert captured["temperature"] is None
-    assert captured["top_p"] is None
-    assert captured["top_k"] is None
+    # Server-owned controls resolve to the launch sampler at the prologue
+    # (shared RequestPolicy path, same as chat) — the client's 0.01/0.2/1
+    # must never reach generation.
+    assert captured["temperature"] == 0.6
+    assert captured["top_p"] == 0.95
+    assert captured["top_k"] == 20
     stats = captured["request_observability"]
     assert stats["mtplx_control_owner"] == "server"
     assert stats["client_controls_allowed"] is False
@@ -3849,6 +3852,14 @@ def test_completion_request_controls_are_server_owned_without_override(monkeypat
         "generation_mode",
         "draft_control",
     ]
+    assert stats["client_sampler_fields_ignored"] == [
+        "temperature",
+        "top_p",
+        "top_k",
+    ]
+    assert stats["effective_temperature"] == 0.6
+    assert stats["effective_top_p"] == 0.95
+    assert stats["effective_top_k"] == 20
 
 
 def test_chat_accepts_max_completion_tokens_alias_and_benign_extras(monkeypatch):

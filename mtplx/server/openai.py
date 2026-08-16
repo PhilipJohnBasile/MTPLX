@@ -118,6 +118,10 @@ from mtplx.reasoning_effort import (
 )
 from mtplx.retrieval import RetrievalError, RetrievalTrustError
 from mtplx.sampling import SamplerConfig
+from mtplx.server.request_policy import (
+    BackgroundBusyBypass,
+    resolve_request_policy,
+)
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
     DEFAULT_PROFILE_NAME,
@@ -24606,156 +24610,15 @@ def create_app(state: ServerState) -> FastAPI:
             "stateless",
             "off",
         }
-        opencode_client = _is_opencode_client(headers=headers, metadata=metadata)
-        requested_tool_specs = _normalize_tool_specs(request.tools)
-        tool_specs = _filter_tool_specs_for_request(
-            requested_tool_specs,
-            request.messages,
-            tool_choice=request.tool_choice,
-            client_manages_tools=opencode_client,
-        )
-        tools_active = _tools_active_for_request(tool_specs, request.tool_choice)
-        raw_tool_result_history_present = any(
-            str(message.role).lower() == "tool" for message in request.messages
-        )
-        agent_transcript_tools_active = bool(
-            tools_active
-            or (
-                requested_tool_specs
-                and raw_tool_result_history_present
-                and _is_read_only_inspection_request(_last_user_text(request.messages))
-            )
-        )
-        read_only_force_answer_contract_active = (
-            _request_should_force_answer_for_read_only_inspection(request.messages)
-        )
-        if read_only_force_answer_contract_active:
-            if _tool_result_message_count(
-                request.messages
-            ) > 0 and _request_explicit_single_tool_then_answer(request.messages):
-                # Explicit "use one tool then answer": the forced final turn
-                # generates tool-free, and turn-level tool state/observability
-                # must agree (zero remaining tools, read_only_force_answer:v1
-                # policy version).
-                tool_specs = []
-                tools_active = False
-            else:
-                # Read-budget force answer: keep the REQUESTED toolset
-                # byte-identical to every prior round of this loop. Filtering
-                # to a read-only subset rewrote the rendered tool contract in
-                # the system prompt, so the largest prompt of the session (the
-                # forced final answer) diverged from every banked prefix at
-                # token ~3 and re-prefilled fully cold (measured 2026-07-04:
-                # 13.2k tokens, TTFT 21s). The appended force-answer user
-                # message carries the "answer now, no more tools" conditioning;
-                # prefix stability owns the toolset bytes.
-                pass
-        no_tools_contract_applies = bool(
-            not read_only_force_answer_contract_active
-            and _should_add_no_tool_contract(
-                requested_tools=requested_tool_specs,
-                tools_active=tools_active,
-                messages=request.messages,
-            )
-        )
-        # A tool loop's FINAL round (tool results already in this turn,
-        # tools now disabled) must synthesize a full answer — it gets
-        # the post-tool contract instead of the terse direct-reply one,
-        # whose no-lists/no-analysis clauses clip searched answers.
-        post_tool_answer_contract_active = bool(
-            no_tools_contract_applies
-            and _turn_tail_contains_tool_results(request.messages)
-        )
-        no_tools_contract_active = bool(
-            no_tools_contract_applies and not post_tool_answer_contract_active
-        )
-        client_controls_allowed = _client_controls_allowed(headers, metadata)
-        pi_convergence_contract_active = bool(
-            not read_only_force_answer_contract_active
-            and not no_tools_contract_active
-            and not post_tool_answer_contract_active
-            and _request_should_add_pi_convergence_contract(
-                request.messages,
+        try:
+            policy = resolve_request_policy(
+                state,
+                request,
                 headers=headers,
                 metadata=metadata,
-                tools_active=agent_transcript_tools_active,
+                endpoint="chat",
             )
-        )
-        opencode_prompt_contract_profile = _opencode_prompt_contract_profile(
-            request.messages,
-            headers=headers,
-            metadata=metadata,
-            tool_choice=request.tool_choice,
-        )
-        opencode_prompt_contract_system_prompt = (
-            _opencode_prompt_contract_system_prompt(opencode_prompt_contract_profile)
-        )
-        opencode_simple_chat_contract_active = False
-        messages_for_generation, transcript_stats = _canonicalize_agent_transcript(
-            request.messages,
-            tools_active=agent_transcript_tools_active,
-            replace_simple_chitchat_system_prompt=False,
-            initial_client_system_prompt=opencode_prompt_contract_system_prompt,
-            strip_tool_call_preamble_text=opencode_client,
-        )
-        messages_for_generation, backend_chat_policy_active = _with_backend_chat_policy(
-            state,
-            messages_for_generation,
-        )
-        if read_only_force_answer_contract_active:
-            messages_for_generation = _with_mtplx_read_only_force_answer_contract(
-                messages_for_generation
-            )
-        elif post_tool_answer_contract_active:
-            messages_for_generation = _with_mtplx_post_tool_answer_contract(
-                messages_for_generation
-            )
-        elif no_tools_contract_active:
-            messages_for_generation = _with_mtplx_no_tool_contract(
-                messages_for_generation
-            )
-        elif pi_convergence_contract_active:
-            messages_for_generation = _with_mtplx_pi_convergence_contract(
-                messages_for_generation
-            )
-        read_only_inspection_request = _is_read_only_inspection_request(
-            _last_user_text(messages_for_generation)
-        )
-        tool_result_history_present = any(
-            str(message.role).lower() == "tool" for message in messages_for_generation
-        )
-        raw_messages_for_postcommit = (
-            list(request.messages)
-            if read_only_force_answer_contract_active
-            else (
-                list(messages_for_generation)
-                if (
-                    no_tools_contract_active
-                    or post_tool_answer_contract_active
-                    or pi_convergence_contract_active
-                    or opencode_prompt_contract_profile is not None
-                    or backend_chat_policy_active
-                )
-                else list(request.messages)
-            )
-        )
-        postcommit_tool_specs = (
-            tool_specs
-            if tools_active
-            else (requested_tool_specs if agent_transcript_tools_active else None)
-        )
-        background = is_background_request(
-            messages=messages_for_generation,
-            max_tokens=request_max_tokens,
-            headers=headers,
-            metadata=metadata,
-            main_system_hash=state.main_system_prompt_hash,
-        )
-        if background and (
-            state.has_foreground()
-            or state.lock.locked()
-            or _foreground_model_work_pending(state)
-        ):
+        except BackgroundBusyBypass:
             return JSONResponse(
                 status_code=503,
                 headers={"Retry-After": "1"},
@@ -24771,62 +24634,42 @@ def create_app(state: ServerState) -> FastAPI:
                     },
                 },
             )
-        thinking_enabled = _thinking_enabled_for_request(
-            state,
-            request,
-            allow_client_controls=client_controls_allowed,
+        # Locals alias the policy so the generation/streaming body below and
+        # its closures read exactly as before the extraction.
+        opencode_client = policy.opencode_client
+        tool_specs = policy.tool_specs
+        tools_active = policy.tools_active
+        agent_transcript_tools_active = policy.agent_transcript_tools_active
+        read_only_force_answer_contract_active = (
+            policy.read_only_force_answer_contract_active
         )
-        reasoning_effort = _reasoning_effort_for_state(
-            state,
-            thinking_enabled=thinking_enabled,
-            request_effort=request.reasoning_effort,
-            allow_client_controls=client_controls_allowed,
+        no_tools_contract_active = policy.no_tools_contract_active
+        post_tool_answer_contract_active = policy.post_tool_answer_contract_active
+        pi_convergence_contract_active = policy.pi_convergence_contract_active
+        opencode_simple_chat_contract_active = (
+            policy.opencode_simple_chat_contract_active
         )
-        if (
-            read_only_force_answer_contract_active
-            and _reasoning_parser_for_state(state) == "gemma4"
-        ):
-            thinking_enabled = False
-        aime_visible_working = (
-            _aime_visible_working_for_request(metadata)
-            and thinking_enabled
-            and _reasoning_parser_for_state(state) in {"qwen3", "step3p5"}
-        )
-        tool_prompt_mode, tool_prompt_mode_resolution = _tool_prompt_mode_for_request(
-            state.args,
-            headers=headers,
-            metadata=metadata,
-            tools_active=tools_active,
-            backend=_backend_descriptor(state),
-        )
-        template_tool_prompt_mode = tool_prompt_mode
-        if read_only_force_answer_contract_active and tools_active:
-            # Read-budget force-answer turns keep the SAME template mode as
-            # every prior round. The earlier hybrid switch re-rendered the
-            # system prompt with full "# Tools" schemas, so the forced final
-            # turn's prompt diverged from all banked prefixes at token ~3 and
-            # re-prefilled fully cold — the fingerprint compatibility shim
-            # could not help because the BYTES differed (2026-07-04 fix).
-            # The appended contract user message is a pure suffix and owns
-            # the force-answer conditioning.
-            tool_prompt_mode_resolution = {
-                **tool_prompt_mode_resolution,
-                "tool_prompt_mode_source": "read_only_force_answer_prefix_stable",
-            }
-        postcommit_tool_prompt_mode = tool_prompt_mode
-        if postcommit_tool_specs and not tools_active:
-            postcommit_tool_prompt_mode, _ = _tool_prompt_mode_for_request(
-                state.args,
-                headers=headers,
-                metadata=metadata,
-                tools_active=True,
-                backend=_backend_descriptor(state),
-            )
-        request_generation_mode = _request_generation_mode_for_generation(
-            state,
-            request,
-            allow_client_controls=client_controls_allowed,
-        )
+        opencode_prompt_contract_profile = policy.opencode_prompt_contract_profile
+        transient_suffix_contract_active = policy.transient_suffix_contract_active
+        messages_for_generation = policy.messages_for_generation
+        raw_messages_for_postcommit = policy.raw_messages_for_postcommit
+        postcommit_tool_specs = policy.postcommit_tool_specs
+        read_only_inspection_request = policy.read_only_inspection_request
+        tool_result_history_present = policy.tool_result_history_present
+        background = policy.background
+        thinking_enabled = policy.thinking_enabled
+        reasoning_effort = policy.reasoning_effort
+        aime_visible_working = policy.aime_visible_working
+        tool_prompt_mode = policy.tool_prompt_mode
+        template_tool_prompt_mode = policy.template_tool_prompt_mode
+        postcommit_tool_prompt_mode = policy.postcommit_tool_prompt_mode
+        request_generation_mode = policy.request_generation_mode
+        sampler_temperature = policy.sampler_temperature
+        sampler_top_p = policy.sampler_top_p
+        sampler_top_k = policy.sampler_top_k
+        sampler_presence_penalty = policy.sampler_presence_penalty
+        sampler_frequency_penalty = policy.sampler_frequency_penalty
+        request_draft_sampler = policy.request_draft_sampler
         defer_mtp_batch_mlx_finalize = _use_live_mtp_batch(
             state, effective_mode=request_generation_mode
         )
@@ -24866,12 +24709,6 @@ def create_app(state: ServerState) -> FastAPI:
                 )
             # Constrained requests ride the serial lanes (MTP included since
             # #186 phase 3); only the batched AR pump is bypassed.
-        request_depth = _request_depth_for_generation(
-            state,
-            request,
-            generation_mode=request_generation_mode,
-            allow_client_controls=client_controls_allowed,
-        )
         try:
             messages_for_generation, vision_images = _vision_extract_and_flatten(
                 messages_for_generation
@@ -24968,22 +24805,15 @@ def create_app(state: ServerState) -> FastAPI:
             ]
             template_observability["aime_visible_working"] = True
             template_observability["aime_visible_working_prompt_close"] = True
-        request_depth, short_depth_policy = _opencode_short_context_depth_policy(
+        policy = policy.with_prompt_tokens(
+            state,
             request,
             headers=headers,
             metadata=metadata,
-            generation_mode=request_generation_mode,
-            request_depth=request_depth,
             prompt_tokens=len(prompt_ids),
         )
-        effective_request_depth, long_context_depth_policy = (
-            _long_context_mtp_depth_policy_for_request(
-                state,
-                generation_mode=request_generation_mode,
-                request_depth=request_depth,
-                prompt_tokens=len(prompt_ids),
-            )
-        )
+        request_depth = policy.request_depth
+        effective_request_depth = policy.effective_request_depth
         if defer_mtp_batch_mlx_finalize:
             response_max, _sampler, _generation_limits = _generation_params(
                 state,
@@ -25043,9 +24873,6 @@ def create_app(state: ServerState) -> FastAPI:
         # fingerprint, or the flag flip alone would hard-miss the bank at the
         # exact turn that most needs the warm prefix (measured on OpenCode
         # 2026-07-04; Pi shares the mechanism via its >=14-tools contract).
-        transient_suffix_contract_active = bool(
-            read_only_force_answer_contract_active or pi_convergence_contract_active
-        )
         postcommit_policy_fingerprint = policy_fingerprint
         if transient_suffix_contract_active:
             postcommit_policy_fingerprint = _policy_fingerprint(
@@ -25176,102 +25003,7 @@ def create_app(state: ServerState) -> FastAPI:
             request_observability["request_model_matches_served_model"] = (
                 requested_model == state.model_id
             )
-        server_reasoning_mode = getattr(state.args, "reasoning", None)
-        if server_reasoning_mode not in {"auto", "on", "off"}:
-            server_reasoning_mode = (
-                "on" if bool(getattr(state.args, "enable_thinking", True)) else "off"
-            )
-        request_observability["request_effective_mtp_depth"] = int(
-            effective_request_depth
-        )
-        if not client_controls_allowed:
-            request_reasoning_mode = (
-                "off" if not thinking_enabled else server_reasoning_mode
-            )
-        elif request.enable_thinking is False:
-            request_reasoning_mode = "off"
-        elif request.enable_thinking is True and server_reasoning_mode == "auto":
-            request_reasoning_mode = "on"
-        else:
-            request_reasoning_mode = server_reasoning_mode
-        request_observability["request_reasoning_mode"] = request_reasoning_mode
-        request_observability["request_enable_thinking"] = bool(thinking_enabled)
-        request_observability["request_reasoning_effort"] = reasoning_effort
-        request_observability["request_enable_thinking_override"] = (
-            request.enable_thinking is not None and client_controls_allowed
-        )
-        request_observability["mtplx_control_owner"] = (
-            "client" if client_controls_allowed else "server"
-        )
-        request_observability["client_controls_allowed"] = bool(client_controls_allowed)
-        if not client_controls_allowed:
-            ignored_fields = _ignored_client_control_fields(request)
-            if ignored_fields:
-                request_observability["client_control_fields_ignored"] = ignored_fields
-        request_observability["request_reasoning_parser"] = _reasoning_parser_for_state(
-            state
-        )
-        request_observability["request_read_only_inspection_force_answer"] = bool(
-            read_only_force_answer_contract_active
-        )
-        request_observability["request_read_only_inspection_tool_result_count"] = (
-            _tool_result_message_count(request.messages)
-        )
-        request_observability[
-            "request_read_only_inspection_force_answer_after_tools"
-        ] = _read_only_inspection_force_answer_after_tools()
-        request_observability["request_pi_convergence_contract"] = bool(
-            pi_convergence_contract_active
-        )
-        request_observability["request_pi_convergence_tool_result_count"] = (
-            _tool_result_message_count(request.messages)
-        )
-        request_observability["request_pi_convergence_after_tools"] = (
-            _pi_convergence_after_tools()
-        )
-        request_observability["opencode_simple_chat_contract_active"] = bool(
-            opencode_simple_chat_contract_active
-        )
-        request_observability["opencode_prompt_contract_profile"] = (
-            opencode_prompt_contract_profile or "none"
-        )
-        request_observability["backend_chat_policy_active"] = bool(
-            backend_chat_policy_active
-        )
-        request_observability["request_effective_message_count"] = len(
-            messages_for_generation
-        )
-        request_observability["request_effective_message_roles"] = [
-            message.role for message in messages_for_generation
-        ]
-        request_observability["request_effective_message_chars"] = [
-            len(_content_to_text(message.content))
-            for message in messages_for_generation
-        ]
-        request_observability["preserve_thinking"] = getattr(
-            state.args, "preserve_thinking", "auto"
-        )
-        request_observability["preserve_thinking_effective"] = (
-            _preserve_thinking_effective(state.args)
-        )
-        request_observability["reasoning_history_mode"] = _reasoning_history_mode(state)
-        request_observability["strip_assistant_reasoning_history"] = bool(
-            state.args.strip_assistant_reasoning_history
-        )
-        request_observability["long_context_mtp_depth_policy"] = (
-            long_context_depth_policy
-        )
-        request_observability.update(
-            _bridge_policy_observability(
-                tools_active=tools_active,
-                tool_prompt_mode=template_tool_prompt_mode,
-                no_tools_contract_active=no_tools_contract_active,
-                read_only_force_answer_contract_active=read_only_force_answer_contract_active,
-                pi_convergence_contract_active=pi_convergence_contract_active,
-                post_tool_answer_contract_active=post_tool_answer_contract_active,
-            )
-        )
-        request_observability.update(tool_prompt_mode_resolution)
+        request_observability.update(policy.as_observability())
         request_observability["session_cache_scope"] = session_cache_scope
         request_observability["opencode_tool_history_cache_bypass"] = bool(
             opencode_tool_history_cache_bypass
@@ -25282,39 +25014,6 @@ def create_app(state: ServerState) -> FastAPI:
         request_observability["opencode_tool_history_live_frontier_restore"] = bool(
             opencode_tool_history_live_frontier_restore
         )
-        requested_tool_names = list(
-            request_observability.get("request_tool_names") or []
-        )
-        filtered_tool_names = _tool_names(tool_specs) if tools_active else []
-        hidden_tool_names = [
-            name for name in requested_tool_names if name not in filtered_tool_names
-        ]
-        request_observability.update(
-            {
-                "request_filtered_tool_count": len(filtered_tool_names),
-                "request_filtered_tool_names": filtered_tool_names,
-                "request_hidden_tool_names": hidden_tool_names,
-                "request_tools_hidden_by_bridge": bool(hidden_tool_names),
-            }
-        )
-        chat_template_report = getattr(state, "chat_template_report", {}) or {}
-        request_observability.update(
-            {
-                "chat_template_profile": str(
-                    chat_template_report.get("profile")
-                    or getattr(
-                        state, "chat_template_profile", _CHAT_TEMPLATE_PROFILE_LOCAL
-                    )
-                ),
-                "chat_template_source": chat_template_report.get("source"),
-                "chat_template_path": chat_template_report.get("path"),
-                "chat_template_hash": state.template_hash,
-            }
-        )
-        request_observability["opencode_short_context_depth_policy"] = (
-            short_depth_policy
-        )
-        request_observability.update(transcript_stats.to_metrics())
         request_observability.update(template_observability)
         if template_observability.get("tool_template_fallback"):
             _record_tool_parse_event(state, event="tool_template_fallback")
@@ -25398,92 +25097,6 @@ def create_app(state: ServerState) -> FastAPI:
             commit_prompt_prefix = False
         request_observability["request_commit_prompt_prefix"] = bool(
             commit_prompt_prefix
-        )
-        if client_controls_allowed:
-            _reject_non_finite_sampler_controls(request)
-        sampler_temperature = request.temperature if client_controls_allowed else None
-        sampler_top_p = request.top_p if client_controls_allowed else None
-        sampler_top_k = request.top_k if client_controls_allowed else None
-        # Penalties follow the same control-ownership policy as the other
-        # sampler fields; None falls through to the server default inside
-        # _generation_params (request value > server default > 0.0).
-        sampler_presence_penalty = (
-            request.presence_penalty if client_controls_allowed else None
-        )
-        sampler_frequency_penalty = (
-            request.frequency_penalty if client_controls_allowed else None
-        )
-        request_observability["request_temperature"] = request.temperature
-        request_observability["request_top_p"] = request.top_p
-        request_observability["request_top_k"] = request.top_k
-        if request.presence_penalty is not None:
-            request_observability["request_presence_penalty"] = request.presence_penalty
-        if request.frequency_penalty is not None:
-            request_observability["request_frequency_penalty"] = (
-                request.frequency_penalty
-            )
-        ignored_sampler_fields = [
-            name
-            for name, value in (
-                ("temperature", request.temperature),
-                ("top_p", request.top_p),
-                ("top_k", request.top_k),
-                ("presence_penalty", request.presence_penalty),
-                ("frequency_penalty", request.frequency_penalty),
-            )
-            if value is not None and not client_controls_allowed
-        ]
-        if ignored_sampler_fields:
-            request_observability["client_sampler_fields_ignored"] = (
-                ignored_sampler_fields
-            )
-        request_draft_sampler = _opencode_default_sampler_override(
-            messages=messages_for_generation,
-            tools_active=tools_active,
-            request_temperature=request.temperature,
-            request_top_p=request.top_p,
-            request_top_k=request.top_k,
-            request_observability=request_observability,
-            default_temperature=getattr(state.args, "temperature", 0.6),
-            default_top_p=getattr(state.args, "top_p", 0.95),
-            default_top_k=getattr(state.args, "top_k", 20),
-        )
-        if request_draft_sampler is not None:
-            target_sampler_override = request_draft_sampler
-            sampler_temperature = target_sampler_override.temperature
-            sampler_top_p = target_sampler_override.top_p
-            sampler_top_k = target_sampler_override.top_k
-            launch_draft_sampler = _opencode_default_draft_sampler_for_request(
-                state,
-                request_observability,
-            )
-            request_draft_sampler = launch_draft_sampler or target_sampler_override
-            request_observability["draft_sampler_override"] = asdict(
-                request_draft_sampler
-            )
-        if sampler_temperature is None:
-            default_temperature = getattr(state.args, "temperature", None)
-            sampler_temperature = (
-                0.6 if default_temperature is None else default_temperature
-            )
-        if sampler_top_p is None:
-            default_top_p = getattr(state.args, "top_p", None)
-            sampler_top_p = 0.95 if default_top_p is None else default_top_p
-        if sampler_top_k is None:
-            default_top_k = getattr(state.args, "top_k", None)
-            sampler_top_k = 20 if default_top_k is None else default_top_k
-        request_observability["effective_temperature"] = float(sampler_temperature)
-        request_observability["effective_top_p"] = float(sampler_top_p)
-        request_observability["effective_top_k"] = int(sampler_top_k)
-        request_observability["effective_presence_penalty"] = float(
-            sampler_presence_penalty
-            if sampler_presence_penalty is not None
-            else getattr(state.args, "default_presence_penalty", 0.0) or 0.0
-        )
-        request_observability["effective_frequency_penalty"] = float(
-            sampler_frequency_penalty
-            if sampler_frequency_penalty is not None
-            else getattr(state.args, "default_frequency_penalty", 0.0) or 0.0
         )
         suppress_visible_reasoning = False
         stop_sequences = _normalize_stop_sequences(request.stop)
@@ -28707,50 +28320,23 @@ def create_app(state: ServerState) -> FastAPI:
         chat_request = _anthropic_to_chat_request(request)
         headers = dict(raw_request.headers)
         metadata = _request_metadata(chat_request)
-        requested_tool_specs = _normalize_tool_specs(chat_request.tools)
-        tools_active = _tools_active_for_request(
-            requested_tool_specs,
-            chat_request.tool_choice,
-        )
-        messages_for_generation, _transcript_stats = _canonicalize_agent_transcript(
-            chat_request.messages,
-            tools_active=tools_active,
-        )
-        messages_for_generation, _backend_chat_policy_active = (
-            _with_backend_chat_policy(
-                state,
-                messages_for_generation,
-            )
-        )
-        client_controls_allowed = _client_controls_allowed(headers, metadata)
-        thinking_enabled = _thinking_enabled_for_request(
+        policy = resolve_request_policy(
             state,
             chat_request,
-            allow_client_controls=client_controls_allowed,
-        )
-        reasoning_effort = _reasoning_effort_for_state(
-            state,
-            thinking_enabled=thinking_enabled,
-            request_effort=chat_request.reasoning_effort,
-            allow_client_controls=client_controls_allowed,
-        )
-        tool_prompt_mode, _tool_prompt_mode_resolution = _tool_prompt_mode_for_request(
-            state.args,
             headers=headers,
             metadata=metadata,
-            tools_active=tools_active,
-            backend=_backend_descriptor(state),
+            endpoint="count_tokens",
         )
         prompt_ids = _encode_messages(
             state.runtime.tokenizer,
-            messages_for_generation,
-            enable_thinking=thinking_enabled,
-            reasoning_effort=reasoning_effort,
+            policy.messages_for_generation,
+            enable_thinking=policy.thinking_enabled,
+            reasoning_effort=policy.reasoning_effort,
             strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,
             scoped_reasoning_history=_reasoning_history_scoped_active(state),
-            tools=requested_tool_specs if tools_active else None,
+            tools=policy.tool_specs if policy.tools_active else None,
             tool_choice=chat_request.tool_choice,
-            tool_prompt_mode=tool_prompt_mode,
+            tool_prompt_mode=policy.tool_prompt_mode,
         )
         return {"input_tokens": len(prompt_ids)}
 
@@ -28759,7 +28345,6 @@ def create_app(state: ServerState) -> FastAPI:
         headers = dict(raw_request.headers)
         raw_metadata = _request_extra(request, "metadata", {})
         metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
-        client_controls_allowed = _client_controls_allowed(headers, metadata)
         prompt_ids = _encode_prompt(state.runtime.tokenizer, request.prompt)
         if not prompt_ids:
             # An empty body used to fall through into generation machinery and
@@ -28781,67 +28366,33 @@ def create_app(state: ServerState) -> FastAPI:
                 _completions_sweep,
                 except_session_id=None,
             )
-        request_generation_mode = _request_generation_mode_for_generation(
+        policy = resolve_request_policy(
             state,
             request,
-            allow_client_controls=client_controls_allowed,
-        )
-        request_depth = _request_depth_for_generation(
-            state,
-            request,
-            generation_mode=request_generation_mode,
-            allow_client_controls=client_controls_allowed,
-        )
-        effective_request_depth, _ = _long_context_mtp_depth_policy_for_request(
-            state,
-            generation_mode=request_generation_mode,
-            request_depth=request_depth,
+            headers=headers,
+            metadata=metadata,
+            endpoint="completions",
             prompt_tokens=len(prompt_ids),
         )
-        if client_controls_allowed:
-            _reject_non_finite_sampler_controls(request)
-        sampler_temperature = request.temperature if client_controls_allowed else None
-        sampler_top_p = request.top_p if client_controls_allowed else None
-        sampler_top_k = request.top_k if client_controls_allowed else None
-        sampler_presence_penalty = (
-            request.presence_penalty if client_controls_allowed else None
-        )
-        sampler_frequency_penalty = (
-            request.frequency_penalty if client_controls_allowed else None
-        )
+        request_generation_mode = policy.request_generation_mode
+        request_depth = policy.request_depth
+        effective_request_depth = policy.effective_request_depth
+        sampler_temperature = policy.sampler_temperature
+        sampler_top_p = policy.sampler_top_p
+        sampler_top_k = policy.sampler_top_k
+        sampler_presence_penalty = policy.sampler_presence_penalty
+        sampler_frequency_penalty = policy.sampler_frequency_penalty
+        request_draft_sampler = policy.request_draft_sampler
+        request_client_hint = _request_client_hint_from_headers(headers, metadata)
         request_observability = {
-            "request_client_hint": _request_client_hint_from_headers(headers, metadata),
-            "request_client_label": _request_client_hint_from_headers(headers, metadata)
-            or "openai",
-            "request_generation_mode": request_generation_mode,
-            "request_depth": int(request_depth),
-            "request_effective_mtp_depth": int(effective_request_depth),
-            "request_temperature": request.temperature,
-            "request_top_p": request.top_p,
-            "request_top_k": request.top_k,
-            "mtplx_control_owner": ("client" if client_controls_allowed else "server"),
-            "client_controls_allowed": bool(client_controls_allowed),
+            "request_client_hint": request_client_hint,
+            "request_client_label": request_client_hint or "openai",
         }
+        request_observability.update(policy.as_observability())
         if completions_cross_yield is not None:
             request_observability["postcommit_cross_session_yield"] = (
                 completions_cross_yield
             )
-        if not client_controls_allowed:
-            ignored_fields = _ignored_client_control_fields(request)
-            if ignored_fields:
-                request_observability["client_control_fields_ignored"] = ignored_fields
-                request_observability["client_sampler_fields_ignored"] = [
-                    field
-                    for field in ignored_fields
-                    if field
-                    in {
-                        "temperature",
-                        "top_p",
-                        "top_k",
-                        "presence_penalty",
-                        "frequency_penalty",
-                    }
-                ]
         stop_sequences = _normalize_stop_sequences(request.stop)
         model = state.model_id
         response_id = f"cmpl-{uuid.uuid4().hex}"
@@ -28912,6 +28463,7 @@ def create_app(state: ServerState) -> FastAPI:
                             presence_penalty=sampler_presence_penalty,
                             frequency_penalty=sampler_frequency_penalty,
                             seed=request.seed,
+                            draft_sampler=request_draft_sampler,
                             generation_mode=request_generation_mode,
                             depth=request_depth,
                             resolved_mtp_depth=effective_request_depth,
@@ -29165,6 +28717,7 @@ def create_app(state: ServerState) -> FastAPI:
                     presence_penalty=sampler_presence_penalty,
                     frequency_penalty=sampler_frequency_penalty,
                     seed=request.seed,
+                    draft_sampler=request_draft_sampler,
                     generation_mode=request_generation_mode,
                     depth=request_depth,
                     resolved_mtp_depth=effective_request_depth,
