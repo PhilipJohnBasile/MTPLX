@@ -841,6 +841,18 @@ class VllmMetalPagedKVCache:
         self.kv_quant_dequant_calls = 0
         self.kv_quant_dequant_time_s = 0.0
         self.kv_quant_dequant_tokens = 0
+        self.kv_quant_dequant_memo_hits = 0
+        self.kv_quant_dequant_memo_rebuilds = 0
+        self.kv_quant_kernel_calls = 0
+        # Incremental dequant memo: a bf16 mirror of the quantized cache that
+        # is extended tail-only per step. Without it every attention call on
+        # the dequant fallback re-dequantized the whole prefix — O(context)
+        # per token, the q8/q4 decode collapse. The mirror matches the
+        # transient full-KV materialization the old path already paid at
+        # attention time, so peak memory is unchanged; compute drops to the
+        # new tail. dict: mirror_k, mirror_v (flat [rows, heads, dim]),
+        # tokens (valid prefix rows).
+        self._dequant_memo: dict[str, Any] | None = None
         self.dense_fallback_calls = 0
         self.dense_fallback_calls_by_phase: dict[str, int] = {}
         self.paged_attention_bailouts_by_phase_reason: dict[str, int] = {}
@@ -962,6 +974,10 @@ class VllmMetalPagedKVCache:
                     f"had {self._shape}/{self._dtypes}, got {shape}/{dtypes}"
                 )
             return
+        # Fresh allocation: any surviving dequant mirror belongs to the
+        # previous buffer's contents and must not be served against the new
+        # one (single choke point for every reset -> reallocate path).
+        self._invalidate_dequant_memo()
         n_kv_heads, k_head_dim, v_head_dim = shape
         # Defense-in-depth: if a TurboQuant cache reaches first allocation but
         # the external vllm-metal ops can't load, gracefully degrade to the
@@ -1203,6 +1219,7 @@ class VllmMetalPagedKVCache:
         self.cache_write_time_s += time.perf_counter() - started
 
     def _load_contiguous_state(self, keys: Any, values: Any, offset: int) -> None:
+        self._invalidate_dequant_memo()
         self.key_cache = None
         self.value_cache = None
         self.key_scale_cache = None
@@ -1232,6 +1249,87 @@ class VllmMetalPagedKVCache:
             return 0
         gqa_factor = max(1, query_heads // kv_heads)
         return max(1, 1024 // max(1, 32 * gqa_factor))
+
+    @staticmethod
+    def _kv_quant_kernel_enabled() -> bool:
+        """Kill-switch for the inline-dequant q8 kernel (default on).
+
+        MTPLX_KV_QUANT_2PASS_KERNEL=0 restores the dequant-fallback dispatch
+        for one release in case a field regression needs the old path.
+        """
+        raw = os.environ.get("MTPLX_KV_QUANT_2PASS_KERNEL")
+        if raw is None or not raw.strip():
+            return True
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _kv_quant_2pass_attention(
+        self,
+        queries: Any,
+        *,
+        scale: float,
+        mask: Any | None,
+        sliding_window: int,
+        q_len: int,
+    ) -> Any | None:
+        """Decode/verify attention reading q8 pages directly (no dequant).
+
+        This is the lane that makes q8 an actual memory feature during
+        decode: no bf16 materialization at all. Eligibility mirrors the
+        dense two-pass tail (causal, batch 1, no window, q_len within the
+        threadgroup budget, offset past the two-pass threshold); anything
+        else falls back to the memoized dequant path. The kernel's June
+        closed-lane verdict (~0.8x) was measured against the DENSE kernel
+        on unquantized caches — irrelevant here, where the alternative is
+        the dequant fallback.
+        """
+        if (
+            not self.kv_quant
+            or self.turboquant
+            or int(self.kv_quant_config.bits) != 8
+            or not self._kv_quant_kernel_enabled()
+        ):
+            return None
+        if mask is not None and mask != "causal":
+            return None
+        if int(sliding_window) > 0:
+            return None
+        if (
+            self.key_cache is None
+            or self.value_cache is None
+            or self.key_scale_cache is None
+            or self.value_scale_cache is None
+        ):
+            return None
+        two_pass_threshold = int(
+            os.environ.get(
+                "MTPLX_VLLM_METAL_PAGED_ATTN_2PASS_THRESHOLD",
+                "1024",
+            )
+            or "1024"
+        )
+        if int(self.offset) < two_pass_threshold:
+            # Short contexts: the memoized dequant path is cheap and the
+            # kernel has no KV-bandwidth advantage to harvest.
+            return None
+        safe_q = self._safe_2pass_paged_q_len(
+            query_heads=int(queries.shape[1]),
+            kv_heads=int(self.key_cache.shape[2]),
+        )
+        if q_len > safe_q:
+            return None
+        from .kernels.sdpa_2pass_paged_q8 import sdpa_2pass_paged_q8_tail
+
+        return sdpa_2pass_paged_q8_tail(
+            queries=queries,
+            key_q=self.key_cache,
+            key_scales=self.key_scale_cache[..., 0],
+            value_q=self.value_cache,
+            value_scales=self.value_scale_cache[..., 0],
+            offset=int(self.offset),
+            block_size=int(self.block_size),
+            scale=float(scale),
+            max_q_len=safe_q,
+        )
 
     def _long_context_dense_fallback_forbidden(self) -> bool:
         if _env_truthy("MTPLX_ALLOW_LONG_CONTEXT_DENSE_FALLBACK"):
@@ -1346,7 +1444,8 @@ class VllmMetalPagedKVCache:
             int(self.dense_fallback_calls_by_phase.get(phase, 0)) + 1
         )
 
-    def _paged_range(self, start: int, end: int) -> tuple[Any, Any]:
+    def _paged_range_flat(self, start: int, end: int) -> tuple[Any, Any]:
+        """Rows [start:end) as flat [tokens, heads, dim], dequantized."""
         if self.key_cache is None or self.value_cache is None:
             raise RuntimeError("paged KV cache is not allocated")
         start = max(0, int(start))
@@ -1396,7 +1495,61 @@ class VllmMetalPagedKVCache:
                 bits=bits,
                 head_dim=int(self._shape[2]),
             ).astype(self._dtypes[1])
+        return flat_k, flat_v
+
+    def _paged_range(self, start: int, end: int) -> tuple[Any, Any]:
+        flat_k, flat_v = self._paged_range_flat(start, end)
         return flat_k.transpose(1, 0, 2)[None, ...], flat_v.transpose(1, 0, 2)[None, ...]
+
+    def _invalidate_dequant_memo(self) -> None:
+        self._dequant_memo = None
+
+    def _dequant_active_arrays(self) -> tuple[Any, Any]:
+        """Full active K/V for kv_quant, dequantizing only the unseen tail.
+
+        The mirror persists across steps; trim() truncates its valid-token
+        count (retracted rows are rewritten through _write_tail and get
+        re-dequantized), and every buffer reallocation path resets it via
+        _invalidate_dequant_memo.
+        """
+        import mlx.core as mx
+
+        offset = int(self.offset)
+        rows = int(self.key_cache.shape[0]) * int(self.key_cache.shape[1])
+        memo = self._dequant_memo
+        if (
+            memo is None
+            or int(memo["rows"]) != rows
+            or int(memo["tokens"]) > offset
+        ):
+            if self._shape is None or self._dtypes is None:
+                raise RuntimeError("paged KV quantization cache is incomplete")
+            memo = {
+                "rows": rows,
+                "tokens": 0,
+                "mirror_k": mx.zeros(
+                    (rows, int(self.key_cache.shape[2]), int(self._shape[1])),
+                    dtype=self._dtypes[0],
+                ),
+                "mirror_v": mx.zeros(
+                    (rows, int(self.value_cache.shape[2]), int(self._shape[2])),
+                    dtype=self._dtypes[1],
+                ),
+            }
+            self._dequant_memo = memo
+            self.kv_quant_dequant_memo_rebuilds += 1
+        valid = int(memo["tokens"])
+        if valid < offset:
+            tail_k, tail_v = self._paged_range_flat(valid, offset)
+            memo["mirror_k"][valid:offset] = tail_k
+            memo["mirror_v"][valid:offset] = tail_v
+            memo["tokens"] = offset
+            self.kv_quant_dequant_tokens += offset - valid
+        else:
+            self.kv_quant_dequant_memo_hits += 1
+        keys = memo["mirror_k"][:offset].transpose(1, 0, 2)[None, ...]
+        values = memo["mirror_v"][:offset].transpose(1, 0, 2)[None, ...]
+        return keys, values
 
     def _large_q_split_sdpa_fallback(
         self,
@@ -1590,10 +1743,9 @@ class VllmMetalPagedKVCache:
                 return None, None
             if self.kv_quant:
                 dequant_started = time.perf_counter()
-                keys, values = self._paged_range(0, int(self.offset))
+                keys, values = self._dequant_active_arrays()
                 self.kv_quant_dequant_calls += 1
                 self.kv_quant_dequant_time_s += time.perf_counter() - dequant_started
-                self.kv_quant_dequant_tokens += int(self.offset)
                 return keys, values
             flat_k = self.key_cache.reshape(
                 -1,
@@ -1689,6 +1841,12 @@ class VllmMetalPagedKVCache:
     def trim(self, n: int) -> int:
         n = min(int(self.offset), int(n))
         self.offset -= n
+        if self._dequant_memo is not None:
+            # Retracted rows are rewritten via _write_tail before reuse; the
+            # mirror prefix below the new offset is still exact.
+            self._dequant_memo["tokens"] = min(
+                int(self._dequant_memo["tokens"]), int(self.offset)
+            )
         return n
 
     def make_mask(self, *args, **kwargs):
@@ -2069,6 +2227,19 @@ class VllmMetalPagedKVCache:
                 return out
             return bailout("kernel_unavailable")
         if self.kv_quant:
+            kernel_out = self._kv_quant_2pass_attention(
+                queries,
+                scale=scale,
+                mask=mask,
+                sliding_window=int(sliding_window),
+                q_len=q_len,
+            )
+            if kernel_out is not None:
+                self.paged_attention_calls += 1
+                self.kv_quant_attention_calls += 1
+                self.kv_quant_kernel_calls += 1
+                self.attention_time_s += time.perf_counter() - started
+                return kernel_out
             from mlx_lm.models.base import scaled_dot_product_attention
 
             gqa_decision = _paged_gqa_sdpa_route_decision_from_env(
@@ -2254,6 +2425,11 @@ class VllmMetalPagedKVCache:
             "kv_quant_dequant_calls": int(self.kv_quant_dequant_calls),
             "kv_quant_dequant_time_s": float(self.kv_quant_dequant_time_s),
             "kv_quant_dequant_tokens": int(self.kv_quant_dequant_tokens),
+            "kv_quant_dequant_memo_hits": int(self.kv_quant_dequant_memo_hits),
+            "kv_quant_dequant_memo_rebuilds": int(
+                self.kv_quant_dequant_memo_rebuilds
+            ),
+            "kv_quant_kernel_calls": int(self.kv_quant_kernel_calls),
             "dense_fallback_calls": int(self.dense_fallback_calls),
             "prefill_dense_fallback_calls": int(
                 self.dense_fallback_calls_by_phase.get("prefill", 0)
@@ -3350,6 +3526,15 @@ def tail_owned_attention_kv_stats(cache: list[Any] | None) -> dict[str, Any]:
             aggregate["kv_quant_dequant_tokens"] = int(
                 aggregate.get("kv_quant_dequant_tokens", 0)
             ) + int(stats.get("kv_quant_dequant_tokens", 0))
+            aggregate["kv_quant_dequant_memo_hits"] = int(
+                aggregate.get("kv_quant_dequant_memo_hits", 0)
+            ) + int(stats.get("kv_quant_dequant_memo_hits", 0))
+            aggregate["kv_quant_dequant_memo_rebuilds"] = int(
+                aggregate.get("kv_quant_dequant_memo_rebuilds", 0)
+            ) + int(stats.get("kv_quant_dequant_memo_rebuilds", 0))
+            aggregate["kv_quant_kernel_calls"] = int(
+                aggregate.get("kv_quant_kernel_calls", 0)
+            ) + int(stats.get("kv_quant_kernel_calls", 0))
             aggregate["dense_fallback_calls"] = int(
                 aggregate.get("dense_fallback_calls", 0)
             ) + int(stats.get("dense_fallback_calls", 0))

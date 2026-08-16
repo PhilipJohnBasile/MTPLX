@@ -746,7 +746,11 @@ def _add_paged_kv_quant_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Paged KV cache quantization mode. off is default; q8/q4 opt into "
-            "the same runtime switch used by the app when the selected model supports it."
+            "the same runtime switch used by the app when the selected model "
+            "supports it. Contract: decode-memory feature (long-context decode "
+            "KV bytes shrink; q8 uses an inline-dequant kernel); prefill runs "
+            "unquantized (peak prefill memory unchanged) and compiled-verify/"
+            "dense-two-pass fast paths detach while active."
         ),
     )
 

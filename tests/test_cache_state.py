@@ -1190,6 +1190,203 @@ def test_vllm_metal_paged_q8_kv_quant_attention_matches_stock_with_tolerance(mon
     assert stats["kv_quant_dequant_time_s"] >= 0.0
 
 
+def test_kv_quant_dequant_memo_is_incremental_and_exact(monkeypatch):
+    """The dequant fallback must not re-dequantize the whole prefix per call
+    (the q8 decode collapse): the memo extends tail-only, and its output is
+    exactly the fresh-dequant result."""
+
+    if not mx.metal.is_available():
+        pytest.skip("Metal is unavailable")
+    monkeypatch.setenv("MTPLX_KV_QUANT_2PASS_KERNEL", "0")
+
+    mx.random.seed(4242)
+    keys = mx.random.normal((1, 2, 100, 16), dtype=mx.float16)
+    values = mx.random.normal((1, 2, 100, 16), dtype=mx.float16)
+    tail_k = mx.random.normal((1, 2, 5, 16), dtype=mx.float16)
+    tail_v = mx.random.normal((1, 2, 5, 16), dtype=mx.float16)
+
+    cache = VllmMetalPagedKVCache(
+        block_size=4,
+        num_blocks=32,
+        kv_quant_config=PagedKVQuantConfig("q8"),
+    )
+    cache.update_without_fetch(keys, values)
+    first_k, first_v = cache._active_arrays()
+    mx.eval(first_k, first_v)
+    assert cache.kv_quant_dequant_tokens == 100
+
+    cache.update_without_fetch(tail_k, tail_v)
+    second_k, second_v = cache._active_arrays()
+    mx.eval(second_k, second_v)
+    # Incremental: only the 5 new rows were dequantized on the second call.
+    assert cache.kv_quant_dequant_tokens == 105
+
+    # Exactness: a fresh cache with identical content dequantizes to the
+    # same bytes (same quantized storage -> same dequant math).
+    fresh = VllmMetalPagedKVCache(
+        block_size=4,
+        num_blocks=32,
+        kv_quant_config=PagedKVQuantConfig("q8"),
+    )
+    fresh.update_without_fetch(keys, values)
+    fresh.update_without_fetch(tail_k, tail_v)
+    fresh_k, fresh_v = fresh._active_arrays()
+    mx.eval(fresh_k, fresh_v)
+    assert float(mx.abs(second_k - fresh_k).max().item()) == 0.0
+    assert float(mx.abs(second_v - fresh_v).max().item()) == 0.0
+
+    # Pure repeat call at the same offset is a memo hit.
+    before_hits = cache.kv_quant_dequant_memo_hits
+    repeat_k, repeat_v = cache._active_arrays()
+    mx.eval(repeat_k, repeat_v)
+    assert cache.kv_quant_dequant_memo_hits == before_hits + 1
+
+
+def test_kv_quant_dequant_memo_survives_trim_and_rewrite(monkeypatch):
+    """Rollback shape: trim retracts rows, new rows land at the frontier.
+    The memo must serve the surviving prefix and re-dequantize the rewrite —
+    output must equal a never-memoized cache with the same final content."""
+
+    if not mx.metal.is_available():
+        pytest.skip("Metal is unavailable")
+    monkeypatch.setenv("MTPLX_KV_QUANT_2PASS_KERNEL", "0")
+
+    mx.random.seed(515)
+    base_k = mx.random.normal((1, 2, 40, 16), dtype=mx.float16)
+    base_v = mx.random.normal((1, 2, 40, 16), dtype=mx.float16)
+    rewrite_k = mx.random.normal((1, 2, 6, 16), dtype=mx.float16)
+    rewrite_v = mx.random.normal((1, 2, 6, 16), dtype=mx.float16)
+
+    memoized = VllmMetalPagedKVCache(
+        block_size=4,
+        num_blocks=16,
+        kv_quant_config=PagedKVQuantConfig("q8"),
+    )
+    memoized.update_without_fetch(base_k, base_v)
+    warm_k, warm_v = memoized._active_arrays()
+    mx.eval(warm_k, warm_v)  # memo now covers 40 rows
+    memoized.trim(10)
+    memoized.update_without_fetch(rewrite_k, rewrite_v)
+    got_k, got_v = memoized._active_arrays()
+    mx.eval(got_k, got_v)
+
+    fresh = VllmMetalPagedKVCache(
+        block_size=4,
+        num_blocks=16,
+        kv_quant_config=PagedKVQuantConfig("q8"),
+    )
+    fresh.update_without_fetch(base_k[..., :30, :], base_v[..., :30, :])
+    fresh.update_without_fetch(rewrite_k, rewrite_v)
+    want_k, want_v = fresh._active_arrays()
+    mx.eval(want_k, want_v)
+
+    assert got_k.shape == want_k.shape
+    assert float(mx.abs(got_k - want_k).max().item()) == 0.0
+    assert float(mx.abs(got_v - want_v).max().item()) == 0.0
+
+
+def test_kv_quant_q8_kernel_engages_and_matches_dequant_path(monkeypatch):
+    """The inline-dequant q8 kernel must actually engage (counter receipt —
+    a silently ineligible shape would compare dequant against itself) and
+    agree with the dequant fallback within kernel arithmetic tolerance."""
+
+    if not mx.metal.is_available():
+        pytest.skip("Metal is unavailable")
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_ATTN_IMPL", "mlx_vector_paged")
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_ATTN_2PASS_THRESHOLD", "64")
+
+    mx.random.seed(8642)
+    kv_len = 230
+    dim = 128
+    queries = 0.3 * mx.random.normal((1, 8, 4, dim), dtype=mx.bfloat16)
+    keys = 0.5 * mx.random.normal((1, 2, kv_len, dim), dtype=mx.bfloat16)
+    values = 0.5 * mx.random.normal((1, 2, kv_len, dim), dtype=mx.bfloat16)
+    scale = dim**-0.5
+
+    def build_cache():
+        cache = VllmMetalPagedKVCache(
+            block_size=16,
+            num_blocks=16,
+            kv_quant_config=PagedKVQuantConfig("q8"),
+        )
+        cache.update_without_fetch(keys, values)
+        return cache
+
+    monkeypatch.setenv("MTPLX_KV_QUANT_2PASS_KERNEL", "1")
+    kernel_cache = build_cache()
+    kernel_out = kernel_cache.paged_attention(queries, scale=scale, mask="causal")
+    assert kernel_out is not None
+    mx.eval(kernel_out)
+    assert kernel_cache.kv_quant_kernel_calls == 1
+    assert kernel_cache.kv_quant_attention_calls == 1
+
+    monkeypatch.setenv("MTPLX_KV_QUANT_2PASS_KERNEL", "0")
+    dequant_cache = build_cache()
+    dequant_out = dequant_cache.paged_attention(queries, scale=scale, mask="causal")
+    assert dequant_out is not None
+    mx.eval(dequant_out)
+    assert dequant_cache.kv_quant_kernel_calls == 0
+    assert dequant_cache.kv_quant_dequant_calls >= 1
+
+    diff = mx.max(
+        mx.abs(kernel_out.astype(mx.float32) - dequant_out.astype(mx.float32))
+    )
+    mx.eval(diff)
+    assert float(diff.item()) <= 5e-3
+
+
+def test_kv_quant_q4_never_routes_to_q8_kernel(monkeypatch):
+    if not mx.metal.is_available():
+        pytest.skip("Metal is unavailable")
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_ATTN_IMPL", "mlx_vector_paged")
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_ATTN_2PASS_THRESHOLD", "64")
+    monkeypatch.setenv("MTPLX_KV_QUANT_2PASS_KERNEL", "1")
+
+    mx.random.seed(11311)
+    dim = 128
+    queries = 0.3 * mx.random.normal((1, 8, 2, dim), dtype=mx.bfloat16)
+    keys = 0.5 * mx.random.normal((1, 2, 200, dim), dtype=mx.bfloat16)
+    values = 0.5 * mx.random.normal((1, 2, 200, dim), dtype=mx.bfloat16)
+    cache = VllmMetalPagedKVCache(
+        block_size=16,
+        num_blocks=16,
+        kv_quant_config=PagedKVQuantConfig("q4"),
+    )
+    cache.update_without_fetch(keys, values)
+
+    out = cache.paged_attention(queries, scale=dim**-0.5, mask="causal")
+
+    assert out is not None
+    assert cache.kv_quant_kernel_calls == 0
+    assert cache.kv_quant_attention_calls == 1
+
+
+def test_install_hybrid_cache_counts_attention_entries_and_skips_rest(monkeypatch):
+    """Hybrid-model shape: only real KV entries convert; recurrent/GDN-style
+    entries are skipped and counted."""
+
+    from mlx_lm.models.cache import KVCache
+
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_ATTN", "1")
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", "q8")
+
+    class RecurrentEntry:
+        # No keys/values attributes: the installer must skip it.
+        def is_trimmable(self) -> bool:
+            return False
+
+    cache: list = []
+    for index in range(16):
+        cache.append(KVCache())
+        cache.extend(RecurrentEntry() for _ in range(3))
+
+    stats = configure_tail_owned_attention_kv_cache(cache)
+
+    assert stats["entries"] == 16
+    assert stats["skipped"] == 48
+    assert sum(isinstance(entry, VllmMetalPagedKVCache) for entry in cache) == 16
+
+
 def test_paged_gqa_sdpa_route_env_is_explicit_and_long_context_only(monkeypatch):
     assert (
         _paged_gqa_sdpa_route_from_env(
