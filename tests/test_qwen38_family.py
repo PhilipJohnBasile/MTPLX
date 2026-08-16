@@ -301,6 +301,76 @@ def test_qwen38_no_silent_sustained_side_doors() -> None:
     assert _bench_run_profile_name(pinned, suite="long_code") == "sustained"
 
 
+def test_model_identity_survives_renamed_dirs(tmp_path) -> None:
+    # Issue #268: family and served id were resolved from the path STRING,
+    # so a symlink or neutral dir name silently flipped preserve -> scoped
+    # (agentic prefix cache collapse) and turbo -> sustained.
+    # NOTE: no family marker in this test's name — pytest bakes the test
+    # name into tmp_path, and a "qwen38" in it would taint every path.
+    import json
+
+    from mtplx.backends.descriptors import model_family_from_inspection
+
+    qwen_descriptor = SimpleNamespace(
+        model_family="qwen", backend_id="qwen3_next_mtp"
+    )
+
+    # Hyphen marker parity: Qwen3-8 refs resolved qwen3_6 before.
+    assert (
+        model_family_from_inspection(
+            model_ref="/models/Qwen3-8-27B", descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+
+    # A neutral-named dir still declares its family via forge provenance.
+    neutral = tmp_path / "neutral-model-dir"
+    neutral.mkdir()
+    (neutral / "mtplx_runtime.json").write_text(
+        json.dumps(
+            {
+                "arch_id": "qwen3-next-mtp",
+                "base_trunk": "/models/Qwen--Qwen3.8-27B",
+                "forge_provenance": {
+                    "forge_inputs": {"trunk_path": "/models/Qwen--Qwen3.8-27B"}
+                },
+            }
+        )
+    )
+    assert (
+        model_family_from_inspection(
+            model_ref=str(neutral), descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+
+    # Symlinks are identity-preserving for family AND served id.
+    real = tmp_path / "Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed"
+    real.mkdir()
+    link = tmp_path / "qwen-control"
+    link.symlink_to(real)
+    assert (
+        model_family_from_inspection(
+            model_ref=str(link), descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+    assert public_model_id_for_ref(str(link)) == public_model_id_for_ref(str(real))
+    assert public_model_id_for_ref(str(link)) == QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+
+    # A bare copy with no provenance keeps both fences: family falls back
+    # to the descriptor default, and the first-party id is NOT claimed.
+    bare = tmp_path / "some-model"
+    bare.mkdir()
+    assert (
+        model_family_from_inspection(
+            model_ref=str(bare), descriptor=qwen_descriptor
+        )
+        == "qwen3_6"
+    )
+    assert public_model_id_for_ref(str(bare)) != QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+
+
 # ------------------------------------------------------------- server behavior
 
 

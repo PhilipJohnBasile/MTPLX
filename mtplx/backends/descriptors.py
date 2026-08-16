@@ -9,7 +9,10 @@ without inheriting Qwen-specific assumptions.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 
@@ -968,13 +971,58 @@ def _text_markers(model_ref: str | None, inspection: dict[str, Any] | None) -> s
 
 
 def _explicit_qwen_family_marker(text: str) -> str | None:
-    if "qwen3.8" in text or "qwen3_8" in text or "qwen38" in text:
+    if "qwen3.8" in text or "qwen3_8" in text or "qwen38" in text or "qwen3-8" in text:
         return "qwen3_8"
-    if "qwen3.6" in text or "qwen3_6" in text or "qwen36" in text:
+    if "qwen3.6" in text or "qwen3_6" in text or "qwen36" in text or "qwen3-6" in text:
         return "qwen3_6"
     if "qwen3.5" in text or "qwen3_5" in text or "qwen3-5" in text:
         return "qwen3_5"
     return None
+
+
+@lru_cache(maxsize=64)
+def _artifact_family_text(model_ref: str) -> str:
+    """Family markers the artifact carries about itself (issue #268).
+
+    A model served from a renamed or symlinked directory has no family
+    marker in its ref, and the shared qwen3_next descriptor cannot split
+    3.5/3.6/3.8 — config.json says qwen3_5 for all of them. The artifact
+    still knows what it is: the resolved path and the forge provenance in
+    mtplx_runtime.json (source trunk, published repo) name the family.
+    Family is a behavior contract, not a first-party identity claim, so
+    provenance matching is safe here — unlike the served-model-id lane,
+    where fuzzy inference was deliberately removed (July 2026, issue #57).
+    """
+    parts: list[str] = []
+    try:
+        path = Path(model_ref).expanduser()
+        if not path.exists():
+            return ""
+        parts.append(str(path.resolve()))
+        runtime_json = path / "mtplx_runtime.json"
+        if runtime_json.is_file():
+            data = json.loads(runtime_json.read_text())
+            if isinstance(data, dict):
+                provenance = data.get("forge_provenance")
+                provenance = provenance if isinstance(provenance, dict) else {}
+                inputs = provenance.get("forge_inputs")
+                inputs = inputs if isinstance(inputs, dict) else {}
+                parts.extend(
+                    str(value or "")
+                    for value in (
+                        data.get("public_model_id"),
+                        data.get("served_model_id"),
+                        data.get("model_id"),
+                        data.get("published_to_hf"),
+                        data.get("base_trunk"),
+                        data.get("artifact_role"),
+                        inputs.get("trunk_path"),
+                        inputs.get("mtp_source_path"),
+                    )
+                )
+    except Exception:
+        pass
+    return " ".join(part for part in parts if part).lower()
 
 
 def model_family_from_inspection(
@@ -987,6 +1035,12 @@ def model_family_from_inspection(
     ref_family = _explicit_qwen_family_marker(str(model_ref or "").lower())
     if ref_family is not None:
         return ref_family
+    if model_ref:
+        artifact_family = _explicit_qwen_family_marker(
+            _artifact_family_text(str(model_ref))
+        )
+        if artifact_family is not None:
+            return artifact_family
     backend_id = (
         str(getattr(descriptor, "backend_id", "") or "")
         if descriptor is not None

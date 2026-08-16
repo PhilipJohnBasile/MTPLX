@@ -451,7 +451,20 @@ def _public_model_id_from_metadata(path: Path) -> str | None:
         value = runtime.get(key)
         if isinstance(value, str) and value.strip():
             return _sanitize_public_model_id(value)
-    return _public_model_id_from_name(str(path))
+    inferred = _public_model_id_from_name(str(path))
+    if inferred:
+        return inferred
+    # Symlinks are identity-preserving, not inference: a link into the
+    # canonical store serves the canonical artifact (issue #268 — turbo and
+    # the served id were lost behind /tmp symlinks). Copies under neutral
+    # names still need an explicit id claim per the July 2026 fence above.
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if resolved != path:
+        return _public_model_id_from_name(str(resolved))
+    return None
 
 
 def _sanitize_public_model_id(value: str) -> str:
