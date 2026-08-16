@@ -22,12 +22,18 @@ OPENCODE_PROVIDER_ID = "mtplx"
 OPENCODE_NPM_PACKAGE = "@ai-sdk/openai-compatible"
 OPENCODE_DEFAULT_CONTEXT_WINDOW = 262_144
 OPENCODE_DEFAULT_CHUNK_TIMEOUT_MS = 900_000
+# OpenCode's own injected output ceiling when the user never set a cap. The
+# plugin strips exactly this value: anything else is a deliberate client cap
+# and must reach MTPLX intact.
+OPENCODE_INJECTED_OUTPUT_CAP = 32_768
 OPENCODE_SESSION_HEADERS_PLUGIN_NAME = "mtplx-session-headers.js"
 OPENCODE_DESKTOP_SETTINGS_STORE_NAME = "default.dat"
 OPENCODE_DESKTOP_SETTINGS_KEY = "settings.v3"
 OPENCODE_DESKTOP_GLOBAL_STORE_NAME = "opencode.global.dat"
 OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE = """const mtplxProviderID = (input) =>
   input?.model?.providerID || input?.provider?.id;
+
+const mtplxInjectedOutputCap = __MTPLX_INJECTED_OUTPUT_CAP__;
 
 export const MTPLXSessionHeaders = async () => ({
   "chat.headers": async (input, output) => {
@@ -42,14 +48,17 @@ export const MTPLXSessionHeaders = async () => ({
   "chat.params": async (input, output) => {
     const providerID = mtplxProviderID(input);
     if (providerID && providerID !== "mtplx") return;
-    // OpenCode otherwise injects a 32k output ceiling even when the configured
-    // model advertises a larger native context. Omit the field so MTPLX owns
-    // the uncapped generation contract and stops naturally at EOS.
-    output.maxOutputTokens = undefined;
+    // OpenCode injects a 32k output ceiling even when the configured model
+    // advertises a larger native context. Strip only that injected default so
+    // MTPLX owns the uncapped generation contract; an explicit user cap (any
+    // other value) passes through untouched.
+    if (output.maxOutputTokens === mtplxInjectedOutputCap) {
+      output.maxOutputTokens = undefined;
+    }
   }
 });
 export default MTPLXSessionHeaders;
-"""
+""".replace("__MTPLX_INJECTED_OUTPUT_CAP__", str(OPENCODE_INJECTED_OUTPUT_CAP))
 
 
 def opencode_config_path(path: str | Path | None = None) -> Path:

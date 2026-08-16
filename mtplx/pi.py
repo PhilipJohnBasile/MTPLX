@@ -20,6 +20,10 @@ PI_LOCAL_API_KEY = "mtplx-local"
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
 PI_DEFAULT_CONTEXT_WINDOW = 131_072
 PI_DEFAULT_MAX_TOKENS: int | None = None
+# Pi serializes a 16,384 output ceiling for models whose metadata omits
+# maxTokens. The extension strips exactly this value; any other cap is a
+# deliberate client choice and must reach MTPLX intact.
+PI_INJECTED_DEFAULT_MAX_TOKENS = 16_384
 PI_REQUEST_POLICY_EXTENSION_NAME = "mtplx-request-policy.ts"
 
 
@@ -65,6 +69,7 @@ def build_pi_request_policy_extension_source(
     uncapped_literal = "true" if uncapped else "false"
     return f"""const mtplxModelID = {model_literal};
 const mtplxUncapped = {uncapped_literal};
+const mtplxPiInjectedDefaultMaxTokens = {PI_INJECTED_DEFAULT_MAX_TOKENS};
 
 export default function (pi: any) {{
   pi.on("before_provider_headers", (event: any, ctx: any) => {{
@@ -83,9 +88,19 @@ export default function (pi: any) {{
     const payload = event?.payload;
     if (!mtplxUncapped || !payload || typeof payload !== "object") return;
     if (payload.model !== mtplxModelID) return;
+    // Strip only Pi's serialized default ceiling; an explicit user cap (any
+    // other value) is honored end to end.
     const request = {{ ...payload }};
-    delete request.max_tokens;
-    delete request.max_completion_tokens;
+    let changed = false;
+    if (request.max_tokens === mtplxPiInjectedDefaultMaxTokens) {{
+      delete request.max_tokens;
+      changed = true;
+    }}
+    if (request.max_completion_tokens === mtplxPiInjectedDefaultMaxTokens) {{
+      delete request.max_completion_tokens;
+      changed = true;
+    }}
+    if (!changed) return;
     return request;
   }});
 }}

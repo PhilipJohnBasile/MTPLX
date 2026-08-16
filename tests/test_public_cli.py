@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -2940,8 +2941,58 @@ def test_pi_models_config_merge_preserves_other_providers(tmp_path):
     extension_source = extension_path.read_text(encoding="utf-8")
     assert 'delete request.max_tokens' in extension_source
     assert 'delete request.max_completion_tokens' in extension_source
+    # Guarded delete: only Pi's serialized default ceiling is stripped;
+    # explicit user caps must survive (the unconditional delete erased them).
+    assert "mtplxPiInjectedDefaultMaxTokens" in extension_source
     assert 'event.headers["x-mtplx-session-id"]' in extension_source
     assert 'const mtplxModelID = "mtplx-test-model"' in extension_source
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_pi_extension_cap_guard_three_payload_shapes(tmp_path):
+    """Execute the Pi request-policy handler under node for the three payload
+    shapes: injected default (stripped), explicit cap (preserved), no cap
+    (untouched)."""
+
+    from mtplx.pi import (
+        PI_INJECTED_DEFAULT_MAX_TOKENS,
+        build_pi_request_policy_extension_source,
+    )
+
+    source = build_pi_request_policy_extension_source(
+        "mtplx-test-model", uncapped=True
+    )
+    # The extension is TypeScript only by annotation; strip ": any" so node
+    # can execute the real handler logic unchanged.
+    module = tmp_path / "extension.mjs"
+    module.write_text(source.replace(": any", ""), encoding="utf-8")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import register from {json.dumps(str(module))};
+const handlers = {{}};
+register({{ on: (name, fn) => {{ handlers[name] = fn; }} }});
+const run = (payload) => handlers["before_provider_request"]({{ payload }});
+const results = {{
+  injected: run({{ model: "mtplx-test-model", max_tokens: {PI_INJECTED_DEFAULT_MAX_TOKENS} }}) ?? null,
+  explicit: run({{ model: "mtplx-test-model", max_tokens: 8192 }}) ?? null,
+  absent: run({{ model: "mtplx-test-model" }}) ?? null,
+}};
+console.log(JSON.stringify(results));
+""",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", str(harness)], capture_output=True, text=True, check=True
+    )
+    results = json.loads(proc.stdout)
+    # Injected default: handler returns an override with the cap removed.
+    assert results["injected"] is not None
+    assert "max_tokens" not in results["injected"]
+    # Explicit cap: no override returned — the deliberate cap flows through.
+    assert results["explicit"] is None
+    # No cap at all: nothing to strip, no override.
+    assert results["absent"] is None
 
 
 def test_start_pi_handoff_writes_config_and_starts_authenticated_server(

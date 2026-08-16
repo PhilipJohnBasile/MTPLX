@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
+import subprocess
+
+import pytest
 
 from mtplx.opencode import (
+    OPENCODE_INJECTED_OUTPUT_CAP,
+    OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE,
     build_opencode_provider_config,
     ensure_opencode_reasoning_summaries_visible,
     merge_opencode_config,
@@ -191,8 +197,52 @@ def test_write_opencode_config_installs_session_headers_plugin(tmp_path, monkeyp
     assert 'output.headers["x-mtplx-session-id"]' in plugin_source
     assert '"chat.params"' in plugin_source
     assert "output.maxOutputTokens = undefined" in plugin_source
+    # The delete is guarded: only OpenCode's injected default ceiling is
+    # stripped, an explicit client cap passes through (issue: unconditional
+    # delete erased deliberate user caps).
+    assert (
+        f"output.maxOutputTokens === mtplxInjectedOutputCap" in plugin_source
+    )
+    assert f"const mtplxInjectedOutputCap = {OPENCODE_INJECTED_OUTPUT_CAP};" in plugin_source
     assert "process.stdout.write" not in plugin_source
     assert "message.updated" not in plugin_source
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_opencode_plugin_cap_guard_three_payload_shapes(tmp_path):
+    """Execute the real plugin under node for the three payload shapes:
+    injected default (stripped), explicit cap (preserved), absent (untouched).
+    """
+
+    plugin = tmp_path / "plugin.mjs"
+    plugin.write_text(OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE, encoding="utf-8")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import plugin from {json.dumps(str(plugin))};
+const hooks = await plugin();
+const run = async (params) => {{
+  const output = {{ ...params }};
+  await hooks["chat.params"]({{ model: {{ providerID: "mtplx" }} }}, output);
+  return output;
+}};
+const results = {{
+  injected: await run({{ maxOutputTokens: {OPENCODE_INJECTED_OUTPUT_CAP} }}),
+  explicit: await run({{ maxOutputTokens: 9000 }}),
+  absent: await run({{}}),
+}};
+console.log(JSON.stringify(results));
+""",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", str(harness)], capture_output=True, text=True, check=True
+    )
+    results = json.loads(proc.stdout)
+    # JSON.stringify drops undefined-valued keys.
+    assert "maxOutputTokens" not in results["injected"]
+    assert results["explicit"]["maxOutputTokens"] == 9000
+    assert "maxOutputTokens" not in results["absent"]
 
 
 def test_repair_opencode_desktop_state_prunes_missing_workspace(tmp_path, monkeypatch):
