@@ -4,7 +4,12 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.7.2] - 2026-08-16
+
+An emergency fix for `mtplx pull`: on 2.7.1 and older, re-pulling a repo that
+changed upstream — such as the Qwen 3.8 repos re-published on 2026-08-15 with
+their vision towers restored — can corrupt the local copy. Upgrade before
+pulling.
 
 ### Fixed
 
@@ -28,7 +33,8 @@ All notable user-facing changes to MTPLX. The format is based on
   `scripts/graft_vision_tower.py`, and the pillar gate now asserts
   `vision.enabled` before the vision-cache check so a blind build fails
   loudly with the real cause.
-- **`mtplx pull` no longer corrupts files that changed upstream.** The
+- **`mtplx pull` no longer corrupts files that changed upstream (#258,
+  #234).** The
   progress downloader treated a size-mismatched *complete* local file as a
   resumable partial and byte-range-appended the remote tail onto the old
   content — updating a repo in place (for example the restored 3.8 vision
@@ -1409,6 +1415,8 @@ working as one product. Full notes:
   completions, and Anthropic `stop_sequences`) and `/v1/completions`
   streams tokens as they are generated with real finish reasons.
 
+[2.7.2]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.2
+[2.7.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.1
 [2.7.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.0
 [2.6.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.6.0
 [2.5.4]: https://github.com/youssofal/MTPLX/releases/tag/v2.5.4
