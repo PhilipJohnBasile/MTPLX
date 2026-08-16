@@ -6360,6 +6360,105 @@ def test_serve_threads_api_key_file_and_kv_quant_to_daemon(monkeypatch, tmp_path
     assert env["MTPLX_PAGED_KV_QUANT"] == "q8"
 
 
+def _serve_execvpe_harness(monkeypatch):
+    """Common monkeypatch set for exercising cmd_serve_public up to execvpe."""
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(public, "_serve_should_onboard", lambda _args: False)
+    monkeypatch.setattr(public, "_print_serve_start_banner", lambda _args: None)
+    monkeypatch.setattr(public, "_port_is_busy", lambda host, port: False)
+    monkeypatch.setattr(
+        public,
+        "_resolve_runtime_model_path",
+        lambda model, cache_dir=None: (model, None),
+    )
+    monkeypatch.setattr(
+        public,
+        "_model_gate",
+        lambda model, unsafe_force_unverified=False, yes=False: (
+            {"compatibility": {"tier": "verified", "can_run": True, "exit_code": 0}},
+            None,
+        ),
+    )
+
+    def fake_execvpe(_executable, cmd, env):
+        calls["cmd"] = cmd
+        calls["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(public.os, "execvpe", fake_execvpe)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["MTPLX_VLLM_METAL_PAGED_KV_QUANT", "MTPLX_PAGED_KV_QUANT"],
+)
+def test_serve_inherits_kv_quant_from_env_without_flag(monkeypatch, env_var):
+    """App-style env KV quant survives the serve wrapper when the flag is absent.
+
+    Regression: the wrapper used to rewrite the absent flag to an explicit
+    "off", clobbering the launcher-provided env pair in both the child argv
+    and the child env — the app's KV-quantization toggle was dead engine-wide.
+    """
+
+    calls = _serve_execvpe_harness(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+    monkeypatch.setenv(env_var, "q8")
+
+    args = build_parser().parse_args(
+        ["serve", "--model", "/tmp/model", "--yes", "--warmup-tokens", "0"]
+    )
+    args._cli_flags = {"model", "yes", "warmup-tokens"}
+
+    with pytest.raises(SystemExit) as exc:
+        public.cmd_serve_public(args)
+
+    cmd = calls["cmd"]
+    env = calls["env"]
+    assert exc.value.code == 0
+    assert isinstance(cmd, list)
+    assert cmd[cmd.index("--paged-kv-quantization") + 1] == "q8"
+    assert isinstance(env, dict)
+    assert env["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "q8"
+    assert env["MTPLX_PAGED_KV_QUANT"] == "q8"
+
+
+def test_serve_explicit_kv_quant_flag_beats_env(monkeypatch):
+    """An explicit --paged-kv-quantization always wins over the environment."""
+
+    calls = _serve_execvpe_harness(monkeypatch)
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", "q8")
+    monkeypatch.setenv("MTPLX_PAGED_KV_QUANT", "q8")
+
+    args = build_parser().parse_args(
+        [
+            "serve",
+            "--model",
+            "/tmp/model",
+            "--yes",
+            "--paged-kv-quantization",
+            "off",
+            "--warmup-tokens",
+            "0",
+        ]
+    )
+    args._cli_flags = {"model", "yes", "paged-kv-quantization", "warmup-tokens"}
+
+    with pytest.raises(SystemExit) as exc:
+        public.cmd_serve_public(args)
+
+    cmd = calls["cmd"]
+    env = calls["env"]
+    assert exc.value.code == 0
+    assert isinstance(cmd, list)
+    assert cmd[cmd.index("--paged-kv-quantization") + 1] == "off"
+    assert isinstance(env, dict)
+    assert env["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "off"
+    assert env["MTPLX_PAGED_KV_QUANT"] == "off"
+
+
 @pytest.mark.parametrize(
     ("public_model_id", "expected_model"),
     [

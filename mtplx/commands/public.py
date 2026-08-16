@@ -132,6 +132,7 @@ from mtplx.server_urls import (
     is_wildcard_bind,
     local_url_for_bind,
 )
+from mtplx.kv_quant import paged_kv_quant_mode_from_env
 from mtplx.runtime_options import (
     normalize_paged_kv_quantization,
     paged_kv_quantization_env,
@@ -8444,8 +8445,17 @@ def _resolve_runtime_options_on_args(
     setattr(args, "api_key_source", resolved_key.source)
     try:
         kv_mode = normalize_paged_kv_quantization(
-            getattr(args, "paged_kv_quantization", None)
+            getattr(args, "paged_kv_quantization", None),
+            allow_none=True,
         )
+        if kv_mode is None:
+            # No explicit --paged-kv-quantization: inherit the launcher's
+            # environment. The app (and any wrapper tooling) communicates the
+            # KV-quant choice through the env pair, and rewriting the absent
+            # flag to an explicit "off" here used to clobber that env in the
+            # rebuilt child argv/env, killing the toggle engine-wide. An
+            # explicit flag still wins over the environment.
+            kv_mode = paged_kv_quant_mode_from_env()
     except ValueError as exc:
         printer(f"error: {exc}")
         return 2
