@@ -11250,9 +11250,14 @@ def _maybe_canonicalize_committed_reasoning(
         "cp_raw": int(cp_raw),
         "committed_len": int(len(committed)),
     }
+
+    def _record(target: dict[str, Any] | None) -> None:
+        if target is not None:
+            target["committed_reasoning_canonicalization"] = outcome
+
     if substituted == 0:
-        if request_observability is not None:
-            request_observability["committed_reasoning_canonicalization"] = outcome
+        _record(template_observability)
+        _record(request_observability)
         return None
     canon_observability: dict[str, Any] = {}
     canon_ids = _encode_messages(
@@ -11271,14 +11276,14 @@ def _maybe_canonicalize_committed_reasoning(
     cp_canon = _common_prefix_len(canon_ids, committed)
     outcome["cp_canon"] = int(cp_canon)
     if cp_canon <= cp_raw:
-        if request_observability is not None:
-            request_observability["committed_reasoning_canonicalization"] = outcome
+        _record(template_observability)
+        _record(request_observability)
         return None
     outcome["applied"] = True
     template_observability.clear()
     template_observability.update(canon_observability)
-    if request_observability is not None:
-        request_observability["committed_reasoning_canonicalization"] = outcome
+    _record(template_observability)
+    _record(request_observability)
     return canon_messages, canon_ids
 
 
@@ -24927,7 +24932,9 @@ def create_app(state: ServerState) -> FastAPI:
                 tool_choice=request.tool_choice,
                 tool_prompt_mode=template_tool_prompt_mode,
                 template_observability=template_observability,
-                request_observability=request_observability,
+                # request_observability is bound later in the prologue on
+                # some branches; the outcome rides template_observability,
+                # which merges into the request stream downstream.
             )
             if _canonicalized is not None:
                 messages_for_generation, prompt_ids = _canonicalized
