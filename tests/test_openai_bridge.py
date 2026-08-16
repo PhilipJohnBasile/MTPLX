@@ -1726,6 +1726,98 @@ def test_thinking_stream_splitter_keeps_orphan_parameter_markup_out_of_reasoning
     assert "</tool_call>" in content
 
 
+def _no_tools_splitter():
+    return _ThinkingContentStreamSplitter(
+        thinking_enabled=False,
+        suppress_orphan_tool_markup=True,
+    )
+
+
+def _collect_content(splitter, pieces):
+    chunks = []
+    for piece in pieces:
+        chunks.extend(splitter.feed(piece))
+    chunks.extend(splitter.finish())
+    return "".join(text for field, text in chunks if field == "content")
+
+
+def test_no_tools_stream_still_suppresses_closed_tool_spans_chunked():
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "Let me check. <tool",
+            '_call>\n{"name": "web_search"}\n</tool',
+            "_call> The answer is 4.",
+        ],
+    )
+    assert "tool_call" not in content
+    assert "web_search" not in content
+    assert "The answer is 4." in content
+
+
+def test_no_tools_stream_unclosed_span_salvages_prose_at_finish():
+    """The 2.7.1 turn-truncation known issue: an unclosed opener used to eat
+    the rest of the turn. The structural payload stays hidden, the prose the
+    model wrote after it survives."""
+
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "<tool_call>\n",
+            '{"name": "web_search", "arguments": {"query": "population"}}\n',
+            "Actually, I do not need a tool. The population is 39 million.",
+        ],
+    )
+    assert "web_search" not in content
+    assert "tool_call" not in content
+    assert "The population is 39 million." in content
+
+
+def test_no_tools_stream_unclosed_pure_payload_stays_hidden():
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "<function=web_search>\n",
+            '<parameter=query>weather</parameter>\n',
+        ],
+    )
+    assert content.strip() == ""
+
+
+def test_no_tools_stream_leaves_code_fenced_tool_examples_untouched():
+    """Users legitimately ask for tool-call syntax examples; fenced content
+    must stream through verbatim, matching the non-stream stripper."""
+
+    pieces = [
+        "Here is the syntax:\n``",
+        "`xml\n<tool_call>\n{\"name\": \"search\"}\n</tool_call>\n``",
+        "`\nThat is the format.",
+    ]
+    content = _collect_content(_no_tools_splitter(), pieces)
+    assert "<tool_call>" in content
+    assert '{"name": "search"}' in content
+    assert "That is the format." in content
+
+
+def test_sanitize_orphan_span_interior_variants():
+    from mtplx.server.openai import _sanitize_orphan_span_interior
+
+    # Payload + prose: prose survives, structure does not.
+    salvaged = _sanitize_orphan_span_interior(
+        '<tool_call>\n{"name": "x", "arguments": {"a": 1}}\nReal answer.'
+    )
+    assert salvaged == "Real answer."
+    # Pure payload: nothing survives.
+    assert (
+        _sanitize_orphan_span_interior('<function=web_search>\n{"q": "x"}')
+        == ""
+    )
+    # Stray opener with prose on later lines survives.
+    assert "keep me" in _sanitize_orphan_span_interior(
+        "<tool_call\nkeep me"
+    )
+
+
 def test_thinking_stream_splitter_strips_generated_chat_template_sentinels():
     splitter = _ThinkingContentStreamSplitter(thinking_enabled=True)
 

@@ -4544,6 +4544,82 @@ def _strip_orphan_tool_markup(text: str) -> tuple[str, int]:
     return cleaned, stripped
 
 
+_COMPLETE_ORPHAN_SPAN_RE = re.compile(
+    # Complete spans only — no \Z fallback. Used by the unclosed-span
+    # sanitizer, where an eat-to-end alternate would rebuild the exact
+    # turn-truncation bug it exists to fix.
+    r"<(?:[A-Za-z_][\w.-]*:)?tool_call>"
+    r"(?:(?!</(?:[A-Za-z_][\w.-]*:)?tool_call>).)*"
+    r"</(?:[A-Za-z_][\w.-]*:)?tool_call>"
+    r"|<function=[^>]*>(?:(?!</function>).)*</function>",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORPHAN_HEAD_OPENER_RE = re.compile(
+    r"^\s*(?:<(?:[A-Za-z_][\w.-]*:)?tool_call[^>\n]*(?:>|(?=\n)|$)"
+    r"|<function=[^>\n]*(?:>|(?=\n)|$))",
+    re.IGNORECASE,
+)
+
+
+def _leading_json_blob_end(text: str) -> int | None:
+    """End index of a leading brace-balanced JSON blob, else None."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _sanitize_orphan_span_interior(text: str) -> str:
+    """Salvage prose from an unclosed no-tools tool-markup span.
+
+    A model that opens ``<tool_call>``/``<function=`` in a no-tools request
+    and never closes used to have the whole rest of its turn discarded by
+    the stream filter (2.7.1 known issue). Strip only the structural payload
+    — opener tag, leading JSON arguments blob, parameter blocks, complete
+    nested spans — and keep whatever prose remains.
+    """
+    s = text.strip()
+    for _ in range(4):
+        previous = s
+        s = _ORPHAN_HEAD_OPENER_RE.sub("", s, count=1).lstrip()
+        if s.startswith("{"):
+            end = _leading_json_blob_end(s)
+            if end is not None:
+                s = s[end:].lstrip()
+            else:
+                last_brace = s.rfind("}")
+                if last_brace >= 0:
+                    s = s[last_brace + 1 :].lstrip()
+                else:
+                    # No closing brace anywhere: drop only the blob's first
+                    # line; later lines may be real prose.
+                    newline = s.find("\n")
+                    s = "" if newline < 0 else s[newline + 1 :].lstrip()
+        s = _COMPLETE_ORPHAN_SPAN_RE.sub("", s)
+        s = _TOOL_PARAMETER_BLOCK_RE.sub("", s)
+        s = s.strip()
+        if s == previous:
+            break
+    return re.sub(r"\n{3,}", "\n\n", s)
+
+
 _TOOL_CALL_BLOCK_RE = re.compile(
     r"<tool_call>\s*(.*?)\s*</tool_call>",
     re.IGNORECASE | re.DOTALL,
@@ -19618,6 +19694,14 @@ class _ThinkingContentStreamSplitter:
         self.suppressed_tool_markup_chars = 0
         self._orphan_in_span = False
         self._orphan_hold = ""
+        # Span interior is buffered, not discarded: finish() re-derives the
+        # non-stream stripper's result from it so an unclosed opener cannot
+        # eat the rest of the turn (2.7.1 known issue).
+        self._orphan_span_buffer = ""
+        self._orphan_span_search_from = 0
+        # Code-fence exemption state: content inside ``` fences streams
+        # through unfiltered, mirroring _strip_orphan_tool_markup.
+        self._orphan_fence_open = False
         self._inside_thinking = thinking_enabled and start_inside_thinking
         self._inside_tool_call = False
         self._tool_call_tail = ""
@@ -19685,72 +19769,121 @@ class _ThinkingContentStreamSplitter:
 
     _ORPHAN_OPENERS = ("<tool_call", "<function=")
     _ORPHAN_CLOSERS = ("</tool_call>", "</function>")
+    _ORPHAN_FENCE = "```"
+
+    @classmethod
+    def _marker_tail_hold(cls, s: str, markers: tuple[str, ...]) -> int:
+        """Length of a trailing fragment that could still become a marker."""
+        max_hold = max(len(marker) for marker in markers) - 1
+        lower = s.lower()
+        for k in range(min(max_hold, len(s)), 0, -1):
+            fragment = lower[-k:]
+            if any(marker.startswith(fragment) for marker in markers):
+                return k
+        return 0
+
+    def _orphan_consume_span(self, s: str) -> str:
+        """Buffer span text until a closer arrives; return the remainder.
+
+        The interior is retained (not dropped): if the closer never comes,
+        flush_orphan_hold() re-derives the non-stream stripper's result at
+        finish so prose after a stray opener survives the turn.
+        """
+        self._orphan_span_buffer += s
+        lower = self._orphan_span_buffer.lower()
+        close_at = -1
+        close_len = 0
+        for closer in self._ORPHAN_CLOSERS:
+            at = lower.find(closer, self._orphan_span_search_from)
+            if at >= 0 and (close_at < 0 or at < close_at):
+                close_at, close_len = at, len(closer)
+        if close_at < 0:
+            max_closer = max(len(closer) for closer in self._ORPHAN_CLOSERS)
+            self._orphan_span_search_from = max(
+                0, len(self._orphan_span_buffer) - (max_closer - 1)
+            )
+            return ""
+        consumed = close_at + close_len
+        self.suppressed_tool_markup_chars += consumed
+        remainder = self._orphan_span_buffer[consumed:]
+        self._orphan_span_buffer = ""
+        self._orphan_span_search_from = 0
+        self._orphan_in_span = False
+        return remainder
 
     def _filter_orphan_tool_markup(self, text: str) -> str:
         """Drop tool-call protocol spans from no-tools content (#160).
 
-        Stateful across chunks: a held-back tail covers markers split over
-        stream deltas, and an in-span flag drops everything between an opener
-        and its closer (or end of stream — small models often never close).
+        Stateful across chunks, converging on _strip_orphan_tool_markup's
+        non-stream contract: code-fenced examples pass through untouched, a
+        held-back tail covers markers split over stream deltas, and span
+        interiors are buffered for a sanitized finish-flush instead of being
+        destroyed.
         """
         s = self._orphan_hold + text
         self._orphan_hold = ""
         out: list[str] = []
-        lower = s.lower()
-        i = 0
-        while i < len(s):
+        while s:
             if self._orphan_in_span:
-                close_at = -1
-                close_len = 0
-                for closer in self._ORPHAN_CLOSERS:
-                    at = lower.find(closer, i)
-                    if at >= 0 and (close_at < 0 or at < close_at):
-                        close_at, close_len = at, len(closer)
-                if close_at < 0:
-                    # Whole remainder is span interior; keep a tail that
-                    # could be a split closer, drop the rest.
-                    keep = min(
-                        len(s) - i, max(len(c) for c in self._ORPHAN_CLOSERS) - 1
-                    )
-                    self.suppressed_tool_markup_chars += len(s) - i - keep
-                    self._orphan_hold = s[len(s) - keep :] if keep else ""
-                    return "".join(out)
-                self.suppressed_tool_markup_chars += close_at + close_len - i
-                i = close_at + close_len
-                self._orphan_in_span = False
+                s = self._orphan_consume_span(s)
                 continue
+            if self._orphan_fence_open:
+                at = s.find(self._ORPHAN_FENCE)
+                if at < 0:
+                    hold = self._marker_tail_hold(s, (self._ORPHAN_FENCE,))
+                    if hold:
+                        self._orphan_hold = s[-hold:]
+                        s = s[:-hold]
+                    out.append(s)
+                    break
+                out.append(s[: at + len(self._ORPHAN_FENCE)])
+                self._orphan_fence_open = False
+                s = s[at + len(self._ORPHAN_FENCE) :]
+                continue
+            fence_at = s.find(self._ORPHAN_FENCE)
+            lower = s.lower()
             open_at = -1
             for opener in self._ORPHAN_OPENERS:
-                at = lower.find(opener, i)
+                at = lower.find(opener)
                 if at >= 0 and (open_at < 0 or at < open_at):
                     open_at = at
-            if open_at < 0:
-                # No opener; hold a tail that could be a split opener.
-                tail = s[i:]
-                hold = 0
-                max_hold = max(len(o) for o in self._ORPHAN_OPENERS) - 1
-                for k in range(min(max_hold, len(tail)), 0, -1):
-                    fragment = tail[-k:].lower()
-                    if any(o.startswith(fragment) for o in self._ORPHAN_OPENERS):
-                        hold = k
-                        break
-                if hold:
-                    self._orphan_hold = tail[-hold:]
-                    out.append(tail[:-hold])
-                else:
-                    out.append(tail)
-                return "".join(out)
-            out.append(s[i:open_at])
-            self._orphan_in_span = True
-            i = open_at
+            if fence_at >= 0 and (open_at < 0 or fence_at < open_at):
+                out.append(s[: fence_at + len(self._ORPHAN_FENCE)])
+                self._orphan_fence_open = True
+                s = s[fence_at + len(self._ORPHAN_FENCE) :]
+                continue
+            if open_at >= 0:
+                out.append(s[:open_at])
+                self._orphan_in_span = True
+                self._orphan_span_buffer = ""
+                self._orphan_span_search_from = 0
+                s = s[open_at:]
+                continue
+            hold = self._marker_tail_hold(
+                s, self._ORPHAN_OPENERS + (self._ORPHAN_FENCE,)
+            )
+            if hold:
+                self._orphan_hold = s[-hold:]
+                s = s[:-hold]
+            out.append(s)
+            break
         return "".join(out)
 
     def flush_orphan_hold(self) -> str:
-        """End-of-stream: release a held tail that never became a marker."""
+        """End-of-stream: release held text that never became dead markup.
+
+        An unclosed span emits its sanitized interior instead of being
+        discarded: the structural payload stays hidden, but prose the model
+        wrote after a stray opener survives the turn.
+        """
         if self._orphan_in_span:
-            self.suppressed_tool_markup_chars += len(self._orphan_hold)
-            self._orphan_hold = ""
-            return ""
+            buffered = self._orphan_span_buffer
+            self._orphan_span_buffer = ""
+            self._orphan_span_search_from = 0
+            self._orphan_in_span = False
+            salvaged = _sanitize_orphan_span_interior(buffered)
+            self.suppressed_tool_markup_chars += len(buffered) - len(salvaged)
+            return salvaged
         held, self._orphan_hold = self._orphan_hold, ""
         return held
 
