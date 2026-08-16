@@ -3211,8 +3211,13 @@ def restore_or_prefill_prompt_state(
     vision_splice: Any | None = None,
     store_prefix_snapshot: bool | None = None,
     stable_prefix_len: int | None = None,
+    capture_hidden: bool | None = None,
 ) -> PromptState:
     """Build the initial prompt state used by MTP-k decode.
+
+    capture_hidden: None follows the runtime gate (MTP runtimes capture the
+    final-row hidden for the draft head); False skips it — the AR lane's
+    contract, where hidden is a env-gated diagnostic only.
 
     This is the first mechanical split point for the serving engine. It keeps
     today's cold path behavior intact while giving EngineSession a concrete
@@ -3796,7 +3801,9 @@ def restore_or_prefill_prompt_state(
         cache, logits, hidden, target_time = _prefill(
             rt,
             prompt_ids,
-            return_hidden=rt.mtp_enabled,
+            return_hidden=(
+                rt.mtp_enabled if capture_hidden is None else bool(capture_hidden)
+            ),
             hidden_variant=base_hidden_variant,
             abort_check=abort_check,
             vision_splice=vision_splice,
@@ -5065,6 +5072,14 @@ def generate_ar(
     loop_guard: bool = False,
     thinking_guard: ThinkingGuardConfig | None = None,
     constraint: Any | None = None,
+    session_bank: Any | None = None,
+    session_id: str | None = None,
+    session_restore_mode: str = "clone",
+    session_template_hash: str | None = None,
+    session_draft_head_identity: str | None = None,
+    session_policy_fingerprint: str | None = None,
+    capture_final_state: bool = False,
+    abort_check: Callable[[], bool] | None = None,
 ) -> GenerationOutput:
     reject_non_k1_a3b_whole_moe_request(rt, entrypoint="generate_ar")
     if getattr(rt, "backend_id", None) == "gemma4_assistant":
@@ -5100,53 +5115,33 @@ def generate_ar(
             or _env_truthy("MTPLX_DIAGNOSTIC_AR_RETURN_HIDDEN")
         )
     )
-    # Dashboard prefill instrumentation for AR. `_prefill` is unchunked,
-    # so we only fire started/completed (no chunk progress).
-    prefill_started_s = time.perf_counter()
-    if prefill_callback is not None:
-        try:
-            prefill_callback(
-                {
-                    "phase": "started",
-                    "tokens_done": 0,
-                    "tokens_total": int(len(prompt_ids)),
-                    "cached_tokens": 0,
-                    "new_prefill_tokens": int(len(prompt_ids)),
-                    "elapsed_s": 0.0,
-                    "started_s": prefill_started_s,
-                }
-            )
-        except Exception:
-            pass
-    cache, logits, hidden, prompt_eval_time = _prefill(
+    # Warm prefix for the AR lane (#246): route through the same
+    # restore-or-prefill machinery MTP uses. With no session bank this is
+    # the cold prefill path; with one, warm turns restore the banked prefix
+    # instead of unconditionally full-prefilling — and the reported
+    # cached_tokens/cache_hit become real numbers instead of hardcoded
+    # zeros, which also makes MTP-vs-AR benchmark comparisons honest.
+    # mtp_history_policy="cycle" keeps AR requests on the trunk-only path
+    # (no MTP history build), including on MTP-enabled runtimes serving
+    # --generation-mode ar.
+    prompt_state = restore_or_prefill_prompt_state(
         rt,
         prompt_ids,
-        return_hidden=ar_return_hidden,
+        base_hidden_variant=None,
+        mtp_history_policy="cycle",
+        session_bank=session_bank,
+        restore_mode=session_restore_mode,
+        session_id=session_id,
+        template_hash=session_template_hash,
+        draft_head_identity=session_draft_head_identity,
+        policy_fingerprint=session_policy_fingerprint,
+        prefill_callback=prefill_callback,
+        abort_check=abort_check,
+        capture_hidden=ar_return_hidden,
     )
-    if prefill_callback is not None:
-        try:
-            elapsed = max(0.0, time.perf_counter() - prefill_started_s)
-            tok_s = (
-                (len(prompt_ids) / elapsed)
-                if elapsed > 0 and prompt_ids
-                else None
-            )
-            prefill_callback(
-                {
-                    "phase": "completed",
-                    "tokens_total": int(len(prompt_ids)),
-                    "new_prefill_tokens": int(len(prompt_ids)),
-                    "cached_tokens": 0,
-                    "elapsed_s": elapsed,
-                    "prompt_eval_time_s": elapsed,
-                    "prefill_tok_s": tok_s,
-                    "prefill_compute_tok_s": tok_s,
-                    "prefill_wall_tok_s": tok_s,
-                    "cache_hit": False,
-                }
-            )
-        except Exception:
-            pass
+    cache = prompt_state.trunk_cache
+    logits = prompt_state.logits
+    prompt_eval_time = prompt_state.prompt_eval_time_s
     tokens: list[int] = []
     events: list[dict] = []
     if constraint is not None:
@@ -5376,6 +5371,37 @@ def generate_ar(
         verify_calls += 1
         logits = logits_next[:, -1, :]
 
+    finish_reason = _finish_reason_from_tokens(
+        tokens,
+        stop_token_ids=stop_token_ids,
+        max_tokens=max_tokens,
+    )
+    final_state: GenerationFinalState | None = None
+    if capture_final_state and tokens and repetition_result is None:
+        # The loop samples its final token and breaks before forwarding it,
+        # so the cache is one token short of the committed sequence. Extend
+        # it: the bank committer refuses final states whose token ids do not
+        # match the cache exactly.
+        with attention_phase("ar_decode"):
+            tail_result = rt.forward_ar(
+                mx.array([[int(tokens[-1])]]),
+                cache=cache,
+                return_hidden=False,
+            )
+        tail_logits = (
+            tail_result[0] if isinstance(tail_result, tuple) else tail_result
+        )
+        _eval(tail_logits)
+        final_state = GenerationFinalState(
+            final_trunk_cache=cache,
+            final_logits=tail_logits[:, -1, :],
+            final_hidden=None,
+            final_committed_mtp_cache=None,
+            generated_token_ids=tuple(int(token) for token in tokens),
+            safe_to_commit=True,
+            finish_reason=finish_reason,
+            mtp_history_policy=prompt_state.mtp_history_policy,
+        )
     elapsed = time.perf_counter() - started_all
     emit_trace(force=True, final=True)
     stats = GenerationStats(
@@ -5386,15 +5412,39 @@ def generate_ar(
             generated_tokens=len(tokens),
             elapsed_s=elapsed,
             prompt_eval_time_s=prompt_eval_time,
+            cache_restore_time_s=prompt_state.cache_restore_time_s,
         ),
         target_forward_time_s=prompt_eval_time + target_decode_time,
         prompt_eval_time_s=prompt_eval_time,
         prompt_tps=(
-            len(prompt_ids) / prompt_eval_time if prompt_eval_time > 0 else 0.0
+            prompt_state.suffix_tokens / prompt_eval_time
+            if prompt_eval_time > 0
+            else 0.0
         ),
         prompt_target_prefill_time_s=prompt_eval_time,
         prompt_target_prefill_tok_s=(
-            len(prompt_ids) / prompt_eval_time if prompt_eval_time > 0 else 0.0
+            prompt_state.suffix_tokens / prompt_eval_time
+            if prompt_eval_time > 0
+            else 0.0
+        ),
+        cache_restore_time_s=prompt_state.cache_restore_time_s,
+        cached_tokens=prompt_state.cached_tokens,
+        new_prefill_tokens=prompt_state.suffix_tokens,
+        session_cache_hit=prompt_state.cache_hit,
+        cache_source=prompt_state.cache_source,
+        ssd_cache_hit=prompt_state.ssd_cache_hit,
+        ssd_cached_tokens=prompt_state.ssd_cached_tokens,
+        ssd_restore_s=prompt_state.ssd_restore_s,
+        ssd_suffix_tokens=(
+            prompt_state.suffix_tokens if prompt_state.ssd_cache_hit else 0
+        ),
+        cache_miss_reason=prompt_state.cache_miss_reason,
+        session_restore_mode=prompt_state.restore_mode,
+        session_prefill_store=dict(
+            getattr(prompt_state, "prefill_store_snapshot", None) or {}
+        ),
+        session_restore_served=dict(
+            getattr(prompt_state, "restore_served", None) or {}
         ),
         verify_time_s=target_decode_time,
         verify_forward_time_s=target_forward_graph_time,
@@ -5442,15 +5492,11 @@ def generate_ar(
         counter_start,
         ar_return_hidden=ar_return_hidden,
     )
-    finish_reason = _finish_reason_from_tokens(
-        tokens,
-        stop_token_ids=stop_token_ids,
-        max_tokens=max_tokens,
-    )
     return GenerationOutput(
         tokens=tokens,
         text=_decode(rt.tokenizer, _strip_terminal_stop(tokens, stop_token_ids)),
         stats=stats,
+        final_state=final_state,
         finish_reason=finish_reason,
     )
 

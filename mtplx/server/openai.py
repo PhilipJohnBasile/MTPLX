@@ -18511,6 +18511,23 @@ def _run_generation(
                         loop_guard=_loop_guard_enabled(),
                         thinking_guard=thinking_guard_config,
                         constraint=constraint,
+                        # Warm-prefix parity with the MTP branch (#246): the
+                        # AR lane used to full-prefill unconditionally and
+                        # hardcode cached_tokens 0 / cache_hit false.
+                        session_bank=session_bank,
+                        session_id=session_id,
+                        session_restore_mode=_session_bank_restore_mode(
+                            session_restore_mode
+                        ),
+                        session_template_hash=session_template_hash,
+                        session_draft_head_identity=session_draft_head_identity,
+                        session_policy_fingerprint=session_policy_fingerprint,
+                        capture_final_state=session_bank is not None,
+                        abort_check=(
+                            (lambda: bool(cancel_event.is_set()))
+                            if cancel_event is not None
+                            else None
+                        ),
                     )
                 else:
                     adaptive_policy = _make_adaptive_policy(

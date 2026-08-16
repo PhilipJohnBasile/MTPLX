@@ -535,6 +535,105 @@ def test_generate_ar_does_not_request_hidden_by_default(monkeypatch):
     assert all(call["return_hidden"] is False for call in model.calls)
 
 
+def test_generate_ar_restores_warm_prefix_from_session_bank():
+    """#246: the AR lane used to full-prefill unconditionally and hardcode
+    cached_tokens 0 / cache_hit false. With a bank hit it must restore the
+    prefix and report real numbers."""
+
+    model = TinyModel()
+    rt = _runtime(model, mtp_enabled=True)
+
+    class Bank:
+        last_miss_reason = None
+
+        def longest_prefix(self, _prompt_ids):
+            return SimpleNamespace(prefix_len=3)
+
+        def restore(self, _rt, _prompt_ids, **kwargs):
+            cache_factory = kwargs.get("cache_factory")
+            cache = cache_factory() if callable(cache_factory) else _rt.make_cache()
+            return SimpleNamespace(
+                entry=SimpleNamespace(prefix_len=3),
+                cache=cache,
+                logits=mx.zeros((1, 4), dtype=mx.float32),
+                hidden=None,
+                mtp_history_cache=None,
+                restore_mode="clone",
+            )
+
+    out = generate_ar(
+        rt,
+        [0, 1, 2, 3, 4],
+        max_tokens=2,
+        sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=4),
+        stop_token_ids=set(),
+        session_bank=Bank(),
+        session_id="ar-warm-session",
+    )
+
+    assert out.stats.session_cache_hit is True
+    assert out.stats.cached_tokens > 0
+    assert out.stats.new_prefill_tokens < 5
+    assert len(out.tokens) == 2
+
+
+def test_generate_ar_cold_output_identical_with_and_without_bank():
+    """Empty-bank receipt: routing AR through restore_or_prefill must not
+    change cold-path outputs."""
+
+    class EmptyBank:
+        last_miss_reason = None
+
+        def longest_prefix(self, _prompt_ids):
+            return None
+
+        def restore(self, _rt, _prompt_ids, **kwargs):
+            return None
+
+    prompt = [0, 1, 2, 3]
+    sampler = SamplerConfig(temperature=0.0, top_p=1.0, top_k=4)
+    out_no_bank = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        list(prompt),
+        max_tokens=3,
+        sampler=sampler,
+        stop_token_ids=set(),
+    )
+    out_empty_bank = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        list(prompt),
+        max_tokens=3,
+        sampler=sampler,
+        stop_token_ids=set(),
+        session_bank=EmptyBank(),
+        session_id="ar-cold-session",
+    )
+
+    assert out_no_bank.tokens == out_empty_bank.tokens
+    assert out_empty_bank.stats.cached_tokens == 0
+    assert out_empty_bank.stats.session_cache_hit is False
+
+
+def test_generate_ar_captures_final_state_for_bank_commit():
+    """capture_final_state must produce a committable state whose token ids
+    match the generated tokens exactly (the committer refuses mismatches)."""
+
+    out = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        [0, 1, 2],
+        max_tokens=2,
+        sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=4),
+        stop_token_ids=set(),
+        capture_final_state=True,
+    )
+
+    assert out.final_state is not None
+    assert out.final_state.safe_to_commit is True
+    assert out.final_state.generated_token_ids == tuple(out.tokens)
+    assert out.final_state.final_committed_mtp_cache is None
+    assert out.final_state.mtp_history_policy == "cycle"
+
+
 def test_default_qwen27b_ar_decode_trace_does_not_crash(tmp_path, monkeypatch):
     trace_path = tmp_path / "qwen27b-ar.jsonl"
     monkeypatch.setenv("MTPLX_DECODE_TRACE_JSONL", str(trace_path))
