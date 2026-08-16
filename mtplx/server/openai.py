@@ -15133,6 +15133,8 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "sampler_policy_temperature",
     "sampler_policy_top_p",
     "sampler_policy_top_k",
+    "draft_sampler_resolved_temperature",
+    "draft_sampler_policy_source",
     "mlx_cache_cleanup",
     "request_cancelled",
     "cancellation_reason",
@@ -19089,6 +19091,17 @@ def _run_generation(
             envelope["mlx_cache_cleanup"] = cleanup
         envelope.update(_mlx_allocator_public_stats())
         stats["generation_mode"] = effective_mode
+        # Desync receipts (dynamic draft temperature): the resolved draft
+        # sampler is visible per response, so a drifted draft is provable
+        # from mtplx_stats alone.
+        stats["draft_sampler_resolved_temperature"] = (
+            float(getattr(effective_draft_sampler, "temperature", 0.0))
+            if effective_mode != "ar" and effective_draft_sampler is not None
+            else None
+        )
+        stats["draft_sampler_policy_source"] = (
+            (request_observability or {}).get("draft_sampler_policy_source")
+        )
         stats.update(envelope)
         stats.update(_generation_truth_stats(state, effective_mode))
         if effective_mode == "ar":
