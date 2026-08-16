@@ -42,7 +42,7 @@ from contextlib import asynccontextmanager, contextmanager, nullcontext, suppres
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from enum import Enum
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty
 from threading import Condition, Event, Lock, Thread, Timer
 from typing import Any, Callable, Iterable, Mapping
 
@@ -513,6 +513,38 @@ class _StopSequenceStreamMonitor:
         emit = self._pending
         self._pending = ""
         return self._emit(emit)
+
+
+class _LoopFedStreamQueue:
+    """Thread-safe producer to asyncio consumer bridge for token streams.
+
+    The worker thread keeps the plain ``put(item)`` contract; items are
+    marshalled onto the event loop with ``call_soon_threadsafe`` and awaited
+    from a plain ``asyncio.Queue``. The previous design paid an
+    ``asyncio.to_thread(queue.get, ...)`` thread-pool dispatch per token —
+    a per-token executor hop on the hottest streaming path in the server.
+    Timeouts raise ``queue.Empty`` so consumer except-sites stay unchanged.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+    def put(self, item: tuple[str, Any]) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, item)
+        except RuntimeError:
+            # Loop already closed (stream torn down). The old thread-queue
+            # silently absorbed late puts; keep that non-blocking contract.
+            pass
+
+    async def get(self, timeout: float | None = None) -> tuple[str, Any]:
+        if timeout is None:
+            return await self._queue.get()
+        try:
+            return await asyncio.wait_for(self._queue.get(), timeout=timeout)
+        except TimeoutError:
+            raise Empty from None
 
 
 def _stream_cancelled_queue_item(exc: _StreamCancelled) -> tuple[str, str]:
@@ -4663,6 +4695,11 @@ _BRACKET_TOOL_CALL_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _BRACKET_TOOL_PREFIXES = ("[Calling tool:", "[Tool call:")
+# Lowered once: _find_tool_start runs per stream chunk and used to pay a
+# fresh needle.lower() per prefix per call.
+_BRACKET_TOOL_PREFIXES_LOWER = tuple(
+    prefix.lower() for prefix in _BRACKET_TOOL_PREFIXES
+)
 _NAMESPACED_TOOL_CALL_START_RE = re.compile(
     r"<[A-Za-z_][\w.-]*:tool_call",
     re.IGNORECASE,
@@ -7764,6 +7801,12 @@ class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
     _PARAM_CLOSE = "</parameter>"
     _FUNCTION_CLOSE = "</function>"
     _TOOL_CALL_CLOSE = "</tool_call>"
+    # Compiled case-insensitive searches for the per-feed hot loops: the
+    # _find_casefold equivalent allocated a lowered copy of the whole buffer
+    # on every call — O(n^2) while a large JSON tool body streams.
+    _FUNCTION_CLOSE_SEARCH_RE = re.compile(r"</function>", re.IGNORECASE)
+    _FUNCTION_OPEN_SEARCH_RE = re.compile(r"<function=", re.IGNORECASE)
+    _PARAMETER_OPEN_SEARCH_RE = re.compile(r"<parameter=", re.IGNORECASE)
 
     def __init__(
         self,
@@ -7830,9 +7873,12 @@ class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
         """
         search_from = 0
         while True:
-            close = _find_casefold(self._buf, self._FUNCTION_CLOSE, search_from)
-            if close < 0:
+            close_match = self._FUNCTION_CLOSE_SEARCH_RE.search(
+                self._buf, search_from
+            )
+            if close_match is None:
                 return "wait" if not self._finishing else "failed"
+            close = close_match.start()
             if self._adopt_json_object_body(self._buf[:close]):
                 self._buf = self._buf[close + len(self._FUNCTION_CLOSE) :]
                 self._stage = "after_function"
@@ -7915,7 +7961,8 @@ class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
         deltas: list[dict[str, Any]] = []
         while True:
             if self._stage == "find_function":
-                function_start = _find_casefold(self._buf, "<function=")
+                open_match = self._FUNCTION_OPEN_SEARCH_RE.search(self._buf)
+                function_start = open_match.start() if open_match else -1
                 if function_start < 0:
                     return deltas
                 function_end = self._buf.find(">", function_start)
@@ -7953,8 +8000,10 @@ class _QwenXMLToolCallStreamParser(_ToolCallStreamParser):
                         f"tool '{self._name}' contains unwrapped parameter text"
                     )
                     return deltas
-                param_start = _find_casefold(self._buf, "<parameter=")
-                function_close = _find_casefold(self._buf, self._FUNCTION_CLOSE)
+                param_match = self._PARAMETER_OPEN_SEARCH_RE.search(self._buf)
+                param_start = param_match.start() if param_match else -1
+                close_match = self._FUNCTION_CLOSE_SEARCH_RE.search(self._buf)
+                function_close = close_match.start() if close_match else -1
                 if function_close >= 0 and (
                     param_start < 0 or function_close < param_start
                 ):
@@ -8154,6 +8203,12 @@ class _ToolAwareContentStreamTranslator:
         self._repair_unclosed_complete = bool(repair_unclosed_complete)
         self._suppress_tool_call_preamble = bool(suppress_tool_call_preamble)
         self._marker_pairs = _tool_marker_pairs_from_tokenizer(tokenizer)
+        # Lowered start markers, computed once: _find_tool_start runs per
+        # chunk and previously re-lowercased the whole buffer per marker pair
+        # (via _find_casefold) on the agentic hot path.
+        self._marker_starts_lower = tuple(
+            start.lower() for start, _end in self._marker_pairs
+        )
         self._pending = ""
         self._trailing = ""
         self._mode = "passthrough" if not tools else "undecided"
@@ -8348,6 +8403,7 @@ class _ToolAwareContentStreamTranslator:
 
     def _find_tool_start(self, text: str) -> int:
         candidates: list[int] = []
+        # One lowered copy per scan, shared by every marker family below.
         lowered = text.lower()
         idx = lowered.find(self._START_MARKER)
         if idx >= 0:
@@ -8355,8 +8411,8 @@ class _ToolAwareContentStreamTranslator:
         ns_match = _NAMESPACED_TOOL_CALL_START_RE.search(text)
         if ns_match:
             candidates.append(ns_match.start())
-        for prefix in _BRACKET_TOOL_PREFIXES:
-            bracket_idx = lowered.find(prefix.lower())
+        for prefix_lower in _BRACKET_TOOL_PREFIXES_LOWER:
+            bracket_idx = lowered.find(prefix_lower)
             while bracket_idx >= 0:
                 # The old gate demanded a complete regex match mid-stream and
                 # skipped ahead on any early `]` (present in every
@@ -8369,9 +8425,9 @@ class _ToolAwareContentStreamTranslator:
                 if _classify_bracket_tool_call(text, bracket_idx) != "invalid":
                     candidates.append(bracket_idx)
                     break
-                bracket_idx = lowered.find(prefix.lower(), bracket_idx + 1)
-        for start_marker, _end_marker in self._marker_pairs:
-            custom_idx = _find_casefold(text, start_marker)
+                bracket_idx = lowered.find(prefix_lower, bracket_idx + 1)
+        for start_marker_lower in self._marker_starts_lower:
+            custom_idx = lowered.find(start_marker_lower)
             if custom_idx >= 0:
                 candidates.append(custom_idx)
         return min(candidates) if candidates else -1
@@ -19574,6 +19630,9 @@ class _IncrementalTokenDecoder:
     finalized text as soon as whitespace or CJK boundaries make it safe.
     """
 
+    _CACHE_TRUNCATE_THRESHOLD = 96
+    _CACHE_KEEP_TOKENS = 8
+
     def __init__(self, tokenizer: Any) -> None:
         self._tokenizer = tokenizer
         self._token_cache: list[int] = []
@@ -19584,6 +19643,32 @@ class _IncrementalTokenDecoder:
             return self._tokenizer.decode(tokens, clean_up_tokenization_spaces=False)
         except TypeError:
             return self._tokenizer.decode(tokens)
+
+    def _truncate_decoded_prefix(self, text: str) -> None:
+        """Drop flushed tokens from the cache when provably safe.
+
+        The cache previously reset only on newline flushes, so one long line
+        (JSON tool arguments, minified code) re-decoded an ever-growing token
+        list on every callback — O(n^2) tokenizer work on exactly the agentic
+        hot path. Byte-level BPE decodes segment-stably except around
+        incomplete UTF-8 sequences, so keep a short tail and verify it: the
+        endswith check proves the tail decodes independently to the same
+        bytes, keeping the visible stream byte-identical. On any mismatch the
+        cache is left alone (correctness first, speed second).
+        """
+        if len(self._token_cache) <= self._CACHE_TRUNCATE_THRESHOLD:
+            return
+        unflushed_chars = len(text) - self._print_len
+        if unflushed_chars < 0:
+            return
+        tail = self._token_cache[-self._CACHE_KEEP_TOKENS :]
+        tail_text = self._decode(tail)
+        if not tail_text or len(tail_text) < unflushed_chars:
+            return
+        if not text.endswith(tail_text):
+            return
+        self._token_cache = list(tail)
+        self._print_len = len(tail_text) - unflushed_chars
 
     def feed(self, tokens: list[int]) -> str:
         if not tokens:
@@ -19598,12 +19683,14 @@ class _IncrementalTokenDecoder:
         if text and self._is_cjk_char(ord(text[-1])):
             printable = text[self._print_len :]
             self._print_len += len(printable)
+            self._truncate_decoded_prefix(text)
             return printable
         close_match = QWEN_STYLE_REASONING_CLOSE_RE.search(text, self._print_len)
         if close_match is not None:
             boundary = close_match.end()
             printable = text[self._print_len : boundary]
             self._print_len = boundary
+            self._truncate_decoded_prefix(text)
             return printable
 
         boundary = -1
@@ -19615,6 +19702,7 @@ class _IncrementalTokenDecoder:
             return ""
         printable = text[self._print_len : boundary]
         self._print_len = boundary
+        self._truncate_decoded_prefix(text)
         return printable
 
     def finish(self) -> str:
@@ -25140,7 +25228,7 @@ def create_app(state: ServerState) -> FastAPI:
                 }
                 yield mark_sse_sent(f"data: {json.dumps(first)}\n\n")
 
-                queue: Queue[tuple[str, Any]] = Queue()
+                queue = _LoopFedStreamQueue(asyncio.get_running_loop())
                 cancel_event = Event()
                 # Register this request in the dashboard's in-flight registry
                 # so external cancel (`POST /v1/mtplx/cancel/{id}`) can flip
@@ -26280,21 +26368,28 @@ def create_app(state: ServerState) -> FastAPI:
                     daemon=True,
                 ).start()
 
+                # The envelope around each delta is constant for the whole
+                # stream; serialize it once instead of rebuilding and
+                # re-serializing the full payload dict per token chunk.
+                # Byte-identical to json.dumps of the equivalent dict
+                # (default separators and key order).
+                _delta_envelope_prefix = (
+                    'data: {"id": '
+                    + json.dumps(response_id)
+                    + ', "object": "chat.completion.chunk", "created": '
+                    + json.dumps(created)
+                    + ', "model": '
+                    + json.dumps(model)
+                    + ', "choices": [{"index": 0, "delta": '
+                )
+                _delta_envelope_suffix = ', "finish_reason": null}]}\n\n'
+
                 def delta_payload_chunk(delta: dict[str, Any]) -> str:
-                    payload = {
-                        "id": response_id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": delta,
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    return f"data: {json.dumps(payload)}\n\n"
+                    return (
+                        _delta_envelope_prefix
+                        + json.dumps(delta)
+                        + _delta_envelope_suffix
+                    )
 
                 def delta_chunk(field: str, text: str) -> str:
                     return delta_payload_chunk({field: text})
@@ -26772,7 +26867,7 @@ def create_app(state: ServerState) -> FastAPI:
                 try:
                     while True:
                         try:
-                            kind, item = await asyncio.to_thread(queue.get, True, 0.25)
+                            kind, item = await queue.get(0.25)
                         except Empty:
                             if stop_monitor is not None and stop_monitor.stopped:
                                 # Stop-sequence cancel in flight: keep
@@ -27306,9 +27401,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                                 commit_state["commit"] = True
                                 commit_event.set()
-                                commit_kind, commit_item = await asyncio.to_thread(
-                                    queue.get
-                                )
+                                commit_kind, commit_item = await queue.get()
                                 if commit_kind == "committed":
                                     generated = commit_item
                                 elif commit_kind == "error":
@@ -28134,7 +28227,7 @@ def create_app(state: ServerState) -> FastAPI:
             # first and then re-chunked the final text, which kept clients
             # staring at a silent stream for the whole generation.
             async def event_stream():
-                queue: Queue[tuple[str, Any]] = Queue()
+                queue = _LoopFedStreamQueue(asyncio.get_running_loop())
                 cancel_event = Event()
                 decoder = _IncrementalTokenDecoder(state.runtime.tokenizer)
                 stop_monitor = _StopSequenceStreamMonitor(stop_sequences)
@@ -28195,15 +28288,25 @@ def create_app(state: ServerState) -> FastAPI:
                     daemon=True,
                 ).start()
 
+                # Constant stream envelope, serialized once (byte-identical
+                # to json.dumps of the equivalent dict).
+                _text_envelope_prefix = (
+                    'data: {"id": '
+                    + json.dumps(response_id)
+                    + ', "object": "text_completion", "created": '
+                    + json.dumps(created)
+                    + ', "model": '
+                    + json.dumps(model)
+                    + ', "choices": [{"index": 0, "text": '
+                )
+                _text_envelope_suffix = ', "finish_reason": null}]}\n\n'
+
                 def text_chunk(text: str) -> str:
-                    payload = {
-                        "id": response_id,
-                        "object": "text_completion",
-                        "created": created,
-                        "model": model,
-                        "choices": [{"index": 0, "text": text, "finish_reason": None}],
-                    }
-                    return f"data: {json.dumps(payload)}\n\n"
+                    return (
+                        _text_envelope_prefix
+                        + json.dumps(text)
+                        + _text_envelope_suffix
+                    )
 
                 def error_chunk(exc: BaseException) -> str:
                     if isinstance(exc, HTTPException):
@@ -28244,7 +28347,7 @@ def create_app(state: ServerState) -> FastAPI:
                 try:
                     while True:
                         try:
-                            kind, item = await asyncio.to_thread(queue.get, True, 0.25)
+                            kind, item = await queue.get(0.25)
                         except Empty:
                             if (
                                 cancel_event.is_set() and not stop_hit
