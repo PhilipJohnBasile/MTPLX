@@ -1049,8 +1049,11 @@ class VllmMetalPagedKVCache:
                 dtype=cache_dtype,
             )
             scale_shape = (self.num_blocks, self.block_size, n_kv_heads, 1)
-            self.key_scale_cache = mx.zeros(scale_shape, dtype=mx.float16)
-            self.value_scale_cache = mx.zeros(scale_shape, dtype=mx.float16)
+            # fp32 scales: quantize_symmetric computes them in fp32 and every
+            # consumer multiplies in fp32; storing fp16 only added rounding
+            # error (see kv_quant.quantize_symmetric).
+            self.key_scale_cache = mx.zeros(scale_shape, dtype=mx.float32)
+            self.value_scale_cache = mx.zeros(scale_shape, dtype=mx.float32)
             self.key_zero_cache = None
             mx.eval(
                 self.key_cache,
@@ -1960,6 +1963,11 @@ class VllmMetalPagedKVCache:
                 mask=mask,
             )
             self.paged_attention_calls += 1
+            if self.kv_quant:
+                # This branch serves kv_quant traffic through the dequant
+                # gather; without the increment the dashboard undercounted
+                # quantized attention calls on exactly this hot path.
+                self.kv_quant_attention_calls += 1
             self.attention_time_s += time.perf_counter() - started
             return out
         if not self.turboquant and not self.kv_quant and impl in {"sdpa_2pass_paged", "mlx_vector_paged"}:

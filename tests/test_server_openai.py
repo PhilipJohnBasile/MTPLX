@@ -11489,6 +11489,84 @@ def test_server_state_applies_clear_cache_every_after_profile(monkeypatch):
     assert captured["status"]["MTPLX_CLEAR_CACHE_EVERY"] == "512"
 
 
+def _monkeypatch_server_state_load(monkeypatch):
+    monkeypatch.setattr(openai, "apply_profile_env", lambda _profile, **_kwargs: None)
+    monkeypatch.setattr(openai, "profile_env_status", lambda _profile, **_kwargs: {})
+    monkeypatch.setattr(openai, "_fast_path_env_status", lambda: {})
+    monkeypatch.setattr(openai, "_mlx_runtime_status", lambda: {"ok": True})
+    monkeypatch.setattr(
+        openai, "_configure_mlx_cache_limit", lambda _args: {"configured": False}
+    )
+    monkeypatch.setattr(
+        openai,
+        "load",
+        lambda model, mtp, contract, **_kwargs: SimpleNamespace(
+            model_path=Path(model),
+            mtp_enabled=mtp,
+            tokenizer=SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setattr(
+        openai, "_install_draft_lm_head", lambda *_args, **_kwargs: {"installed": True}
+    )
+    monkeypatch.setattr(openai, "_draft_head_identity", lambda _runtime: "draft-head")
+    monkeypatch.setattr(openai, "_template_hash", lambda _tokenizer: "template")
+    monkeypatch.setattr(
+        openai, "_resolve_context_window", lambda _tokenizer, _model: 32768
+    )
+    monkeypatch.setattr(
+        openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace()
+    )
+
+
+def test_server_state_downgrades_kv_quant_for_unsupported_family(monkeypatch):
+    """Engine-side policy gate: q8 on a family without a validated KV-quant
+    policy must downgrade to off (and scrub the env pair) instead of reaching
+    the cache installer."""
+
+    _monkeypatch_server_state_load(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+
+    args = parse_args(
+        [
+            "--model",
+            "models/Gemma4-MTPLX-Optimized-Speed",
+            "--warmup-tokens",
+            "0",
+            "--paged-kv-quantization",
+            "q8",
+        ]
+    )
+    openai.ServerState(args)
+
+    assert args.paged_kv_quantization == "off"
+    assert os.environ["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "off"
+    assert os.environ["MTPLX_PAGED_KV_QUANT"] == "off"
+
+
+def test_server_state_keeps_kv_quant_for_supported_family(monkeypatch):
+    _monkeypatch_server_state_load(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+
+    args = parse_args(
+        [
+            "--model",
+            "models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+            "--warmup-tokens",
+            "0",
+            "--paged-kv-quantization",
+            "q8",
+        ]
+    )
+    openai.ServerState(args)
+
+    assert args.paged_kv_quantization == "q8"
+    assert os.environ["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "q8"
+    assert os.environ["MTPLX_PAGED_KV_QUANT"] == "q8"
+
+
 def test_server_state_reports_model_load_failure(monkeypatch, capsys):
     monkeypatch.setattr(openai, "apply_profile_env", lambda _profile, **_kwargs: None)
     monkeypatch.setattr(openai, "profile_env_status", lambda _profile, **_kwargs: {})

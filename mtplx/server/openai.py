@@ -1831,6 +1831,32 @@ class ServerState:
             )
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
+        if args.paged_kv_quantization != "off":
+            # Engine-side policy gate: the descriptor table is the single
+            # source of KV-quant eligibility. Without this, an env-supplied
+            # q8/q4 reached the cache installer for families that never
+            # validated it (Gemma/Step/GLM/DeepSeek). Downgrade loudly rather
+            # than refuse: a persisted app toggle must not brick a model swap.
+            from mtplx.backends.descriptors import kv_quant_policy_for_model
+
+            kv_policy = kv_quant_policy_for_model(
+                model_ref=str(getattr(args, "model", "") or "") or None,
+                descriptor=descriptor_for_backend_id(
+                    getattr(args, "backend_id", None)
+                ),
+            )
+            if not (
+                kv_policy.supported
+                and args.paged_kv_quantization in kv_policy.modes
+            ):
+                LOGGER.warning(
+                    "paged KV quantization %r is not supported for this model "
+                    "(%s) — downgrading to off",
+                    args.paged_kv_quantization,
+                    kv_policy.disabled_reason
+                    or "no validated KV-quant policy for this family",
+                )
+                args.paged_kv_quantization = "off"
         apply_paged_kv_quantization_env(args.paged_kv_quantization)
         self.model_id = args.model_id
         # Retrieval models are independent of the MTP generation path: they are
