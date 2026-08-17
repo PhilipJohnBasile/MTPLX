@@ -8,6 +8,14 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Added
 
+- **Sharing the API over your network is now a one-liner.** `mtplx serve
+  --host 0.0.0.0 --api-key-file ~/.mtplx/api-key` creates the key file with
+  a fresh key when it doesn't exist (0600, printed once) instead of dying on
+  the exact recovery command our own non-localhost refusal suggests. Wildcard
+  binds print a dialable `Network OpenAI API Base URL` (your Mac's LAN
+  address — what Parallels/VM guests and other devices should use), `--host`
+  finally has help text, and docs/server.md gained a sharing section.
+  Keyless non-localhost binds still refuse: that guard is the product.
 - **`/health` tells you when the engine is degraded.** A new additive
   `degradation` block reports compiled-verify state with the reason for any
   permanent-eager fallback, profile env keys an operator override beat, and
@@ -72,6 +80,12 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **The web chat UI no longer labels this launch's context cap as "the
+  model's" context.** The max-tokens help fed `/health`'s `context_window` —
+  which memory sizing can cap far below native — into a string attributing
+  it to the model, so a 32GB machine serving a 256k-native model read
+  "the model's 16.4k context". It now says whose number it is: this
+  server's active context window.
 - **Stock `Qwen/Qwen3-8B` is no longer misclassified as the Qwen 3.8
   family** (a regression in the artifact-identity fix gave Alibaba's most
   popular size the wrong sampler defaults and reasoning codec), and family

@@ -174,6 +174,26 @@ def apply_paged_kv_quantization_env(mode: object | None, env: dict[str, str] | N
     return canonical
 
 
+def generate_api_key_file(api_key_file: str | os.PathLike[str]) -> str:
+    """Create ``api_key_file`` holding a fresh random key and return the key.
+
+    Server entrypoints call this when the user passed ``--api-key-file`` for a
+    path that does not exist yet, so the recovery command our own non-localhost
+    refusal prints is runnable as-is instead of dying on FileNotFoundError.
+    Read-only consumers of key files (doctor, connect) must NOT call this — a
+    missing file is a real error there. The file is created 0600.
+    """
+    import secrets
+
+    path = Path(api_key_file).expanduser()
+    key = "mtplx-" + secrets.token_hex(24)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(key + "\n")
+    return key
+
+
 def resolve_api_key(
     *,
     explicit_api_key: str | None = None,

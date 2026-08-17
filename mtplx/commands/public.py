@@ -131,9 +131,11 @@ from mtplx.server_urls import (
     connect_host_for_bind,
     is_wildcard_bind,
     local_url_for_bind,
+    network_url_for_bind,
 )
 from mtplx.kv_quant import paged_kv_quant_mode_from_env
 from mtplx.runtime_options import (
+    generate_api_key_file,
     normalize_paged_kv_quantization,
     paged_kv_quantization_env,
     resolve_api_key,
@@ -8408,6 +8410,11 @@ def _print_serve_handoff(args: Any, runtime_model: str, profile_name: str) -> No
         _print_serve_start_line(
             f"      Local API Base URL: {_server_url(args.host, int(args.port))}/v1"
         )
+        network_url = network_url_for_bind(args.host, int(args.port), path="/v1")
+        if network_url:
+            _print_serve_start_line(
+                f"      Network API Base URL: {network_url} (other devices + VM guests)"
+            )
     else:
         _print_serve_start_line(
             f"[1/6] Server config ready: {_server_url(args.host, int(args.port))}/v1"
@@ -8656,6 +8663,25 @@ def _resolve_runtime_options_on_args(
     *,
     printer: Callable[[str], None],
 ) -> int | None:
+    # --api-key-file pointing at a missing path creates the file with a fresh
+    # key instead of erroring: the non-localhost refusal below suggests
+    # `--api-key-file ~/.mtplx/api-key` as the recovery command, and that
+    # suggestion must work on a machine that has never had a key. The key is
+    # printed once, at generation — it never appears again on later launches,
+    # and the file path stays the durable copy. Only server entrypoints get
+    # this behavior; read-only key-file consumers keep strict missing-file
+    # errors.
+    api_key_file = getattr(args, "api_key_file", None)
+    if api_key_file and not getattr(args, "api_key", None):
+        key_path = Path(str(api_key_file)).expanduser()
+        if not key_path.exists():
+            try:
+                generated = generate_api_key_file(key_path)
+            except OSError as exc:
+                printer(f"error: could not create API key file: {exc}")
+                return 2
+            printer(f"Generated a new API key and saved it to {key_path}")
+            printer(f"API key (use as Bearer token from other machines): {generated}")
     try:
         resolved_key = resolve_api_key(
             explicit_api_key=getattr(args, "api_key", None),

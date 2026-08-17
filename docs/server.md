@@ -21,7 +21,24 @@ Endpoints:
 - `GET /admin/sessions`
 - `POST /admin/cache/clear`
 
-Binding to a non-localhost host requires an API key:
+## Sharing on your network (other devices, Parallels/VM guests)
+
+The default bind is `127.0.0.1`: only this Mac can connect. To reach MTPLX
+from other devices — or from a Windows VM in Parallels/VMware/UTM on the same
+Mac, which arrives over the virtual network rather than loopback — bind all
+interfaces. Non-localhost binds require an API key; if the key file doesn't
+exist yet it is created with a fresh key and printed once:
+
+```bash
+mtplx serve --host 0.0.0.0 --port 8000 --api-key-file ~/.mtplx/api-key
+```
+
+Startup prints a `Network OpenAI API Base URL` (your Mac's LAN address, e.g.
+`http://192.168.1.20:8000/v1`). On the other machine, point any
+OpenAI-compatible client at that base URL with the printed key as the API
+key (sent as a Bearer token). Parallels shared networking reaches the Mac's
+LAN address directly; macOS may ask once to allow incoming connections —
+click Allow. To pass the key inline instead of a file:
 
 ```bash
 mtplx serve --host 0.0.0.0 --port 8000 --api-key "$MTPLX_API_KEY"

@@ -2396,7 +2396,15 @@ def build_parser() -> argparse.ArgumentParser:
     quickstart_server_p.add_argument(
         "--yes", action="store_true", help="Confirm unsafe non-interactive actions"
     )
-    quickstart_server_p.add_argument("--host", default="127.0.0.1")
+    quickstart_server_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind address. Default 127.0.0.1 is this Mac only; 0.0.0.0 shares "
+            "the API with other devices and VM guests (requires an API key — "
+            "add --api-key-file ~/.mtplx/api-key to generate one)"
+        ),
+    )
     quickstart_server_p.add_argument("--port", type=int, default=8000)
     quickstart_server_p.add_argument("--model-id", default=DEFAULT_PUBLIC_MODEL_ID, help="Served OpenAI model id; defaults to the loaded artifact identity")
     quickstart_server_p.add_argument(
@@ -2449,7 +2457,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require Bearer or X-API-Key auth. Required for non-localhost binds.",
     )
     quickstart_server_p.add_argument(
-        "--api-key-file", help="Read the API key from a local file instead of argv/env."
+        "--api-key-file",
+        help=(
+            "Read the API key from a local file instead of argv/env. "
+            "A missing file is created with a fresh key (printed once)."
+        ),
     )
     quickstart_server_p.add_argument(
         "--rate-limit",
@@ -3144,7 +3156,15 @@ def build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument(
         "--yes", action="store_true", help="Confirm unsafe non-interactive actions"
     )
-    serve_p.add_argument("--host", default="127.0.0.1")
+    serve_p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind address. Default 127.0.0.1 is this Mac only; 0.0.0.0 shares "
+            "the API with other devices and VM guests (requires an API key — "
+            "add --api-key-file ~/.mtplx/api-key to generate one)"
+        ),
+    )
     serve_p.add_argument("--port", type=int, default=8000)
     serve_p.add_argument(
         "--no-auth",
@@ -3183,7 +3203,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require Bearer or X-API-Key auth. Required for non-localhost binds.",
     )
     serve_p.add_argument(
-        "--api-key-file", help="Read the API key from a local file instead of argv/env."
+        "--api-key-file",
+        help=(
+            "Read the API key from a local file instead of argv/env. "
+            "A missing file is created with a fresh key (printed once)."
+        ),
     )
     serve_p.add_argument(
         "--rate-limit",

@@ -179,7 +179,12 @@ from mtplx.server.omlx_bridge.tool_calling import (
     PYTHONIC_TOOL_CALL_END,
     PYTHONIC_TOOL_CALL_START,
 )
-from mtplx.server_urls import bind_label, is_wildcard_bind, local_url_for_bind
+from mtplx.server_urls import (
+    bind_label,
+    is_wildcard_bind,
+    local_url_for_bind,
+    network_url_for_bind,
+)
 
 LOGGER = logging.getLogger("mtplx.server.openai")
 
@@ -31326,6 +31331,15 @@ def main(argv: list[str] | None = None) -> None:
         _startup_line("Listening: " + _startup_bind_label(args))
         _startup_line("Local Chat UI: " + chat_url)
         _startup_line("Local OpenAI API Base URL: " + _startup_openai_base_url(args))
+        network_url = network_url_for_bind(
+            getattr(args, "host", None), int(args.port), path="/v1"
+        )
+        if network_url:
+            _startup_line(
+                "Network OpenAI API Base URL: "
+                + network_url
+                + " (use from other devices and VM guests, with your API key)"
+            )
     else:
         _startup_line("Chat UI: " + chat_url)
         _startup_line("OpenAI API Base URL: " + _startup_openai_base_url(args))
