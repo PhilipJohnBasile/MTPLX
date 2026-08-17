@@ -4,7 +4,7 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.8.0] - 2026-08-17
 
 ### Added
 
@@ -36,6 +36,32 @@ All notable user-facing changes to MTPLX. The format is based on
 - **Warmup knobs:** the turbo profile ships `MTPLX_WARMUP_LADDER` crossing
   every compiled-verify bucket class up to its fence, and
   `MTPLX_WARMUP_PREFILL_CHUNK` is now env-tunable (default unchanged).
+- **AR mode joins the session bank (#246).** `--generation-mode ar` (and
+  `--no-mtp`) now restores warm prefixes through the same path MTP uses and
+  reports real cache stats (`cached_tokens`, `cache_source`,
+  `cache_miss_reason`, true `prompt_tps`), so an AR control arm measures
+  decode alone instead of paying a full re-prefill every turn.
+- **Prompt scoring on `/v1/completions`.** `echo: true` with `logprobs` and
+  `max_tokens: 0` scores an entire prompt in one call: per-token logprobs,
+  top-K alternatives, byte-exact `text_offset`, and a `token_ids` identity
+  array. This is the lane KL-divergence quality harnesses need.
+- **Per-request draft-sampler resolver.** The draft temperature resolves per
+  request from the artifact stamp, the request's own sampling, and greedy
+  coupling at temperature 0, with the resolved value stamped in
+  `mtplx_stats` so telemetry always equals engine reality.
+- **KV quantization is a real decode feature.** Paged q8 KV runs through a
+  dedicated kernel on the decode path (with a dequant memo below the kernel
+  threshold), and `mtplx_stats` reports the memo and kernel counters.
+- **Faster streaming under load.** The SSE hot path moved to a loop-fed
+  queue with a constant envelope and cheaper per-chunk encoding, lowering
+  per-token server overhead at high decode speeds.
+- **`/v1/messages` protocol conformance.** Parallel tool use, streamed
+  usage accounting, and strict rejection of fields that were previously
+  ignored silently.
+- **Bridge hygiene.** The OpenCode and Pi plugins no longer delete a
+  client's explicitly configured capabilities, and the no-tools stream
+  filter stops eating turns (code fences are exempt from tool-markup
+  suppression).
 
 ### Changed
 
@@ -1601,6 +1627,7 @@ working as one product. Full notes:
   completions, and Anthropic `stop_sequences`) and `/v1/completions`
   streams tokens as they are generated with real finish reasons.
 
+[2.8.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.8.0
 [2.7.2]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.2
 [2.7.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.1
 [2.7.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.0
