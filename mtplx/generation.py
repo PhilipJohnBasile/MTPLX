@@ -4087,25 +4087,20 @@ def _adaptive_full_k3_draft_reader(
     return token, distribution, False
 
 
-def _env_scaled_draft_sampler(
+def _effective_draft_sampler(
     sampler: SamplerConfig,
     draft_sampler: SamplerConfig | None,
 ) -> SamplerConfig:
-    base = draft_sampler or sampler
-    raw = os.environ.get("MTPLX_DRAFT_TEMPERATURE_SCALE")
-    if raw is None or raw.strip() == "":
-        return base
-    try:
-        scale = float(raw)
-    except ValueError:
-        return base
-    if scale <= 0 or base.temperature <= 0:
-        return base
-    return SamplerConfig(
-        temperature=float(base.temperature) * scale,
-        top_p=float(base.top_p),
-        top_k=int(base.top_k),
-    )
+    """Mirror the target sampler when no draft sampler was provided.
+
+    A provided draft sampler passes through UNTOUCHED: the server-side
+    resolver (mtplx.server.openai._resolve_draft_sampler_for_request) owns
+    the MTPLX_DRAFT_TEMPERATURE_SCALE knob and applies it BEFORE stamping
+    telemetry, so the stamped draft temperature is the temperature the
+    engine actually drafts with. Rescaling here again would double-apply
+    the knob and make every stamp a lie (the pre-2.8 desync).
+    """
+    return draft_sampler or sampler
 
 
 def _sample_adapter_ensemble_q(
@@ -5657,7 +5652,7 @@ def generate_mtp1(
     verify_core_backend = resolve_gdn_capture_backend(verify_core)
 
     rng = np.random.default_rng(seed)
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     stop_token_ids = (
         _default_stop_tokens(rt.tokenizer) if stop_token_ids is None else stop_token_ids
     )
@@ -6508,7 +6503,7 @@ def generate_mtpk(
         else None
     )
     exact_a3b_target_prefix = exact_a3b_target_prefix_factory is not None
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     _loop_guard_config = loop_guard_config_from_env(
         bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
     )
@@ -10373,7 +10368,7 @@ def generate_mtpa(
 
     counter_start = _runtime_counter_snapshot(rt)
     rng = np.random.default_rng(seed)
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     policy = AdaptiveDepthPolicy(
         max_depth=max_depth,
         min_depth=min_depth,

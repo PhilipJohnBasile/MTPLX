@@ -888,7 +888,24 @@ def _model_draft_sampler_spec(
         from mtplx.draft_sampling import draft_sampler_spec_from_runtime_contract
 
         contract = _profile_scoped_model_runtime_contract(inspection, profile)
-        return draft_sampler_spec_from_runtime_contract(contract, fallback=fallback)
+        if not isinstance(contract, dict):
+            # A profile mismatch (artifact recommends another profile) hides
+            # the typed contract, but the recommended draft sampler is a
+            # property of the ARTIFACT, not of the profile match — exactly
+            # like _model_contract_depth above: keep resolving from the
+            # top-level mtplx_runtime.json metadata so serving --profile
+            # turbo against a sustained-stamped artifact does not silently
+            # drop the artifact's draft-sampler stamp.
+            contract = _artifact_runtime_metadata(inspection)
+        try:
+            return draft_sampler_spec_from_runtime_contract(
+                contract, fallback=fallback
+            )
+        except (TypeError, ValueError):
+            # Artifact metadata is fail-safe by contract; a malformed
+            # recommended_draft_sampler degrades to the profile default
+            # instead of failing the launch.
+            return fallback
     except ImportError:
         return fallback
 
@@ -1339,6 +1356,15 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         and getattr(args, "depth", None) in (None, 3)
     ):
         args.depth = draft_semantics.default
+    # Injected-default provenance (same contract as
+    # _apply_qwen36_35b_optimized_speed_defaults): the family draft values
+    # below must reach the daemon as the launch draft sampler even when the
+    # model contract carries no recommended_draft_sampler — and telemetry
+    # must be able to tell an injected default from an artifact stamp.
+    # _injected_default_flags feeds _explicit_draft_sampler_override, while
+    # --draft-sampler-source stays "default" (user-typed _cli_flags only),
+    # so injected values never pin and the family curve stays live.
+    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):
@@ -1353,13 +1379,17 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
             args.draft_temperature = QWEN3_8_DRAFT_TEMPERATURE
         else:
             args.draft_temperature = sampler["temperature"]
+        injected.add("draft-temperature")
     if "draft-top-p" not in cli_flags and getattr(args, "draft_top_p", None) is None:
         args.draft_top_p = sampler["top_p"]
+        injected.add("draft-top-p")
     if "draft-top-k" not in cli_flags and getattr(args, "draft_top_k", None) in (
         None,
         20,
     ):
         args.draft_top_k = sampler["top_k"]
+        injected.add("draft-top-k")
+    args._injected_default_flags = injected
     if (
         "chat-template-profile" not in cli_flags
         and model_family_from_inspection(
@@ -1393,12 +1423,19 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         args.top_k = sampler["top_k"]
     if getattr(args, "depth", None) in (None, 3):
         args.depth = draft_block_size
+    # Same injected-default provenance as the family block above: the
+    # gemma4 pair draft values are launch defaults, not user pins.
+    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if getattr(args, "draft_temperature", None) in (None, 0.6):
         args.draft_temperature = sampler["temperature"]
+        injected.add("draft-temperature")
     if getattr(args, "draft_top_p", None) is None:
         args.draft_top_p = sampler["top_p"]
+        injected.add("draft-top-p")
     if getattr(args, "draft_top_k", None) in (None, 20):
         args.draft_top_k = sampler["top_k"]
+        injected.add("draft-top-k")
+    args._injected_default_flags = injected
     if getattr(args, "chat_template_profile", None) == "local_qwen36":
         args.chat_template_profile = "tokenizer"
     if getattr(args, "adaptive_policy", None) == "expected_value":
@@ -1430,14 +1467,17 @@ def _explicit_draft_sampler_override(
 ) -> dict[str, Any] | None:
     """Return a user-requested draft sampler override, not an internal default.
 
-    Measured per-model defaults injected by `_apply_*_defaults` helpers count
-    as requested values (tracked via ``args._injected_default_flags``) so the
+    Provenance order: user-typed CLI flags always win; defaults injected by
+    `_apply_*_defaults` helpers (tracked via ``args._injected_default_flags``)
+    only FILL THE GAP when no contract/profile spec exists, so the
     benchmarked launch configuration still reaches the daemon when the model
-    contract carries no ``recommended_draft_sampler``.
+    contract carries no ``recommended_draft_sampler`` — and an injected
+    generic default can never clobber an artifact's stamped value.
     """
 
     cli_flags = set(getattr(args, "_cli_flags", set()) or set())
-    cli_flags |= set(getattr(args, "_injected_default_flags", set()) or set())
+    if base_sampler is None:
+        cli_flags |= set(getattr(args, "_injected_default_flags", set()) or set())
     if not any(flag in cli_flags for flag in _DRAFT_SAMPLER_FLAG_ATTRS):
         return None
     base = base_sampler or {

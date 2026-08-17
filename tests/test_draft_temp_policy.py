@@ -32,6 +32,7 @@ def _state(
 
 
 BASE = SamplerConfig(temperature=1.0, top_p=0.95, top_k=20)
+TARGET = SamplerConfig(temperature=0.6, top_p=0.95, top_k=20)
 
 
 def test_identity_curve_is_todays_behavior():
@@ -40,6 +41,7 @@ def test_identity_curve_is_todays_behavior():
         _state(draft_sampler=BASE, curve=None),
         request_draft_sampler=None,
         target_temperature=0.6,
+        target_sampler=TARGET,
         request_observability=observability,
     )
     assert resolved is BASE
@@ -55,6 +57,7 @@ def test_greedy_target_still_couples_to_greedy_draft(monkeypatch):
         _state(draft_sampler=BASE, curve=None),
         request_draft_sampler=None,
         target_temperature=0.0,
+        target_sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=1),
         request_observability=observability,
     )
     assert resolved.temperature == 0.0
@@ -72,6 +75,7 @@ def test_family_curve_maps_target_to_draft_temperature():
         _state(draft_sampler=BASE, curve=curve),
         request_draft_sampler=None,
         target_temperature=0.6,
+        target_sampler=TARGET,
         request_observability=observability,
     )
     assert resolved.temperature == pytest.approx(0.4)
@@ -100,6 +104,7 @@ def test_pinned_launch_disables_curve():
         _state(draft_sampler=BASE, pinned=True, curve=curve),
         request_draft_sampler=None,
         target_temperature=0.4,
+        target_sampler=TARGET,
         request_observability=observability,
     )
     assert resolved is BASE
@@ -119,6 +124,7 @@ def test_request_explicit_sampler_beats_curve_and_pin():
             ),
             request_draft_sampler=explicit,
             target_temperature=0.6,
+            target_sampler=TARGET,
             request_observability=observability,
         )
         assert resolved is explicit
@@ -132,22 +138,52 @@ def test_request_explicit_sampler_is_never_greedy_coupled(monkeypatch):
         _state(draft_sampler=BASE, curve=None),
         request_draft_sampler=explicit,
         target_temperature=0.0,
+        target_sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=1),
         request_observability={},
     )
     assert resolved is explicit
 
 
-def test_no_draft_sampler_resolves_none():
+def test_no_launch_draft_sampler_mirrors_target():
+    """No launch draft sampler: the engine drafts with the target sampler
+    (its None-draft mirror), so the resolver returns that SAME mirror and
+    stamps target_mirror — never a "none" stamp over a live draft."""
+
     observability: dict = {}
     resolved = _resolve_draft_sampler_for_request(
         _state(draft_sampler=None),
         request_draft_sampler=None,
         target_temperature=0.6,
+        target_sampler=TARGET,
         request_observability=observability,
     )
-    assert resolved is None
-    assert observability["draft_sampler_policy"] == "none"
-    assert observability["draft_sampler_resolved_temperature"] is None
+    assert resolved is TARGET
+    assert observability["draft_sampler_policy"] == "target_mirror"
+    assert observability["draft_sampler_policy_source"] == "target_mirror"
+    assert observability["draft_sampler_resolved_temperature"] == pytest.approx(
+        0.6
+    )
+
+
+def test_mirror_follows_the_request_not_a_pin():
+    """Mirror-not-pin: consecutive requests at different temperatures each
+    resolve to their OWN target sampler."""
+
+    state = _state(draft_sampler=None)
+    for temperature in (1.0, 0.6, 0.0, 1.0):
+        target = SamplerConfig(temperature=temperature, top_p=0.95, top_k=20)
+        observability: dict = {}
+        resolved = _resolve_draft_sampler_for_request(
+            state,
+            request_draft_sampler=None,
+            target_temperature=temperature,
+            target_sampler=target,
+            request_observability=observability,
+        )
+        assert resolved is target
+        assert observability[
+            "draft_sampler_resolved_temperature"
+        ] == pytest.approx(temperature)
 
 
 def test_serial_and_batch_resolution_agree():
@@ -156,16 +192,23 @@ def test_serial_and_batch_resolution_agree():
 
     curve = ((0.2, 0.1), (0.6, 0.4), (1.0, 1.0))
     for target in (0.0, 0.2, 0.4, 0.6, 0.8, 1.0, None):
+        target_sampler = SamplerConfig(
+            temperature=target if target is not None else 0.6,
+            top_p=0.95,
+            top_k=20,
+        )
         serial = _resolve_draft_sampler_for_request(
             _state(draft_sampler=BASE, curve=curve),
             request_draft_sampler=None,
             target_temperature=target,
+            target_sampler=target_sampler,
             request_observability={},
         )
         batch = _resolve_draft_sampler_for_request(
             _state(draft_sampler=BASE, curve=curve),
             request_draft_sampler=None,
             target_temperature=target,
+            target_sampler=target_sampler,
             request_observability={},
         )
         assert (

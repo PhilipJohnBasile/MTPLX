@@ -2190,9 +2190,8 @@ class ServerState:
         #   live-settings implicit temperature->draft mirror never pins.
         # - curve: measured per-family (target -> draft) temperature map;
         #   None means identity (today's static behavior).
-        self.draft_sampler_pinned = (
-            str(getattr(args, "draft_sampler_source", "default") or "default")
-            == "explicit"
+        self.draft_sampler_pinned = _launch_draft_sampler_pinned(
+            args, self.draft_sampler
         )
         from mtplx.backends.descriptors import draft_temperature_curve_for_model
 
@@ -5770,7 +5769,7 @@ def _request_should_add_pi_convergence_contract(
     if not tools_active:
         return False
     client_hint = str(
-        _request_client_hint_from_headers(headers, metadata) or ""
+        _request_client_hint_from_request(headers, metadata) or ""
     ).lower()
     if "pi" not in client_hint:
         return False
@@ -10920,7 +10919,15 @@ def _encode_rendered_chat_text(tokenizer: Any, text: str) -> list[int]:
 
 
 def _encode_plain_text(tokenizer: Any, text: str) -> list[int]:
-    return _coerce_token_ids(tokenizer.encode(text))
+    # Pinned, not tokenizer-config luck: a RAW /v1/completions prompt keeps
+    # the family's standard special tokens (BOS where the family uses one)
+    # — the HF default this call always relied on, now explicit. Rendered
+    # chat text pins False above (the template carries its own specials),
+    # and _count_text_tokens pins False (it counts template-interior text).
+    try:
+        return _coerce_token_ids(tokenizer.encode(text, add_special_tokens=True))
+    except TypeError:
+        return _coerce_token_ids(tokenizer.encode(text))
 
 
 _QWEN_ASSISTANT_THINK_PROMPT = "<|im_start|>assistant\n<think>\n"
@@ -12479,10 +12486,15 @@ def _request_draft_control_value(
     return None
 
 
-def _request_client_hint_from_headers(
+def _request_client_hint_from_request(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> str | None:
+    """Client hint derived from PER-REQUEST evidence only (header, body
+    metadata, user agent, surface-specific headers). This — never the
+    launch environment — is what client-policy decisions key on: a daemon
+    launched for one surface still serves anonymous OpenAI-API traffic,
+    and that traffic must keep OpenAI semantics (issue #241 class)."""
     user_agent = headers.get("user-agent") or headers.get("User-Agent") or ""
     user_agent_lower = user_agent.lower()
     explicit_client = (
@@ -12495,9 +12507,6 @@ def _request_client_hint_from_headers(
     )
     if explicit_client:
         return str(explicit_client).strip().lower().replace(" ", "_")
-    launch_client = os.getenv("MTPLX_CLIENT", "").strip()
-    if launch_client:
-        return launch_client.lower().replace(" ", "_")
     if "claude-cli" in user_agent_lower:
         # Claude Code sends "claude-cli/<version> (external, cli)".
         return "claude_code"
@@ -12507,6 +12516,30 @@ def _request_client_hint_from_headers(
         return "android_studio"
     if "ai-sdk" in user_agent_lower:
         return "ai_sdk_agent"
+    if any(
+        key.lower().startswith("x-openwebui-") for key in headers
+    ):
+        # Open WebUI sends no client header but its session headers are
+        # unmistakable per-request evidence.
+        return "openwebui"
+    return None
+
+
+def _request_client_hint_from_headers(
+    headers: Mapping[str, str],
+    metadata: Mapping[str, Any],
+) -> str | None:
+    """Observability client label: per-request evidence first, then the
+    MTPLX_CLIENT launch env var as a LAST-RESORT LABEL for headerless
+    traffic. The env var never participates in control ownership — a
+    launch surface label must not deny an anonymous benchmarker's
+    explicit sampler params (the silent temp:0 hijack)."""
+    hint = _request_client_hint_from_request(headers, metadata)
+    if hint:
+        return hint
+    launch_client = os.getenv("MTPLX_CLIENT", "").strip()
+    if launch_client:
+        return launch_client.lower().replace(" ", "_")
     return None
 
 
@@ -12533,7 +12566,9 @@ def _app_managed_client_hint(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> str | None:
-    hint = _request_client_hint_from_headers(headers, metadata)
+    # Control ownership requires REAL per-request evidence; the launch env
+    # label alone never classifies a request as managed (F1).
+    hint = _request_client_hint_from_request(headers, metadata)
     if not hint:
         return None
     normalized = str(hint).strip().lower().replace("-", "_").replace(" ", "_")
@@ -12692,7 +12727,7 @@ def _opencode_short_context_depth_policy(
     request_depth: int,
     prompt_tokens: int,
 ) -> tuple[int, dict[str, Any]]:
-    client_hint = _request_client_hint_from_headers(headers, metadata)
+    client_hint = _request_client_hint_from_request(headers, metadata)
     policy = {
         "active": False,
         "client": client_hint,
@@ -15659,6 +15694,17 @@ def _public_mtplx_stats(generated: dict[str, Any]) -> dict[str, Any]:
         reason = stats.get("repetition_stop_reason")
         if reason is not None:
             public["repetition_stop_reason"] = str(reason)
+    # Draft-sampler truth keys (same quiet-envelope idiom): stamped only
+    # when the resolution ran, so AR responses — which carry no draft
+    # telemetry at all — and legacy envelopes stay byte-stable.
+    draft_policy = stats.get("draft_sampler_policy")
+    if draft_policy is not None:
+        public["draft_sampler_policy"] = str(draft_policy)
+    if stats.get("draft_sampler_greedy_coupled"):
+        public["draft_sampler_greedy_coupled"] = True
+    draft_ownership = stats.get("draft_sampler_ownership")
+    if draft_ownership is not None:
+        public["draft_sampler_ownership"] = str(draft_ownership)
     postcommit = stats.get("session_postcommit_snapshot")
     if isinstance(postcommit, dict):
         public["session_postcommit_snapshot"] = {
@@ -15931,24 +15977,36 @@ def _opencode_default_sampler_override(
     )
 
 
-def _opencode_default_draft_sampler_for_request(
+def _opencode_launch_default_draft_policy(
     state: ServerState,
     request_observability: dict[str, Any],
-) -> SamplerConfig | None:
-    launched = getattr(state, "draft_sampler", None)
-    if not isinstance(launched, SamplerConfig):
-        return None
-    request_observability["draft_sampler_policy"] = "launch_default"
+) -> None:
+    """Stamp the launch_default draft ownership tier for the OpenCode
+    sampler normalization.
+
+    Server-injected values are NOT a client request: the draft sampler
+    stays owned by the launch policy, so per-request resolution (family
+    curve + greedy coupling) still runs instead of freezing a
+    "request_explicit" copy of the launch sampler. Only the tier and the
+    launched values are recorded here; the resolver stamps the truthful
+    resolution.
+    """
+    request_observability["draft_sampler_ownership"] = "launch_default"
     request_observability["draft_sampler_policy_reason"] = (
-        "OpenCode default target sampler normalized; keep the launched "
-        "model-contract proposal sampler for speculative decoding"
+        "OpenCode default target sampler normalized; draft resolution "
+        "stays launch-owned (family curve + greedy coupling still run)"
     )
-    request_observability["draft_sampler_policy_temperature"] = float(
-        launched.temperature
-    )
-    request_observability["draft_sampler_policy_top_p"] = float(launched.top_p)
-    request_observability["draft_sampler_policy_top_k"] = int(launched.top_k)
-    return launched
+    launched = getattr(state, "draft_sampler", None)
+    if isinstance(launched, SamplerConfig):
+        request_observability["draft_sampler_policy_temperature"] = float(
+            launched.temperature
+        )
+        request_observability["draft_sampler_policy_top_p"] = float(
+            launched.top_p
+        )
+        request_observability["draft_sampler_policy_top_k"] = int(
+            launched.top_k
+        )
 
 
 def _policy_fingerprint(
@@ -16039,7 +16097,7 @@ def _session_cache_scope_for_request(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> str:
-    client_hint = str(_request_client_hint_from_headers(headers, metadata) or "")
+    client_hint = str(_request_client_hint_from_request(headers, metadata) or "")
     if "opencode" not in client_hint:
         return "stable"
     launch_id = str(getattr(state.args, "app_launch_id", "") or "").strip()
@@ -16053,7 +16111,7 @@ def _is_opencode_client(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> bool:
-    client_hint = str(_request_client_hint_from_headers(headers, metadata) or "")
+    client_hint = str(_request_client_hint_from_request(headers, metadata) or "")
     return "opencode" in client_hint
 
 
@@ -16062,7 +16120,7 @@ def _is_hermes_client(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> bool:
-    client_hint = str(_request_client_hint_from_headers(headers, metadata) or "")
+    client_hint = str(_request_client_hint_from_request(headers, metadata) or "")
     return "hermes" in client_hint
 
 
@@ -16091,7 +16149,7 @@ def _agent_tool_contract_client_hint(
     headers: Mapping[str, str],
     metadata: Mapping[str, Any],
 ) -> str | None:
-    client_hint = str(_request_client_hint_from_headers(headers, metadata) or "")
+    client_hint = str(_request_client_hint_from_request(headers, metadata) or "")
     for marker in _TOOL_CONTRACT_AGENT_CLIENT_HINTS:
         if marker in client_hint:
             return marker
@@ -18247,6 +18305,38 @@ def _build_mtp_batch_session_hooks(
     return session_restore, session_commit
 
 
+def _sampler_cohort_triple(sampler: Any) -> tuple[float, float, int]:
+    return (
+        float(getattr(sampler, "temperature", 0.0)),
+        float(getattr(sampler, "top_p", 0.0)),
+        int(getattr(sampler, "top_k", 0)),
+    )
+
+
+def _mtp_batch_compatibility_key(
+    lane: Any,
+    omit_bonus: bool,
+    sampler: Any,
+    draft_sampler: Any,
+) -> tuple[Any, ...]:
+    """Cohort admission key for the fixed-width mtp_batch lane.
+
+    One cohort binds one TARGET sampler triple and one DRAFT sampler
+    triple: requests resolved to different draft samplers must not share a
+    cohort, and — because the resolved draft can coincide while the target
+    sampling differs (e.g. greedy-coupled temp-0 next to an explicit
+    temp-1 draft) — the target triple is part of the key in its own right,
+    in both admission directions.
+    """
+    return (
+        str(getattr(lane, "route_id", "")),
+        bool(omit_bonus),
+        "cold_full_prompt",
+        _sampler_cohort_triple(sampler),
+        _sampler_cohort_triple(draft_sampler),
+    )
+
+
 def _run_mtp_batch_generation_dispatched(
     state: ServerState,
     prompt_ids: list[int],
@@ -18322,10 +18412,9 @@ def _run_mtp_batch_generation_dispatched(
         state,
         request_draft_sampler=kwargs.get("draft_sampler"),
         target_temperature=kwargs.get("temperature"),
+        target_sampler=sampler,
         request_observability=request_observability,
     )
-    if draft_sampler is None:
-        draft_sampler = sampler
     cancel_event = kwargs.get("cancel_event") or Event()
     omit_bonus = bool(getattr(state, "mtp_batch_omit_speculative_bonus", False))
     job = MTPBatchJob(
@@ -18338,18 +18427,8 @@ def _run_mtp_batch_generation_dispatched(
         stop_token_ids=_default_stop_tokens(state.runtime.tokenizer),
         token_callback=kwargs.get("token_callback"),
         prefill_callback=kwargs.get("prefill_callback"),
-        compatibility_key=(
-            str(getattr(lane, "route_id", "")),
-            omit_bonus,
-            "cold_full_prompt",
-            # Dynamic draft temperature: one cohort binds one draft sampler
-            # pair, so requests resolved to different draft samplers must
-            # not share a cohort.
-            (
-                float(getattr(draft_sampler, "temperature", 0.0)),
-                float(getattr(draft_sampler, "top_p", 0.0)),
-                int(getattr(draft_sampler, "top_k", 0)),
-            ),
+        compatibility_key=_mtp_batch_compatibility_key(
+            lane, omit_bonus, sampler, draft_sampler
         ),
         generation_limits=generation_limits,
         solo_runner=lambda _job: _run_generation(state, prompt_ids, **solo_kwargs),
@@ -18568,7 +18647,20 @@ async def _prompt_scoring_response(
 
     scored = await asyncio.to_thread(_score_under_lock)
 
-    token_strings = [tokenizer.decode([int(token)]) for token in prompt_ids]
+    # Single-token decode memo: the arrays below need per-token strings
+    # (batch decode may join pieces differently, breaking exact offsets),
+    # but positions x top_k naive decode calls reach ~65k at long context.
+    # Each UNIQUE id decodes exactly once; the decomposition is unchanged.
+    _token_text_by_id: dict[int, str] = {}
+
+    def _token_text(token_id: int) -> str:
+        cached = _token_text_by_id.get(token_id)
+        if cached is None:
+            cached = tokenizer.decode([token_id])
+            _token_text_by_id[token_id] = cached
+        return cached
+
+    token_strings = [_token_text(int(token)) for token in prompt_ids]
     # text and text_offset share one per-token decomposition so
     # text[text_offset[i] : text_offset[i] + len(tokens[i])] == tokens[i]
     # exactly, ASCII or not (batch decode may join pieces differently).
@@ -18588,7 +18680,7 @@ async def _prompt_scoring_response(
         row: dict[str, float] = {}
         if top_k > 0:
             for token_id, logprob in entries:
-                token_text = tokenizer.decode([int(token_id)])
+                token_text = _token_text(int(token_id))
                 # Distinct ids can decode to the same display string; keep
                 # the highest logprob (entries arrive sorted descending).
                 if token_text not in row:
@@ -18883,11 +18975,45 @@ def _couple_draft_sampler_to_greedy_target(
     return replace(draft_sampler, temperature=0.0)
 
 
+def _launch_draft_sampler_pinned(args: Any, draft_sampler: Any) -> bool:
+    """Launch provenance for the draft sampler pin.
+
+    ``--draft-sampler-source explicit`` pins (user-typed launcher flag).
+    When the launcher did not stamp a source at all, a directly passed
+    ``--draft-temperature`` is an operator-typed flag and pins like any
+    other explicit flag — mtplx serve/start always stamp the source, so
+    only direct daemon launches take this branch.
+    """
+    source = getattr(args, "draft_sampler_source", None)
+    return str(source or "") == "explicit" or (
+        source is None and draft_sampler is not None
+    )
+
+
+def _env_draft_temperature_scale() -> float | None:
+    """Validated MTPLX_DRAFT_TEMPERATURE_SCALE, or None when inert.
+
+    Same guards the engine-side helper historically applied: unset/blank,
+    unparsable, and non-positive values are ignored.
+    """
+    raw = os.environ.get("MTPLX_DRAFT_TEMPERATURE_SCALE")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        scale = float(raw)
+    except ValueError:
+        return None
+    if scale <= 0:
+        return None
+    return scale
+
+
 def _resolve_draft_sampler_for_request(
     state: "ServerState",
     *,
     request_draft_sampler: Any | None,
     target_temperature: float | None,
+    target_sampler: Any,
     request_observability: dict[str, Any] | None = None,
 ) -> Any:
     """The single per-request draft-sampler resolution, serial and batch.
@@ -18896,18 +19022,30 @@ def _resolve_draft_sampler_for_request(
     derives p and q independently, so any draft temperature preserves the
     output marginal — this only moves speed):
 
-    1. request_explicit — a request-supplied draft sampler is honored as-is.
+    1. request_explicit — a request-supplied draft sampler is honored as-is
+       (no curve, no greedy coupling).
     2. pinned — a user-typed launch flag or explicit live-settings draft
        value freezes the launch sampler and disables the family curve.
     3. family_curve — the measured per-family curve maps the effective
        target temperature to a draft temperature (identity when no curve
        has been stamped).
-    4. greedy coupling — target temp 0 forces greedy drafts (the curve's
+    4. target_mirror — no launch draft sampler: the draft mirrors the
+       effective target sampler. This is what the engine does with a None
+       draft sampler; resolving the mirror HERE and passing it explicitly
+       keeps the stamped policy equal to engine reality instead of
+       reporting "none" over a target-temperature draft.
+    5. greedy coupling — target temp 0 forces greedy drafts (the curve's
        temp-0 row; keeps its own env off-switch).
 
+    MTPLX_DRAFT_TEMPERATURE_SCALE (diagnostic sweep knob) is applied HERE,
+    after coupling and before the telemetry stamp, so the stamped number
+    IS the effective draft temperature. The engine never rescales a
+    server-resolved sampler (see generation._effective_draft_sampler).
+
     Telemetry: draft_sampler_policy, draft_sampler_policy_source,
-    draft_sampler_resolved_temperature in request observability, so a
-    desync is visible per request instead of silent.
+    draft_sampler_resolved_temperature (and draft_sampler_temperature_scale
+    when the knob rescaled) in request observability, so a desync is
+    visible per request instead of silent.
     """
 
     if request_draft_sampler is not None:
@@ -18917,39 +19055,52 @@ def _resolve_draft_sampler_for_request(
     else:
         base = getattr(state, "draft_sampler", None)
         if base is None:
-            if request_observability is not None:
-                request_observability["draft_sampler_policy"] = "none"
-                request_observability["draft_sampler_policy_source"] = "none"
-                request_observability["draft_sampler_resolved_temperature"] = None
-            return None
-        pinned = bool(getattr(state, "draft_sampler_pinned", False))
-        curve = getattr(state, "draft_temperature_curve", None)
-        if pinned or not curve:
-            resolved = base
-            source = "launch_pinned" if pinned else "family_default"
-            policy = "static"
+            resolved = target_sampler
+            source = "target_mirror"
+            policy = "target_mirror"
         else:
-            from mtplx.draft_sampling import resolve_draft_temperature
-
-            draft_temperature = resolve_draft_temperature(
-                curve,
-                target_temperature,
-                default=float(getattr(base, "temperature", 0.0)),
-            )
-            if float(draft_temperature) == float(
-                getattr(base, "temperature", 0.0)
-            ):
+            pinned = bool(getattr(state, "draft_sampler_pinned", False))
+            curve = getattr(state, "draft_temperature_curve", None)
+            if pinned or not curve:
                 resolved = base
+                source = "launch_pinned" if pinned else "family_default"
+                policy = "static"
             else:
-                resolved = replace(base, temperature=float(draft_temperature))
-            source = "family_curve"
-            policy = "curve"
+                from mtplx.draft_sampling import resolve_draft_temperature
+
+                draft_temperature = resolve_draft_temperature(
+                    curve,
+                    target_temperature,
+                    default=float(getattr(base, "temperature", 0.0)),
+                )
+                if float(draft_temperature) == float(
+                    getattr(base, "temperature", 0.0)
+                ):
+                    resolved = base
+                else:
+                    resolved = replace(base, temperature=float(draft_temperature))
+                source = "family_curve"
+                policy = "curve"
     coupled = _couple_draft_sampler_to_greedy_target(
         resolved,
         explicit_draft_sampler=request_draft_sampler is not None,
         target_temperature=target_temperature,
         request_observability=request_observability,
     )
+    effective = coupled
+    scale = _env_draft_temperature_scale()
+    if (
+        scale is not None
+        and effective is not None
+        and float(getattr(effective, "temperature", 0.0)) > 0.0
+    ):
+        effective = replace(
+            effective, temperature=float(effective.temperature) * scale
+        )
+        if request_observability is not None:
+            request_observability["draft_sampler_temperature_scale"] = float(
+                scale
+            )
     if request_observability is not None:
         request_observability["draft_sampler_policy"] = policy
         request_observability["draft_sampler_policy_source"] = (
@@ -18958,11 +19109,11 @@ def _resolve_draft_sampler_for_request(
             else source
         )
         request_observability["draft_sampler_resolved_temperature"] = (
-            float(getattr(coupled, "temperature", 0.0))
-            if coupled is not None
+            float(getattr(effective, "temperature", 0.0))
+            if effective is not None
             else None
         )
-    return coupled
+    return effective
 
 
 def _run_generation(
@@ -19020,15 +19171,22 @@ def _run_generation(
         prompt_ids=prompt_ids,
         request_observability=request_observability,
     )
-    effective_draft_sampler = _resolve_draft_sampler_for_request(
-        state,
-        request_draft_sampler=draft_sampler,
-        target_temperature=temperature,
-        request_observability=request_observability,
-    )
     effective_mode = _normalize_generation_mode(
         generation_mode,
         default=getattr(state.args, "generation_mode", "mtp"),
+    )
+    # AR responses carry NO draft-sampler telemetry (absent, not
+    # null-with-value): there is no draft, so resolution never runs (F8).
+    effective_draft_sampler = (
+        None
+        if effective_mode == "ar"
+        else _resolve_draft_sampler_for_request(
+            state,
+            request_draft_sampler=draft_sampler,
+            target_temperature=temperature,
+            target_sampler=sampler,
+            request_observability=request_observability,
+        )
     )
     requested_depth = (
         0
@@ -19459,6 +19617,12 @@ def _run_generation(
                     session_keep_live_ref=session_keep_live_ref,
                 )
             )
+        if effective_mode == "ar":
+            # No draft ran: request-policy stamps (e.g. the OpenCode
+            # launch_default tier) must not read as draft stats on an AR
+            # response (F8 — absent, not null-with-value).
+            for key in [k for k in envelope if k.startswith("draft_sampler")]:
+                del envelope[key]
         cleanup = _auto_clear_mlx_cache_after_completed_request(
             state,
             session_id=session_id,
@@ -19470,15 +19634,16 @@ def _run_generation(
         stats["generation_mode"] = effective_mode
         # Desync receipts (dynamic draft temperature): the resolved draft
         # sampler is visible per response, so a drifted draft is provable
-        # from mtplx_stats alone.
-        stats["draft_sampler_resolved_temperature"] = (
-            float(getattr(effective_draft_sampler, "temperature", 0.0))
-            if effective_mode != "ar" and effective_draft_sampler is not None
-            else None
-        )
-        stats["draft_sampler_policy_source"] = (
-            (request_observability or {}).get("draft_sampler_policy_source")
-        )
+        # from mtplx_stats alone. AR responses carry no draft keys at all.
+        if effective_mode != "ar" and effective_draft_sampler is not None:
+            stats["draft_sampler_resolved_temperature"] = float(
+                getattr(effective_draft_sampler, "temperature", 0.0)
+            )
+            policy_source = (request_observability or {}).get(
+                "draft_sampler_policy_source"
+            )
+            if policy_source is not None:
+                stats["draft_sampler_policy_source"] = policy_source
         stats.update(envelope)
         stats.update(_generation_truth_stats(state, effective_mode))
         if effective_mode == "ar":
@@ -19504,6 +19669,8 @@ def _run_generation(
             stats["drafted_by_depth"] = []
             stats["mean_accept_probability_by_depth"] = []
             stats["draft_time_s"] = 0.0
+            for key in [k for k in stats if k.startswith("draft_sampler")]:
+                del stats[key]
         stats["server_elapsed_s"] = elapsed_s
         stats["server_tok_s"] = server_tok_s
         stats["server_seed"] = generation_seed
@@ -19511,6 +19678,18 @@ def _run_generation(
         stats["server_blank_retries"] = attempt
         stats["server_blank_retry_suppressed"] = bool(
             response_is_streaming and blank_retry_budget
+        )
+        # The public stats contract declares finish_reason (additive-only):
+        # stamp it at generation time so every stop path — stream and
+        # non-stream, chat and messages — actually carries it instead of
+        # only the envelope builders that re-nest it.
+        stats["finish_reason"] = (
+            out.final_state.finish_reason
+            if out.final_state is not None
+            # The serial AR lane has no final_state; its GenerationOutput
+            # still reports length-vs-stop correctly — don't flatten a
+            # max_tokens truncation into "stop".
+            else (getattr(out, "finish_reason", None) or "stop")
         )
         _record_request_metrics(state, dict(envelope))
         state.last_request_at = time.time()
@@ -19526,14 +19705,7 @@ def _run_generation(
             "tok_s": stats.get("decode_tok_s") or server_tok_s,
             "end_to_end_tok_s": server_tok_s,
             "_final_state": final_state,
-            "finish_reason": (
-                out.final_state.finish_reason
-                if out.final_state is not None
-                # The serial AR lane has no final_state; its GenerationOutput
-                # still reports length-vs-stop correctly — don't flatten a
-                # max_tokens truncation into "stop".
-                else (getattr(out, "finish_reason", None) or "stop")
-            ),
+            "finish_reason": stats["finish_reason"],
         }
         if seed_is_explicit or out.text.strip():
             break
@@ -27405,6 +27577,9 @@ def create_app(state: ServerState) -> FastAPI:
                                 generated["text"] = streamed_history_content()
                                 generated["finish_reason"] = "stop"
                                 stats = generated.setdefault("stats", {})
+                                # mtplx_stats.finish_reason mirrors the
+                                # response-level rewrite (truth contract).
+                                stats["finish_reason"] = "stop"
                                 stats["stop_sequence_hit"] = True
                                 stats["stop_sequence_matched"] = (
                                     stop_monitor.matched_stop
@@ -27690,6 +27865,9 @@ def create_app(state: ServerState) -> FastAPI:
                                     stats["tool_calls_truncated_by_length"] = True
                                 else:
                                     generated["finish_reason"] = "tool_calls"
+                                    # mtplx_stats.finish_reason mirrors the
+                                    # response-level rewrite (truth contract).
+                                    stats["finish_reason"] = "tool_calls"
                             elif (
                                 extraction is not None
                                 and extraction.status == "malformed_as_content"
@@ -28244,6 +28422,9 @@ def create_app(state: ServerState) -> FastAPI:
             else:
                 generated["finish_reason"] = "tool_calls"
                 finish_reason = "tool_calls"
+            # mtplx_stats.finish_reason mirrors the response-level value
+            # (truth contract).
+            generated["stats"]["finish_reason"] = finish_reason
             generated["stats"]["tool_parse_success"] = True
             generated["stats"]["tool_call_count"] = len(tool_calls)
             _record_tool_parse_event(
@@ -28326,6 +28507,9 @@ def create_app(state: ServerState) -> FastAPI:
                 if matched_stop is not None:
                     display_text = trimmed_text
                     generated["finish_reason"] = "stop"
+                    # mtplx_stats.finish_reason mirrors the response-level
+                    # rewrite (truth contract).
+                    generated["stats"]["finish_reason"] = "stop"
                     generated["stats"]["stop_sequence_hit"] = True
                     generated["stats"]["stop_sequence_matched"] = matched_stop
             _merge_final_bridge_stats_into_latest_metrics(state, generated["stats"])
@@ -29802,12 +29986,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--draft-sampler-source",
         choices=["explicit", "default"],
-        default="default",
+        default=None,
         help=(
             "Provenance of the launch draft sampler: 'explicit' (user-typed "
             "flag; pins the draft sampler and disables the per-family "
             "dynamic draft-temperature curve) or 'default' (injected/model "
-            "default; treated as the curve anchor)."
+            "default; treated as the curve anchor). When omitted, a "
+            "directly passed --draft-temperature counts as explicit — the "
+            "launcher (mtplx serve/start) always stamps this flag, so an "
+            "operator typing draft flags at the daemon gets the same "
+            "explicit-flag provenance as everywhere else."
         ),
     )
     parser.add_argument(

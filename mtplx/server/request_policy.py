@@ -25,7 +25,7 @@ Contract notes:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from mtplx.constants import DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P
@@ -223,7 +223,7 @@ def _resolve_sampler(
     ]
     if ignored_sampler_fields:
         observability["client_sampler_fields_ignored"] = ignored_sampler_fields
-    request_draft_sampler = srv._opencode_default_sampler_override(
+    target_sampler_override = srv._opencode_default_sampler_override(
         messages=messages_for_generation,
         tools_active=tools_active,
         request_temperature=request.temperature,
@@ -234,17 +234,17 @@ def _resolve_sampler(
         default_top_p=getattr(state.args, "top_p", DEFAULT_TOP_P),
         default_top_k=getattr(state.args, "top_k", DEFAULT_TOP_K),
     )
-    if request_draft_sampler is not None:
-        target_sampler_override = request_draft_sampler
+    # The OpenCode normalization overrides the TARGET sampler only. The
+    # draft sampler is deliberately NOT injected as a request value:
+    # server-injected values are launch_default ownership, not
+    # request_explicit, so the per-request draft resolution (family curve +
+    # greedy coupling) still runs against the launch policy (F9).
+    request_draft_sampler: SamplerConfig | None = None
+    if target_sampler_override is not None:
         sampler_temperature = target_sampler_override.temperature
         sampler_top_p = target_sampler_override.top_p
         sampler_top_k = target_sampler_override.top_k
-        launch_draft_sampler = srv._opencode_default_draft_sampler_for_request(
-            state,
-            observability,
-        )
-        request_draft_sampler = launch_draft_sampler or target_sampler_override
-        observability["draft_sampler_override"] = asdict(request_draft_sampler)
+        srv._opencode_launch_default_draft_policy(state, observability)
     if sampler_temperature is None:
         default_temperature = getattr(state.args, "temperature", None)
         sampler_temperature = (

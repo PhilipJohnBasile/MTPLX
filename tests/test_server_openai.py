@@ -8566,13 +8566,13 @@ def test_opencode_chitchat_preserves_agent_tools_without_direct_reply_contract(
     assert stats["effective_temperature"] == 0.6
     assert stats["effective_top_p"] == 0.95
     assert stats["effective_top_k"] == 20
-    assert stats["draft_sampler_policy"] == "launch_default"
+    # F9: server-injected sampler normalization is launch_default OWNERSHIP,
+    # not a request-explicit draft value — the launched sampler stays on the
+    # server state and per-request resolution (curve + greedy coupling)
+    # still runs inside _run_generation.
+    assert stats["draft_sampler_ownership"] == "launch_default"
     assert stats["draft_sampler_policy_temperature"] == 0.7
-    assert seen["draft_sampler"] == openai.SamplerConfig(
-        temperature=0.7,
-        top_p=0.95,
-        top_k=20,
-    )
+    assert seen["draft_sampler"] is None
 
 
 def test_chat_tools_add_no_tool_contract_when_non_chitchat_disables_tools(monkeypatch):
@@ -10257,6 +10257,9 @@ def test_chat_tool_xml_returns_openai_tool_calls_nonstream(monkeypatch):
     payload = response.json()
     choice = payload["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
+    # mtplx_stats.finish_reason mirrors the response-level rewrite: a stat
+    # that disagrees with the response is a lie.
+    assert payload["mtplx_stats"]["finish_reason"] == "tool_calls"
     assert choice["message"]["content"] is None
     assert choice["message"]["tool_calls"][0]["function"] == {
         "name": "session_status",
