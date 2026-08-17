@@ -82,6 +82,12 @@ public struct DetectedHardware: Equatable, Sendable {
             switch gen {
             case "m1", "m2": return .legacyApple
             case "m3", "m4", "m5": return .modernApple
+            // `mtplx hardware inspect` reports Intel Macs as the literal
+            // generation string "intel" (classify_apple_silicon_generation,
+            // mtplx/hardware.py). Without this case they landed in
+            // `.unknown` — treated as modernApple — and were recommended
+            // Q4 models the tier gating exists to warn about.
+            case "intel": return .intel
             default: return .unknown
             }
         }

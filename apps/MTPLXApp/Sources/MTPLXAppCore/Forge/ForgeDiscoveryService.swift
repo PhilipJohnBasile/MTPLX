@@ -49,11 +49,13 @@ public enum ForgeDiscoveryError: Error, Equatable, Sendable {
 // MARK: - ForgeDiscoveryService
 //
 // Wraps `mtplx forge discover --json [--query …] [--limit N]
-// [--offset N]`. Backend queries HF's list_models endpoint filtered to
-// repo names matching `*-MTPLX-*` and sorted by `downloads`
-// descending. NO curated allow-list — the brand-name filter is
-// sufficient quality signal because forging brands the artifact
-// `<source-base>-MTPLX-<role>`.
+// [--offset N]`. Backend queries HF's list_models endpoint sorted by
+// `downloads` descending and keeps every repo whose NAME contains
+// "MTPLX" (any case, any position — Forge brands `<base>-MTPLX`, and
+// community naming varies placement and case freely). NO curated
+// allow-list and no architecture gate — the brand name is the
+// discovery signal; compatibility is still checked where it always
+// was, at install/load time.
 //
 // On HF-unreachable conditions (DNS down, captive portal, etc.) the
 // backend exits with a recognisable error string and we surface
@@ -74,7 +76,13 @@ public struct ForgeDiscoveryService: Sendable {
         public var limit: Int
         public var offset: Int
 
-        public init(search: String? = nil, limit: Int = 30, offset: Int = 0) {
+        /// Default limit = the backend's per-call cap. The wall has no
+        /// pagination affordance, so this IS the wall: at 30 the fresh
+        /// low-download models (the 3.8 FP16 siblings on drop day, most
+        /// new community forges) ranked below the fold and simply never
+        /// existed for the user. 100 covers the live MTPLX result set
+        /// (109 repos, 2026-08-16) minus a single-digit tail.
+        public init(search: String? = nil, limit: Int = 100, offset: Int = 0) {
             self.search = search
             self.limit = limit
             self.offset = offset

@@ -851,14 +851,40 @@ def _cmd_discover(args: Any) -> int:
     return 0
 
 
+# Downloads-sorted rows scanned per discover call. Bounded so a broad
+# --query cannot walk the whole hub; ~10x the full MTPLX result set
+# (109 repos for search=MTPLX, measured 2026-08-16).
+_DISCOVER_SCAN_LIMIT = 1000
+
+
+def is_discoverable_repo(repo: str) -> bool:
+    """Discover keeps every repo whose *name* carries the MTPLX brand —
+    any case, any position ("…-MTPLX", "MTPLX-…", "…-mtplx-4bit").
+
+    The old ``"-MTPLX-" in repo`` check was a fossil of the retired
+    ``<base>-MTPLX-<role>`` branding: Forge now brands artifacts
+    ``<base>-MTPLX`` (suffix), so the dash-bounded case-sensitive match
+    dropped the app's own output plus every lowercase/prefix community
+    variant (36 of the 109 live MTPLX repos on 2026-08-16, including
+    the #2-by-downloads one).
+    """
+    return "mtplx" in repo.rsplit("/", 1)[-1].lower()
+
+
 def discover_models(*, query: str, limit: int, offset: int = 0) -> list[dict[str, Any]]:
     api = _make_hf_api()
-    # huggingface_hub versions differ on offset support, so fetch enough rows and slice locally.
+    # Sorted by downloads descending; the name filter runs while we
+    # iterate, so rows keep coming until `limit` cards survive it. The
+    # old shape sliced at HF first (`limit + offset` rows) and filtered
+    # second, so every filtered row shrank the page and any repo ranked
+    # below the slice — exactly the fresh, low-download models — could
+    # never surface. huggingface_hub versions differ on offset support,
+    # so offset still pages locally over the matching rows.
     list_kwargs = {
         "search": query or "MTPLX",
         "sort": "downloads",
         "direction": -1,
-        "limit": max(limit + offset, limit),
+        "limit": _DISCOVER_SCAN_LIMIT,
     }
     try:
         models = api.list_models(**list_kwargs)
@@ -868,23 +894,23 @@ def discover_models(*, query: str, limit: int, offset: int = 0) -> list[dict[str
         list_kwargs.pop("direction", None)
         models = api.list_models(**list_kwargs)
     cards: list[dict[str, Any]] = []
+    matched = 0
     for model in models:
-        repo = (
+        repo = str(
             getattr(model, "modelId", None)
             or getattr(model, "id", None)
             or getattr(model, "model_id", None)
             or ""
         )
-        repo = str(repo)
-        if "-MTPLX-" not in repo:
+        if not is_discoverable_repo(repo):
             continue
-        if len(cards) < offset:
-            cards.append({"_skip": True})
+        matched += 1
+        if matched <= offset:
             continue
         cards.append(_discover_card(model, repo))
-        if len([card for card in cards if not card.get("_skip")]) >= limit:
+        if len(cards) >= limit:
             break
-    return [card for card in cards if not card.get("_skip")]
+    return cards
 
 
 def _discover_card(model: Any, repo: str) -> dict[str, Any]:
