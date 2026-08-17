@@ -47,8 +47,10 @@ def test_committed_assistant_turns_parses_interiors_and_gates():
     assert len(turns) == 2
     assert turns[0][0] == "I should call the tool."
     assert turns[0][1] == ""  # tool-call markup excluded from the gate
+    assert turns[0][2] == '<tool_call>{"name": "glob"}</tool_call>'
     assert turns[1][0] == "Now answer plainly."
     assert turns[1][1] == "The answer is 42."
+    assert turns[1][2] == ""  # no tool markup on the plain turn
 
 
 def test_committed_assistant_turns_handles_missing_think():
@@ -57,7 +59,7 @@ def test_committed_assistant_turns_handles_missing_think():
         "<|im_start|>assistant\nplain, no think.<|im_end|>\n"
     )
     turns = oa._committed_assistant_turns(text)
-    assert turns == [(None, "plain, no think.")]
+    assert turns == [(None, "plain, no think.", "")]
 
 
 def _fake_state(committed_ids, committed_text, session_id="s1"):

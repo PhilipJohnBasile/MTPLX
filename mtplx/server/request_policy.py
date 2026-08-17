@@ -690,7 +690,14 @@ def resolve_request_policy(
         allow_client_controls=client_controls_allowed,
     )
     transient_suffix_contract_active = bool(
-        read_only_force_answer_contract_active or pi_convergence_contract_active
+        read_only_force_answer_contract_active
+        or pi_convergence_contract_active
+        # Suffix contracts since audit F11 #6: they no longer rewrite msg0,
+        # so entries banked WITHOUT the contract stay byte-compatible
+        # prefixes and restore/postcommit must use the contract-free
+        # fingerprint on the flip turn (same mechanism as Pi convergence).
+        or no_tools_contract_active
+        or post_tool_answer_contract_active
     )
 
     observability["request_client_hint"] = srv._request_client_hint_from_headers(

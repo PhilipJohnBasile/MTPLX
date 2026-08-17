@@ -114,6 +114,7 @@ from mtplx.gemma4_pair import (
 from mtplx.model_scheduler import ModelWorkScheduler
 from mtplx.reasoning_effort import (
     REASONING_EFFORT_CHOICES,
+    REASONING_EFFORT_LEVELS,
     normalize_reasoning_effort as _normalize_reasoning_effort,
 )
 from mtplx.retrieval import RetrievalError, RetrievalTrustError
@@ -5615,15 +5616,47 @@ def _forced_tool_contract_clause(tool_choice: Any) -> str:
     return ""
 
 
+_DATE_LINE_IDLE_REFRESH_S = 15 * 60.0
+_DATE_LINE_PIN_LOCK = threading.Lock()
+_DATE_LINE_PIN: dict[str, Any] = {"day": None, "last_use_monotonic": None}
+
+
+def _pinned_render_day() -> str:
+    # Burst-pinned wall-clock day (audit F11 P2 date-pin). The date line
+    # below is part of the rendered system prompt, so the old "fresh
+    # strftime every call" flipped msg0's bytes at local midnight and every
+    # LIVE session re-prefilled its whole transcript cold mid-conversation.
+    # The day now advances only across an idle boundary: while requests
+    # keep arriving (foreground encodes AND their postcommit re-renders,
+    # which share this module-level pin across threads) the pinned day
+    # holds, and after _DATE_LINE_IDLE_REFRESH_S without any date-line use
+    # the next request re-pins to today. Staleness is bounded by continuous
+    # activity — which is exactly the window where changing the date would
+    # have forced the re-prefill this pin exists to prevent. Fresh daemons
+    # always start on today's date.
+    now = time.monotonic()
+    with _DATE_LINE_PIN_LOCK:
+        day = _DATE_LINE_PIN["day"]
+        last_use = _DATE_LINE_PIN["last_use_monotonic"]
+        if day is None or (
+            last_use is not None and (now - last_use) > _DATE_LINE_IDLE_REFRESH_S
+        ):
+            day = time.strftime("%B %d, %Y")
+            _DATE_LINE_PIN["day"] = day
+        _DATE_LINE_PIN["last_use_monotonic"] = now
+        return str(day)
+
+
 def _current_date_line() -> str:
-    # Local wall-clock date, day granularity. Injected into the tool
-    # and post-tool contracts so the model stops anchoring "latest
-    # version" reasoning (and search queries) to its training cutoff —
-    # without it, queries came out as "latest X 2024 2025" and final
-    # answers dismissed fresher tool results (2026-07-03 founder
-    # report). Day granularity keeps prompt bytes stable within a day,
-    # so warm-prefix session reuse is unaffected until midnight.
-    return f"Today's date is {time.strftime('%B %d, %Y')}."
+    # Local wall-clock date, day granularity, burst-pinned (see
+    # _pinned_render_day). Injected into the tool and post-tool contracts
+    # so the model stops anchoring "latest version" reasoning (and search
+    # queries) to its training cutoff — without it, queries came out as
+    # "latest X 2024 2025" and final answers dismissed fresher tool results
+    # (2026-07-03 founder report). Day granularity keeps prompt bytes
+    # stable within a day, and the burst pin keeps them stable across
+    # midnight for sessions that are mid-conversation.
+    return f"Today's date is {_pinned_render_day()}."
 
 
 def _mtplx_tool_contract_text(
@@ -5677,20 +5710,23 @@ def _mtplx_no_tool_contract_text() -> str:
 def _with_mtplx_no_tool_contract(
     messages: list[ChatMessage],
 ) -> list[ChatMessage]:
+    # PREFIX STABILITY (audit F11 #6): this contract used to be spliced into
+    # the FIRST system message. It flips per turn (tools available on one
+    # request, absent on the next), so msg0's bytes changed under the
+    # session bank and every flip re-prefilled the whole transcript cold —
+    # the same defect class the Pi convergence contract fixed on 2026-07-04.
+    # The contract now travels as a pure suffix: one appended user message,
+    # which is also positionally stronger (closest to generation).
     contract = _mtplx_no_tool_contract_text()
     if not messages:
-        return [ChatMessage(role="system", content=contract)]
+        return [ChatMessage(role="user", content=contract)]
     updated = list(messages)
-    first = updated[0]
-    if str(first.role).lower() == "system":
-        content = str(first.content or "")
-        if _MTPLX_NO_TOOL_CONTRACT_SENTINEL not in content:
-            updated[0] = _copy_chat_message(
-                first,
-                content=(f"{content.rstrip()}\n\n{contract}" if content else contract),
-            )
-        return updated
-    return [ChatMessage(role="system", content=contract), *updated]
+    if not any(
+        _MTPLX_NO_TOOL_CONTRACT_SENTINEL in str(message.content or "")
+        for message in updated
+    ):
+        updated.append(ChatMessage(role="user", content=contract))
+    return updated
 
 
 def _mtplx_post_tool_answer_contract_text() -> str:
@@ -5725,20 +5761,20 @@ def _mtplx_post_tool_answer_contract_text() -> str:
 def _with_mtplx_post_tool_answer_contract(
     messages: list[ChatMessage],
 ) -> list[ChatMessage]:
+    # Suffix contract, same prefix-stability rationale as
+    # _with_mtplx_no_tool_contract above (audit F11 #6): it activates on the
+    # FINAL round of a tool loop, exactly when the session's banked prefix
+    # is largest and a msg0 rewrite was most expensive.
     contract = _mtplx_post_tool_answer_contract_text()
     if not messages:
-        return [ChatMessage(role="system", content=contract)]
+        return [ChatMessage(role="user", content=contract)]
     updated = list(messages)
-    first = updated[0]
-    if str(first.role).lower() == "system":
-        content = str(first.content or "")
-        if _MTPLX_POST_TOOL_ANSWER_SENTINEL not in content:
-            updated[0] = _copy_chat_message(
-                first,
-                content=(f"{content.rstrip()}\n\n{contract}" if content else contract),
-            )
-        return updated
-    return [ChatMessage(role="system", content=contract), *updated]
+    if not any(
+        _MTPLX_POST_TOOL_ANSWER_SENTINEL in str(message.content or "")
+        for message in updated
+    ):
+        updated.append(ChatMessage(role="user", content=contract))
+    return updated
 
 
 def _mtplx_read_only_force_answer_contract_text() -> str:
@@ -10969,6 +11005,14 @@ def _encode_plain_text(tokenizer: Any, text: str) -> list[int]:
         return _coerce_token_ids(tokenizer.encode(text))
 
 
+# SCOPE (audit F11 P2): these are Qwen-family ChatML+think template
+# specials. Every consumer (generation-boundary segmentation, committed-turn
+# parsing, postcommit boundary cuts, the committed-reasoning gate) does
+# find()-based detection, so on a non-matching family (Gemma4's
+# <start_of_turn>, plain-ChatML no-think templates) they match nothing and
+# the machinery degrades to an explicit no-op — pinned by the Gemma4-inert
+# canonicalization test. Deriving them from the live template is the larger
+# follow-up; until then this note is the true statement of scope.
 _QWEN_ASSISTANT_THINK_PROMPT = "<|im_start|>assistant\n<think>\n"
 _QWEN_IM_END = "<|im_end|>"
 _DISABLED_THINK_GENERATION_PROMPT_RE = re.compile(
@@ -11142,18 +11186,23 @@ def _common_prefix_len(a: Sequence[int], b: Sequence[int]) -> int:
 
 def _committed_assistant_turns(
     committed_text: str,
-) -> list[tuple[str | None, str]]:
+) -> list[tuple[str | None, str, str]]:
     """Per assistant turn of a decoded committed stream, in order:
-    (think_interior, visible_content_gate).
+    (think_interior, visible_content_gate, tool_call_markup).
 
     think_interior is the exact bytes between ``<think>\\n`` and the next
     ``</think>`` (None when the turn opens without a think scaffold — e.g. a
     reasoning-off turn); the gate is the post-think text before any
     ``<tool_call`` markup, stripped, used to refuse substitution onto a turn
-    the client has rewritten. Parsing is marker-based on the same template
-    specials the boundary helpers above rely on.
+    the client has rewritten; tool_call_markup is the raw remainder from the
+    first ``<tool_call`` on ("" when the turn made no tool calls), so the
+    substitution gate can refuse a branch switch that changed ONLY the tool
+    calls (identical visible text, different call → the committed reasoning
+    argues for the OLD call and must not be substituted). Parsing is
+    marker-based on the same template specials the boundary helpers above
+    rely on.
     """
-    turns: list[tuple[str | None, str]] = []
+    turns: list[tuple[str | None, str, str]] = []
     search_from = 0
     while True:
         turn_at = committed_text.find(_COMMITTED_TURN_OPEN, search_from)
@@ -11177,12 +11226,231 @@ def _committed_assistant_turns(
                 # byte-exactly with rc stripped of the single trailing newline.
                 think_interior = interior[:-1] if interior.endswith("\n") else interior
                 content_part = body[close_at + len(_COMMITTED_THINK_CLOSE) :]
-        gate = content_part.split("<tool_call", 1)[0].strip()
-        turns.append((think_interior, gate))
+        markup_at = content_part.find("<tool_call")
+        if markup_at >= 0:
+            gate = content_part[:markup_at].strip()
+            tool_markup = content_part[markup_at:]
+        else:
+            gate = content_part.strip()
+            tool_markup = ""
+        turns.append((think_interior, gate, tool_markup))
         search_from = body_start if turn_end < 0 else turn_end
         if turn_end < 0:
             break
     return turns
+
+
+_COMMITTED_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*(?:</tool_call>|\Z)",
+    re.DOTALL,
+)
+_COMMITTED_FUNCTION_NAME_RE = re.compile(r"<function=([^>\s]+)\s*>")
+_COMMITTED_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)\s*>\n?(.*?)\n?</parameter>",
+    re.DOTALL,
+)
+
+
+def _committed_turn_tool_keys(tool_markup: str) -> list[tuple[str, str, str]] | None:
+    """Loop keys of a committed turn's tool-call markup, or None if the
+    markup cannot be parsed confidently.
+
+    Committed streams carry two markup dialects: the template's native
+    ``<tool_call>\\n{json}\\n</tool_call>`` re-render of structured history
+    and the contract's ``<function=name><parameter=k>v`` form the model
+    emits live. Both reduce to the same :func:`_tool_call_loop_key`
+    identity used for the incoming structured tool_calls, so the gate
+    compares like with like. None (unparseable) must be treated as a
+    mismatch by callers — refusing substitution is always safe; guessing
+    is not.
+    """
+    if not tool_markup:
+        return []
+    if "<tool_call" not in tool_markup:
+        return []
+    keys: list[tuple[str, str, str]] = []
+    matched_any = False
+    for match in _COMMITTED_TOOL_CALL_BLOCK_RE.finditer(tool_markup):
+        matched_any = True
+        body = match.group(1).strip()
+        if not body:
+            return None
+        call: dict[str, Any] | None = None
+        if body.startswith("{"):
+            try:
+                parsed = json.loads(body)
+            except Exception:
+                return None
+            if not isinstance(parsed, dict):
+                return None
+            call = parsed
+        elif "<function=" in body:
+            name_match = _COMMITTED_FUNCTION_NAME_RE.search(body)
+            if name_match is None:
+                return None
+            params = {
+                key: value
+                for key, value in _COMMITTED_PARAMETER_RE.findall(body)
+            }
+            call = {"name": name_match.group(1), "arguments": params}
+        else:
+            return None
+        key = _tool_call_loop_key(call)
+        if key is None:
+            return None
+        keys.append(key)
+    if not matched_any:
+        return None
+    return keys
+
+
+def _incoming_tool_loop_keys(
+    tool_calls: list[dict[str, Any]] | None,
+) -> list[tuple[str, str, str]] | None:
+    """Loop keys of an incoming turn's structured tool_calls; None when any
+    call has no confident identity (callers must treat None as mismatch)."""
+    if not tool_calls:
+        return []
+    keys: list[tuple[str, str, str]] = []
+    for tool_call in tool_calls:
+        key = _tool_call_loop_key(tool_call)
+        if key is None:
+            return None
+        keys.append(key)
+    return keys
+
+
+def _canonical_turn_gate_text(
+    text: str,
+    *,
+    has_tool_calls: bool,
+    strip_tool_call_preamble: bool,
+) -> str:
+    """Single normalization choke point for the substitution gate.
+
+    The committed stream holds the bytes the MODEL generated; the incoming
+    turn holds the bytes the CLIENT echoes after its own laundering
+    (OpenCode strips tool-call preambles; force-answer flows strip the
+    <mtplx_final_answer> marker; some clients inline <think> blocks into
+    content). The gate must compare both sides through the SAME normalizer
+    or every laundered turn reads as "rewritten by the client" and the
+    canonicalization silently no-ops for exactly the agent clients it was
+    built for (audit F11 #4).
+    """
+    if strip_tool_call_preamble and has_tool_calls:
+        # Mirrors _canonicalize_agent_transcript's preamble strip: on
+        # clients that never echo the preamble the canonical turn carries
+        # empty visible content, so the committed side must gate on the
+        # same emptiness.
+        return ""
+    gate = _strip_assistant_history_baggage(str(text or ""))
+    gate = _MTPLX_READ_ONLY_FORCE_ANSWER_STREAM_MARKER_RE.sub("", gate)
+    return gate.strip()
+
+
+def _substitute_committed_reasoning_messages(
+    messages: list[ChatMessage],
+    committed_turns: list[tuple[str | None, str, str]],
+    *,
+    strip_tool_call_preamble_text: bool = False,
+) -> tuple[list[ChatMessage], int]:
+    """Positionally substitute committed think interiors onto matching
+    assistant turns. Shared by the foreground gate and the postcommit
+    producer so both build the SAME canonical messages (single choke
+    point). Returns (messages, turns_substituted).
+
+    Substitution is prefix-ruled: the first turn whose visible gate or
+    tool-call identity mismatches the committed turn closes substitution
+    for itself and every later turn. Assistant messages that render to
+    nothing (no content, no tool_calls) consume no committed ordinal —
+    the template drops them, so the committed stream never saw them.
+    """
+    canon_messages: list[ChatMessage] = []
+    substituted = 0
+    assistant_ordinal = 0
+    substitution_open = True
+    for message in messages:
+        message = _scrub_inbound_committed_reasoning(message)
+        if message.role != "assistant":
+            canon_messages.append(message)
+            continue
+        content = _content_to_text(message.content)
+        if not content.strip() and not message.tool_calls:
+            # _message_to_template_dict drops this message: it has no
+            # rendered turn in the committed stream, so it must not shift
+            # the positional mapping.
+            canon_messages.append(message)
+            continue
+        ordinal = assistant_ordinal
+        assistant_ordinal += 1
+        if not substitution_open or ordinal >= len(committed_turns):
+            canon_messages.append(message)
+            continue
+        interior, gate, tool_markup = committed_turns[ordinal]
+        incoming_keys = _incoming_tool_loop_keys(message.tool_calls)
+        committed_keys = _committed_turn_tool_keys(tool_markup)
+        if (
+            incoming_keys is None
+            or committed_keys is None
+            or incoming_keys != committed_keys
+        ):
+            # Tool-call identity is part of the gate: a branch switch that
+            # changed ONLY the tool calls must not inherit reasoning that
+            # argued for the old calls (prefix rule, mirrors restore).
+            substitution_open = False
+            canon_messages.append(message)
+            continue
+        incoming_gate = _canonical_turn_gate_text(
+            content,
+            has_tool_calls=bool(message.tool_calls),
+            strip_tool_call_preamble=strip_tool_call_preamble_text,
+        )
+        committed_gate = _canonical_turn_gate_text(
+            gate,
+            has_tool_calls=bool(tool_markup),
+            strip_tool_call_preamble=strip_tool_call_preamble_text,
+        )
+        if incoming_gate != committed_gate:
+            # Client rewrote this turn's visible content: stop substituting
+            # here and for every later turn (prefix rule, mirrors restore).
+            substitution_open = False
+            canon_messages.append(message)
+            continue
+        if not interior:
+            canon_messages.append(message)
+            continue
+        canon_messages.append(
+            _copy_chat_message(message, **{_COMMITTED_REASONING_FIELD: interior})
+        )
+        substituted += 1
+    return canon_messages, substituted
+
+
+def _transcript_dropped_assistant_turns(transcript_stats: Any) -> int:
+    """Assistant turns the transcript canonicalization removed this request.
+
+    Any dropped assistant turn shifts every later positional ordinal, so
+    the committed-think substitution would put the WRONG turn's reasoning
+    in front of the model (audit F11 #2 — ordinal drift). Refusing when
+    the count is nonzero costs a cold prefill and keeps the output correct;
+    substituting wrongly is an exactness violation.
+    """
+    if transcript_stats is None:
+        return 0
+    total = 0
+    for field_name in (
+        "skipped_aborted_assistant_messages",
+        "skipped_orphan_chitchat_assistant_messages",
+        "skipped_repeated_assistant_messages",
+        "skipped_stalled_agent_preamble_messages",
+        "skipped_verbatim_tool_output_assistant_messages",
+        "dropped_simple_chitchat_history_messages",
+    ):
+        try:
+            total += int(getattr(transcript_stats, field_name, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 def _scrub_inbound_committed_reasoning(message: ChatMessage) -> ChatMessage:
@@ -11214,6 +11482,9 @@ def _maybe_canonicalize_committed_reasoning(
     tool_prompt_mode: str,
     template_observability: dict[str, Any],
     request_observability: dict[str, Any] | None = None,
+    transcript_stats: Any | None = None,
+    strip_tool_call_preamble_text: bool = False,
+    session_id: str | None = None,
 ) -> tuple[list[ChatMessage], list[int]] | None:
     """Session-owned committed-think canonicalization (2.8 headline, defect B).
 
@@ -11227,8 +11498,10 @@ def _maybe_canonicalize_committed_reasoning(
     demonstrably matches the committed stream further than the raw encode —
     otherwise the raw encode stands and behavior is byte-identical to today.
     Preserve-mode only; per-turn substitution is gated on the visible content
-    matching the committed turn, so a client-rewritten turn (and everything
-    after it) is never mixed with stale reasoning.
+    AND the tool-call identity matching the committed turn, so a
+    client-rewritten turn (and everything after it) is never mixed with stale
+    reasoning. ``session_id`` accepts the endpoint's already-resolved id so
+    resolution (and its prefix-scan side effects) runs once per request.
     """
     if not _committed_reasoning_canonicalization_enabled():
         return None
@@ -11238,18 +11511,24 @@ def _maybe_canonicalize_committed_reasoning(
         return None
     if _reasoning_history_scoped_active(state):
         return None
+    # Prologue scrub (audit F11 P2): a client-planted committed-reasoning
+    # field must never survive into any later encode, including when this
+    # gate declines below — gate-outs used to return the caller's original
+    # messages with the client field still attached.
+    messages = [_scrub_inbound_committed_reasoning(message) for message in messages]
     sessions = getattr(state, "sessions", None)
     if sessions is None:
         return None
     try:
-        session_id, _source = sessions.resolve_session_id(
-            headers=headers,
-            metadata=metadata,
-            user=_request_extra(request, "user"),
-            chat_id=_request_extra(request, "chat_id"),
-            conversation_id=_request_extra(request, "conversation_id"),
-            prompt_ids=prompt_ids,
-        )
+        if session_id is None:
+            session_id, _source = sessions.resolve_session_id(
+                headers=headers,
+                metadata=metadata,
+                user=_request_extra(request, "user"),
+                chat_id=_request_extra(request, "chat_id"),
+                conversation_id=_request_extra(request, "conversation_id"),
+                prompt_ids=prompt_ids,
+            )
         session = sessions.peek(session_id)
     except Exception:
         return None
@@ -11259,47 +11538,9 @@ def _maybe_canonicalize_committed_reasoning(
     cp_raw = _common_prefix_len(prompt_ids, committed)
     if cp_raw >= min(len(committed), len(prompt_ids)):
         return None  # already extends (or is contained in) the committed stream
-    try:
-        committed_text = state.runtime.tokenizer.decode(list(committed))
-    except Exception:
-        return None
-    committed_turns = _committed_assistant_turns(committed_text)
-    if not any(interior for interior, _gate in committed_turns):
-        return None
-
-    canon_messages: list[ChatMessage] = []
-    substituted = 0
-    assistant_ordinal = 0
-    substitution_open = True
-    for message in messages:
-        message = _scrub_inbound_committed_reasoning(message)
-        if message.role != "assistant":
-            canon_messages.append(message)
-            continue
-        ordinal = assistant_ordinal
-        assistant_ordinal += 1
-        if not substitution_open or ordinal >= len(committed_turns):
-            canon_messages.append(message)
-            continue
-        interior, gate = committed_turns[ordinal]
-        incoming_gate = _content_to_text(message.content).strip()
-        if incoming_gate != gate:
-            # Client rewrote this turn's visible content: stop substituting
-            # here and for every later turn (prefix rule, mirrors restore).
-            substitution_open = False
-            canon_messages.append(message)
-            continue
-        if not interior:
-            canon_messages.append(message)
-            continue
-        canon_messages.append(
-            _copy_chat_message(message, **{_COMMITTED_REASONING_FIELD: interior})
-        )
-        substituted += 1
 
     outcome: dict[str, Any] = {
         "applied": False,
-        "turns_substituted": int(substituted),
         "cp_raw": int(cp_raw),
         "committed_len": int(len(committed)),
     }
@@ -11307,6 +11548,34 @@ def _maybe_canonicalize_committed_reasoning(
     def _record(target: dict[str, Any] | None) -> None:
         if target is not None:
             target["committed_reasoning_canonicalization"] = outcome
+
+    dropped_assistant_turns = _transcript_dropped_assistant_turns(transcript_stats)
+    if dropped_assistant_turns > 0:
+        # Ordinal-drift refusal (audit F11 #2): transcript canonicalization
+        # removed assistant turns this request, so positional mapping onto
+        # the committed turns is shifted and substitution could put the
+        # WRONG turn's reasoning in front of the model. Refusing costs a
+        # cold prefill and keeps the output correct.
+        outcome["turns_substituted"] = 0
+        outcome["refused_reason"] = "transcript_assistant_turns_dropped"
+        outcome["dropped_assistant_turns"] = int(dropped_assistant_turns)
+        _record(template_observability)
+        _record(request_observability)
+        return None
+    try:
+        committed_text = state.runtime.tokenizer.decode(list(committed))
+    except Exception:
+        return None
+    committed_turns = _committed_assistant_turns(committed_text)
+    if not any(interior for interior, _gate, _markup in committed_turns):
+        return None
+
+    canon_messages, substituted = _substitute_committed_reasoning_messages(
+        messages,
+        committed_turns,
+        strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+    )
+    outcome["turns_substituted"] = int(substituted)
 
     if substituted == 0:
         _record(template_observability)
@@ -11437,13 +11706,11 @@ def _encode_generation_compatible_tool_history(
     boundaries = _qwen_assistant_generation_boundaries(rendered)
     if not boundaries:
         return None
-    hint_injected = bool(
-        template_observability is not None
-        and template_observability.get("tool_result_continuation_hint_injected") is True
-    )
-    hint_boundary = (
-        _trailing_tool_hint_char_boundary(rendered) if hint_injected else None
-    )
+    # The registry-backed detector self-guards on tail position, so it runs
+    # unconditionally: force-answer and Pi convergence suffixes (which never
+    # set the hint-injected flag) now get the same stable-prefix boundary as
+    # the tool-continuation nudge (audit F11 #5).
+    hint_boundary = _trailing_tool_hint_char_boundary(rendered)
     if hint_boundary is None:
         return _encode_rendered_chat_text_segmented(tokenizer, rendered, boundaries)
     # Report where the transient trailing tool-continuation hint's user turn
@@ -11512,16 +11779,34 @@ def _encode_with_stable_hint_boundary(
     return token_ids
 
 
-def _trailing_tool_hint_char_boundary(rendered: str) -> int | None:
-    """Char position where the transient trailing tool-continuation hint's
-    user turn begins, or None when the hint was not injected.
+def _transient_trailing_user_sentinel_texts() -> tuple[str, ...]:
+    """Registry of transient user-turn suffixes MTPLX itself appends.
 
-    The injector appends the hint ONLY as the final message (after a
-    trailing tool result) and never when the hint text already appears
-    anywhere in the transcript, so a genuine injection is the LAST user
-    turn before the generation prompt. The tail guard rejects lookalikes
-    (an echoed hint would have suppressed injection and would not sit in
-    tail position with only the generation prompt after it).
+    Every entry is injected ONLY as the final user message of a single
+    request and never echoed back by the client, so the bytes before it are
+    the stable prompt prefix the next turn will resend. The trailing
+    boundary detector below keys on the first 48 chars of each text
+    (stable constants: the sentinel prefix of the message content).
+    """
+    return (
+        _mtplx_tool_result_continuation_hint_text(),
+        _mtplx_read_only_force_answer_contract_text(),
+        _mtplx_pi_convergence_contract_text(),
+    )
+
+
+def _trailing_tool_hint_char_boundary(rendered: str) -> int | None:
+    """Char position where a transient trailing MTPLX user turn begins, or
+    None when no transient suffix was injected.
+
+    Generalized (audit F11 #5) over the sentinel registry above: the
+    tool-continuation nudge, the read-only force-answer instruction, and
+    the Pi convergence instruction are all injected ONLY as the final
+    message and never when their text already appears in the transcript,
+    so a genuine injection is the LAST user turn before the generation
+    prompt. The tail guard rejects lookalikes (an echoed sentinel would
+    have suppressed injection and would not sit in tail position with only
+    the generation prompt after it).
 
     SHARED-MARKER INCLUSION: the boundary sits immediately AFTER the
     turn's <|im_start|> special token. Both this render and the next
@@ -11533,13 +11818,19 @@ def _trailing_tool_hint_char_boundary(rendered: str) -> int | None:
     both sides: specials never merge with neighbors.
     """
     turn_open = "<|im_start|>"
-    marker = turn_open + "user\n" + _mtplx_tool_result_continuation_hint_text()[:48]
-    pos = rendered.rfind(marker)
-    if pos <= 0:
+    best: int | None = None
+    for sentinel_text in _transient_trailing_user_sentinel_texts():
+        marker = turn_open + "user\n" + sentinel_text[:48]
+        pos = rendered.rfind(marker)
+        if pos <= 0:
+            continue
+        if rendered.count(turn_open, pos + len(marker)) != 1:
+            continue
+        if best is None or pos > best:
+            best = pos
+    if best is None:
         return None
-    if rendered.count(turn_open, pos + len(marker)) != 1:
-        return None
-    return pos + len(turn_open)
+    return best + len(turn_open)
 
 
 _CHAT_ENCODE_TOKENIZER_IDS: "weakref.WeakKeyDictionary[Any, str]" = (
@@ -11631,12 +11922,17 @@ def _encode_messages(
                 "tool_prompt_mode": tool_prompt_mode,
                 "committed_reasoning": bool(allow_committed_reasoning),
                 # The rendered prompt embeds the current date (tool contract's
-                # _current_date_line; strftime_now-style templates). Without a
-                # date component, an exact repeat across local midnight would
-                # be served yesterday's render until eviction. Day granularity
-                # matches the render's own granularity: at worst the whole
-                # cache turns over once per day, which is the correct outcome.
-                "render_day": time.strftime("%Y-%m-%d"),
+                # burst-pinned _current_date_line; hypothetically also
+                # strftime_now-style templates reading the raw wall clock).
+                # Key on BOTH days so the key flips whenever either source
+                # can change the render: raw wall clock covers
+                # template-embedded dates at midnight, the pinned day covers
+                # the contract line at pin refresh. A flip only re-renders
+                # once — the pinned contract bytes stay identical across
+                # midnight, so session/bank prefixes are unaffected.
+                "render_day": (
+                    f"{time.strftime('%Y-%m-%d')}:{_pinned_render_day()}"
+                ),
             }
             key = ChatEncodeCache.make_key(
                 tokenizer_key=tokenizer_key,
@@ -11795,18 +12091,9 @@ def _encode_messages_uncached(
         if rendered:
             canon_boundaries = _qwen_assistant_generation_boundaries(rendered)
             if canon_boundaries:
-                hint_injected = bool(
-                    template_observability is not None
-                    and template_observability.get(
-                        "tool_result_continuation_hint_injected"
-                    )
-                    is True
-                )
-                hint_boundary = (
-                    _trailing_tool_hint_char_boundary(rendered)
-                    if hint_injected
-                    else None
-                )
+                # Registry-backed and tail-guarded; see
+                # _encode_generation_compatible_tool_history (audit F11 #5).
+                hint_boundary = _trailing_tool_hint_char_boundary(rendered)
                 if hint_boundary is None:
                     return _encode_rendered_chat_text_segmented(
                         tokenizer, rendered, canon_boundaries
@@ -16661,6 +16948,7 @@ def _store_retokenized_history_snapshot(
     keep_live_ref: bool = True,
     tool_prompt_mode: str | None = None,
     strip_tool_call_preamble_text: bool = False,
+    committed_stream_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     if session_id is None:
         return {"stored": False, "reason": "no_session_id"}
@@ -16693,6 +16981,7 @@ def _store_retokenized_history_snapshot(
         tool_specs=tool_specs,
         tool_prompt_mode=tool_prompt_mode,
         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+        committed_stream_ids=committed_stream_ids,
     )
     if not history_ids:
         return {"stored": False, "reason": "empty_boundary_prefix"}
@@ -16931,6 +17220,7 @@ def _history_ids_for_postcommit(
     tool_specs: list[dict[str, Any]] | None = None,
     tool_prompt_mode: str | None = None,
     strip_tool_call_preamble_text: bool = False,
+    committed_stream_ids: Sequence[int] | None = None,
 ) -> tuple[list[int], Any]:
     """Retokenized next-turn history ids, plus a VisionSplice when the
     history carries images.
@@ -16972,6 +17262,7 @@ def _history_ids_for_postcommit(
         )
     except ValueError:
         return [], None
+    postcommit_transcript_stats: Any | None = None
     if tool_specs:
         # The generation prompt may compact the current large read as an
         # active-read excerpt. Once the assistant response is appended, that
@@ -16983,7 +17274,7 @@ def _history_ids_for_postcommit(
                 *history_messages,
                 ChatMessage(role="user", content=_POSTCOMMIT_SENTINEL_CONTENT),
             ]
-        history_messages, _stats = _canonicalize_agent_transcript(
+        history_messages, postcommit_transcript_stats = _canonicalize_agent_transcript(
             canonicalization_messages,
             tools_active=True,
             strip_tool_call_preamble_text=strip_tool_call_preamble_text,
@@ -16996,6 +17287,50 @@ def _history_ids_for_postcommit(
             == _POSTCOMMIT_SENTINEL_CONTENT
         ):
             history_messages = history_messages[:-1]
+    # Committed-think substitution for the postcommit (audit F11 #3, the
+    # issue #269 bug): the banked next-turn prefix must be built from the
+    # SAME canonical encoding the next request will actually send. The next
+    # request's committed-reasoning gate substitutes each assistant turn's
+    # think interior from the session's committed stream — including the
+    # turn generated THIS request — so a postcommit rendered without those
+    # interiors never byte-extends the committed session
+    # ("retokenized_prefix_not_extending_session" on every commit) and the
+    # banked entry never matches the next prompt either. Substituting from
+    # the decoded committed stream (prompt + generated ids) through the same
+    # helper the gate uses keeps producer and consumer on one choke point.
+    # A client-planted committed-reasoning field is scrubbed inside the
+    # substitution walk; when the walk is skipped, the explicit scrub below
+    # keeps allow_committed_reasoning encodes clean.
+    substitution_walked = False
+    if (
+        committed_stream_ids
+        and thinking_enabled
+        and _committed_reasoning_canonicalization_enabled()
+        and not getattr(state.args, "strip_assistant_reasoning_history", False)
+        and not _reasoning_history_scoped_active(state)
+        and _transcript_dropped_assistant_turns(postcommit_transcript_stats) == 0
+    ):
+        try:
+            committed_text = state.runtime.tokenizer.decode(
+                [int(token) for token in committed_stream_ids]
+            )
+        except Exception:
+            committed_text = ""
+        if committed_text:
+            committed_turns = _committed_assistant_turns(committed_text)
+            if any(interior for interior, _gate, _markup in committed_turns):
+                history_messages, _substituted = (
+                    _substitute_committed_reasoning_messages(
+                        history_messages,
+                        committed_turns,
+                        strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+                    )
+                )
+                substitution_walked = True
+    if not substitution_walked:
+        history_messages = [
+            _scrub_inbound_committed_reasoning(message) for message in history_messages
+        ]
     next_turn_prefix_ids = _postcommit_next_turn_prefix_ids(
         state.runtime.tokenizer,
         history_messages,
@@ -17017,6 +17352,10 @@ def _history_ids_for_postcommit(
         add_generation_prompt=False,
         tools=tool_specs,
         tool_prompt_mode=effective_tool_prompt_mode,
+        # Substituted interiors ride _COMMITTED_REASONING_FIELD on
+        # server-built copies; without this flag the fallback encode
+        # silently drops them and the prefix stops extending the session.
+        allow_committed_reasoning=True,
     )
     if not postcommit_vision_images or not history_ids:
         return list(history_ids or []), None
@@ -17103,6 +17442,12 @@ def _generation_final_postcommit_compatibility(
         tool_specs=tool_specs,
         tool_prompt_mode=tool_prompt_mode,
         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+        # The generation boundary IS the committed stream this snapshot
+        # anchors: rendering the history with its think interiors is what
+        # lets a thinking turn be token-identical to prompt+generated at
+        # all (before F11 #3 the retokenized history rendered an empty
+        # think scaffold and thinking turns could never match).
+        committed_stream_ids=final_token_ids,
     )
 
     def _bank_view(token_ids: list[int]) -> list[int] | None:
@@ -17312,6 +17657,7 @@ def _schedule_idle_postcommit_snapshot(
     keep_live_ref: bool = True,
     tool_prompt_mode: str | None = None,
     strip_tool_call_preamble_text: bool = False,
+    committed_stream_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Schedule a background SessionBank commit for a response the
     generation-final compatibility check rejected as unsafe (most commonly
@@ -17502,6 +17848,7 @@ def _schedule_idle_postcommit_snapshot(
                     keep_live_ref=bool(keep_live_ref),
                     tool_prompt_mode=tool_prompt_mode,
                     strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+                    committed_stream_ids=committed_stream_ids,
                 )
                 if postcommit.get("stored"):
                     _log(postcommit)
@@ -20164,7 +20511,16 @@ class _BackgroundWarmup:
     # resubmit budget and abandoning. Passed as a _run_generation kwarg:
     # the generation applies its own prefill_chunk_size_override
     # internally, so an outer ContextVar wrapper would be clobbered.
+    # MTPLX_WARMUP_PREFILL_CHUNK overrides for profile tuning (audit F11
+    # #9); the 256 default is the measured 2026-07-31 fence and must not
+    # move without re-measuring the mid-warmup stall.
     WARMUP_PREFILL_CHUNK_TOKENS = 256
+
+    def _warmup_prefill_chunk_tokens(self) -> int:
+        return max(
+            1,
+            _env_int("MTPLX_WARMUP_PREFILL_CHUNK", self.WARMUP_PREFILL_CHUNK_TOKENS),
+        )
 
     def _ladder_generation(self, context_tokens: int) -> dict[str, Any]:
         repeats = context_tokens // max(1, len(self.prompt_ids)) + 1
@@ -20179,7 +20535,7 @@ class _BackgroundWarmup:
             seed=0,
             request_observability={"warmup": True, "warmup_background": True},
             cancel_event=_ForegroundYield(self.state),
-            prefill_chunk_tokens=self.WARMUP_PREFILL_CHUNK_TOKENS,
+            prefill_chunk_tokens=self._warmup_prefill_chunk_tokens(),
         )
 
     def _finish(self, abandoned: bool = False) -> None:
@@ -23121,18 +23477,45 @@ def _reasoning_effort_for_state(
     levels = set(codec.effort_levels)
     if not levels:
         return None
+    client_supplied = request_effort is not None and allow_client_controls
     raw = (
         request_effort
-        if request_effort is not None and allow_client_controls
+        if client_supplied
         else getattr(state.args, "reasoning_effort", None)
     )
-    effort = _normalize_reasoning_effort(
-        raw,
-        default=codec.default_effort or "auto",
-    )
+    try:
+        effort = _normalize_reasoning_effort(
+            raw,
+            default=codec.default_effort or "auto",
+        )
+    except ValueError as exc:
+        if client_supplied:
+            # A junk client value ("banana") used to escape as an unhandled
+            # ValueError and turn into a 500; it is a request error (audit
+            # F11 #8).
+            raise HTTPException(status_code=400, detail=str(exc))
+        raise
     if effort == "auto":
         effort = codec.default_effort or "low"
-    return effort if effort in levels else codec.default_effort
+    if effort in levels:
+        return effort
+    # The requested tier is real vocabulary the loaded family does not
+    # declare (OpenAI clients send "high"; Qwen 3.8 declares
+    # low/medium/xhigh). Silently bouncing to the family default mapped the
+    # request DOWN and lied about honoring it (audit F11 #8). Map to the
+    # nearest declared tier UP the global ladder; when nothing above is
+    # declared, the nearest declared tier below.
+    try:
+        requested_rank = REASONING_EFFORT_LEVELS.index(effort)
+    except ValueError:
+        return codec.default_effort
+    for candidate in REASONING_EFFORT_LEVELS[requested_rank + 1 :]:
+        if candidate in levels:
+            return candidate
+    for candidate in reversed(REASONING_EFFORT_LEVELS[:requested_rank]):
+        if candidate in levels:
+            return candidate
+    return codec.default_effort
 
 
 _AGENT_THINKING_BUDGET_BY_EFFORT = {"low": 1536, "medium": 3072, "high": 6144}
@@ -25237,12 +25620,36 @@ def create_app(state: ServerState) -> FastAPI:
             tool_prompt_mode=template_tool_prompt_mode,
             template_observability=template_observability,
         )
+        resolved_session_id: str | None = None
+        resolved_session_source: str | None = None
         if (
             not background
             and not cache_bypass
             and not vision_images
             and not aime_visible_working
         ):
+            # Resolve the session exactly once (audit F11 P2): the
+            # committed-reasoning gate and the session-adoption step below
+            # used to resolve independently, doubling the anonymous
+            # prefix-scan cost and overwriting last_prefix_diagnostic
+            # twice per request. Header/metadata-identified clients (every
+            # real agent bridge) resolve identically from either call
+            # site; anonymous prompt-inference uses the raw encode here,
+            # which is the same stream the canonical encode extends.
+            try:
+                resolved_session_id, resolved_session_source = (
+                    state.sessions.resolve_session_id(
+                        headers=headers,
+                        metadata=metadata,
+                        user=_request_extra(request, "user"),
+                        chat_id=_request_extra(request, "chat_id"),
+                        conversation_id=_request_extra(request, "conversation_id"),
+                        prompt_ids=prompt_ids,
+                    )
+                )
+            except Exception:
+                resolved_session_id = None
+                resolved_session_source = None
             # Defect B (2.8 headline): if this conversation's session holds a
             # committed stream the raw encode diverges from inside a think
             # block, substitute the committed think bytes and re-encode so
@@ -25266,6 +25673,9 @@ def create_app(state: ServerState) -> FastAPI:
                 # request_observability is bound later in the prologue on
                 # some branches; the outcome rides template_observability,
                 # which merges into the request stream downstream.
+                transcript_stats=policy.transcript_stats,
+                strip_tool_call_preamble_text=opencode_client,
+                session_id=resolved_session_id,
             )
             if _canonicalized is not None:
                 messages_for_generation, prompt_ids = _canonicalized
@@ -25412,10 +25822,16 @@ def create_app(state: ServerState) -> FastAPI:
             request_observability["request_vision_images"] = len(vision_images)
             request_observability["request_vision_rows"] = vision_splice.total_rows
         if transient_suffix_contract_active:
+            if read_only_force_answer_contract_active:
+                _restore_policy_label = "stable_without_transient_force_answer"
+            elif pi_convergence_contract_active:
+                _restore_policy_label = "stable_without_transient_pi_convergence"
+            elif post_tool_answer_contract_active:
+                _restore_policy_label = "stable_without_transient_post_tool_answer"
+            else:
+                _restore_policy_label = "stable_without_transient_no_tools"
             request_observability["request_session_restore_policy"] = (
-                "stable_without_transient_force_answer"
-                if read_only_force_answer_contract_active
-                else "stable_without_transient_pi_convergence"
+                _restore_policy_label
             )
             request_observability[
                 "request_session_restore_policy_matches_postcommit"
@@ -25481,14 +25897,23 @@ def create_app(state: ServerState) -> FastAPI:
             if opencode_tool_history_cache_bypass:
                 cache_miss_reason = "opencode_tool_history_cache_bypass"
                 session_restore_mode = "opencode_tool_history_bypass"
-            session_id, session_source = state.sessions.resolve_session_id(
-                headers=headers,
-                metadata=metadata,
-                user=_request_extra(request, "user"),
-                chat_id=_request_extra(request, "chat_id"),
-                conversation_id=_request_extra(request, "conversation_id"),
-                prompt_ids=prompt_ids,
-            )
+            if resolved_session_id is not None:
+                # Reuse the prologue's single resolution (F11 P2); the
+                # vision-keyed and aime arms never resolved early, so they
+                # keep the original call here.
+                session_id, session_source = (
+                    resolved_session_id,
+                    resolved_session_source,
+                )
+            else:
+                session_id, session_source = state.sessions.resolve_session_id(
+                    headers=headers,
+                    metadata=metadata,
+                    user=_request_extra(request, "user"),
+                    chat_id=_request_extra(request, "chat_id"),
+                    conversation_id=_request_extra(request, "conversation_id"),
+                    prompt_ids=prompt_ids,
+                )
             session = state.sessions.get_or_create(session_id)
             session.last_cache_miss_reason = cache_miss_reason
             session.last_restore_mode = session_restore_mode
@@ -25823,6 +26248,13 @@ def create_app(state: ServerState) -> FastAPI:
                     _attach_skipped_postcommit_cleanup(state, skipped)
                 )
                 return
+            # The committed stream this turn will anchor: canonical prompt +
+            # generated ids. The retokenized history substitutes its think
+            # interiors from these bytes so the commit actually extends the
+            # session (F11 #3 / issue #269).
+            postcommit_committed_stream = [int(token) for token in prompt_ids] + [
+                int(token) for token in (generated.get("tokens") or [])
+            ]
             if state.args.session_postcommit_mode == "async" and generated_mode != "ar":
                 generated["stats"]["session_postcommit_snapshot"] = (
                     _schedule_idle_postcommit_snapshot(
@@ -25841,6 +26273,7 @@ def create_app(state: ServerState) -> FastAPI:
                         keep_live_ref=session_keep_live_ref,
                         tool_prompt_mode=postcommit_tool_prompt_mode,
                         strip_tool_call_preamble_text=opencode_client,
+                        committed_stream_ids=postcommit_committed_stream,
                     )
                 )
                 return
@@ -25860,6 +26293,7 @@ def create_app(state: ServerState) -> FastAPI:
                         keep_live_ref=session_keep_live_ref,
                         tool_prompt_mode=postcommit_tool_prompt_mode,
                         strip_tool_call_preamble_text=opencode_client,
+                        committed_stream_ids=postcommit_committed_stream,
                     ),
                     batch_key=f"postcommit.inline:{session_id or 'stateless'}",
                 ),
@@ -26228,6 +26662,12 @@ def create_app(state: ServerState) -> FastAPI:
                         tools=tool_specs,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
+                        # Repair re-encodes run on the gate's canonical
+                        # messages: without this flag the substituted think
+                        # interiors are dropped and the repair prompt
+                        # re-poisons what canonicalization just fixed
+                        # (audit F11 #5).
+                        allow_committed_reasoning=True,
                     )
                     retry_observability = dict(request_observability)
                     retry_observability.update(
@@ -26553,6 +26993,12 @@ def create_app(state: ServerState) -> FastAPI:
                         tools=tool_specs,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
+                        # Repair re-encodes run on the gate's canonical
+                        # messages: without this flag the substituted think
+                        # interiors are dropped and the repair prompt
+                        # re-poisons what canonicalization just fixed
+                        # (audit F11 #5).
+                        allow_committed_reasoning=True,
                     )
                     first_stats = dict(generated.get("stats") or {})
                     retry_observability = dict(request_observability)
@@ -26713,6 +27159,9 @@ def create_app(state: ServerState) -> FastAPI:
                         tools=None,
                         tool_prompt_mode=tool_prompt_mode,
                         template_observability=repair_observability,
+                        # Same committed-reasoning preservation as the other
+                        # repair encodes (audit F11 #5).
+                        allow_committed_reasoning=True,
                     )
                     first_stats = dict(generated.get("stats") or {})
                     retry_observability = dict(request_observability)
@@ -26942,6 +27391,12 @@ def create_app(state: ServerState) -> FastAPI:
                                     assistant_tool_calls = commit_state.get(
                                         "assistant_tool_calls"
                                     )
+                                    stream_committed_stream = [
+                                        int(token) for token in prompt_ids
+                                    ] + [
+                                        int(token)
+                                        for token in (generated.get("tokens") or [])
+                                    ]
                                     if bool(commit_state.get("retokenize_inline")):
                                         postcommit = _submit_foreground_model_work(
                                             state,
@@ -26962,6 +27417,9 @@ def create_app(state: ServerState) -> FastAPI:
                                                 keep_live_ref=session_keep_live_ref,
                                                 tool_prompt_mode=postcommit_tool_prompt_mode,
                                                 strip_tool_call_preamble_text=opencode_client,
+                                                committed_stream_ids=(
+                                                    stream_committed_stream
+                                                ),
                                             ),
                                             batch_key=(
                                                 f"postcommit.stream.inline:"
@@ -28344,6 +28802,15 @@ def create_app(state: ServerState) -> FastAPI:
                                             keep_live_ref=session_keep_live_ref,
                                             tool_prompt_mode=postcommit_tool_prompt_mode,
                                             strip_tool_call_preamble_text=opencode_client,
+                                            committed_stream_ids=[
+                                                int(token) for token in prompt_ids
+                                            ]
+                                            + [
+                                                int(token)
+                                                for token in (
+                                                    generated.get("tokens") or []
+                                                )
+                                            ],
                                         )
                                     generated["stats"][
                                         "session_postcommit_snapshot"
