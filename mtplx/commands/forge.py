@@ -2944,6 +2944,27 @@ def _saved_verify_rows_reuse_blocker(
     return None
 
 
+def _recommended_profile_stamp(model_path: Path, *, best_depth: int) -> str:
+    """Profile per-model launch resolution will actually pick for this artifact.
+
+    A hard-coded "sustained" stamp lied for flagship-identified rebuilds
+    (drop-day forge-local builds carry first-party branded names): serve
+    resolves them to turbo, and a mismatched stamp then hid the artifact's
+    profile-scoped runtime contract on the profile it actually runs under
+    (``_profile_scoped_model_runtime_contract``). Identity at forge time is
+    exactly what serve-time identity will see: the artifact directory —
+    its existing mtplx_runtime.json id claim, else its branded dir name —
+    mapped through the same ``public_model_id_for_ref`` resolver. Artifacts
+    with no MTP depth win keep the "stable" recommendation.
+    """
+
+    if best_depth <= 0:
+        return "stable"
+    from mtplx.commands.public import resolved_default_profile_name_for_ref
+
+    return resolved_default_profile_name_for_ref(model_path)
+
+
 def _stamp_runtime_metadata(
     model_path: Path,
     *,
@@ -2979,7 +3000,7 @@ def _stamp_runtime_metadata(
     metadata["mtp_depth_max"] = max(verified_depth_max, int(metadata.get("mtp_depth_max") or 0))
     metadata.setdefault(
         "recommended_profile",
-        "sustained" if best_depth > 0 else "stable",
+        _recommended_profile_stamp(model_path, best_depth=best_depth),
     )
     metadata.setdefault("sampler", {"temperature": 0.6, "top_p": 0.95, "top_k": 20})
     metadata["verified_on"] = {

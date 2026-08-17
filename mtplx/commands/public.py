@@ -1170,6 +1170,22 @@ def _resolved_default_profile_name(args: Any, model: str | None = None) -> str:
     return current
 
 
+def resolved_default_profile_name_for_ref(model_ref: str | Path | None) -> str:
+    """Default profile per-model launch resolution picks for an artifact ref.
+
+    The args-free core of ``_resolved_default_profile_name`` for surfaces
+    that report or stamp a profile for an artifact without a CLI namespace
+    (cache listings, doctor's support matrix, forge runtime stamps). No
+    user override can exist on those surfaces, so the answer is exactly
+    the per-model turbo promotion over the served public id — the same
+    ``public_model_id_for_ref`` mapping serve-time resolution uses.
+    """
+
+    if public_model_id_for_ref(model_ref) in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
+        return "turbo"
+    return DEFAULT_PROFILE_NAME
+
+
 def _apply_qwen36_35b_optimized_speed_defaults(args: Any, model_id: str) -> None:
     # The -FP16 sibling shares the byte-identical INT packs and the measured
     # launch defaults; the app's substring detection already applied them to
@@ -1336,20 +1352,45 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
             and getattr(args, "max_response_tokens", None) is None
         ):
             args.max_response_tokens = int(descriptor.default_max_response_tokens)
+    # config.toml presence beats value-sentinels for the launch sampler trio:
+    # apply_user_config stamps the parsed file onto ``args.mtplx_config``, so
+    # a config value that happens to EQUAL the parser default (0.6/0.95/20)
+    # is still the user's standing pin — the bare ``in (None, 0.6)`` checks
+    # read it as "unset" and silently replaced it with the family sampler.
+    # Injected family values are recorded in ``_injected_default_flags``
+    # (the same provenance contract as the draft trio below).
+    mtplx_config = getattr(args, "mtplx_config", None)
+    config_pinned = {
+        key
+        for key in ("temperature", "top_p", "top_k")
+        if isinstance(mtplx_config, dict)
+        and mtplx_config.get(key) is not None
+        and getattr(args, key, None) is not None
+    }
+    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if (
         "temperature" not in cli_flags
         and "default-temperature" not in cli_flags
+        and "temperature" not in config_pinned
         and getattr(args, "temperature", None) in (None, 0.6)
     ):
         args.temperature = sampler["temperature"]
+        injected.add("temperature")
     if (
         "top-p" not in cli_flags
         and "default-top-p" not in cli_flags
+        and "top_p" not in config_pinned
         and getattr(args, "top_p", None) in (None, 0.95)
     ):
         args.top_p = sampler["top_p"]
-    if "top-k" not in cli_flags and getattr(args, "top_k", None) in (None, 20):
+        injected.add("top-p")
+    if (
+        "top-k" not in cli_flags
+        and "top_k" not in config_pinned
+        and getattr(args, "top_k", None) in (None, 20)
+    ):
         args.top_k = sampler["top_k"]
+        injected.add("top-k")
     if (
         "depth" not in cli_flags
         and draft_semantics.request_field == "depth"
@@ -1364,7 +1405,6 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
     # _injected_default_flags feeds _explicit_draft_sampler_override, while
     # --draft-sampler-source stays "default" (user-typed _cli_flags only),
     # so injected values never pin and the family curve stays live.
-    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):
@@ -12037,6 +12077,11 @@ def _with_server_policy_args(target: Any, source: Any) -> Any:
     setattr(
         target, "_profile_from_config", getattr(source, "_profile_from_config", None)
     )
+    # Same contract for the sampler pins: _apply_backend_serve_defaults reads
+    # config presence from args.mtplx_config, and these handoffs forward the
+    # raw sampler VALUES (a config temperature equal to the 0.6 parser
+    # default is indistinguishable from unset without the parsed file).
+    setattr(target, "mtplx_config", getattr(source, "mtplx_config", None))
     _with_batching_args(target, source)
     for attr, default in (
         # Retrieval models: quickstart builds its serve namespace field by

@@ -22,7 +22,6 @@ from mtplx.models.laguna_config import (
     LAGUNA_S_2_1_REVISION,
     laguna_s_2_1_artifact_integrity_errors,
 )
-from mtplx.profiles import DEFAULT_PROFILE_NAME
 
 
 DEFAULT_MODEL_CACHE = Path("~/.mtplx/models").expanduser()
@@ -778,6 +777,12 @@ class CachedModel:
     validation: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
+        # Per-model launch resolution promotes the quantized flagships to
+        # turbo; a flat DEFAULT_PROFILE_NAME here reported "sustained" for
+        # artifacts the engine never launches on sustained. Lazy import:
+        # core module, resolver lives in the CLI layer.
+        from mtplx.commands.public import resolved_default_profile_name_for_ref
+
         return {
             "repo_id": self.repo_id,
             "path": str(self.path),
@@ -786,7 +791,11 @@ class CachedModel:
             "has_runtime_contract": self.has_runtime_contract,
             "has_config": self.has_config,
             "validation": self.validation,
-            "recommended_profile": DEFAULT_PROFILE_NAME if self.validation.get("ok") else None,
+            "recommended_profile": (
+                resolved_default_profile_name_for_ref(self.path)
+                if self.validation.get("ok")
+                else None
+            ),
             "delete_command": f"mtplx remove {self.repo_id}",
         }
 

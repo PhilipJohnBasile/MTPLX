@@ -341,3 +341,255 @@ def test_request_observability_matches_golden(monkeypatch, name, route, headers,
         f"{golden_path.name} — if intentional, regenerate goldens and explain "
         f"the diff in the commit"
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming arms (2026-08-16 tail sweep): the matrix above never consumed
+# SSE, so the stream lane — reassembly, final-chunk envelope, terminal —
+# had zero golden coverage. Same harness contract: fake ONLY the
+# generators (callback-aware here, so tokens flow through the real
+# record_tokens -> SSE assembly), let _run_generation and the endpoint
+# run for real, pin the normalized final-chunk mtplx_stats.
+# ---------------------------------------------------------------------------
+
+
+def _fake_streaming_generation_output(text: str):
+    """Callback-aware generator stand-in for the STREAM arms only.
+
+    The non-stream arms keep ``_fake_generation_output`` (which never
+    invokes ``token_callback``) so their pinned envelopes stay
+    byte-identical; the stream arms need the tokens on the wire, exactly
+    like the real generators deliver them.
+    """
+    from mtplx.generation import GenerationStats
+
+    tokens = [ord(char) for char in text]
+
+    def fake(*_args, **kwargs):
+        token_callback = kwargs.get("token_callback")
+        if token_callback is not None:
+            for token in tokens:
+                token_callback([token])
+        stats = GenerationStats(
+            mode="mtpk",
+            generated_tokens=len(tokens),
+            elapsed_s=0.01,
+            tok_s=200.0,
+            decode_elapsed_s=0.005,
+            decode_tok_s=400.0,
+            prompt_eval_time_s=0.005,
+            prompt_tps=600.0,
+            verify_calls=1,
+            accepted_by_depth=[1],
+        )
+        return SimpleNamespace(
+            tokens=tokens,
+            text=text,
+            stats=stats,
+            final_state=None,
+            finish_reason="stop",
+        )
+
+    return fake
+
+
+def _stream_client(monkeypatch, text: str) -> TestClient:
+    monkeypatch.delenv("MTPLX_CLIENT", raising=False)
+    state = _fake_state()
+    foreground = ForegroundState()
+    state.lock = foreground.lock
+    state.begin_foreground = foreground.begin_foreground
+    state.end_foreground = foreground.end_foreground
+    state.has_foreground = foreground.has_foreground
+    state.foreground_count = foreground.foreground_count
+    state.requests_completed = 0
+    state.requests_cancelled = 0
+    state.last_request_at = 0.0
+    state.last_request_started_at = 0.0
+    state.active_requests = 0
+    # Deterministic frames: flush every token, no footer prose on the wire
+    # (same conventions as test_stream_transcript_golden).
+    state.args.stream_interval = 1
+    state.args.stats_footer = False
+    state.runtime.tokenizer.encode = lambda _text, **_kwargs: [1, 2, 3]
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3]
+    )
+    fake = _fake_streaming_generation_output(text)
+    monkeypatch.setattr(openai, "generate_mtpk", fake)
+    monkeypatch.setattr(openai, "generate_ar", fake)
+    monkeypatch.setattr(openai, "generate_mtp1", fake, raising=False)
+    return TestClient(create_app(state))
+
+
+def _consume_sse(client: TestClient, route: str, headers: dict, body: dict) -> dict:
+    """Minimal SSE consumption: data: frames, reassembly, final chunk, [DONE]."""
+    with client.stream(
+        "POST", route, headers={**BASE_HEADERS, **headers}, json=body
+    ) as response:
+        assert response.status_code == 200, response.status_code
+        raw = "".join(response.iter_text())
+
+    frames = [
+        json.loads(line.removeprefix("data: "))
+        for line in raw.splitlines()
+        if line.startswith("data: {")
+    ]
+    done_terminal = any(
+        line.strip() == "data: [DONE]" for line in raw.splitlines()
+    )
+    content = ""
+    reasoning = ""
+    tool_calls: dict[int, dict[str, str]] = {}
+    finish_reason = None
+    final_frame = None
+    for frame in frames:
+        for choice in frame.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content += delta.get("content") or ""
+            reasoning += delta.get("reasoning_content") or ""
+            for item in delta.get("tool_calls") or []:
+                if not isinstance(item, dict):
+                    continue
+                slot = tool_calls.setdefault(
+                    int(item.get("index") or 0), {"name": "", "arguments": ""}
+                )
+                function = item.get("function") or {}
+                slot["name"] += function.get("name") or ""
+                slot["arguments"] += function.get("arguments") or ""
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+                final_frame = frame
+    return {
+        "raw": raw,
+        "frames": frames,
+        "done_terminal": done_terminal,
+        "content": content,
+        "reasoning": reasoning,
+        "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
+        "finish_reason": finish_reason,
+        "final_frame": final_frame,
+    }
+
+
+def _assert_stream_golden(name: str, stats: dict) -> None:
+    normalized = _normalize(stats)
+    golden_path = GOLDEN_DIR / f"{name}.json"
+    if UPDATE:
+        GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(json.dumps(normalized, indent=1, sort_keys=True) + "\n")
+        return
+    assert golden_path.exists(), (
+        f"missing golden {golden_path.name}; run MTPLX_UPDATE_GOLDENS=1 pytest "
+        f"tests/test_request_observability_golden.py and review the diff"
+    )
+    golden = json.loads(golden_path.read_text())
+    assert normalized == golden, (
+        f"{name}: streaming observability envelope drifted from golden "
+        f"{golden_path.name} — if intentional, regenerate goldens and explain "
+        f"the diff in the commit"
+    )
+
+
+def test_plain_chat_stream_matches_golden_and_nonstream(monkeypatch):
+    body = {
+        "model": "default",
+        "messages": [{"role": "user", "content": "Reply OK only."}],
+        "max_tokens": 8,
+    }
+
+    stream = _consume_sse(
+        _stream_client(monkeypatch, "OK"),
+        "/v1/chat/completions",
+        {},
+        {**body, "stream": True},
+    )
+    nonstream = (
+        _stream_client(monkeypatch, "OK")
+        .post("/v1/chat/completions", headers=BASE_HEADERS, json=body)
+        .json()
+    )
+
+    # Terminal contract: exactly one [DONE] sentinel closes the stream.
+    assert stream["done_terminal"], "stream must end with data: [DONE]"
+    assert stream["raw"].rstrip().endswith("data: [DONE]")
+
+    # Delta reassembly equals the non-stream content.
+    assert stream["content"] == nonstream["choices"][0]["message"]["content"]
+    assert stream["finish_reason"] == nonstream["choices"][0]["finish_reason"]
+
+    # Final chunk carries the envelope: usage + mtplx_stats + finish_reason.
+    final = stream["final_frame"]
+    assert final is not None, "no finish_reason frame seen"
+    assert final.get("usage"), "final chunk must carry usage"
+    assert final.get("mtplx_stats"), "final chunk must carry mtplx_stats"
+    assert final["usage"]["completion_tokens"] == (
+        nonstream["usage"]["completion_tokens"]
+    )
+
+    _assert_stream_golden("plain_chat_stream", final["mtplx_stats"])
+
+
+def test_tool_call_stream_matches_golden_and_nonstream(monkeypatch):
+    from test_server_openai import _tool_history_messages, _write_tool_schema
+
+    tool_text = (
+        "Let me write the file.\n<tool_call>\n<function=write>\n"
+        "<parameter=filePath>src/app.py</parameter>\n"
+        "<parameter=content>print('hello')\nprint('world')</parameter>\n"
+        "</function>\n</tool_call>"
+    )
+    body = {
+        "model": "default",
+        "messages": _tool_history_messages(),
+        "tools": [_write_tool_schema()],
+        "tool_choice": "auto",
+        "max_tokens": 4096,
+    }
+
+    stream = _consume_sse(
+        _stream_client(monkeypatch, tool_text),
+        "/v1/chat/completions",
+        {},
+        {**body, "stream": True},
+    )
+    nonstream = (
+        _stream_client(monkeypatch, tool_text)
+        .post("/v1/chat/completions", headers=BASE_HEADERS, json=body)
+        .json()
+    )
+    nonstream_message = nonstream["choices"][0]["message"]
+
+    assert stream["done_terminal"], "stream must end with data: [DONE]"
+    assert stream["raw"].rstrip().endswith("data: [DONE]")
+
+    # Tool-call reassembly: streamed fragments rebuild the exact non-stream
+    # tool calls (names and full argument JSON, byte for byte).
+    assert stream["tool_calls"] == [
+        {
+            "name": call["function"]["name"],
+            "arguments": call["function"]["arguments"],
+        }
+        for call in nonstream_message["tool_calls"]
+    ]
+    assert stream["finish_reason"] == "tool_calls"
+    assert nonstream["choices"][0]["finish_reason"] == "tool_calls"
+
+    # KNOWN DIVERGENCE (pinned, not endorsed — 2026-08-16 tail sweep): the
+    # pre-tool-call preamble reaches the non-stream client as `content`
+    # but streams out on the `reasoning_content` channel and is never
+    # reconciled into a content delta. Stream and non-stream therefore
+    # disagree about which channel carries the preamble. The fix belongs
+    # in mtplx/server/openai.py's stream reconcile (owned by the
+    # request-policy lane); when it lands, flip these two assertions to
+    # plain content equality and regenerate this arm's golden.
+    assert nonstream_message["content"] == "Let me write the file."
+    assert stream["content"] == ""
+    assert stream["reasoning"] == "Let me write the file.\n"
+
+    final = stream["final_frame"]
+    assert final is not None, "no finish_reason frame seen"
+    assert final.get("usage"), "final chunk must carry usage"
+    assert final.get("mtplx_stats"), "final chunk must carry mtplx_stats"
+
+    _assert_stream_golden("plain_chat_tool_call_stream", final["mtplx_stats"])

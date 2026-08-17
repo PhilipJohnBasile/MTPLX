@@ -1,24 +1,37 @@
 """Unit tests for engine_session bank-cap env-var overrides."""
 
-import importlib
-
 import pytest
 
 
-def _reload_module():
+def _engine_session():
+    """Import — never reload — the live module.
+
+    Every function under test reads its env vars at call time
+    (``os.environ.get`` inside the function bodies), so the old
+    ``importlib.reload`` here was pure ritual. It was also a process-global
+    leak: reload re-executes the module body in place, replacing the
+    ``EngineSession*``/``EngineSessionBusy`` class objects, so any file
+    that bound them at collection time stopped matching what product code
+    raises afterwards (test_engine_session_concurrency's
+    ``pytest.raises(EngineSessionBusy)`` no longer caught the busy error
+    when this file ran first). A plain import keeps this file hermetic in
+    any run order — and pins call-time env semantics: these tests now fail
+    honestly if env parsing ever regresses to import-time caching.
+    """
     import mtplx.engine_session
-    return importlib.reload(mtplx.engine_session)
+
+    return mtplx.engine_session
 
 
 def test_bank_bytes_from_env_default_when_unset(monkeypatch):
     monkeypatch.delenv("TEST_BANK_BYTES", raising=False)
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 1234) == 1234
 
 
 def test_bank_bytes_from_env_plain_integer(monkeypatch):
     monkeypatch.setenv("TEST_BANK_BYTES", "987654321")
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 0) == 987654321
 
 
@@ -34,31 +47,31 @@ def test_bank_bytes_from_env_plain_integer(monkeypatch):
 ])
 def test_bank_bytes_from_env_with_suffix(monkeypatch, raw, expected):
     monkeypatch.setenv("TEST_BANK_BYTES", raw)
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 0) == expected
 
 
 def test_bank_bytes_from_env_invalid_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("TEST_BANK_BYTES", "not-a-number")
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 5555) == 5555
 
 
 def test_bank_bytes_from_env_empty_string_uses_default(monkeypatch):
     monkeypatch.setenv("TEST_BANK_BYTES", "")
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 7777) == 7777
 
 
 @pytest.mark.parametrize("raw", ["0", "-1", "0G", "-2G"])
 def test_bank_bytes_from_env_nonpositive_uses_default(monkeypatch, raw):
     monkeypatch.setenv("TEST_BANK_BYTES", raw)
-    es = _reload_module()
+    es = _engine_session()
     assert es._bank_bytes_from_env("TEST_BANK_BYTES", 8888) == 8888
 
 
 def test_short_no_history_api_request_is_foreground_by_default():
-    es = _reload_module()
+    es = _engine_session()
     messages = [
         {"role": "system", "content": "Return only the final answer."},
         {"role": "user", "content": "Compute 17 + 29 + 101."},
@@ -77,7 +90,7 @@ def test_short_no_history_api_request_is_foreground_by_default():
 
 
 def test_openwebui_task_header_still_marks_background():
-    es = _reload_module()
+    es = _engine_session()
     messages = [
         {"role": "system", "content": "Return a short title."},
         {"role": "user", "content": "Conversation text"},
@@ -96,7 +109,7 @@ def test_openwebui_task_header_still_marks_background():
 
 
 def test_system_prompt_mismatch_still_marks_background():
-    es = _reload_module()
+    es = _engine_session()
     main_hash = es.hash_text("main chat system")
     messages = [
         {"role": "system", "content": "Return a short title."},
@@ -121,7 +134,7 @@ GIB = 1024**3
 
 
 def _es_with_ram(monkeypatch, total_ram_bytes):
-    es = _reload_module()
+    es = _engine_session()
     monkeypatch.setattr(
         es, "_detect_total_ram_bytes_for_session_bank", lambda: total_ram_bytes
     )
@@ -217,12 +230,12 @@ def test_memory_budget_env_ignored_when_looser_than_ram(monkeypatch):
 
 def test_per_session_explicit_env_clamped_to_budget(monkeypatch):
     monkeypatch.setenv("MTPLX_SESSION_BANK_PER_SESSION_BYTES", "24G")
-    es = _reload_module()
+    es = _engine_session()
     assert es.resolve_session_bank_per_session_bytes(8 * GIB) == 8 * GIB
 
 
 def test_model_weights_bytes_sums_safetensors(tmp_path):
-    es = _reload_module()
+    es = _engine_session()
     (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 1024)
     (tmp_path / "model-00002-of-00002.safetensors").write_bytes(b"y" * 2048)
     (tmp_path / "mtp.safetensors").write_bytes(b"z" * 512)
