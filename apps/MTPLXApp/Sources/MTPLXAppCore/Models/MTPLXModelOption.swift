@@ -1027,11 +1027,16 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static func modelFamily(for model: String) -> String {
-        // Forge provenance outranks any name marker: a renamed or symlinked
-        // dir keeps the family its artifact declares (engine F22 twin —
-        // path markers are the tiebreak, never the authority).
-        if let metadataFamily = modelFamilyFromLocalMetadata(model) {
-            return metadataFamily
+        // PRECISE forge provenance (source repo, assistant-pair marker)
+        // outranks any name marker: a renamed or symlinked dir keeps the
+        // family its artifact declares (engine F22 twin). Architecture ids
+        // are NOT precise — every qwen3-next build of any version reports
+        // the same arch — so arch/model_type-derived family stays a
+        // fallback BELOW the name markers: a version token in the name
+        // must beat the coarse arch mapping (the 3.5 9B pack is a
+        // qwen3-next arch but a qwen3_5 family).
+        if let preciseFamily = modelFamilyFromLocalMetadata(model, preciseOnly: true) {
+            return preciseFamily
         }
         let normalized = Self.normalized(model)
             .replacingOccurrences(of: "_", with: "-")
@@ -1066,6 +1071,12 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             return "glm"
         }
 
+        // Coarse metadata (arch id, model_type): only when no name marker
+        // resolved a version family above.
+        if let metadataFamily = modelFamilyFromLocalMetadata(model, preciseOnly: false) {
+            return metadataFamily
+        }
+
         let marker = URL(fileURLWithPath: NSString(string: model).expandingTildeInPath)
             .appendingPathComponent("mtplx_pair.json")
             .path
@@ -1086,7 +1097,12 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         ) != nil
     }
 
-    private static func modelFamilyFromLocalMetadata(_ model: String) -> String? {
+    /// `preciseOnly: true` evaluates only the signals that identify one
+    /// exact family (the assistant-pair marker and the forge source repo);
+    /// `preciseOnly: false` evaluates only the coarse signals (arch ids and
+    /// model_type, which are shared across model versions). The caller runs
+    /// precise above the name markers and coarse below them.
+    private static func modelFamilyFromLocalMetadata(_ model: String, preciseOnly: Bool) -> String? {
         let expanded = NSString(string: model).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         var isDirectory: ObjCBool = false
@@ -1096,15 +1112,19 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             return nil
         }
 
-        if FileManager.default.fileExists(atPath: url.appendingPathComponent("mtplx_pair.json").path) {
-            return "gemma4"
-        }
-
-        if let runtime = MTPLXRuntimeMetadata.read(at: url.appendingPathComponent("mtplx_runtime.json").path) {
-            if let sourceRepo = runtime.forgeProvenance?.sourceRepo {
+        if preciseOnly {
+            if FileManager.default.fileExists(atPath: url.appendingPathComponent("mtplx_pair.json").path) {
+                return "gemma4"
+            }
+            if let runtime = MTPLXRuntimeMetadata.read(at: url.appendingPathComponent("mtplx_runtime.json").path),
+               let sourceRepo = runtime.forgeProvenance?.sourceRepo {
                 let sourceFamily = modelFamily(for: sourceRepo)
                 if sourceFamily != "unknown" { return sourceFamily }
             }
+            return nil
+        }
+
+        if let runtime = MTPLXRuntimeMetadata.read(at: url.appendingPathComponent("mtplx_runtime.json").path) {
             if let archFamily = modelFamily(forArchitectureID: runtime.archId) {
                 return archFamily
             }
