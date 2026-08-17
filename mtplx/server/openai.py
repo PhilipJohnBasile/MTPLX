@@ -21378,8 +21378,12 @@ class _ThinkingContentStreamSplitter:
                 out.append((channel, text))
                 continue
             if text.lstrip().startswith(self._TOOL_CONTROL_MARKERS):
+                # The pre-tool separator ("...\n\n<tool_call>") rides at the
+                # head of the markup chunk; non-stream strips it, so drop it
+                # here too along with any held run. The markup itself passes
+                # verbatim for the tool translator.
                 self._stream_trailing_ws_hold = ""
-                out.append((channel, text))
+                out.append((channel, text.lstrip()))
                 continue
             if self._stream_lead_ws_pending:
                 text = text.lstrip()

@@ -167,7 +167,9 @@ def test_prompt_scoring_arrays_are_openai_aligned(monkeypatch):
     assert logprobs["token_logprobs"][0] is None
     assert logprobs["token_logprobs"][1:] == [-0.1, -0.1, -0.1]
     assert len(logprobs["top_logprobs"]) == 4
-    assert logprobs["top_logprobs"][0] is None
+    # {} at index 0, never null: nothing predicts position 0, but harness
+    # KL parsers iterate entries with .items() and a null crashes them.
+    assert logprobs["top_logprobs"][0] == {}
     # top_logprobs[i] is the distribution that predicted tokens[i]: the
     # token's own string is a key, mapped to its own logprob.
     for index in (1, 2, 3):

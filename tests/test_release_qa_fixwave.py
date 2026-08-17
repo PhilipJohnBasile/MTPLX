@@ -216,6 +216,24 @@ def test_stream_splitter_preserves_interior_whitespace():
     assert _collect(out) == "para one.\n\npara two."
 
 
+def test_stream_splitter_drops_separator_ahead_of_tool_markup():
+    splitter = srv._ThinkingContentStreamSplitter(
+        thinking_enabled=False,
+        trim_visible_content_edges=True,
+    )
+    out = []
+    for piece in [
+        "I'll check.",
+        "\n\n<tool_call>\n<function=f>\n</function>\n</tool_call>",
+    ]:
+        out.extend(splitter.feed(piece))
+    out.extend(splitter.finish())
+    joined = _collect(out)
+    assert joined.startswith("I'll check.<tool_call>") or (
+        "I'll check." in joined and "\n\n<tool_call" not in joined
+    )
+
+
 def test_normalizer_default_keeps_bytes_exact():
     # Canonicalization must never adopt the trim: transcript identity is
     # byte-exact (F11 postcommit extension).
