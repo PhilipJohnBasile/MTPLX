@@ -2898,7 +2898,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit machine-readable cards"
     )
     forge_discover_p.add_argument("--query", help="Search text; defaults to MTPLX")
-    forge_discover_p.add_argument("--limit", type=int, default=20)
+    # 100 = the engine's per-call cap and the app wall's page size; 20 hid
+    # everything below the download-rank fold (same trap as the old wall).
+    forge_discover_p.add_argument("--limit", type=int, default=100)
     forge_discover_p.add_argument("--offset", type=int, default=0)
     forge_discover_p.set_defaults(func=cmd_forge_public)
 

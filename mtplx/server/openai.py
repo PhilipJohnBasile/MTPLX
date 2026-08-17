@@ -13130,12 +13130,9 @@ def _memory_attribution(state: Any) -> dict[str, Any]:
             from mtplx.engine_session import model_weights_bytes
 
             root = Path(str(state.args.model))
+            # model_weights_bytes scans recursively and already counts the
+            # nested MTP sidecar — no manual add, or it double-counts.
             weights = int(model_weights_bytes(root) or 0)
-            mtp_dir = root / "mtp"
-            if mtp_dir.is_dir():
-                weights += sum(
-                    shard.stat().st_size for shard in mtp_dir.glob("*.safetensors")
-                )
         except Exception:
             weights = 0
         state._model_weights_bytes_cache = weights
