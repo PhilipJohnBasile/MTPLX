@@ -4139,16 +4139,18 @@ def _anthropic_stop_reason(
     has_tool_calls: bool,
     matched_stop: str | None = None,
 ) -> str:
-    if has_tool_calls or finish_reason == "tool_calls":
-        return "tool_use"
+    # Priority mirrors the Anthropic wire contract: a budget cut is
+    # max_tokens whatever the turn contains (a truncated tool_use block
+    # reported as "tool_use" would make clients execute a cut batch), then
+    # a client stop_sequences match, then tool_use, then natural end_turn.
     if finish_reason == "length":
         return "max_tokens"
     if matched_stop:
         # A client stop_sequences match must surface as stop_sequence per
         # the Anthropic wire contract, not as a natural end_turn (QA-117).
         return "stop_sequence"
-    if finish_reason == "stop":
-        return "end_turn"
+    if has_tool_calls or finish_reason == "tool_calls":
+        return "tool_use"
     return "end_turn"
 
 
@@ -12496,6 +12498,9 @@ def _request_client_hint_from_headers(
     launch_client = os.getenv("MTPLX_CLIENT", "").strip()
     if launch_client:
         return launch_client.lower().replace(" ", "_")
+    if "claude-cli" in user_agent_lower:
+        # Claude Code sends "claude-cli/<version> (external, cli)".
+        return "claude_code"
     if "opencode" in user_agent_lower:
         return "opencode"
     if "android" in user_agent_lower or "jetbrains" in user_agent_lower:
@@ -15517,6 +15522,9 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "tool_parse_status",
     "tool_calls_emitted",
     "tool_calls_truncated_parallel_disabled",
+    # Stamped only when a length cap cut a tool-call turn (#196/#197), so
+    # quiet envelopes stay byte-stable.
+    "tool_calls_truncated_by_length",
     "raw_tool_markup_suppressed",
     "legacy_bridge_used",
     "hidden_generation_repair_used",
@@ -15645,6 +15653,15 @@ PUBLIC_POSTCOMMIT_KEYS = (
 def _public_mtplx_stats(generated: dict[str, Any]) -> dict[str, Any]:
     stats = generated.get("stats") or {}
     public = {key: stats[key] for key in PUBLIC_MTPLX_STATS_KEYS if key in stats}
+    if stats.get("repetition_stop_triggered"):
+        # Exactness law: a repetition-guard stop must be distinguishable
+        # from a natural "stop" in every eval arm. Stamped only when it
+        # fired so quiet envelopes stay byte-stable for existing clients
+        # (and the golden matrix).
+        public["repetition_stop_triggered"] = True
+        reason = stats.get("repetition_stop_reason")
+        if reason is not None:
+            public["repetition_stop_reason"] = str(reason)
     postcommit = stats.get("session_postcommit_snapshot")
     if isinstance(postcommit, dict):
         public["session_postcommit_snapshot"] = {
@@ -17352,6 +17369,33 @@ def _uncapped_response_lease_tokens_from_env() -> int | None:
         return None
 
 
+def _reject_prompt_over_context(state: ServerState, prompt_token_count: int) -> None:
+    """400 when the prompt alone fills or overflows the context window.
+
+    Without this the request would enter generation with remaining_context
+    floored to 1 and produce a single token — a silent degradation a
+    benchmark ladder charts as engine speed. OpenAI parity: error code
+    context_length_exceeded with both numbers in the message. Called early
+    in the chat/completions handlers (a real 400 before any stream starts)
+    and again inside _generation_params as the backstop for every lane.
+    """
+    context_window = int(state.context_window)
+    if int(prompt_token_count) < context_window:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "message": (
+                f"This model's maximum context length is {context_window} "
+                f"tokens, but the prompt alone has {int(prompt_token_count)} "
+                "tokens, leaving no room to generate. Reduce the prompt or "
+                "serve with a larger --context-window."
+            ),
+            "code": "context_length_exceeded",
+        },
+    )
+
+
 def _generation_params(
     state: ServerState,
     *,
@@ -17363,6 +17407,7 @@ def _generation_params(
     presence_penalty: float | None = None,
     frequency_penalty: float | None = None,
 ) -> tuple[int, SamplerConfig, dict[str, Any]]:
+    _reject_prompt_over_context(state, prompt_token_count)
     remaining_context = max(1, int(state.context_window) - int(prompt_token_count))
     request_max_tokens = None if max_tokens is None else int(max_tokens)
     semantic_requested_max = (
@@ -17376,6 +17421,20 @@ def _generation_params(
         )
     after_server_cap = semantic_requested_max
     semantic_effective_max = max(1, min(after_server_cap, remaining_context))
+    if semantic_effective_max < after_server_cap:
+        # Visible clamp (exactness law): context_cap_applied plus the
+        # effective value ride in the stats below; one server log line so
+        # the trail exists even for clients that drop mtplx_stats.
+        LOGGER.warning(
+            "max_tokens clamped to remaining context",
+            extra={
+                "requested_max_tokens": request_max_tokens,
+                "effective_max_tokens": int(semantic_effective_max),
+                "remaining_context_tokens": int(remaining_context),
+                "prompt_tokens": int(prompt_token_count),
+                "context_window": int(state.context_window),
+            },
+        )
     decode_lease_tokens = semantic_effective_max
     uncapped_response_requested = request_max_tokens is None
     uncapped_response_lease_tokens: int | None = None
@@ -18463,10 +18522,16 @@ async def _prompt_scoring_response(
 ) -> JSONResponse:
     """/v1/completions echo+logprobs+max_tokens=0: teacher-forced prompt scoring.
 
-    The KL-divergence lane contract (kl_capture.py, llama.cpp-compatible):
-    ``logprobs.top_logprobs[i]`` is a token->logprob dict for the model's
-    distribution AFTER prefix tokens[..i] (it predicts token i+1); no null
-    placeholder entries. One prefill-shaped pass, chunk-bounded logits,
+    The KL-divergence lane contract (OpenAI echo+logprobs alignment): all
+    four arrays have length n with index i describing prompt token i.
+    ``token_logprobs[0]`` and ``top_logprobs[0]`` are null (the first token
+    has no conditional); ``top_logprobs[i]`` is the token->logprob dict of
+    the distribution that predicted tokens[i] and always contains tokens[i]
+    itself ("up to k+1 entries"). ``token_ids`` rides along because string
+    keys collapse for multi-byte pieces; ``text``/``text_offset`` come from
+    the same per-token decomposition so offset slicing is exact. Correct
+    under both harness zip conventions (zip(tokens, token_logprobs) and the
+    skip-nulls variant). One prefill-shaped pass, chunk-bounded logits,
     zero decode-hot-path involvement.
     """
 
@@ -18507,25 +18572,41 @@ async def _prompt_scoring_response(
     scored = await asyncio.to_thread(_score_under_lock)
 
     token_strings = [tokenizer.decode([int(token)]) for token in prompt_ids]
+    # text and text_offset share one per-token decomposition so
+    # text[text_offset[i] : text_offset[i] + len(tokens[i])] == tokens[i]
+    # exactly, ASCII or not (batch decode may join pieces differently).
+    echoed_text = "".join(token_strings)
     text_offsets: list[int] = []
     offset = 0
     for token_text in token_strings:
         text_offsets.append(offset)
         offset += len(token_text)
-    top_logprob_dicts: list[dict[str, float]] = []
-    for entries in scored["positions"]:
+    # Engine position i predicts prompt token i+1; shift right by one with
+    # null at index 0 so array index i describes token i (OpenAI echo
+    # semantics — correct under both harness zip conventions).
+    token_logprobs: list[float | None] = [None]
+    token_logprobs.extend(float(value) for value in scored["token_logprobs"])
+    top_logprob_dicts: list[dict[str, float] | None] = [None]
+    for position, entries in enumerate(scored["positions"]):
         row: dict[str, float] = {}
-        for token_id, logprob in entries:
-            token_text = tokenizer.decode([int(token_id)])
-            # Distinct ids can decode to the same display string; keep the
-            # highest logprob (entries arrive sorted descending).
-            if token_text not in row:
-                row[token_text] = float(logprob)
+        if top_k > 0:
+            for token_id, logprob in entries:
+                token_text = tokenizer.decode([int(token_id)])
+                # Distinct ids can decode to the same display string; keep
+                # the highest logprob (entries arrive sorted descending).
+                if token_text not in row:
+                    row[token_text] = float(logprob)
+        # The scored token always appears in its own map (OpenAI: "up to
+        # k+1 entries"); a ranked-out token absent from its map would
+        # inflate every string-keyed KL measurement.
+        actual_text = token_strings[position + 1]
+        if actual_text not in row:
+            row[actual_text] = float(scored["token_logprobs"][position])
         top_logprob_dicts.append(row)
 
     if request_observability is not None:
         request_observability["prompt_scoring"] = True
-        request_observability["prompt_scoring_positions"] = len(top_logprob_dicts)
+        request_observability["prompt_scoring_positions"] = len(scored["positions"])
         request_observability["prompt_scoring_top_k"] = int(top_k)
 
     payload = {
@@ -18536,15 +18617,16 @@ async def _prompt_scoring_response(
         "choices": [
             {
                 "index": 0,
-                "text": tokenizer.decode(list(prompt_ids)),
+                "text": echoed_text,
                 "finish_reason": "length",
                 "logprobs": {
                     "tokens": token_strings,
-                    "token_logprobs": [
-                        float(value) for value in scored["token_logprobs"]
-                    ],
+                    "token_logprobs": token_logprobs,
                     "top_logprobs": top_logprob_dicts,
                     "text_offset": text_offsets,
+                    # Stable identity: string keys collapse when byte-level
+                    # pieces decode to U+FFFD; ids never do.
+                    "token_ids": [int(token) for token in prompt_ids],
                 },
             }
         ],
@@ -18556,7 +18638,7 @@ async def _prompt_scoring_response(
         "mtplx_stats": {
             "mode": "prompt_scoring",
             "prompt_tokens": len(prompt_ids),
-            "scored_positions": len(top_logprob_dicts),
+            "scored_positions": len(scored["positions"]),
             "top_k": int(top_k),
             "prompt_eval_time_s": float(scored["elapsed_s"]),
         },
@@ -24834,6 +24916,7 @@ def create_app(state: ServerState) -> FastAPI:
                 depth=request_depth,
                 resolved_mtp_depth=effective_request_depth,
             )
+        _reject_prompt_over_context(state, len(prompt_ids))
         current_system_hash = system_prompt_hash(messages_for_generation)
         if current_system_hash is not None and not background:
             state.main_system_prompt_hash = current_system_hash
@@ -28153,7 +28236,17 @@ def create_app(state: ServerState) -> FastAPI:
             tool_calls = None
             extraction = None
         if tool_calls:
-            generated["finish_reason"] = "tool_calls"
+            # Honest finish on budget cuts (#196/#197), mirroring the
+            # streaming twin: a length-truncated turn that still parsed
+            # complete tool calls must keep "length" — reporting
+            # "tool_calls" would make the client treat the batch as
+            # complete while a trailing call was cut and swallowed.
+            if str(generated.get("finish_reason") or "") == "length":
+                generated["stats"]["tool_calls_truncated_by_length"] = True
+                finish_reason = "length"
+            else:
+                generated["finish_reason"] = "tool_calls"
+                finish_reason = "tool_calls"
             generated["stats"]["tool_parse_success"] = True
             generated["stats"]["tool_call_count"] = len(tool_calls)
             _record_tool_parse_event(
@@ -28179,12 +28272,6 @@ def create_app(state: ServerState) -> FastAPI:
                 "content": assistant_content or None,
                 "tool_calls": tool_calls,
             }
-            # Honest finish on budget cuts (#196/#197): see the streaming twin.
-            if str(generated.get("finish_reason") or "") == "length":
-                generated["stats"]["tool_calls_truncated_by_length"] = True
-                finish_reason = "length"
-            else:
-                finish_reason = "tool_calls"
         else:
             reasoning_text = ""
             if extraction is not None and extraction.status == "malformed_as_content":
@@ -28345,6 +28432,7 @@ def create_app(state: ServerState) -> FastAPI:
             # surface as a 500 with a Python exception string — external
             # endpoint-discovery probes printed it as "python errors".
             raise HTTPException(status_code=400, detail="prompt must not be empty")
+        _reject_prompt_over_context(state, len(prompt_ids))
         # Same admission-time yield as chat: a completions request holds no
         # session, so every pending idle commit is a stranger's — none can
         # help this request and any can stall it. Failures surface exactly
@@ -28392,8 +28480,18 @@ def create_app(state: ServerState) -> FastAPI:
         response_id = f"cmpl-{uuid.uuid4().hex}"
         created = int(time.time())
 
-        requested_logprobs = int(request.logprobs or 0)
-        if bool(request.echo) and requested_logprobs > 0:
+        # OpenAI semantics: logprobs=0 is a real request ("sampled token
+        # logprob only"), not absence — the gate must never be truthiness
+        # based, or a harness sending 0 silently loses its logprobs lane.
+        requested_logprobs = (
+            None if request.logprobs is None else int(request.logprobs)
+        )
+        if requested_logprobs is not None and requested_logprobs < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"logprobs must be >= 0, got {requested_logprobs}",
+            )
+        if bool(request.echo) and requested_logprobs is not None:
             if int(request.max_tokens or 0) != 0:
                 raise HTTPException(
                     status_code=400,
@@ -28412,13 +28510,14 @@ def create_app(state: ServerState) -> FastAPI:
                 created=created,
                 request_observability=request_observability,
             )
-        if requested_logprobs > 0:
+        if requested_logprobs is not None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "logprobs on /v1/completions requires echo=true with "
-                    "max_tokens=0 (prompt scoring); decode-time logprobs are "
-                    "not supported yet"
+                    "logprobs on /v1/completions (including logprobs=0) "
+                    "requires echo=true with max_tokens=0 (prompt scoring); "
+                    "decode-time logprobs for generated tokens are not "
+                    "supported yet — omit logprobs to generate"
                 ),
             )
 
@@ -28595,7 +28694,31 @@ def create_app(state: ServerState) -> FastAPI:
                             generated = item
                             for chunk in emit_text(decoder.finish()):
                                 yield chunk
+                            emitted_before_flush = stop_monitor.emitted_text
                             held_text = stop_monitor.flush()
+                            if (
+                                stop_sequences
+                                and not stop_hit
+                                and not stop_monitor.stopped
+                            ):
+                                # Post-trim safety net, parity with the
+                                # non-stream path below: a stop match that
+                                # completes only in the engine's final text
+                                # (never in the streamed deltas) must still
+                                # trim the unsent tail and finish "stop" —
+                                # emitted text never includes a stop string.
+                                trimmed_engine, matched_stop = (
+                                    _trim_text_at_stop_sequences(
+                                        str(generated.get("text") or ""),
+                                        stop_sequences,
+                                    )
+                                )
+                                if matched_stop is not None:
+                                    held_text = trimmed_engine[
+                                        len(emitted_before_flush) :
+                                    ]
+                                    stop_monitor.stopped = True
+                                    stop_monitor.matched_stop = matched_stop
                             for chunk in emit_text(held_text, monitor=False):
                                 yield chunk
                             break
@@ -28776,17 +28899,23 @@ def create_app(state: ServerState) -> FastAPI:
         _record_tool_parse_event(state, event="openai_error_response")
         detail_payload = exc.detail if isinstance(exc.detail, dict) else None
         message = str(exc.detail)
+        code = type(exc).__name__
         if detail_payload is not None:
             detail_message = detail_payload.get("message")
             if isinstance(detail_message, str) and detail_message:
                 message = detail_message
+            # A structured detail may carry an OpenAI wire code (e.g.
+            # context_length_exceeded) that harnesses match on exactly.
+            detail_code = detail_payload.get("code")
+            if isinstance(detail_code, str) and detail_code:
+                code = detail_code
         return JSONResponse(
             status_code=exc.status_code,
             headers=getattr(exc, "headers", None),
             content=_openai_error_content(
                 message,
                 status_code=exc.status_code,
-                code=type(exc).__name__,
+                code=code,
                 detail=detail_payload,
             ),
         )

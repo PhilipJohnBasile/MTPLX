@@ -2610,9 +2610,10 @@ def test_anthropic_messages_rejects_empty_request_before_generation():
 
 
 def test_completions_prompt_scoring_contract(monkeypatch):
-    """echo+logprobs+max_tokens=0 returns the KL-lane shape: all-dict
-    top_logprobs where entry i predicts token i+1 (llama.cpp-compatible,
-    kl_capture.py-consumable), token_logprobs for tokens 1..n-1."""
+    """echo+logprobs+max_tokens=0 returns the KL-lane shape with OpenAI
+    alignment: all arrays length n, null token_logprobs/top_logprobs at
+    index 0, entry i describing prompt token i (correct under both harness
+    zip conventions), plus a token_ids identity array."""
 
     state = _prompt_scoring_state()
     prompt = "abcd"  # CaptureTokenizer: 1 char = 1 token (ords)
@@ -2650,13 +2651,15 @@ def test_completions_prompt_scoring_contract(monkeypatch):
     assert choice["text"] == "abcd"
     logprobs = choice["logprobs"]
     assert logprobs["tokens"] == ["a", "b", "c", "d"]
-    assert len(logprobs["top_logprobs"]) == 3
-    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"])
-    # Position i predicts token i+1 and entries are token-string keyed.
-    assert logprobs["top_logprobs"][0]["b"] == pytest.approx(-0.1)
-    assert logprobs["top_logprobs"][1]["c"] == pytest.approx(-0.1)
-    assert logprobs["token_logprobs"] == [-0.1, -0.1, -0.1]
+    assert len(logprobs["top_logprobs"]) == 4
+    assert logprobs["top_logprobs"][0] is None
+    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"][1:])
+    # Entry i is the distribution that predicted token i, string-keyed.
+    assert logprobs["top_logprobs"][1]["b"] == pytest.approx(-0.1)
+    assert logprobs["top_logprobs"][2]["c"] == pytest.approx(-0.1)
+    assert logprobs["token_logprobs"] == [None, -0.1, -0.1, -0.1]
     assert logprobs["text_offset"] == [0, 1, 2, 3]
+    assert logprobs["token_ids"] == [97, 98, 99, 100]
     assert body["usage"] == {
         "prompt_tokens": 4,
         "completion_tokens": 0,
@@ -3081,6 +3084,9 @@ def test_opencode_initial_coding_request_uses_compact_mtplx_agent_prompt(monkeyp
 def test_chat_long_context_depth_cap_resolves_runtime_depth(monkeypatch):
     captured: dict[str, object] = {}
     state = _fake_state()
+    # The 12506-token prompt must fit: over-context prompts are a 400
+    # (context_length_exceeded) by contract, not an implicit pass-through.
+    state.context_window = 131072
     client = TestClient(create_app(state))
 
     monkeypatch.setenv("MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY", "auto")
@@ -3134,7 +3140,10 @@ def test_chat_long_context_depth_cap_resolves_runtime_depth(monkeypatch):
 
 def test_opencode_short_context_preserves_depth3(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 5000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
@@ -3174,7 +3183,10 @@ def test_opencode_short_context_preserves_depth3(monkeypatch):
 
 def test_opencode_short_context_depth_policy_respects_explicit_depth(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 5000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
@@ -3215,7 +3227,10 @@ def test_opencode_short_context_depth_policy_respects_explicit_depth(monkeypatch
 
 def test_opencode_short_context_depth_policy_keeps_depth3_above_threshold(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 8000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 8000
@@ -9436,6 +9451,10 @@ def test_read_only_force_answer_stream_fallback_emits_without_marker(monkeypatch
 def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatch):
     monkeypatch.setenv("MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS", "2")
     state = _fake_streaming_session_state()
+    # The char-level tokenizer plus the injected force-answer contract
+    # renders past the 4096-token default; over-context prompts are a 400
+    # (context_length_exceeded) by contract now.
+    state.context_window = 32768
     state.args.stream_interval = 1
     captured: dict[str, object] = {}
     client = TestClient(create_app(state))

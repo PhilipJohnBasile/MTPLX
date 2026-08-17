@@ -145,7 +145,7 @@
  "opencode_prompt_contract_profile": "none",
  "opencode_short_context_depth_policy": {
   "active": false,
-  "client": null,
+  "client": "claude_code",
   "effective_depth": 3,
   "explicit_depth": false,
   "prompt_tokens": 3,
@@ -213,8 +213,8 @@
  "remaining_context_tokens": 4093,
  "repair_time_by_reject_depth_s": {},
  "repair_time_s": "<float>",
- "request_client_hint": null,
- "request_client_label": "openai",
+ "request_client_hint": "claude_code",
+ "request_client_label": "claude_code",
  "request_effective_message_chars": [
   17
  ],
