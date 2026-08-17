@@ -333,6 +333,12 @@ def _resolve_completions_policy(
     observability["request_client_hint"] = srv._request_client_hint_from_headers(
         headers, metadata
     )
+    # Behavior branches key on per-request evidence only; the env-inclusive
+    # hint above is an observability label (F1 — the launch env must never
+    # steer another client's request).
+    observability["request_client_evidence"] = srv._request_client_hint_from_request(
+        headers, metadata
+    )
     observability["request_generation_mode"] = request_generation_mode
     observability["request_depth"] = int(request_depth)
     observability["request_effective_mtp_depth"] = int(effective_request_depth)
@@ -701,6 +707,9 @@ def resolve_request_policy(
     )
 
     observability["request_client_hint"] = srv._request_client_hint_from_headers(
+        headers, metadata
+    )
+    observability["request_client_evidence"] = srv._request_client_hint_from_request(
         headers, metadata
     )
     server_reasoning_mode = getattr(state.args, "reasoning", None)

@@ -2374,6 +2374,16 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
             print(f"{marker:4} {check['id']}: {check['observed']}")
             if check.get("fix") and check["status"] != "pass":
                 print(f"     fix: {check['fix']}")
+        # The compiled-verify fence is the answer to "why does long context
+        # feel different" (#255) — the summary view must carry it too, not
+        # only the full report (F15).
+        fence = report.get("compiled_verify") or {}
+        if fence.get("fenced"):
+            print(
+                "compiled verify fence: "
+                f"<= {fence.get('max_context_tokens')} tokens "
+                f"({fence.get('max_context_source')})"
+            )
         if report.get("bundle"):
             print(f"bundle: {report['bundle']['bundle_dir']}")
             print(f"zip: {report['bundle']['bundle_zip']}")

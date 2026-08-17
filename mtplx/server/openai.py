@@ -3193,6 +3193,10 @@ class _BatchedARGenerationService:
             "server_seed": int(job.seed),
         }
         stats.update(job.request_observability)
+        # AR service lane: never surface draft-sampler policy stamps as
+        # draft stats on an AR response (F8 — absent, not null-with-value).
+        for key in [k for k in stats if k.startswith("draft_sampler")]:
+            del stats[key]
         stats.update(
             {
                 "cached_tokens": int(job.cached_tokens),
@@ -15623,9 +15627,7 @@ def _auto_clear_mlx_cache_after_completed_request(
         return None
     request_observability = request_observability or {}
     client = str(
-        request_observability.get("request_client_hint")
-        or request_observability.get("request_client_label")
-        or ""
+        request_observability.get("request_client_evidence") or ""
     ).lower()
     if raw in {"1", "true", "yes", "always"}:
         reason = "after_request_forced"
@@ -16417,7 +16419,9 @@ def _opencode_default_sampler_override(
     default_top_p: float,
     default_top_k: int,
 ) -> SamplerConfig | None:
-    client_hint = str(request_observability.get("request_client_hint") or "").lower()
+    client_hint = str(
+        request_observability.get("request_client_evidence") or ""
+    ).lower()
     if "opencode" not in client_hint:
         return None
     simple_chitchat = _is_simple_chitchat_text(_last_user_text(messages))
@@ -18415,6 +18419,11 @@ def _finalize_batched_ar_generation(
             envelope[key] = stats[key]
     if request_observability:
         envelope.update(request_observability)
+    # This whole lane is AR: request-policy stamps (e.g. the OpenCode
+    # launch_default tier) must not read as draft stats on an AR response
+    # (F8 — absent, not null-with-value). The serial lane scrubs the same way.
+    for key in [k for k in envelope if k.startswith("draft_sampler")]:
+        del envelope[key]
     cleanup = _auto_clear_mlx_cache_after_completed_request(
         state,
         session_id=session_id,
@@ -19303,7 +19312,11 @@ async def _prompt_scoring_response(
     # semantics — correct under both harness zip conventions).
     token_logprobs: list[float | None] = [None]
     token_logprobs.extend(float(value) for value in scored["token_logprobs"])
-    top_logprob_dicts: list[dict[str, float] | None] = [None]
+    # Index 0 of top_logprobs is an EMPTY DICT, not null: nothing predicts
+    # position 0 (token_logprobs[0] stays null per OpenAI echo semantics),
+    # but harness KL parsers iterate top_logprobs entries with .items() and
+    # a null first element crashes them. {} carries the same meaning safely.
+    top_logprob_dicts: list[dict[str, float]] = [{}]
     for position, entries in enumerate(scored["positions"]):
         row: dict[str, float] = {}
         if top_k > 0:
@@ -19314,11 +19327,14 @@ async def _prompt_scoring_response(
                 if token_text not in row:
                     row[token_text] = float(logprob)
         # The scored token always appears in its own map (OpenAI: "up to
-        # k+1 entries"); a ranked-out token absent from its map would
-        # inflate every string-keyed KL measurement.
+        # k+1 entries") and its entry always carries the TRUE scored value:
+        # when a higher-ranked entry decodes to the same display string
+        # (byte-fallback pieces collapsing to U+FFFD), a keep-first policy
+        # would leave the other token's logprob under this key and
+        # string-keyed KL readers would zip a wrong number against
+        # token_logprobs[i].
         actual_text = token_strings[position + 1]
-        if actual_text not in row:
-            row[actual_text] = float(scored["token_logprobs"][position])
+        row[actual_text] = float(scored["token_logprobs"][position])
         top_logprob_dicts.append(row)
 
     if request_observability is not None:
@@ -21257,7 +21273,17 @@ class _ThinkingContentStreamSplitter:
         recover_unclosed_reasoning_as_content: bool = True,
         start_inside_thinking: bool = True,
         suppress_orphan_tool_markup: bool = False,
+        trim_visible_content_edges: bool = False,
     ) -> None:
+        # Live-SSE lanes only (stream/non-stream text parity): the
+        # non-stream cleaner ends with a global strip(), so streamed
+        # content deltas must concatenate to the same edge-stripped text
+        # (the model separates "</think>" from prose with "\n\n", which
+        # otherwise leaks as a leading content delta). The canonicalization
+        # normalizer must NOT set this — transcript identity is byte-exact.
+        self._trim_visible_content_edges = bool(trim_visible_content_edges)
+        self._stream_lead_ws_pending = True
+        self._stream_trailing_ws_hold = ""
         self._thinking_enabled = thinking_enabled
         self._recover_unclosed_reasoning_as_content = (
             recover_unclosed_reasoning_as_content
@@ -21329,9 +21355,48 @@ class _ThinkingContentStreamSplitter:
             return []
         if not self._thinking_enabled:
             self._pending += text
-            return self._drain_disabled(final=False)
+            return self._trim_visible_edges(self._drain_disabled(final=False))
         self._pending += text
-        return self._drain(final=False)
+        return self._trim_visible_edges(self._drain(final=False))
+
+    def _trim_visible_edges(
+        self, chunks: list[tuple[str, str]], *, final: bool = False
+    ) -> list[tuple[str, str]]:
+        """Make streamed content concatenate to the non-stream strip().
+
+        Leading whitespace-only content is swallowed until the first visible
+        character; a trailing whitespace run is held and dropped at finish or
+        ahead of tool-call markup (interior whitespace passes untouched, so
+        markdown structure is preserved). Tool-protocol markup chunks are
+        never padded or trimmed — the tool translator consumes them verbatim.
+        """
+        if not self._trim_visible_content_edges:
+            return chunks
+        out: list[tuple[str, str]] = []
+        for channel, text in chunks:
+            if channel != "content" or not text:
+                out.append((channel, text))
+                continue
+            if text.lstrip().startswith(self._TOOL_CONTROL_MARKERS):
+                self._stream_trailing_ws_hold = ""
+                out.append((channel, text))
+                continue
+            if self._stream_lead_ws_pending:
+                text = text.lstrip()
+                if not text:
+                    continue
+                self._stream_lead_ws_pending = False
+            if self._stream_trailing_ws_hold:
+                text = self._stream_trailing_ws_hold + text
+                self._stream_trailing_ws_hold = ""
+            body = text.rstrip()
+            if len(body) != len(text):
+                self._stream_trailing_ws_hold = text[len(body):]
+            if body:
+                out.append((channel, body))
+        if final:
+            self._stream_trailing_ws_hold = ""
+        return out
 
     def finish(
         self,
@@ -21389,7 +21454,7 @@ class _ThinkingContentStreamSplitter:
             if recovered:
                 self.tool_preamble_recovered_content = recovered
         self._inside_thinking = False
-        return chunks
+        return self._trim_visible_edges(chunks, final=True)
 
     _ORPHAN_OPENERS = ("<tool_call", "<function=")
     _ORPHAN_CLOSERS = ("</tool_call>", "</function>")
@@ -21914,6 +21979,7 @@ def _stream_splitter_for_state(
         recover_unclosed_reasoning_as_content=recover_unclosed_reasoning_as_content,
         start_inside_thinking=start_inside_thinking,
         suppress_orphan_tool_markup=suppress_orphan_tool_markup,
+        trim_visible_content_edges=True,
     )
 
 
@@ -26633,7 +26699,7 @@ def create_app(state: ServerState) -> FastAPI:
                     else None
                 )
                 stream_client_hint = str(
-                    request_observability.get("request_client_hint") or ""
+                    request_observability.get("request_client_evidence") or ""
                 ).lower()
                 single_tool_call_stream = _single_tool_call_stream_policy(
                     parallel_tool_calls=_request_parallel_tool_calls(request),

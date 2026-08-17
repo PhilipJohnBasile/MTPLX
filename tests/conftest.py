@@ -10,7 +10,24 @@ override these variables with their own fixtures.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+
+def pytest_configure(config):
+    # A leaked MTPLX_UPDATE_GOLDENS=1 turns every golden test into a
+    # write-then-return no-op and the suite reports green with zero
+    # verification. Regeneration is a deliberate local act: run it as
+    # MTPLX_UPDATE_GOLDENS=1 MTPLX_UPDATE_GOLDENS_ACK=yes pytest ...
+    if os.environ.get("MTPLX_UPDATE_GOLDENS") and not os.environ.get(
+        "MTPLX_UPDATE_GOLDENS_ACK"
+    ):
+        raise pytest.UsageError(
+            "MTPLX_UPDATE_GOLDENS is set: golden tests would silently skip "
+            "comparison. Unset it, or acknowledge regeneration explicitly "
+            "with MTPLX_UPDATE_GOLDENS_ACK=yes."
+        )
 
 
 @pytest.fixture(autouse=True)

@@ -80,6 +80,51 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Streamed text now concatenates to exactly the non-stream text.** The
+  model separates `</think>` from its answer with a blank line, and the
+  stream lane leaked that separator (and a trailing one before tool calls)
+  as content deltas while the non-stream lane stripped it, so diffing the
+  two transports at temperature 0 showed a whitespace mismatch on every
+  thinking response. Streamed content is edge-trimmed on the wire the same
+  way the non-stream cleaner strips it; interior whitespace (markdown
+  structure) is untouched, and transcript canonicalization stays byte-exact.
+- **Batched-AR responses no longer carry draft-sampler stamps.** Under
+  concurrency, requests that ride the batched AR lane merged request-policy
+  observability wholesale, so an AR response could report a draft sampler
+  policy plus `draft_time_s: 0.0`, the exact fabricated-stats shape the
+  serial lane already scrubbed. Both batched sites now scrub the same way.
+- **The launch environment can no longer steer request behavior.** Three
+  branches (the OpenCode default-sampler override, the single-tool-call
+  stream policy, and the post-request cache clear) keyed on a client hint
+  that fell back to the daemon's `MTPLX_CLIENT` label, so an operator-set
+  env var could change anonymous API callers' sampling. Behavior now keys
+  on per-request evidence only; the env-inclusive hint remains as an
+  observability label.
+- **Prompt scoring's `top_logprobs` is correct under string collisions and
+  safe for harness parsers.** When two token ids decode to the same display
+  string, the scored token's entry now always carries its true logprob
+  (previously a higher-ranked collision kept the other token's value, which
+  inflated string-keyed KL readings), and index 0 is an empty dict instead
+  of null so parsers that iterate entries with `.items()` don't crash on a
+  spec-shaped response. `token_logprobs[0]` stays null.
+- **`mtplx quickstart`/`serve` find branded local builds.** The canonical
+  model id resolver only checked the Hub snapshot layout, so a forge-built
+  pack living under its bare name (which `mtplx models` lists and bench
+  model selection happily uses) was reported "not cached" with a 20 GB
+  re-download suggestion. The resolver now falls back to the branded
+  directory under the same contract validation.
+- **`mtplx doctor --summary` prints the compiled-verify fence** like the
+  full report already did.
+- **The MTP lane's final session-bank commit is timed and guarded like
+  AR's.** The post-response commit forward was billed into measured decode
+  elapsed (understating MTP tok/s) and an allocation failure there could
+  destroy a completed response; it is now outside the measured window and
+  a failure downgrades to "no session commit this turn".
+- **The macOS app's model-family detection matches the engine's.** The app
+  still classified stock `Qwen/Qwen3-8B` as the 3.8 family (temperature 1.0
+  defaults on the wrong model) and let folder names outrank forge
+  provenance; it now uses the engine's boundary guard and provenance-first
+  order.
 - **The web chat UI no longer labels this launch's context cap as "the
   model's" context.** The max-tokens help fed `/health`'s `context_window` —
   which memory sizing can cap far below native — into a string attributing
