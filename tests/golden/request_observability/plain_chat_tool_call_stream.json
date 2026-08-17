@@ -5,7 +5,7 @@
  ],
  "accepted_drafts": 0,
  "active_memory_bytes": "<int>",
- "answer_tokens": 0,
+ "answer_tokens": 3,
  "ar_dense_fallback_calls": 0,
  "ar_return_hidden": false,
  "attention_dense_fallback_calls": 0,

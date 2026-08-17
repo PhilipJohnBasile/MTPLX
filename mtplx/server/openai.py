@@ -17016,28 +17016,87 @@ def _store_retokenized_history_snapshot(
     }
     bank_budget = int(getattr(state.sessions.bank, "per_session_max_bytes", 0) or 0)
     estimated_nbytes = 0
-    if best_prefix_len > 0 and best_prefix_nbytes > 0:
+    if best_prefix_len > 0:
         # SessionBank snapshots scale roughly with prefix length. If the
         # previous committed boundary is already close to the per-session
         # cap, attempting to materialize a larger postcommit snapshot can
-        # burn tens of seconds only to be rejected as oversized. Skip that
-        # best-effort cache maintenance before touching MLX arrays; the
-        # foreground user request can still reuse the existing shorter
-        # prefix and prefill only the suffix.
-        estimated_nbytes = int(
-            (float(best_prefix_nbytes) * float(history_tokens) / float(best_prefix_len))
-            * 1.03
-        )
+        # burn tens of seconds only to be rejected as oversized. Project the
+        # size before touching MLX arrays. A zero-byte best prefix is a
+        # live-ref lease (the bank's own oversized fallback); its recorded
+        # rejected-snapshot size keeps the projection honest in the
+        # oversized regime, where entry.nbytes reads 0.
+        projection_base_nbytes = int(best_prefix_nbytes)
+        if projection_base_nbytes <= 0:
+            projection_base_nbytes = int(
+                getattr(best_prefix, "oversized_nbytes", 0) or 0
+            )
+        if projection_base_nbytes > 0:
+            estimated_nbytes = int(
+                (
+                    float(projection_base_nbytes)
+                    * float(history_tokens)
+                    / float(best_prefix_len)
+                )
+                * 1.03
+            )
+    oversized_nbytes_override: int | None = None
     if bank_budget > 0 and estimated_nbytes > bank_budget:
-        return {
-            "stored": False,
-            "mode": "retokenized_history",
-            "reason": "estimated_oversized_snapshot",
-            "estimated_nbytes": int(estimated_nbytes),
-            "budget": int(bank_budget),
-            "best_prefix_nbytes": int(best_prefix_nbytes),
-            **prefix_probe,
-        }
+        if session is None or not keep_live_ref:
+            # No live-ref lease is possible here (no EngineSession to track
+            # the frontier for, or live refs are disallowed for this
+            # request, e.g. a forked busy session), so the prefill + put
+            # below is provably doomed: put() would reject the snapshot as
+            # oversized and has no fallback to install. Skip the model work
+            # — but never silently: the frontier still advances on the
+            # session (the retokenized ids are pure tokenizer output, no
+            # GPU work), and the once-per-session ceiling warning fires.
+            # Without the frontier commit, committed_token_ids froze at the
+            # last under-budget boundary and every later turn re-prefilled
+            # a growing suffix forever (issue #255: cache_read plateaued at
+            # 38335, 111k prompts paid 277s TTFT).
+            try:
+                state.sessions.bank.warn_oversized_snapshot_skip(
+                    session_id, needed_nbytes=int(estimated_nbytes)
+                )
+            except BaseException:
+                pass
+            outcome = {
+                "stored": False,
+                "mode": "retokenized_history",
+                "reason": "estimated_oversized_snapshot",
+                "estimated_nbytes": int(estimated_nbytes),
+                "budget": int(bank_budget),
+                "best_prefix_nbytes": int(best_prefix_nbytes),
+                **prefix_probe,
+            }
+            if session is not None:
+                try:
+                    commit = session.commit_retokenized_prefix(
+                        token_ids=history_ids,
+                        expected_revision=expected_session_revision,
+                        nbytes=0,
+                    )
+                    outcome["session_commit"] = {
+                        "committed": bool(commit.committed),
+                        "reason": commit.reason,
+                        "prefix_len": int(commit.prefix_len),
+                    }
+                except BaseException as exc:
+                    outcome["session_commit"] = {
+                        "committed": False,
+                        "reason": f"session_commit_error:{type(exc).__name__}",
+                        "prefix_len": int(getattr(session, "prefix_len", 0) or 0),
+                    }
+            return outcome
+        # A lease is possible: do the postcommit anyway (restore the best
+        # banked/live prefix, forward only the true remainder) and route the
+        # store through put()'s existing oversized branch via
+        # nbytes_override, which skips snapshot materialization entirely and
+        # installs the live-ref lease (#150/#229 policy — the same fallback
+        # oversized generation-final commits already ride). The next turn
+        # restores the lease at the full canonical frontier instead of the
+        # frozen last-under-budget boundary.
+        oversized_nbytes_override = int(estimated_nbytes)
     if _abort_requested():
         return {
             "stored": False,
@@ -17098,12 +17157,27 @@ def _store_retokenized_history_snapshot(
                     policy_fingerprint=policy_fingerprint,
                     abort_check=abort_check,
                     vision_splice=history_vision_splice,
+                    # In the oversized regime the store-on-prefill inside the
+                    # restore is provably doomed (computed nbytes would beat
+                    # the cap with keep_live_ref hardwired False there):
+                    # don't let it materialize a multi-GiB snapshot only to
+                    # throw it away. None follows the env gate as before.
+                    store_prefix_snapshot=(
+                        False if oversized_nbytes_override is not None else None
+                    ),
                 )
             if _abort_requested():
                 raise PostcommitAbort(_abort_reason())
+            # Oversized regime: put() takes its nbytes_override branch, which
+            # never reads mtp_history_snapshot (the lease carries live refs
+            # instead) — snapshotting the MTP cache here would be pure waste.
+            # Hand the live committed-MTP cache as a ref so the lease stays
+            # restorable under the committed history policy (the same pairing
+            # the bank's lease restore trims and returns together).
             mtp_snapshot = (
                 snapshot_cache(prompt_state.committed_mtp_cache)
                 if prompt_state.committed_mtp_cache is not None
+                and oversized_nbytes_override is None
                 else None
             )
             if _abort_requested():
@@ -17125,10 +17199,20 @@ def _store_retokenized_history_snapshot(
                     getattr(prompt_state, "gdn_boundaries", None) or []
                 ),
                 mtp_history_snapshot=mtp_snapshot,
+                mtp_history_cache_ref=(
+                    prompt_state.committed_mtp_cache
+                    if oversized_nbytes_override is not None
+                    else None
+                ),
                 snapshot_epoch=len(history_ids),
                 mtp_snapshot_epoch=len(history_ids)
                 if mtp_snapshot is not None
+                or (
+                    oversized_nbytes_override is not None
+                    and prompt_state.committed_mtp_cache is not None
+                )
                 else None,
+                nbytes_override=oversized_nbytes_override,
             )
         except PostcommitAbort:
             return {
@@ -17176,7 +17260,7 @@ def _store_retokenized_history_snapshot(
                 "reason": f"session_commit_error:{type(exc).__name__}",
                 "prefix_len": int(getattr(session, "prefix_len", 0) or 0),
             }
-    return {
+    outcome = {
         "stored": True,
         "mode": "retokenized_history",
         "prefix_len": entry.prefix_len,
@@ -17207,6 +17291,16 @@ def _store_retokenized_history_snapshot(
         "cache_miss_reason": getattr(prompt_state, "cache_miss_reason", None),
         "session_commit": session_commit,
     }
+    if oversized_nbytes_override is not None:
+        # Quiet-envelope stamp: only oversized-regime commits carry these, so
+        # under-budget envelopes stay byte-stable. The `[mtplx] idle async
+        # session postcommit ...` log line then shows the projected bytes,
+        # the budget, and that the store is a live-ref lease — a byte
+        # ceiling is never silent (#255).
+        outcome["estimated_nbytes"] = int(oversized_nbytes_override)
+        outcome["budget"] = int(bank_budget)
+        outcome["live_ref_lease"] = bool(getattr(entry, "live_ref_only", False))
+    return outcome
 
 
 def _history_ids_for_postcommit(
@@ -21195,6 +21289,28 @@ class _ThinkingContentStreamSplitter:
         self._content_history_tail = ""
         self._post_orphan_close_duplicate_tail = ""
         self._saw_chat_template_sentinel = False
+        # F40 tool-preamble parity state. With reasoning=auto the template
+        # pre-opens <think>, so pre-tool-call preamble text is routed to
+        # reasoning_content before the splitter can know a tool call follows;
+        # non-stream classifies the same marker-less text as content. These
+        # flags let finish() distinguish that auto-routed preamble (recovered
+        # as content, F3-precedent) from an explicit think block (which
+        # legitimately stays reasoning on both paths) using splitter state,
+        # not text heuristics.
+        # Content that reached the content channel as user-visible prose —
+        # tool-call passthrough markup sets _content_emitted but not this.
+        self._visible_content_emitted = False
+        # The thinking state was exited by a tool-control marker (no
+        # explicit </think> close): everything accumulated as reasoning up
+        # to that point was auto-routed pre-tool-call text.
+        self._tool_call_interrupted_thinking = False
+        # An explicit think open/close marker was consumed while splitting:
+        # the accumulated reasoning is (at least partly) a real think block.
+        self._saw_explicit_reasoning_marker = False
+        # Set by finish(): auto-routed pre-tool-call preamble that should
+        # surface as a content delta once the stream lane confirms the turn
+        # actually parsed tool calls. None when no recovery applies.
+        self.tool_preamble_recovered_content: str | None = None
 
     @property
     def reentry_count(self) -> int:
@@ -21234,6 +21350,7 @@ class _ThinkingContentStreamSplitter:
             if recover_unclosed_reasoning_as_content is None
             else recover_unclosed_reasoning_as_content
         )
+        recovered_as_content = False
         if (
             self._thinking_enabled
             and recover_unclosed_reasoning
@@ -21244,7 +21361,28 @@ class _ThinkingContentStreamSplitter:
             recovered = "".join(self._reasoning_accumulated).strip()
             if recovered:
                 self._content_emitted = True
+                recovered_as_content = True
                 chunks.append(("content", recovered))
+        if (
+            self._thinking_enabled
+            and not recovered_as_content
+            and self._tool_call_interrupted_thinking
+            and not self._visible_content_emitted
+            and not self._saw_explicit_reasoning_marker
+            and self._reasoning_accumulated
+            and not self._saw_chat_template_sentinel
+        ):
+            # F40: the auto-routed pre-tool-call preamble. The content
+            # channel carried nothing user-visible (tool markup only), the
+            # thinking state was exited by a tool-control marker, and no
+            # explicit think markers were involved — the same marker-less
+            # text non-stream clients receive as `content`. Stash instead of
+            # emitting: the stream lane surfaces it as a content delta before
+            # the finish frame only once the turn's tool calls actually
+            # parsed (F3-precedent recovery shape, 835a9fd0).
+            recovered = "".join(self._reasoning_accumulated).strip()
+            if recovered:
+                self.tool_preamble_recovered_content = recovered
         self._inside_thinking = False
         return chunks
 
@@ -21373,6 +21511,8 @@ class _ThinkingContentStreamSplitter:
         chunks: list[tuple[str, str]],
         field: str,
         text: str,
+        *,
+        visible: bool = True,
     ) -> None:
         if field == "content" and self._suppress_orphan_tool_markup:
             text = self._filter_orphan_tool_markup(text)
@@ -21384,6 +21524,12 @@ class _ThinkingContentStreamSplitter:
                 self._reasoning_accumulated.append(cleaned)
             elif field == "content":
                 self._content_emitted = True
+                if visible:
+                    # Tool-call passthrough emissions pass visible=False:
+                    # their bytes are protocol markup the downstream
+                    # translator turns into tool_call deltas, not prose the
+                    # client sees as message content (F40).
+                    self._visible_content_emitted = True
                 self._content_history_tail = (self._content_history_tail + cleaned)[
                     -2048:
                 ]
@@ -21647,6 +21793,10 @@ class _ThinkingContentStreamSplitter:
                     self._inside_thinking = False
                     self._inside_tool_call = True
                     self._tool_call_tail = ""
+                    # Exited thinking on a tool-control marker, not an
+                    # explicit close: the reasoning accumulated so far was
+                    # auto-routed pre-tool-call preamble (F40).
+                    self._tool_call_interrupted_thinking = True
                     continue
                 if (
                     not final
@@ -21658,6 +21808,7 @@ class _ThinkingContentStreamSplitter:
                 if open_match_at_start is not None:
                     self._pending = self._pending[open_match_at_start.end() :]
                     self._reentry_count += 1
+                    self._saw_explicit_reasoning_marker = True
                     continue
                 if not final and self._reasoning_control_marker_has_partial_prefix(
                     self._pending
@@ -21681,6 +21832,10 @@ class _ThinkingContentStreamSplitter:
                 )
                 self._pending = self._pending[close_match.end() :].lstrip()
                 self._inside_thinking = False
+                # An explicit close ended this block: the accumulated
+                # reasoning is a real think block, never recovered as
+                # content at finish (F40).
+                self._saw_explicit_reasoning_marker = True
                 continue
 
             open_match = QWEN_STYLE_REASONING_OPEN_RE.search(self._pending)
@@ -21712,13 +21867,16 @@ class _ThinkingContentStreamSplitter:
                 ):
                     self._inside_tool_call = False
                     self._tool_call_tail = ""
-                self._append_chunk(chunks, "content", emitted)
+                self._append_chunk(
+                    chunks, "content", emitted, visible=not tool_passthrough
+                )
                 self._pending = self._pending[emit_len:]
                 break
             self._append_chunk(chunks, "content", self._pending[: open_match.start()])
             self._pending = self._pending[open_match.end() :]
             self._inside_thinking = True
             self._reentry_count += 1
+            self._saw_explicit_reasoning_marker = True
         return chunks
 
 
@@ -28561,6 +28719,56 @@ def create_app(state: ServerState) -> FastAPI:
                                     remember_stream_delta(delta)
                                     yield mark_sse_sent(delta_payload_chunk(delta))
                             if assistant_tool_calls:
+                                recovered_tool_preamble = getattr(
+                                    splitter,
+                                    "tool_preamble_recovered_content",
+                                    None,
+                                )
+                                if (
+                                    recovered_tool_preamble
+                                    and (
+                                        recovered_tool_preamble
+                                        not in "".join(history_content_chunks)
+                                    )
+                                    # Hermes-mode clients suppress tool-turn
+                                    # preambles by contract (the translator
+                                    # drops even LIVE preamble content when
+                                    # the turn parses tool calls); the
+                                    # recovered auto-routed preamble honors
+                                    # the same suppression.
+                                    and not (
+                                        content_tool_translator is not None
+                                        and getattr(
+                                            content_tool_translator,
+                                            "_suppress_tool_call_preamble",
+                                            False,
+                                        )
+                                    )
+                                ):
+                                    # F40 stream/non-stream parity: the
+                                    # reasoning=auto pre-tool-call preamble
+                                    # non-stream clients receive as `content`
+                                    # surfaces as a content delta before the
+                                    # finish frame (F3-precedent recovery,
+                                    # 835a9fd0). Bypasses the tool translator
+                                    # (its done-mode would swallow trailing
+                                    # content) — the recovered text cannot
+                                    # contain tool markup: a marker inside it
+                                    # would have flipped the splitter to tool
+                                    # mode at that point. reasoning deltas
+                                    # already sent stay sent, matching the
+                                    # plain-lane recovery contract.
+                                    for chunk in stream_content_delta_chunks(
+                                        "content",
+                                        recovered_tool_preamble,
+                                        use_orphan_guard=False,
+                                        use_tool_translator=False,
+                                        monitor_stop=False,
+                                    ):
+                                        yield mark_sse_sent(chunk)
+                                    stats[
+                                        "stream_tool_preamble_recovered_as_content"
+                                    ] = True
                                 if not streamed_tool_deltas_emitted:
                                     for delta in _stream_tool_call_deltas(
                                         assistant_tool_calls,

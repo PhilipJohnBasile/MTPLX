@@ -575,16 +575,16 @@ def test_tool_call_stream_matches_golden_and_nonstream(monkeypatch):
     assert stream["finish_reason"] == "tool_calls"
     assert nonstream["choices"][0]["finish_reason"] == "tool_calls"
 
-    # KNOWN DIVERGENCE (pinned, not endorsed — 2026-08-16 tail sweep): the
-    # pre-tool-call preamble reaches the non-stream client as `content`
-    # but streams out on the `reasoning_content` channel and is never
-    # reconciled into a content delta. Stream and non-stream therefore
-    # disagree about which channel carries the preamble. The fix belongs
-    # in mtplx/server/openai.py's stream reconcile (owned by the
-    # request-policy lane); when it lands, flip these two assertions to
-    # plain content equality and regenerate this arm's golden.
+    # F40 (fixed 2026-08-16, was KNOWN DIVERGENCE): with reasoning=auto the
+    # splitter routes the pre-tool-call preamble to reasoning_content before
+    # it can know a tool call follows; at finish the auto-routed text (never
+    # an explicit <think> block — splitter-state distinction) now surfaces
+    # as a content delta before the finish frame, the F3-precedent recovery
+    # (835a9fd0). Stream and non-stream agree on `content`; the reasoning
+    # deltas that already streamed stay sent, matching the plain-lane
+    # recovery contract.
     assert nonstream_message["content"] == "Let me write the file."
-    assert stream["content"] == ""
+    assert stream["content"] == nonstream_message["content"]
     assert stream["reasoning"] == "Let me write the file.\n"
 
     final = stream["final_frame"]
