@@ -1792,6 +1792,45 @@ def _validate_backend_context_memory_budget(
     )
 
 
+def apply_memory_caps_preflight(
+    *,
+    entry: str,
+    model: str | None = None,
+    contexts: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    """Serve-path memory discipline for non-serve entries (#261, F7).
+
+    Benchmark/ladder/terminal-chat paths used to load models with no Metal
+    allocator caps, producing 100GB+ headline peaks the serve path can never
+    reach. This applies the exact caps the serve path pins at startup — same
+    function, same values, same env overrides — and refuses context requests
+    beyond the model's context window with a clear message instead of
+    silently benchmarking past the trained window.
+
+    Returns a JSON-safe receipt for the caller's payload/envelope.
+    """
+    caps = _apply_metal_memory_caps()
+    outcome: dict[str, Any] = {
+        "entry": str(entry),
+        "metal_memory_caps": caps,
+    }
+    requested = sorted({int(value) for value in (contexts or []) if int(value) > 0})
+    if model is not None and requested:
+        limit = int(_resolve_context_window(None, str(model)))
+        outcome["model_context_window"] = limit
+        outcome["requested_contexts"] = requested
+        over = [value for value in requested if value > limit]
+        if over:
+            raise ValueError(
+                f"{entry}: requested context of {max(over):,} tokens exceeds "
+                f"the model's context window of {limit:,} tokens (from the "
+                "model config, or the 262,144-token default when no local "
+                "config.json resolves). Refusing to benchmark beyond the "
+                f"trained window; rerun with contexts <= {limit:,}."
+            )
+    return outcome
+
+
 def _select_backend_context_window(
     backend: BackendDescriptor,
     *,
@@ -13728,6 +13767,146 @@ def _startup_health_payload(state: "ServerState") -> dict[str, Any]:
     }
 
 
+def _health_degradation_payload(state: Any) -> dict[str, Any]:
+    """Truth block for the benchmark harness gate (#F23-surface).
+
+    Surfaces the known ways the runtime can silently run slower than its
+    profile advertises: compiled-verify fallback state, profile env keys the
+    environment overrode, and NAX kernel availability/bail counters. Every
+    read is DEFENSIVE — the enriched state lives in modules another lane owns
+    (graphbank / profiles / nax_verify), so missing state degrades to honest
+    "unknown"/empty defaults instead of guessing, lying, or crashing. The
+    block is additive: nothing existing in /health moves or renames.
+    """
+    compiled_verify: dict[str, Any] = {
+        "mode": "unknown",
+        "permanent_eager": "unknown",
+        "reason": "unknown",
+    }
+    try:
+        from mtplx.graphbank import compiled_verify_mode
+
+        compiled_verify["mode"] = str(compiled_verify_mode())
+    except BaseException:
+        pass
+    snapshot_data: Any = None
+    module_status: Any = None
+    try:
+        import mtplx.graphbank as _graphbank_module
+
+        snapshot = getattr(_graphbank_module, "compiled_verify_health_snapshot", None)
+        snapshot_data = snapshot() if callable(snapshot) else None
+        module_status = getattr(_graphbank_module, "compiled_verify_status", None)
+    except BaseException:
+        snapshot_data = None
+    for source in (
+        snapshot_data,
+        module_status,
+        getattr(state, "compiled_verify_status", None),
+    ):
+        if isinstance(source, Mapping):
+            for key in (
+                "mode",
+                "permanent_eager",
+                "reason",
+                "flip_count",
+                "transient_exception_count",
+            ):
+                value = source.get(key)
+                if value is not None:
+                    compiled_verify[key] = value
+
+    profile_env_overridden: list[str] = []
+    try:
+        from mtplx.profiles import profile_env_status
+
+        status = profile_env_status(
+            getattr(getattr(state, "profile", None), "name", None),
+            runtime_env_overrides=getattr(
+                state, "model_runtime_env_overrides", None
+            ),
+        )
+        for key in sorted(status):
+            item = status.get(key) or {}
+            observed = item.get("observed")
+            if observed is not None and str(observed) != str(item.get("expected")):
+                profile_env_overridden.append(str(key))
+    except BaseException:
+        profile_env_overridden = []
+
+    nax: dict[str, Any] = {
+        "env_enabled": "unknown",
+        "available": "unknown",
+        "counters": "unknown",
+        "bail_counters": "unknown",
+    }
+    try:
+        import mtplx.nax_verify as _nax_module
+
+        try:
+            nax["env_enabled"] = bool(_nax_module.nax_env_enabled())
+        except BaseException:
+            pass
+        try:
+            nax["available"] = bool(_nax_module.nax_available())
+        except BaseException:
+            pass
+        for target_key, attr_names in (
+            (
+                "counters",
+                (
+                    "nax_health_counters",
+                    "nax_counters",
+                    "nax_qlinear_fallback_counts",
+                ),
+            ),
+            ("bail_counters", ("nax_bail_counters", "bail_counters")),
+        ):
+            for attr_name in attr_names:
+                candidate = getattr(_nax_module, attr_name, None)
+                if candidate is None:
+                    continue
+                try:
+                    value = candidate() if callable(candidate) else candidate
+                except BaseException:
+                    continue
+                if isinstance(value, Mapping):
+                    nax[target_key] = dict(value)
+                    break
+    except BaseException:
+        pass
+    for target_key, state_attr in (
+        ("counters", "nax_health_counters"),
+        ("bail_counters", "nax_bail_counters"),
+    ):
+        state_value = getattr(state, state_attr, None)
+        if isinstance(state_value, Mapping):
+            nax[target_key] = dict(state_value)
+    if nax["bail_counters"] == "unknown":
+        # The GQA bail counters live in the kernel modules themselves.
+        kernel_bails: dict[str, Any] = {}
+        for module_name, attr_name in (
+            ("mtplx.kernels.sdpa_gqa_packed", "gqa_packed_bail_counts"),
+            ("mtplx.attention_split", "gqa_packed_route_bail_counts"),
+        ):
+            try:
+                from importlib import import_module
+
+                value = getattr(import_module(module_name), attr_name, None)
+            except BaseException:
+                continue
+            if isinstance(value, Mapping):
+                kernel_bails[attr_name] = dict(value)
+        if kernel_bails:
+            nax["bail_counters"] = kernel_bails
+
+    return {
+        "compiled_verify": compiled_verify,
+        "profile_env_overridden": profile_env_overridden,
+        "nax": nax,
+    }
+
+
 def _server_fan_mode(state: Any) -> str:
     try:
         return normalize_fan_mode(
@@ -15509,6 +15688,9 @@ PUBLIC_MTPLX_STATS_KEYS = (
     "reasoning_reentries",
     "reasoning_tokens",
     "answer_tokens",
+    # Stamped only when finish=length cut the turn inside reasoning and left
+    # content empty (#F3), so quiet envelopes stay byte-stable.
+    "content_empty_reason",
     "reasoning_completion_repair_attempted",
     "reasoning_completion_repair_succeeded",
     "reasoning_completion_repair_skipped",
@@ -20646,6 +20828,11 @@ class _ThinkingContentStreamSplitter:
         self._pending = ""
         self._disabled_inside_reasoning = False
         self._disabled_visible_started = False
+        # Interior of a disabled-thinking reasoning span is buffered, not
+        # discarded (#F3): if the closer never arrives, finish() emits it as
+        # content, matching strip_qwen_style_reasoning_from_content's
+        # keep-prose behavior on the non-stream path.
+        self._disabled_reasoning_interior = ""
         self._reentry_count = 0
         self._reasoning_accumulated: list[str] = []
         self._content_emitted = False
@@ -20977,12 +21164,18 @@ class _ThinkingContentStreamSplitter:
                 close_match = QWEN_STYLE_REASONING_CLOSE_RE.search(self._pending)
                 if close_match is None:
                     if final:
+                        self._disabled_reasoning_interior += self._pending
                         self._pending = ""
                     else:
                         hold = self._disabled_reasoning_close_tail_len(self._pending)
-                        self._pending = self._pending[-hold:] if hold else ""
+                        keep_from = len(self._pending) - hold
+                        self._disabled_reasoning_interior += self._pending[
+                            :keep_from
+                        ]
+                        self._pending = self._pending[keep_from:]
                     break
                 self._pending = self._pending[close_match.end() :].lstrip()
+                self._disabled_reasoning_interior = ""
                 self._disabled_inside_reasoning = False
                 self._disabled_visible_started = True
                 continue
@@ -21038,6 +21231,21 @@ class _ThinkingContentStreamSplitter:
             self._disabled_visible_started = True
             self._pending = self._pending[emit_len:]
             break
+        if (
+            final
+            and self._disabled_inside_reasoning
+            and self._disabled_reasoning_interior
+        ):
+            # Keep-prose parity with the non-stream cleaner (#F3):
+            # strip_qwen_style_reasoning_from_content keeps the interior of
+            # an unclosed reasoning block when thinking is disabled. Dropping
+            # it here made the streamed answer silently lose text the
+            # non-stream path returns.
+            recovered = self._disabled_reasoning_interior.strip()
+            self._disabled_reasoning_interior = ""
+            if recovered:
+                self._append_chunk(chunks, "content", recovered)
+                self._disabled_visible_started = True
         return chunks
 
     def _drain(self, *, final: bool) -> list[tuple[str, str]]:
@@ -21295,6 +21503,7 @@ def _nonstream_chat_message_parts(
     starts_in_think: bool = False,
     suppress_visible_reasoning: bool = False,
     footer_allowed: bool | None = None,
+    recover_unclosed_reasoning: bool = False,
 ) -> tuple[str, str]:
     raw_text = _strip_generated_chat_template_sentinels(
         str(generated.get("text") or "")
@@ -21386,6 +21595,34 @@ def _nonstream_chat_message_parts(
         )
 
     display_text = _strip_mtplx_internal_continuation_markers(display_text)
+    finish_reason_for_parts = str(generated.get("finish_reason") or "")
+    if (
+        recover_unclosed_reasoning
+        and thinking_enabled
+        and finish_reason_for_parts == "stop"
+        and not display_text.strip()
+        and reasoning_text.strip()
+        and not CHAT_TEMPLATE_TURN_SENTINEL_RE.search(
+            str(generated.get("text") or "")
+        )
+    ):
+        # Parity with the streaming splitter's finish() recovery (#F3): a
+        # turn that ended at "stop" with every visible character still inside
+        # an unclosed reasoning block surfaces that text as content instead
+        # of returning an empty message. reasoning_content is kept, matching
+        # the stream where the reasoning deltas were already sent.
+        display_text = reasoning_text.strip()
+    elif (
+        finish_reason_for_parts == "length"
+        and not display_text.strip()
+        and reasoning_text.strip()
+    ):
+        # Quiet-envelope truth stat (#F3): the row is empty because
+        # max_tokens ran out inside the reasoning block — stamped only when
+        # it applies so unaffected envelopes stay byte-stable.
+        generated.setdefault("stats", {})["content_empty_reason"] = (
+            "truncated_inside_reasoning"
+        )
     if suppress_visible_reasoning:
         reasoning_text = ""
     if footer_allowed is None:
@@ -23708,6 +23945,11 @@ def create_app(state: ServerState) -> FastAPI:
             "live_output_detach": os.environ.get("MTPLX_DETACH_LIVE_OUTPUTS"),
             "live_output_detach_mode": os.environ.get("MTPLX_DETACH_LIVE_OUTPUTS_MODE"),
             "aime_process_isolation": os.environ.get("MTPLX_AIME_PROCESS_ISOLATION"),
+            # Additive degradation truth block (#F23-surface): the benchmark
+            # harness gate reads /health; everything slow or clamped must be
+            # visible here. Defensive reads only — see
+            # _health_degradation_payload.
+            "degradation": _health_degradation_payload(state),
             "metal_memory_caps": getattr(
                 state,
                 "metal_memory_caps",
@@ -27371,11 +27613,20 @@ def create_app(state: ServerState) -> FastAPI:
                                     stream_cancelled_by_client = True
                                     return
                                 continue
-                            if (
-                                cancel_event.is_set()
-                                or await raw_request.is_disconnected()
-                            ):
-                                stream_cancelled_by_client = True
+                            client_disconnected_now = (
+                                await raw_request.is_disconnected()
+                            )
+                            if cancel_event.is_set() or client_disconnected_now:
+                                # Truthful cancel accounting (#F36): only a
+                                # genuinely dead transport is a client
+                                # disconnect; an explicit server-side cancel
+                                # (POST /v1/mtplx/cancel/{id}) leaves the
+                                # client connected and MUST still receive a
+                                # terminal frame + [DONE] instead of a silent
+                                # close.
+                                stream_cancelled_by_client = (
+                                    client_disconnected_now
+                                )
                                 _cancel_stream_generation(
                                     cancel_event, generation_future
                                 )
@@ -27384,7 +27635,22 @@ def create_app(state: ServerState) -> FastAPI:
                                 ):
                                     session.abort_pending_postcommit(
                                         "stream_client_disconnected"
+                                        if client_disconnected_now
+                                        else "stream_cancelled"
                                     )
+                                if not client_disconnected_now:
+                                    yield mark_sse_sent(
+                                        error_chunk(
+                                            RuntimeError(
+                                                "request cancelled via "
+                                                "POST /v1/mtplx/cancel "
+                                                "after "
+                                                f"{streamed_progress_tokens} "
+                                                "streamed tokens"
+                                            )
+                                        )
+                                    )
+                                    yield mark_sse_sent("data: [DONE]\n\n")
                                 return
                             now_s = time.perf_counter()
                             if (
@@ -27900,7 +28166,87 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                                 commit_state["commit"] = True
                                 commit_event.set()
-                                commit_kind, commit_item = await queue.get()
+                                # Bounded commit wait (#F34): the session
+                                # postcommit runs on the model owner. Behind a
+                                # competing foreground job this wait is long
+                                # but alive (the owner heartbeat keeps
+                                # ticking), while the old unbounded
+                                # ``queue.get()`` held the stream open with
+                                # heartbeats dead and hung forever on a wedged
+                                # owner. Poll at the stream cadence so client
+                                # heartbeats keep flowing, and reuse the
+                                # stall-probe idiom for a visible error finish
+                                # instead of a silent hang.
+                                commit_wait_probe = _OwnerStallProbe(
+                                    deadline_s=STREAM_STALL_DEADLINE_S
+                                )
+                                while True:
+                                    try:
+                                        commit_kind, commit_item = await queue.get(
+                                            0.25
+                                        )
+                                    except Empty:
+                                        now_s = time.perf_counter()
+                                        frozen_for_s = commit_wait_probe.observe(
+                                            now_s
+                                        )
+                                        if frozen_for_s is not None:
+                                            _log_stream_stall_break(
+                                                state,
+                                                response_id=response_id,
+                                                session_id=session_id,
+                                                frozen_for_s=frozen_for_s,
+                                                streamed_tokens=(
+                                                    streamed_progress_tokens
+                                                ),
+                                            )
+                                            if hasattr(
+                                                session,
+                                                "abort_pending_postcommit",
+                                            ):
+                                                session.abort_pending_postcommit(
+                                                    "stream_stall_watchdog"
+                                                )
+                                            yield mark_sse_sent(
+                                                error_chunk(
+                                                    TimeoutError(
+                                                        "model owner made no "
+                                                        "progress for "
+                                                        f"{frozen_for_s:.0f}s "
+                                                        "while committing the "
+                                                        "session after "
+                                                        "generation; request "
+                                                        "aborted by the stream "
+                                                        "stall watchdog "
+                                                        "(MTPLX_STREAM_STALL_DEADLINE_S)"
+                                                    )
+                                                )
+                                            )
+                                            yield mark_sse_sent(
+                                                "data: [DONE]\n\n"
+                                            )
+                                            return
+                                        if (
+                                            now_s - last_sse_sent_s
+                                            >= STREAM_HEARTBEAT_INTERVAL_S
+                                        ):
+                                            maybe_log_stream_silence(now_s)
+                                            yield mark_sse_sent(
+                                                progress_chunk(
+                                                    _stream_heartbeat_payload(
+                                                        completion_tokens=(
+                                                            streamed_progress_tokens
+                                                        ),
+                                                        stream_started_s=(
+                                                            stream_started_s
+                                                        ),
+                                                        last_token_s=last_token_s,
+                                                        now_s=now_s,
+                                                    )
+                                                )
+                                            )
+                                        continue
+                                    break
                                 if commit_kind == "committed":
                                     generated = commit_item
                                 elif commit_kind == "error":
@@ -28034,6 +28380,21 @@ def create_app(state: ServerState) -> FastAPI:
                                 state.runtime.tokenizer,
                                 answer_text,
                             )
+                            if (
+                                not assistant_tool_calls
+                                and str(generated.get("finish_reason") or "")
+                                == "length"
+                                and not answer_text
+                                and reasoning_text
+                            ):
+                                # Quiet-envelope truth stat (#F3): the row is
+                                # empty because max_tokens ran out inside the
+                                # reasoning block — stamped only when it
+                                # applies so unaffected envelopes stay
+                                # byte-stable.
+                                generated["stats"]["content_empty_reason"] = (
+                                    "truncated_inside_reasoning"
+                                )
                             if state.last_metrics:
                                 state.last_metrics[-1]["reasoning_reentries"] = (
                                     splitter.reentry_count
@@ -28163,6 +28524,24 @@ def create_app(state: ServerState) -> FastAPI:
                                     state, generated["stats"]
                                 )
                                 break
+                            if await raw_request.is_disconnected():
+                                stream_cancelled_by_client = True
+                            else:
+                                # Explicit cancel acknowledged by the worker
+                                # with the transport still up: end the stream
+                                # with a visible terminal frame + [DONE]
+                                # instead of silently closing (#F36).
+                                yield mark_sse_sent(
+                                    error_chunk(
+                                        RuntimeError(
+                                            "request cancelled via "
+                                            "POST /v1/mtplx/cancel after "
+                                            f"{streamed_progress_tokens} "
+                                            "streamed tokens"
+                                        )
+                                    )
+                                )
+                                yield mark_sse_sent("data: [DONE]\n\n")
                             return
                         else:
                             yield mark_sse_sent(
@@ -28175,6 +28554,16 @@ def create_app(state: ServerState) -> FastAPI:
                 except asyncio.CancelledError:
                     stream_cancelled_by_client = True
                     _cancel_stream_generation(cancel_event, generation_future)
+                    raise
+                except GeneratorExit:
+                    # Starlette closes the async generator when the client
+                    # disconnects mid-stream. The old catch-all below yielded
+                    # after GeneratorExit ("async generator ignored
+                    # GeneratorExit" RuntimeError noise) and mis-tagged the
+                    # cancellation metric "stream_cancelled"; re-raise and let
+                    # the finally record the truthful client_disconnected
+                    # reason (#F36).
+                    stream_cancelled_by_client = True
                     raise
                 except BaseException as exc:
                     yield mark_sse_sent(error_chunk(exc))
@@ -28482,6 +28871,13 @@ def create_app(state: ServerState) -> FastAPI:
                     starts_in_think=_prompt_opens_thinking(state, prompt_ids),
                     suppress_visible_reasoning=suppress_visible_reasoning,
                     footer_allowed=_stats_footer_allowed(state, headers, metadata),
+                    # Same gate as the streaming twin (#F3): recover only on a
+                    # natural stop with no tools declared. /v1/messages
+                    # inherits through chat_completions.
+                    recover_unclosed_reasoning=(
+                        str(generated.get("finish_reason") or "") == "stop"
+                        and not tools_active
+                    ),
                 )
                 if extraction is None:
                     # No tools were declared on this request, so any tool-call
@@ -28832,12 +29228,28 @@ def create_app(state: ServerState) -> FastAPI:
                         try:
                             kind, item = await queue.get(0.25)
                         except Empty:
+                            completion_client_disconnected = (
+                                await raw_request.is_disconnected()
+                            )
                             if (
                                 cancel_event.is_set() and not stop_hit
-                            ) or await raw_request.is_disconnected():
+                            ) or completion_client_disconnected:
                                 _cancel_stream_generation(
                                     cancel_event, generation_future
                                 )
+                                if not completion_client_disconnected:
+                                    # Explicit cancel with the transport still
+                                    # up: terminal frame + [DONE] instead of a
+                                    # silent close (#F36).
+                                    yield error_chunk(
+                                        RuntimeError(
+                                            "request cancelled server-side "
+                                            "after "
+                                            f"{streamed_completion_tokens} "
+                                            "streamed tokens"
+                                        )
+                                    )
+                                    yield "data: [DONE]\n\n"
                                 return
                             frozen_for_s = owner_stall_probe.observe()
                             if (
@@ -28917,6 +29329,19 @@ def create_app(state: ServerState) -> FastAPI:
                                     mtp_depth=request_depth,
                                 )
                                 break
+                            if not await raw_request.is_disconnected():
+                                # Cancel acknowledged by the worker with the
+                                # transport still up: terminal frame + [DONE]
+                                # instead of a silent close (#F36).
+                                yield error_chunk(
+                                    RuntimeError(
+                                        "request cancelled server-side "
+                                        "after "
+                                        f"{streamed_completion_tokens} "
+                                        "streamed tokens"
+                                    )
+                                )
+                                yield "data: [DONE]\n\n"
                             return
                         elif kind == "error":
                             yield error_chunk(item)
@@ -28930,6 +29355,11 @@ def create_app(state: ServerState) -> FastAPI:
                             return
                 except asyncio.CancelledError:
                     _cancel_stream_generation(cancel_event, generation_future)
+                    raise
+                except GeneratorExit:
+                    # Client disconnect closes the async generator; yielding
+                    # from the catch-all below would raise "async generator
+                    # ignored GeneratorExit". Re-raise untouched (#F36).
                     raise
                 except BaseException as exc:
                     yield error_chunk(exc)

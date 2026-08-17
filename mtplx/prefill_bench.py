@@ -1083,6 +1083,19 @@ def run_prefill_ladder(args: Any) -> dict[str, Any]:
     from .runtime import load
     from .sampling import SamplerConfig
 
+    # Serve-path memory discipline (#261, F7): pin the exact Metal allocator
+    # caps the serve path applies at startup BEFORE the model loads, and
+    # refuse contexts beyond the model's context window instead of silently
+    # benchmarking past the trained window. Uncapped ladder rows produced the
+    # 102.6GB-at-262k class of headline the serve path can never reach.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    payload["memory_preflight"] = apply_memory_caps_preflight(
+        entry="bench.prefill_ladder",
+        model=model,
+        contexts=contexts,
+    )
+
     max_session = None
     if getattr(args, "fanmax", False):
         from .thermal import MaxSession
@@ -1172,7 +1185,11 @@ def run_prefill_ladder(args: Any) -> dict[str, Any]:
             row["requested_prefill_layout"] = prefill_layout
             row["seed"] = row_seed
             payload["rows"].append(row)
-            if inter_context_cleanup_enabled and index < len(contexts) - 1:
+            if inter_context_cleanup_enabled:
+                # Per-row flush (#F7): every row — including the last, largest
+                # context — releases allocator pressure before the next
+                # measurement or process exit. The old last-row exclusion left
+                # the biggest context's pool resident with no receipt.
                 cleanup_time = _sync_and_clear_cache_between_contexts()
                 cleanup_meta = payload["inter_context_cache_cleanup"]
                 cleanup_meta["events"] = int(cleanup_meta["events"]) + 1

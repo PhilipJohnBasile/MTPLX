@@ -1605,7 +1605,10 @@ def test_depth_sweep_native60_keeps_model_runtime_env_overrides(monkeypatch):
         },
     )
 
-    assert result == {"depths": []}
+    assert result["depths"] == []
+    # The sweep harness now records the serve-path memory preflight (#F7);
+    # the receipt is additive to the runner's payload.
+    assert result["memory_preflight"]["entry"] == "bench.depth_sweep"
     assert observed["temperature"] == "0.7"
     assert observed["top_p"] == "1.0"
     assert observed["top_k"] == "13"

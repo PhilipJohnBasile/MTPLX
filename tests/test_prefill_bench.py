@@ -120,6 +120,15 @@ def test_run_prefill_ladder_fake_runtime_records_release_valid_prompt(
         "_sync_and_clear_cache_between_contexts",
         lambda: cleanup_calls.__setitem__("count", cleanup_calls["count"] + 1) or 0.123,
     )
+    # The ladder now runs the serve-path memory preflight (#F7); keep this
+    # CPU-only test off the real Metal allocator caps.
+    import mtplx.server.openai as openai_server
+
+    monkeypatch.setattr(
+        openai_server,
+        "apply_memory_caps_preflight",
+        lambda **kwargs: {"entry": kwargs.get("entry"), "stub": True},
+    )
     before_env = dict(os.environ)
     try:
         payload = run_prefill_ladder(
@@ -161,9 +170,11 @@ def test_run_prefill_ladder_fake_runtime_records_release_valid_prompt(
     assert payload["seed"] == 0
     assert payload["vary_seed_by_context"] is False
     assert payload["inter_context_cache_cleanup"]["enabled"] is True
-    assert payload["inter_context_cache_cleanup"]["events"] == 1
-    assert payload["inter_context_cache_cleanup"]["time_s"] == 0.123
-    assert cleanup_calls["count"] == 1
+    # Per-row flush (#F7): every row flushes, including the last one.
+    assert payload["inter_context_cache_cleanup"]["events"] == 2
+    assert payload["inter_context_cache_cleanup"]["time_s"] == 0.123 * 2
+    assert cleanup_calls["count"] == 2
+    assert payload["memory_preflight"]["stub"] is True
     assert payload["prompt"]["release_valid"] is True
     assert payload["prompt"]["format"] == "chat"
     assert payload["prompt"]["enable_thinking"] is False

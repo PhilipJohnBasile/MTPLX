@@ -2106,8 +2106,16 @@ def _depth_sweep_native60(
         "group_size": 64,
         "mode": "affine",
     }
+    # Serve-path memory discipline (#261, F7): the depth-sweep harness loads
+    # the model in-process; pin the serve-path Metal allocator caps first.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    memory_preflight = apply_memory_caps_preflight(
+        entry="bench.depth_sweep",
+        model=str(model),
+    )
     try:
-        return run_mtp_depth_sweep(
+        result = run_mtp_depth_sweep(
             model,
             prompt_suite,
             depths=depths,
@@ -2141,6 +2149,9 @@ def _depth_sweep_native60(
             else float(draft_sampler["top_p"]),
             draft_top_k=None if draft_sampler is None else int(draft_sampler["top_k"]),
         )
+        if isinstance(result, dict):
+            result.setdefault("memory_preflight", memory_preflight)
+        return result
     finally:
         restore_profile_env(previous)
 
@@ -9725,6 +9736,15 @@ def _generate_one_shot_public(
     from mtplx.runtime import load
     from mtplx.sampling import SamplerConfig
 
+    # Serve-path memory discipline (#261, F7): pin the exact Metal allocator
+    # caps the serve path applies at startup before this in-process load.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    memory_preflight = apply_memory_caps_preflight(
+        entry=f"cli.{command}",
+        model=str(runtime_model),
+    )
+
     try:
         rt = load(runtime_model, mtp=getattr(args, "load_mtp", True) is not False)
         draft_report = None
@@ -9826,6 +9846,7 @@ def _generate_one_shot_public(
         "text": out.text,
         "model": _compact_model_summary(inspection),
         "profile": profile.to_dict(),
+        "memory_preflight": memory_preflight,
         "draft_lm_head": draft_report,
         "draft_sampler": draft_sampler,
         "stats": {
@@ -12729,6 +12750,16 @@ def _quickstart_run_terminal_chat_body(
                 ("Reasoning", _reasoning_mode(args)),
             ],
         )
+
+    # Serve-path memory discipline (#261, F7): terminal chat loads the model
+    # in-process with no server; pin the exact Metal allocator caps the serve
+    # path applies at startup so long chats cannot balloon past serve limits.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    apply_memory_caps_preflight(
+        entry="quickstart.terminal_chat",
+        model=str(runtime_model),
+    )
 
     started = time.perf_counter()
     quiet_progress = not sys.stdout.isatty()
