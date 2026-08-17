@@ -40,6 +40,18 @@ import mlx.core as mx
 
 from .sdpa_2pass_paged import _paged_reduce_kernel
 
+# F23b (2026-08-16): contract bails, keyed by the first gate that declined.
+# Every ``return None`` below silently routes the caller back to fused SDPA
+# — "looks like turbo, runs stock" is invisible without this. Import-stable
+# surface for /health; increments happen ONLY on bail paths (an engaged
+# call never touches this dict).
+gqa_packed_bail_counts: dict[str, int] = {}
+
+
+def _bail(reason: str) -> None:
+    gqa_packed_bail_counts[reason] = gqa_packed_bail_counts.get(reason, 0) + 1
+    return None
+
 
 def _env_blocks_override() -> int:
     raw = (os.environ.get("MTPLX_GQA_PACKED_SDPA_BLOCKS") or "").strip()
@@ -245,33 +257,33 @@ def sdpa_gqa_packed_tail(
     """
 
     if not mx.metal.is_available():
-        return None
+        return _bail("metal_unavailable")
     if queries.ndim != 4 or keys.ndim != 4 or values.ndim != 4:
-        return None
+        return _bail("ndim")
     bsz, hq, q_len, d = (int(x) for x in queries.shape)
     if bsz != 1:
-        return None
+        return _bail("batch_size")
     if q_len < 2 or q_len > min(4, int(max_q_len)):
-        return None
+        return _bail("q_len")
     hk = int(keys.shape[1])
     capacity = int(keys.shape[2])
     if int(values.shape[1]) != hk or int(values.shape[2]) != capacity:
-        return None
+        return _bail("kv_layout_mismatch")
     kd = int(keys.shape[3])
     vdim = int(values.shape[3])
     if kd != d or vdim != d:
-        return None
+        return _bail("head_dim_mismatch")
     if d not in (64, 96, 128, 256):
-        return None
+        return _bail("head_dim_unsupported")
     if hk <= 0 or hq % hk:
-        return None
+        return _bail("gqa_heads")
     gqa_factor = hq // hk
     if 32 * gqa_factor > 1024:
-        return None
+        return _bail("threadgroup_width")
     if queries.dtype not in (mx.bfloat16, mx.float16):
-        return None
+        return _bail("query_dtype")
     if keys.dtype != queries.dtype or values.dtype != queries.dtype:
-        return None
+        return _bail("kv_dtype_mismatch")
     # NOTE: callers must pass the whole allocated buffers (contiguous by
     # construction), never `[..., :offset, :]` views. MLX python exposes no
     # contiguity flag to assert on; a sliced view would still be CORRECT
@@ -280,22 +292,22 @@ def sdpa_gqa_packed_tail(
 
     if isinstance(offset, mx.array):
         if offset.size != 1:
-            return None
+            return _bail("offset_shape")
         offset_arr = offset.astype(mx.int32).reshape(1)
     else:
         offset_int = int(offset)
         if offset_int <= 0 or offset_int > capacity:
-            return None
+            return _bail("offset_range")
         offset_arr = mx.array([offset_int], dtype=mx.int32)
 
     blocks = _blocks_for_capacity(capacity)
     if blocks <= 0 or blocks % 32:
-        return None
+        return _bail("blocks_geometry")
 
     kernel = _packed_partials_kernel()
     reduce_kernel = _paged_reduce_kernel()
     if kernel is None or reduce_kernel is None:
-        return None
+        return _bail("kernel_unavailable")
 
     partial_shape = (bsz, hq, q_len, blocks, vdim)
     stats_shape = (bsz, hq, q_len, blocks)

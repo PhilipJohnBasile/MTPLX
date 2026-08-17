@@ -1897,6 +1897,54 @@ def _repetition_stop_config(enabled: bool) -> RepetitionStopConfig:
     )
 
 
+def _repetition_stream_holdback_tokens(config: RepetitionStopConfig) -> int:
+    """Wire tail (in tokens) held back while the repetition stop is armed.
+
+    F35 (2026-08-16): the serial loops emitted every token to the stream
+    callback BEFORE the repetition trimmer ran, so the wire transcript kept
+    the repeated garbage the non-stream lane trims — stream-vs-non-stream
+    divergence and wire > usage. Holding this many trailing tokens off the
+    wire keeps every steady-state trim inside the unsent tail: once the
+    detector has run at least once, a first-fire trim is bounded by
+    max(min_repeats * max_block, min_repeated_tokens + max_block) — a
+    longer periodic run would already have fired one pass earlier (the
+    shifted block is a rotation with the same period). The margin covers
+    speculative lanes committing several tokens between detector passes
+    (primary + accepted window + bonus + context-copy block, K<=24
+    default). Returns 0 when the guard is disarmed: capped requests keep
+    the exact historical emit pattern, byte for byte.
+    """
+    if not config.enabled:
+        return 0
+    window = max(
+        int(config.min_repeats) * int(config.max_block_tokens),
+        int(config.min_repeated_tokens) + int(config.max_block_tokens),
+    )
+    return window + 64
+
+
+def _repetition_stream_emit_limit(
+    total_tokens: int,
+    config: RepetitionStopConfig,
+    holdback: int,
+) -> int:
+    """Highest token index (exclusive) safe to hand the stream callback now.
+
+    Tokens below ``min_tokens - holdback`` can stream immediately (the
+    detector cannot run before ``min_tokens``, and a later steady-state
+    fire never trims deeper than ``holdback``), so short armed responses
+    stream exactly like today. One residual, documented divergence: the
+    detector's very FIRST pass (at ``min_tokens``) may trim deeper than the
+    holdback when the output was periodic from near the start; covering
+    that would mean streaming nothing before ``min_tokens`` for every
+    armed request, which is a worse product than the bounded residue.
+    """
+    if holdback <= 0:
+        return total_tokens
+    safe_prefix = max(0, int(config.min_tokens) - holdback)
+    return max(total_tokens - holdback, min(total_tokens, safe_prefix))
+
+
 @dataclass
 class PromptState:
     trunk_cache: list[Any]
@@ -5368,9 +5416,37 @@ def generate_ar(
             mtp_history_materialize_events=0,
         )
 
+    # F35: while the uncapped repetition stop is armed, the wire must never
+    # outrun a future trim — hold a detector-window tail back from the
+    # callback and flush it after the loop, once the trim decision is
+    # known. Disarmed (all capped/benchmark requests): holdback is 0 and
+    # the historical per-token callback pattern is byte-identical.
+    _stream_holdback = (
+        _repetition_stream_holdback_tokens(repetition_config)
+        if token_callback is not None
+        else 0
+    )
+    _streamed_token_count = 0
+
     def emit_token(token: int) -> None:
-        if token_callback is not None and not _is_stop(int(token), stop_token_ids):
-            token_callback([int(token)])
+        nonlocal _streamed_token_count
+        if token_callback is not None:
+            if _stream_holdback <= 0:
+                if not _is_stop(int(token), stop_token_ids):
+                    token_callback([int(token)])
+            else:
+                limit = _repetition_stream_emit_limit(
+                    len(tokens), repetition_config, _stream_holdback
+                )
+                if limit > _streamed_token_count:
+                    released = [
+                        int(t)
+                        for t in tokens[_streamed_token_count:limit]
+                        if not _is_stop(int(t), stop_token_ids)
+                    ]
+                    _streamed_token_count = limit
+                    if released:
+                        token_callback(released)
         emit_trace()
 
     for step in range(max_tokens):
@@ -5477,6 +5553,18 @@ def generate_ar(
         verify_calls += 1
         logits = logits_next[:, -1, :]
 
+    if token_callback is not None and _stream_holdback > 0:
+        # Armed-stream reconcile (F35): the trim decision is known here —
+        # flush the held tail in full (no trim) or the post-trim remainder.
+        _streamed_token_count = min(_streamed_token_count, len(tokens))
+        _held_tail = [
+            int(t)
+            for t in tokens[_streamed_token_count:]
+            if not _is_stop(int(t), stop_token_ids)
+        ]
+        _streamed_token_count = len(tokens)
+        if _held_tail:
+            token_callback(_held_tail)
     finish_reason = _finish_reason_from_tokens(
         tokens,
         stop_token_ids=stop_token_ids,
@@ -6732,6 +6820,16 @@ def generate_mtpk(
         repetition_stop = False
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    # F35: armed uncapped streams hold a detector-window tail off the wire
+    # (see _repetition_stream_holdback_tokens); emit_new_tokens applies the
+    # limit and the post-loop reconcile flushes the tail once the trim
+    # decision is known. Disarmed requests keep the exact historical
+    # emit batching (holdback 0 short-circuits to len(tokens)).
+    _stream_holdback = (
+        _repetition_stream_holdback_tokens(repetition_config)
+        if token_callback is not None
+        else 0
+    )
     draft_time = verify_time = 0.0
     verify_forward_time = 0.0
     verify_eval_time = 0.0
@@ -7609,12 +7707,24 @@ def generate_mtpk(
         maybe_clear_mlx_cache()
         if token_callback is None or streamed_token_count >= len(tokens):
             return
+        # F35: armed streams stop at the holdback limit so a repetition
+        # trim can never chase bytes already on the wire; disarmed streams
+        # keep the historical limit len(tokens), byte for byte.
+        limit = (
+            _repetition_stream_emit_limit(
+                len(tokens), repetition_config, _stream_holdback
+            )
+            if _stream_holdback > 0
+            else len(tokens)
+        )
+        if limit <= streamed_token_count:
+            return
         new_tokens = [
             int(token)
-            for token in tokens[streamed_token_count:]
+            for token in tokens[streamed_token_count:limit]
             if not _is_stop(int(token), stop_token_ids)
         ]
-        streamed_token_count = len(tokens)
+        streamed_token_count = limit
         if new_tokens:
             token_callback(new_tokens)
 
@@ -9966,6 +10076,18 @@ def generate_mtpk(
         emit_new_tokens()
         emit_trace()
 
+    if token_callback is not None and _stream_holdback > 0:
+        # Armed-stream reconcile (F35): the trim decision is known here —
+        # flush the held tail in full (no trim) or the post-trim remainder.
+        streamed_token_count = min(streamed_token_count, len(tokens))
+        _held_tail = [
+            int(token)
+            for token in tokens[streamed_token_count:]
+            if not _is_stop(int(token), stop_token_ids)
+        ]
+        streamed_token_count = len(tokens)
+        if _held_tail:
+            token_callback(_held_tail)
     if first_round_snapshot is None and int(verify_calls) >= 1:
         # Single-cycle generation: the loop never reached iteration 2, so the
         # cumulative timers ARE round 1's totals. Product telemetry stays

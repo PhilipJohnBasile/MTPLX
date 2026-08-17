@@ -883,6 +883,20 @@ def nax_qmm_m16(
 
 _QLINEAR_PATCH: dict[str, object] = {"installed": False, "original": None}
 
+# F23b (2026-08-16): verify-shaped QuantizedLinear calls that entered the
+# patched fast-path window (bits in {4,6,8}, decode/verify phase, M in the
+# verify range) but fell through every kernel gate back to stock. Keyed
+# "b{bits}_m{M}" — the shape class tells which lane silently declined
+# (lane_disabled kill switches, eligibility geometry, small-N floors).
+# Import-stable surface for /health; increments happen ONLY on the bail
+# path (calls the kernels serve never touch this dict).
+nax_qlinear_fallback_counts: dict[str, int] = {}
+
+
+def _count_qlinear_fallback(bits: int, m: int) -> None:
+    key = f"b{int(bits)}_m{int(m)}"
+    nax_qlinear_fallback_counts[key] = nax_qlinear_fallback_counts.get(key, 0) + 1
+
 
 def install_nax_qlinear_patch() -> dict[str, object]:
     """Route verify-shaped (M in 4..16) 4-bit QuantizedLinear calls through the
@@ -971,6 +985,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         if bits == 6 and x.ndim >= 2 and current_attention_phase() != "prefill":
             # 6-bit affine (9B tier), added 2026-07-07: split-K hexpack
             # kernels, exactness-gated vs stock across {bf16,fp16} x
@@ -1017,6 +1032,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         if bits == 4 and x.ndim >= 2 and current_attention_phase() != "prefill":
             m = 1
             for d in x.shape[:-1]:
@@ -1058,6 +1074,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         return original(self, x)
 
     nn.QuantizedLinear.__call__ = patched

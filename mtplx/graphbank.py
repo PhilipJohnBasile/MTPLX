@@ -726,10 +726,85 @@ _UNSUPPORTED_CAPTURE_BACKENDS = {
 }
 
 
-# One ladder walk per process: the shader cache it primes is process-global
-# (and OS-persistent), so re-walking on every per-generation bank instance
-# would be pure waste.
+# Prewarm one-shot (F6, 2026-08-16). The shader/pipeline cache the ladder
+# primes is process-global (and OS-persistent), so re-walking buckets that
+# are already warm is pure waste — but the OLD one-shot boolean was spent by
+# the FIRST compiled dispatch of the process, which is normally the 16-token
+# boot warmup: its tiny cache clamped the walk (min paged capacity) and the
+# deeper buckets then paid their ~1s compile inside the first MEASURED
+# benchmark row. `_PREWARM_DONE` now means "no future walk can add
+# coverage" (walk reached the router ceiling, or the cache is structurally
+# ladder-free); until then, the first dispatch of each generation retries
+# the walk and extends it with whatever new buckets the current cache
+# capacity allows, skipping buckets already recorded in
+# `_PREWARMED_BUCKETS`. A retry with nothing new to walk is a few python
+# comparisons — no compiles, no kernel work.
 _PREWARM_DONE = False
+
+# Buckets already walked this process, keyed
+# (runtime id, verify length, hidden variant, bucket). A recycled runtime
+# id after a model swap can only SKIP a warmup walk (perf miss, never a
+# correctness risk — the compiled callables themselves are guarded by the
+# weakref check in _shared_or_new_verify_step).
+_PREWARMED_BUCKETS: set[tuple[int, int, str, int]] = set()
+
+# Importable prewarm truth for /health (read defensively via getattr).
+# "done": no further walk can add coverage; "buckets": bucket sizes warmed
+# this process; "walks": ladder walks that executed; "last_report": the most
+# recent walk report (same shape as CompiledVerifyBank.stats["prewarm"]).
+prewarm_status: dict[str, Any] = {
+    "done": False,
+    "buckets": [],
+    "walks": 0,
+    "last_report": None,
+}
+
+# Importable compiled-verify degradation truth for /health (F23a).
+# "permanent_eager" tracks the most recently constructed bank (flipped True
+# by any later runtime flip); "reason"/"flipped_at" keep the LAST flip
+# forensics (sticky across requests); "flip_count" counts permanent flips
+# process-wide (construction-gate flips count once per distinct reason, not
+# once per request); "transient_exception_count" counts per-call exception
+# fallbacks that did NOT flip the bank.
+compiled_verify_status: dict[str, Any] = {
+    "mode": None,
+    "permanent_eager": False,
+    "reason": None,
+    "flipped_at": None,
+    "flip_count": 0,
+    "transient_exception_count": 0,
+}
+
+_PERMANENT_EAGER_LOGGED: set[str] = set()
+
+
+def _record_permanent_eager(reason: str, *, once: bool = False) -> None:
+    """Record (and log once per distinct reason) a permanent-eager flip.
+
+    ``once=True`` marks deterministic construction-time flips (per-model
+    quant gate): the first bank records and logs; subsequent per-request
+    banks only re-assert ``permanent_eager`` without inflating the count.
+    """
+    already_logged = reason in _PERMANENT_EAGER_LOGGED
+    compiled_verify_status["permanent_eager"] = True
+    if once and already_logged:
+        return
+    compiled_verify_status["reason"] = reason
+    compiled_verify_status["flipped_at"] = time.time()
+    compiled_verify_status["flip_count"] = (
+        int(compiled_verify_status.get("flip_count", 0)) + 1
+    )
+    if not already_logged:
+        _PERMANENT_EAGER_LOGGED.add(reason)
+        try:
+            print(
+                "[mtplx] compiled-verify permanent-eager: "
+                + reason
+                + " (verify runs the eager path from here)",
+                flush=True,
+            )
+        except Exception:
+            pass
 
 # Process-global compiled verify callables, keyed by
 # (runtime id, capture backend, state spec, verify length, hidden variant,
@@ -1204,6 +1279,11 @@ class CompiledVerifyBank:
                 "CompiledVerifyBank: parity and parity2 are mutually exclusive"
             )
         self.permanent_eager = False
+        self.permanent_eager_reason: str | None = None
+        compiled_verify_status["mode"] = (
+            "parity" if self.parity else ("parity2" if self.parity2 else "on")
+        )
+        compiled_verify_status["permanent_eager"] = False
         if not parity and not parity2 and not _compiled_verify_bits_gate_ok(runtime):
             # Per-model promotion gate: 4-bit and 8-bit affine trunks engage
             # (both parity2-validated; q8's early -15/-18% reading predated
@@ -1211,6 +1291,10 @@ class CompiledVerifyBank:
             # compiled, 0 fallbacks, 41.3 tok/s at league parity). Unmeasured
             # quantizations (e.g. the 6-bit 9B) stay eager.
             self.permanent_eager = True
+            self.permanent_eager_reason = (
+                f"quant_bits_gate:bits={_runtime_trunk_quant_bits(runtime)}"
+            )
+            _record_permanent_eager(self.permanent_eager_reason, once=True)
         self._capture_accepts_backend = _accepts_capture_backend(runtime)
         self._compiled: dict[tuple[int, str, int], Any] = {}
         self._spec: list[tuple[int, str, int]] | None = None
@@ -1277,30 +1361,58 @@ class CompiledVerifyBank:
             and not self.parity2
             and _prewarm_enabled()
         ):
-            # First compiled dispatch of the process (normally the startup
-            # warmup generation): walk the PAGED bucket ladder once so those
-            # graphs (and their Metal pipelines) exist before any user-facing
-            # generation — paged bucket crossings were the bulk of the −28%
-            # unrouted long-form cost (MEASUREMENTS 2026-07-02). On the dense
-            # path this is a deliberate no-op ("no_paged_entries"): dense KV
+            # First compiled dispatch of a generation while coverage is
+            # incomplete (the first one of the process is normally the
+            # startup warmup generation): walk the PAGED bucket ladder so
+            # those graphs (and their Metal pipelines) exist before any
+            # user-facing generation — paged bucket crossings were the bulk
+            # of the −28% unrouted long-form cost (MEASUREMENTS 2026-07-02).
+            # On the dense path this is a deliberate no-op
+            # ("no_paged_entries", marks the walk complete): dense KV
             # retraces every 256 tokens of growth (5 traces per 1.3k-token
             # chat answer, measured 2026-07-02 21:25) and pre-walking ~24
             # shape classes to 6k is startup-prohibitive — the designed fix
             # there is pow2-bucketized dense leaves, not a longer prewarm.
-            _PREWARM_DONE = True
-            report = self.prewarm_ladder(
-                cache, input_ids, hidden_variant=hidden_variant
-            )
-            self.stats["prewarm"] = report
+            # F6 (2026-08-16): a walk CLAMPED by the current cache's paged
+            # capacity (the 16-token boot warmup) no longer spends the
+            # one-shot — later generations with more capacity (the server
+            # warmup ladder rungs) extend the walk over the still-missing
+            # buckets, so their compiles land in warmup, not in measured
+            # rows. The walk is best-effort by design: a failure is
+            # recorded visibly and the organic dispatch below handles the
+            # same condition through its own fallback accounting.
             try:
-                import json as _json
-
-                print(
-                    "[mtplx] compiled-verify prewarm " + _json.dumps(report),
-                    flush=True,
+                report = self.prewarm_ladder(
+                    cache, input_ids, hidden_variant=hidden_variant
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # visible, never fatal (see docstring)
+                report = {
+                    "buckets": [],
+                    "skipped": [f"walk_error:{type(exc).__name__}"],
+                    "elapsed_s": 0.0,
+                    "complete": False,
+                }
+            self.stats["prewarm"] = report
+            _PREWARM_DONE = bool(report.get("complete"))
+            prewarm_status["done"] = _PREWARM_DONE
+            prewarm_status["walks"] = int(prewarm_status.get("walks", 0)) + 1
+            prewarm_status["last_report"] = report
+            prewarm_status["buckets"] = sorted(
+                {bucket for _rt, _len, _var, bucket in _PREWARMED_BUCKETS}
+            )
+            if report.get("buckets") or int(prewarm_status["walks"]) == 1:
+                # One line per walk that actually compiled something (plus
+                # the first walk of the process); silent no-op retries stay
+                # off the console.
+                try:
+                    import json as _json
+
+                    print(
+                        "[mtplx] compiled-verify prewarm " + _json.dumps(report),
+                        flush=True,
+                    )
+                except Exception:
+                    pass
         self.stats["calls"] += 1
         reason = self._fallback_reason(input_ids, cache, return_hidden)
         if reason is not None:
@@ -1413,8 +1525,15 @@ class CompiledVerifyBank:
                     self._held_state_refs.pop(0)
         except Exception as exc:
             self._exception_failures += 1
+            compiled_verify_status["transient_exception_count"] = (
+                int(compiled_verify_status.get("transient_exception_count", 0)) + 1
+            )
             if self._exception_failures >= 3:
                 self.permanent_eager = True
+                self.permanent_eager_reason = (
+                    f"exception_streak:{type(exc).__name__}"
+                )
+                _record_permanent_eager(self.permanent_eager_reason)
             return self._fallback(
                 input_ids,
                 cache=cache,
@@ -1488,8 +1607,23 @@ class CompiledVerifyBank:
         to its natural value before returning. Failures are recorded per
         bucket and never flip ``permanent_eager`` — a bucket that cannot
         prewarm simply pays its organic compile later.
+
+        ``report["complete"]`` is the one-shot verdict (F6): True when no
+        future walk could add coverage (the ladder reached the router
+        ceiling, or the cache is structurally ladder-free), False when the
+        walk was clamped by the current cache's paged capacity or skipped
+        for a transient reason — the trigger then retries on a later
+        generation whose cache reaches further. Buckets warmed by earlier
+        walks are skipped (``report["already"]``), so a retry with nothing
+        new to add costs a few python comparisons.
         """
-        report: dict[str, Any] = {"buckets": [], "skipped": [], "elapsed_s": 0.0}
+        report: dict[str, Any] = {
+            "buckets": [],
+            "skipped": [],
+            "already": [],
+            "elapsed_s": 0.0,
+            "complete": False,
+        }
         started = time.perf_counter()
 
         def _finish() -> dict[str, Any]:
@@ -1497,7 +1631,10 @@ class CompiledVerifyBank:
             return report
 
         if self.permanent_eager:
+            # Structural for this process/model (quant gate) or already a
+            # terminal degradation — nothing a later walk could add.
             report["skipped"].append("permanent_eager")
+            report["complete"] = True
             return _finish()
         reason = self._fallback_reason(
             input_ids, cache, True, consume_post_restore=False
@@ -1515,6 +1652,9 @@ class CompiledVerifyBank:
             report["skipped"].append(
                 "capacity_overflow" if natural is None else "no_paged_entries"
             )
+            # Dense caches have no paged bucket ladder by design (see the
+            # trigger comment): the walk is complete, not clamped.
+            report["complete"] = natural is not None
             return _finish()
         boundary = (
             int(max_context)
@@ -1535,6 +1675,13 @@ class CompiledVerifyBank:
                 cap = int(entry.capacity)
                 min_capacity = cap if min_capacity is None else min(min_capacity, cap)
         ceiling = _next_pow2(boundary + length + 512)
+        if int(natural) > ceiling:
+            # This call's context is already above the compiled-verify
+            # router: every dispatch of this generation falls back per call
+            # ("context_above_threshold"), so walking (and compiling) its
+            # bucket would burn ~1s on a graph no compiled row can use.
+            report["skipped"].append("context_above_router")
+            return _finish()
         ladder: list[int] = []
         bucket = int(natural)
         while True:
@@ -1547,21 +1694,45 @@ class CompiledVerifyBank:
             if bucket >= ceiling:
                 break
             bucket *= 2
+        # Complete = the ladder reached the router ceiling. A walk clamped
+        # below it by min_capacity leaves the one-shot unspent so a later,
+        # larger cache (server warmup ladder rungs) extends the coverage.
+        report["complete"] = bool(ladder) and int(ladder[-1]) >= ceiling
+        variant_key = str(hidden_variant or "")
+        runtime_id = id(self.runtime)
+        pending = [
+            bucket
+            for bucket in ladder
+            if (runtime_id, length, variant_key, int(bucket))
+            not in _PREWARMED_BUCKETS
+        ]
+        report["already"] = [
+            int(bucket) for bucket in ladder if bucket not in pending
+        ]
+        if not pending:
+            return _finish()
         self._ensure_shadow(cache)
         state_in = self._read_state_leaves(cache)
         if state_in is None:
             report["skipped"].append("empty_state_leaf")
+            report["complete"] = False
             return _finish()
-        for bucket in ladder:
+        for bucket in pending:
             if self._paged_ineligibility(cache, length, bucket) is not None:
                 report["skipped"].append(f"b{bucket}:paged_kernel_ineligible")
                 continue
             try:
                 self._apply_bucket(cache, bucket)
-                key = (length, str(hidden_variant or ""), int(bucket))
+                key = (length, variant_key, int(bucket))
                 fn = self._compiled.get(key)
                 if fn is None:
-                    fn = mx.compile(self._make_verify_step(length, hidden_variant))
+                    # Shared-registry compile (F6): a bare per-bank
+                    # mx.compile primed the Metal pipelines but kept the
+                    # trace private to the warmup bank, so the first real
+                    # request at the same shapes re-traced every bucket
+                    # (~1s each) inside its measured row. The shared step
+                    # is exactly what organic dispatch consults.
+                    fn = self._shared_or_new_verify_step(key, length, hidden_variant)
                     self._compiled[key] = fn
                 bucket_started = time.perf_counter()
                 outputs = fn(input_ids, *state_in)
@@ -1575,6 +1746,7 @@ class CompiledVerifyBank:
                         "s": round(time.perf_counter() - bucket_started, 3),
                     }
                 )
+                _PREWARMED_BUCKETS.add((runtime_id, length, variant_key, int(bucket)))
             except Exception as exc:
                 report["skipped"].append(f"b{bucket}:{type(exc).__name__}")
         try:
@@ -1678,6 +1850,9 @@ class CompiledVerifyBank:
         data["growth_reserve_tokens"] = self.growth_reserve_tokens
         data["capture_backend"] = self.capture_backend
         data["permanent_eager"] = self.permanent_eager
+        data["permanent_eager_reason"] = getattr(
+            self, "permanent_eager_reason", None
+        )
         data["compiled_entry_count"] = len(self._compiled)
         data["compiled_keys"] = [
             f"m{length}:{variant or 'default'}:b{bucket}"
