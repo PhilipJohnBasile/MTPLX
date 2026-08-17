@@ -22811,8 +22811,12 @@ def _chat_ui_html(
             ctlEls.max_tokens.value = String(Math.min(parseInt(ctlEls.max_tokens.value, 10) || DEFAULTS.max_tokens, cap));
           }
           if (maxTokensHelpEl) {
+            // ctx is /health's context_window: what THIS launch is serving,
+            // which memory sizing may cap well below the model's native
+            // context. Labeling it "the model's" misled low-RAM users into
+            // reading the machine cap as a model property.
             maxTokensHelpEl.textContent =
-              "Cap is the model's " + formatTokens(ctx) + " context (slider tops out at " +
+              "Cap is this server's " + formatTokens(ctx) + " context window (slider tops out at " +
               formatTokens(cap) + ").";
           }
           refreshLabels();
