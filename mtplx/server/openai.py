@@ -17078,6 +17078,21 @@ def _store_retokenized_history_snapshot(
                 "best_prefix_nbytes": int(best_prefix_nbytes),
                 **prefix_probe,
             }
+            if session is not None and history_vision_splice is not None:
+                # The engine-session frontier is raw-token-id keyed and has
+                # no image identity, so a committed vision frontier lets a
+                # later request with DIFFERENT pixels but identical pad ids
+                # extend/restore another image's KV (the pillar alias leg).
+                # Vision turns keep their warm reuse through the bank lane,
+                # whose keys are content surrogates. Before the F39 frontier
+                # fix these turns never committed by accident; now they skip
+                # deliberately.
+                outcome["session_commit"] = {
+                    "committed": False,
+                    "reason": "vision_session_frontier_skip",
+                    "prefix_len": int(getattr(session, "prefix_len", 0) or 0),
+                }
+                return outcome
             if session is not None:
                 try:
                     commit = session.commit_retokenized_prefix(
@@ -17243,6 +17258,17 @@ def _store_retokenized_history_snapshot(
             **prefix_probe,
         }
     session_commit: dict[str, Any] | None = None
+    if session is not None and history_vision_splice is not None:
+        # Raw-id session frontiers carry no image identity; a committed
+        # vision frontier aliases DIFFERENT pixels behind identical pad ids
+        # (pillar alias leg). Vision reuse rides the surrogate-keyed bank
+        # entry stored above; the session frontier deliberately stays put.
+        session_commit = {
+            "committed": False,
+            "reason": "vision_session_frontier_skip",
+            "prefix_len": int(getattr(session, "prefix_len", 0) or 0),
+        }
+        session = None
     if session is not None:
         try:
             if _abort_requested():
@@ -26420,11 +26446,17 @@ def create_app(state: ServerState) -> FastAPI:
                     streaming_response=False,
                 )
                 generated_result = attach_response_observability(generated_result)
-                session.commit(
-                    prompt_ids=prompt_ids,
-                    generated_ids=generated_result["tokens"],
-                    finish_reason=generated_result.get("finish_reason", "stop"),
-                )
+                if vision_splice is None:
+                    # Raw-id session frontiers carry no image identity: a
+                    # committed vision frontier lets a same-text request
+                    # with DIFFERENT pixels adopt and restore this KV whole
+                    # (pillar alias leg). Vision reuse rides the
+                    # surrogate-keyed bank lane only.
+                    session.commit(
+                        prompt_ids=prompt_ids,
+                        generated_ids=generated_result["tokens"],
+                        finish_reason=generated_result.get("finish_reason", "stop"),
+                    )
                 return generated_result
 
         async def store_postcommit_snapshot(
@@ -27748,14 +27780,18 @@ def create_app(state: ServerState) -> FastAPI:
                                     generated["stats"][
                                         "session_postcommit_snapshot"
                                     ] = postcommit
-                                    session.commit(
-                                        prompt_ids=prompt_ids,
-                                        generated_ids=generated["tokens"],
-                                        finish_reason=generated.get(
-                                            "finish_reason", "stop"
-                                        ),
-                                        nbytes=int(postcommit.get("nbytes") or 0),
-                                    )
+                                    if vision_splice is None:
+                                        # Vision frontiers alias different
+                                        # pixels behind identical pad ids;
+                                        # bank lane (surrogate keys) only.
+                                        session.commit(
+                                            prompt_ids=prompt_ids,
+                                            generated_ids=generated["tokens"],
+                                            finish_reason=generated.get(
+                                                "finish_reason", "stop"
+                                            ),
+                                            nbytes=int(postcommit.get("nbytes") or 0),
+                                        )
                                     queue.put(("committed", generated))
                                 else:
                                     queue.put(("released", None))
