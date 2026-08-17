@@ -20,17 +20,23 @@ public struct PiLaunchResult: Equatable, Sendable {
     public let command: String
     public let detail: String
     public let launchedProcessIDs: [Int]
+    /// Exact ownership of the Terminal-launched Pi process when it reports
+    /// its UUID receipt. Callers must use this lease, not process discovery,
+    /// for stale cleanup.
+    public let terminalHandoffLease: MTPLXTerminalHandoffLease?
 
     public init(
         action: PiLaunchAction,
         command: String,
         detail: String,
-        launchedProcessIDs: [Int] = []
+        launchedProcessIDs: [Int] = [],
+        terminalHandoffLease: MTPLXTerminalHandoffLease? = nil
     ) {
         self.action = action
         self.command = command
         self.detail = detail
         self.launchedProcessIDs = launchedProcessIDs
+        self.terminalHandoffLease = terminalHandoffLease
     }
 }
 
@@ -49,9 +55,19 @@ public struct PiIntegration: Sendable {
     """
 
     public let configURL: URL
+    /// Per-invocation scripts, receipts, and cancellation markers live here.
+    /// Keeping the directory injectable makes ownership deterministic in
+    /// service tests without reusing a fixed command filename.
+    public let handoffDirectory: URL
 
-    public init(configURL: URL = PiIntegration.defaultConfigURL()) {
+    public init(
+        configURL: URL = PiIntegration.defaultConfigURL(),
+        handoffDirectory: URL = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".mtplx", isDirectory: true)
+            .appendingPathComponent("handoffs", isDirectory: true)
+    ) {
         self.configURL = configURL
+        self.handoffDirectory = handoffDirectory
     }
 
     public static func defaultConfigURL() -> URL {
@@ -82,15 +98,23 @@ public struct PiIntegration: Sendable {
             .appendingPathComponent(agentOperatingHintsFilename)
     }
 
-    public func launchInTerminal(configuration: MTPLXAppConfiguration) -> PiLaunchResult {
+    @MainActor
+    public func launchInTerminal(
+        configuration: MTPLXAppConfiguration,
+        isCurrent: (() -> Bool)? = nil
+    ) async -> PiLaunchResult {
         let command = Self.terminalLaunchCommand(for: configuration.model)
+        guard isCurrent?() ?? true else {
+            return staleHandoffResult(command: command)
+        }
         #if os(macOS)
-        let existingAgentPIDs = Self.runningPiAgentPIDs()
-        let scriptURL: URL
+        let handoff = makeTerminalHandoffFiles()
         do {
-            scriptURL = try writeTerminalCommandFile(
+            guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
+            try writeTerminalCommandFile(
                 command: command,
-                configuration: configuration
+                configuration: configuration,
+                handoff: handoff
             )
         } catch {
             return PiLaunchResult(
@@ -99,10 +123,14 @@ public struct PiIntegration: Sendable {
                 detail: "could not prepare Pi terminal command: \(error)"
             )
         }
+        guard isCurrent?() ?? true else {
+            await cancelPendingTerminalHandoff(handoff)
+            return staleHandoffResult(command: command)
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "Terminal", scriptURL.path]
+        process.arguments = ["-a", "Terminal", handoff.commandURL.path]
         let stderr = Pipe()
         process.standardError = stderr
         // The backend store calls this from the main actor, so a wedged
@@ -116,8 +144,13 @@ public struct PiIntegration: Sendable {
         defer { stderr.fileHandleForReading.readabilityHandler = nil }
         let watchdog = SubprocessWatchdog(process)
         do {
+            guard isCurrent?() ?? true else {
+                await cancelPendingTerminalHandoff(handoff)
+                return staleHandoffResult(command: command)
+            }
             try process.run()
             guard watchdog.wait(for: process, timeout: 30) else {
+                await cancelPendingTerminalHandoff(handoff)
                 return PiLaunchResult(
                     action: .unavailable,
                     command: command,
@@ -125,6 +158,7 @@ public struct PiIntegration: Sendable {
                 )
             }
             guard process.terminationStatus == 0 else {
+                await cancelPendingTerminalHandoff(handoff)
                 let message = stderrTail.snapshot()
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return PiLaunchResult(
@@ -135,14 +169,52 @@ public struct PiIntegration: Sendable {
                         : "could not open Pi automatically: \(message)"
                 )
             }
-            let launchedPIDs = Self.waitForNewPiAgentPIDs(excluding: existingAgentPIDs)
+            let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
+                handoffID: handoff.handoffID,
+                receiptURL: handoff.receiptURL,
+                cancellationMarkerURL: handoff.cancellationMarkerURL,
+                commandURL: handoff.commandURL,
+                isCurrent: isCurrent
+            )
+            if receipt.cancellationRequested {
+                if let lease = receipt.lease {
+                    _ = cancelTerminalHandoff(lease)
+                }
+                let stale = !(isCurrent?() ?? true)
+                return PiLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: stale
+                        ? "Pi handoff cancelled because the daemon lifecycle changed."
+                        : "Pi Terminal did not report its launch receipt."
+                )
+            }
+            guard let lease = receipt.lease else {
+                return PiLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "Pi Terminal did not report its launch receipt."
+                )
+            }
+            guard isCurrent?() ?? true else {
+                _ = cancelTerminalHandoff(lease)
+                return PiLaunchResult(
+                    action: .unavailable,
+                    command: command,
+                    detail: "Pi handoff cancelled because the daemon lifecycle changed.",
+                    launchedProcessIDs: [lease.processID],
+                    terminalHandoffLease: lease
+                )
+            }
             return PiLaunchResult(
                 action: .launched,
                 command: command,
                 detail: "opened Pi in Terminal",
-                launchedProcessIDs: launchedPIDs.map(Int.init).sorted()
+                launchedProcessIDs: [lease.processID],
+                terminalHandoffLease: lease
             )
         } catch {
+            await cancelPendingTerminalHandoff(handoff)
             return PiLaunchResult(
                 action: .unavailable,
                 command: command,
@@ -158,16 +230,53 @@ public struct PiIntegration: Sendable {
         #endif
     }
 
-    @discardableResult
-    public func stopLaunchedAgents(processIDs: [Int]) -> Int {
-        var stopped = 0
-        for processID in Set(processIDs) {
-            let pid = pid_t(processID)
-            guard pid > 1, Self.isPiAgentProcess(pid: pid) else { continue }
-            Self.terminate(pid: pid)
-            stopped += 1
+    private func staleHandoffResult(command: String) -> PiLaunchResult {
+        PiLaunchResult(
+            action: .unavailable,
+            command: command,
+            detail: "Pi handoff cancelled because the daemon lifecycle changed."
+        )
+    }
+
+    /// Covers every failure after the script is durable. A late Terminal
+    /// launch sees the marker; a receipt from the final-check race is reaped
+    /// only after proving the exact UUID environment token.
+    @MainActor
+    private func cancelPendingTerminalHandoff(_ handoff: TerminalHandoffFiles) async {
+        let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
+            handoffID: handoff.handoffID,
+            receiptURL: handoff.receiptURL,
+            cancellationMarkerURL: handoff.cancellationMarkerURL,
+            commandURL: handoff.commandURL,
+            isCurrent: { false },
+            timeoutSeconds: 0,
+            delayedCancellationSeconds: 1
+        )
+        if let lease = receipt.lease {
+            _ = cancelTerminalHandoff(lease)
         }
-        return stopped
+    }
+
+    /// Cancels one exact lease. A stale Store callback must use this method
+    /// rather than process discovery or a raw PID list.
+    @MainActor
+    @discardableResult
+    public func cancelTerminalHandoff(_ lease: MTPLXTerminalHandoffLease) -> Bool {
+        let cancellationMarked = MTPLXTerminalHandoffLease.writeCancellationMarker(
+            at: lease.cancellationMarkerURL
+        )
+        let commandRemoved = lease.commandURL.map {
+            MTPLXTerminalHandoffLease.removeDurableCommandScript(at: $0)
+        } ?? true
+        let receiptRemoved = lease.receiptURL.map {
+            MTPLXTerminalHandoffLease.removeDurableCommandScript(at: $0)
+        } ?? true
+        let pid = pid_t(lease.processID)
+        guard pid > 1,
+              MTPLXTerminalHandoffLease.process(pid: pid, hasExactHandoffID: lease.handoffID)
+        else { return false }
+        Self.terminate(pid: pid)
+        return cancellationMarked && commandRemoved && receiptRemoved
     }
 
     @discardableResult
@@ -373,6 +482,24 @@ public struct PiIntegration: Sendable {
             && isDirectory.boolValue
     }
 
+    private struct TerminalHandoffFiles: Sendable {
+        let handoffID: UUID
+        let commandURL: URL
+        let receiptURL: URL
+        let cancellationMarkerURL: URL
+    }
+
+    private func makeTerminalHandoffFiles() -> TerminalHandoffFiles {
+        let handoffID = UUID()
+        let suffix = handoffID.uuidString.lowercased()
+        return TerminalHandoffFiles(
+            handoffID: handoffID,
+            commandURL: handoffDirectory.appendingPathComponent("open-pi-\(suffix).command"),
+            receiptURL: handoffDirectory.appendingPathComponent("open-pi-\(suffix).pid"),
+            cancellationMarkerURL: handoffDirectory.appendingPathComponent("open-pi-\(suffix).cancelled")
+        )
+    }
+
     static func isPiAgentCommand(_ command: String) -> Bool {
         let words = commandWords(command)
         guard let first = words.first else { return false }
@@ -390,70 +517,6 @@ public struct PiIntegration: Sendable {
         guard hasPiScript else { return false }
 
         return hasPiLaunchIntent(words)
-    }
-
-    private static func waitForNewPiAgentPIDs(excluding existing: Set<pid_t>) -> [pid_t] {
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline {
-            let next = runningPiAgentPIDs().subtracting(existing)
-            if !next.isEmpty {
-                return Array(next)
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        return []
-    }
-
-    private static func isPiAgentProcess(pid: pid_t) -> Bool {
-        runningPiAgentPIDs().contains(pid)
-    }
-
-    private static func runningPiAgentPIDs() -> Set<pid_t> {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,command="]
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mtplx-pi-ps-\(UUID().uuidString).txt")
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        guard let outputHandle = try? FileHandle(forWritingTo: outputURL) else { return [] }
-        defer {
-            try? outputHandle.close()
-            try? FileManager.default.removeItem(at: outputURL)
-        }
-        process.standardOutput = outputHandle
-        let exitDone = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            exitDone.signal()
-        }
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-        if exitDone.wait(timeout: .now() + 1.0) == .timedOut {
-            process.terminate()
-            if exitDone.wait(timeout: .now() + 0.5) == .timedOut {
-                return []
-            }
-        }
-        try? outputHandle.synchronize()
-        let outputData = (try? Data(contentsOf: outputURL)) ?? Data()
-        guard let output = String(data: outputData, encoding: .utf8) else { return [] }
-        let currentPID = getpid()
-        return Set(output.split(separator: "\n").compactMap { row -> pid_t? in
-            let text = String(row).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let firstSpace = text.firstIndex(where: { $0.isWhitespace }) else {
-                return nil
-            }
-            guard let pid = pid_t(text[..<firstSpace]),
-                  pid > 1,
-                  pid != currentPID
-            else {
-                return nil
-            }
-            let command = String(text[firstSpace...])
-            return isPiAgentCommand(command) ? pid : nil
-        })
     }
 
     private static func terminate(pid: pid_t) {
@@ -514,28 +577,34 @@ public struct PiIntegration: Sendable {
 
     private func writeTerminalCommandFile(
         command: String,
-        configuration: MTPLXAppConfiguration
-    ) throws -> URL {
-        let directory = URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".mtplx")
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        let scriptURL = directory.appendingPathComponent("open-pi.command")
+        configuration: MTPLXAppConfiguration,
+        handoff: TerminalHandoffFiles
+    ) throws {
+        let directory = handoff.commandURL.deletingLastPathComponent()
+        try MTPLXTerminalHandoffLease.prepareArtifactDirectory(directory)
         _ = try Self.writeAgentOperatingHintsFile()
         let workspacePath = Self.resolvedWorkspacePath(configuration: configuration)
         let script = """
         #!/bin/zsh
+        _mtplx_handoff_cancel=\(Self.shellQuote(handoff.cancellationMarkerURL.path))
+        _mtplx_handoff_receipt=\(Self.shellQuote(handoff.receiptURL.path))
+        export MTPLX_APP_HANDOFF_ID=\(Self.shellQuote(handoff.handoffID.uuidString.lowercased()))
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
         cd \(Self.shellQuote(workspacePath))
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
+        umask 077
+        print -r -- "$$" > "${_mtplx_handoff_receipt}.$$.tmp"
+        mv -f "${_mtplx_handoff_receipt}.$$.tmp" "$_mtplx_handoff_receipt"
+        if [[ -e "$_mtplx_handoff_cancel" ]]; then
+          exit 0
+        fi
         exec \(command)
         """
-        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: scriptURL.path
-        )
-        return scriptURL
+        try MTPLXTerminalHandoffLease.writeSecureCommandScript(script, to: handoff.commandURL)
     }
 
     @discardableResult

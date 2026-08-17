@@ -1151,6 +1151,18 @@ struct SettingsTab: View {
                     isOn: $draftConfig.launchDaemonOnOpen
                 )
 
+                FormToggleRow(
+                    label: "Restart this session's MTPLX after a crash",
+                    caption: "Applies to daemons launched after enabling this setting. Retries up to three times with backoff; Stop cancels pending retries.",
+                    isOn: $draftConfig.automaticDaemonRestart
+                )
+                if let restartStatusText {
+                    Text(restartStatusText)
+                        .font(.caption)
+                        .foregroundStyle(Brand.typeTertiary)
+                        .padding(.leading, 200)
+                }
+
                 Divider().overlay(Brand.separator).padding(.vertical, 4)
 
                 streamCadenceRow
@@ -1160,6 +1172,29 @@ struct SettingsTab: View {
 
     private var settingsFilePathHint: String {
         backend.settingsURL.path
+    }
+
+    private var restartStatusText: String? {
+        switch backend.daemonRestartStatus {
+        case .idle:
+            guard draftConfig.automaticDaemonRestart else { return nil }
+            switch backend.daemonRestartEligibility {
+            case .adoptedPriorSession:
+                return "This adopted prior-session daemon is not protected. Start a fresh daemon."
+            case .currentSessionUnprotected:
+                return "This daemon was launched before restart protection was enabled. Start a fresh daemon."
+            case .noDaemon, .currentSessionProtected:
+                return nil
+            }
+        case .scheduled(let attempt, let delay):
+            return "Restart \(attempt) scheduled in \(String(format: "%.1f", delay))s."
+        case .restarting(let attempt):
+            return "Restarting MTPLX (attempt \(attempt))."
+        case .runningAfterRestart(let attempt):
+            return "Recovered automatically on restart \(attempt)."
+        case .exhausted(let attempts, _):
+            return "Automatic recovery stopped after \(attempts) attempts."
+        }
     }
 
     private func chooseHermesWorkspace() {

@@ -43,6 +43,29 @@ public struct OpenCodeDesktopResult: Equatable, Sendable {
     public let didTerminateExistingInstance: Bool
     public let didOpen: Bool
     public let detail: String
+    /// A PID is exposed only when LaunchServices created a process that was
+    /// not already present before this invocation. It is diagnostic only;
+    /// stale cleanup needs the PID-plus-launch-date identity below.
+    public let launchedProcessID: Int?
+    public let launchedDesktopIdentity: MTPLXDesktopHandoffIdentity?
+
+    public init(
+        action: OpenCodeDesktopAction,
+        wasRunning: Bool,
+        didTerminateExistingInstance: Bool,
+        didOpen: Bool,
+        detail: String,
+        launchedProcessID: Int? = nil,
+        launchedDesktopIdentity: MTPLXDesktopHandoffIdentity? = nil
+    ) {
+        self.action = action
+        self.wasRunning = wasRunning
+        self.didTerminateExistingInstance = didTerminateExistingInstance
+        self.didOpen = didOpen
+        self.detail = detail
+        self.launchedProcessID = launchedProcessID
+        self.launchedDesktopIdentity = launchedDesktopIdentity
+    }
 }
 
 private struct OpenCodeReasoningVisibilityResult: Equatable, Sendable {
@@ -173,7 +196,9 @@ public struct OpenCodeIntegration: Sendable {
     /// target therefore owns this handoff: after the daemon is ready, reload
     /// Desktop so users do not have to discover the "restart OpenCode" fix.
     @MainActor
-    public func reloadDesktopAfterDaemonReady() async -> OpenCodeDesktopResult {
+    public func reloadDesktopAfterDaemonReady(
+        isCurrent: (() -> Bool)? = nil
+    ) async -> OpenCodeDesktopResult {
         #if canImport(AppKit)
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: desktopApplicationURL.path) else {
@@ -185,7 +210,15 @@ public struct OpenCodeIntegration: Sendable {
                 detail: "OpenCode.app not found at \(desktopApplicationURL.path)"
             )
         }
+        guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
+        let preexistingProcessIDs = Set(
+            NSRunningApplication
+                .runningApplications(withBundleIdentifier: desktopBundleIdentifier)
+                .filter { !$0.isTerminated }
+                .map { Int($0.processIdentifier) }
+        )
         let stateRepair = repairDesktopStateBeforeLaunch()
+        guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
 
         let running = NSRunningApplication
             .runningApplications(withBundleIdentifier: desktopBundleIdentifier)
@@ -194,37 +227,59 @@ public struct OpenCodeIntegration: Sendable {
         var terminatedExisting = false
 
         if wasRunning {
+            guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
             for app in running {
                 app.terminate()
             }
             terminatedExisting = await waitUntilApplicationsExit(running, timeoutSeconds: 5)
+            guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
             if !terminatedExisting {
+                guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
                 for app in running where !app.isTerminated {
                     app.forceTerminate()
                 }
                 terminatedExisting = await waitUntilApplicationsExit(running, timeoutSeconds: 2)
+                guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
             }
         }
 
-        let didOpen = await openDesktopApplication()
+        guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
+        let opened = await openDesktopApplication()
+        let launchedDesktopIdentity: MTPLXDesktopHandoffIdentity?
+        if opened.didOpen,
+           let processID = opened.processID,
+           let launchDate = opened.launchDate,
+           !preexistingProcessIDs.contains(processID) {
+            launchedDesktopIdentity = MTPLXDesktopHandoffIdentity(
+                processID: processID,
+                launchDate: launchDate
+            )
+        } else {
+            launchedDesktopIdentity = nil
+        }
+        guard isCurrent?() ?? true else {
+            return staleDesktopHandoffResult(launchedDesktopIdentity: launchedDesktopIdentity)
+        }
         let action: OpenCodeDesktopAction
         if wasRunning {
-            action = didOpen ? .relaunched : .unavailable
+            action = opened.didOpen ? .relaunched : .unavailable
         } else {
-            action = didOpen ? .opened : .unavailable
+            action = opened.didOpen ? .opened : .unavailable
         }
 
         return OpenCodeDesktopResult(
             action: action,
             wasRunning: wasRunning,
             didTerminateExistingInstance: wasRunning ? terminatedExisting : false,
-            didOpen: didOpen,
+            didOpen: opened.didOpen,
             detail: (wasRunning
                 ? "reloaded OpenCode Desktop so its sidecar re-reads MTPLX provider config"
                 : "opened OpenCode Desktop")
                 + (stateRepair.didChange
                    ? "; repaired \(stateRepair.removedEntries) stale OpenCode workspace state entr\(stateRepair.removedEntries == 1 ? "y" : "ies")"
-                   : "")
+                   : ""),
+            launchedProcessID: launchedDesktopIdentity?.processID,
+            launchedDesktopIdentity: launchedDesktopIdentity
         )
         #else
         return OpenCodeDesktopResult(
@@ -234,6 +289,46 @@ public struct OpenCodeIntegration: Sendable {
             didOpen: false,
             detail: "AppKit is unavailable"
         )
+        #endif
+    }
+
+    private func staleDesktopHandoffResult(
+        launchedDesktopIdentity: MTPLXDesktopHandoffIdentity? = nil
+    ) -> OpenCodeDesktopResult {
+        OpenCodeDesktopResult(
+            action: .unavailable,
+            wasRunning: false,
+            didTerminateExistingInstance: false,
+            didOpen: false,
+            detail: "OpenCode handoff cancelled because the daemon lifecycle changed.",
+            launchedProcessID: launchedDesktopIdentity?.processID,
+            launchedDesktopIdentity: launchedDesktopIdentity
+        )
+    }
+
+    /// Reap only the process opened by this invocation. The Store calls this
+    /// when the lifecycle changes after LaunchServices returns a new PID; an
+    /// already-running OpenCode instance is deliberately never targeted.
+    @MainActor
+    @discardableResult
+    public func cancelLaunchedDesktop(_ identity: MTPLXDesktopHandoffIdentity) -> Bool {
+        #if canImport(AppKit)
+        guard identity.processID > 1,
+              let application = NSRunningApplication
+                .runningApplications(withBundleIdentifier: desktopBundleIdentifier)
+                .first(where: {
+                    !$0.isTerminated
+                        && identity.matches(
+                            processID: Int($0.processIdentifier),
+                            launchDate: $0.launchDate
+                        )
+                })
+        else { return false }
+        application.terminate()
+        return true
+        #else
+        _ = identity
+        return false
         #endif
     }
 
@@ -781,7 +876,11 @@ public struct OpenCodeIntegration: Sendable {
     }
 
     @MainActor
-    private func openDesktopApplication() async -> Bool {
+    private func openDesktopApplication() async -> (
+        didOpen: Bool,
+        processID: Int?,
+        launchDate: Date?
+    ) {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
 
@@ -789,8 +888,14 @@ public struct OpenCodeIntegration: Sendable {
             NSWorkspace.shared.openApplication(
                 at: desktopApplicationURL,
                 configuration: configuration
-            ) { _, error in
-                continuation.resume(returning: error == nil)
+            ) { application, error in
+                continuation.resume(
+                    returning: (
+                        error == nil,
+                        application.map { Int($0.processIdentifier) },
+                        application?.launchDate
+                    )
+                )
             }
         }
     }
