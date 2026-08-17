@@ -3399,16 +3399,25 @@ def _cmd_tune(
             or state_key is None
             or key_material is None
         ):
-            hardware = _apple_hardware_context()
-            software = _software_context()
-            backend = _mlx_backend_context()
-            state_key, key_material = _tune_state_key(
-                runtime_model,
-                settings=settings,
-                hardware=hardware,
-                software=software,
-                backend=backend,
-            )
+            # Shared constructor so save and wizard-lookup keys can never
+            # drift (issue #280 re-tune loop). Falls back to the inline
+            # construction only if the shared path cannot resolve — the
+            # model is already resolved and support-checked by this point,
+            # so that fallback should be unreachable.
+            context = _tune_state_context_for_args(args)
+            if context is not None:
+                hardware, software, backend, state_key, key_material = context
+            else:
+                hardware = _apple_hardware_context()
+                software = _software_context()
+                backend = _mlx_backend_context()
+                state_key, key_material = _tune_state_key(
+                    runtime_model,
+                    settings=settings,
+                    hardware=hardware,
+                    software=software,
+                    backend=backend,
+                )
         return hardware, software, backend, state_key, key_material
 
     cached = None
@@ -3971,6 +3980,54 @@ def _save_tune_record(
     path = _tune_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, state)
+
+
+def _tune_state_context_for_args(
+    args: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, Any]] | None:
+    """Resolve (hardware, software, backend, state_key, key_material) exactly as
+    a live ``mtplx tune`` save would for these args.
+
+    Every reader of the tune-record store MUST derive its key through this
+    function. The 2.8.0/2.8.1 quickstart wizard rebuilt the settings dict by
+    hand (stale ``performance-cold`` profile, unjoined depths, missing keys),
+    so its lookup hash could never match the record ``tune`` had just saved —
+    users were re-offered tuning on every start (issue #280).
+    """
+    model, resolve_error = _resolve_runtime_model_path(
+        _tune_requested_model(args),
+        cache_dir=getattr(args, "cache_dir", None),
+    )
+    if resolve_error is not None:
+        return None
+    support_payload = _tune_support_payload(model, inspect_local=True)
+    if not support_payload["tune_supported"]:
+        return None
+    _apply_tune_sampling_defaults(args, support_payload)
+    try:
+        depths = _parse_tune_candidate_values(
+            getattr(args, "depths", None),
+            support_payload=support_payload,
+        )
+    except ValueError:
+        return None
+    settings = _tune_settings(
+        args,
+        model=model,
+        depths=depths,
+        control_field=_tune_control_field(support_payload),
+    )
+    hardware = _apple_hardware_context()
+    software = _software_context()
+    backend = _mlx_backend_context()
+    state_key, key_material = _tune_state_key(
+        model,
+        settings=settings,
+        hardware=hardware,
+        software=software,
+        backend=backend,
+    )
+    return hardware, software, backend, state_key, key_material
 
 
 def _tune_state_key(
@@ -8775,6 +8832,12 @@ def cmd_serve_public(args: Any) -> int:
         chosen_model = choice.get("model")
         if chosen_model:
             args.model = chosen_model
+            # Explicitness markers: see the matching stamp in
+            # cmd_quickstart_public (issues #279/#280 — a wizard pick must
+            # never be re-resolved to the hardware default downstream).
+            args._model_explicit = True
+            args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
+            args._cli_flags.add("model")
             try:
                 from mtplx.hf_loader import repo_id_from_model_ref
 
@@ -13011,25 +13074,35 @@ def _quickstart_apply_tuned_depth(
         return
     if bool(getattr(args, "_explicit_depth", False)):
         return
-    settings = {
-        "profile": "performance-cold",
-        "suite": TUNE_DEFAULT_SUITE,
-        "depths": TUNE_DEFAULT_DEPTHS,
-        "max_tokens": TUNE_DEFAULT_MAX_TOKENS,
-        "limit": TUNE_DEFAULT_LIMIT,
-        "seed": TUNE_DEFAULT_SEED,
-        "thinking": "disabled",
-    }
-    hardware = _apple_hardware_context()
-    software = _software_context()
-    backend = _mlx_backend_context()
-    state_key, _key_material = _tune_state_key(
-        runtime_model,
-        settings=settings,
-        hardware=hardware,
-        software=software,
-        backend=backend,
+    tune_args = SimpleNamespace(
+        command="tune",
+        model=runtime_model,
+        # The wizard's pick IS an explicit model selection. Without this
+        # marker _tune_requested_model treats the namespace model as
+        # unrequested and re-resolves the hardware default, so picking the
+        # 4B tuned (and keyed) the 27B (2026-08-17 wizard repro).
+        _cli_flags={"model"},
+        cache_dir=getattr(args, "cache_dir", None),
+        profile=getattr(args, "profile", None),
+        depths=TUNE_DEFAULT_DEPTHS,
+        max_tokens=TUNE_DEFAULT_MAX_TOKENS,
+        limit=TUNE_DEFAULT_LIMIT,
+        seed=TUNE_DEFAULT_SEED,
+        run_id=None,
+        output_dir=None,
+        output=None,
+        json=False,
+        verbose=False,
+        dry_run=False,
+        no_save=False,
+        retune=False,
+        unsafe_force_unverified=bool(getattr(args, "unsafe_force_unverified", False)),
+        yes=True,
     )
+    context = _tune_state_context_for_args(tune_args)
+    if context is None:
+        return
+    _hardware, _software, _backend, state_key, _key_material = context
     record = _load_tune_record(state_key)
     if record is not None:
         payload = record.get("payload") or {}
@@ -13055,25 +13128,6 @@ def _quickstart_apply_tuned_depth(
     if not should_tune:
         _quickstart_line("tuning skipped; using default depth")
         return
-    tune_args = SimpleNamespace(
-        command="tune",
-        model=runtime_model,
-        cache_dir=getattr(args, "cache_dir", None),
-        depths=TUNE_DEFAULT_DEPTHS,
-        max_tokens=TUNE_DEFAULT_MAX_TOKENS,
-        limit=TUNE_DEFAULT_LIMIT,
-        seed=TUNE_DEFAULT_SEED,
-        run_id=None,
-        output_dir=None,
-        output=None,
-        json=False,
-        verbose=False,
-        dry_run=False,
-        no_save=False,
-        retune=False,
-        unsafe_force_unverified=bool(getattr(args, "unsafe_force_unverified", False)),
-        yes=True,
-    )
     code = _cmd_tune(
         tune_args,
         action="tune",
@@ -13181,6 +13235,20 @@ def cmd_quickstart_public(args: Any) -> int:
         chosen_model = choice.get("model")
         if chosen_model:
             args.model = chosen_model
+            # A wizard pick is an explicit user decision, exactly like the
+            # profile stamp below. Both explicitness markers must be set:
+            # without _model_explicit, _quickstart_current_model re-routes a
+            # default-NAMED pick (e.g. an LM Studio folder whose basename
+            # matches the verified default) back through
+            # select_default_model(), replacing the picked path with the
+            # canonical repo id — "Model is missing. Download?" for a model
+            # that is on disk (issue #279). Without "model" in _cli_flags,
+            # _tune_requested_model re-resolves the hardware default and
+            # tunes a different model than the one being launched
+            # (2026-08-17 wizard repro: picked 4B, tuned 27B).
+            args._model_explicit = True
+            args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
+            args._cli_flags.add("model")
             # Auto-pull policy: the user has explicitly picked this model in
             # the onboarding wizard; if it isn't on disk we fetch it without
             # re-prompting. The legacy "Model is missing. Download? [Y/n]"

@@ -4,6 +4,46 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.8.2] - 2026-08-17
+
+### Fixed
+
+- **`mtplx start` no longer re-runs tuning on every launch.** The tune
+  record is keyed by a hash of the exact tune settings, and 2.8.0's
+  per-model profile work updated the settings the tuner *saves* under
+  without updating the hand-built dict the start wizard *looks up* with —
+  the two hashes could never match again, so every start re-offered
+  "Run tuning [recommended]" and accepting it meant minutes of maxed-out
+  GPU with the API port still closed. That combination is the "loads the
+  model, machine heats up, requests never arrive" experience reported
+  within hours of 2.8.1 (#280). Save and lookup now derive the key
+  through one shared constructor, with a regression test that fails if
+  they ever drift apart again.
+- **The wizard tunes the model you actually picked.** A wizard pick was
+  not marked as an explicit model selection, so the tuner re-resolved
+  the hardware default: picking the 4B on a machine whose default is the
+  27B tuned the 27B — minutes of the wrong benchmark — and then saved a
+  record the launched model could never use. Wizard picks now carry the
+  same explicitness markers as CLI flags.
+- **A picked local model can no longer be silently swapped for the
+  canonical default.** A local folder whose name matches the verified
+  default (an LM Studio-style `Youssofal/Qwen…` layout, #279) was
+  re-routed through default-model selection, replacing the on-disk path
+  with the Hugging Face repo id — and start then demanded a download for
+  a model that was already installed.
+- **Idle daemons no longer hammer `session-bank/manifest.sqlite`.**
+  Every `/health` and dashboard poll opened the SSD session-cache
+  manifest and ran a full-table aggregate (about eight sqlite opens per
+  health check, continuously visible in Activity Monitor, #280). The
+  aggregate is now cached against the store's mutation generation with a
+  5-second staleness bound: steady-state polling costs at most one
+  manifest read per 5 s instead of dozens per second.
+- **`mtplx --version` reports the right version again.** The 2.8.1
+  hotfix bumped the package version but missed the CLI banner constant,
+  so the published 2.8.1 wheel identified itself as `2.8.0 (2.8.1)` —
+  exactly the line users check to confirm they escaped the 2.8.0 vision
+  defect.
+
 ## [2.8.1] - 2026-08-17
 
 ### Fixed

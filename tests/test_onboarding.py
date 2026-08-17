@@ -1178,6 +1178,14 @@ def test_quickstart_applies_saved_tuned_depth(monkeypatch):
     monkeypatch.setattr(public, "_software_context", lambda: {"mtplx_version": "test", "mlx_version": "test"})
     monkeypatch.setattr(public, "_mlx_backend_context", lambda: {"stock_mlx_likely": True})
     monkeypatch.setattr(public, "_tune_state_key", lambda *_args, **_kwargs: ("key", {}))
+    # The lookup now flows through the shared save-side key constructor,
+    # which resolves and support-checks the model like a real tune would.
+    monkeypatch.setattr(
+        public, "_resolve_runtime_model_path", lambda model, cache_dir=None: (model, None)
+    )
+    monkeypatch.setattr(
+        public, "_tune_support_payload", lambda model, **_kwargs: {"tune_supported": True}
+    )
     monkeypatch.setattr(
         public,
         "_load_tune_record",
@@ -1217,6 +1225,14 @@ def test_quickstart_tuning_prompt_can_save_and_apply(monkeypatch):
     monkeypatch.setattr(public, "_software_context", lambda: {"mtplx_version": "test", "mlx_version": "test"})
     monkeypatch.setattr(public, "_mlx_backend_context", lambda: {"stock_mlx_likely": True})
     monkeypatch.setattr(public, "_tune_state_key", lambda *_args, **_kwargs: ("key", {}))
+    # The lookup now flows through the shared save-side key constructor,
+    # which resolves and support-checks the model like a real tune would.
+    monkeypatch.setattr(
+        public, "_resolve_runtime_model_path", lambda model, cache_dir=None: (model, None)
+    )
+    monkeypatch.setattr(
+        public, "_tune_support_payload", lambda model, **_kwargs: {"tune_supported": True}
+    )
     monkeypatch.setattr("mtplx.ui.onboarding.screen_tuning_offer", lambda: True)
     calls = []
     records = iter(

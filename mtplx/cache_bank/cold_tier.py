@@ -72,6 +72,11 @@ DEFAULT_COLD_TIER_MAX_BYTES = 100 * 1024**3
 DEFAULT_COLD_TIER_MIN_PREFIX_TOKENS = 512
 DEFAULT_BLOCK_SIZE = 256
 DISK_USAGE_CACHE_TTL_S = 30.0
+# stats() manifest-aggregate snapshot TTL. /health and the dashboard poll
+# stats() continuously; the aggregate is exact while _store_generation is
+# unchanged, so the TTL only bounds staleness against out-of-process writers
+# sharing the directory.
+MANIFEST_STATS_TTL_S = 5.0
 # A rescan is due only when the store changed since the last scan AND at
 # least DUTY_DIVISOR x the last scan's own duration has passed, so the
 # reconciliation walk can never occupy more than 1/DUTY_DIVISOR of a core
@@ -367,6 +372,10 @@ class SessionBankColdTier:
         # at; a snapshot whose generation still matches is exact no matter
         # how old it is, and a rescan is only ever due for a changed store.
         self._store_generation = 0
+        # stats() aggregate snapshot: exact while _store_generation is
+        # unchanged; TTL bounds staleness against out-of-process writers.
+        self._manifest_stats_lock = threading.Lock()
+        self._manifest_stats_cache: dict[str, Any] | None = None
         self._orphan_cleanup_running = False
         self._stats_lock = threading.Lock()
         self._stats: dict[str, int | float | str | bool | None] = {
@@ -731,6 +740,46 @@ class SessionBankColdTier:
             logger.warning("SessionBank SSD prefix-boundary restore failed: %s: %s", type(exc).__name__, exc)
             return None
 
+    def _manifest_stats_row(self) -> tuple[int, int, int, int]:
+        """The stats() aggregate, opening the manifest only when it changed.
+
+        Before 2.8.2 every stats() call — i.e. every /health and dashboard
+        poll — opened a fresh sqlite connection and ran this full-table
+        aggregate, which showed up as continuous manifest.sqlite access on
+        idle daemons (issue #280). The row is exact while _store_generation
+        matches (every store mutation bumps it via
+        _invalidate_disk_usage_cache); MANIFEST_STATS_TTL_S bounds staleness
+        against out-of-process writers.
+        """
+        now = time.monotonic()
+        with self._disk_usage_lock:
+            generation = self._store_generation
+        with self._manifest_stats_lock:
+            cached = self._manifest_stats_cache
+            if (
+                cached is not None
+                and int(cached.get("generation", -1)) == generation
+                and now - float(cached.get("at", 0.0)) < MANIFEST_STATS_TTL_S
+            ):
+                return cached["row"]
+        with self._connect() as conn:
+            fetched = conn.execute(
+                "SELECT COUNT(*), "
+                "COALESCE(SUM(CASE WHEN logical_nbytes > 0 "
+                "THEN logical_nbytes ELSE nbytes END), 0), "
+                "COALESCE(SUM(CASE WHEN physical_nbytes > 0 "
+                "THEN physical_nbytes ELSE nbytes END), 0), "
+                "COALESCE(SUM(deduped_nbytes), 0) FROM entries"
+            ).fetchone()
+        row = (int(fetched[0]), int(fetched[1]), int(fetched[2]), int(fetched[3]))
+        with self._manifest_stats_lock:
+            self._manifest_stats_cache = {
+                "generation": generation,
+                "at": now,
+                "row": row,
+            }
+        return row
+
     def stats(self) -> dict[str, Any]:
         with self._stats_lock:
             stats = dict(self._stats)
@@ -751,15 +800,7 @@ class SessionBankColdTier:
             }
         )
         try:
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*), "
-                    "COALESCE(SUM(CASE WHEN logical_nbytes > 0 "
-                    "THEN logical_nbytes ELSE nbytes END), 0), "
-                    "COALESCE(SUM(CASE WHEN physical_nbytes > 0 "
-                    "THEN physical_nbytes ELSE nbytes END), 0), "
-                    "COALESCE(SUM(deduped_nbytes), 0) FROM entries"
-                ).fetchone()
+            row = self._manifest_stats_row()
             stats["entries"] = int(row[0])
             stats["logical_bytes"] = int(row[1])
             stats["bytes"] = int(row[2])
