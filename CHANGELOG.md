@@ -4,6 +4,23 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.8.1] - 2026-08-17
+
+### Fixed
+
+- **A cached vision conversation can no longer serve another image's
+  context.** Session frontiers are keyed by token ids, and every image
+  placeholder shares one id, so after 2.8.0 taught vision histories to
+  commit (the long-session cache fix), a request that repeated a
+  transcript with a different image could restore the previous image's
+  KV wholesale. Our own release gate's correctness sentinel caught it
+  before the DMG went out. Vision turns now keep their full warm-cache
+  reuse through the content-keyed store (identical pixels restore
+  everything, different pixels never read past the image) and simply
+  stop advancing the raw-id session frontier. PyPI 2.8.0 shipped with
+  the defect for about an hour; 2.8.1 is the same release plus this
+  fix, and it is what the desktop build carries.
+
 ## [2.8.0] - 2026-08-17
 
 ### Added
@@ -1627,6 +1644,7 @@ working as one product. Full notes:
   completions, and Anthropic `stop_sequences`) and `/v1/completions`
   streams tokens as they are generated with real finish reasons.
 
+[2.8.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.8.1
 [2.8.0]: https://github.com/youssofal/MTPLX/releases/tag/v2.8.0
 [2.7.2]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.2
 [2.7.1]: https://github.com/youssofal/MTPLX/releases/tag/v2.7.1
