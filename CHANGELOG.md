@@ -6,7 +6,128 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`/health` tells you when the engine is degraded.** A new additive
+  `degradation` block reports compiled-verify state with the reason for any
+  permanent-eager fallback, profile env keys an operator override beat, and
+  NAX/GQA kernel bail counters. "Looks like turbo, runs slow" is no longer
+  possible to miss from a harness.
+- **`mtplx doctor` prints the compiled-verify fence** — mode, threshold, and
+  which profile or env supplied it (#255).
+- **Richer per-response `mtplx_stats`:** `finish_reason`,
+  `draft_sampler_policy`/ownership/`greedy_coupled`,
+  `repetition_stop_triggered` (+reason), `content_empty_reason` on capped
+  thinking rows, and visible clamp stats (`context_cap_applied`,
+  `effective_max_tokens`). All quiet-envelope: stamped only when they apply.
+- **Streaming golden coverage and measurement guidance.** The request
+  matrix gains SSE arms, and the benchmarking guide now documents response
+  caps, `enable_thinking:false` for capped harnesses, streaming measurement
+  rules (TTFT at first *content* delta; progress frames are spec-valid
+  empty deltas), and the exact prompt-scoring array contract.
+- **Warmup knobs:** the turbo profile ships `MTPLX_WARMUP_LADDER` crossing
+  every compiled-verify bucket class up to its fence, and
+  `MTPLX_WARMUP_PREFILL_CHUNK` is now env-tunable (default unchanged).
+
+### Changed
+
+- **Quickstart leads with "Auto (recommended)".** Auto pins nothing — the
+  engine resolves the launch profile per model (Turbo for the quantized
+  flagships). A previously saved default "sustained" state migrates to Auto
+  once; deliberate picks (including Sustained Max) keep pinning. The macOS
+  app's "auto" likewise emits no `--profile` flag anymore, so legacy hybrid
+  and renamed model directories stop launching pinned to sustained.
+- **Discover shows every MTPLX build.** Any repo with "mtplx" in its name
+  appears (case-insensitive, any position), results are collected until the
+  page fills *after* filtering instead of slicing the top-30-by-downloads
+  first, and the wall/CLI default page is 100.
+- **Config values are real pins.** A profile or sampler value from
+  `config.toml` is honored as explicit in both directions (config
+  "sustained" stays sustained; values equal to a family default are no
+  longer treated as unset) and startup prints one line saying so. Injected
+  launch defaults carry provenance and never override an artifact's stamp.
+- **KV quantization actually saves memory now.** The q8 dequant mirror is
+  offset-sized with geometric growth and is released once a request latches
+  onto the kernel path; q4 never allocates a mirror. Numerics route once
+  per request (a q8 request starting below the kernel threshold stays on
+  dequant math for its whole life instead of switching mid-generation), the
+  byte stat counts the mirror, and the CLI help states the honest contract.
+- **Prompt-scoring (`/v1/completions` echo+logprobs) follows OpenAI array
+  semantics:** all arrays length n with `null` at index 0, the scored token
+  always present in its own top-K map, and a `token_ids` array for stable
+  identity. `logprobs` without `echo` returns a 400 that names the exact
+  requirement; `logprobs: 0` is a valid request.
+- **`reasoning_effort: "high"` maps up the engine's real effort ladder**
+  (xhigh on Qwen 3.8) instead of silently falling back to the default;
+  unknown values return 400.
+- **`MTPLX_CLIENT` is an observability label, not an owner.** Managed-client
+  policy requires per-request evidence (headers/UA/body), so an anonymous
+  benchmarker's sampling settings are honored against app- or
+  hermes-launched daemons. Claude Code's `claude-cli/*` user agent is now
+  recognized as a client hint.
+- **Draft-sampler provenance is explicit end-to-end:** a daemon launched
+  with a bare `--draft-temperature` pins it as operator-explicit, while
+  family-default launches ship unpinned values that keep the temperature
+  curve live.
+
 ### Fixed
+
+- **Stock `Qwen/Qwen3-8B` is no longer misclassified as the Qwen 3.8
+  family** (a regression in the artifact-identity fix gave Alibaba's most
+  popular size the wrong sampler defaults and reasoning codec), and family
+  resolution now trusts forge provenance over the folder name, so renamed
+  or symlinked model directories keep their true family (#268).
+- **Agentic sessions commit again.** The post-turn session commit now builds
+  its prefix with the same committed-reasoning canonicalization the next
+  request will send, so commits byte-extend instead of failing every turn
+  ("retokenized_prefix_not_extending_session", 3–4% reuse — #269). The
+  canonicalization gate also refuses on tool-call changes and dropped
+  turns instead of substituting the wrong turn's reasoning, works for
+  OpenCode's stripped preambles, and repair re-encodes preserve committed
+  reasoning. Two system contracts became suffix contracts, ending
+  full-context re-prefill when they flip.
+- **A prompt that fills the context window returns a clear 400**
+  (`context_length_exceeded`) instead of silently generating one token,
+  and a fitting prompt whose `max_tokens` exceeds the remainder is clamped
+  visibly — no more phantom 0.4 tok/s rows at 256k.
+- **`finish_reason` is truthful everywhere:** a length cap beats
+  `tool_calls` in non-streaming chat (matching streaming), `/v1/messages`
+  maps priority `max_tokens` → `stop_sequence` → `tool_use`, the
+  completions stream trims stop strings like non-stream, and empty content
+  on a capped thinking row recovers or is stamped with the reason on both
+  paths.
+- **AR mode reports honest numbers:** no fabricated draft temperature, and
+  elapsed time no longer includes the post-response session-bank forward
+  pass (which also can no longer destroy a finished response on failure).
+- **Draft-sampler telemetry equals engine reality.** The resolver no longer
+  reports policy "none" while drafting at target temperature; the
+  temperature-scale env applies before the stamp; artifact draft stamps
+  survive launching under a different profile; OpenCode's server-side
+  defaults are an honest `launch_default` tier with the coupling curve
+  live; batch cohorts key on the target sampling triple.
+- **Repetition-guard stops stay off the wire:** the streaming paths (AR,
+  MTP-K, and both Gemma-4 loops) hold back a detector-window tail while
+  the guard is armed, so trimmed loop garbage never reaches clients, and
+  the stop is visible in public stats.
+- **Benchmark rows stop paying hidden costs:** compiled-verify prewarm is
+  no longer spent by the boot walk and warms the exact shared traces real
+  rows dispatch; Metal memory caps and over-context refusal now apply to
+  every bench, ladder, one-shot, and quickstart entry (#261) with
+  per-row flushes.
+- **Streams end honestly:** the post-content commit wait is bounded with
+  live heartbeats and a stall watchdog, explicit cancels emit a terminal
+  frame + `[DONE]`, client disconnects are tagged as such, and
+  `GeneratorExit` no longer logs runtime errors.
+- **No surface stamps "sustained" for a flagship anymore:** forge's
+  artifact stamp, cached-model listings, doctor's support matrix, bench
+  suites, tune, and the quickstart download branch all report what serve
+  resolution actually picks.
+- **Sizing and accounting truths:** nested MTP-sidecar layouts are sized
+  correctly (restoring the RAM-aware auto budget on small Macs), the
+  dashboard no longer double-counts the sidecar, the NAX install report
+  reflects the real probe, the batch histogram stops counting phantom
+  width-1 units, and prompt scoring decodes each unique token once instead
+  of ~65k times at long context.
 
 - **The Qwen 3.8 Hugging Face artifacts can see again (#263).** All six
   published 3.8 repos (Bare Speed, Optimized Speed, Optimized Quality and
