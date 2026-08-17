@@ -423,6 +423,15 @@ def _attach_runtime_diagnostics(
     stats.paged_kv_quant_dequant_tokens = int(
         owned_attn.get("kv_quant_dequant_tokens") or 0
     )
+    stats.paged_kv_quant_dequant_memo_hits = int(
+        owned_attn.get("kv_quant_dequant_memo_hits") or 0
+    )
+    stats.paged_kv_quant_dequant_memo_rebuilds = int(
+        owned_attn.get("kv_quant_dequant_memo_rebuilds") or 0
+    )
+    stats.paged_kv_quant_kernel_calls = int(
+        owned_attn.get("kv_quant_kernel_calls") or 0
+    )
     stats.paged_gqa_sdpa_calls = int(owned_attn.get("gqa_sdpa_calls") or 0)
     gqa_by_route = owned_attn.get("gqa_sdpa_calls_by_route") or {}
     stats.paged_gqa_sdpa_calls_by_route = (
@@ -1632,6 +1641,9 @@ class GenerationStats:
     paged_kv_quant_dequant_calls: int = 0
     paged_kv_quant_dequant_time_s: float = 0.0
     paged_kv_quant_dequant_tokens: int = 0
+    paged_kv_quant_dequant_memo_hits: int = 0
+    paged_kv_quant_dequant_memo_rebuilds: int = 0
+    paged_kv_quant_kernel_calls: int = 0
     paged_gqa_sdpa_calls: int = 0
     paged_gqa_sdpa_calls_by_route: dict[str, int] = field(default_factory=dict)
     paged_gqa_sdpa_calls_by_phase: dict[str, int] = field(default_factory=dict)
@@ -1883,6 +1895,54 @@ def _repetition_stop_config(enabled: bool) -> RepetitionStopConfig:
         min_block_tokens=min_block_tokens,
         max_block_tokens=max_block_tokens,
     )
+
+
+def _repetition_stream_holdback_tokens(config: RepetitionStopConfig) -> int:
+    """Wire tail (in tokens) held back while the repetition stop is armed.
+
+    F35 (2026-08-16): the serial loops emitted every token to the stream
+    callback BEFORE the repetition trimmer ran, so the wire transcript kept
+    the repeated garbage the non-stream lane trims — stream-vs-non-stream
+    divergence and wire > usage. Holding this many trailing tokens off the
+    wire keeps every steady-state trim inside the unsent tail: once the
+    detector has run at least once, a first-fire trim is bounded by
+    max(min_repeats * max_block, min_repeated_tokens + max_block) — a
+    longer periodic run would already have fired one pass earlier (the
+    shifted block is a rotation with the same period). The margin covers
+    speculative lanes committing several tokens between detector passes
+    (primary + accepted window + bonus + context-copy block, K<=24
+    default). Returns 0 when the guard is disarmed: capped requests keep
+    the exact historical emit pattern, byte for byte.
+    """
+    if not config.enabled:
+        return 0
+    window = max(
+        int(config.min_repeats) * int(config.max_block_tokens),
+        int(config.min_repeated_tokens) + int(config.max_block_tokens),
+    )
+    return window + 64
+
+
+def _repetition_stream_emit_limit(
+    total_tokens: int,
+    config: RepetitionStopConfig,
+    holdback: int,
+) -> int:
+    """Highest token index (exclusive) safe to hand the stream callback now.
+
+    Tokens below ``min_tokens - holdback`` can stream immediately (the
+    detector cannot run before ``min_tokens``, and a later steady-state
+    fire never trims deeper than ``holdback``), so short armed responses
+    stream exactly like today. One residual, documented divergence: the
+    detector's very FIRST pass (at ``min_tokens``) may trim deeper than the
+    holdback when the output was periodic from near the start; covering
+    that would mean streaming nothing before ``min_tokens`` for every
+    armed request, which is a worse product than the bounded residue.
+    """
+    if holdback <= 0:
+        return total_tokens
+    safe_prefix = max(0, int(config.min_tokens) - holdback)
+    return max(total_tokens - holdback, min(total_tokens, safe_prefix))
 
 
 @dataclass
@@ -3211,8 +3271,13 @@ def restore_or_prefill_prompt_state(
     vision_splice: Any | None = None,
     store_prefix_snapshot: bool | None = None,
     stable_prefix_len: int | None = None,
+    capture_hidden: bool | None = None,
 ) -> PromptState:
     """Build the initial prompt state used by MTP-k decode.
+
+    capture_hidden: None follows the runtime gate (MTP runtimes capture the
+    final-row hidden for the draft head); False skips it — the AR lane's
+    contract, where hidden is a env-gated diagnostic only.
 
     This is the first mechanical split point for the serving engine. It keeps
     today's cold path behavior intact while giving EngineSession a concrete
@@ -3503,6 +3568,14 @@ def restore_or_prefill_prompt_state(
                     else None
                 ),
                 cache_factory=restore_cache_factory,
+                # Tool-round prefix stability (defect A): the suffix prefill
+                # behind this lane must treat the pre-nudge stable edge as a
+                # mandatory chunk boundary so a recurrent snapshot exists
+                # exactly where the next request's history diverges from the
+                # committed stream. Lane 2 below has always forwarded this;
+                # omitting it here left the hottest tool-round path
+                # block-rounding down ~one 256-token block per round.
+                stable_prefix_len=stable_prefix_len,
             )
             if near_prompt_state is not None:
                 return _emit_prefill_complete(near_prompt_state)
@@ -3796,7 +3869,9 @@ def restore_or_prefill_prompt_state(
         cache, logits, hidden, target_time = _prefill(
             rt,
             prompt_ids,
-            return_hidden=rt.mtp_enabled,
+            return_hidden=(
+                rt.mtp_enabled if capture_hidden is None else bool(capture_hidden)
+            ),
             hidden_variant=base_hidden_variant,
             abort_check=abort_check,
             vision_splice=vision_splice,
@@ -4060,25 +4135,20 @@ def _adaptive_full_k3_draft_reader(
     return token, distribution, False
 
 
-def _env_scaled_draft_sampler(
+def _effective_draft_sampler(
     sampler: SamplerConfig,
     draft_sampler: SamplerConfig | None,
 ) -> SamplerConfig:
-    base = draft_sampler or sampler
-    raw = os.environ.get("MTPLX_DRAFT_TEMPERATURE_SCALE")
-    if raw is None or raw.strip() == "":
-        return base
-    try:
-        scale = float(raw)
-    except ValueError:
-        return base
-    if scale <= 0 or base.temperature <= 0:
-        return base
-    return SamplerConfig(
-        temperature=float(base.temperature) * scale,
-        top_p=float(base.top_p),
-        top_k=int(base.top_k),
-    )
+    """Mirror the target sampler when no draft sampler was provided.
+
+    A provided draft sampler passes through UNTOUCHED: the server-side
+    resolver (mtplx.server.openai._resolve_draft_sampler_for_request) owns
+    the MTPLX_DRAFT_TEMPERATURE_SCALE knob and applies it BEFORE stamping
+    telemetry, so the stamped draft temperature is the temperature the
+    engine actually drafts with. Rescaling here again would double-apply
+    the knob and make every stamp a lie (the pre-2.8 desync).
+    """
+    return draft_sampler or sampler
 
 
 def _sample_adapter_ensemble_q(
@@ -5049,6 +5119,97 @@ def _append_mtp_history(
     return time.perf_counter() - started
 
 
+def score_prompt_logprobs(
+    rt: MTPLXRuntime,
+    prompt_ids: list[int],
+    *,
+    top_k: int,
+    chunk_size: int = 256,
+) -> dict[str, Any]:
+    """Teacher-forced prompt scoring: per-position next-token top-K logprobs.
+
+    One prefill-shaped pass over the prompt, chunked so at most
+    ``chunk_size x vocab`` logits are resident at once — the full-prompt
+    logits tensor was the 32k memory-balloon root cause and must never come
+    back. Position ``i`` of the result describes the model's distribution
+    AFTER prefix ``prompt_ids[:i+1]`` (i.e. it predicts token ``i+1``): the
+    alignment Ivan's kl_capture consumes and llama.cpp's echo+logprobs
+    emits. Zero decode-hot-path cost: nothing here touches generation.
+    """
+
+    import numpy as np
+
+    if not prompt_ids:
+        raise ValueError("prompt_ids must not be empty")
+    top_k = max(1, int(top_k))
+    chunk_size = max(16, int(chunk_size))
+    cache = _make_target_prefill_cache(rt)
+    n = len(prompt_ids)
+    prompt_array = mx.array([prompt_ids])
+    token_logprobs: list[float | None] = []
+    top_entries: list[list[tuple[int, float]]] = []
+    started = time.perf_counter()
+    for start in range(0, n, chunk_size):
+        end = min(n, start + chunk_size)
+        chunk = prompt_array[:, start:end]
+        with attention_phase("prefill"):
+            logits, _hidden = _forward_ar_optional_hidden(
+                rt,
+                chunk,
+                cache=cache,
+                hidden_variant=None,
+                emit_logits=True,
+            )
+        logprobs = logits[0].astype(mx.float32)
+        logprobs = logprobs - mx.logsumexp(logprobs, axis=-1, keepdims=True)
+        k = min(top_k, int(logprobs.shape[-1]))
+        top_idx = mx.argpartition(-logprobs, kth=k - 1, axis=-1)[..., :k]
+        top_vals = mx.take_along_axis(logprobs, top_idx, axis=-1)
+        # Positions start..end-1 predict prompt tokens start+1..end; the
+        # final prompt position has no target inside the prompt.
+        target_rows = min(end, n - 1) - start
+        if target_rows > 0:
+            targets = mx.array(
+                [prompt_ids[start + 1 : start + 1 + target_rows]]
+            )[0][:, None]
+            target_lp = mx.take_along_axis(
+                logprobs[:target_rows], targets, axis=-1
+            )[:, 0]
+        else:
+            target_lp = None
+        if target_lp is not None:
+            mx.eval(top_idx, top_vals, target_lp)
+        else:
+            mx.eval(top_idx, top_vals)
+        idx_np = np.array(top_idx)
+        vals_np = np.array(top_vals)
+        # Sort each row descending by logprob.
+        order = np.argsort(-vals_np, axis=-1)
+        idx_np = np.take_along_axis(idx_np, order, axis=-1)
+        vals_np = np.take_along_axis(vals_np, order, axis=-1)
+        rows = end - start
+        for row in range(rows):
+            # The last prompt position's distribution predicts a token
+            # outside the prompt; keep its top-K out of the echoed contract.
+            if start + row >= n - 1:
+                break
+            top_entries.append(
+                [
+                    (int(idx_np[row, col]), float(vals_np[row, col]))
+                    for col in range(idx_np.shape[1])
+                ]
+            )
+        if target_lp is not None:
+            token_logprobs.extend(float(v) for v in np.array(target_lp))
+        del logits, logprobs, top_idx, top_vals
+    return {
+        "positions": top_entries,
+        "token_logprobs": token_logprobs,
+        "prompt_tokens": n,
+        "elapsed_s": time.perf_counter() - started,
+    }
+
+
 def generate_ar(
     rt: MTPLXRuntime,
     prompt_ids: list[int],
@@ -5065,6 +5226,14 @@ def generate_ar(
     loop_guard: bool = False,
     thinking_guard: ThinkingGuardConfig | None = None,
     constraint: Any | None = None,
+    session_bank: Any | None = None,
+    session_id: str | None = None,
+    session_restore_mode: str = "clone",
+    session_template_hash: str | None = None,
+    session_draft_head_identity: str | None = None,
+    session_policy_fingerprint: str | None = None,
+    capture_final_state: bool = False,
+    abort_check: Callable[[], bool] | None = None,
 ) -> GenerationOutput:
     reject_non_k1_a3b_whole_moe_request(rt, entrypoint="generate_ar")
     if getattr(rt, "backend_id", None) == "gemma4_assistant":
@@ -5100,53 +5269,33 @@ def generate_ar(
             or _env_truthy("MTPLX_DIAGNOSTIC_AR_RETURN_HIDDEN")
         )
     )
-    # Dashboard prefill instrumentation for AR. `_prefill` is unchunked,
-    # so we only fire started/completed (no chunk progress).
-    prefill_started_s = time.perf_counter()
-    if prefill_callback is not None:
-        try:
-            prefill_callback(
-                {
-                    "phase": "started",
-                    "tokens_done": 0,
-                    "tokens_total": int(len(prompt_ids)),
-                    "cached_tokens": 0,
-                    "new_prefill_tokens": int(len(prompt_ids)),
-                    "elapsed_s": 0.0,
-                    "started_s": prefill_started_s,
-                }
-            )
-        except Exception:
-            pass
-    cache, logits, hidden, prompt_eval_time = _prefill(
+    # Warm prefix for the AR lane (#246): route through the same
+    # restore-or-prefill machinery MTP uses. With no session bank this is
+    # the cold prefill path; with one, warm turns restore the banked prefix
+    # instead of unconditionally full-prefilling — and the reported
+    # cached_tokens/cache_hit become real numbers instead of hardcoded
+    # zeros, which also makes MTP-vs-AR benchmark comparisons honest.
+    # mtp_history_policy="cycle" keeps AR requests on the trunk-only path
+    # (no MTP history build), including on MTP-enabled runtimes serving
+    # --generation-mode ar.
+    prompt_state = restore_or_prefill_prompt_state(
         rt,
         prompt_ids,
-        return_hidden=ar_return_hidden,
+        base_hidden_variant=None,
+        mtp_history_policy="cycle",
+        session_bank=session_bank,
+        restore_mode=session_restore_mode,
+        session_id=session_id,
+        template_hash=session_template_hash,
+        draft_head_identity=session_draft_head_identity,
+        policy_fingerprint=session_policy_fingerprint,
+        prefill_callback=prefill_callback,
+        abort_check=abort_check,
+        capture_hidden=ar_return_hidden,
     )
-    if prefill_callback is not None:
-        try:
-            elapsed = max(0.0, time.perf_counter() - prefill_started_s)
-            tok_s = (
-                (len(prompt_ids) / elapsed)
-                if elapsed > 0 and prompt_ids
-                else None
-            )
-            prefill_callback(
-                {
-                    "phase": "completed",
-                    "tokens_total": int(len(prompt_ids)),
-                    "new_prefill_tokens": int(len(prompt_ids)),
-                    "cached_tokens": 0,
-                    "elapsed_s": elapsed,
-                    "prompt_eval_time_s": elapsed,
-                    "prefill_tok_s": tok_s,
-                    "prefill_compute_tok_s": tok_s,
-                    "prefill_wall_tok_s": tok_s,
-                    "cache_hit": False,
-                }
-            )
-        except Exception:
-            pass
+    cache = prompt_state.trunk_cache
+    logits = prompt_state.logits
+    prompt_eval_time = prompt_state.prompt_eval_time_s
     tokens: list[int] = []
     events: list[dict] = []
     if constraint is not None:
@@ -5267,9 +5416,37 @@ def generate_ar(
             mtp_history_materialize_events=0,
         )
 
+    # F35: while the uncapped repetition stop is armed, the wire must never
+    # outrun a future trim — hold a detector-window tail back from the
+    # callback and flush it after the loop, once the trim decision is
+    # known. Disarmed (all capped/benchmark requests): holdback is 0 and
+    # the historical per-token callback pattern is byte-identical.
+    _stream_holdback = (
+        _repetition_stream_holdback_tokens(repetition_config)
+        if token_callback is not None
+        else 0
+    )
+    _streamed_token_count = 0
+
     def emit_token(token: int) -> None:
-        if token_callback is not None and not _is_stop(int(token), stop_token_ids):
-            token_callback([int(token)])
+        nonlocal _streamed_token_count
+        if token_callback is not None:
+            if _stream_holdback <= 0:
+                if not _is_stop(int(token), stop_token_ids):
+                    token_callback([int(token)])
+            else:
+                limit = _repetition_stream_emit_limit(
+                    len(tokens), repetition_config, _stream_holdback
+                )
+                if limit > _streamed_token_count:
+                    released = [
+                        int(t)
+                        for t in tokens[_streamed_token_count:limit]
+                        if not _is_stop(int(t), stop_token_ids)
+                    ]
+                    _streamed_token_count = limit
+                    if released:
+                        token_callback(released)
         emit_trace()
 
     for step in range(max_tokens):
@@ -5376,7 +5553,62 @@ def generate_ar(
         verify_calls += 1
         logits = logits_next[:, -1, :]
 
+    if token_callback is not None and _stream_holdback > 0:
+        # Armed-stream reconcile (F35): the trim decision is known here —
+        # flush the held tail in full (no trim) or the post-trim remainder.
+        _streamed_token_count = min(_streamed_token_count, len(tokens))
+        _held_tail = [
+            int(t)
+            for t in tokens[_streamed_token_count:]
+            if not _is_stop(int(t), stop_token_ids)
+        ]
+        _streamed_token_count = len(tokens)
+        if _held_tail:
+            token_callback(_held_tail)
+    finish_reason = _finish_reason_from_tokens(
+        tokens,
+        stop_token_ids=stop_token_ids,
+        max_tokens=max_tokens,
+    )
+    # Stamp elapsed before the final-state tail forward below: that pass is
+    # session-bank bookkeeping done after the response is complete, and
+    # billing it to AR would inflate every MTP-vs-AR comparison.
     elapsed = time.perf_counter() - started_all
+    final_state: GenerationFinalState | None = None
+    if capture_final_state and tokens and repetition_result is None:
+        # The loop samples its final token and breaks before forwarding it,
+        # so the cache is one token short of the committed sequence. Extend
+        # it: the bank committer refuses final states whose token ids do not
+        # match the cache exactly.
+        try:
+            with attention_phase("ar_decode"):
+                tail_result = rt.forward_ar(
+                    mx.array([[int(tokens[-1])]]),
+                    cache=cache,
+                    return_hidden=False,
+                )
+            tail_logits = (
+                tail_result[0] if isinstance(tail_result, tuple) else tail_result
+            )
+            _eval(tail_logits)
+            final_state = GenerationFinalState(
+                final_trunk_cache=cache,
+                final_logits=tail_logits[:, -1, :],
+                final_hidden=None,
+                final_committed_mtp_cache=None,
+                generated_token_ids=tuple(int(token) for token in tokens),
+                safe_to_commit=True,
+                finish_reason=finish_reason,
+                mtp_history_policy=prompt_state.mtp_history_policy,
+            )
+        except Exception as exc:  # capture only — never lose a finished response
+            final_state = None
+            events.append({"final_state_capture_error": str(exc)})
+            print(
+                f"[mtplx] AR final-state capture failed ({exc}); response "
+                "preserved, session-bank commit skipped for this turn",
+                file=sys.stderr,
+            )
     emit_trace(force=True, final=True)
     stats = GenerationStats(
         mode="ar",
@@ -5386,15 +5618,39 @@ def generate_ar(
             generated_tokens=len(tokens),
             elapsed_s=elapsed,
             prompt_eval_time_s=prompt_eval_time,
+            cache_restore_time_s=prompt_state.cache_restore_time_s,
         ),
         target_forward_time_s=prompt_eval_time + target_decode_time,
         prompt_eval_time_s=prompt_eval_time,
         prompt_tps=(
-            len(prompt_ids) / prompt_eval_time if prompt_eval_time > 0 else 0.0
+            prompt_state.suffix_tokens / prompt_eval_time
+            if prompt_eval_time > 0
+            else 0.0
         ),
         prompt_target_prefill_time_s=prompt_eval_time,
         prompt_target_prefill_tok_s=(
-            len(prompt_ids) / prompt_eval_time if prompt_eval_time > 0 else 0.0
+            prompt_state.suffix_tokens / prompt_eval_time
+            if prompt_eval_time > 0
+            else 0.0
+        ),
+        cache_restore_time_s=prompt_state.cache_restore_time_s,
+        cached_tokens=prompt_state.cached_tokens,
+        new_prefill_tokens=prompt_state.suffix_tokens,
+        session_cache_hit=prompt_state.cache_hit,
+        cache_source=prompt_state.cache_source,
+        ssd_cache_hit=prompt_state.ssd_cache_hit,
+        ssd_cached_tokens=prompt_state.ssd_cached_tokens,
+        ssd_restore_s=prompt_state.ssd_restore_s,
+        ssd_suffix_tokens=(
+            prompt_state.suffix_tokens if prompt_state.ssd_cache_hit else 0
+        ),
+        cache_miss_reason=prompt_state.cache_miss_reason,
+        session_restore_mode=prompt_state.restore_mode,
+        session_prefill_store=dict(
+            getattr(prompt_state, "prefill_store_snapshot", None) or {}
+        ),
+        session_restore_served=dict(
+            getattr(prompt_state, "restore_served", None) or {}
         ),
         verify_time_s=target_decode_time,
         verify_forward_time_s=target_forward_graph_time,
@@ -5442,15 +5698,11 @@ def generate_ar(
         counter_start,
         ar_return_hidden=ar_return_hidden,
     )
-    finish_reason = _finish_reason_from_tokens(
-        tokens,
-        stop_token_ids=stop_token_ids,
-        max_tokens=max_tokens,
-    )
     return GenerationOutput(
         tokens=tokens,
         text=_decode(rt.tokenizer, _strip_terminal_stop(tokens, stop_token_ids)),
         stats=stats,
+        final_state=final_state,
         finish_reason=finish_reason,
     )
 
@@ -5488,7 +5740,7 @@ def generate_mtp1(
     verify_core_backend = resolve_gdn_capture_backend(verify_core)
 
     rng = np.random.default_rng(seed)
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     stop_token_ids = (
         _default_stop_tokens(rt.tokenizer) if stop_token_ids is None else stop_token_ids
     )
@@ -6339,7 +6591,7 @@ def generate_mtpk(
         else None
     )
     exact_a3b_target_prefix = exact_a3b_target_prefix_factory is not None
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     _loop_guard_config = loop_guard_config_from_env(
         bool(loop_guard), tokenizer=getattr(rt, "tokenizer", None)
     )
@@ -6568,6 +6820,16 @@ def generate_mtpk(
         repetition_stop = False
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result: RepetitionStopResult | None = None
+    # F35: armed uncapped streams hold a detector-window tail off the wire
+    # (see _repetition_stream_holdback_tokens); emit_new_tokens applies the
+    # limit and the post-loop reconcile flushes the tail once the trim
+    # decision is known. Disarmed requests keep the exact historical
+    # emit batching (holdback 0 short-circuits to len(tokens)).
+    _stream_holdback = (
+        _repetition_stream_holdback_tokens(repetition_config)
+        if token_callback is not None
+        else 0
+    )
     draft_time = verify_time = 0.0
     verify_forward_time = 0.0
     verify_eval_time = 0.0
@@ -6722,7 +6984,10 @@ def generate_mtpk(
         0.0, prompt_eval_time - prompt_state.prompt_mtp_history_time_s
     )
     target_time = prompt_target_prefill_time
-    draft_time += prompt_state.prompt_mtp_history_time_s
+    # Prompt-phase MTP-history time is reported in prompt_mtp_history_time_s
+    # only. draft_time_s stays a decode-window bucket, matching generate_mtp1
+    # and generate_mtpa (folding it here made exported stats show
+    # draft > decode-elapsed at long context).
     graphbank = (
         SpecDecodeGraphBank(rt, capture_backend=verify_core_backend)
         if verify_strategy in {"graphbank", "graphbank_capture_commit"}
@@ -7236,7 +7501,8 @@ def generate_mtpk(
         target_time += max(
             0.0, rebased.prompt_eval_time_s - rebased.prompt_mtp_history_time_s
         )
-        draft_time += rebased.prompt_mtp_history_time_s
+        # The rebase replay's MTP-history share stays inside
+        # state_rebase_time_s (captured above); draft_time_s is decode-only.
 
     def maybe_clear_mlx_cache() -> None:
         nonlocal clear_cache_tokens_since, clear_cache_observed_tokens
@@ -7441,12 +7707,24 @@ def generate_mtpk(
         maybe_clear_mlx_cache()
         if token_callback is None or streamed_token_count >= len(tokens):
             return
+        # F35: armed streams stop at the holdback limit so a repetition
+        # trim can never chase bytes already on the wire; disarmed streams
+        # keep the historical limit len(tokens), byte for byte.
+        limit = (
+            _repetition_stream_emit_limit(
+                len(tokens), repetition_config, _stream_holdback
+            )
+            if _stream_holdback > 0
+            else len(tokens)
+        )
+        if limit <= streamed_token_count:
+            return
         new_tokens = [
             int(token)
-            for token in tokens[streamed_token_count:]
+            for token in tokens[streamed_token_count:limit]
             if not _is_stop(int(token), stop_token_ids)
         ]
-        streamed_token_count = len(tokens)
+        streamed_token_count = limit
         if new_tokens:
             token_callback(new_tokens)
 
@@ -9798,6 +10076,18 @@ def generate_mtpk(
         emit_new_tokens()
         emit_trace()
 
+    if token_callback is not None and _stream_holdback > 0:
+        # Armed-stream reconcile (F35): the trim decision is known here —
+        # flush the held tail in full (no trim) or the post-trim remainder.
+        streamed_token_count = min(streamed_token_count, len(tokens))
+        _held_tail = [
+            int(token)
+            for token in tokens[streamed_token_count:]
+            if not _is_stop(int(token), stop_token_ids)
+        ]
+        streamed_token_count = len(tokens)
+        if _held_tail:
+            token_callback(_held_tail)
     if first_round_snapshot is None and int(verify_calls) >= 1:
         # Single-cycle generation: the loop never reached iteration 2, so the
         # cumulative timers ARE round 1's totals. Product telemetry stays
@@ -10200,7 +10490,7 @@ def generate_mtpa(
 
     counter_start = _runtime_counter_snapshot(rt)
     rng = np.random.default_rng(seed)
-    draft_sampler = _env_scaled_draft_sampler(sampler, draft_sampler)
+    draft_sampler = _effective_draft_sampler(sampler, draft_sampler)
     policy = AdaptiveDepthPolicy(
         max_depth=max_depth,
         min_depth=min_depth,

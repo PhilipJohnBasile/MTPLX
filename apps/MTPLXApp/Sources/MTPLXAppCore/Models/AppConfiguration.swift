@@ -610,7 +610,8 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// PROFILE_CHOICES and mtplx GENERATION_MODES. A value outside these
     /// kills `mtplx serve` at argument parsing, which the user experiences
     /// as a daemon that is degraded on every start, so any persisted
-    /// config must decode back to something launchable.
+    /// config must decode back to something launchable — or to "auto",
+    /// which launches with no --profile flag at all.
     static let engineProfiles: Set<String> = [
         "stable", "performance-cold", "sustained", "turbo", "exact",
         "max-diagnostic",
@@ -622,9 +623,17 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     static let persistedProfiles: Set<String> = engineProfiles.union(["auto"])
     static let engineGenerationModes: Set<String> = ["mtp", "ar"]
 
-    public static func launchableProfile(_ raw: String) -> String {
+    /// The normalized value when it is engine-launchable, else nil.
+    /// "auto", typos, and every other string return nil: the caller
+    /// omits `--profile` entirely and the engine — the single owner of
+    /// default-profile resolution — picks the per-artifact profile
+    /// (turbo for the flagships) and reports it on /health. The old
+    /// coercion to "sustained" here was the app-side half of the
+    /// historic resolve-to-sustained bug class: it turned "no explicit
+    /// choice" into an explicit sustained pick the engine had to obey.
+    public static func launchableProfile(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return engineProfiles.contains(value) ? value : "sustained"
+        return engineProfiles.contains(value) ? value : nil
     }
 
     public static func launchableGenerationMode(_ raw: String) -> String {
@@ -668,11 +677,12 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
             fanMode = MTPLXFanMode.max.rawValue
             pinFansAtMaxOnStart = true
         }
-        // "auto" persists as-is (per-model resolution happens at launch);
-        // everything else must be engine-launchable.
+        // "auto" persists as-is (the launch omits --profile so the engine
+        // resolves per model); unknown strings normalize to "auto" too —
+        // never to a concrete profile the user did not pick.
         profile = Self.persistedProfiles.contains(profileValue)
             ? profileValue
-            : Self.launchableProfile(profile)
+            : "auto"
         generationMode = Self.launchableGenerationMode(generationMode)
         // One-shot migration (2026-07-03, turbo release): a persisted
         // "sustained" predating the Auto option was never a choice — it

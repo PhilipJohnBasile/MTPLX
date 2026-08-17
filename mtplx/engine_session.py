@@ -177,13 +177,19 @@ def _default_per_session_max_bytes() -> int:
 
 def model_weights_bytes(model_path: Any) -> int | None:
     """Total bytes of the model's safetensors shards (weights actually wired
-    into memory), following symlink wrappers. None when unknown."""
+    into memory), following symlink wrappers. None when unknown.
+
+    Recursive on purpose: shipped layouts nest shards below the root — the
+    MTP sidecar lives at ``mtp/weights.safetensors`` (artifacts.py) and
+    wrapper dirs keep shards under a subdirectory. The old top-level-only
+    scan undercounted those (or returned None outright), silently skewing
+    the RAM-aware session-bank budget this number feeds."""
     try:
         root = Path(str(model_path))
         if not root.is_dir():
             return None
         total = 0
-        for shard in root.glob("*.safetensors"):
+        for shard in root.rglob("*.safetensors"):
             try:
                 total += shard.stat().st_size
             except OSError:
@@ -204,6 +210,30 @@ def _memory_budget_bytes_env() -> int | None:
         return None
     value = _bank_bytes_from_env("MTPLX_MEMORY_BUDGET", 0)
     return value if value > 0 else None
+
+
+# Loud once per process when the auto budget lands on its floor: a silently
+# tiny warm cache reads as "the cache broke" (same lesson as #229/#230).
+_auto_floor_announced = False
+
+
+def _announce_auto_budget_floor(
+    total_ram: int, model_bytes: int, surplus: int
+) -> None:
+    global _auto_floor_announced
+    if _auto_floor_announced:
+        return
+    _auto_floor_announced = True
+    print(
+        "[mtplx] session-bank auto budget floored at "
+        f"{_AUTO_BUDGET_FLOOR_BYTES / 1024**3:.1f}G: "
+        f"total_ram={total_ram / 1024**3:.1f}G "
+        f"model_weights={model_bytes / 1024**3:.1f}G "
+        f"post-model surplus={surplus / 1024**3:.1f}G. Warm-cache capacity "
+        "is minimal on this machine; longer contexts will re-prefill. "
+        "Override with MTPLX_SESSION_BANK_MAX_BYTES (sizes like 4G).",
+        flush=True,
+    )
 
 
 def _auto_session_bank_max_bytes(model_bytes: int | None) -> int | None:
@@ -230,13 +260,21 @@ def _auto_session_bank_max_bytes(model_bytes: int | None) -> int | None:
         return None
     surplus = total_ram - int(model_bytes)
     if surplus <= 0:
+        _announce_auto_budget_floor(total_ram, int(model_bytes), surplus)
         return _AUTO_BUDGET_FLOOR_BYTES
     budget = int(surplus * _AUTO_BUDGET_SURPLUS_FRACTION)
+    if budget < _AUTO_BUDGET_FLOOR_BYTES:
+        _announce_auto_budget_floor(total_ram, int(model_bytes), surplus)
     return max(_AUTO_BUDGET_FLOOR_BYTES, min(_AUTO_BUDGET_CAP_BYTES, budget))
 
 
 def _is_auto_bytes_setting(raw: str | None) -> bool:
     return raw is not None and raw.strip().lower() in {"auto", "default"}
+
+
+def _explicit_max_bytes_env_set() -> bool:
+    raw = os.environ.get("MTPLX_SESSION_BANK_MAX_BYTES")
+    return bool(raw and raw.strip()) and not _is_auto_bytes_setting(raw)
 
 
 def resolve_session_bank_max_bytes(
@@ -1235,10 +1273,19 @@ class EngineSessionManager:
             # 2.4.2 notes promised this line but it shipped as logger.info,
             # which default logging swallows — users debugging "the cache
             # stopped working" had no way to see the resolved budgets.
+            if auto_active:
+                budget_mode = "auto: half of post-model RAM surplus"
+            elif _explicit_max_bytes_env_set():
+                budget_mode = "explicit"
+            else:
+                # Auto sizing could not engage (model size or RAM unknown)
+                # and nothing was configured: say so instead of implying the
+                # user chose this budget.
+                budget_mode = "legacy default; auto sizing unavailable"
             print(
                 "[mtplx] session-bank budget: "
                 f"{bank.max_bytes / 1024**3:.1f}G total "
-                f"({'auto: half of post-model RAM surplus' if auto_active else 'explicit'}), "
+                f"({budget_mode}), "
                 f"{bank.per_session_max_bytes / 1024**3:.1f}G per-session cap, "
                 f"{bank.max_entries} entries max, model weights "
                 + (
@@ -1355,6 +1402,13 @@ class EngineSessionManager:
                 self._sessions[session_id] = session
             session.touch()
             return session
+
+    def peek(self, session_id: str) -> EngineSession | None:
+        """Read-only lookup: no creation, no touch. Pre-encode consumers
+        (committed-reasoning canonicalization) must not mint sessions or
+        refresh TTLs for requests that may never adopt the id."""
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def _sessions_snapshot(self) -> list[EngineSession]:
         with self._lock:

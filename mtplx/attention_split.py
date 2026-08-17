@@ -15,6 +15,26 @@ def _env_enabled(name: str, *, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# F23b (2026-08-16): packed-GQA route declines. Counted only when the lane
+# is enabled AND the call is a verify-shaped dense-cache window (q_len 2..4,
+# cache present, blockwise/paged lanes not owning attention) yet the route
+# still fell back to fused SDPA. By-design non-applicability (q_len 1
+# decode, prefill, paged-cache calls) is never counted. Import-stable
+# surface for /health; increments happen only on the declined path —
+# engaged calls skip the block via the same gate bool the router uses.
+# Kernel-level contract bails have their own precise counters in
+# mtplx.kernels.sdpa_gqa_packed.gqa_packed_bail_counts. Inside a compiled
+# verify graph this python body runs at trace time only, so traced-path
+# declines count once per trace, not once per replay.
+gqa_packed_route_bail_counts: dict[str, int] = {}
+
+
+def _count_gqa_packed_route_bail(reason: str) -> None:
+    gqa_packed_route_bail_counts[reason] = (
+        gqa_packed_route_bail_counts.get(reason, 0) + 1
+    )
+
+
 def _env_index_set(name: str) -> set[int]:
     raw = os.environ.get(name, "")
     out: set[int] = set()
@@ -258,6 +278,27 @@ def _install_split_attention_hook(attn: Any) -> bool:
                 and int(mask.shape[-2]) == int(queries.shape[2])
                 and int(mask.shape[-1]) == int(cache.keys.shape[2])
             )
+        if (
+            gqa_packed_enabled
+            and not should_use_gqa_packed
+            and cache is not None
+            and not blockwise_enabled
+            and not vllm_metal_paged_enabled
+            and 2 <= int(queries.shape[2]) <= 4
+        ):
+            # F23b: enabled verify-shaped dense-cache window that the packed
+            # route declined — record why (bail path only).
+            if (
+                getattr(cache, "keys", None) is None
+                or getattr(cache, "values", None) is None
+            ):
+                _count_gqa_packed_route_bail("kv_buffers_none")
+            elif int(cache.keys.shape[2]) < gqa_packed_threshold:
+                _count_gqa_packed_route_bail("capacity_below_threshold")
+            elif not can_slice_mask:
+                _count_gqa_packed_route_bail("mask_type_unsupported")
+            else:
+                _count_gqa_packed_route_bail("mask_shape_mismatch")
         should_use_vllm_metal_paged = (
             vllm_metal_paged_enabled
             and cache is not None

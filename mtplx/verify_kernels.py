@@ -55,9 +55,15 @@ import mlx.core as mx
 _KERNEL_CACHE: dict[tuple, object] = {}
 
 # Simdgroups per threadgroup. 8 (=256 threads, 32 columns) won the 2026-07-02
-# sweep vs 4 and 16; env knob kept for serve-path co-residency sweeps.
-_M4_NSG = max(1, min(24, int(os.environ.get("MTPLX_VK_M4_NSG", "8") or 8)))
-_M6_NSG = max(1, min(24, int(os.environ.get("MTPLX_VK_M6_NSG", "4") or 4)))
+# sweep vs 4 and 16; env knob kept for serve-path co-residency sweeps. Read
+# per call, not at import — an import-time snapshot froze the knob before
+# profile/sweep harnesses could set it.
+def _m4_nsg() -> int:
+    return max(1, min(24, int(os.environ.get("MTPLX_VK_M4_NSG", "8") or 8)))
+
+
+def _m6_nsg() -> int:
+    return max(1, min(24, int(os.environ.get("MTPLX_VK_M6_NSG", "4") or 4)))
 
 
 def _fma_block(m: int, bits: int) -> str:
@@ -214,11 +220,11 @@ def _eligible(m: int, K: int, N: int, bits: int, group_size: int, dtype, nsg: in
 
 
 def vk_eligible_m4(m: int, K: int, N: int, bits: int, group_size: int, dtype) -> bool:
-    return int(m) == 4 and _eligible(4, K, N, bits, group_size, dtype, _M4_NSG)
+    return int(m) == 4 and _eligible(4, K, N, bits, group_size, dtype, _m4_nsg())
 
 
 def vk_eligible_m6(m: int, K: int, N: int, bits: int, group_size: int, dtype) -> bool:
-    return 5 <= int(m) <= 6 and _eligible(6, K, N, bits, group_size, dtype, _M6_NSG)
+    return 5 <= int(m) <= 6 and _eligible(6, K, N, bits, group_size, dtype, _m6_nsg())
 
 
 def _run(m: int, x2: mx.array, w_q: mx.array, scales: mx.array, biases: mx.array,
@@ -246,12 +252,12 @@ def _run(m: int, x2: mx.array, w_q: mx.array, scales: mx.array, biases: mx.array
 
 def vk_qmm_m4(x2, w_q, scales, biases, *, bits: int = 4, group_size: int = 64):
     """4-row verify matmul (D3 shape), msg geometry."""
-    return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_M4_NSG)
+    return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_m4_nsg())
 
 
 def vk_qmm_m6(x2, w_q, scales, biases, *, bits: int = 4, group_size: int = 64):
     """5..6-row verify matmul (D4/D5 shapes), msg geometry; pads M=5 to 6."""
-    return _run(6, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_M6_NSG)
+    return _run(6, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_m6_nsg())
 
 
 def vk_qmm_m4_ksplit(x2, w_q, scales, biases, *, bits: int = 4, group_size: int = 64):
@@ -582,13 +588,13 @@ def vk_qmm_m4_impl(impl: str, x2, w_q, scales, biases, *, bits: int = 4, group_s
     """
     N = int(w_q.shape[0])
     if impl == "oct":
-        return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_M4_NSG)
+        return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_m4_nsg())
     if impl == "twin":
         # H1 twin-tile: 2 independent barrier-free simdgroups (64 threads,
         # grid N/8) — the port's kp2 scheduling footprint without its barrier.
         return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=2)
-    if impl == "vk_hybrid" and N >= 100000 and N % (4 * _M4_NSG) == 0:
-        return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_M4_NSG)
+    if impl == "vk_hybrid" and N >= 100000 and N % (4 * _m4_nsg()) == 0:
+        return _run(4, x2, w_q, scales, biases, bits=bits, group_size=group_size, nsg=_m4_nsg())
     dual = impl == "vk_u2"
     kconst = impl in ("vk_k", "vk_hybrid")
     return _run_ksplit(

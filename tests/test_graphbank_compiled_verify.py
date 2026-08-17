@@ -15,7 +15,7 @@ import os
 import mlx.core as mx
 import numpy as np
 import pytest
-from mlx_lm.models.cache import ArraysCache, KVCache
+from mlx_lm.models.cache import KVCache
 
 from mtplx.cache_state import TensorOffsetVllmMetalPagedKVCache, VllmMetalPagedKVCache
 from mtplx.gdn_capture import commit_captured_prefix
@@ -28,6 +28,25 @@ from mtplx.graphbank import (
     compiled_verify_mode,
     promote_kv_cache_offsets,
 )
+
+
+def _arrays_cache_cls() -> type:
+    """Resolve ``ArraysCache`` lazily at use time, exactly like production.
+
+    ``mtplx.arrays_cache_patch.install_arrays_cache_fix`` (triggered by any
+    earlier test importing ``mtplx.a3b_mtp_batch``) replaces the class bound
+    in ``mlx_lm.models.cache``; ``mtplx.graphbank`` resolves it per call
+    (``build_verify_state_spec``). A module-scope ``from ... import
+    ArraysCache`` here froze the pre-patch class identity at collection
+    time, so instances this file constructed failed graphbank's isinstance
+    checks whenever a patch-triggering file ran first (23 false failures).
+    Per-use resolution keeps this file green both standalone and after any
+    patch-triggering file, without touching the process-global patch state.
+    """
+
+    import mlx_lm.models.cache as cache_module
+
+    return cache_module.ArraysCache
 
 
 class ToyHybridRuntime:
@@ -47,7 +66,7 @@ class ToyHybridRuntime:
         self.calls: list[str] = []
 
     def make_cache(self) -> list:
-        gdn = ArraysCache(2)
+        gdn = _arrays_cache_cls()(2)
         gdn[0] = mx.zeros((1, self.K, self.D), dtype=mx.float32)
         gdn[1] = mx.zeros((1, 1, self.D, self.D), dtype=mx.float32)
         return [gdn, KVCache()]
@@ -129,7 +148,7 @@ def _leaf_arrays(cache) -> list[mx.array]:
             continue
         if isinstance(entry, (TensorOffsetKVCache, TensorOffsetVllmMetalPagedKVCache)):
             leaves.extend(entry.cache[:3])
-        elif isinstance(entry, ArraysCache):
+        elif isinstance(entry, _arrays_cache_cls()):
             leaves.extend(item for item in entry.cache if item is not None)
         elif isinstance(entry, KVCache):
             leaves.extend(item for item in (entry.keys, entry.values) if item is not None)
@@ -615,7 +634,7 @@ def test_demote_restores_stock_containers_and_counts():
     assert type(cache[1]) is KVCache
     assert isinstance(cache[1].offset, int)
     assert cache[1].offset == 6
-    assert isinstance(cache[0], ArraysCache)  # GDN entries untouched
+    assert isinstance(cache[0], _arrays_cache_cls())  # GDN entries untouched
     # Compiled closures were dropped with the shadow; the next call rebuilds.
     bank.forward_ar_capture(mx.array([[1, 2]]), cache=cache)
     assert bank.stats["compiled_calls"] == 2

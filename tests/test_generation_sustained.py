@@ -535,6 +535,134 @@ def test_generate_ar_does_not_request_hidden_by_default(monkeypatch):
     assert all(call["return_hidden"] is False for call in model.calls)
 
 
+def test_score_prompt_logprobs_alignment_and_normalization():
+    """Prompt scoring: position i predicts token i+1; per-row logprobs are a
+    valid distribution slice (sorted descending, <= 0); token_logprobs match
+    the target token's entry when it appears in the top-K."""
+
+    from mtplx.generation import score_prompt_logprobs
+
+    rt = _runtime(TinyModel(), mtp_enabled=True)
+    prompt = [0, 1, 2, 3]
+
+    scored = score_prompt_logprobs(rt, prompt, top_k=4, chunk_size=2)
+
+    assert scored["prompt_tokens"] == 4
+    assert len(scored["positions"]) == 3
+    assert len(scored["token_logprobs"]) == 3
+    for index, entries in enumerate(scored["positions"]):
+        values = [logprob for _token, logprob in entries]
+        assert values == sorted(values, reverse=True)
+        assert all(value <= 1e-6 for value in values)
+        # top_k == vocab here, so the target token must be present and its
+        # entry must equal the reported token logprob.
+        target = prompt[index + 1]
+        by_token = dict(entries)
+        assert target in by_token
+        assert by_token[target] == pytest.approx(
+            scored["token_logprobs"][index], abs=1e-5
+        )
+
+
+def test_generate_ar_restores_warm_prefix_from_session_bank():
+    """#246: the AR lane used to full-prefill unconditionally and hardcode
+    cached_tokens 0 / cache_hit false. With a bank hit it must restore the
+    prefix and report real numbers."""
+
+    model = TinyModel()
+    rt = _runtime(model, mtp_enabled=True)
+
+    class Bank:
+        last_miss_reason = None
+
+        def longest_prefix(self, _prompt_ids):
+            return SimpleNamespace(prefix_len=3)
+
+        def restore(self, _rt, _prompt_ids, **kwargs):
+            cache_factory = kwargs.get("cache_factory")
+            cache = cache_factory() if callable(cache_factory) else _rt.make_cache()
+            return SimpleNamespace(
+                entry=SimpleNamespace(prefix_len=3),
+                cache=cache,
+                logits=mx.zeros((1, 4), dtype=mx.float32),
+                hidden=None,
+                mtp_history_cache=None,
+                restore_mode="clone",
+            )
+
+    out = generate_ar(
+        rt,
+        [0, 1, 2, 3, 4],
+        max_tokens=2,
+        sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=4),
+        stop_token_ids=set(),
+        session_bank=Bank(),
+        session_id="ar-warm-session",
+    )
+
+    assert out.stats.session_cache_hit is True
+    assert out.stats.cached_tokens > 0
+    assert out.stats.new_prefill_tokens < 5
+    assert len(out.tokens) == 2
+
+
+def test_generate_ar_cold_output_identical_with_and_without_bank():
+    """Empty-bank receipt: routing AR through restore_or_prefill must not
+    change cold-path outputs."""
+
+    class EmptyBank:
+        last_miss_reason = None
+
+        def longest_prefix(self, _prompt_ids):
+            return None
+
+        def restore(self, _rt, _prompt_ids, **kwargs):
+            return None
+
+    prompt = [0, 1, 2, 3]
+    sampler = SamplerConfig(temperature=0.0, top_p=1.0, top_k=4)
+    out_no_bank = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        list(prompt),
+        max_tokens=3,
+        sampler=sampler,
+        stop_token_ids=set(),
+    )
+    out_empty_bank = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        list(prompt),
+        max_tokens=3,
+        sampler=sampler,
+        stop_token_ids=set(),
+        session_bank=EmptyBank(),
+        session_id="ar-cold-session",
+    )
+
+    assert out_no_bank.tokens == out_empty_bank.tokens
+    assert out_empty_bank.stats.cached_tokens == 0
+    assert out_empty_bank.stats.session_cache_hit is False
+
+
+def test_generate_ar_captures_final_state_for_bank_commit():
+    """capture_final_state must produce a committable state whose token ids
+    match the generated tokens exactly (the committer refuses mismatches)."""
+
+    out = generate_ar(
+        _runtime(TinyModel(), mtp_enabled=True),
+        [0, 1, 2],
+        max_tokens=2,
+        sampler=SamplerConfig(temperature=0.0, top_p=1.0, top_k=4),
+        stop_token_ids=set(),
+        capture_final_state=True,
+    )
+
+    assert out.final_state is not None
+    assert out.final_state.safe_to_commit is True
+    assert out.final_state.generated_token_ids == tuple(out.tokens)
+    assert out.final_state.final_committed_mtp_cache is None
+    assert out.final_state.mtp_history_policy == "cycle"
+
+
 def test_default_qwen27b_ar_decode_trace_does_not_crash(tmp_path, monkeypatch):
     trace_path = tmp_path / "qwen27b-ar.jsonl"
     monkeypatch.setenv("MTPLX_DECODE_TRACE_JSONL", str(trace_path))
@@ -760,6 +888,48 @@ def test_trim_commit_keeps_rejected_verify_prefix_without_reforward(monkeypatch)
     assert model.target_cache[0].trimmed == [1]
     assert out.stats.events[0]["capture_repair"] == "trimmed_prefix_commit"
     assert "repair_forward" not in out.stats.events[0].get("timing_s", {})
+
+
+def test_mtpk_draft_time_is_decode_only_and_excludes_prompt_mtp_history(monkeypatch):
+    """draft_time_s must be a decode-window bucket.
+
+    Prefill MTP-history time is already reported separately in
+    prompt_mtp_history_time_s (and subtracted from prompt_target_prefill).
+    Folding it into draft_time_s as well made exported stats look impossible
+    at long context (256k Ivan-ladder row: draft 83s inside a 19s decode
+    window) and disagreed with generate_mtp1/generate_mtpa, which both report
+    decode-only draft time.
+    """
+    import mtplx.generation as generation_mod
+
+    real_restore = generation_mod.restore_or_prefill_prompt_state
+
+    def fake_restore(*args, **kwargs):
+        state = real_restore(*args, **kwargs)
+        state.prompt_mtp_history_time_s = 123.0
+        return state
+
+    monkeypatch.setattr(
+        generation_mod, "restore_or_prefill_prompt_state", fake_restore
+    )
+
+    out = generate_mtpk(
+        _runtime(AcceptingTinyMTPModel(), mtp_enabled=True),
+        [0],
+        max_tokens=5,
+        sampler=SamplerConfig(temperature=0.6, top_p=1.0, top_k=1),
+        speculative_depth=3,
+        mtp_history_policy="committed",
+        verify_strategy="batched",
+        stop_token_ids=set(),
+    )
+
+    # The prompt-side bucket carries the injected time untouched...
+    assert out.stats.prompt_mtp_history_time_s == 123.0
+    # ...and the decode-side draft bucket does not absorb it.
+    assert out.stats.draft_time_s < 60.0
+    # prompt_eval here is tiny, so the target-prefill share clamps to zero.
+    assert out.stats.prompt_target_prefill_time_s == 0.0
 
 
 def test_sustained_prefill_chunks_without_full_prompt_logits(monkeypatch):

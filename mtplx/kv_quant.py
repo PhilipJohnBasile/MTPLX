@@ -87,14 +87,19 @@ def quantize_symmetric(x: Any, *, bits: int) -> tuple[Any, Any]:
     scale = mx.maximum(max_abs / float(qmax), mx.array(1.0e-6, dtype=mx.float32))
     q = mx.round(x.astype(mx.float32) / scale)
     q = mx.clip(q, -float(qmax), float(qmax))
+    # Scales stay fp32 end-to-end: they are computed here in fp32, stored
+    # fp32 (cache_state scale caches), and consumed in fp32 by
+    # dequantize_symmetric and the paged q8 kernel. The former fp16
+    # round-trip added avoidable error on top of the int quantization for a
+    # ~1.5% (q8) memory saving on the scale sidecar only.
     if bits == 8:
-        return q.astype(mx.int8), scale.astype(mx.float16)
+        return q.astype(mx.int8), scale
     if bits == 4:
         unsigned = (q + 8).astype(mx.uint8)
         even = unsigned[..., 0::2]
         odd = unsigned[..., 1::2]
         packed = mx.bitwise_or(even, mx.left_shift(odd, 4)).astype(mx.uint8)
-        return packed, scale.astype(mx.float16)
+        return packed, scale
     raise ValueError(f"unsupported paged KV quantization bits={bits}")
 
 
@@ -118,6 +123,6 @@ def compression_ratio(*, head_dim: int, bits: int) -> float:
     bits = int(bits)
     # Two fp16 tensors, key + value.
     fp16_bytes = 2 * head_dim * 2
-    # Two quantized tensors plus one fp16 scale for K and one for V.
-    quant_bytes = 2 * packed_dim(head_dim, bits) + 2 * 2
+    # Two quantized tensors plus one fp32 scale for K and one for V.
+    quant_bytes = 2 * packed_dim(head_dim, bits) + 2 * 4
     return float(fp16_bytes) / float(quant_bytes)

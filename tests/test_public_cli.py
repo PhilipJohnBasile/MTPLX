@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1604,7 +1605,10 @@ def test_depth_sweep_native60_keeps_model_runtime_env_overrides(monkeypatch):
         },
     )
 
-    assert result == {"depths": []}
+    assert result["depths"] == []
+    # The sweep harness now records the serve-path memory preflight (#F7);
+    # the receipt is additive to the runner's payload.
+    assert result["memory_preflight"]["entry"] == "bench.depth_sweep"
     assert observed["temperature"] == "0.7"
     assert observed["top_p"] == "1.0"
     assert observed["top_k"] == "13"
@@ -2940,8 +2944,58 @@ def test_pi_models_config_merge_preserves_other_providers(tmp_path):
     extension_source = extension_path.read_text(encoding="utf-8")
     assert 'delete request.max_tokens' in extension_source
     assert 'delete request.max_completion_tokens' in extension_source
+    # Guarded delete: only Pi's serialized default ceiling is stripped;
+    # explicit user caps must survive (the unconditional delete erased them).
+    assert "mtplxPiInjectedDefaultMaxTokens" in extension_source
     assert 'event.headers["x-mtplx-session-id"]' in extension_source
     assert 'const mtplxModelID = "mtplx-test-model"' in extension_source
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_pi_extension_cap_guard_three_payload_shapes(tmp_path):
+    """Execute the Pi request-policy handler under node for the three payload
+    shapes: injected default (stripped), explicit cap (preserved), no cap
+    (untouched)."""
+
+    from mtplx.pi import (
+        PI_INJECTED_DEFAULT_MAX_TOKENS,
+        build_pi_request_policy_extension_source,
+    )
+
+    source = build_pi_request_policy_extension_source(
+        "mtplx-test-model", uncapped=True
+    )
+    # The extension is TypeScript only by annotation; strip ": any" so node
+    # can execute the real handler logic unchanged.
+    module = tmp_path / "extension.mjs"
+    module.write_text(source.replace(": any", ""), encoding="utf-8")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import register from {json.dumps(str(module))};
+const handlers = {{}};
+register({{ on: (name, fn) => {{ handlers[name] = fn; }} }});
+const run = (payload) => handlers["before_provider_request"]({{ payload }});
+const results = {{
+  injected: run({{ model: "mtplx-test-model", max_tokens: {PI_INJECTED_DEFAULT_MAX_TOKENS} }}) ?? null,
+  explicit: run({{ model: "mtplx-test-model", max_tokens: 8192 }}) ?? null,
+  absent: run({{ model: "mtplx-test-model" }}) ?? null,
+}};
+console.log(JSON.stringify(results));
+""",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", str(harness)], capture_output=True, text=True, check=True
+    )
+    results = json.loads(proc.stdout)
+    # Injected default: handler returns an override with the cap removed.
+    assert results["injected"] is not None
+    assert "max_tokens" not in results["injected"]
+    # Explicit cap: no override returned — the deliberate cap flows through.
+    assert results["explicit"] is None
+    # No cap at all: nothing to strip, no override.
+    assert results["absent"] is None
 
 
 def test_start_pi_handoff_writes_config_and_starts_authenticated_server(
@@ -6358,6 +6412,105 @@ def test_serve_threads_api_key_file_and_kv_quant_to_daemon(monkeypatch, tmp_path
     assert isinstance(env, dict)
     assert env["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "q8"
     assert env["MTPLX_PAGED_KV_QUANT"] == "q8"
+
+
+def _serve_execvpe_harness(monkeypatch):
+    """Common monkeypatch set for exercising cmd_serve_public up to execvpe."""
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(public, "_serve_should_onboard", lambda _args: False)
+    monkeypatch.setattr(public, "_print_serve_start_banner", lambda _args: None)
+    monkeypatch.setattr(public, "_port_is_busy", lambda host, port: False)
+    monkeypatch.setattr(
+        public,
+        "_resolve_runtime_model_path",
+        lambda model, cache_dir=None: (model, None),
+    )
+    monkeypatch.setattr(
+        public,
+        "_model_gate",
+        lambda model, unsafe_force_unverified=False, yes=False: (
+            {"compatibility": {"tier": "verified", "can_run": True, "exit_code": 0}},
+            None,
+        ),
+    )
+
+    def fake_execvpe(_executable, cmd, env):
+        calls["cmd"] = cmd
+        calls["env"] = env
+        raise SystemExit(0)
+
+    monkeypatch.setattr(public.os, "execvpe", fake_execvpe)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["MTPLX_VLLM_METAL_PAGED_KV_QUANT", "MTPLX_PAGED_KV_QUANT"],
+)
+def test_serve_inherits_kv_quant_from_env_without_flag(monkeypatch, env_var):
+    """App-style env KV quant survives the serve wrapper when the flag is absent.
+
+    Regression: the wrapper used to rewrite the absent flag to an explicit
+    "off", clobbering the launcher-provided env pair in both the child argv
+    and the child env — the app's KV-quantization toggle was dead engine-wide.
+    """
+
+    calls = _serve_execvpe_harness(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+    monkeypatch.setenv(env_var, "q8")
+
+    args = build_parser().parse_args(
+        ["serve", "--model", "/tmp/model", "--yes", "--warmup-tokens", "0"]
+    )
+    args._cli_flags = {"model", "yes", "warmup-tokens"}
+
+    with pytest.raises(SystemExit) as exc:
+        public.cmd_serve_public(args)
+
+    cmd = calls["cmd"]
+    env = calls["env"]
+    assert exc.value.code == 0
+    assert isinstance(cmd, list)
+    assert cmd[cmd.index("--paged-kv-quantization") + 1] == "q8"
+    assert isinstance(env, dict)
+    assert env["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "q8"
+    assert env["MTPLX_PAGED_KV_QUANT"] == "q8"
+
+
+def test_serve_explicit_kv_quant_flag_beats_env(monkeypatch):
+    """An explicit --paged-kv-quantization always wins over the environment."""
+
+    calls = _serve_execvpe_harness(monkeypatch)
+    monkeypatch.setenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", "q8")
+    monkeypatch.setenv("MTPLX_PAGED_KV_QUANT", "q8")
+
+    args = build_parser().parse_args(
+        [
+            "serve",
+            "--model",
+            "/tmp/model",
+            "--yes",
+            "--paged-kv-quantization",
+            "off",
+            "--warmup-tokens",
+            "0",
+        ]
+    )
+    args._cli_flags = {"model", "yes", "paged-kv-quantization", "warmup-tokens"}
+
+    with pytest.raises(SystemExit) as exc:
+        public.cmd_serve_public(args)
+
+    cmd = calls["cmd"]
+    env = calls["env"]
+    assert exc.value.code == 0
+    assert isinstance(cmd, list)
+    assert cmd[cmd.index("--paged-kv-quantization") + 1] == "off"
+    assert isinstance(env, dict)
+    assert env["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "off"
+    assert env["MTPLX_PAGED_KV_QUANT"] == "off"
 
 
 @pytest.mark.parametrize(

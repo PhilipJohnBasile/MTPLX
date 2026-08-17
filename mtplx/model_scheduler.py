@@ -152,6 +152,9 @@ class ModelWorkScheduler:
         self._completed_by_kind: Counter[str] = Counter()
         self._started_by_batch_key: Counter[str] = Counter()
         self._batch_histogram: Counter[int] = Counter()
+        # True while the active item has reported real microbatch sizes via
+        # record_batch_step — its completion must not also stamp a size-1.
+        self._active_self_reported = False
         self._queue_wait_samples_s: deque[float] = deque(maxlen=256)
         self._run_duration_samples_s: deque[float] = deque(maxlen=256)
         self._cancellation_latency_samples_s: deque[float] = deque(maxlen=256)
@@ -252,6 +255,7 @@ class ModelWorkScheduler:
         progress_heartbeat.tick()
         with self._condition:
             self._batch_histogram[max(1, int(size))] += 1
+            self._active_self_reported = True
             if batch_key:
                 self._started_by_batch_key[_batch_key_class(str(batch_key))] += 1
 
@@ -425,6 +429,7 @@ class ModelWorkScheduler:
                 self._active_batch_key = item.batch_key
                 self._active_started_at_s = now
                 self._active_queue_wait_s = queue_wait_s
+                self._active_self_reported = False
                 self._queue_wait_samples_s.append(queue_wait_s)
                 self._started += 1
                 self._started_by_batch_key[
@@ -440,7 +445,14 @@ class ModelWorkScheduler:
                 with self._condition:
                     self._completed += 1
                     self._completed_by_kind[item.kind] += 1
-                    self._batch_histogram[1] += 1
+                    if item.kind == "foreground" and not self._active_self_reported:
+                        # One foreground item that never reported microbatch
+                        # sizes is a single-request unit of owner work. Pumps
+                        # report their true per-step sizes via
+                        # record_batch_step, and idle/persistence bookkeeping
+                        # is not a batch at all — stamping [1] for those
+                        # polluted the histogram with phantom size-1 batches.
+                        self._batch_histogram[1] += 1
                     self._run_duration_samples_s.append(run_duration_s)
                     if item.kind != "idle_persistence":
                         # Foreground AND postcommit completions re-arm the

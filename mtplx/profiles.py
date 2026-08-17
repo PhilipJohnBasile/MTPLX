@@ -55,8 +55,20 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # config being shipped), not only on profiles that leave the env
         # unset. Same operator-A/B precedent as DONATION/MAX_CONTEXT.
         "MTPLX_COMPILED_VERIFY",
+        # Background warmup ladder (F6, 2026-08-16): operators sweep the
+        # rung list per machine/benchmark; an explicit env must beat the
+        # turbo default below, same precedent as the chunk-size knobs.
+        "MTPLX_WARMUP_LADDER",
     }
 )
+
+# Operator envs that beat a profile value at apply time (F23c, 2026-08-16).
+# Rebuilt in place by every apply_profile_env() call, so the list always
+# reflects the most recent application. Stable name for /health readers:
+# each entry is {"var", "profile_value", "actual_value"}. Precedence is
+# unchanged — operator env SHOULD win — this is visibility only; envs that
+# merely pin the profile's own value are not listed (nothing degraded).
+profile_env_overridden: list[dict[str, str]] = []
 
 OPTIMIZED_SPEED_V1_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed"
 OPTIMIZED_SPEED_V2_HF_MODEL_ID = "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2"
@@ -543,6 +555,21 @@ TURBO_PROFILE = RuntimeProfile(
             # any contract miss.
             "MTPLX_GQA_PACKED_SDPA": "1",
             "MTPLX_GQA_PACKED_SDPA_THRESHOLD": "8192",
+            # Background warmup ladder (F6, 2026-08-16): prompt-token rungs
+            # the server's idle-lane warmup walks after boot (consumed by
+            # mtplx.server.openai._warmup_ladder_contexts). The server
+            # default ("512,2560") leaves every deeper compiled-verify KV
+            # bucket cold, so the first benchmark row at each context class
+            # paid the ~1s-per-bucket mx.compile INSIDE the measured row.
+            # These rungs cross each pow2 bucket class up to the turbo
+            # router fence (MTPLX_COMPILED_VERIFY_MAX_CONTEXT=32768 above);
+            # deeper rungs would warm nothing compiled (rows above the
+            # fence run the eager verify path per call). Warming runs on
+            # the idle lane and yields to real traffic (foreground-yield
+            # abort per prefill chunk); rungs that exceed the model's
+            # context window are dropped by the server. Operator env wins
+            # (PROFILE_ENV_USER_OVERRIDE_KEYS).
+            "MTPLX_WARMUP_LADDER": "512,1024,2048,2560,4096,8192,16384,32768",
         },
     ),
     caveats=(
@@ -649,10 +676,34 @@ def apply_profile_env(
     expected = profile.env_dict()
     expected.update(overrides)
     previous = {key: target.get(key) for key in expected}
+    overridden: list[dict[str, str]] = []
     for key, value in profile.env:
         if key in PROFILE_ENV_USER_OVERRIDE_KEYS and str(target.get(key) or "").strip():
+            actual = str(target.get(key))
+            if actual != value:
+                # Operator env beats the profile (by design). Record and
+                # announce it (F23c): before this, profile_env_status said
+                # ok:true and strict startup passed with zero trace that
+                # the launched config was not the profile's.
+                overridden.append(
+                    {
+                        "var": key,
+                        "profile_value": value,
+                        "actual_value": actual,
+                    }
+                )
+                try:
+                    print(
+                        f"[mtplx] profile env override: {key}={actual} "
+                        f"(profile {profile.name} default {value}; "
+                        "operator env wins)",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
             continue
         target[key] = value
+    profile_env_overridden[:] = overridden
     for key, value in overrides.items():
         target[key] = value
     return previous
@@ -686,6 +737,14 @@ def profile_env_status(
             "expected": expected_value,
             "observed": target.get(key),
             "override_allowed": key in PROFILE_ENV_USER_OVERRIDE_KEYS,
+            # "ok" deliberately stays permissive for allowed overrides
+            # (strict startup must keep passing); "overridden" is the F23c
+            # truth bit — the operator env replaced the profile value.
+            "overridden": bool(
+                key in PROFILE_ENV_USER_OVERRIDE_KEYS
+                and str(target.get(key) or "").strip()
+                and target.get(key) != expected_value
+            ),
             "ok": target.get(key) == expected_value
             or (
                 key in PROFILE_ENV_USER_OVERRIDE_KEYS

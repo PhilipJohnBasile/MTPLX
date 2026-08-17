@@ -623,6 +623,106 @@ def test_anthropic_request_translates_to_openai_chat_request():
     ]
 
 
+def test_anthropic_missing_max_tokens_is_recorded_not_rejected():
+    """Anthropic's API requires max_tokens; our bridges tolerate its absence.
+    The defaulting is recorded for observability instead of 400ing (which
+    would break those bridges)."""
+
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat = _anthropic_to_chat_request(request)
+    assert getattr(chat, "anthropic_max_tokens_defaulted", False) is True
+
+    capped = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat_capped = _anthropic_to_chat_request(capped)
+    assert getattr(chat_capped, "anthropic_max_tokens_defaulted", False) is False
+
+
+def test_request_observability_records_anthropic_max_tokens_defaulted():
+    from mtplx.server.openai import _request_observability
+
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    chat = _anthropic_to_chat_request(request)
+    observability = _request_observability(
+        chat,
+        headers={},
+        metadata={},
+        session_source=None,
+        request_generation_mode="mtp",
+        request_depth=3,
+    )
+    assert observability["anthropic_max_tokens_defaulted"] is True
+
+    capped = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+    )
+    observability_capped = _request_observability(
+        _anthropic_to_chat_request(capped),
+        headers={},
+        metadata={},
+        session_source=None,
+        request_generation_mode="mtp",
+        request_depth=3,
+    )
+    assert "anthropic_max_tokens_defaulted" not in observability_capped
+
+
+def test_anthropic_disable_parallel_tool_use_maps_to_parallel_tool_calls():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "auto"
+    assert chat.parallel_tool_calls is False
+
+
+def test_anthropic_disable_parallel_tool_use_false_allows_parallel():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "any", "disable_parallel_tool_use": False},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "required"
+    assert chat.parallel_tool_calls is True
+
+
+def test_anthropic_tool_choice_without_parallel_preference_stays_none():
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=64,
+        messages=[AnthropicMessage(role="user", content="hi")],
+        tools=[{"name": "Bash", "input_schema": {"type": "object"}}],
+        tool_choice={"type": "auto"},
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.tool_choice == "auto"
+    assert chat.parallel_tool_calls is None
+
+
 def test_anthropic_request_translates_claude_code_tools_and_history():
     request = AnthropicMessagesRequest(
         model="mtplx",
@@ -1001,8 +1101,74 @@ def test_anthropic_stream_translates_openai_sse_events():
     assert events[2][1]["delta"] == {"type": "text_delta", "text": "Hel"}
     assert events[3][1]["delta"] == {"type": "text_delta", "text": "lo"}
     assert events[5][1]["delta"]["stop_reason"] == "end_turn"
-    assert events[5][1]["usage"] == {"output_tokens": 2}
+    assert events[5][1]["usage"] == {
+        "input_tokens": 5,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 0,
+    }
     assert events[5][1]["mtplx_stats"] == {"tok_s": 12.5}
+
+
+def test_anthropic_stream_and_nonstream_usage_parity():
+    """Streamed and non-streamed /v1/messages must report identical usage for
+    the same upstream OpenAI usage payload — including the session-cache
+    prefix hit (cache_read_input_tokens), which the stream path used to drop.
+    """
+
+    upstream_usage = {
+        "prompt_tokens": 1200,
+        "completion_tokens": 34,
+        "prompt_tokens_details": {"cached_tokens": 1024},
+    }
+
+    nonstream = _anthropic_payload_from_openai(
+        {
+            "model": "mtplx",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Hello"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": dict(upstream_usage),
+        }
+    )
+
+    async def upstream():
+        yield (
+            'data: {"choices":[{"delta":{"content":"Hello"},'
+            '"finish_reason":null}]}\n\n'
+        )
+        yield (
+            'data: '
+            + json.dumps(
+                {
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": dict(upstream_usage),
+                }
+            )
+            + "\n\n"
+        )
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in _anthropic_stream_from_openai_sse(
+                upstream(),
+                model="mtplx",
+            )
+        ]
+
+    events = _anthropic_stream_events(asyncio.run(collect()))
+    message_delta = next(data for event, data in events if event == "message_delta")
+
+    assert nonstream["usage"] == {
+        "input_tokens": 1200,
+        "output_tokens": 34,
+        "cache_read_input_tokens": 1024,
+    }
+    assert message_delta["usage"] == nonstream["usage"]
 
 
 def test_anthropic_stream_translates_openai_tool_call_deltas():
@@ -1558,6 +1724,98 @@ def test_thinking_stream_splitter_keeps_orphan_parameter_markup_out_of_reasoning
     assert "</parameter>" not in reasoning
     assert "<parameter=keys>" in content
     assert "</tool_call>" in content
+
+
+def _no_tools_splitter():
+    return _ThinkingContentStreamSplitter(
+        thinking_enabled=False,
+        suppress_orphan_tool_markup=True,
+    )
+
+
+def _collect_content(splitter, pieces):
+    chunks = []
+    for piece in pieces:
+        chunks.extend(splitter.feed(piece))
+    chunks.extend(splitter.finish())
+    return "".join(text for field, text in chunks if field == "content")
+
+
+def test_no_tools_stream_still_suppresses_closed_tool_spans_chunked():
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "Let me check. <tool",
+            '_call>\n{"name": "web_search"}\n</tool',
+            "_call> The answer is 4.",
+        ],
+    )
+    assert "tool_call" not in content
+    assert "web_search" not in content
+    assert "The answer is 4." in content
+
+
+def test_no_tools_stream_unclosed_span_salvages_prose_at_finish():
+    """The 2.7.1 turn-truncation known issue: an unclosed opener used to eat
+    the rest of the turn. The structural payload stays hidden, the prose the
+    model wrote after it survives."""
+
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "<tool_call>\n",
+            '{"name": "web_search", "arguments": {"query": "population"}}\n',
+            "Actually, I do not need a tool. The population is 39 million.",
+        ],
+    )
+    assert "web_search" not in content
+    assert "tool_call" not in content
+    assert "The population is 39 million." in content
+
+
+def test_no_tools_stream_unclosed_pure_payload_stays_hidden():
+    content = _collect_content(
+        _no_tools_splitter(),
+        [
+            "<function=web_search>\n",
+            '<parameter=query>weather</parameter>\n',
+        ],
+    )
+    assert content.strip() == ""
+
+
+def test_no_tools_stream_leaves_code_fenced_tool_examples_untouched():
+    """Users legitimately ask for tool-call syntax examples; fenced content
+    must stream through verbatim, matching the non-stream stripper."""
+
+    pieces = [
+        "Here is the syntax:\n``",
+        "`xml\n<tool_call>\n{\"name\": \"search\"}\n</tool_call>\n``",
+        "`\nThat is the format.",
+    ]
+    content = _collect_content(_no_tools_splitter(), pieces)
+    assert "<tool_call>" in content
+    assert '{"name": "search"}' in content
+    assert "That is the format." in content
+
+
+def test_sanitize_orphan_span_interior_variants():
+    from mtplx.server.openai import _sanitize_orphan_span_interior
+
+    # Payload + prose: prose survives, structure does not.
+    salvaged = _sanitize_orphan_span_interior(
+        '<tool_call>\n{"name": "x", "arguments": {"a": 1}}\nReal answer.'
+    )
+    assert salvaged == "Real answer."
+    # Pure payload: nothing survives.
+    assert (
+        _sanitize_orphan_span_interior('<function=web_search>\n{"q": "x"}')
+        == ""
+    )
+    # Stray opener with prose on later lines survives.
+    assert "keep me" in _sanitize_orphan_span_interior(
+        "<tool_call\nkeep me"
+    )
 
 
 def test_thinking_stream_splitter_strips_generated_chat_template_sentinels():

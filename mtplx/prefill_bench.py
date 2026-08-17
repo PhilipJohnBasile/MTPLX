@@ -829,9 +829,27 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _ladder_profile(args: Any) -> Any:
+    """Profile the ladder runs under: the launch rule, unless --profile is set.
+
+    The raw ``DEFAULT_PROFILE_NAME`` fallback here was the last bench-lane
+    sustained side door: without an explicit --profile the flagships silently
+    measured the slow profile instead of their turbo launch default. The
+    import is lazy in both directions (commands.public imports this module
+    inside its bench dispatcher), so there is no module cycle.
+    """
+
+    requested = getattr(args, "profile", None)
+    if requested:
+        return get_profile(str(requested))
+    from mtplx.commands.public import _resolved_default_profile_name
+
+    return get_profile(_resolved_default_profile_name(args))
+
+
 def run_prefill_ladder(args: Any) -> dict[str, Any]:
     contexts = parse_contexts(getattr(args, "contexts", None), full=bool(getattr(args, "full", False)))
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = _ladder_profile(args)
     prompt_style = str(getattr(args, "prompt_style", None) or DEFAULT_PROMPT_STYLE)
     prompt_format = _normalize_prompt_format(
         str(getattr(args, "prompt_format", None) or DEFAULT_PROMPT_FORMAT)
@@ -1065,6 +1083,19 @@ def run_prefill_ladder(args: Any) -> dict[str, Any]:
     from .runtime import load
     from .sampling import SamplerConfig
 
+    # Serve-path memory discipline (#261, F7): pin the exact Metal allocator
+    # caps the serve path applies at startup BEFORE the model loads, and
+    # refuse contexts beyond the model's context window instead of silently
+    # benchmarking past the trained window. Uncapped ladder rows produced the
+    # 102.6GB-at-262k class of headline the serve path can never reach.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    payload["memory_preflight"] = apply_memory_caps_preflight(
+        entry="bench.prefill_ladder",
+        model=model,
+        contexts=contexts,
+    )
+
     max_session = None
     if getattr(args, "fanmax", False):
         from .thermal import MaxSession
@@ -1154,7 +1185,11 @@ def run_prefill_ladder(args: Any) -> dict[str, Any]:
             row["requested_prefill_layout"] = prefill_layout
             row["seed"] = row_seed
             payload["rows"].append(row)
-            if inter_context_cleanup_enabled and index < len(contexts) - 1:
+            if inter_context_cleanup_enabled:
+                # Per-row flush (#F7): every row — including the last, largest
+                # context — releases allocator pressure before the next
+                # measurement or process exit. The old last-row exclusion left
+                # the biggest context's pool resident with no receipt.
                 cleanup_time = _sync_and_clear_cache_between_contexts()
                 cleanup_meta = payload["inter_context_cache_cleanup"]
                 cleanup_meta["events"] = int(cleanup_meta["events"]) + 1

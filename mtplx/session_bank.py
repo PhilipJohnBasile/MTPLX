@@ -263,6 +263,14 @@ class SessionBankEntry:
     cache_ref: list[Any] | None = None
     mtp_history_cache_ref: list[Any] | None = None
     live_ref_only: bool = False
+    # Live-ref leases store nbytes=0 (no snapshot copy exists), which blinds
+    # byte projections that scale from `longest_prefix().nbytes` — the
+    # postcommit's oversized-snapshot estimate read 0 once a lease became the
+    # session's longest banked prefix and then materialized a multi-GiB
+    # snapshot just to have put() reject it again (the #255 freeze family).
+    # Record the rejected snapshot size that forced the lease so projections
+    # stay honest across the whole oversized regime.
+    oversized_nbytes: int = 0
     # Passive probe: monotonic time this ENTRY OBJECT's cold-tier encode
     # completed (the encode evals the entry's lazy roots in place), or None.
     # Kept on the exact object — Site A and Site B can create distinct
@@ -498,6 +506,32 @@ class SessionBank:
             sid for sid, ts in self._session_last_active.items() if ts >= cutoff
         }
 
+    def warn_oversized_snapshot_skip(
+        self, session_id: str | None, *, needed_nbytes: int
+    ) -> None:
+        """Loud once per session (#229): the point where a long conversation
+        stops getting durable snapshots (a live-ref lease survives only until
+        restart/displacement) and users read the resulting cold prefill as
+        "the cache broke". Say exactly which knob raises the ceiling. Shared
+        by put()'s oversized branch and the postcommit's byte projection so
+        the ceiling is never silent regardless of which gate hits first.
+        """
+        if session_id in self._oversized_warned_sessions:
+            return
+        self._oversized_warned_sessions.add(session_id)
+        print(
+            "[mtplx] session-bank snapshot skipped: session "
+            f"{session_id or 'anon'} needs "
+            f"{int(needed_nbytes) / 2**30:.1f} GiB but the "
+            "per-session cap is "
+            f"{self.per_session_max_bytes / 2**30:.1f} GiB — longer "
+            "contexts will re-prefill after restart/eviction. Raise "
+            "MTPLX_SESSION_BANK_PER_SESSION_BYTES (e.g. "
+            f"{max(1, int(needed_nbytes * 1.5) >> 30)}G) to keep "
+            "caching this session.",
+            flush=True,
+        )
+
     def put(
         self,
         *,
@@ -603,6 +637,7 @@ class SessionBank:
                 mtp_history_cache_ref=mtp_history_cache_ref,
                 live_ref_only=True,
                 nbytes=0,
+                oversized_nbytes=max(0, int(nbytes)),
                 session_id=session_id,
                 template_hash=template_hash,
                 mtp_history_policy=mtp_history_policy,
@@ -642,25 +677,9 @@ class SessionBank:
         if nbytes_override is not None and int(nbytes_override) > self.per_session_max_bytes:
             self.last_put_nbytes = int(nbytes_override)
             self.last_put_skipped_oversized_snapshot = True
-            if session_id not in self._oversized_warned_sessions:
-                # Loud once per session (#229): this is the point where a
-                # long conversation silently stops getting durable snapshots
-                # (a live-ref lease survives only until restart/displacement)
-                # and users read the resulting cold prefill as "the cache
-                # broke". Say exactly which knob raises the ceiling.
-                self._oversized_warned_sessions.add(session_id)
-                print(
-                    "[mtplx] session-bank snapshot skipped: session "
-                    f"{session_id or 'anon'} needs "
-                    f"{int(nbytes_override) / 2**30:.1f} GiB but the "
-                    "per-session cap is "
-                    f"{self.per_session_max_bytes / 2**30:.1f} GiB — longer "
-                    "contexts will re-prefill after restart/eviction. Raise "
-                    "MTPLX_SESSION_BANK_PER_SESSION_BYTES (e.g. "
-                    f"{max(1, int(nbytes_override * 1.5) >> 30)}G) to keep "
-                    "caching this session.",
-                    flush=True,
-                )
+            self.warn_oversized_snapshot_skip(
+                session_id, needed_nbytes=int(nbytes_override)
+            )
             live_entry = live_ref_entry(
                 "skipped_oversized_snapshot_live_ref",
                 int(nbytes_override),
@@ -1292,7 +1311,21 @@ class SessionBank:
         if mode == "reference" and entry.cache_ref is not None:
             cache = entry.cache_ref
             entry.cache_ref = None
-            if not _trim_cache_ref_to_prefix(cache, entry.prefix_len):
+            # Trim depth is the seed-forward contract, decided by the lookup
+            # shape. A lookup that EXTENDS the entry is served by the exact
+            # suffix-forward lane, which forwards prompt[prefix_len:] with NO
+            # seed re-forward — the cache must land at the FULL boundary or
+            # the first suffix token overwrites the final prefix position
+            # (integer-exact receipt: warm lease restores decoded different
+            # bytes than cold, F39 lane 2026-08-16). An exact full-prefix
+            # lookup keeps the pre-last-token trim: that consumer contract
+            # (BatchGenerator insert / stored-boundary-logits decode start)
+            # owns the final-token re-forward.
+            if len(token_ids) > entry.prefix_len:
+                trimmed = _trim_cache_ref_to_tokens(cache, entry.prefix_len)
+            else:
+                trimmed = _trim_cache_ref_to_prefix(cache, entry.prefix_len)
+            if not trimmed:
                 self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
                 return cold_fallback()
             actual_restore_mode = "reference_lease"

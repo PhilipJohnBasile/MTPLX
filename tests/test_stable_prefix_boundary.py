@@ -290,3 +290,61 @@ def test_thinning_retains_tail_adjacent_stable_edge():
     assert any(r[0] == 15723 for r in thinned), (
         "tail-adjacent stable edge must survive geometric thinning"
     )
+
+
+class _NearPrefixProbe(Exception):
+    """Raised by the recorder to stop restore_or_prefill before any real work."""
+
+
+def test_near_prefix_lane_one_forwards_stable_prefix_len(monkeypatch):
+    """Defect A regression (2026-08-16): the FIRST near-prefix lane — the one
+    every warm tool round takes when a shorter entry shadows the prompt —
+    must forward stable_prefix_len so its suffix prefill captures the
+    pre-nudge recurrent boundary. Without it each banked tool-round entry
+    lacks the stable-edge snapshot and the NEXT round block-rounds down."""
+    import mtplx.generation as generation
+
+    captured: dict[str, object] = {}
+
+    def _recorder(rt, prompt_ids, **kwargs):
+        captured.update(kwargs)
+        raise _NearPrefixProbe()
+
+    monkeypatch.setattr(generation, "_restore_near_prefix_prompt_state", _recorder)
+
+    bank = SessionBank(max_entries=4, max_bytes=4096, per_session_max_bytes=4096)
+    runtime = SimpleNamespace(
+        model_path=Path("models/example"),
+        mtp_enabled=False,
+        contract=SimpleNamespace(),
+    )
+    prompt_ids = list(range(1, 121))
+    entry = bank.put(
+        runtime=runtime,
+        token_ids=prompt_ids[:60],  # strict prefix -> exact_prefix_len < len
+        cache=[],
+        logits=None,
+        hidden=None,
+        session_id="s",
+        nbytes_override=64,
+    )
+    assert entry is not None
+
+    try:
+        generation.restore_or_prefill_prompt_state(
+            runtime,
+            prompt_ids,
+            mtp_history_policy="cycle",
+            session_bank=bank,
+            session_id="s",
+            stable_prefix_len=97,
+        )
+    except _NearPrefixProbe:
+        pass
+    else:
+        raise AssertionError("near-prefix lane 1 never fired for a shorter entry")
+
+    assert captured.get("stable_prefix_len") == 97, (
+        "lane-1 near-prefix restore dropped stable_prefix_len: "
+        f"forwarded kwargs {sorted(captured)}"
+    )

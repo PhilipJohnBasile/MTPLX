@@ -16,8 +16,13 @@ import pytest
 
 
 def _reload_engine_session():
+    # Plain import, no reload: every function under test reads env at call
+    # time, and importlib.reload re-executes the module body in place —
+    # replacing EngineSessionBusy/manager class objects process-wide and
+    # breaking any test that imported them earlier (same defect fixed in
+    # test_engine_session_env.py, dominion 5fe09fb9).
     import mtplx.engine_session
-    return importlib.reload(mtplx.engine_session)
+    return mtplx.engine_session
 
 
 # --- _bank_entries_from_env helper ----------------------------------------

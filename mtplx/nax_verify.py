@@ -36,16 +36,8 @@ def nax_env_enabled() -> bool:
 
 
 @lru_cache(maxsize=1)
-def nax_available() -> bool:
-    if str(os.environ.get("MTPLX_FORCE_GPU_FAMILY_FALLBACK", "")).strip().lower() in {
-        "1",
-        "true",
-        "on",
-        "yes",
-    }:
-        # QA rehearsal switch: pretend this GPU is not G17-class so an M5
-        # exercises the exact plain-SIMD code path an M1-M4 user gets.
-        return False
+def _nax_hardware_available() -> bool:
+    """GPU family + macOS floor. Immutable for the process life — safe to memoize."""
     arch = str(mx.device_info().get("architecture", "")).lower()
     if not arch.startswith("applegpu_g17"):
         return False
@@ -59,6 +51,26 @@ def nax_available() -> bool:
     except ValueError:
         minor = 0
     return major > 26 or (major == 26 and minor >= 2)
+
+
+def nax_available() -> bool:
+    if str(os.environ.get("MTPLX_FORCE_GPU_FAMILY_FALLBACK", "")).strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }:
+        # QA rehearsal switch: pretend this GPU is not G17-class so an M5
+        # exercises the exact plain-SIMD code path an M1-M4 user gets. Read
+        # per call — memoizing it froze the value at first probe, so setting
+        # the switch after import (profiles, tests) silently did nothing.
+        return False
+    return _nax_hardware_available()
+
+
+# The whole function used to be lru_cached; callers cleared it to see env
+# changes. Only the hardware memo remains clearable — env is read per call.
+nax_available.cache_clear = _nax_hardware_available.cache_clear  # type: ignore[attr-defined]
 
 
 def _build_kernel_m16_nax_ktmpl(k_val: int, group_size: int, dtype: mx.Dtype):
@@ -871,6 +883,20 @@ def nax_qmm_m16(
 
 _QLINEAR_PATCH: dict[str, object] = {"installed": False, "original": None}
 
+# F23b (2026-08-16): verify-shaped QuantizedLinear calls that entered the
+# patched fast-path window (bits in {4,6,8}, decode/verify phase, M in the
+# verify range) but fell through every kernel gate back to stock. Keyed
+# "b{bits}_m{M}" — the shape class tells which lane silently declined
+# (lane_disabled kill switches, eligibility geometry, small-N floors).
+# Import-stable surface for /health; increments happen ONLY on the bail
+# path (calls the kernels serve never touch this dict).
+nax_qlinear_fallback_counts: dict[str, int] = {}
+
+
+def _count_qlinear_fallback(bits: int, m: int) -> None:
+    key = f"b{int(bits)}_m{int(m)}"
+    nax_qlinear_fallback_counts[key] = nax_qlinear_fallback_counts.get(key, 0) + 1
+
 
 def install_nax_qlinear_patch() -> dict[str, object]:
     """Route verify-shaped (M in 4..16) 4-bit QuantizedLinear calls through the
@@ -959,6 +985,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         if bits == 6 and x.ndim >= 2 and current_attention_phase() != "prefill":
             # 6-bit affine (9B tier), added 2026-07-07: split-K hexpack
             # kernels, exactness-gated vs stock across {bf16,fp16} x
@@ -1005,6 +1032,7 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         if bits == 4 and x.ndim >= 2 and current_attention_phase() != "prefill":
             m = 1
             for d in x.shape[:-1]:
@@ -1046,12 +1074,13 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                     if "bias" in self:
                         y = y + self["bias"]
                     return y
+                _count_qlinear_fallback(bits, m)
         return original(self, x)
 
     nn.QuantizedLinear.__call__ = patched
     _QLINEAR_PATCH["installed"] = True
     _QLINEAR_PATCH["original"] = original
-    return {"installed": True, "already": False, "nax_available": True}
+    return {"installed": True, "already": False, "nax_available": nax_available()}
 
 
 def uninstall_nax_qlinear_patch() -> None:
@@ -1069,7 +1098,11 @@ def uninstall_nax_qlinear_patch() -> None:
 # hidden-eval 48.8 -> 57.2 ms/call, acceptance matched) — small threadgroups
 # lose under mixed co-residency with attention/GDN kernels. Promotion bar for
 # any m4 variant: the serve-path long-form A/B, not the tune lane.
-_M4_IMPL = str(os.environ.get("MTPLX_NAX_M4_IMPL", "legacy")).strip().lower()
+def _m4_impl() -> str:
+    # Read per call, not at import: the turbo profile exports
+    # MTPLX_NAX_M4_IMPL=vk_k while the server boots, and an import-time
+    # snapshot silently pinned whichever value happened to be set first.
+    return str(os.environ.get("MTPLX_NAX_M4_IMPL", "legacy")).strip().lower()
 
 
 def nax_qmm_m4(
@@ -1091,7 +1124,7 @@ def nax_qmm_m4(
     """
     K = int(x2.shape[1])
     N = int(w_q.shape[0])
-    impl = _M4_IMPL
+    impl = _m4_impl()
     if impl in ("oct", "twin", "vk", "vk_u2", "vk_k", "vk_hybrid"):
         # MTPLX verify_kernels family (original implementations, 2026-07-02).
         from .verify_kernels import (

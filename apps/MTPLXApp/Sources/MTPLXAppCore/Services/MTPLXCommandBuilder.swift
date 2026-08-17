@@ -101,7 +101,9 @@ public struct MTPLXCommandBuilder: Sendable {
     /// The concrete profile a fresh user should measure and then run for a
     /// model. Keeping onboarding tune on this resolver prevents its benchmark
     /// from selecting a depth under the legacy Burst lane and then launching
-    /// the finished daemon under a different profile.
+    /// the finished daemon under a different profile. Families without a
+    /// measured preset fall back to "sustained" — the same default the
+    /// engine resolves for non-flagship models when no --profile is given.
     public static func recommendedProfile(
         for model: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -113,7 +115,7 @@ public struct MTPLXCommandBuilder: Sendable {
             for: model,
             processEnvironment: environment
         )
-        return MTPLXAppConfiguration.launchableProfile(preset.profile ?? "sustained")
+        return preset.profile.flatMap(MTPLXAppConfiguration.launchableProfile) ?? "sustained"
     }
 
     public static func resolveHomebrewExecutable(
@@ -192,8 +194,18 @@ public struct MTPLXCommandBuilder: Sendable {
             "--host", configuration.host,
             "--port", String(configuration.port),
             "--model", configuration.model,
-            "--profile", MTPLXAppConfiguration.launchableProfile(resolved.profile),
         ]
+        // Only an engine-launchable profile is emitted. "auto" (and any
+        // unknown string) emits NO --profile: the engine is the single
+        // owner of default-profile resolution — it resolves identity from
+        // the artifact (#268), promotes the flagships to turbo itself,
+        // and reports the resolved profile on /health. Writing
+        // "--profile sustained" here read as an explicit user choice and
+        // blocked that promotion for legacy hybrids and renamed model
+        // dirs (F20).
+        if let profile = MTPLXAppConfiguration.launchableProfile(resolved.profile) {
+            arguments.append(contentsOf: ["--profile", profile])
+        }
         let launchGenerationMode = MTPLXAppConfiguration.launchableGenerationMode(
             configuration.generationMode
         )
@@ -725,13 +737,16 @@ struct ResolvedDaemonArgs {
             ? preset.batchingPreset
             : schedulingDefaults.batchingPreset
 
-        // "auto" = the recommended profile for the selected model (the
-        // per-model preset; turbo for the 27Bs). An explicit user pick
-        // always wins over the preset — the Settings picker must never
-        // lie (2026-07-03 turbo release).
-        profile = configuration.profile == "auto"
-            ? (preset.profile ?? MTPLXAppConfiguration.launchableProfile(configuration.profile))
-            : configuration.profile
+        // "auto" flows through unresolved: buildServeCommand emits no
+        // --profile for it, handing default-profile resolution to the
+        // engine (per-artifact; turbo for the flagships). The old
+        // app-side resolution — preset.profile with a "sustained"
+        // fallback — was the Swift twin of the engine's #268 path bug:
+        // any model the path-substring table missed (legacy hybrids,
+        // renamed dirs) launched with an explicit sustained pin. An
+        // explicit user pick still wins — the Settings picker must
+        // never lie (2026-07-03 turbo release).
+        profile = configuration.profile
 
         maxActiveRequests = targetOwnsScheduling
             ? preset.maxActiveRequests
@@ -1323,10 +1338,12 @@ private struct TargetPreset {
         preset.topK = 20
         // The draft sampler is deliberately NOT pinned for this family. Each
         // 3.8 artifact stamps its measured `recommended_draft_sampler` in
-        // mtplx_runtime.json (Bare Speed: 0.6 from the drop-day strict
-        // max-fan A/B; Optimized Speed/Quality: the target sampler) and the
-        // server resolves it from the stamp — the same path `mtplx serve`
-        // takes with zero flags. One owner, so the app and the CLI serve the
+        // mtplx_runtime.json and the server resolves it from the stamp — the
+        // same path `mtplx serve` takes with zero flags. (Which number is
+        // right belongs to the artifact: the drop-day strict max-fan A/B
+        // measured draft 1.0 over the earlier uncontrolled 0.6 for Bare
+        // Speed — the stamp is the restamp surface, never this file.) One
+        // owner, so the app and the CLI serve the
         // same draft sampler for the same artifact (incl. the FP16 siblings)
         // and a stamp change never needs an app release. A user-set sampler
         // in Settings still carries to the draft, as for every family.

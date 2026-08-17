@@ -9,7 +9,11 @@ without inheriting Qwen-specific assumptions.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 
@@ -397,6 +401,30 @@ QWEN3_8_SAMPLER_DEFAULTS = SamplerDefaults(temperature=1.0, top_p=0.95, top_k=20
 # acceptance. The earlier 0.6 result was thermally uncontrolled and is not a
 # product receipt.
 QWEN3_8_DRAFT_TEMPERATURE = 1.0
+# Per-family dynamic draft-temperature curves: (target_temperature,
+# draft_temperature) points, piecewise-linear, flat extrapolation
+# (draft_sampling.resolve_draft_temperature). An absent family means the
+# identity policy — the static per-family draft temperature above. Curves
+# are stamped ONLY from a measured max-fan ABBA calibration campaign (see
+# MEASUREMENTS.md); never invent offsets. Target temp 0 is handled by
+# greedy draft coupling in the server resolver, not by these curves.
+DRAFT_TEMPERATURE_CURVES: dict[str, tuple[tuple[float, float], ...]] = {}
+
+
+def draft_temperature_curve_for_model(
+    model_ref: str | None = None,
+    inspection: dict[str, Any] | None = None,
+    descriptor: "BackendDescriptor | None" = None,
+) -> tuple[tuple[float, float], ...] | None:
+    """The measured draft-temperature curve for the model's family, or None
+    (identity) when no calibration has been stamped."""
+
+    family = model_family_from_inspection(
+        inspection,
+        model_ref=model_ref,
+        descriptor=descriptor,
+    )
+    return DRAFT_TEMPERATURE_CURVES.get(family)
 QWEN3_8_REASONING_CODEC = ReasoningCodec(
     parser="qwen3",
     display_name="Qwen think tags",
@@ -943,14 +971,68 @@ def _text_markers(model_ref: str | None, inspection: dict[str, Any] | None) -> s
     return " ".join(str(part or "") for part in parts).lower()
 
 
+# Stock Qwen3 sizes collide with the 3.8 version token: in "qwen3-8b" or
+# "qwen3-80b" the digit-run ending in "b" right after the token is a
+# parameter count, not a version, and must not claim the qwen3_8 family.
+_QWEN3_8_MARKER = re.compile(r"qwen3[._-]?8(?!\d*b)")
+
+
 def _explicit_qwen_family_marker(text: str) -> str | None:
-    if "qwen3.8" in text or "qwen3_8" in text or "qwen38" in text:
+    if _QWEN3_8_MARKER.search(text):
         return "qwen3_8"
-    if "qwen3.6" in text or "qwen3_6" in text or "qwen36" in text:
+    if "qwen3.6" in text or "qwen3_6" in text or "qwen36" in text or "qwen3-6" in text:
         return "qwen3_6"
     if "qwen3.5" in text or "qwen3_5" in text or "qwen3-5" in text:
         return "qwen3_5"
     return None
+
+
+@lru_cache(maxsize=64)
+def _artifact_family_texts(model_ref: str) -> tuple[str, str]:
+    """Family markers the artifact carries about itself (issue #268).
+
+    A model served from a renamed or symlinked directory has no family
+    marker in its ref, and the shared qwen3_next descriptor cannot split
+    3.5/3.6/3.8 — config.json says qwen3_5 for all of them. The artifact
+    still knows what it is: the forge provenance in mtplx_runtime.json
+    (source trunk, published repo) and the symlink-resolved path name the
+    family, returned as ``(provenance, resolved_path)`` in that order of
+    authority — what the artifact says outranks what the folder is called.
+    Family is a behavior contract, not a first-party identity claim, so
+    provenance matching is safe here — unlike the served-model-id lane,
+    where fuzzy inference was deliberately removed (July 2026, issue #57).
+    """
+    resolved = ""
+    parts: list[str] = []
+    try:
+        path = Path(model_ref).expanduser()
+        if not path.exists():
+            return "", ""
+        resolved = str(path.resolve())
+        runtime_json = path / "mtplx_runtime.json"
+        if runtime_json.is_file():
+            data = json.loads(runtime_json.read_text())
+            if isinstance(data, dict):
+                provenance = data.get("forge_provenance")
+                provenance = provenance if isinstance(provenance, dict) else {}
+                inputs = provenance.get("forge_inputs")
+                inputs = inputs if isinstance(inputs, dict) else {}
+                parts.extend(
+                    str(value or "")
+                    for value in (
+                        data.get("public_model_id"),
+                        data.get("served_model_id"),
+                        data.get("model_id"),
+                        data.get("published_to_hf"),
+                        data.get("base_trunk"),
+                        data.get("artifact_role"),
+                        inputs.get("trunk_path"),
+                        inputs.get("mtp_source_path"),
+                    )
+                )
+    except Exception:
+        pass
+    return " ".join(part for part in parts if part).lower(), resolved.lower()
 
 
 def model_family_from_inspection(
@@ -960,6 +1042,15 @@ def model_family_from_inspection(
     descriptor: BackendDescriptor | None = None,
 ) -> str:
     text = _text_markers(model_ref, inspection)
+    if model_ref:
+        # The artifact outranks its folder name: forge provenance first,
+        # then the symlink-resolved location, then the ref as spelled.
+        provenance_text, resolved_path = _artifact_family_texts(str(model_ref))
+        artifact_family = _explicit_qwen_family_marker(
+            provenance_text
+        ) or _explicit_qwen_family_marker(resolved_path)
+        if artifact_family is not None:
+            return artifact_family
     ref_family = _explicit_qwen_family_marker(str(model_ref or "").lower())
     if ref_family is not None:
         return ref_family

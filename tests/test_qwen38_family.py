@@ -276,6 +276,141 @@ def test_qwen38_turbo_default_promotion() -> None:
     assert pinned.profile == "sustained"
 
 
+def test_qwen38_no_silent_sustained_side_doors() -> None:
+    # 2026-08-16 redp314 board lesson: serve resolved turbo but `mtplx run`
+    # and the no-flag bench actions fell back to the raw sustained default,
+    # so exactly the people producing public numbers hit the slow profile.
+    from mtplx.commands.public import (
+        _bench_run_profile_name,
+        _bench_suite_tasks,
+        _resolved_default_profile_name,
+    )
+    from mtplx.prefill_bench import _ladder_profile
+
+    flagship = QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+    args = SimpleNamespace(profile=None, _cli_flags=set(), model=flagship)
+    assert _resolved_default_profile_name(args) == "turbo"
+    # Speed suites follow the launch rule for the flagship...
+    assert _bench_run_profile_name(args, suite="long_code") == "turbo"
+    # ...and so do context suites (founder order 2026-08-16: our models
+    # default turbo across every feature).
+    assert _bench_run_profile_name(args, suite="python_modules_long") == "turbo"
+    # ...while the deliberate memory-safe context defaults stay sustained
+    # and an explicit flag always wins.
+    pinned = SimpleNamespace(
+        profile="sustained", _cli_flags={"profile"}, model=flagship
+    )
+    assert _bench_run_profile_name(pinned, suite="long_code") == "sustained"
+
+    # EVERY suite builder (quick and nightly, client contracts included)
+    # follows the launch rule: the builders set child.profile explicitly,
+    # which bypasses serve-time resolution, so a task built without an
+    # explicit --profile must already carry the resolved default. The
+    # deliberate strict-cold lane stays performance-cold by design.
+    for quick in (False, True):
+        suite_args = SimpleNamespace(
+            profile=None, _cli_flags=set(), model=flagship, quick=quick
+        )
+        tasks = _bench_suite_tasks(suite_args, model=flagship)
+        assert tasks, "suite builder returned no tasks"
+        for task in tasks:
+            expected = "performance-cold" if task["strict_cold"] else "turbo"
+            assert task["profile"] == expected, (quick, task["label"])
+        # An explicit --profile pins every non-cold task.
+        pinned_suite = SimpleNamespace(
+            profile="sustained", _cli_flags={"profile"}, model=flagship, quick=quick
+        )
+        for task in _bench_suite_tasks(pinned_suite, model=flagship):
+            if not task["strict_cold"]:
+                assert task["profile"] == "sustained", (quick, task["label"])
+        # Non-flagship models keep the memory-safe sustained defaults.
+        other = SimpleNamespace(
+            profile=None, _cli_flags=set(), model="someone/custom", quick=quick
+        )
+        for task in _bench_suite_tasks(other, model="someone/custom"):
+            if not task["strict_cold"]:
+                assert task["profile"] == "sustained", (quick, task["label"])
+
+    # The prefill ladder was the last raw bench-lane fallback.
+    assert _ladder_profile(args).name == "turbo"
+    assert (
+        _ladder_profile(
+            SimpleNamespace(profile="sustained", _cli_flags={"profile"})
+        ).name
+        == "sustained"
+    )
+
+
+def test_model_identity_survives_renamed_dirs(tmp_path) -> None:
+    # Issue #268: family and served id were resolved from the path STRING,
+    # so a symlink or neutral dir name silently flipped preserve -> scoped
+    # (agentic prefix cache collapse) and turbo -> sustained.
+    # NOTE: no family marker in this test's name — pytest bakes the test
+    # name into tmp_path, and a "qwen38" in it would taint every path.
+    import json
+
+    from mtplx.backends.descriptors import model_family_from_inspection
+
+    qwen_descriptor = SimpleNamespace(
+        model_family="qwen", backend_id="qwen3_next_mtp"
+    )
+
+    # Hyphen marker parity: Qwen3-8 refs resolved qwen3_6 before.
+    assert (
+        model_family_from_inspection(
+            model_ref="/models/Qwen3-8-27B", descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+
+    # A neutral-named dir still declares its family via forge provenance.
+    neutral = tmp_path / "neutral-model-dir"
+    neutral.mkdir()
+    (neutral / "mtplx_runtime.json").write_text(
+        json.dumps(
+            {
+                "arch_id": "qwen3-next-mtp",
+                "base_trunk": "/models/Qwen--Qwen3.8-27B",
+                "forge_provenance": {
+                    "forge_inputs": {"trunk_path": "/models/Qwen--Qwen3.8-27B"}
+                },
+            }
+        )
+    )
+    assert (
+        model_family_from_inspection(
+            model_ref=str(neutral), descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+
+    # Symlinks are identity-preserving for family AND served id.
+    real = tmp_path / "Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed"
+    real.mkdir()
+    link = tmp_path / "qwen-control"
+    link.symlink_to(real)
+    assert (
+        model_family_from_inspection(
+            model_ref=str(link), descriptor=qwen_descriptor
+        )
+        == "qwen3_8"
+    )
+    assert public_model_id_for_ref(str(link)) == public_model_id_for_ref(str(real))
+    assert public_model_id_for_ref(str(link)) == QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+
+    # A bare copy with no provenance keeps both fences: family falls back
+    # to the descriptor default, and the first-party id is NOT claimed.
+    bare = tmp_path / "some-model"
+    bare.mkdir()
+    assert (
+        model_family_from_inspection(
+            model_ref=str(bare), descriptor=qwen_descriptor
+        )
+        == "qwen3_6"
+    )
+    assert public_model_id_for_ref(str(bare)) != QWEN38_BARE_SPEED_PUBLIC_MODEL_ID
+
+
 # ------------------------------------------------------------- server behavior
 
 

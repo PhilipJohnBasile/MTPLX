@@ -2609,6 +2609,137 @@ def test_anthropic_messages_rejects_empty_request_before_generation():
     assert response.json()["error"]["message"] == "messages must not be empty"
 
 
+def test_completions_prompt_scoring_contract(monkeypatch):
+    """echo+logprobs+max_tokens=0 returns the KL-lane shape with OpenAI
+    alignment: all arrays length n, null token_logprobs/top_logprobs at
+    index 0, entry i describing prompt token i (correct under both harness
+    zip conventions), plus a token_ids identity array."""
+
+    state = _prompt_scoring_state()
+    prompt = "abcd"  # CaptureTokenizer: 1 char = 1 token (ords)
+
+    def fake_score(runtime, prompt_ids, *, top_k):
+        n = len(prompt_ids)
+        positions = [
+            [(prompt_ids[i + 1], -0.1), (prompt_ids[0], -2.0)]
+            for i in range(n - 1)
+        ]
+        return {
+            "positions": positions,
+            "token_logprobs": [-0.1] * (n - 1),
+            "prompt_tokens": n,
+            "elapsed_s": 0.01,
+        }
+
+    monkeypatch.setattr(openai, "score_prompt_logprobs", fake_score)
+    client = TestClient(create_app(state))
+
+    response = client.post(
+        "/v1/completions",
+        json={
+            "prompt": prompt,
+            "echo": True,
+            "logprobs": 2,
+            "max_tokens": 0,
+            "temperature": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    choice = body["choices"][0]
+    assert choice["text"] == "abcd"
+    logprobs = choice["logprobs"]
+    assert logprobs["tokens"] == ["a", "b", "c", "d"]
+    assert len(logprobs["top_logprobs"]) == 4
+    assert logprobs["top_logprobs"][0] is None
+    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"][1:])
+    # Entry i is the distribution that predicted token i, string-keyed.
+    assert logprobs["top_logprobs"][1]["b"] == pytest.approx(-0.1)
+    assert logprobs["top_logprobs"][2]["c"] == pytest.approx(-0.1)
+    assert logprobs["token_logprobs"] == [None, -0.1, -0.1, -0.1]
+    assert logprobs["text_offset"] == [0, 1, 2, 3]
+    assert logprobs["token_ids"] == [97, 98, 99, 100]
+    assert body["usage"] == {
+        "prompt_tokens": 4,
+        "completion_tokens": 0,
+        "total_tokens": 4,
+    }
+    assert body["mtplx_stats"]["mode"] == "prompt_scoring"
+    assert body["mtplx_stats"]["scored_positions"] == 3
+
+
+def _prompt_scoring_state():
+    state = _fake_state()
+    state.runtime.tokenizer = CaptureTokenizer()
+    state.begin_foreground = lambda: None
+    state.end_foreground = lambda: None
+    state.requests_completed = 0
+    state.last_request_at = 0.0
+    return state
+
+
+def test_completions_echo_logprobs_requires_zero_max_tokens():
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "echo": True, "logprobs": 4, "max_tokens": 8},
+    )
+
+    assert response.status_code == 400
+    assert "max_tokens to 0" in response.json()["error"]["message"]
+
+
+def test_completions_logprobs_without_echo_rejected():
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "logprobs": 4, "max_tokens": 0},
+    )
+
+    assert response.status_code == 400
+    assert "echo=true" in response.json()["error"]["message"]
+
+
+def test_completions_prompt_scoring_top_k_capped(monkeypatch):
+    monkeypatch.setenv("MTPLX_PROMPT_LOGPROBS_MAX", "16")
+    client = TestClient(create_app(_prompt_scoring_state()))
+
+    response = client.post(
+        "/v1/completions",
+        json={"prompt": "hi", "echo": True, "logprobs": 64, "max_tokens": 0},
+    )
+
+    assert response.status_code == 400
+    assert "MTPLX_PROMPT_LOGPROBS_MAX" in response.json()["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "body_extra",
+    [{"logprobs": True}, {"logprobs": 1}, {"top_logprobs": 3}],
+)
+def test_chat_completions_rejects_logprobs_with_clear_400(body_extra):
+    """logprobs used to be swallowed by extra="allow" and silently ignored;
+    clients read the missing data as model behavior. Interim contract: a
+    clean 400 until logprob support ships."""
+
+    client = TestClient(create_app(_fake_state()))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "mtplx-test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            **body_extra,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "logprobs" in response.json()["error"]["message"]
+
+
 def test_chat_ui_uses_server_depth_default():
     state = _fake_state()
     state.args.depth = 2
@@ -2953,6 +3084,9 @@ def test_opencode_initial_coding_request_uses_compact_mtplx_agent_prompt(monkeyp
 def test_chat_long_context_depth_cap_resolves_runtime_depth(monkeypatch):
     captured: dict[str, object] = {}
     state = _fake_state()
+    # The 12506-token prompt must fit: over-context prompts are a 400
+    # (context_length_exceeded) by contract, not an implicit pass-through.
+    state.context_window = 131072
     client = TestClient(create_app(state))
 
     monkeypatch.setenv("MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY", "auto")
@@ -3006,7 +3140,10 @@ def test_chat_long_context_depth_cap_resolves_runtime_depth(monkeypatch):
 
 def test_opencode_short_context_preserves_depth3(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 5000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
@@ -3046,7 +3183,10 @@ def test_opencode_short_context_preserves_depth3(monkeypatch):
 
 def test_opencode_short_context_depth_policy_respects_explicit_depth(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 5000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 5000
@@ -3087,7 +3227,10 @@ def test_opencode_short_context_depth_policy_respects_explicit_depth(monkeypatch
 
 def test_opencode_short_context_depth_policy_keeps_depth3_above_threshold(monkeypatch):
     captured: dict[str, object] = {}
-    client = TestClient(create_app(_fake_state()))
+    state = _fake_state()
+    # The 8000-token prompt must fit: over-context prompts are a 400 now.
+    state.context_window = 131072
+    client = TestClient(create_app(state))
 
     monkeypatch.setattr(
         openai, "_encode_messages", lambda *_args, **_kwargs: [1] * 8000
@@ -3708,9 +3851,12 @@ def test_completion_request_controls_are_server_owned_without_override(monkeypat
     assert response.status_code == 200
     assert captured["generation_mode"] == "mtp"
     assert captured["depth"] == 3
-    assert captured["temperature"] is None
-    assert captured["top_p"] is None
-    assert captured["top_k"] is None
+    # Server-owned controls resolve to the launch sampler at the prologue
+    # (shared RequestPolicy path, same as chat) — the client's 0.01/0.2/1
+    # must never reach generation.
+    assert captured["temperature"] == 0.6
+    assert captured["top_p"] == 0.95
+    assert captured["top_k"] == 20
     stats = captured["request_observability"]
     assert stats["mtplx_control_owner"] == "server"
     assert stats["client_controls_allowed"] is False
@@ -3721,6 +3867,14 @@ def test_completion_request_controls_are_server_owned_without_override(monkeypat
         "generation_mode",
         "draft_control",
     ]
+    assert stats["client_sampler_fields_ignored"] == [
+        "temperature",
+        "top_p",
+        "top_k",
+    ]
+    assert stats["effective_temperature"] == 0.6
+    assert stats["effective_top_p"] == 0.95
+    assert stats["effective_top_k"] == 20
 
 
 def test_chat_accepts_max_completion_tokens_alias_and_benign_extras(monkeypatch):
@@ -8412,13 +8566,13 @@ def test_opencode_chitchat_preserves_agent_tools_without_direct_reply_contract(
     assert stats["effective_temperature"] == 0.6
     assert stats["effective_top_p"] == 0.95
     assert stats["effective_top_k"] == 20
-    assert stats["draft_sampler_policy"] == "launch_default"
+    # F9: server-injected sampler normalization is launch_default OWNERSHIP,
+    # not a request-explicit draft value — the launched sampler stays on the
+    # server state and per-request resolution (curve + greedy coupling)
+    # still runs inside _run_generation.
+    assert stats["draft_sampler_ownership"] == "launch_default"
     assert stats["draft_sampler_policy_temperature"] == 0.7
-    assert seen["draft_sampler"] == openai.SamplerConfig(
-        temperature=0.7,
-        top_p=0.95,
-        top_k=20,
-    )
+    assert seen["draft_sampler"] is None
 
 
 def test_chat_tools_add_no_tool_contract_when_non_chitchat_disables_tools(monkeypatch):
@@ -9297,6 +9451,10 @@ def test_read_only_force_answer_stream_fallback_emits_without_marker(monkeypatch
 def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatch):
     monkeypatch.setenv("MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS", "2")
     state = _fake_streaming_session_state()
+    # The char-level tokenizer plus the injected force-answer contract
+    # renders past the 4096-token default; over-context prompts are a 400
+    # (context_length_exceeded) by contract now.
+    state.context_window = 32768
     state.args.stream_interval = 1
     captured: dict[str, object] = {}
     client = TestClient(create_app(state))
@@ -10099,6 +10257,9 @@ def test_chat_tool_xml_returns_openai_tool_calls_nonstream(monkeypatch):
     payload = response.json()
     choice = payload["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
+    # mtplx_stats.finish_reason mirrors the response-level rewrite: a stat
+    # that disagrees with the response is a lie.
+    assert payload["mtplx_stats"]["finish_reason"] == "tool_calls"
     assert choice["message"]["content"] is None
     assert choice["message"]["tool_calls"][0]["function"] == {
         "name": "session_status",
@@ -11487,6 +11648,84 @@ def test_server_state_applies_clear_cache_every_after_profile(monkeypatch):
     assert state.runtime_env_overrides["MTPLX_CLEAR_CACHE_EVERY"] == "512"
     assert captured["apply"]["MTPLX_CLEAR_CACHE_EVERY"] == "512"
     assert captured["status"]["MTPLX_CLEAR_CACHE_EVERY"] == "512"
+
+
+def _monkeypatch_server_state_load(monkeypatch):
+    monkeypatch.setattr(openai, "apply_profile_env", lambda _profile, **_kwargs: None)
+    monkeypatch.setattr(openai, "profile_env_status", lambda _profile, **_kwargs: {})
+    monkeypatch.setattr(openai, "_fast_path_env_status", lambda: {})
+    monkeypatch.setattr(openai, "_mlx_runtime_status", lambda: {"ok": True})
+    monkeypatch.setattr(
+        openai, "_configure_mlx_cache_limit", lambda _args: {"configured": False}
+    )
+    monkeypatch.setattr(
+        openai,
+        "load",
+        lambda model, mtp, contract, **_kwargs: SimpleNamespace(
+            model_path=Path(model),
+            mtp_enabled=mtp,
+            tokenizer=SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setattr(
+        openai, "_install_draft_lm_head", lambda *_args, **_kwargs: {"installed": True}
+    )
+    monkeypatch.setattr(openai, "_draft_head_identity", lambda _runtime: "draft-head")
+    monkeypatch.setattr(openai, "_template_hash", lambda _tokenizer: "template")
+    monkeypatch.setattr(
+        openai, "_resolve_context_window", lambda _tokenizer, _model: 32768
+    )
+    monkeypatch.setattr(
+        openai, "EngineSessionManager", lambda **_kwargs: SimpleNamespace()
+    )
+
+
+def test_server_state_downgrades_kv_quant_for_unsupported_family(monkeypatch):
+    """Engine-side policy gate: q8 on a family without a validated KV-quant
+    policy must downgrade to off (and scrub the env pair) instead of reaching
+    the cache installer."""
+
+    _monkeypatch_server_state_load(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+
+    args = parse_args(
+        [
+            "--model",
+            "models/Gemma4-MTPLX-Optimized-Speed",
+            "--warmup-tokens",
+            "0",
+            "--paged-kv-quantization",
+            "q8",
+        ]
+    )
+    openai.ServerState(args)
+
+    assert args.paged_kv_quantization == "off"
+    assert os.environ["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "off"
+    assert os.environ["MTPLX_PAGED_KV_QUANT"] == "off"
+
+
+def test_server_state_keeps_kv_quant_for_supported_family(monkeypatch):
+    _monkeypatch_server_state_load(monkeypatch)
+    monkeypatch.delenv("MTPLX_VLLM_METAL_PAGED_KV_QUANT", raising=False)
+    monkeypatch.delenv("MTPLX_PAGED_KV_QUANT", raising=False)
+
+    args = parse_args(
+        [
+            "--model",
+            "models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+            "--warmup-tokens",
+            "0",
+            "--paged-kv-quantization",
+            "q8",
+        ]
+    )
+    openai.ServerState(args)
+
+    assert args.paged_kv_quantization == "q8"
+    assert os.environ["MTPLX_VLLM_METAL_PAGED_KV_QUANT"] == "q8"
+    assert os.environ["MTPLX_PAGED_KV_QUANT"] == "q8"
 
 
 def test_server_state_reports_model_load_failure(monkeypatch, capsys):

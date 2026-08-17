@@ -45,3 +45,36 @@ def bind_label(host: str | None, port: int) -> str:
     if is_wildcard_bind(host):
         label += " (all interfaces)"
     return label
+
+
+def primary_lan_ip() -> str | None:
+    """This Mac's default-route IPv4, or None when it can't be determined.
+
+    Wildcard binds print this so the user knows what address OTHER machines
+    (LAN devices, Parallels/VM guests) should dial — 0.0.0.0 is not dialable.
+    The UDP connect never sends a packet; the target is a TEST-NET-3 literal
+    so no DNS lookup and no real host is involved. Loopback answers mean no
+    usable route, reported as None.
+    """
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("203.0.113.1", 9))
+            address = str(probe.getsockname()[0])
+    except OSError:
+        return None
+    if not address or address.startswith("127.") or address == "0.0.0.0":
+        return None
+    return address
+
+
+def network_url_for_bind(host: str | None, port: int, *, path: str = "") -> str | None:
+    """Dialable URL for other machines, or None (non-wildcard/undetectable)."""
+    if not is_wildcard_bind(host):
+        return None
+    address = primary_lan_ip()
+    if not address:
+        return None
+    suffix = path if path.startswith("/") or not path else f"/{path}"
+    return f"http://{address}:{int(port)}{suffix}"

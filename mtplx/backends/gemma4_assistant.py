@@ -2401,6 +2401,85 @@ def _emit_gemma_token(
         token_callback([int(token_id)])
 
 
+class _Gemma4RepetitionAwareWire:
+    """Armed-stream holdback for the repetition stop (F35), gemma4 loops.
+
+    Same contract as the serial-lane fix in :mod:`mtplx.generation`, whose
+    ``_repetition_stream_holdback_tokens`` / ``_repetition_stream_emit_limit``
+    are imported (not duplicated): while the uncapped repetition stop is
+    armed, the wire must never outrun a future trim — both gemma4 loops used
+    to emit every token BEFORE ``_trim_repeated_suffix`` ran, so a fired trim
+    left already-streamed garbage on the wire (stream != non-stream, wire >
+    usage). A detector-window tail is held back and reconciled by ``flush``
+    once the trim decision is known. Disarmed requests keep the historical
+    per-token ``_emit_gemma_token`` pattern byte for byte.
+    """
+
+    def __init__(
+        self,
+        tokens: list[int],
+        *,
+        config: Any,
+        stop_ids: set[int],
+        token_callback: Any | None,
+    ) -> None:
+        from mtplx.generation import (
+            _repetition_stream_emit_limit,
+            _repetition_stream_holdback_tokens,
+        )
+
+        self._tokens = tokens
+        self._config = config
+        self._stop_ids = stop_ids
+        self._callback = token_callback
+        self._emit_limit = _repetition_stream_emit_limit
+        self._holdback = (
+            _repetition_stream_holdback_tokens(config)
+            if token_callback is not None
+            else 0
+        )
+        self._streamed = 0
+
+    def emit(self) -> None:
+        """Release whatever is wire-safe after a token was appended."""
+
+        if self._callback is None:
+            return
+        if self._holdback <= 0:
+            _emit_gemma_token(
+                self._tokens[-1],
+                stop_ids=self._stop_ids,
+                token_callback=self._callback,
+            )
+            return
+        limit = self._emit_limit(len(self._tokens), self._config, self._holdback)
+        if limit > self._streamed:
+            released = [
+                int(token)
+                for token in self._tokens[self._streamed : limit]
+                if int(token) not in self._stop_ids
+            ]
+            self._streamed = limit
+            if released:
+                self._callback(released)
+
+    def flush(self) -> None:
+        """Post-loop reconcile: the trim decision is known here — release
+        the held tail in full (no trim) or the post-trim remainder."""
+
+        if self._callback is None or self._holdback <= 0:
+            return
+        self._streamed = min(self._streamed, len(self._tokens))
+        held = [
+            int(token)
+            for token in self._tokens[self._streamed :]
+            if int(token) not in self._stop_ids
+        ]
+        self._streamed = len(self._tokens)
+        if held:
+            self._callback(held)
+
+
 def _gemma4_session_extra_state(
     *,
     shared_kv_states: dict[str, Any],
@@ -2647,6 +2726,12 @@ def generate_gemma4_ar(
     pending_token_needs_commit = False
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result = None
+    wire = _Gemma4RepetitionAwareWire(
+        tokens,
+        config=repetition_config,
+        stop_ids=stop_ids,
+        token_callback=token_callback,
+    )
 
     for step in range(int(max_tokens)):
         token, _dist = _sample_from_logits(logits[0], sampler, rng)
@@ -2654,7 +2739,7 @@ def generate_gemma4_ar(
         tokens.append(token)
         pending_token_needs_commit = True
         events.append({"step": int(step), "token": token})
-        _emit_gemma_token(token, stop_ids=stop_ids, token_callback=token_callback)
+        wire.emit()
         repetition_result = _trim_repeated_suffix(tokens, repetition_config)
         if repetition_result is not None:
             events.append(
@@ -2687,6 +2772,7 @@ def generate_gemma4_ar(
         kv_offset = int(output.cache_offset)
         pending_token_needs_commit = False
 
+    wire.flush()
     final_state = None
     finish_reason = "stop" if any(token in stop_ids for token in tokens) else "length"
     if capture_final_state and pending_token_needs_commit and tokens:
@@ -2913,6 +2999,12 @@ def generate_gemma4_assistant(
     safe_to_commit = True
     repetition_config = _repetition_stop_config(bool(repetition_stop))
     repetition_result = None
+    wire = _Gemma4RepetitionAwareWire(
+        tokens,
+        config=repetition_config,
+        stop_ids=stop_ids,
+        token_callback=token_callback,
+    )
 
     decode_started = time.perf_counter()
     while len(tokens) < int(max_tokens):
@@ -2920,7 +3012,7 @@ def generate_gemma4_assistant(
         tokens.append(primary)
         pending_primary_needs_commit = True
         events.append({"step": len(tokens) - 1, "token": primary, "source": "target"})
-        _emit_gemma_token(primary, stop_ids=stop_ids, token_callback=token_callback)
+        wire.emit()
         repetition_result = _trim_repeated_suffix(tokens, repetition_config)
         if repetition_result is not None:
             events.append(
@@ -3008,7 +3100,7 @@ def generate_gemma4_assistant(
             if depth < len(accepted_by_depth):
                 accepted_by_depth[depth] += 1
             events.append({"step": len(tokens) - 1, "token": token, "source": "assistant"})
-            _emit_gemma_token(token, stop_ids=stop_ids, token_callback=token_callback)
+            wire.emit()
             repetition_result = _trim_repeated_suffix(tokens, repetition_config)
             if repetition_result is not None:
                 events.append(
@@ -3086,6 +3178,7 @@ def generate_gemma4_assistant(
         timing_totals["next_hidden_eval"] += time.perf_counter() - hidden_eval_started
         pending_primary_needs_commit = False
 
+    wire.flush()
     final_state = None
     finish_reason = "stop" if any(token in stop_ids for token in tokens) else "length"
     if capture_final_state and pending_primary_needs_commit and tokens:

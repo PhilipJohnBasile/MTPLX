@@ -794,14 +794,21 @@ final class MTPLXAppCoreTests: XCTestCase {
         let auto = try decodeConfiguration(json: #"{"profile": "auto"}"#)
         XCTAssertEqual(auto.profile, "auto")
 
-        // Junk coerces to sustained, which the one-shot legacy migration
-        // then lifts to auto — either way the launch resolution produces
-        // an engine-launchable profile.
+        // Junk normalizes straight to auto — never to a concrete profile
+        // the user did not pick. The launch then omits --profile and the
+        // engine resolves the per-model default.
         let unknown = try decodeConfiguration(
             json: #"{"profile": "banana", "generation_mode": "auto"}"#
         )
         XCTAssertEqual(unknown.profile, "auto")
         XCTAssertEqual(unknown.generationMode, "mtp")
+
+        // Junk after the legacy migration must also land on auto, not on
+        // a silent sustained (the pre-F20 behavior).
+        let unknownMigrated = try decodeConfiguration(
+            json: #"{"profile": "banana", "profile_legacy_default_migrated": true}"#
+        )
+        XCTAssertEqual(unknownMigrated.profile, "auto")
 
         // A post-migration explicit sustained is preserved verbatim.
         let chosen = try decodeConfiguration(
@@ -839,8 +846,12 @@ final class MTPLXAppCoreTests: XCTestCase {
         let command = try builder.buildServeCommand(configuration: configuration)
 
         let arguments = command.arguments
-        let profileIndex = try XCTUnwrap(arguments.firstIndex(of: "--profile"))
-        XCTAssertEqual(arguments[arguments.index(after: profileIndex)], "sustained")
+        // "auto" (and anything not engine-launchable) emits NO --profile:
+        // the engine owns default-profile resolution. The old behavior —
+        // coercing to an explicit "--profile sustained" — blocked the
+        // engine's per-artifact turbo promotion (F20).
+        XCTAssertFalse(arguments.contains("--profile"), arguments.joined(separator: " "))
+        XCTAssertFalse(arguments.contains("sustained"), arguments.joined(separator: " "))
         XCTAssertFalse(
             arguments.contains("--generation-mode"),
             arguments.joined(separator: " ")
@@ -1112,7 +1123,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--chat-template-profile", "local_qwen36"]))
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BOptimizedSpeed() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen27BOptimizedSpeed() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         let command = try builder.buildServeCommand(
@@ -1123,9 +1134,12 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
 
-        // Auto = the recommended per-model profile: turbo for the 4-bit
-        // Optimized-Speed (chat lane 44.7 -> 58-60 tok/s, 2026-07-02).
-        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
+        // Auto emits no --profile: the engine owns the per-model default
+        // and promotes this flagship to turbo itself (it sits in
+        // _TURBO_DEFAULT_PUBLIC_MODEL_IDS; chat lane 44.7 -> 58-60 tok/s,
+        // 2026-07-02). An app-side "--profile" here would read as an
+        // explicit user pick and block that promotion.
+        XCTAssertFalse(command.arguments.contains("--profile"))
         // Qwen3.6 thinking-mode spec sampler (0.6/0.95/20), same as the
         // 35B and Step presets — the 27B fell through to 1.0 until the
         // launch family existed (founder-confirmed 2026-07-02).
@@ -1134,7 +1148,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]))
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BSpeedFP16Sibling() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen27BSpeedFP16Sibling() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         let command = try builder.buildServeCommand(
@@ -1145,18 +1159,17 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
 
-        // The FP16 sibling (M1/M2 routing target) earned turbo on
-        // 2026-07-07 after its first e2e measurement: same INT4/g64
-        // weight packs the vk kernels cover, 1.98-2.08x over true AR
-        // under turbo vs 1.34x on sustained. Promotion is per-artifact,
-        // the same way Quality q8 earned turbo.
-        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
+        // No --profile on auto: the engine's turbo-default set carries the
+        // FP16 sibling (promoted 2026-07-07 after its first e2e
+        // measurement: 1.98-2.08x over true AR under turbo vs 1.34x on
+        // sustained) and resolves it per-artifact even for renamed dirs.
+        XCTAssertFalse(command.arguments.contains("--profile"))
         // It still gets the Qwen3.6 thinking-mode sampler preset.
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BOptimizedQuality() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen27BOptimizedQuality() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         let command = try builder.buildServeCommand(
@@ -1167,16 +1180,16 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
 
-        // 8-bit Quality is promoted to turbo too: the q8 verify_kernels
-        // branch is ULP-exact and measured +22-40% on the chat lane
-        // (2026-07-03). The old sustained ruling was about compiled
-        // verify, which turbo does not use.
-        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
+        // No --profile on auto: 8-bit Quality is in the engine's
+        // turbo-default set (q8 verify_kernels ULP-exact, +22-40% on the
+        // chat lane, 2026-07-03) — the engine applies it without an
+        // app-side pin.
+        XCTAssertFalse(command.arguments.contains("--profile"))
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen38Family() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen38Family() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         for model in [
@@ -1195,13 +1208,15 @@ final class MTPLXAppCoreTests: XCTestCase {
                     profile: "auto"
                 )
             )
-            // Qwen3.8 27B launches turbo (trunk geometry identical to the
-            // 3.6 27B flagships; the vk/NAX packs carry over) with the model
-            // card's official thinking sampler — 1.0/0.95/20, NOT the
-            // 3.6-era 0.6 coding triple. The draft sampler is left to the
-            // artifact's `recommended_draft_sampler` stamp (the CLI's zero-flag
+            // Qwen3.8 27B launches with no --profile: the whole family
+            // (all six artifacts, FP16 siblings included) sits in the
+            // engine's turbo-default set, and the engine resolves it
+            // per-artifact. The app still pins the model card's official
+            // thinking sampler — 1.0/0.95/20, NOT the 3.6-era 0.6 coding
+            // triple. The draft sampler is left to the artifact's
+            // `recommended_draft_sampler` stamp (the CLI's zero-flag
             // path), so app and CLI serve the same draft sampler per artifact.
-            XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]), model)
+            XCTAssertFalse(command.arguments.contains("--profile"), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "1.0"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]), model)
@@ -1267,7 +1282,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen27BQualityFP16Sibling() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen27BQualityFP16Sibling() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         let command = try builder.buildServeCommand(
@@ -1278,16 +1293,15 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
 
-        // The Quality-FP16 sibling (M1/M2 quality pick, built 2026-07-07)
-        // shares the q8/g64 packs the ULP-exact vk kernels cover and
-        // measured 2.5x over true AR under turbo on its own artifact
-        // (43.8/42.1 vs 17.4 tok/s D3).
-        XCTAssertTrue(command.arguments.containsInOrder(["--profile", "turbo"]))
+        // No --profile on auto: the Quality-FP16 sibling (M1/M2 quality
+        // pick, built 2026-07-07; 2.5x over true AR under turbo on its
+        // own artifact) is in the engine's turbo-default set.
+        XCTAssertFalse(command.arguments.contains("--profile"))
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
     }
 
-    func testCommandBuilderResolvesAutoProfileToTurboForQwen359BOptimizedSpeed() throws {
+    func testCommandBuilderAutoProfileEmitsNoFlagForQwen359BOptimizedSpeed() throws {
         let fake = try makeExecutable(named: "mtplx")
         let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
         for model in [
@@ -1301,14 +1315,41 @@ final class MTPLXAppCoreTests: XCTestCase {
                     profile: "auto"
                 )
             )
-            // The 6-bit 9B earned turbo on 2026-07-07 with the 6-bit
-            // hexpack split-K kernels: live ABBA MTP D3 110/102 tok/s
-            // under turbo vs 90/69 sustained (AR flat both profiles).
-            XCTAssertTrue(
-                command.arguments.containsInOrder(["--profile", "turbo"]),
-                model
-            )
+            // No --profile on auto: both 9B artifacts are in the engine's
+            // turbo-default set (earned 2026-07-07 with the 6-bit hexpack
+            // split-K kernels: live ABBA MTP D3 110/102 tok/s under turbo
+            // vs 90/69 sustained).
+            XCTAssertFalse(command.arguments.contains("--profile"), model)
             XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]), model)
+        }
+    }
+
+    func testCommandBuilderAutoProfileEmitsNoFlagForUnrecognizedModelDirs() throws {
+        // F20 regression: models the path-substring family table cannot
+        // classify — the legacy gdn8 hybrid and renamed/symlinked dirs of
+        // flagships — used to launch with an explicit "--profile
+        // sustained", which the engine had to obey. With no flag the
+        // engine resolves identity from the artifact (#268) and applies
+        // its own per-model default.
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        for model in [
+            // Legacy 27B Optimized (gdn8 hybrid) — no -Speed/-Quality
+            // suffix, so ModelLaunchFamily.detect has no case for it even
+            // though the engine's turbo set carries it.
+            "Youssofal/Qwen3.6-27B-MTPLX-Optimized",
+            // A renamed local dir of a flagship artifact.
+            "/Users/youssof/models/my-favorite-model",
+        ] {
+            let command = try builder.buildServeCommand(
+                configuration: MTPLXAppConfiguration(
+                    executablePath: fake.path,
+                    model: model,
+                    profile: "auto"
+                )
+            )
+            XCTAssertFalse(command.arguments.contains("--profile"), model)
+            XCTAssertFalse(command.arguments.contains("sustained"), model)
         }
     }
 
@@ -8812,10 +8853,19 @@ final class MTPLXAppCoreTests: XCTestCase {
             opencode["chat_template_profile"] as? String,
             "app and CLI disagree on the OpenCode chat template profile"
         )
-        XCTAssertEqual(
+        // The app emits no --profile on the default (auto) configuration,
+        // so the CLI's own per-model resolution IS the launch profile and
+        // parity holds by construction. Pin both halves of that contract:
+        // the app side stays flagless (an accidental pin here re-creates
+        // the F20 sustained lock) and the CLI side still resolves a
+        // concrete engine profile for the same model.
+        XCTAssertNil(
             argumentValue("--profile"),
+            "auto must not pin a profile — the engine owns the default"
+        )
+        XCTAssertNotNil(
             payload["profile"] as? String,
-            "app and CLI disagree on the default launch profile"
+            "CLI dry-run must resolve a concrete default launch profile"
         )
     }
 

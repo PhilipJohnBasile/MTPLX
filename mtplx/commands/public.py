@@ -131,8 +131,11 @@ from mtplx.server_urls import (
     connect_host_for_bind,
     is_wildcard_bind,
     local_url_for_bind,
+    network_url_for_bind,
 )
+from mtplx.kv_quant import paged_kv_quant_mode_from_env
 from mtplx.runtime_options import (
+    generate_api_key_file,
     normalize_paged_kv_quantization,
     paged_kv_quantization_env,
     resolve_api_key,
@@ -887,7 +890,24 @@ def _model_draft_sampler_spec(
         from mtplx.draft_sampling import draft_sampler_spec_from_runtime_contract
 
         contract = _profile_scoped_model_runtime_contract(inspection, profile)
-        return draft_sampler_spec_from_runtime_contract(contract, fallback=fallback)
+        if not isinstance(contract, dict):
+            # A profile mismatch (artifact recommends another profile) hides
+            # the typed contract, but the recommended draft sampler is a
+            # property of the ARTIFACT, not of the profile match — exactly
+            # like _model_contract_depth above: keep resolving from the
+            # top-level mtplx_runtime.json metadata so serving --profile
+            # turbo against a sustained-stamped artifact does not silently
+            # drop the artifact's draft-sampler stamp.
+            contract = _artifact_runtime_metadata(inspection)
+        try:
+            return draft_sampler_spec_from_runtime_contract(
+                contract, fallback=fallback
+            )
+        except (TypeError, ValueError):
+            # Artifact metadata is fail-safe by contract; a malformed
+            # recommended_draft_sampler degrades to the profile default
+            # instead of failing the launch.
+            return fallback
     except ImportError:
         return fallback
 
@@ -1105,6 +1125,11 @@ def _apply_model_default_profile(args: Any, model_id: str) -> bool:
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     if "profile" in cli_flags:
         return False
+    if getattr(args, "_profile_from_config", None):
+        # A profile from config.toml is the user's standing pin (stamped by
+        # config._apply_profile_default). Honor it even when it equals the
+        # parser default — config "sustained" used to be silently promoted.
+        return False
     if model_id not in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
         return False
     current = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
@@ -1129,7 +1154,11 @@ def _resolved_default_profile_name(args: Any, model: str | None = None) -> str:
 
     current = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
     cli_flags = getattr(args, "_cli_flags", set()) or set()
-    if "profile" in cli_flags or current != DEFAULT_PROFILE_NAME:
+    if (
+        "profile" in cli_flags
+        or current != DEFAULT_PROFILE_NAME
+        or getattr(args, "_profile_from_config", None)
+    ):
         return current
     model_ref = str(model if model is not None else getattr(args, "model", "") or "")
     if not model_ref:
@@ -1141,6 +1170,22 @@ def _resolved_default_profile_name(args: Any, model: str | None = None) -> str:
     if model_id in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
         return "turbo"
     return current
+
+
+def resolved_default_profile_name_for_ref(model_ref: str | Path | None) -> str:
+    """Default profile per-model launch resolution picks for an artifact ref.
+
+    The args-free core of ``_resolved_default_profile_name`` for surfaces
+    that report or stamp a profile for an artifact without a CLI namespace
+    (cache listings, doctor's support matrix, forge runtime stamps). No
+    user override can exist on those surfaces, so the answer is exactly
+    the per-model turbo promotion over the served public id — the same
+    ``public_model_id_for_ref`` mapping serve-time resolution uses.
+    """
+
+    if public_model_id_for_ref(model_ref) in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
+        return "turbo"
+    return DEFAULT_PROFILE_NAME
 
 
 def _apply_qwen36_35b_optimized_speed_defaults(args: Any, model_id: str) -> None:
@@ -1309,26 +1354,59 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
             and getattr(args, "max_response_tokens", None) is None
         ):
             args.max_response_tokens = int(descriptor.default_max_response_tokens)
+    # config.toml presence beats value-sentinels for the launch sampler trio:
+    # apply_user_config stamps the parsed file onto ``args.mtplx_config``, so
+    # a config value that happens to EQUAL the parser default (0.6/0.95/20)
+    # is still the user's standing pin — the bare ``in (None, 0.6)`` checks
+    # read it as "unset" and silently replaced it with the family sampler.
+    # Injected family values are recorded in ``_injected_default_flags``
+    # (the same provenance contract as the draft trio below).
+    mtplx_config = getattr(args, "mtplx_config", None)
+    config_pinned = {
+        key
+        for key in ("temperature", "top_p", "top_k")
+        if isinstance(mtplx_config, dict)
+        and mtplx_config.get(key) is not None
+        and getattr(args, key, None) is not None
+    }
+    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if (
         "temperature" not in cli_flags
         and "default-temperature" not in cli_flags
+        and "temperature" not in config_pinned
         and getattr(args, "temperature", None) in (None, 0.6)
     ):
         args.temperature = sampler["temperature"]
+        injected.add("temperature")
     if (
         "top-p" not in cli_flags
         and "default-top-p" not in cli_flags
+        and "top_p" not in config_pinned
         and getattr(args, "top_p", None) in (None, 0.95)
     ):
         args.top_p = sampler["top_p"]
-    if "top-k" not in cli_flags and getattr(args, "top_k", None) in (None, 20):
+        injected.add("top-p")
+    if (
+        "top-k" not in cli_flags
+        and "top_k" not in config_pinned
+        and getattr(args, "top_k", None) in (None, 20)
+    ):
         args.top_k = sampler["top_k"]
+        injected.add("top-k")
     if (
         "depth" not in cli_flags
         and draft_semantics.request_field == "depth"
         and getattr(args, "depth", None) in (None, 3)
     ):
         args.depth = draft_semantics.default
+    # Injected-default provenance (same contract as
+    # _apply_qwen36_35b_optimized_speed_defaults): the family draft values
+    # below must reach the daemon as the launch draft sampler even when the
+    # model contract carries no recommended_draft_sampler — and telemetry
+    # must be able to tell an injected default from an artifact stamp.
+    # _injected_default_flags feeds _explicit_draft_sampler_override, while
+    # --draft-sampler-source stays "default" (user-typed _cli_flags only),
+    # so injected values never pin and the family curve stays live.
     if "draft-temperature" not in cli_flags and getattr(
         args, "draft_temperature", None
     ) in (None, 0.6):
@@ -1343,13 +1421,17 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
             args.draft_temperature = QWEN3_8_DRAFT_TEMPERATURE
         else:
             args.draft_temperature = sampler["temperature"]
+        injected.add("draft-temperature")
     if "draft-top-p" not in cli_flags and getattr(args, "draft_top_p", None) is None:
         args.draft_top_p = sampler["top_p"]
+        injected.add("draft-top-p")
     if "draft-top-k" not in cli_flags and getattr(args, "draft_top_k", None) in (
         None,
         20,
     ):
         args.draft_top_k = sampler["top_k"]
+        injected.add("draft-top-k")
+    args._injected_default_flags = injected
     if (
         "chat-template-profile" not in cli_flags
         and model_family_from_inspection(
@@ -1383,12 +1465,19 @@ def _apply_backend_serve_defaults(args: Any, inspection: dict[str, Any]) -> None
         args.top_k = sampler["top_k"]
     if getattr(args, "depth", None) in (None, 3):
         args.depth = draft_block_size
+    # Same injected-default provenance as the family block above: the
+    # gemma4 pair draft values are launch defaults, not user pins.
+    injected = set(getattr(args, "_injected_default_flags", set()) or set())
     if getattr(args, "draft_temperature", None) in (None, 0.6):
         args.draft_temperature = sampler["temperature"]
+        injected.add("draft-temperature")
     if getattr(args, "draft_top_p", None) is None:
         args.draft_top_p = sampler["top_p"]
+        injected.add("draft-top-p")
     if getattr(args, "draft_top_k", None) in (None, 20):
         args.draft_top_k = sampler["top_k"]
+        injected.add("draft-top-k")
+    args._injected_default_flags = injected
     if getattr(args, "chat_template_profile", None) == "local_qwen36":
         args.chat_template_profile = "tokenizer"
     if getattr(args, "adaptive_policy", None) == "expected_value":
@@ -1420,14 +1509,17 @@ def _explicit_draft_sampler_override(
 ) -> dict[str, Any] | None:
     """Return a user-requested draft sampler override, not an internal default.
 
-    Measured per-model defaults injected by `_apply_*_defaults` helpers count
-    as requested values (tracked via ``args._injected_default_flags``) so the
+    Provenance order: user-typed CLI flags always win; defaults injected by
+    `_apply_*_defaults` helpers (tracked via ``args._injected_default_flags``)
+    only FILL THE GAP when no contract/profile spec exists, so the
     benchmarked launch configuration still reaches the daemon when the model
-    contract carries no ``recommended_draft_sampler``.
+    contract carries no ``recommended_draft_sampler`` — and an injected
+    generic default can never clobber an artifact's stamped value.
     """
 
     cli_flags = set(getattr(args, "_cli_flags", set()) or set())
-    cli_flags |= set(getattr(args, "_injected_default_flags", set()) or set())
+    if base_sampler is None:
+        cli_flags |= set(getattr(args, "_injected_default_flags", set()) or set())
     if not any(flag in cli_flags for flag in _DRAFT_SAMPLER_FLAG_ATTRS):
         return None
     base = base_sampler or {
@@ -2056,8 +2148,16 @@ def _depth_sweep_native60(
         "group_size": 64,
         "mode": "affine",
     }
+    # Serve-path memory discipline (#261, F7): the depth-sweep harness loads
+    # the model in-process; pin the serve-path Metal allocator caps first.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    memory_preflight = apply_memory_caps_preflight(
+        entry="bench.depth_sweep",
+        model=str(model),
+    )
     try:
-        return run_mtp_depth_sweep(
+        result = run_mtp_depth_sweep(
             model,
             prompt_suite,
             depths=depths,
@@ -2091,6 +2191,9 @@ def _depth_sweep_native60(
             else float(draft_sampler["top_p"]),
             draft_top_k=None if draft_sampler is None else int(draft_sampler["top_k"]),
         )
+        if isinstance(result, dict):
+            result.setdefault("memory_preflight", memory_preflight)
+        return result
     finally:
         restore_profile_env(previous)
 
@@ -2110,6 +2213,73 @@ class _temporary_env:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _compiled_verify_fence_report(args: Any) -> dict[str, Any]:
+    """Static compiled-verify fence status for doctor (issue #255).
+
+    The fence is the context ceiling of the compiled verify step: above it
+    every verify call falls back to the eager path (graphbank
+    ``_compiled_verify_max_context``; engine default 6144 tokens). The
+    founder's public commitment on #255 is that doctor prints the live
+    value. Resolution mirrors the launch: an operator env always beats the
+    profile value (both envs are in profiles.py's passthrough set), else the
+    profile the default launch resolves for this Mac's verified default
+    model, else the engine default. Mode mapping mirrors
+    ``graphbank.compiled_verify_mode``. Static env + profile state only —
+    no GPU probing.
+    """
+
+    engine_default_max_context = 6144
+    try:
+        default_model = str(select_default_model().model)
+    except Exception:
+        default_model = None
+    profile_name = DEFAULT_PROFILE_NAME
+    if default_model:
+        try:
+            profile_name = _resolved_default_profile_name(args, default_model)
+        except Exception:
+            profile_name = DEFAULT_PROFILE_NAME
+    try:
+        profile_env = get_profile(profile_name).env_dict()
+    except Exception:
+        profile_env = {}
+
+    def _resolve(name: str, fallback: str) -> tuple[str, str]:
+        if name in os.environ:
+            return str(os.environ[name]).strip(), f"{name} env"
+        if name in profile_env:
+            return str(profile_env[name]).strip(), f"{profile_name} profile"
+        return fallback, "engine default"
+
+    mode_raw, mode_source = _resolve("MTPLX_COMPILED_VERIFY", "")
+    lowered = mode_raw.lower()
+    if lowered in {"", "0", "false", "no", "off"}:
+        mode = "off"
+    elif lowered in {"parity", "parity2"}:
+        mode = lowered
+    else:
+        mode = "on"
+    raw_max, max_source = _resolve(
+        "MTPLX_COMPILED_VERIFY_MAX_CONTEXT", str(engine_default_max_context)
+    )
+    try:
+        max_context = max(0, int(raw_max))
+    except (TypeError, ValueError):
+        max_context = engine_default_max_context
+        max_source = "engine default"
+    return {
+        "mode": mode,
+        "mode_source": mode_source,
+        "max_context_tokens": max_context,
+        "max_context_source": max_source,
+        # max_context == 0 disables the ceiling (experiments only).
+        "fenced": bool(max_context),
+        "resolved_default_profile": profile_name,
+        "default_model": default_model,
+        "above_fence_behavior": "eager verify per call",
+    }
 
 
 def cmd_doctor(args: Any) -> int:
@@ -2163,6 +2333,7 @@ def _build_doctor_report(args: Any) -> dict[str, Any]:
             "fanmax_counts_for_product_gate": False,
             "benchmark_exactness_smoke_context": 2048,
         },
+        "compiled_verify": _compiled_verify_fence_report(args),
     }
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     report["diagnostics"] = build_diagnostics_payload(
@@ -2225,6 +2396,24 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
             f"{'available' if thermal.get('available') else 'not configured'}"
             f" ({selected.get('kind') or 'none'})"
         )
+        fence = report.get("compiled_verify") or {}
+        if fence:
+            print(
+                "compiled verify: "
+                f"{fence.get('mode')} ({fence.get('mode_source')})"
+            )
+            if fence.get("fenced"):
+                print(
+                    "compiled verify fence: "
+                    f"<= {fence.get('max_context_tokens')} tokens "
+                    f"({fence.get('max_context_source')}); above it each "
+                    "verify call falls back to eager"
+                )
+            else:
+                print(
+                    "compiled verify fence: disabled "
+                    f"({fence.get('max_context_source')}); no context ceiling"
+                )
         if getattr(args, "deep", False):
             launchers = report.get("launchers") or {}
             config = report.get("config") or {}
@@ -3122,6 +3311,7 @@ def _cmd_tune(
             return _tune_error(str(exc), json_output=json_output)
         settings = _tune_settings(
             args,
+            model=model,
             depths=depths,
             control_field=_tune_control_field(support_payload),
         )
@@ -3172,6 +3362,7 @@ def _cmd_tune(
         return _tune_error(str(exc), json_output=json_output)
     settings = _tune_settings(
         args,
+        model=runtime_model,
         depths=depths,
         control_field=_tune_control_field(support_payload),
     )
@@ -3427,7 +3618,11 @@ def _cmd_tune_candidate(args: Any) -> int:
             return _tune_error(
                 f"tune depths must be one of {allowed}", json_output=True
             )
-    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
+    # The parent tune run always passes --profile explicitly; this default
+    # covers direct candidate invocations and must match what serve resolves
+    # (the hidden performance-cold default tuned depth under different
+    # kernels than the launch profile actually uses).
+    profile = get_profile(_resolved_default_profile_name(args, runtime_model))
     runtime_env = _runtime_env_with_external_overrides(
         _runtime_env_with_model_contract_overrides(
             profile.env_dict(),
@@ -3598,6 +3793,7 @@ def _tune_model_source_notes(args: Any, *, runtime_model: str) -> list[str]:
 def _tune_settings(
     args: Any,
     *,
+    model: str,
     depths: list[int],
     control_field: str = "depth",
 ) -> dict[str, Any]:
@@ -3606,7 +3802,11 @@ def _tune_settings(
         or getattr(args, "suite", None)
         or TUNE_DEFAULT_SUITE
     )
-    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
+    # Tune must measure under the profile serve will actually resolve for
+    # this model (the macOS app already guards this); the old hidden
+    # performance-cold default tuned depth under different kernels than the
+    # launch profile uses. An explicit --profile always wins.
+    profile = get_profile(_resolved_default_profile_name(args, model))
     return {
         "profile": profile.name,
         "suite": str(suite),
@@ -5583,6 +5783,14 @@ def _bench_run_profile_name(args: Any, *, suite: str) -> str:
     requested = getattr(args, "profile", None)
     if requested:
         return str(requested)
+    # Founder order (2026-08-16, redp314 board): our flagship models default
+    # to turbo across EVERY feature — context suites included. The old bare
+    # sustained defaults here meant exactly the people producing public
+    # numbers benchmarked the slow profile. Explicit --profile always wins;
+    # non-flagship models keep the memory-safe sustained defaults below.
+    resolved = _resolved_default_profile_name(args)
+    if resolved == "turbo":
+        return "turbo"
     if suite in BENCH_SUSTAINED_DEFAULT_SUITES:
         return "sustained"
     try:
@@ -5594,7 +5802,7 @@ def _bench_run_profile_name(args: Any, *, suite: str) -> str:
         and max_tokens > BENCH_SUSTAINED_MAX_TOKENS_THRESHOLD
     ):
         return "sustained"
-    return DEFAULT_PROFILE_NAME
+    return resolved
 
 
 def _direct_http_bench_command(
@@ -5884,10 +6092,21 @@ def _cmd_bench_run_direct_http(
     return 0
 
 
-def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
-    sustained_profile = get_profile(
-        getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-    ).name
+def _suite_default_profile_name(args: Any, *, model: str) -> str:
+    """Launch-rule profile for suite tasks built without an explicit flag.
+
+    Suite builders set ``child.profile`` explicitly, which bypasses the
+    serve-time per-model resolution — so the default must be resolved HERE,
+    against the model the suite will actually run, or the flagships silently
+    benchmark sustained (the 25.3 tok/s shape). An explicit --profile always
+    wins via ``_resolved_default_profile_name``.
+    """
+
+    return get_profile(_resolved_default_profile_name(args, model)).name
+
+
+def _nightly_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
+    default_profile = _suite_default_profile_name(args, model=model)
     return [
         {
             "label": "cold-long-code-192",
@@ -5902,7 +6121,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "flappy-6k",
             "suite": "flappy",
             "max_tokens": 6000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": bool(getattr(args, "strict", False)),
             "strict_cold": False,
             "harness": "direct-http",
@@ -5911,7 +6130,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "flappy-10k",
             "suite": "flappy",
             "max_tokens": 10000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": bool(getattr(args, "strict", False)),
             "strict_cold": False,
             "harness": "direct-http",
@@ -5920,7 +6139,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "python-modules-6k",
             "suite": "python_modules_long",
             "max_tokens": 6000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -5933,13 +6152,13 @@ def _bench_suite_is_quick(args: Any) -> bool:
 
 
 def _client_contract_task(
-    label: str, client: str, *, max_tokens: int
+    label: str, client: str, *, max_tokens: int, profile: str
 ) -> dict[str, Any]:
     return {
         "label": label,
         "suite": "flappy",
         "max_tokens": max_tokens,
-        "profile": "sustained",
+        "profile": profile,
         "strict": False,
         "strict_cold": False,
         "harness": "direct-http",
@@ -5962,16 +6181,14 @@ def _client_contract_task(
     }
 
 
-def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
-    sustained_profile = get_profile(
-        getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-    ).name
+def _quick_suite_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
+    default_profile = _suite_default_profile_name(args, model=model)
     return [
         {
             "label": "short-context-384",
             "suite": "flappy",
             "max_tokens": 384,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -5989,7 +6206,7 @@ def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "long-tool-history-1536",
             "suite": "python_modules_long",
             "max_tokens": 1536,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -6004,17 +6221,26 @@ def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
                 "late verify cost does not collapse the tail",
             ],
         },
-        _client_contract_task("opencode-contract-1024", "opencode", max_tokens=1024),
-        _client_contract_task("pi-contract-1024", "pi", max_tokens=1024),
-        _client_contract_task("hermes-contract-1024", "hermes", max_tokens=1024),
+        _client_contract_task(
+            "opencode-contract-1024",
+            "opencode",
+            max_tokens=1024,
+            profile=default_profile,
+        ),
+        _client_contract_task(
+            "pi-contract-1024", "pi", max_tokens=1024, profile=default_profile
+        ),
+        _client_contract_task(
+            "hermes-contract-1024", "hermes", max_tokens=1024, profile=default_profile
+        ),
     ]
 
 
-def _bench_suite_tasks(args: Any) -> list[dict[str, Any]]:
+def _bench_suite_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
     return (
-        _quick_suite_tasks(args)
+        _quick_suite_tasks(args, model=model)
         if _bench_suite_is_quick(args)
-        else _nightly_tasks(args)
+        else _nightly_tasks(args, model=model)
     )
 
 
@@ -6125,7 +6351,7 @@ def _cmd_bench_nightly(args: Any) -> int:
     action_name = _bench_suite_action_name(args)
     default_prefix = "cli-suite" if action_name == "bench suite" else "cli-nightly"
     run_id = args.run_id or f"{default_prefix}-{time.strftime('%Y%m%d-%H%M%S')}"
-    tasks = _bench_suite_tasks(args)
+    tasks = _bench_suite_tasks(args, model=model)
     default_root = Path(
         "outputs/cli/suite" if action_name == "bench suite" else "outputs/cli/nightly"
     )
@@ -8184,6 +8410,11 @@ def _print_serve_handoff(args: Any, runtime_model: str, profile_name: str) -> No
         _print_serve_start_line(
             f"      Local API Base URL: {_server_url(args.host, int(args.port))}/v1"
         )
+        network_url = network_url_for_bind(args.host, int(args.port), path="/v1")
+        if network_url:
+            _print_serve_start_line(
+                f"      Network API Base URL: {network_url} (other devices + VM guests)"
+            )
     else:
         _print_serve_start_line(
             f"[1/6] Server config ready: {_server_url(args.host, int(args.port))}/v1"
@@ -8432,6 +8663,25 @@ def _resolve_runtime_options_on_args(
     *,
     printer: Callable[[str], None],
 ) -> int | None:
+    # --api-key-file pointing at a missing path creates the file with a fresh
+    # key instead of erroring: the non-localhost refusal below suggests
+    # `--api-key-file ~/.mtplx/api-key` as the recovery command, and that
+    # suggestion must work on a machine that has never had a key. The key is
+    # printed once, at generation — it never appears again on later launches,
+    # and the file path stays the durable copy. Only server entrypoints get
+    # this behavior; read-only key-file consumers keep strict missing-file
+    # errors.
+    api_key_file = getattr(args, "api_key_file", None)
+    if api_key_file and not getattr(args, "api_key", None):
+        key_path = Path(str(api_key_file)).expanduser()
+        if not key_path.exists():
+            try:
+                generated = generate_api_key_file(key_path)
+            except OSError as exc:
+                printer(f"error: could not create API key file: {exc}")
+                return 2
+            printer(f"Generated a new API key and saved it to {key_path}")
+            printer(f"API key (use as Bearer token from other machines): {generated}")
     try:
         resolved_key = resolve_api_key(
             explicit_api_key=getattr(args, "api_key", None),
@@ -8444,8 +8694,17 @@ def _resolve_runtime_options_on_args(
     setattr(args, "api_key_source", resolved_key.source)
     try:
         kv_mode = normalize_paged_kv_quantization(
-            getattr(args, "paged_kv_quantization", None)
+            getattr(args, "paged_kv_quantization", None),
+            allow_none=True,
         )
+        if kv_mode is None:
+            # No explicit --paged-kv-quantization: inherit the launcher's
+            # environment. The app (and any wrapper tooling) communicates the
+            # KV-quant choice through the env pair, and rewriting the absent
+            # flag to an explicit "off" here used to clobber that env in the
+            # rebuilt child argv/env, killing the toggle engine-wide. An
+            # explicit flag still wins over the environment.
+            kv_mode = paged_kv_quant_mode_from_env()
     except ValueError as exc:
         printer(f"error: {exc}")
         return 2
@@ -8492,7 +8751,7 @@ def cmd_serve_public(args: Any) -> int:
         has_explicit_model="model" in cli_flags,
     )
     if _serve_should_onboard(args):
-        from mtplx.ui.onboarding import run_serve_flow
+        from mtplx.ui.onboarding import PROFILE_AUTO, run_serve_flow
 
         choice = run_serve_flow(
             configured_model=getattr(args, "model", None),
@@ -8514,10 +8773,12 @@ def cmd_serve_public(args: Any) -> int:
             except Exception:
                 pass
         chosen_profile = choice.get("profile")
-        if chosen_profile:
+        if chosen_profile and chosen_profile != PROFILE_AUTO:
             args.profile = chosen_profile
-            # A wizard pick is a user decision: record it so per-model
-            # default-profile resolution never overrides it.
+            # An explicit wizard pick is a user decision: record it so
+            # per-model default-profile resolution never overrides it. Auto
+            # is the opposite decision — stamp nothing, so the engine keeps
+            # resolving the launch profile per model.
             args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
             args._cli_flags.add("profile")
         args.max = bool(choice.get("max"))
@@ -8721,7 +8982,7 @@ def cmd_serve_public(args: Any) -> int:
             f"try: mtplx {server_command}{profile_arg}{max_arg} --port {int(args.port) + 1}"
         )
         return 2
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     cache_dir = getattr(args, "cache_dir", None)
     if bool(getattr(args, "download", False)) and not dry_run:
         try:
@@ -8988,6 +9249,18 @@ def cmd_serve_public(args: Any) -> int:
             ):
                 cmd.extend([flag, str(getattr(args, attr))])
     if draft_sampler is not None:
+        # Provenance for the dynamic draft-temperature curve: only a
+        # user-typed CLI draft flag pins the sampler. Injected measured
+        # defaults and the app's boilerplate launch flag (the app always
+        # emits --draft-temperature from its preset/target mirror,
+        # identified by --app-launch-id) are curve anchors, not pins.
+        user_typed_draft = any(
+            flag in (getattr(args, "_cli_flags", set()) or set())
+            for flag in _DRAFT_SAMPLER_FLAG_ATTRS
+        )
+        launched_by_app = bool(
+            str(getattr(args, "app_launch_id", "") or "").strip()
+        )
         cmd.extend(
             [
                 "--draft-temperature",
@@ -8996,6 +9269,12 @@ def cmd_serve_public(args: Any) -> int:
                 str(float(draft_sampler["top_p"])),
                 "--draft-top-k",
                 str(int(draft_sampler["top_k"])),
+                "--draft-sampler-source",
+                (
+                    "explicit"
+                    if user_typed_draft and not launched_by_app
+                    else "default"
+                ),
             ]
         )
     if getattr(args, "tool_prompt_mode", None):
@@ -9479,7 +9758,11 @@ def _generate_one_shot_public(
             [],
         )
     _apply_backend_serve_defaults(args, inspection)
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    # Per-model default, same rule as serve: turbo for the quantized
+    # flagships unless --profile was given. The raw sustained fallback here
+    # made `mtplx run` silently benchmark the slow profile (2026-08-16
+    # redp314 board investigation).
+    profile = get_profile(_resolved_default_profile_name(args))
     apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
     draft_lm_head = (
@@ -9518,6 +9801,15 @@ def _generate_one_shot_public(
     from mtplx.generation import generate_ar, generate_mtpk
     from mtplx.runtime import load
     from mtplx.sampling import SamplerConfig
+
+    # Serve-path memory discipline (#261, F7): pin the exact Metal allocator
+    # caps the serve path applies at startup before this in-process load.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    memory_preflight = apply_memory_caps_preflight(
+        entry=f"cli.{command}",
+        model=str(runtime_model),
+    )
 
     try:
         rt = load(runtime_model, mtp=getattr(args, "load_mtp", True) is not False)
@@ -9620,6 +9912,7 @@ def _generate_one_shot_public(
         "text": out.text,
         "model": _compact_model_summary(inspection),
         "profile": profile.to_dict(),
+        "memory_preflight": memory_preflight,
         "draft_lm_head": draft_report,
         "draft_sampler": draft_sampler,
         "stats": {
@@ -11276,7 +11569,7 @@ def _quickstart_opencode_payload(
         else ""
     )
     api_key_suffix = _api_key_command_suffix(args)
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     generation_mode = _generation_mode_from_args(args)
     target_sampler = {
         "temperature": float(getattr(args, "temperature", 0.6)),
@@ -11771,7 +12064,7 @@ def _quickstart_apply_local_model_defaults(
         unsafe_force_unverified=bool(getattr(args, "unsafe_force_unverified", False)),
         yes=bool(getattr(args, "yes", False)),
     )
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     _apply_model_contract_depth_default(args, inspection, profile)
     _apply_backend_serve_defaults(args, inspection)
     if gate_exit is not None:
@@ -11805,6 +12098,16 @@ def _with_batching_args(target: Any, source: Any) -> Any:
 
 def _with_server_policy_args(target: Any, source: Any) -> Any:
     setattr(target, "_cli_flags", getattr(source, "_cli_flags", set()) or set())
+    # The config-pin marker must survive the quickstart -> serve handoff or
+    # the child would re-promote over a config.toml profile pin.
+    setattr(
+        target, "_profile_from_config", getattr(source, "_profile_from_config", None)
+    )
+    # Same contract for the sampler pins: _apply_backend_serve_defaults reads
+    # config presence from args.mtplx_config, and these handoffs forward the
+    # raw sampler VALUES (a config temperature equal to the 0.6 parser
+    # default is indistinguishable from unset without the parsed file).
+    setattr(target, "mtplx_config", getattr(source, "mtplx_config", None))
     _with_batching_args(target, source)
     for attr, default in (
         # Retrieval models: quickstart builds its serve namespace field by
@@ -12474,7 +12777,7 @@ def _quickstart_run_terminal_chat_body(
     _apply_model_default_profile(
         args, _public_model_id_for_args(args, str(runtime_model))
     )
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
     draft_lm_head = (
@@ -12518,6 +12821,16 @@ def _quickstart_run_terminal_chat_body(
                 ("Reasoning", _reasoning_mode(args)),
             ],
         )
+
+    # Serve-path memory discipline (#261, F7): terminal chat loads the model
+    # in-process with no server; pin the exact Metal allocator caps the serve
+    # path applies at startup so long chats cannot balloon past serve limits.
+    from mtplx.server.openai import apply_memory_caps_preflight
+
+    apply_memory_caps_preflight(
+        entry="quickstart.terminal_chat",
+        model=str(runtime_model),
+    )
 
     started = time.perf_counter()
     quiet_progress = not sys.stdout.isatty()
@@ -12835,7 +13148,7 @@ def cmd_quickstart_public(args: Any) -> int:
     )
 
     if not skip_onboarding:
-        from mtplx.ui.onboarding import run_quickstart_flow
+        from mtplx.ui.onboarding import PROFILE_AUTO, run_quickstart_flow
 
         configured_model = getattr(args, "model", None)
         # `--open-dashboard` / `--no-open-dashboard` on the CLI is the
@@ -12871,10 +13184,12 @@ def cmd_quickstart_public(args: Any) -> int:
                 # Best-effort: never let an import problem break the wizard.
                 pass
         chosen_profile = choice.get("profile")
-        if chosen_profile:
+        if chosen_profile and chosen_profile != PROFILE_AUTO:
             args.profile = chosen_profile
-            # A wizard pick is a user decision: record it so per-model
-            # default-profile resolution never overrides it.
+            # An explicit wizard pick is a user decision: record it so
+            # per-model default-profile resolution never overrides it. Auto
+            # is the opposite decision — stamp nothing, so the engine keeps
+            # resolving the launch profile per model.
             args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
             args._cli_flags.add("profile")
         if choice.get("max"):
@@ -13218,9 +13533,7 @@ def cmd_quickstart_public(args: Any) -> int:
             )
             if mode_exit is not None:
                 return mode_exit
-            profile = get_profile(
-                getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-            )
+            profile = get_profile(_resolved_default_profile_name(args))
             _apply_model_contract_depth_default(args, inspection, profile)
             _apply_backend_serve_defaults(args, inspection)
             _quickstart_apply_tuned_depth(
@@ -13300,7 +13613,7 @@ def cmd_quickstart_public(args: Any) -> int:
     )
     if mode_exit is not None:
         return mode_exit
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = get_profile(_resolved_default_profile_name(args))
     _apply_model_contract_depth_default(args, inspection, profile)
     _apply_backend_serve_defaults(args, inspection)
     _quickstart_apply_tuned_depth(

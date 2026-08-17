@@ -30,6 +30,26 @@ DEFAULT_SPEED_MODEL_SIZE_BYTES = 21_313_949_792  # Qwen3.8-27B Optimized Speed (
 MIN_RECOMMENDED_MEMORY_BYTES = 48 * GIB
 SUPPORT_MACOS_MAJOR = 14
 SUPPORT_PYTHON = (3, 11)
+
+
+def _default_model_resolved_profile() -> str:
+    """Profile the engine actually resolves for the default model.
+
+    The support matrix pairs ``default_model`` with the profile that model
+    launches under; the raw parser default (DEFAULT_PROFILE_NAME) lied for
+    flagships that per-model resolution promotes to turbo. Lazy import so
+    a broken CLI module cannot take ``mtplx doctor`` down with it (this
+    module must stay useful on fresh machines).
+    """
+
+    try:
+        from mtplx.commands.public import resolved_default_profile_name_for_ref
+
+        return resolved_default_profile_name_for_ref(DEFAULT_HF_MODEL_ID)
+    except Exception:  # pragma: no cover - degraded doctor environments
+        return DEFAULT_PROFILE_NAME
+
+
 SUPPORT_MATRIX = {
     "supported": {
         "platform": "Apple Silicon arm64 Mac",
@@ -37,7 +57,7 @@ SUPPORT_MATRIX = {
         "python": "native arm64 Python >= 3.11",
         "docker": "Docker Desktop current plus previous two macOS major releases",
         "default_model": DEFAULT_HF_MODEL_ID,
-        "default_profile": DEFAULT_PROFILE_NAME,
+        "default_profile": _default_model_resolved_profile(),
     },
     "preview_test_targets": [
         "M3 Max",

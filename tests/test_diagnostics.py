@@ -38,7 +38,9 @@ def test_diagnostics_payload_has_production_checks(tmp_path) -> None:
     assert payload["support_matrix"]["supported"]["default_model"] == (
         "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed"
     )
-    assert payload["support_matrix"]["supported"]["default_profile"] == "sustained"
+    # The matrix reports the profile the default model actually resolves to:
+    # the Qwen3.8 flagship is turbo-promoted by per-model launch resolution.
+    assert payload["support_matrix"]["supported"]["default_profile"] == "turbo"
     ids = {check["id"] for check in payload["checks"]}
     assert {
         "os.macos_version",
