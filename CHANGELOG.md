@@ -82,12 +82,14 @@ All notable user-facing changes to MTPLX. The format is based on
 
 - **Streamed text now concatenates to exactly the non-stream text.** The
   model separates `</think>` from its answer with a blank line, and the
-  stream lane leaked that separator (and a trailing one before tool calls)
-  as content deltas while the non-stream lane stripped it, so diffing the
-  two transports at temperature 0 showed a whitespace mismatch on every
-  thinking response. Streamed content is edge-trimmed on the wire the same
-  way the non-stream cleaner strips it; interior whitespace (markdown
-  structure) is untouched, and transcript canonicalization stays byte-exact.
+  stream lane leaked that separator as content deltas while the non-stream
+  lane stripped it, so diffing the two transports at temperature 0 showed a
+  whitespace mismatch on every thinking response. Streamed content is
+  edge-trimmed on the wire the same way the non-stream cleaner strips it;
+  interior whitespace (markdown structure) is untouched, and transcript
+  canonicalization stays byte-exact. One cosmetic shape remains: a stream
+  that ends in a tool call can still carry a trailing blank line ahead of
+  the tool call in some chunkings.
 - **Batched-AR responses no longer carry draft-sampler stamps.** Under
   concurrency, requests that ride the batched AR lane merged request-policy
   observability wholesale, so an AR response could report a draft sampler
