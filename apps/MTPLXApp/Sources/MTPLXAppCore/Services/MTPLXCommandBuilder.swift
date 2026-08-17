@@ -1338,10 +1338,12 @@ private struct TargetPreset {
         preset.topK = 20
         // The draft sampler is deliberately NOT pinned for this family. Each
         // 3.8 artifact stamps its measured `recommended_draft_sampler` in
-        // mtplx_runtime.json (Bare Speed: 0.6 from the drop-day strict
-        // max-fan A/B; Optimized Speed/Quality: the target sampler) and the
-        // server resolves it from the stamp — the same path `mtplx serve`
-        // takes with zero flags. One owner, so the app and the CLI serve the
+        // mtplx_runtime.json and the server resolves it from the stamp — the
+        // same path `mtplx serve` takes with zero flags. (Which number is
+        // right belongs to the artifact: the drop-day strict max-fan A/B
+        // measured draft 1.0 over the earlier uncontrolled 0.6 for Bare
+        // Speed — the stamp is the restamp surface, never this file.) One
+        // owner, so the app and the CLI serve the
         // same draft sampler for the same artifact (incl. the FP16 siblings)
         // and a stamp change never needs an app release. A user-set sampler
         // in Settings still carries to the draft, as for every family.
