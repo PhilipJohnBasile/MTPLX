@@ -116,6 +116,10 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     public var streamSnapshotIntervalMs: Int
     public var performanceLock: Bool
     public var launchDaemonOnOpen: Bool
+    /// Opt-in app-managed recovery after an abnormal daemon exit. It applies
+    /// to launches created in this app session; the launch command and API key
+    /// remain process-memory-only in DaemonSupervisor.
+    public var automaticDaemonRestart: Bool
     /// When on, the app launches Hermes in auto-approve ("YOLO") mode so
     /// the agent runs tools without prompting. Off makes Hermes ask for
     /// approval. Applies the next time Hermes is started.
@@ -234,6 +238,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         streamSnapshotIntervalMs: Int = 100,
         performanceLock: Bool = false,
         launchDaemonOnOpen: Bool = false,
+        automaticDaemonRestart: Bool = false,
         hermesAutoApprove: Bool = true,
         fanMode: String? = nil,
         pinFansAtMaxOnStart: Bool = false,
@@ -301,6 +306,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.streamSnapshotIntervalMs = streamSnapshotIntervalMs
         self.performanceLock = performanceLock
         self.launchDaemonOnOpen = launchDaemonOnOpen
+        self.automaticDaemonRestart = automaticDaemonRestart
         self.hermesAutoApprove = hermesAutoApprove
         let resolvedFanMode = MTPLXFanMode.normalized(
             fanMode ?? (pinFansAtMaxOnStart ? MTPLXFanMode.max.rawValue : MTPLXFanMode.smart.rawValue)
@@ -493,6 +499,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case streamSnapshotIntervalMs = "stream_snapshot_interval_ms"
         case performanceLock = "performance_lock"
         case launchDaemonOnOpen = "launch_daemon_on_open"
+        case automaticDaemonRestart = "automatic_daemon_restart"
         case hermesAutoApprove = "hermes_auto_approve"
         case fanMode = "fan_mode"
         case pinFansAtMaxOnStart = "pin_fans_at_max_on_start"
@@ -572,6 +579,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         streamSnapshotIntervalMs = try container.decodeIfPresent(Int.self, forKey: .streamSnapshotIntervalMs) ?? defaults.streamSnapshotIntervalMs
         performanceLock = try container.decodeIfPresent(Bool.self, forKey: .performanceLock) ?? defaults.performanceLock
         launchDaemonOnOpen = try container.decodeIfPresent(Bool.self, forKey: .launchDaemonOnOpen) ?? defaults.launchDaemonOnOpen
+        automaticDaemonRestart = try container.decodeIfPresent(Bool.self, forKey: .automaticDaemonRestart) ?? defaults.automaticDaemonRestart
         hermesAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .hermesAutoApprove) ?? defaults.hermesAutoApprove
         let decodedFanMode = try container.decodeIfPresent(String.self, forKey: .fanMode)
         let legacyPin = try container.decodeIfPresent(Bool.self, forKey: .pinFansAtMaxOnStart)
