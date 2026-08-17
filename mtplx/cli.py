@@ -212,7 +212,7 @@ def _format_public_help() -> str:
   mtplx start opencode --port 18083    Configure OpenCode Desktop for MTPLX-owned generation
   mtplx start swival --port 18084      Print Swival generic-provider command
   mtplx start hermes --port 18085      Launch Hermes Agent against MTPLX
-  mtplx quickstart --profile sustained --port 8000  API server only, no chat
+  mtplx quickstart --port 8000         API server only, no chat
 
   {footer}
 """
@@ -257,7 +257,7 @@ On later runs it offers "same as last time?" so the chat is one keypress away.
 
 What gets asked:
   1. Model — your configured model, the verified default, custom HF, or local
-  2. Mode  — Sustained, Sustained Max, or Burst (Turbo auto-selects for the quantized flagships; Stable remains available via --profile safe)
+  2. Mode  — Auto (recommended; Turbo auto-selects for the quantized flagships), Sustained, Sustained Max, or Burst (Stable remains available via --profile safe)
   3. Where — Web UI (default), terminal CLI, Pi, OpenCode Desktop, Swival, or Hermes
 
 Power-user shortcuts (any of these skip the onboarding wizard):
@@ -348,7 +348,7 @@ def _format_verbose_help() -> str:
   mtplx start                       Open the local chat in your browser
   mtplx start cli                   Chat in this terminal instead
   mtplx start --download            Pull the verified model from Hugging Face
-  mtplx quickstart --profile sustained --port 8000  Run the API server only
+  mtplx quickstart --port 8000      Run the API server only
   mtplx connect openwebui           Print Open WebUI integration settings
   mtplx ask "Write a tiny FastAPI app"
   mtplx inspect Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed
@@ -1137,7 +1137,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "config_path": str(config_path),
             "next_steps": [
                 "mtplx status",
-                "mtplx quickstart --profile sustained --port 8000",
+                "mtplx quickstart --port 8000",
                 "mtplx connect openwebui",
             ],
         }
@@ -1147,7 +1147,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print("MTPLX setup")
             print(f"config already exists: {config_path}")
             print("next: mtplx status")
-            print("next: mtplx quickstart --profile sustained --port 8000")
+            print("next: mtplx quickstart --port 8000")
             print("Use --force to rewrite the config.")
         return 0
     args.write = True
@@ -1156,7 +1156,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
 def _cmd_connect(args: argparse.Namespace) -> int:
     if not args.integration:
-        server_command = f"mtplx quickstart --profile sustained --host {args.host} --port {args.port}"
+        server_command = f"mtplx quickstart --host {args.host} --port {args.port}"
         payload = {
             "action": "connect",
             "integrations": [
@@ -2763,7 +2763,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         type=_profile_arg,
         metavar=_PROFILE_METAVAR,
-        default="performance-cold",
+        # No parser default: tune's profile resolves like serve's launch
+        # rule (per-model turbo for the flagships) so depth is measured
+        # under the kernels the launch profile actually uses. An explicit
+        # --profile always wins.
+        default=None,
         help=argparse.SUPPRESS,
     )
     tune_p.add_argument(

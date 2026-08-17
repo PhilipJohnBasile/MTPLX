@@ -152,6 +152,8 @@ def test_confirm_same_as_last_prints_the_moved_default_note(monkeypatch, capsys)
 
 def test_mode_label_covers_all_modes():
     """Mode labels explain runtime mechanics and hardware-neutral speed gain."""
+    auto = onboarding.mode_label({"profile": onboarding.PROFILE_AUTO, "max": False})
+    assert "Auto" in auto and "engine" in auto
     stable = onboarding.mode_label({"profile": "stable", "max": False})
     legacy = onboarding.mode_label({"profile": "performance-cold", "max": False})
     sustained = onboarding.mode_label({"profile": "sustained", "max": False})
@@ -178,7 +180,8 @@ def test_run_onboarding_screens_with_stubbed_input(monkeypatch, capsys):
     """Walk all four screens with stubbed ``input`` answers.
 
     Screens: model, mode, interface, dashboard-companion (only asked for
-    server-spawning targets; openwebui is one of them).
+    server-spawning targets; openwebui is one of them). The mode default is
+    Auto: no profile pin, engine resolves per model.
     """
     answers = iter(["1", "1", "1", "2"])
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
@@ -186,7 +189,8 @@ def test_run_onboarding_screens_with_stubbed_input(monkeypatch, capsys):
 
     state = onboarding.run_onboarding_screens()
     assert state["model"] == expected_model
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
+    assert "profile_explicit" not in state
     assert state["max"] is False
     assert state["target"] == "openwebui"
     assert state["open_dashboard"] is False
@@ -251,34 +255,38 @@ def test_run_onboarding_screens_uses_fp16_default_when_policy_selects_it(monkeyp
 
 def test_run_onboarding_sustained_max_sets_max_flag_when_thermal_available(monkeypatch):
     """Picking Sustained Max + a working fan controller -> ``profile=sustained,max=True``."""
-    answers = iter(["1", "2", "2"])
+    answers = iter(["1", "3", "2"])
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
     monkeypatch.setattr(onboarding, "ensure_thermal_control_installed", lambda: True)
     state = onboarding.run_onboarding_screens()
     assert state["profile"] == "sustained"
+    assert state["profile_explicit"] is True
     assert state["max"] is True
     assert state["target"] == "terminal"
 
 
 def test_run_onboarding_fan_mode_falls_back_to_sustained_when_thermal_unavailable(monkeypatch):
-    """Picking a fan-backed mode + declined/failed install -> Sustained no-fan."""
-    answers = iter(["1", "3", "2"])
+    """Picking a fan-backed mode (Burst) + declined install -> Sustained no-fan."""
+    answers = iter(["1", "4", "2"])
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
     monkeypatch.setattr(onboarding, "ensure_thermal_control_installed", lambda: False)
     state = onboarding.run_onboarding_screens()
     assert state["profile"] == "sustained"
+    assert state["profile_explicit"] is True
     assert state["max"] is False
     assert state["target"] == "terminal"
 
 
 def test_run_onboarding_sustained_mode_is_explicit(monkeypatch):
-    # openwebui target → dashboard companion prompt fires; answer "No" (2).
-    answers = iter(["1", "1", "1", "2"])
+    # Deliberate Sustained pick (mode 2). openwebui target → dashboard
+    # companion prompt fires; answer "No" (2).
+    answers = iter(["1", "2", "1", "2"])
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
 
     state = onboarding.run_onboarding_screens()
 
     assert state["profile"] == "sustained"
+    assert state["profile_explicit"] is True
     assert state["max"] is False
     assert state["target"] == "openwebui"
 
@@ -289,7 +297,7 @@ def test_run_onboarding_can_select_pi(monkeypatch):
 
     state = onboarding.run_onboarding_screens()
 
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
     assert state["max"] is False
     assert state["target"] == "pi"
     assert state["open_dashboard"] is False
@@ -301,7 +309,7 @@ def test_run_onboarding_can_select_opencode(monkeypatch):
 
     state = onboarding.run_onboarding_screens()
 
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
     assert state["max"] is False
     assert state["target"] == "opencode"
     assert state["open_dashboard"] is False
@@ -348,7 +356,8 @@ def test_run_serve_onboarding_screens_defaults_to_api_server(monkeypatch):
     monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
     state = onboarding.run_serve_onboarding_screens(host="127.0.0.1", port=8765)
     assert state["model"] == onboarding._verified_default_model()
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
+    assert "profile_explicit" not in state
     assert state["max"] is False
     assert state["target"] == "server"
     assert state["open_browser"] is False
@@ -517,7 +526,12 @@ def test_run_quickstart_flow_returning_user_says_same(tmp_path, monkeypatch):
     assert state["target"] == "pi"
 
 
-def test_run_quickstart_flow_returning_user_reuses_sustained(tmp_path, monkeypatch):
+def test_run_quickstart_flow_returning_user_reuses_migrated_legacy_sustained(
+    tmp_path, monkeypatch
+):
+    """Legacy wizard-default Sustained (no explicit marker) migrates to Auto
+    once and is reused as Auto; the model/interface are untouched."""
+
     monkeypatch.setenv("MTPLX_QUICKSTART_STATE", str(tmp_path / "returning-sustained.json"))
     onboarding.save_state(
         {
@@ -532,8 +546,11 @@ def test_run_quickstart_flow_returning_user_reuses_sustained(tmp_path, monkeypat
     state = onboarding.run_quickstart_flow(fresh=False)
 
     assert state is not None
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
     assert state["model"] == "mtplx/foo"
+    persisted = onboarding.load_state()
+    assert persisted is not None
+    assert persisted["profile"] == onboarding.PROFILE_AUTO
 
 
 def test_run_quickstart_flow_refreshes_saved_verified_default(tmp_path, monkeypatch):
@@ -574,7 +591,7 @@ def test_run_quickstart_flow_legacy_stable_state_is_not_reused(tmp_path, monkeyp
     state = onboarding.run_quickstart_flow(fresh=False)
     assert state is not None
     assert state["model"] == onboarding._verified_default_model()
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
     assert state["max"] is False
     assert state["target"] == "openwebui"
 
@@ -627,7 +644,7 @@ def test_run_quickstart_flow_returning_user_says_no(tmp_path, monkeypatch):
     state = onboarding.run_quickstart_flow(fresh=False)
     assert state is not None
     assert state["model"] == onboarding._verified_default_model()
-    assert state["profile"] == "sustained"
+    assert state["profile"] == onboarding.PROFILE_AUTO
     assert state["target"] == "openwebui"
 
 

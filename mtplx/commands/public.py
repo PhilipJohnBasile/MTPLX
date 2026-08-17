@@ -1106,6 +1106,11 @@ def _apply_model_default_profile(args: Any, model_id: str) -> bool:
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     if "profile" in cli_flags:
         return False
+    if getattr(args, "_profile_from_config", None):
+        # A profile from config.toml is the user's standing pin (stamped by
+        # config._apply_profile_default). Honor it even when it equals the
+        # parser default — config "sustained" used to be silently promoted.
+        return False
     if model_id not in _TURBO_DEFAULT_PUBLIC_MODEL_IDS:
         return False
     current = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
@@ -1130,7 +1135,11 @@ def _resolved_default_profile_name(args: Any, model: str | None = None) -> str:
 
     current = str(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
     cli_flags = getattr(args, "_cli_flags", set()) or set()
-    if "profile" in cli_flags or current != DEFAULT_PROFILE_NAME:
+    if (
+        "profile" in cli_flags
+        or current != DEFAULT_PROFILE_NAME
+        or getattr(args, "_profile_from_config", None)
+    ):
         return current
     model_ref = str(model if model is not None else getattr(args, "model", "") or "")
     if not model_ref:
@@ -2113,6 +2122,73 @@ class _temporary_env:
                 os.environ[key] = value
 
 
+def _compiled_verify_fence_report(args: Any) -> dict[str, Any]:
+    """Static compiled-verify fence status for doctor (issue #255).
+
+    The fence is the context ceiling of the compiled verify step: above it
+    every verify call falls back to the eager path (graphbank
+    ``_compiled_verify_max_context``; engine default 6144 tokens). The
+    founder's public commitment on #255 is that doctor prints the live
+    value. Resolution mirrors the launch: an operator env always beats the
+    profile value (both envs are in profiles.py's passthrough set), else the
+    profile the default launch resolves for this Mac's verified default
+    model, else the engine default. Mode mapping mirrors
+    ``graphbank.compiled_verify_mode``. Static env + profile state only —
+    no GPU probing.
+    """
+
+    engine_default_max_context = 6144
+    try:
+        default_model = str(select_default_model().model)
+    except Exception:
+        default_model = None
+    profile_name = DEFAULT_PROFILE_NAME
+    if default_model:
+        try:
+            profile_name = _resolved_default_profile_name(args, default_model)
+        except Exception:
+            profile_name = DEFAULT_PROFILE_NAME
+    try:
+        profile_env = get_profile(profile_name).env_dict()
+    except Exception:
+        profile_env = {}
+
+    def _resolve(name: str, fallback: str) -> tuple[str, str]:
+        if name in os.environ:
+            return str(os.environ[name]).strip(), f"{name} env"
+        if name in profile_env:
+            return str(profile_env[name]).strip(), f"{profile_name} profile"
+        return fallback, "engine default"
+
+    mode_raw, mode_source = _resolve("MTPLX_COMPILED_VERIFY", "")
+    lowered = mode_raw.lower()
+    if lowered in {"", "0", "false", "no", "off"}:
+        mode = "off"
+    elif lowered in {"parity", "parity2"}:
+        mode = lowered
+    else:
+        mode = "on"
+    raw_max, max_source = _resolve(
+        "MTPLX_COMPILED_VERIFY_MAX_CONTEXT", str(engine_default_max_context)
+    )
+    try:
+        max_context = max(0, int(raw_max))
+    except (TypeError, ValueError):
+        max_context = engine_default_max_context
+        max_source = "engine default"
+    return {
+        "mode": mode,
+        "mode_source": mode_source,
+        "max_context_tokens": max_context,
+        "max_context_source": max_source,
+        # max_context == 0 disables the ceiling (experiments only).
+        "fenced": bool(max_context),
+        "resolved_default_profile": profile_name,
+        "default_model": default_model,
+        "above_fence_behavior": "eager verify per call",
+    }
+
+
 def cmd_doctor(args: Any) -> int:
     # --json promises machine-parseable stdout. Probes import third-party
     # packages whose lazy loaders print() import errors straight to stdout
@@ -2164,6 +2240,7 @@ def _build_doctor_report(args: Any) -> dict[str, Any]:
             "fanmax_counts_for_product_gate": False,
             "benchmark_exactness_smoke_context": 2048,
         },
+        "compiled_verify": _compiled_verify_fence_report(args),
     }
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     report["diagnostics"] = build_diagnostics_payload(
@@ -2226,6 +2303,24 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
             f"{'available' if thermal.get('available') else 'not configured'}"
             f" ({selected.get('kind') or 'none'})"
         )
+        fence = report.get("compiled_verify") or {}
+        if fence:
+            print(
+                "compiled verify: "
+                f"{fence.get('mode')} ({fence.get('mode_source')})"
+            )
+            if fence.get("fenced"):
+                print(
+                    "compiled verify fence: "
+                    f"<= {fence.get('max_context_tokens')} tokens "
+                    f"({fence.get('max_context_source')}); above it each "
+                    "verify call falls back to eager"
+                )
+            else:
+                print(
+                    "compiled verify fence: disabled "
+                    f"({fence.get('max_context_source')}); no context ceiling"
+                )
         if getattr(args, "deep", False):
             launchers = report.get("launchers") or {}
             config = report.get("config") or {}
@@ -3123,6 +3218,7 @@ def _cmd_tune(
             return _tune_error(str(exc), json_output=json_output)
         settings = _tune_settings(
             args,
+            model=model,
             depths=depths,
             control_field=_tune_control_field(support_payload),
         )
@@ -3173,6 +3269,7 @@ def _cmd_tune(
         return _tune_error(str(exc), json_output=json_output)
     settings = _tune_settings(
         args,
+        model=runtime_model,
         depths=depths,
         control_field=_tune_control_field(support_payload),
     )
@@ -3428,7 +3525,11 @@ def _cmd_tune_candidate(args: Any) -> int:
             return _tune_error(
                 f"tune depths must be one of {allowed}", json_output=True
             )
-    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
+    # The parent tune run always passes --profile explicitly; this default
+    # covers direct candidate invocations and must match what serve resolves
+    # (the hidden performance-cold default tuned depth under different
+    # kernels than the launch profile actually uses).
+    profile = get_profile(_resolved_default_profile_name(args, runtime_model))
     runtime_env = _runtime_env_with_external_overrides(
         _runtime_env_with_model_contract_overrides(
             profile.env_dict(),
@@ -3599,6 +3700,7 @@ def _tune_model_source_notes(args: Any, *, runtime_model: str) -> list[str]:
 def _tune_settings(
     args: Any,
     *,
+    model: str,
     depths: list[int],
     control_field: str = "depth",
 ) -> dict[str, Any]:
@@ -3607,7 +3709,11 @@ def _tune_settings(
         or getattr(args, "suite", None)
         or TUNE_DEFAULT_SUITE
     )
-    profile = get_profile(str(getattr(args, "profile", None) or "performance-cold"))
+    # Tune must measure under the profile serve will actually resolve for
+    # this model (the macOS app already guards this); the old hidden
+    # performance-cold default tuned depth under different kernels than the
+    # launch profile uses. An explicit --profile always wins.
+    profile = get_profile(_resolved_default_profile_name(args, model))
     return {
         "profile": profile.name,
         "suite": str(suite),
@@ -5893,10 +5999,21 @@ def _cmd_bench_run_direct_http(
     return 0
 
 
-def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
-    sustained_profile = get_profile(
-        getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-    ).name
+def _suite_default_profile_name(args: Any, *, model: str) -> str:
+    """Launch-rule profile for suite tasks built without an explicit flag.
+
+    Suite builders set ``child.profile`` explicitly, which bypasses the
+    serve-time per-model resolution — so the default must be resolved HERE,
+    against the model the suite will actually run, or the flagships silently
+    benchmark sustained (the 25.3 tok/s shape). An explicit --profile always
+    wins via ``_resolved_default_profile_name``.
+    """
+
+    return get_profile(_resolved_default_profile_name(args, model)).name
+
+
+def _nightly_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
+    default_profile = _suite_default_profile_name(args, model=model)
     return [
         {
             "label": "cold-long-code-192",
@@ -5911,7 +6028,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "flappy-6k",
             "suite": "flappy",
             "max_tokens": 6000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": bool(getattr(args, "strict", False)),
             "strict_cold": False,
             "harness": "direct-http",
@@ -5920,7 +6037,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "flappy-10k",
             "suite": "flappy",
             "max_tokens": 10000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": bool(getattr(args, "strict", False)),
             "strict_cold": False,
             "harness": "direct-http",
@@ -5929,7 +6046,7 @@ def _nightly_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "python-modules-6k",
             "suite": "python_modules_long",
             "max_tokens": 6000,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -5942,13 +6059,13 @@ def _bench_suite_is_quick(args: Any) -> bool:
 
 
 def _client_contract_task(
-    label: str, client: str, *, max_tokens: int
+    label: str, client: str, *, max_tokens: int, profile: str
 ) -> dict[str, Any]:
     return {
         "label": label,
         "suite": "flappy",
         "max_tokens": max_tokens,
-        "profile": "sustained",
+        "profile": profile,
         "strict": False,
         "strict_cold": False,
         "harness": "direct-http",
@@ -5971,16 +6088,14 @@ def _client_contract_task(
     }
 
 
-def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
-    sustained_profile = get_profile(
-        getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-    ).name
+def _quick_suite_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
+    default_profile = _suite_default_profile_name(args, model=model)
     return [
         {
             "label": "short-context-384",
             "suite": "flappy",
             "max_tokens": 384,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -5998,7 +6113,7 @@ def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
             "label": "long-tool-history-1536",
             "suite": "python_modules_long",
             "max_tokens": 1536,
-            "profile": sustained_profile,
+            "profile": default_profile,
             "strict": False,
             "strict_cold": False,
             "harness": "direct-http",
@@ -6013,17 +6128,26 @@ def _quick_suite_tasks(args: Any) -> list[dict[str, Any]]:
                 "late verify cost does not collapse the tail",
             ],
         },
-        _client_contract_task("opencode-contract-1024", "opencode", max_tokens=1024),
-        _client_contract_task("pi-contract-1024", "pi", max_tokens=1024),
-        _client_contract_task("hermes-contract-1024", "hermes", max_tokens=1024),
+        _client_contract_task(
+            "opencode-contract-1024",
+            "opencode",
+            max_tokens=1024,
+            profile=default_profile,
+        ),
+        _client_contract_task(
+            "pi-contract-1024", "pi", max_tokens=1024, profile=default_profile
+        ),
+        _client_contract_task(
+            "hermes-contract-1024", "hermes", max_tokens=1024, profile=default_profile
+        ),
     ]
 
 
-def _bench_suite_tasks(args: Any) -> list[dict[str, Any]]:
+def _bench_suite_tasks(args: Any, *, model: str) -> list[dict[str, Any]]:
     return (
-        _quick_suite_tasks(args)
+        _quick_suite_tasks(args, model=model)
         if _bench_suite_is_quick(args)
-        else _nightly_tasks(args)
+        else _nightly_tasks(args, model=model)
     )
 
 
@@ -6134,7 +6258,7 @@ def _cmd_bench_nightly(args: Any) -> int:
     action_name = _bench_suite_action_name(args)
     default_prefix = "cli-suite" if action_name == "bench suite" else "cli-nightly"
     run_id = args.run_id or f"{default_prefix}-{time.strftime('%Y%m%d-%H%M%S')}"
-    tasks = _bench_suite_tasks(args)
+    tasks = _bench_suite_tasks(args, model=model)
     default_root = Path(
         "outputs/cli/suite" if action_name == "bench suite" else "outputs/cli/nightly"
     )
@@ -8510,7 +8634,7 @@ def cmd_serve_public(args: Any) -> int:
         has_explicit_model="model" in cli_flags,
     )
     if _serve_should_onboard(args):
-        from mtplx.ui.onboarding import run_serve_flow
+        from mtplx.ui.onboarding import PROFILE_AUTO, run_serve_flow
 
         choice = run_serve_flow(
             configured_model=getattr(args, "model", None),
@@ -8532,10 +8656,12 @@ def cmd_serve_public(args: Any) -> int:
             except Exception:
                 pass
         chosen_profile = choice.get("profile")
-        if chosen_profile:
+        if chosen_profile and chosen_profile != PROFILE_AUTO:
             args.profile = chosen_profile
-            # A wizard pick is a user decision: record it so per-model
-            # default-profile resolution never overrides it.
+            # An explicit wizard pick is a user decision: record it so
+            # per-model default-profile resolution never overrides it. Auto
+            # is the opposite decision — stamp nothing, so the engine keeps
+            # resolving the launch profile per model.
             args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
             args._cli_flags.add("profile")
         args.max = bool(choice.get("max"))
@@ -11845,6 +11971,11 @@ def _with_batching_args(target: Any, source: Any) -> Any:
 
 def _with_server_policy_args(target: Any, source: Any) -> Any:
     setattr(target, "_cli_flags", getattr(source, "_cli_flags", set()) or set())
+    # The config-pin marker must survive the quickstart -> serve handoff or
+    # the child would re-promote over a config.toml profile pin.
+    setattr(
+        target, "_profile_from_config", getattr(source, "_profile_from_config", None)
+    )
     _with_batching_args(target, source)
     for attr, default in (
         # Retrieval models: quickstart builds its serve namespace field by
@@ -12875,7 +13006,7 @@ def cmd_quickstart_public(args: Any) -> int:
     )
 
     if not skip_onboarding:
-        from mtplx.ui.onboarding import run_quickstart_flow
+        from mtplx.ui.onboarding import PROFILE_AUTO, run_quickstart_flow
 
         configured_model = getattr(args, "model", None)
         # `--open-dashboard` / `--no-open-dashboard` on the CLI is the
@@ -12911,10 +13042,12 @@ def cmd_quickstart_public(args: Any) -> int:
                 # Best-effort: never let an import problem break the wizard.
                 pass
         chosen_profile = choice.get("profile")
-        if chosen_profile:
+        if chosen_profile and chosen_profile != PROFILE_AUTO:
             args.profile = chosen_profile
-            # A wizard pick is a user decision: record it so per-model
-            # default-profile resolution never overrides it.
+            # An explicit wizard pick is a user decision: record it so
+            # per-model default-profile resolution never overrides it. Auto
+            # is the opposite decision — stamp nothing, so the engine keeps
+            # resolving the launch profile per model.
             args._cli_flags = set(getattr(args, "_cli_flags", set()) or set())
             args._cli_flags.add("profile")
         if choice.get("max"):
@@ -13258,9 +13391,7 @@ def cmd_quickstart_public(args: Any) -> int:
             )
             if mode_exit is not None:
                 return mode_exit
-            profile = get_profile(
-                getattr(args, "profile", None) or DEFAULT_PROFILE_NAME
-            )
+            profile = get_profile(_resolved_default_profile_name(args))
             _apply_model_contract_depth_default(args, inspection, profile)
             _apply_backend_serve_defaults(args, inspection)
             _quickstart_apply_tuned_depth(

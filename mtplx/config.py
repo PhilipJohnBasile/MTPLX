@@ -235,11 +235,20 @@ def _apply_profile_default(args: Any, config: UserConfig) -> None:
     if command in {"start", "serve", "quickstart", "quick-start"} and "max" in cli_flags:
         return
     current = getattr(args, "profile", None)
-    if config.profile and current == DEFAULT_PROFILE_NAME:
+    if config.profile and current in (None, DEFAULT_PROFILE_NAME):
         try:
             args.profile = resolve_profile_name(config.profile)
         except ValueError:
             return
+        # A config-file profile is the user's standing pin: per-model
+        # default-profile promotion must honor it (config "sustained" was
+        # silently promoted to turbo), and a pin that sticks must be
+        # visible (config "stable" silently defeated turbo). The marker is
+        # deliberately not ``_cli_flags`` — that set records typed argv
+        # only, and the onboarding gates depend on the distinction.
+        args._profile_from_config = str(config.path)
+        if not getattr(args, "json", False):
+            print(f"profile: {args.profile} (from {config.path.name})", flush=True)
 
 
 _RUNTIME_DEFAULTS: dict[str, tuple[str, tuple[str, ...]]] = {

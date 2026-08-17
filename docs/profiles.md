@@ -9,6 +9,6 @@
 | `performance-cold` | Legacy burst path without fan boost. Kept for explicit flags and compatibility; not shown in first-run onboarding. |
 | `stable` | Hidden conservative alias for the exact/staged long-reply path and compatibility fallback. |
 | `exact` | QA and release exactness checks. |
-| `max-diagnostic` | Fan-control diagnostics only. Product modes are Sustained, Sustained Max, and Burst. |
+| `max-diagnostic` | Fan-control diagnostics only. Onboarding modes are Auto (recommended; the engine resolves the profile per model), Sustained, Sustained Max, and Burst. |
 
 `--max` is separate from profiles. It is opt-in and must restore fan state on exit when supported.

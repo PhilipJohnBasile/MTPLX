@@ -829,9 +829,27 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _ladder_profile(args: Any) -> Any:
+    """Profile the ladder runs under: the launch rule, unless --profile is set.
+
+    The raw ``DEFAULT_PROFILE_NAME`` fallback here was the last bench-lane
+    sustained side door: without an explicit --profile the flagships silently
+    measured the slow profile instead of their turbo launch default. The
+    import is lazy in both directions (commands.public imports this module
+    inside its bench dispatcher), so there is no module cycle.
+    """
+
+    requested = getattr(args, "profile", None)
+    if requested:
+        return get_profile(str(requested))
+    from mtplx.commands.public import _resolved_default_profile_name
+
+    return get_profile(_resolved_default_profile_name(args))
+
+
 def run_prefill_ladder(args: Any) -> dict[str, Any]:
     contexts = parse_contexts(getattr(args, "contexts", None), full=bool(getattr(args, "full", False)))
-    profile = get_profile(getattr(args, "profile", None) or DEFAULT_PROFILE_NAME)
+    profile = _ladder_profile(args)
     prompt_style = str(getattr(args, "prompt_style", None) or DEFAULT_PROMPT_STYLE)
     prompt_format = _normalize_prompt_format(
         str(getattr(args, "prompt_format", None) or DEFAULT_PROMPT_FORMAT)
