@@ -10102,6 +10102,11 @@ def generate_mtpk(
             "committed_tokens": len(tokens),
             "single_cycle": True,
         }
+    # Stamp elapsed before the final-pending commit below: that forward is
+    # session-bank bookkeeping done after the response is complete, and
+    # billing it to the measured window understates MTP tok/s (AR twin at
+    # its own capture_final_state tail — F31).
+    elapsed = time.perf_counter() - started_all
     final_state: GenerationFinalState | None = None
     if (
         capture_final_state
@@ -10109,43 +10114,53 @@ def generate_mtpk(
         and tokens
         and repetition_result is None
     ):
-        pending_token = int(pending_primary)
-        if (
-            _mtp_history_uses_committed_cache(mtp_history_policy)
-            and mtp_history_cache is not None
-            and hidden is not None
-        ):
+        try:
+            pending_token = int(pending_primary)
+            if (
+                _mtp_history_uses_committed_cache(mtp_history_policy)
+                and mtp_history_cache is not None
+                and hidden is not None
+            ):
+                commit_started = time.perf_counter()
+                draft_time += append_mtp_history(
+                    mtp_history_cache,
+                    hidden,
+                    [pending_token],
+                )
+                commit_time += time.perf_counter() - commit_started
             commit_started = time.perf_counter()
-            draft_time += append_mtp_history(
-                mtp_history_cache,
-                hidden,
-                [pending_token],
+            with attention_phase("decode_verify"):
+                commit_logits, commit_hidden = rt.forward_ar(
+                    mx.array([[pending_token]]),
+                    cache=cache,
+                    return_hidden=True,
+                    hidden_variant=base_hidden_variant,
+                )
+            _eval(commit_logits, commit_hidden)
+            elapsed_commit_forward = time.perf_counter() - commit_started
+            target_time += elapsed_commit_forward
+            commit_time += elapsed_commit_forward
+            logits, hidden = own_live_logits_hidden(
+                commit_logits[:, -1, :],
+                commit_hidden[:, -1:, :],
             )
-            commit_time += time.perf_counter() - commit_started
-        commit_started = time.perf_counter()
-        with attention_phase("decode_verify"):
-            commit_logits, commit_hidden = rt.forward_ar(
-                mx.array([[pending_token]]),
-                cache=cache,
-                return_hidden=True,
-                hidden_variant=base_hidden_variant,
+            pending_primary = None
+            detach_capture_committed_state(len(tokens))
+            maybe_detach_dirty_state(len(tokens))
+            maybe_rebase_decode_state(len(tokens))
+            maybe_eval_state_roots({"final_pending_commit": True}, len(tokens))
+        except Exception as exc:  # capture only — never lose a finished response
+            # pending_primary stays set, so the final state below reports
+            # safe_to_commit=False and the bank refuses it; the completed
+            # response itself is untouched.
+            events.append({"final_state_capture_error": str(exc)})
+            print(
+                f"[mtplx] MTP final-pending commit failed ({exc}); response "
+                "preserved, session-bank commit skipped for this turn",
+                file=sys.stderr,
             )
-        _eval(commit_logits, commit_hidden)
-        elapsed_commit_forward = time.perf_counter() - commit_started
-        target_time += elapsed_commit_forward
-        commit_time += elapsed_commit_forward
-        logits, hidden = own_live_logits_hidden(
-            commit_logits[:, -1, :],
-            commit_hidden[:, -1:, :],
-        )
-        pending_primary = None
-        detach_capture_committed_state(len(tokens))
-        maybe_detach_dirty_state(len(tokens))
-        maybe_rebase_decode_state(len(tokens))
-        maybe_eval_state_roots({"final_pending_commit": True}, len(tokens))
 
     emit_trace(force=True, final=True)
-    elapsed = time.perf_counter() - started_all
     compiled_verify_report: dict[str, Any] | None = None
     if a3b_target_prefix_route is not None:
         compiled_verify_report = a3b_target_prefix_route.final_report(

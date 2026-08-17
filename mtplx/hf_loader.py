@@ -386,6 +386,15 @@ def resolve_model_path(model_ref: str, *, cache_dir: str | Path | None = None) -
     cached = cached_model_path(repo_id, cache_dir=cache_dir)
     if _cached_model_ready_for_repo(cached, repo_id):
         return cached
+    # Branded local builds (forge output, `mtplx models` rows) live under the
+    # bare repo basename, not the Org--Name snapshot layout. Bench's default
+    # model selection already resolves them for the same id ("installed
+    # locally"); quickstart/serve must agree, or the CLI tells a user to
+    # re-download 20 GB it already lists. Same contract gate as above.
+    if "/" in repo_id:
+        branded = cached.parent / repo_id.split("/", 1)[1]
+        if branded != cached and _cached_model_ready_for_repo(branded, repo_id):
+            return branded
     raise FileNotFoundError(
         f"Model {repo_id} is not cached. Run: mtplx pull {repo_id}"
     )

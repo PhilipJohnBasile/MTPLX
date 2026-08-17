@@ -1027,12 +1027,18 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static func modelFamily(for model: String) -> String {
+        // Forge provenance outranks any name marker: a renamed or symlinked
+        // dir keeps the family its artifact declares (engine F22 twin —
+        // path markers are the tiebreak, never the authority).
+        if let metadataFamily = modelFamilyFromLocalMetadata(model) {
+            return metadataFamily
+        }
         let normalized = Self.normalized(model)
             .replacingOccurrences(of: "_", with: "-")
         if normalized.contains("gemma4") || normalized.contains("gemma-4") {
             return "gemma4"
         }
-        if normalized.contains("qwen3.8") || normalized.contains("qwen38") || normalized.contains("qwen3-8") {
+        if matchesQwen38VersionToken(normalized) {
             return "qwen3_8"
         }
         if normalized.contains("qwen3.6") || normalized.contains("qwen36") || normalized.contains("qwen3-6") {
@@ -1060,10 +1066,6 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             return "glm"
         }
 
-        if let metadataFamily = modelFamilyFromLocalMetadata(model) {
-            return metadataFamily
-        }
-
         let marker = URL(fileURLWithPath: NSString(string: model).expandingTildeInPath)
             .appendingPathComponent("mtplx_pair.json")
             .path
@@ -1071,6 +1073,17 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             return "gemma4"
         }
         return "unknown"
+    }
+
+    /// The 3.8 version token must not be a parameter count: stock
+    /// `Qwen/Qwen3-8B` and `Qwen3-80B` (digit run ending in "b" right after
+    /// the token) never claim the qwen3_8 family. Engine twin:
+    /// descriptors.py `qwen3[._-]?8(?!\d*b)` (F21).
+    private static func matchesQwen38VersionToken(_ dashNormalized: String) -> Bool {
+        return dashNormalized.range(
+            of: "qwen3[.-]?8(?![0-9]*b)",
+            options: .regularExpression
+        ) != nil
     }
 
     private static func modelFamilyFromLocalMetadata(_ model: String) -> String? {
@@ -1138,7 +1151,10 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         if normalized.contains("step") { return "step" }
         if normalized.contains("deepseek") { return "deepseek" }
         if normalized.contains("glm") { return "glm" }
-        if normalized.contains("qwen3.8") || normalized.contains("qwen3_8") || normalized.contains("qwen3-8") {
+        if normalized.range(
+            of: "qwen3[._-]?8(?![0-9]*b)",
+            options: .regularExpression
+        ) != nil {
             return "qwen3_8"
         }
         if normalized.contains("qwen3.5") || normalized.contains("qwen3_5") || normalized.contains("qwen3-5") {

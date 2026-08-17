@@ -2652,8 +2652,11 @@ def test_completions_prompt_scoring_contract(monkeypatch):
     logprobs = choice["logprobs"]
     assert logprobs["tokens"] == ["a", "b", "c", "d"]
     assert len(logprobs["top_logprobs"]) == 4
-    assert logprobs["top_logprobs"][0] is None
-    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"][1:])
+    # Index 0 is an EMPTY DICT, not null: nothing predicts position 0
+    # (token_logprobs[0] stays null), but harness KL parsers iterate
+    # top_logprobs entries with .items() and a null crashes them.
+    assert logprobs["top_logprobs"][0] == {}
+    assert all(isinstance(entry, dict) for entry in logprobs["top_logprobs"])
     # Entry i is the distribution that predicted token i, string-keyed.
     assert logprobs["top_logprobs"][1]["b"] == pytest.approx(-0.1)
     assert logprobs["top_logprobs"][2]["c"] == pytest.approx(-0.1)
@@ -9610,7 +9613,7 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
 
 
 def test_opencode_chitchat_sampler_uses_launched_defaults():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9636,7 +9639,7 @@ def test_opencode_chitchat_sampler_uses_launched_defaults():
 
 
 def test_opencode_chitchat_sampler_normalizes_client_defaults():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9659,7 +9662,7 @@ def test_opencode_chitchat_sampler_normalizes_client_defaults():
 
 
 def test_opencode_chitchat_sampler_uses_launched_top_p():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9682,7 +9685,7 @@ def test_opencode_chitchat_sampler_uses_launched_top_p():
 
 
 def test_opencode_chitchat_sampler_accepts_app_owned_top_k():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9704,7 +9707,7 @@ def test_opencode_chitchat_sampler_accepts_app_owned_top_k():
 
 
 def test_opencode_chitchat_sampler_runs_with_tools_active():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9726,7 +9729,7 @@ def test_opencode_chitchat_sampler_runs_with_tools_active():
 
 
 def test_opencode_default_sampler_uses_launched_defaults_for_agent_turns():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9751,7 +9754,7 @@ def test_opencode_default_sampler_uses_launched_defaults_for_agent_turns():
 
 
 def test_opencode_agent_sampler_keeps_app_owned_top_p_one():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -9774,7 +9777,7 @@ def test_opencode_agent_sampler_keeps_app_owned_top_p_one():
 
 
 def test_opencode_default_sampler_does_not_touch_explicit_tool_sampler():
-    observability = {"request_client_hint": "opencode"}
+    observability = {"request_client_evidence": "opencode"}
 
     sampler = openai._opencode_default_sampler_override(
         messages=[
@@ -10846,7 +10849,9 @@ def test_chat_stream_tool_call_preamble_is_stored_for_postcommit(monkeypatch):
         for payload in _stream_payloads(response.text)
         if payload["choices"][0]["delta"].get("content")
     )
-    assert streamed_content == "Let me research first.\n\n"
+    # Edge-trimmed on the wire: streamed content matches the non-stream
+    # strip() so stream-vs-non-stream text diffs are byte-clean.
+    assert streamed_content == "Let me research first."
     assert "<tool_call>" not in response.text
 
     assert captured_generation_final
@@ -11057,7 +11062,7 @@ def test_chat_stream_tools_plain_content_stays_incremental(monkeypatch):
         if payload["choices"][0]["delta"].get("content")
     ]
     assert len(content_deltas) > 1
-    assert "".join(content_deltas) == "Count: 1, 2, 3.\n"
+    assert "".join(content_deltas) == "Count: 1, 2, 3."
     assert not any(
         payload["choices"][0]["delta"].get("tool_calls") for payload in payloads
     )
@@ -11287,7 +11292,7 @@ def test_chat_stream_emits_heartbeat_during_alive_silence(monkeypatch):
     assert heartbeats
     assert heartbeats[0]["mtplx_progress"]["phase"] == "generating"
     assert heartbeats[0]["mtplx_progress"]["completion_tokens"] == 0
-    assert content == "ok\n"
+    assert content == "ok"
     assert final_chunks
     assert "data: [DONE]" in response.text
 
