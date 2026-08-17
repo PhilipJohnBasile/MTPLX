@@ -5487,33 +5487,45 @@ def generate_ar(
         stop_token_ids=stop_token_ids,
         max_tokens=max_tokens,
     )
+    # Stamp elapsed before the final-state tail forward below: that pass is
+    # session-bank bookkeeping done after the response is complete, and
+    # billing it to AR would inflate every MTP-vs-AR comparison.
+    elapsed = time.perf_counter() - started_all
     final_state: GenerationFinalState | None = None
     if capture_final_state and tokens and repetition_result is None:
         # The loop samples its final token and breaks before forwarding it,
         # so the cache is one token short of the committed sequence. Extend
         # it: the bank committer refuses final states whose token ids do not
         # match the cache exactly.
-        with attention_phase("ar_decode"):
-            tail_result = rt.forward_ar(
-                mx.array([[int(tokens[-1])]]),
-                cache=cache,
-                return_hidden=False,
+        try:
+            with attention_phase("ar_decode"):
+                tail_result = rt.forward_ar(
+                    mx.array([[int(tokens[-1])]]),
+                    cache=cache,
+                    return_hidden=False,
+                )
+            tail_logits = (
+                tail_result[0] if isinstance(tail_result, tuple) else tail_result
             )
-        tail_logits = (
-            tail_result[0] if isinstance(tail_result, tuple) else tail_result
-        )
-        _eval(tail_logits)
-        final_state = GenerationFinalState(
-            final_trunk_cache=cache,
-            final_logits=tail_logits[:, -1, :],
-            final_hidden=None,
-            final_committed_mtp_cache=None,
-            generated_token_ids=tuple(int(token) for token in tokens),
-            safe_to_commit=True,
-            finish_reason=finish_reason,
-            mtp_history_policy=prompt_state.mtp_history_policy,
-        )
-    elapsed = time.perf_counter() - started_all
+            _eval(tail_logits)
+            final_state = GenerationFinalState(
+                final_trunk_cache=cache,
+                final_logits=tail_logits[:, -1, :],
+                final_hidden=None,
+                final_committed_mtp_cache=None,
+                generated_token_ids=tuple(int(token) for token in tokens),
+                safe_to_commit=True,
+                finish_reason=finish_reason,
+                mtp_history_policy=prompt_state.mtp_history_policy,
+            )
+        except Exception as exc:  # capture only — never lose a finished response
+            final_state = None
+            events.append({"final_state_capture_error": str(exc)})
+            print(
+                f"[mtplx] AR final-state capture failed ({exc}); response "
+                "preserved, session-bank commit skipped for this turn",
+                file=sys.stderr,
+            )
     emit_trace(force=True, final=True)
     stats = GenerationStats(
         mode="ar",
