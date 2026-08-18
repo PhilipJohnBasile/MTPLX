@@ -1,4 +1,4 @@
-name: Temporary rebase diagnostic PR 254
+name: Temporary rebase and validate PR 254
 
 on:
   push:
@@ -6,18 +6,18 @@ on:
       - codex/deepseek-v4-mlxserve-v26
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
-    runs-on: ubuntu-latest
+  rebase-and-validate:
+    runs-on: macos-15-arm64
     steps:
       - uses: actions/checkout@v4
         with:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Resolve first current-main conflict and report any later conflicts
+      - name: Rebase and preserve current lifecycle contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -52,14 +52,14 @@ jobs:
                   ours.append(lines[index])
                   index += 1
               if index >= len(lines):
-                  raise SystemExit("unterminated conflict before separator")
+                  raise SystemExit("unterminated hf_loader conflict before separator")
               index += 1
               theirs: list[str] = []
               while index < len(lines) and not lines[index].startswith(">>>>>>> "):
                   theirs.append(lines[index])
                   index += 1
               if index >= len(lines):
-                  raise SystemExit("unterminated conflict after separator")
+                  raise SystemExit("unterminated hf_loader conflict after separator")
               index += 1
               ours_text = "".join(ours)
               theirs_text = "".join(theirs)
@@ -103,14 +103,14 @@ jobs:
                       ]
                   )
               else:
-                  raise SystemExit("unexpected additional conflict")
+                  raise SystemExit("unexpected additional hf_loader conflict")
               count += 1
 
           if count != 2:
-              raise SystemExit(f"expected two hf_loader.py conflicts, resolved {count}")
+              raise SystemExit(f"expected two hf_loader conflicts, resolved {count}")
           merged = "".join(output)
           if any(marker in merged for marker in ("<<<<<<<", "=======", ">>>>>>>")):
-              raise SystemExit("conflict markers remain")
+              raise SystemExit("hf_loader conflict markers remain")
           path.write_text(merged, encoding="utf-8")
           PY
             git add mtplx/hf_loader.py
@@ -118,16 +118,423 @@ jobs:
             GIT_EDITOR=true git rebase --continue
             rc=$?
             set -e
-            if [ "$rc" -ne 0 ]; then
-              echo "::group::Later conflicted files"
-              git diff --name-only --diff-filter=U
-              echo "::endgroup::"
-              for file in $(git diff --name-only --diff-filter=U); do
-                echo "::group::Conflict markers: $file"
-                grep -n -B 25 -A 70 -E '^(<<<<<<<|=======|>>>>>>>)' "$file" || true
-                echo "::endgroup::"
-              done
-              exit "$rc"
-            fi
           fi
-          echo "Rebase completed after the first semantic resolution."
+
+          if [ "${rc:-0}" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift\napps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
+            test "$conflicts" = "$expected"
+            python - <<'PY'
+          from pathlib import Path
+          from typing import Callable
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          def parse_conflicts(
+              path_name: str,
+              merger: Callable[[str, str], tuple[str, set[str]]],
+          ) -> set[str]:
+              path = Path(path_name)
+              lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+              output: list[str] = []
+              index = 0
+              resolved: set[str] = set()
+              conflict_count = 0
+              while index < len(lines):
+                  if not lines[index].startswith("<<<<<<< "):
+                      output.append(lines[index])
+                      index += 1
+                      continue
+                  index += 1
+                  ours: list[str] = []
+                  while index < len(lines) and not lines[index].startswith("======="):
+                      ours.append(lines[index])
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f"{path_name}: unterminated conflict before separator")
+                  index += 1
+                  theirs: list[str] = []
+                  while index < len(lines) and not lines[index].startswith(">>>>>>> "):
+                      theirs.append(lines[index])
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f"{path_name}: unterminated conflict after separator")
+                  index += 1
+                  merged, kinds = merger("".join(ours), "".join(theirs))
+                  if not kinds:
+                      raise SystemExit(
+                          f"{path_name}: unrecognized conflict\nOURS:\n{''.join(ours)}\nTHEIRS:\n{''.join(theirs)}"
+                      )
+                  output.append(merged)
+                  resolved.update(kinds)
+                  conflict_count += 1
+              merged_file = "".join(output)
+              if any(marker in merged_file for marker in ("<<<<<<<", "=======", ">>>>>>>")):
+                  raise SystemExit(f"{path_name}: conflict markers remain")
+              path.write_text(merged_file, encoding="utf-8")
+              print(f"{path_name}: resolved {conflict_count} conflict(s): {sorted(resolved)}")
+              return resolved
+
+          def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
+              kinds: set[str] = set()
+              text = ours
+              if (
+                  "let existingHealth = probeHealth ? await initialHealthProbe" in ours
+                  and "ExternalMlxServeAdapter" in theirs
+                  and "switch backendKind" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "        let existingHealth = probeHealth ? await initialHealthProbe(healthBaseURL, apiKey) : nil\n",
+                      "        let existingHealth: HealthPayload?\n"
+                      "        var externalPortOccupied = false\n"
+                      "        if probeHealth {\n"
+                      "            switch backendKind {\n"
+                      "            case .mtplx:\n"
+                      "                existingHealth = await initialHealthProbe(healthBaseURL, apiKey)\n"
+                      "            case .externalMlxServe:\n"
+                      "                existingHealth = nil\n"
+                      "                let external = ExternalMlxServeAdapter(\n"
+                      "                    baseURL: healthBaseURL,\n"
+                      "                    apiKey: apiKey\n"
+                      "                )\n"
+                      "                if let existing = try? await external.health(), existing.ok {\n"
+                      "                    externalPortOccupied = true\n"
+                      "                }\n"
+                      "            }\n"
+                      "        } else {\n"
+                      "            existingHealth = nil\n"
+                      "        }\n",
+                      "DaemonSupervisor initial health declaration",
+                  )
+                  text = replace_once(
+                      text,
+                      "            throw DaemonSupervisorError.launchFailed(\"automatic restart was cancelled\")\n"
+                      "        }\n"
+                      "        if let existing = existingHealth, existing.ok {\n",
+                      "            throw DaemonSupervisorError.launchFailed(\"automatic restart was cancelled\")\n"
+                      "        }\n"
+                      "        if externalPortOccupied {\n"
+                      "            abortUnstartedLaunch(\n"
+                      "                generation: launchGeneration,\n"
+                      "                lifecycleEpoch: launchLifecycleEpoch\n"
+                      "            )\n"
+                      "            throw DaemonSupervisorError.portOccupied(pid: nil, launchID: nil)\n"
+                      "        }\n"
+                      "        if let existing = existingHealth, existing.ok {\n",
+                      "DaemonSupervisor external occupied handling",
+                  )
+                  kinds.add("initial_health")
+
+              if (
+                  "private func waitForHealth(" in ours
+                  and "waitForExternalMlxServeHealth" in theirs
+                  and "backendKind: DaemonBackendKind" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "        apiKey: String?,\n        timeoutSeconds: TimeInterval,\n",
+                      "        apiKey: String?,\n"
+                      "        backendKind: DaemonBackendKind,\n"
+                      "        timeoutSeconds: TimeInterval,\n",
+                      "DaemonSupervisor waitForHealth backend argument",
+                  )
+                  text = replace_once(
+                      text,
+                      "    ) async throws -> HealthPayload {\n        let deadline = Date().addingTimeInterval(timeoutSeconds)\n",
+                      "    ) async throws -> HealthPayload? {\n"
+                      "        if backendKind == .externalMlxServe {\n"
+                      "            try await waitForExternalMlxServeHealth(\n"
+                      "                baseURL: baseURL,\n"
+                      "                apiKey: apiKey,\n"
+                      "                timeoutSeconds: timeoutSeconds,\n"
+                      "                onPhase: onPhase\n"
+                      "            )\n"
+                      "            return nil\n"
+                      "        }\n"
+                      "        let deadline = Date().addingTimeInterval(timeoutSeconds)\n",
+                      "DaemonSupervisor waitForHealth external branch",
+                  )
+                  kinds.add("wait_for_health")
+              return text, kinds
+
+          def merge_store(ours: str, theirs: str) -> tuple[str, set[str]]:
+              kinds: set[str] = set()
+              text = ours
+
+              if (
+                  "supervisor.setAutomaticRestartEnabled(next.automaticDaemonRestart)" in ours
+                  and "daemonBackendKind(for: next) == .mtplx" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "            try await prepareRuntimeForDaemonStart()\n",
+                      "            if daemonBackendKind(for: next) == .mtplx {\n"
+                      "                try await prepareRuntimeForDaemonStart()\n"
+                      "            }\n",
+                      "BackendStore restart runtime preparation",
+                  )
+                  kinds.add("restart_runtime")
+
+              if (
+                  "supervisor.setAutomaticRestartEnabled(configuration.automaticDaemonRestart)" in ours
+                  and "daemonBackendKind(for: configuration) == .mtplx" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "            try await prepareRuntimeForDaemonStart()\n",
+                      "            if daemonBackendKind(for: configuration) == .mtplx {\n"
+                      "                try await prepareRuntimeForDaemonStart()\n"
+                      "            }\n",
+                      "BackendStore start runtime preparation",
+                  )
+                  kinds.add("start_runtime")
+
+              if "public func refreshStaticState(" in ours and "supportsMTPLXLiveControls" in theirs:
+                  text = replace_once(
+                      text,
+                      "    ) async throws {\n        let client = apiClient\n",
+                      "    ) async throws {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            health = nil\n"
+                      "            capabilities = nil\n"
+                      "            sessions = nil\n"
+                      "            prefillHistory = nil\n"
+                      "            models = nil\n"
+                      "            return\n"
+                      "        }\n"
+                      "        let client = apiClient\n",
+                      "BackendStore refreshStaticState external guard",
+                  )
+                  kinds.add("refresh_static")
+
+              if (
+                  "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours
+                  and "pendingLiveSettings = nil" in theirs
+                  and "supportsMTPLXLiveControls" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "    ) async throws {\n        guard let pending = pendingLiveSettings else { return }\n",
+                      "    ) async throws {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            pendingLiveSettings = nil\n"
+                      "            pendingLiveSettingsModel = nil\n"
+                      "            settings = nil\n"
+                      "            return\n"
+                      "        }\n"
+                      "        guard let pending = pendingLiveSettings else { return }\n",
+                      "BackendStore fresh-launch settings external guard",
+                  )
+                  kinds.add("flush_fresh")
+
+              if (
+                  "func setFanMode(" in ours
+                  and "unsupportedExternalBackend" in theirs
+                  and "supportsMTPLXLiveControls" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "    ) async throws {\n        guard isCurrent?() ?? true else { return }\n",
+                      "    ) async throws {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            throw BenchmarkDaemonReadinessError.unsupportedExternalBackend\n"
+                      "        }\n"
+                      "        guard isCurrent?() ?? true else { return }\n",
+                      "BackendStore fan mode external guard",
+                  )
+                  kinds.add("fan_mode")
+
+              if (
+                  "public func refreshThermalStatus(isCurrent:" in ours
+                  and "thermalStatus = nil" in theirs
+                  and "supportsMTPLXLiveControls" in theirs
+              ):
+                  text = replace_once(
+                      text,
+                      "    public func refreshThermalStatus(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        await beforeThermalStatusRefresh()\n",
+                      "    public func refreshThermalStatus(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            thermalStatus = nil\n"
+                      "            currentFanMode = nil\n"
+                      "            return\n"
+                      "        }\n"
+                      "        await beforeThermalStatusRefresh()\n",
+                      "BackendStore thermal external guard",
+                  )
+                  kinds.add("thermal")
+
+              if (
+                  "private func refreshPostStartState(" in ours
+                  and "external mlx-serve ready" in theirs
+                  and "startExternalMlxServeHealthWatchdog" in theirs
+              ):
+                  current_guard = (
+                      "        guard daemonSessionIsCurrent(\n"
+                      "            lifecycleEpoch: lifecycleEpoch,\n"
+                      "            launchID: nil,\n"
+                      "            recoveryGeneration: recoveryGeneration\n"
+                      "        ) else { return false }\n"
+                      "        do {\n"
+                  )
+                  external_guard = (
+                      "        guard daemonSessionIsCurrent(\n"
+                      "            lifecycleEpoch: lifecycleEpoch,\n"
+                      "            launchID: nil,\n"
+                      "            recoveryGeneration: recoveryGeneration\n"
+                      "        ) else { return false }\n"
+                      "        guard daemonBackendKind(for: configuration) == .mtplx else {\n"
+                      "            health = nil\n"
+                      "            capabilities = nil\n"
+                      "            sessions = nil\n"
+                      "            sessionBank = nil\n"
+                      "            settings = nil\n"
+                      "            pendingLiveSettings = nil\n"
+                      "            pendingLiveSettingsModel = nil\n"
+                      "            connectionState = .idle\n"
+                      "            await supervisor.logs.append(\n"
+                      "                \"external mlx-serve ready; MTPLX live controls and metrics are unavailable\",\n"
+                      "                stream: .system\n"
+                      "            )\n"
+                      "            guard daemonSessionIsCurrent(\n"
+                      "                lifecycleEpoch: lifecycleEpoch,\n"
+                      "                launchID: nil,\n"
+                      "                recoveryGeneration: recoveryGeneration\n"
+                      "            ) else { return false }\n"
+                      "            startExternalMlxServeHealthWatchdog()\n"
+                      "            return daemonSessionIsCurrent(\n"
+                      "                lifecycleEpoch: lifecycleEpoch,\n"
+                      "                launchID: nil,\n"
+                      "                recoveryGeneration: recoveryGeneration\n"
+                      "            )\n"
+                      "        }\n"
+                      "        do {\n"
+                  )
+                  text = replace_once(
+                      text,
+                      current_guard,
+                      external_guard,
+                      "BackendStore post-start external branch",
+                  )
+                  kinds.add("post_start")
+
+              if "public func refreshPrefillHistory(isCurrent:" in ours and "prefillHistory = nil" in theirs:
+                  text = replace_once(
+                      text,
+                      "    public func refreshPrefillHistory(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        let fetchedPrefillHistory = try? await apiClient.prefillHistory()\n",
+                      "    public func refreshPrefillHistory(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            prefillHistory = nil\n"
+                      "            return\n"
+                      "        }\n"
+                      "        let fetchedPrefillHistory = try? await apiClient.prefillHistory()\n",
+                      "BackendStore prefill history external guard",
+                  )
+                  kinds.add("prefill_history")
+
+              if "public func refreshModels(isCurrent:" in ours and "models = nil" in theirs:
+                  text = replace_once(
+                      text,
+                      "    public func refreshModels(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        let fetchedModels = try? await apiClient.models()\n",
+                      "    public func refreshModels(isCurrent: (() -> Bool)? = nil) async {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+                      "            models = nil\n"
+                      "            return\n"
+                      "        }\n"
+                      "        let fetchedModels = try? await apiClient.models()\n",
+                      "BackendStore models external guard",
+                  )
+                  kinds.add("models")
+
+              return text, kinds
+
+          supervisor_kinds = parse_conflicts(
+              "apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift",
+              merge_supervisor,
+          )
+          store_kinds = parse_conflicts(
+              "apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift",
+              merge_store,
+          )
+          expected_supervisor = {"initial_health", "wait_for_health"}
+          expected_store = {
+              "restart_runtime",
+              "start_runtime",
+              "refresh_static",
+              "flush_fresh",
+              "fan_mode",
+              "thermal",
+              "post_start",
+              "prefill_history",
+              "models",
+          }
+          if supervisor_kinds != expected_supervisor:
+              raise SystemExit(
+                  f"unexpected DaemonSupervisor resolution set: {sorted(supervisor_kinds)}"
+              )
+          if store_kinds != expected_store:
+              raise SystemExit(
+                  f"unexpected MTPLXBackendStore resolution set: {sorted(store_kinds)}"
+              )
+          PY
+            git add \
+              apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift \
+              apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift
+            GIT_EDITOR=true git rebase --continue
+          fi
+
+      - name: Squash helper history into one feature commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --soft upstream/main
+          rm -f .github/workflows/temporary-rebase-254.yml
+          git add -A
+          git commit -s -m "feat: add DeepSeek V4 target-only mlx-serve backend"
+          test "$(git rev-list --count upstream/main..HEAD)" = "1"
+          test -z "$(git diff --name-only upstream/main...HEAD -- .github/workflows/temporary-rebase-254.yml)"
+          git diff --check upstream/main...HEAD
+
+      - name: Validate app lifecycle and Python backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q uv build
+          uv run --extra server --extra dev pytest -q \
+            tests/test_deepseek_v4_mlxserve_backend.py \
+            tests/test_artifacts.py \
+            tests/test_public_cli.py
+          python -m compileall -q \
+            mtplx/artifacts.py \
+            mtplx/backends/deepseek_v4_mlxserve.py \
+            mtplx/backends/descriptors.py \
+            mtplx/backends/registry.py \
+            mtplx/commands/public.py \
+            mtplx/hf_loader.py \
+            mtplx/models/deepseek_v4_target_only_config.py
+          bash scripts/hygiene_scan.sh .
+          python -m build
+          (
+            cd apps/MTPLXApp
+            swift test
+            swift build -c release
+          )
+          git diff --check upstream/main...HEAD
+
+      - name: Publish clean candidate branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git" \
+            HEAD:sync/rebased-254-ready \
+            --force
