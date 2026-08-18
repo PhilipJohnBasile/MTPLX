@@ -54,6 +54,45 @@ jobs:
           if len(blocks) != 4:
               raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
 
+          # Current MTPLX main now keeps waitForHealth non-optional for the
+          # native daemon. The external backend still has no truthful
+          # HealthPayload to return. Teach the guarded resolver the new,
+          # smaller signature-only conflict shape while preserving main's
+          # injected healthWaitProbe for the native path.
+          supervisor_anchor = '''          def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
+              kinds: set[str] = set()
+              text = ours
+          '''
+          supervisor_replacement = supervisor_anchor + '''              if (
+                  ours.strip() == ") async throws -> HealthPayload {"
+                  and "waitForExternalMlxServeHealth" in theirs
+                  and "return nil" in theirs
+              ):
+                  return (
+                      "    ) async throws -> HealthPayload? {\\n"
+                      "        if backendKind == .externalMlxServe {\\n"
+                      "            try await waitForExternalMlxServeHealth(\\n"
+                      "                baseURL: baseURL,\\n"
+                      "                apiKey: apiKey,\\n"
+                      "                timeoutSeconds: timeoutSeconds,\\n"
+                      "                onPhase: onPhase\\n"
+                      "            )\\n"
+                      "            // External mlx-serve exposes only its raw\\n"
+                      "            // liveness contract; do not fabricate MTPLX\\n"
+                      "            // sessions, metrics, or launch metadata.\\n"
+                      "            return nil\\n"
+                      "        }\\n",
+                      {"wait_for_health"},
+                  )
+          '''
+          if blocks[1].count(supervisor_anchor) != 1:
+              raise SystemExit("could not locate PR 254 supervisor resolver")
+          blocks[1] = blocks[1].replace(
+              supervisor_anchor,
+              supervisor_replacement,
+              1,
+          )
+
           cleanup = """rm -f \\
             .github/workflows/temporary-rebase-254.yml \\
             .github/workflows/temporary-execute-rebase-254-macos14.yml \\
