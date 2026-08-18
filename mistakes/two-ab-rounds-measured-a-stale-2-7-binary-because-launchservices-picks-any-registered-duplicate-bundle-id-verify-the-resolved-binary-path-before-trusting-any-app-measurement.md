@@ -28,3 +28,15 @@ my "after" instances were roulette.
 4. Corollary for "impossible" debug results: when two different code
    changes produce IDENTICAL wrong pixels, stop debugging the code and
    verify WHICH code is running.
+5. **The Python twin (2026-08-18):** the app daemon launches
+   `python -m mtplx.server.openai` with cwd = the runtime venv's
+   site-packages — and a REAL `mtplx/` directory from an old wheel
+   install sat there, shadowing the editable checkout. An engine A/B
+   round "showed no improvement" because the fixes never loaded. Worse,
+   `venv/bin/python -c "import mtplx; print(mtplx.__file__)"` LIED when
+   run from the checkout directory (cwd precedes site-packages on
+   sys.path). Rules: resolve-check imports from a NEUTRAL cwd
+   (`cd /tmp`), and after every daemon restart verify the running code
+   by PROBING for a marker only the new code has (e.g. a freshly added
+   telemetry field in the request record). No probe, no verdict —
+   binary and package alike.
