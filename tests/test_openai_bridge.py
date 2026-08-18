@@ -1425,6 +1425,40 @@ def test_incremental_token_decoder_flushes_think_close_without_waiting_for_space
     assert decoder.feed(_ids("Answer ")) == "Answer "
 
 
+def test_incremental_token_decoder_escapes_whitespace_free_hold():
+    # 2026-08-18 stream-cadence fix: a whitespace-free run (table
+    # separator row, long URL, minified code) must not freeze the
+    # visible stream for its full length. Once the held tail passes
+    # _MAX_HOLD_CHARS the decoder flushes, keeping a short tail so a
+    # chunk-split close tag still completes inside the cache.
+    decoder = _IncrementalTokenDecoder(TinyTokenizer())
+    run = "|" + "-" * 200
+    emitted = []
+    for ch in run:
+        emitted.append(decoder.feed(_ids(ch)))
+    flushed = "".join(emitted)
+    # It must have flushed something mid-run (no total hold)...
+    assert len(flushed) >= len(run) - decoder._MAX_HOLD_CHARS
+    # ...never emitted more than exists, and finish() restores the rest
+    # byte-for-byte.
+    assert run.startswith(flushed)
+    assert flushed + decoder.finish() == run
+
+
+def test_incremental_token_decoder_escape_preserves_close_tag_flush():
+    # The escape must not break the reasoning close-tag fast path: a
+    # long no-space run followed by </think> still flushes the tag the
+    # moment it completes, and the total stream stays byte-identical.
+    decoder = _IncrementalTokenDecoder(TinyTokenizer())
+    run = "x" * 150 + "</think>"
+    emitted = []
+    for ch in run:
+        emitted.append(decoder.feed(_ids(ch)))
+    flushed = "".join(emitted)
+    assert flushed.endswith("</think>")
+    assert flushed + decoder.finish() == run
+
+
 def test_thinking_stream_splitter_keeps_reasoning_out_of_content():
     splitter = _ThinkingContentStreamSplitter(thinking_enabled=True)
 

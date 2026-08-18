@@ -13209,6 +13209,23 @@ def _metrics_envelope(
     # The sliding-window rates below remain available for diagnostics, but
     # consumer UI must not present a token-window burst as "TPS".
     display_decode_tok_s = decode_tok_s
+    # Producer-side emit-gap census (2026-08-18). Mean TPS hid 200-500 ms
+    # emit silences that users feel as freeze-then-catch-up; sliding
+    # window averages blur them. These make the felt-smoothness regime
+    # auditable in every request record: a gap here is the GENERATOR
+    # going quiet (verify stall, cache housekeeping), as opposed to
+    # delivery-side batching downstream.
+    producer_gap_ms_p95: float | None = None
+    producer_gap_ms_max: float | None = None
+    producer_gaps_over_200ms = 0
+    if len(token_times) >= 2:
+        gaps = sorted(
+            (later - earlier) * 1000.0
+            for earlier, later in zip(token_times, token_times[1:])
+        )
+        producer_gap_ms_p95 = gaps[min(len(gaps) - 1, int(len(gaps) * 0.95))]
+        producer_gap_ms_max = gaps[-1]
+        producer_gaps_over_200ms = sum(1 for gap in gaps if gap >= 200.0)
     prompt_eval_time_s = float(stats.get("prompt_eval_time_s") or 0.0)
     ttft_s = max(0.0, token_times[0] - request_started_s) if token_times else None
     cached_tokens = int(stats.get("cached_tokens") or 0)
@@ -13257,6 +13274,9 @@ def _metrics_envelope(
         "sliding_decode_tok_s_last_64": sliding_decode_tok_s_last_64,
         "sliding_decode_tok_s_last_128": sliding_decode_tok_s_last_128,
         "sliding_decode_tok_s_last_256": sliding_decode_tok_s_last_256,
+        "producer_gap_ms_p95": producer_gap_ms_p95,
+        "producer_gap_ms_max": producer_gap_ms_max,
+        "producer_gaps_over_200ms": producer_gaps_over_200ms,
         "mtp_depth": int(mtp_depth),
         "verify_calls": int(stats.get("verify_calls") or 0),
         "accepted_by_depth": stats.get("accepted_by_depth") or [],
@@ -19249,6 +19269,60 @@ class _SmartFanArrivalMiddleware:
             _end_smart_fan_request(self.state, lease)
 
 
+class _AuthRateLimitMiddleware:
+    """API-key + rate-limit gate as pure ASGI (2026-08-18).
+
+    Behavior-identical replacement for the former ``@app.middleware
+    ("http")`` function ``api_key_and_rate_limit``. The decorator form
+    wraps responses in BaseHTTPMiddleware's rendezvous relay, taxing
+    every SSE frame; this class touches only the request head. Auth and
+    rate-limit helpers take a Starlette ``Request``, which constructs
+    fine from a bare http scope (headers/query only — the body is never
+    read here, so downstream receives an untouched stream).
+    """
+
+    def __init__(self, app: Any, state: Any) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        api_key = self.state.args.api_key
+        if not _request_is_authorized(
+            request, api_key
+        ) and not _request_is_browser_auth_bootstrap(request, api_key):
+            response = JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "message": "missing or invalid API key",
+                        "type": "authentication_error",
+                    }
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+        allowed, retry_after = self.state.rate_limiter.check(_rate_limit_key(request))
+        if not allowed:
+            response = JSONResponse(
+                status_code=429,
+                content={
+                    "error": {
+                        "message": "rate limit exceeded",
+                        "type": "rate_limit_error",
+                    }
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 async def _prompt_scoring_response(
     state: "ServerState",
     *,
@@ -21208,6 +21282,17 @@ class _IncrementalTokenDecoder:
 
     _CACHE_TRUNCATE_THRESHOLD = 96
     _CACHE_KEEP_TOKENS = 8
+    # Max characters the decoder may hold waiting for a whitespace
+    # boundary before force-flushing (2026-08-18). Without this, any
+    # whitespace-free run — a markdown table separator row, a long URL,
+    # minified code, compact JSON — froze the VISIBLE stream for the
+    # run's full length and then landed as one paste ("freeze then
+    # vomit" in code/tables). ~64 chars ≈ 0.3 s at chat decode rates.
+    # The escape keeps a short tail held so a chunk-split reasoning
+    # close tag always completes inside the cache before the close-tag
+    # branch looks for it.
+    _MAX_HOLD_CHARS = 64
+    _ESCAPE_TAIL_KEEP_CHARS = 32
 
     def __init__(self, tokenizer: Any) -> None:
         self._tokenizer = tokenizer
@@ -21275,6 +21360,15 @@ class _IncrementalTokenDecoder:
                 boundary = index + 1
                 break
         if boundary <= self._print_len:
+            held = len(text) - self._print_len
+            if held >= self._MAX_HOLD_CHARS:
+                boundary = len(text) - self._ESCAPE_TAIL_KEEP_CHARS
+                if boundary <= self._print_len:
+                    return ""
+                printable = text[self._print_len : boundary]
+                self._print_len = boundary
+                self._truncate_decoded_prefix(text)
+                return printable
             return ""
         printable = text[self._print_len : boundary]
         self._print_len = boundary
@@ -24233,36 +24327,16 @@ def create_app(state: ServerState) -> FastAPI:
         allow_headers=["*"],
     )
 
-    @app.middleware("http")
-    async def api_key_and_rate_limit(
-        request: Request, call_next: Callable[[Request], Any]
-    ) -> Any:
-        if not _request_is_authorized(
-            request, state.args.api_key
-        ) and not _request_is_browser_auth_bootstrap(request, state.args.api_key):
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "error": {
-                        "message": "missing or invalid API key",
-                        "type": "authentication_error",
-                    }
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        allowed, retry_after = state.rate_limiter.check(_rate_limit_key(request))
-        if not allowed:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": {
-                        "message": "rate limit exceeded",
-                        "type": "rate_limit_error",
-                    }
-                },
-                headers={"Retry-After": str(retry_after)},
-            )
-        return await call_next(request)
+    # Registered LAST so it stays the OUTERMOST middleware, exactly where
+    # the previous @app.middleware("http") decorator put it. Pure ASGI on
+    # purpose (2026-08-18): the decorator form is Starlette
+    # BaseHTTPMiddleware, which relays every response chunk through a
+    # zero-buffer anyio memory channel across a task-group boundary —
+    # several extra event-loop turns per SSE frame at 60-120 frames/s,
+    # clumping stream delivery whenever the loop is busy. This gate only
+    # inspects the request head and otherwise passes the raw ASGI stream
+    # through untouched — zero per-chunk cost.
+    app.add_middleware(_AuthRateLimitMiddleware, state=state)
 
     @app.get(_BROWSER_AUTH_PATH)
     def browser_auth(request: Request) -> Response:

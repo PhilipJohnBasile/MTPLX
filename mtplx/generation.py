@@ -1981,13 +1981,19 @@ class _RepetitionStreamGate:
     the pre-F35 wire, which streamed the entire trimmed run.
     """
 
-    __slots__ = ("config", "window", "mode", "engaged")
+    __slots__ = ("config", "window", "mode", "engaged", "engagements", "engaged_at")
 
     def __init__(self, config: RepetitionStopConfig, window: int) -> None:
         self.config = config
         self.mode = _repetition_stream_holdback_mode()
         self.window = 0 if self.mode == "off" else max(0, int(window))
         self.engaged = self.mode == "strict" and self.window > 0
+        # Observability (2026-08-18): every engagement is a deliberate
+        # wire freeze — it must never be invisible again. Transition
+        # logs let a stream-cadence report attribute any silence window
+        # to this gate (or rule it out) without instrumented rebuilds.
+        self.engagements = 0
+        self.engaged_at = 0
 
     def _tail_candidate(self, tokens: list[int]) -> bool:
         cfg = self.config
@@ -2021,7 +2027,22 @@ class _RepetitionStreamGate:
         if self.window <= 0:
             return total
         if self.mode != "strict":
+            was_engaged = self.engaged
             self.engaged = self._tail_candidate(tokens)
+            if self.engaged and not was_engaged:
+                self.engagements += 1
+                self.engaged_at = total
+                print(
+                    f"[mtplx] repetition stream holdback engaged "
+                    f"(n={self.engagements}, at_token={total})",
+                    file=sys.stderr,
+                )
+            elif was_engaged and not self.engaged:
+                print(
+                    f"[mtplx] repetition stream holdback released "
+                    f"(held {total - self.engaged_at} tokens)",
+                    file=sys.stderr,
+                )
         if not self.engaged:
             return total
         return _repetition_stream_emit_limit(total, self.config, self.window)
@@ -7788,29 +7809,38 @@ def generate_mtpk(
 
     def emit_new_tokens() -> None:
         nonlocal streamed_token_count
-        maybe_materialize_trunk_cache()
-        maybe_clear_mlx_cache()
-        if token_callback is None or streamed_token_count >= len(tokens):
-            return
-        # F35 → 2.8.3: armed streams stop at the holdback limit only while
-        # a loop is forming, so a repetition trim can never chase bytes
-        # already on the wire; non-looping and disarmed streams keep the
-        # historical limit len(tokens), byte for byte.
-        limit = (
-            _stream_gate.emit_limit(tokens)
-            if _stream_gate.window > 0
-            else len(tokens)
-        )
-        if limit <= streamed_token_count:
-            return
-        new_tokens = [
-            int(token)
-            for token in tokens[streamed_token_count:limit]
-            if not _is_stop(int(token), stop_token_ids)
-        ]
-        streamed_token_count = limit
-        if new_tokens:
-            token_callback(new_tokens)
+        # Emit FIRST, housekeeping after (2026-08-18): the trunk-cache
+        # materialize and mx cache clear can block on an mx.synchronize
+        # barrier for hundreds of ms (the clear auto-arms at >=16k-token
+        # contexts). Running them before the callback held freshly
+        # committed tokens off the wire for the barrier's full duration —
+        # production and delivery frozen together. The finally keeps the
+        # housekeeping cadence identical on every call path.
+        try:
+            if token_callback is None or streamed_token_count >= len(tokens):
+                return
+            # F35 → 2.8.3: armed streams stop at the holdback limit only while
+            # a loop is forming, so a repetition trim can never chase bytes
+            # already on the wire; non-looping and disarmed streams keep the
+            # historical limit len(tokens), byte for byte.
+            limit = (
+                _stream_gate.emit_limit(tokens)
+                if _stream_gate.window > 0
+                else len(tokens)
+            )
+            if limit <= streamed_token_count:
+                return
+            new_tokens = [
+                int(token)
+                for token in tokens[streamed_token_count:limit]
+                if not _is_stop(int(token), stop_token_ids)
+            ]
+            streamed_token_count = limit
+            if new_tokens:
+                token_callback(new_tokens)
+        finally:
+            maybe_materialize_trunk_cache()
+            maybe_clear_mlx_cache()
 
     if exact_a3b_target_prefix:
         if _compiled_verify_mode != "on":
