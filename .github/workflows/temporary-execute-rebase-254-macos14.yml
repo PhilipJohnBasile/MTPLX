@@ -85,33 +85,44 @@ jobs:
               raise SystemExit("could not locate PR 254 supervisor resolver")
           blocks[0] = blocks[0].replace(supervisor_anchor, supervisor_replacement, 1)
 
-          # refreshStaticState gained parameters on current main. Change the
-          # resolver's old match from the function boundary to the stable client
-          # declaration and avoid re-emitting a second function signature.
-          old_match_literal = '"    ) async throws {\\n        let client = apiClient\\n",'
-          new_match_literal = '"        let client = apiClient\\n",'
-          if blocks[0].count(old_match_literal) != 1:
-              raise SystemExit(
-                  "could not locate PR 254 refreshStaticState old match literal"
-              )
-          blocks[0] = blocks[0].replace(old_match_literal, new_match_literal, 1)
-
-          old_replacement_prefix = (
-              '"    ) async throws {\\n"\n'
-              '                      "        guard supportsMTPLXLiveControls else {\\n"'
+          # refreshStaticState gained parameters on current main. Replace the
+          # complete old resolver subsection so only the external guard is
+          # inserted at the stable client-declaration anchor.
+          refresh_start = (
+              '              if "public func refreshStaticState(" in ours '
+              'and "supportsMTPLXLiveControls" in theirs:\n'
           )
-          new_replacement_prefix = (
-              '""\n'
-              '                      "        guard supportsMTPLXLiveControls else {\\n"'
+          refresh_end = (
+              '\n              if (\n'
+              '                  "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours\n'
           )
-          if blocks[0].count(old_replacement_prefix) != 1:
-              raise SystemExit(
-                  "could not locate PR 254 refreshStaticState replacement prefix"
-              )
-          blocks[0] = blocks[0].replace(
-              old_replacement_prefix,
-              new_replacement_prefix,
-              1,
+          start_index = blocks[0].find(refresh_start)
+          if start_index < 0:
+              raise SystemExit("could not locate PR 254 refreshStaticState subsection")
+          end_index = blocks[0].find(refresh_end, start_index)
+          if end_index < 0:
+              raise SystemExit("could not locate PR 254 refreshStaticState subsection end")
+          refresh_replacement = '''              if "public func refreshStaticState(" in ours and "supportsMTPLXLiveControls" in theirs:
+                  text = replace_once(
+                      text,
+                      "        let client = apiClient\\n",
+                      "        guard supportsMTPLXLiveControls else {\\n"
+                      "            health = nil\\n"
+                      "            capabilities = nil\\n"
+                      "            sessions = nil\\n"
+                      "            prefillHistory = nil\\n"
+                      "            models = nil\\n"
+                      "            return\\n"
+                      "        }\\n"
+                      "        let client = apiClient\\n",
+                      "BackendStore refreshStaticState external guard",
+                  )
+                  kinds.add("refresh_static")
+          '''
+          blocks[0] = (
+              blocks[0][:start_index]
+              + refresh_replacement.rstrip("\n")
+              + blocks[0][end_index:]
           )
 
           cleanup = """rm -f \\
