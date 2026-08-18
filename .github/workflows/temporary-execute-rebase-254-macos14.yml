@@ -54,16 +54,13 @@ jobs:
           if len(blocks) != 4:
               raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
 
-          # Current MTPLX main now keeps waitForHealth non-optional for the
-          # native daemon. The external backend still has no truthful
-          # HealthPayload to return. Teach the guarded resolver the new,
-          # smaller signature-only conflict shape while preserving main's
-          # injected healthWaitProbe for the native path.
-          supervisor_anchor = '''          def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
+          # block extraction removes the workflow's ten-space shell indent, so
+          # this anchor must match the Python resolver at column zero.
+          supervisor_anchor = '''def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
               kinds: set[str] = set()
               text = ours
           '''
-          supervisor_replacement = supervisor_anchor + '''              if (
+          supervisor_replacement = supervisor_anchor + '''    if (
                   ours.strip() == ") async throws -> HealthPayload {"
                   and "waitForExternalMlxServeHealth" in theirs
                   and "return nil" in theirs
@@ -106,6 +103,13 @@ jobs:
               r"--force-with-lease=[^\\s]+",
               "--force",
               blocks[3],
+          )
+          blocks[3] += (
+              "\n"
+              "git push "
+              "\"https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git\" "
+              "HEAD:codex/deepseek-v4-mlxserve-v26 "
+              "--force-with-lease=refs/heads/codex/deepseek-v4-mlxserve-v26:${GITHUB_SHA}\n"
           )
 
           script: list[str] = ["set -euo pipefail"]
