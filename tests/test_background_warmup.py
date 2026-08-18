@@ -144,6 +144,55 @@ def test_background_warmup_runs_all_steps_and_publishes_done(monkeypatch):
     assert snapshot["resubmits"] == 0
 
 
+def test_background_warmup_defers_while_foreground_recent(monkeypatch):
+    """2.8.3 idle grace: a daemon that served traffic recently must not
+    burn GPU on warm rungs between chat turns — steps defer on a timer
+    (no model work, no resubmit budget) until the grace elapses."""
+    import time as _time
+
+    scheduler = FakeScheduler()
+    state = make_state(scheduler)
+    state.last_request_at = _time.time()  # a response just finished
+    monkeypatch.setenv("MTPLX_WARMUP_LADDER", "16")
+    monkeypatch.setenv("MTPLX_WARMUP_IDLE_GRACE_S", "90")
+    monkeypatch.setattr(server, "_prewarm_gqa_packed_pipelines", lambda: True)
+    generations: list[int] = []
+    monkeypatch.setattr(
+        server,
+        "_run_generation",
+        lambda _state, prompt_ids, **kwargs: generations.append(len(prompt_ids))
+        or {"tok_s": 1.0},
+    )
+    timers: list[tuple[float, object, tuple]] = []
+
+    class FakeTimer:
+        def __init__(self, interval, fn, args=()):
+            timers.append((interval, fn, tuple(args)))
+            self.daemon = False
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server.threading, "Timer", FakeTimer)
+    status_host: dict = {}
+    warming = server._BackgroundWarmup(state, status_host, [1, 2, 3])
+    warming.submit(0)
+    scheduler.drain()
+    # No model work ran; the plan is waiting for idle, budget untouched.
+    assert generations == []
+    assert status_host["background"]["steps"][0]["state"] == "waiting_idle"
+    assert status_host["background"]["resubmits"] == 0
+    assert len(timers) == 1
+    wait_s, fn, args = timers[0]
+    assert 0.0 < wait_s <= 90.0
+    # Grace elapses: the deferred submit now runs the plan to completion.
+    state.last_request_at = _time.time() - 3600.0
+    fn(*args)
+    scheduler.drain()
+    assert generations == [16]
+    assert status_host["background"]["state"] == "done"
+
+
 def test_background_warmup_yield_resubmits_then_completes(monkeypatch):
     scheduler = FakeScheduler()
     state = make_state(scheduler)

@@ -1,12 +1,21 @@
-"""Runtime observability F35: the armed repetition stop must trim BEFORE the
-wire, not after it.
+"""Runtime observability F35 → 2.8.3 candidate gating: armed-stream wire
+semantics.
 
 Deterministic no-model harness (pattern from test_loop_guard): a scripted
 model walks distinct tokens then enters a fixed cycle, so the uncapped
 repetition stop fires at a known step. The stream callback records every
-wire batch; the invariant under arming is wire == final tokens, byte for
-byte. Disarmed requests must keep the exact historical per-call emit
-pattern.
+wire batch.
+
+Contract by mode (MTPLX_REPETITION_STREAM_HOLDBACK):
+- "strict" (the 2.8.0-2.8.2 behavior): wire == final tokens byte for byte —
+  the holdback is unconditional while armed.
+- "candidate" (default since the 2.8.3 streaming-freeze fix): non-looping
+  armed streams are LIVE (byte-identical to the disarmed wire — this is the
+  product regression test for the 2.8.x every-chat freeze); when a real
+  loop trims, wire divergence is bounded by the candidate engagement span
+  (a short prefix of the trimmed suffix may have streamed).
+- Disarmed requests keep the exact historical per-call emit pattern in
+  every mode.
 """
 
 from __future__ import annotations
@@ -205,8 +214,9 @@ def _collecting_callback():
     return calls, callback
 
 
-def test_ar_armed_stream_never_shows_trimmed_tokens(monkeypatch):
+def test_ar_armed_stream_never_shows_trimmed_tokens_strict(monkeypatch):
     _set_repetition_env(monkeypatch)
+    monkeypatch.setenv("MTPLX_REPETITION_STREAM_HOLDBACK", "strict")
     calls, callback = _collecting_callback()
     out = generate_ar(
         _runtime(_ScriptedModel(_next_token)),
@@ -272,8 +282,9 @@ def test_ar_disarmed_stream_is_byte_identical_per_token(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_mtpk_armed_stream_never_shows_trimmed_tokens(monkeypatch):
+def test_mtpk_armed_stream_never_shows_trimmed_tokens_strict(monkeypatch):
     _set_repetition_env(monkeypatch)
+    monkeypatch.setenv("MTPLX_REPETITION_STREAM_HOLDBACK", "strict")
     calls, callback = _collecting_callback()
     out = generate_mtpk(
         _runtime(_ScriptedMTPModel(_next_token)),
@@ -293,6 +304,92 @@ def test_mtpk_armed_stream_never_shows_trimmed_tokens(monkeypatch):
     assert wire == list(out.tokens)
     # The trimmer retracted the repeated suffix before it hit the wire.
     assert len(out.tokens) < 200
+
+
+def test_ar_armed_nonlooping_stream_is_live_per_token(monkeypatch):
+    """THE 2.8.x product regression test.
+
+    An armed uncapped stream with healthy (non-looping) output must be
+    byte-identical to the disarmed wire: one singleton callback per token,
+    no holdback, no freeze window, no end-of-response flush burst. The
+    2.8.0-2.8.2 unconditional holdback fails exactly this — it silenced
+    every desktop chat for a detector-window of tokens (8-11 s at chat
+    rates) and dumped the tail as one final burst.
+    """
+    _set_repetition_env(monkeypatch)
+    calls, callback = _collecting_callback()
+    out = generate_ar(
+        _runtime(_ScriptedModel(_next_token_fresh)),
+        [0],
+        max_tokens=120,  # far past min_tokens=48: detector armed and active
+        sampler=GREEDY,
+        seed=7,
+        stop_token_ids=set(),
+        token_callback=callback,
+        repetition_stop=True,
+    )
+    assert len(out.tokens) == 120
+    # Live wire: the exact historical per-token singleton pattern.
+    assert calls == [[token] for token in out.tokens]
+
+
+def test_ar_armed_looping_stream_divergence_is_bounded(monkeypatch):
+    """Candidate mode on a real loop: the wire may briefly stream a prefix
+    of the suffix the trimmer later retracts — bounded by the candidate
+    engagement span — and never anything else."""
+    _set_repetition_env(monkeypatch)
+    # Fire threshold 4 copies/32 tokens; candidate engages at 2 copies/16.
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MIN_REPEATED_TOKENS", "32")
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MIN_REPEATS", "4")
+    calls, callback = _collecting_callback()
+    out = generate_ar(
+        _runtime(_ScriptedModel(_next_token)),
+        [0],
+        max_tokens=200,
+        sampler=GREEDY,
+        seed=7,
+        stop_token_ids=set(),
+        token_callback=callback,
+        repetition_stop=True,
+    )
+    assert any("repetition_stop" in event for event in out.stats.events)
+    final = list(out.tokens)
+    wire = [token for call in calls for token in call]
+    # The final answer streamed in order and in full.
+    assert wire[: len(final)] == final
+    extra = wire[len(final) :]
+    # Anything beyond it is a prefix of the loop the trimmer retracted...
+    trimmed_span = 200  # loop values cycle LOOP_START..LOOP_START+PERIOD-1
+    for token in extra:
+        assert LOOP_START <= token < LOOP_START + PERIOD
+    # ...bounded by the engagement span (min_repeated//2) plus one commit.
+    assert len(extra) <= 16 + 2
+
+
+def test_mtpk_armed_nonlooping_stream_is_live(monkeypatch):
+    """Speculative lane: armed healthy streams deliver committed tokens as
+    they commit (multiple wire batches), byte-identical to disarmed."""
+    _set_repetition_env(monkeypatch)
+    calls, callback = _collecting_callback()
+    out = generate_mtpk(
+        _runtime(_ScriptedMTPModel(_next_token_fresh)),
+        [0],
+        max_tokens=120,
+        sampler=GREEDY,
+        speculative_depth=2,
+        seed=7,
+        mtp_history_policy="committed",
+        verify_strategy="batched",
+        stop_token_ids=set(),
+        token_callback=callback,
+        repetition_stop=True,
+    )
+    wire = [token for call in calls for token in call]
+    assert wire == list(out.tokens)
+    assert len(out.tokens) == 120
+    # Liveness: the response arrived across many wire batches, not one
+    # end-of-response flush.
+    assert len(calls) >= 5
 
 
 def test_mtpk_disarmed_stream_matches_committed_tokens(monkeypatch):

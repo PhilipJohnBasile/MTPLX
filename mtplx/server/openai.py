@@ -20572,6 +20572,32 @@ class _BackgroundWarmup:
         except BaseException:
             pass
 
+    # A user who just got a response is reading it and about to send the
+    # next turn; warm rungs re-queued the moment a stream ends burned max
+    # GPU between every chat turn (2026-08-17 field regression: rungs
+    # preempted by the first chat re-fired right after each response).
+    # Warm steps now wait for this much foreground quiet before touching
+    # the model; the deferral is a timer, never model work, and does not
+    # consume the resubmit budget.
+    IDLE_GRACE_S = 90.0
+
+    @classmethod
+    def _idle_grace_s(cls) -> float:
+        raw = str(os.environ.get("MTPLX_WARMUP_IDLE_GRACE_S", "")).strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                return cls.IDLE_GRACE_S
+        return cls.IDLE_GRACE_S
+
+    def _foreground_quiet_for_s(self) -> float:
+        last = float(getattr(self.state, "last_request_at", 0.0) or 0.0)
+        if last <= 0.0:
+            # No request has ever landed (fresh boot): warm immediately.
+            return float("inf")
+        return max(0.0, time.time() - last)
+
     def submit(self, index: int = 0) -> None:
         try:
             _submit_idle_postcommit_model_work(
@@ -20583,6 +20609,11 @@ class _BackgroundWarmup:
         except BaseException:
             self.state_label = "failed"
             self._publish()
+
+    def _defer_step(self, index: int, wait_s: float) -> None:
+        timer = threading.Timer(max(1.0, wait_s), self.submit, args=(index,))
+        timer.daemon = True
+        timer.start()
 
     def _run_step(self, index: int) -> None:
         try:
@@ -20597,6 +20628,17 @@ class _BackgroundWarmup:
     def _run_step_inner(self, index: int) -> None:
         if index >= len(self.steps):
             self._finish()
+            return
+        grace = self._idle_grace_s()
+        quiet = self._foreground_quiet_for_s()
+        if quiet < grace:
+            # Recently-served traffic: hold the plan without burning GPU or
+            # the resubmit budget, and re-check when the grace can be met.
+            step = self.steps[index]
+            if step.get("state") in ("pending", "yielded", "waiting_idle"):
+                step["state"] = "waiting_idle"
+            self._publish()
+            self._defer_step(index, grace - quiet)
             return
         if self.started_at_s is None:
             self.started_at_s = time.time()
@@ -20682,7 +20724,12 @@ class _BackgroundWarmup:
     def _finish(self, abandoned: bool = False) -> None:
         if abandoned:
             for step in self.steps:
-                if step.get("state") in ("pending", "yielded", "running"):
+                if step.get("state") in (
+                    "pending",
+                    "yielded",
+                    "running",
+                    "waiting_idle",
+                ):
                     step["state"] = "abandoned"
         self.finished_at_s = time.time()
         self.state_label = "abandoned_busy" if abandoned else "done"

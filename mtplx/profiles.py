@@ -555,21 +555,22 @@ TURBO_PROFILE = RuntimeProfile(
             # any contract miss.
             "MTPLX_GQA_PACKED_SDPA": "1",
             "MTPLX_GQA_PACKED_SDPA_THRESHOLD": "8192",
-            # Background warmup ladder (F6, 2026-08-16): prompt-token rungs
-            # the server's idle-lane warmup walks after boot (consumed by
-            # mtplx.server.openai._warmup_ladder_contexts). The server
-            # default ("512,2560") leaves every deeper compiled-verify KV
-            # bucket cold, so the first benchmark row at each context class
-            # paid the ~1s-per-bucket mx.compile INSIDE the measured row.
-            # These rungs cross each pow2 bucket class up to the turbo
-            # router fence (MTPLX_COMPILED_VERIFY_MAX_CONTEXT=32768 above);
-            # deeper rungs would warm nothing compiled (rows above the
-            # fence run the eager verify path per call). Warming runs on
-            # the idle lane and yields to real traffic (foreground-yield
-            # abort per prefill chunk); rungs that exceed the model's
-            # context window are dropped by the server. Operator env wins
-            # (PROFILE_ENV_USER_OVERRIDE_KEYS).
-            "MTPLX_WARMUP_LADDER": "512,1024,2048,2560,4096,8192,16384,32768",
+            # Background warmup ladder (F6, 2026-08-16; retrenched 2026-08-17
+            # field regression fix). F6 shipped the full pow2 walk up to the
+            # 32768 router fence in the PRODUCT profile so benchmark rows
+            # would never pay a bucket's first-touch mx.compile. Field
+            # fallout on 2.8.0-2.8.2: every desktop/serve boot burned
+            # 30-60+ s of max GPU walking rungs users never reach in chat
+            # (the reported "idle GPU pin"), rungs preempted by a first chat
+            # re-queued and re-burned between turns, and a request landing
+            # mid-rung saw its prefill contended (measured 166 vs ~800
+            # prefill tok/s). The PRODUCT default is back to the two rungs
+            # interactive chat actually touches early (boot cost ~4.5 s on
+            # the 27B, 2.7.1-equivalent). Benchmark harnesses that want
+            # every bucket pre-warmed set the deep ladder themselves via
+            # operator env, which wins (PROFILE_ENV_USER_OVERRIDE_KEYS):
+            #   MTPLX_WARMUP_LADDER=512,1024,2048,2560,4096,8192,16384,32768
+            "MTPLX_WARMUP_LADDER": "512,2560",
         },
     ),
     caveats=(
