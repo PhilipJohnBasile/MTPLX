@@ -1,0 +1,85 @@
+name: Temporary execute PR 254 quote repair
+
+on:
+  push:
+    branches:
+      - codex/deepseek-v4-mlxserve-v26
+
+permissions:
+  contents: write
+
+jobs:
+  execute-corrected-workflow:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+
+      - name: Correct the nested patch delimiter and execute
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
+          lines = workflow.read_text(encoding="utf-8").splitlines()
+          blocks: list[str] = []
+          index = 0
+          while index < len(lines):
+              if lines[index] == "        run: |":
+                  index += 1
+                  block: list[str] = []
+                  while index < len(lines):
+                      current = lines[index]
+                      if current and len(current) - len(current.lstrip()) <= 8:
+                          break
+                      if current.startswith("          "):
+                          block.append(current[10:])
+                      elif not current:
+                          block.append("")
+                      else:
+                          raise SystemExit(f"unexpected workflow indentation: {current!r}")
+                      index += 1
+                  blocks.append("\n".join(block))
+                  continue
+              index += 1
+
+          if len(blocks) != 1:
+              raise SystemExit(f"expected one wrapper run block, found {len(blocks)}")
+
+          script = blocks[0]
+          start = "candidate_patch = r'''python - <<'PY_PATCH_254'"
+          end = "\n'''\nblocks[2] = candidate_patch"
+          if script.count(start) != 1 or script.count(end) != 1:
+              raise SystemExit("nested candidate patch delimiter shape changed")
+          script = script.replace(
+              start,
+              'candidate_patch = r"""python - <<\'PY_PATCH_254\'',
+              1,
+          )
+          script = script.replace(
+              end,
+              '\n"""\nblocks[2] = candidate_patch',
+              1,
+          )
+
+          cleanup_line = (
+              "  .github/workflows/temporary-execute-rebase-254-macos14.yml \\\n"
+          )
+          cleanup_replacement = cleanup_line + (
+              "  .github/workflows/temporary-execute-rebase-254-quote-fix.yml \\\n"
+          )
+          if script.count(cleanup_line) != 1:
+              raise SystemExit("temporary workflow cleanup shape changed")
+          script = script.replace(cleanup_line, cleanup_replacement, 1)
+
+          Path("/tmp/pr254-corrected-wrapper.sh").write_text(
+              script + "\n", encoding="utf-8"
+          )
+          PY
+          bash /tmp/pr254-corrected-wrapper.sh
