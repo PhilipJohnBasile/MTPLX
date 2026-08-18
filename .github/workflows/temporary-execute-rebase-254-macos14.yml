@@ -160,6 +160,65 @@ jobs:
               + blocks[0][fresh_stop:]
           )
 
+          # Current main made post-start refresh cancellation-aware and Bool-
+          # returning. Preserve that lifecycle ownership contract, then add the
+          # external raw-server finalization before the common MTPLX refresh.
+          post_condition = '"private func refreshPostStartState(" in ours'
+          post_condition_index = blocks[0].find(post_condition)
+          if post_condition_index < 0:
+              raise SystemExit("could not locate PR 254 post-start resolver")
+          post_start = blocks[0].rfind("if (", 0, post_condition_index)
+          if post_start < 0:
+              raise SystemExit("could not locate PR 254 post-start resolver start")
+          post_stop_marker = 'kinds.add("post_start")'
+          post_stop = blocks[0].find(post_stop_marker, post_condition_index)
+          if post_stop < 0:
+              raise SystemExit("could not locate PR 254 post-start resolver end")
+          post_stop += len(post_stop_marker)
+          post_replacement = '''if (
+                  "configuration: MTPLXAppConfiguration," in ours
+                  and "recoveryGeneration: Int?" in ours
+                  and ") async -> Bool {" in ours
+                  and "daemonSessionIsCurrent(" in ours
+                  and "external mlx-serve ready" in theirs
+                  and "startExternalMlxServeHealthWatchdog" in theirs
+              ):
+                  return (
+                      ours.rstrip()
+                      + "\\n"
+                      + "        guard daemonBackendKind(for: configuration) == .mtplx else {\\n"
+                      + "            health = nil\\n"
+                      + "            capabilities = nil\\n"
+                      + "            sessions = nil\\n"
+                      + "            sessionBank = nil\\n"
+                      + "            settings = nil\\n"
+                      + "            pendingLiveSettings = nil\\n"
+                      + "            pendingLiveSettingsModel = nil\\n"
+                      + "            connectionState = .idle\\n"
+                      + "            await supervisor.logs.append(\\n"
+                      + "                \\\"external mlx-serve ready; MTPLX live controls and metrics are unavailable\\\",\\n"
+                      + "                stream: .system\\n"
+                      + "            )\\n"
+                      + "            guard daemonSessionIsCurrent(\\n"
+                      + "                lifecycleEpoch: lifecycleEpoch,\\n"
+                      + "                launchID: nil,\\n"
+                      + "                recoveryGeneration: recoveryGeneration\\n"
+                      + "            ) else { return false }\\n"
+                      + "            startExternalMlxServeHealthWatchdog()\\n"
+                      + "            return daemonSessionIsCurrent(\\n"
+                      + "                lifecycleEpoch: lifecycleEpoch,\\n"
+                      + "                launchID: nil,\\n"
+                      + "                recoveryGeneration: recoveryGeneration\\n"
+                      + "            )\\n"
+                      + "        }\\n",
+                      {"post_start"},
+                  )'''
+          blocks[0] = (
+              blocks[0][:post_start]
+              + post_replacement
+              + blocks[0][post_stop:]
+          )
+
           cleanup = """rm -f \\
             .github/workflows/temporary-rebase-254.yml \\
             .github/workflows/temporary-execute-rebase-254-macos14.yml \\
