@@ -54,8 +54,9 @@ jobs:
           if len(blocks) != 4:
               raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
 
-          # block extraction removes the workflow's ten-space shell indent, so
-          # this anchor must match the Python resolver at column zero.
+          # The lifecycle conflict resolver lives in the first run block. Add a
+          # narrow rule for current main's non-optional native health contract
+          # versus the external backend's intentionally absent MTPLX payload.
           supervisor_anchor = '''def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
               kinds: set[str] = set()
               text = ours
@@ -82,9 +83,9 @@ jobs:
                       {"wait_for_health"},
                   )
           '''
-          if blocks[1].count(supervisor_anchor) != 1:
+          if blocks[0].count(supervisor_anchor) != 1:
               raise SystemExit("could not locate PR 254 supervisor resolver")
-          blocks[1] = blocks[1].replace(
+          blocks[0] = blocks[0].replace(
               supervisor_anchor,
               supervisor_replacement,
               1,
@@ -99,11 +100,15 @@ jobs:
           if blocks[1].count(marker) != 1:
               raise SystemExit("could not locate the PR 254 squash boundary")
           blocks[1] = blocks[1].replace(marker, cleanup + marker, 1)
-          blocks[3] = re.sub(
-              r"--force-with-lease=[^\\s]+",
+
+          blocks[3], replacements = re.subn(
+              r"--force-with-lease=\S+",
               "--force",
               blocks[3],
+              count=1,
           )
+          if replacements != 1:
+              raise SystemExit("could not replace the helper-branch force-with-lease")
           blocks[3] += (
               "\n"
               "git push "
