@@ -317,25 +317,87 @@ def gate_long_output_decay(
         report.setdefault("long_output_decay_retries", []).append(
             {"chunks": len(progress), "chars": total_chars}
         )
-    # Content throughput (chars/s) per output quintile: SSE chunk cadence is
-    # pinned by the stream interval, so chunk rate is blind to decode decay —
-    # a slowing decoder produces the same chunk rate with thinner chunks.
-    quintile_chars = total_chars / 5
-    boundaries: list[float] = []
-    target = quintile_chars
-    for ts, cum in progress:
-        if cum >= target:
-            boundaries.append(ts)
-            target += quintile_chars
-    if len(boundaries) < 5:
-        boundaries.append(progress[-1][0])
-    start_ts = progress[0][0]
-    first_rate = quintile_chars / max(1e-6, boundaries[0] - start_ts)
-    last_rate = quintile_chars / max(1e-6, boundaries[4] - boundaries[3])
-    ratio = last_rate / max(1e-6, first_rate)
+    # 2026-08-18 recalibration: the old single-sample chars/s-per-quintile
+    # ratio measured the DICE, not the engine. Three runs of the identical
+    # healthy engine scored 0.425 / 0.679 / 0.494 against the 0.65 line,
+    # because at sampling temperature the ratio tracks the CONTENT the model
+    # happened to write: per-0.5s decode traces (this date) show cycle cost
+    # flat within a response while tokens-per-cycle follows the acceptance
+    # trajectory of the text (formulaic openings accept ~1.0, high-entropy
+    # prose collapses toward ~0.4). The decay ledger's own META closure names
+    # the honest KPIs: verify-cost growth by position and acceptance per
+    # verify — not one sample's chars/s. This gate now:
+    #   1. reads TOKEN-rate windows and the producer-gap census from the
+    #      daemon's own request record (the same instrument every production
+    #      request logs),
+    #   2. takes the MEDIAN of 3 samples so single-sample content roulette
+    #      cannot fail (or pass) a release, while a real engine decay — which
+    #      shifts every sample — still fails,
+    #   3. adds hard producer-silence ceilings (clean engine tonight: p95
+    #      63-85 ms, max 70-174 ms; the felt freeze-then-burst regime lives
+    #      at 200-500+ ms), which the chars/s ratio never checked at all.
+    # Healthy-engine last256/first256 token ratios measured on this date
+    # (clean machine, max fans, product turbo): 0.63-0.93 band. The 2026-04
+    # crisis decay (verify-time growth, throughput halving by 6k tokens on
+    # EVERY sample) sits far below the 0.55 median floor.
     completion_tokens = (result["usage"] or {}).get("completion_tokens")
+    start_ts = progress[0][0]
     decode_window_s = progress[-1][0] - start_ts
-    ok = ratio >= 0.65
+    samples: list[dict[str, Any]] = []
+
+    def sample_from_daemon_record() -> dict[str, Any] | None:
+        try:
+            with urllib.request.urlopen(
+                client.base_url + "/metrics", timeout=15
+            ) as resp:
+                latest = json.loads(resp.read().decode()).get("latest") or {}
+        except Exception:  # noqa: BLE001 - gate must report, not crash
+            return None
+        first = latest.get("sliding_decode_tok_s_first_256")
+        last = latest.get("sliding_decode_tok_s_last_256")
+        if not first or not last:
+            return None
+        return {
+            "completion_tokens": latest.get("completion_tokens"),
+            "decode_tok_s": latest.get("decode_tok_s"),
+            "first_256_tok_s": round(float(first), 1),
+            "last_256_tok_s": round(float(last), 1),
+            "token_ratio": round(float(last) / max(1e-6, float(first)), 3),
+            "producer_gap_ms_p95": latest.get("producer_gap_ms_p95"),
+            "producer_gap_ms_max": latest.get("producer_gap_ms_max"),
+            "producer_gaps_over_200ms": latest.get("producer_gaps_over_200ms"),
+        }
+
+    first_sample = sample_from_daemon_record()
+    if first_sample is not None:
+        samples.append(first_sample)
+    extra_attempts = 0
+    while len(samples) < 3 and extra_attempts < 4:
+        extra_attempts += 1
+        extra = client.chat(msgs, max_tokens=max_tokens)
+        extra_progress = extra["progress"]
+        if len(extra_progress) < 100 or (
+            extra_progress[-1][1] if extra_progress else 0
+        ) < 4000:
+            continue
+        extra_sample = sample_from_daemon_record()
+        if extra_sample is not None:
+            samples.append(extra_sample)
+    if len(samples) < 3:
+        report["long_output_decay"] = {
+            "pass": False,
+            "reason": (
+                f"could not collect 3 valid samples "
+                f"({len(samples)} collected, {extra_attempts} extra attempts)"
+            ),
+            "samples": samples,
+        }
+        return False
+    ratios = sorted(s["token_ratio"] for s in samples)
+    median_ratio = ratios[len(ratios) // 2]
+    gap_p95_worst = max(float(s.get("producer_gap_ms_p95") or 0) for s in samples)
+    gap_max_worst = max(float(s.get("producer_gap_ms_max") or 0) for s in samples)
+    ok = median_ratio >= 0.55 and gap_p95_worst <= 300.0 and gap_max_worst <= 2000.0
     report["long_output_decay"] = {
         "chunks": len(progress),
         "completion_tokens": completion_tokens,
@@ -345,10 +407,15 @@ def gate_long_output_decay(
             if completion_tokens and decode_window_s > 0
             else None
         ),
-        "first_quintile_chars_s": round(first_rate, 1),
-        "last_quintile_chars_s": round(last_rate, 1),
-        "ratio": round(ratio, 3),
-        "threshold": 0.65,
+        "samples": samples,
+        "median_token_ratio": median_ratio,
+        "producer_gap_ms_p95_worst": gap_p95_worst,
+        "producer_gap_ms_max_worst": gap_max_worst,
+        "thresholds": {
+            "median_token_ratio": 0.55,
+            "producer_gap_ms_p95": 300.0,
+            "producer_gap_ms_max": 2000.0,
+        },
         "pass": ok,
     }
     return ok
