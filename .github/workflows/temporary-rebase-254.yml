@@ -17,7 +17,7 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Rebase onto current upstream main and report conflicts
+      - name: Resolve first current-main conflict and report any later conflicts
         shell: bash
         run: |
           set -euo pipefail
@@ -25,19 +25,109 @@ jobs:
           git config user.email "PBasile@Basilecom.com"
           git remote add upstream https://github.com/youssofal/MTPLX.git || true
           git fetch upstream main
+
           set +e
           git rebase upstream/main
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
-            echo "::group::Conflicted files"
-            git diff --name-only --diff-filter=U
-            echo "::endgroup::"
-            for file in $(git diff --name-only --diff-filter=U); do
-              echo "::group::Conflict markers: $file"
-              grep -n -B 25 -A 60 -E '^(<<<<<<<|=======|>>>>>>>)' "$file" || true
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "mtplx/hf_loader.py"
+            python - <<'PY'
+          from pathlib import Path
+
+          path = Path("mtplx/hf_loader.py")
+          lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+          output: list[str] = []
+          index = 0
+          count = 0
+          while index < len(lines):
+              if not lines[index].startswith("<<<<<<< "):
+                  output.append(lines[index])
+                  index += 1
+                  continue
+              index += 1
+              ours: list[str] = []
+              while index < len(lines) and not lines[index].startswith("======="):
+                  ours.append(lines[index])
+                  index += 1
+              if index >= len(lines):
+                  raise SystemExit("unterminated conflict before separator")
+              index += 1
+              theirs: list[str] = []
+              while index < len(lines) and not lines[index].startswith(">>>>>>> "):
+                  theirs.append(lines[index])
+                  index += 1
+              if index >= len(lines):
+                  raise SystemExit("unterminated conflict after separator")
+              index += 1
+              ours_text = "".join(ours)
+              theirs_text = "".join(theirs)
+
+              if count == 0:
+                  if (
+                      ours_text.strip()
+                      or "DEEPSEEK_V4_TARGET_ONLY_REPO_ID" not in theirs_text
+                      or "DEFAULT_PROFILE_NAME" not in theirs_text
+                  ):
+                      raise SystemExit(
+                          "unexpected import conflict\nOURS:\n"
+                          + ours_text
+                          + "\nTHEIRS:\n"
+                          + theirs_text
+                      )
+                  output.extend(theirs)
+              elif count == 1:
+                  if (
+                      "if target.exists():" not in ours_text
+                      or "target.unlink()" not in ours_text
+                      or "if force and partial.exists():" not in theirs_text
+                  ):
+                      raise SystemExit(
+                          "unexpected repair conflict\nOURS:\n"
+                          + ours_text
+                          + "\nTHEIRS:\n"
+                          + theirs_text
+                      )
+                  output.extend(
+                      [
+                          "    if force:\n",
+                          "        # Retain a known-bad target until the replacement is complete\n",
+                          "        # and hashed; a failed repair must not discard the only local copy.\n",
+                          "        if partial.exists():\n",
+                          "            partial.unlink()\n",
+                          "    elif target.exists():\n",
+                          "        # A size-mismatched final file is stale, not an interrupted\n",
+                          "        # partial. Do not append a remote tail to old final content.\n",
+                          "        target.unlink()\n",
+                      ]
+                  )
+              else:
+                  raise SystemExit("unexpected additional conflict")
+              count += 1
+
+          if count != 2:
+              raise SystemExit(f"expected two hf_loader.py conflicts, resolved {count}")
+          merged = "".join(output)
+          if any(marker in merged for marker in ("<<<<<<<", "=======", ">>>>>>>")):
+              raise SystemExit("conflict markers remain")
+          path.write_text(merged, encoding="utf-8")
+          PY
+            git add mtplx/hf_loader.py
+            set +e
+            GIT_EDITOR=true git rebase --continue
+            rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "::group::Later conflicted files"
+              git diff --name-only --diff-filter=U
               echo "::endgroup::"
-            done
-            exit "$rc"
+              for file in $(git diff --name-only --diff-filter=U); do
+                echo "::group::Conflict markers: $file"
+                grep -n -B 25 -A 70 -E '^(<<<<<<<|=======|>>>>>>>)' "$file" || true
+                echo "::endgroup::"
+              done
+              exit "$rc"
+            fi
           fi
-          echo "Rebase completed without conflicts."
+          echo "Rebase completed after the first semantic resolution."
