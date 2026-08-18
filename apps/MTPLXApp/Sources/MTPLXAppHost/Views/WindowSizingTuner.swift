@@ -92,21 +92,34 @@ struct WindowSizingTuner: NSViewRepresentable {
         // early: the next flush saw re-armed options and walked the
         // whole transcript again (~60x/s post-stream, ~28% of the main
         // thread on an 11k-token chat; two chained-re-arm designs lost
-        // the same race from different sides). A `.beforeWaiting`
-        // runloop observer runs after ALL of a turn's commit work,
-        // render included — options end every runloop turn empty, so
-        // the next flush's `NSHostingView.updateConstraints` skips the
-        // extrema derivation outright. Cost: one property read per
-        // runloop turn while the app is active; zero when idle (no
-        // turns). The `updateConstraints` clear below stays as the
-        // in-pass belt for the streaming path.
+        // the same race from different sides). A runloop observer that
+        // fires after render leaves the options empty for the NEXT
+        // flush, so `NSHostingView.updateConstraints` skips the extrema
+        // derivation outright.
+        //
+        // The mask MUST include `.beforeTimers`, not just
+        // `.beforeWaiting` (founder stutter, 2026-08-18 round three):
+        // CFRunLoop skips the beforeWaiting phase on any iteration that
+        // handled a source and keeps polling — which is exactly what a
+        // human interacting with the app produces (mouse-moved / wheel
+        // event storms). Under interaction the waiting-only observer
+        // starved, the transcript walk returned full-size, and Core
+        // Animation's own beforeWaiting commit coalesced behind it:
+        // freeze-then-burst that ONLY reproduced with a hand on the
+        // mouse, never under hands-off automation. `.beforeTimers`
+        // fires on every iteration, polling included, and iteration
+        // N+1's beforeTimers still sits after iteration N's render —
+        // same ordering guarantee, no starvation window. beforeWaiting
+        // stays in the mask as the idle-edge belt. Cost: one property
+        // read per iteration while active; zero when idle.
         private var runLoopObserver: CFRunLoopObserver?
 
         private func installRunLoopObserver() {
             guard runLoopObserver == nil else { return }
             let observer = CFRunLoopObserverCreateWithHandler(
                 kCFAllocatorDefault,
-                CFRunLoopActivity.beforeWaiting.rawValue,
+                CFRunLoopActivity.beforeTimers.rawValue
+                    | CFRunLoopActivity.beforeWaiting.rawValue,
                 true,
                 0
             ) { [weak self] _, _ in

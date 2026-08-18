@@ -43,6 +43,7 @@ struct ChatConversationView: View {
     @ObservedObject var viewModel: ChatViewModel
     @State private var scroll = ChatConversationScrollState()
     @State private var scrollDriver = ChatConversationScrollDriver()
+    @State private var userScroll = ChatConversationUserScrollState()
     @State private var showFullHeavyTranscript = false
     @State private var renderPlan = ChatConversationRenderPlan(
         messages: [],
@@ -109,8 +110,10 @@ struct ChatConversationView: View {
             }
             .background(
                 ChatConversationScrollObserverView(
+                    userScroll: userScroll,
                     onScrollViewResolved: { scrollView in
                         scrollDriver.updateScrollView(scrollView)
+                        scrollDriver.userScroll = userScroll
                         if scrollView != nil, scroll.policy.shouldAutoScrollForStreamingUpdate {
                             scheduleDeferredBottomScroll(delays: [.milliseconds(40)])
                         }
@@ -661,12 +664,14 @@ private struct HiddenTranscriptSummaryView: View {
 }
 
 private struct ChatConversationScrollObserverView: NSViewRepresentable {
+    let userScroll: ChatConversationUserScrollState
     let onScrollViewResolved: @MainActor (NSScrollView?) -> Void
     let onScroll: @MainActor (CGFloat, Bool) -> Void
     let onDocumentFrameChanged: @MainActor () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            userScroll: userScroll,
             onScrollViewResolved: onScrollViewResolved,
             onScroll: onScroll,
             onDocumentFrameChanged: onDocumentFrameChanged
@@ -695,6 +700,7 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject {
+        let userScroll: ChatConversationUserScrollState
         var onScrollViewResolved: @MainActor (NSScrollView?) -> Void
         var onScroll: @MainActor (CGFloat, Bool) -> Void
         var onDocumentFrameChanged: @MainActor () -> Void
@@ -703,13 +709,15 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
         private var documentFrameObserver: NSObjectProtocol?
         private var liveScrollStartObserver: NSObjectProtocol?
         private var liveScrollEndObserver: NSObjectProtocol?
-        private var isUserLiveScrolling = false
+        private var wheelMonitor: Any?
 
         init(
+            userScroll: ChatConversationUserScrollState,
             onScrollViewResolved: @escaping @MainActor (NSScrollView?) -> Void,
             onScroll: @escaping @MainActor (CGFloat, Bool) -> Void,
             onDocumentFrameChanged: @escaping @MainActor () -> Void
         ) {
+            self.userScroll = userScroll
             self.onScrollViewResolved = onScrollViewResolved
             self.onScroll = onScroll
             self.onDocumentFrameChanged = onDocumentFrameChanged
@@ -726,14 +734,21 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
             scrollView = resolvedScrollView
             onScrollViewResolved(resolvedScrollView)
             resolvedScrollView.contentView.postsBoundsChangedNotifications = true
+            // The live-scroll flag MUST flip synchronously in the
+            // notification block (queue .main delivers on the main
+            // thread): the frameDidChange pin below runs synchronously
+            // inside layout, and the old `Task { }` wrapper let the pin
+            // race a scroll the user had already started — the yank the
+            // founder felt as the app "grabbing the wheel back".
             liveScrollStartObserver = NotificationCenter.default.addObserver(
                 forName: NSScrollView.willStartLiveScrollNotification,
                 object: resolvedScrollView,
                 queue: .main
             ) { [weak hostView, weak resolvedScrollView] _ in
-                Task { @MainActor [weak hostView, weak resolvedScrollView] in
-                    guard let hostView, let resolvedScrollView, let coordinator = hostView.coordinator else { return }
-                    coordinator.isUserLiveScrolling = true
+                MainActor.assumeIsolated {
+                    guard let coordinator = hostView?.coordinator,
+                          let resolvedScrollView else { return }
+                    coordinator.userScroll.beginLiveScroll()
                     coordinator.onScroll(Self.distanceToBottom(for: resolvedScrollView), true)
                 }
             }
@@ -742,11 +757,31 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
                 object: resolvedScrollView,
                 queue: .main
             ) { [weak hostView, weak resolvedScrollView] _ in
-                Task { @MainActor [weak hostView, weak resolvedScrollView] in
-                    guard let hostView, let resolvedScrollView, let coordinator = hostView.coordinator else { return }
+                MainActor.assumeIsolated {
+                    guard let coordinator = hostView?.coordinator,
+                          let resolvedScrollView else { return }
                     coordinator.onScroll(Self.distanceToBottom(for: resolvedScrollView), true)
-                    coordinator.isUserLiveScrolling = false
+                    coordinator.userScroll.endLiveScroll()
                 }
+            }
+            // Live-scroll notifications only cover phased (trackpad)
+            // gestures between touch-down and finger-lift. Momentum
+            // events and classic non-phased wheel mice bypass them
+            // entirely, so the pin used to fight both. A local monitor
+            // sees every wheel event before dispatch; any wheel over
+            // the transcript extends the inhibit window.
+            wheelMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: .scrollWheel
+            ) { [weak hostView, weak resolvedScrollView] event in
+                MainActor.assumeIsolated {
+                    guard let coordinator = hostView?.coordinator,
+                          let resolvedScrollView,
+                          event.window === resolvedScrollView.window else { return }
+                    let point = resolvedScrollView.convert(event.locationInWindow, from: nil)
+                    guard resolvedScrollView.bounds.contains(point) else { return }
+                    coordinator.userScroll.noteWheelEvent()
+                }
+                return event
             }
             boundsObserver = NotificationCenter.default.addObserver(
                 forName: NSView.boundsDidChangeNotification,
@@ -755,9 +790,12 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
             ) { [weak hostView, weak resolvedScrollView] _ in
                 Task { @MainActor [weak hostView, weak resolvedScrollView] in
                     guard let hostView, let resolvedScrollView, let coordinator = hostView.coordinator else { return }
+                    // isActive (not just live-scrolling) so momentum and
+                    // classic-wheel scrolls count as user-initiated and
+                    // the policy can detach past 120pt.
                     coordinator.onScroll(
                         Self.distanceToBottom(for: resolvedScrollView),
-                        coordinator.isUserLiveScrolling
+                        coordinator.userScroll.isActive
                     )
                 }
             }
@@ -777,7 +815,7 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
                     guard Thread.isMainThread else { return }
                     MainActor.assumeIsolated {
                         guard let coordinator = hostView?.coordinator,
-                              !coordinator.isUserLiveScrolling else { return }
+                              !coordinator.userScroll.isActive else { return }
                         coordinator.onDocumentFrameChanged()
                     }
                 }
@@ -797,6 +835,10 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
             if let liveScrollEndObserver {
                 NotificationCenter.default.removeObserver(liveScrollEndObserver)
             }
+            if let wheelMonitor {
+                NSEvent.removeMonitor(wheelMonitor)
+            }
+            wheelMonitor = nil
             boundsObserver = nil
             documentFrameObserver = nil
             liveScrollStartObserver = nil
@@ -845,9 +887,53 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
     }
 }
 
+// MARK: User-scroll arbitration (founder stutter round three, 2026-08-18)
+//
+// Why this exists: the bottom pin used to lose every fight with a human.
+// The live-scroll flag was set inside a `Task { @MainActor }`, so the
+// SYNCHRONOUS frameDidChange pin raced it and yanked the viewport while
+// the user's fingers were still on the trackpad; the momentum phase ran
+// entirely unguarded (didEndLiveScroll fires at finger-lift); and a
+// classic non-phased wheel mouse never posts live-scroll notifications
+// at all. Meanwhile the policy's 28pt re-attach meant every yank reset
+// the user's escape distance — scrolling up mid-stream felt like the
+// app was grabbing the wheel back. One shared state object, updated
+// synchronously, consulted by every pin path:
+// - live-scroll begin/end set the flag in the notification block itself
+// - every wheel event over the transcript (phased, momentum, or classic)
+//   extends a short inhibit window, so momentum and wheel mice are
+//   covered by the same signal
+// - bounds changes report `isActive` as user-initiated, so the policy
+//   can legitimately detach (>120pt) during momentum/wheel scrolls.
+@MainActor
+final class ChatConversationUserScrollState {
+    private(set) var isLiveScrolling = false
+    private var inhibitUntil: CFTimeInterval = 0
+
+    var isActive: Bool {
+        isLiveScrolling || CACurrentMediaTime() < inhibitUntil
+    }
+
+    func beginLiveScroll() {
+        isLiveScrolling = true
+    }
+
+    func endLiveScroll() {
+        isLiveScrolling = false
+        // Momentum keeps delivering wheel events after finger-lift; the
+        // grace covers the gap until the first momentum event lands.
+        inhibitUntil = max(inhibitUntil, CACurrentMediaTime() + 0.35)
+    }
+
+    func noteWheelEvent() {
+        inhibitUntil = CACurrentMediaTime() + 0.30
+    }
+}
+
 @MainActor
 private final class ChatConversationScrollDriver {
     weak var scrollView: NSScrollView?
+    var userScroll: ChatConversationUserScrollState?
 
     func updateScrollView(_ scrollView: NSScrollView?) {
         self.scrollView = scrollView
@@ -855,6 +941,10 @@ private final class ChatConversationScrollDriver {
 
     @discardableResult
     func scrollToBottom(animated: Bool) -> Bool {
+        // Never pin against an active user scroll: the user wins, the
+        // policy detaches past 120pt, and streaming follows resume only
+        // when they return to the bottom.
+        if userScroll?.isActive == true { return false }
         _ = clampToValidOffset()
         guard let scrollView,
               let documentView = scrollView.documentView else { return false }

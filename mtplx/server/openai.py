@@ -13108,6 +13108,33 @@ def _long_context_mtp_depth_policy_for_request(
     return int(effective_depth), dict(policy)
 
 
+def _producer_gap_census(token_times: list[float]) -> dict[str, Any]:
+    """Producer-side emit-gap census (2026-08-18).
+
+    Mean TPS hid 200-500 ms emit silences that users feel as
+    freeze-then-catch-up; sliding-window averages blur them. These make
+    the felt-smoothness regime auditable in every request record: a gap
+    here is the GENERATOR going quiet (verify stall, cache
+    housekeeping), as opposed to delivery-side batching downstream.
+    Shared by completed AND cancelled records — the founder's stutter
+    run was cancelled mid-stream and previously logged no census.
+    """
+    census: dict[str, Any] = {
+        "producer_gap_ms_p95": None,
+        "producer_gap_ms_max": None,
+        "producer_gaps_over_200ms": 0,
+    }
+    if len(token_times) >= 2:
+        gaps = sorted(
+            (later - earlier) * 1000.0
+            for earlier, later in zip(token_times, token_times[1:])
+        )
+        census["producer_gap_ms_p95"] = gaps[min(len(gaps) - 1, int(len(gaps) * 0.95))]
+        census["producer_gap_ms_max"] = gaps[-1]
+        census["producer_gaps_over_200ms"] = sum(1 for gap in gaps if gap >= 200.0)
+    return census
+
+
 def _token_window_rate(token_times: list[float], window: int) -> float | None:
     if len(token_times) < 2:
         return None
@@ -13209,23 +13236,10 @@ def _metrics_envelope(
     # The sliding-window rates below remain available for diagnostics, but
     # consumer UI must not present a token-window burst as "TPS".
     display_decode_tok_s = decode_tok_s
-    # Producer-side emit-gap census (2026-08-18). Mean TPS hid 200-500 ms
-    # emit silences that users feel as freeze-then-catch-up; sliding
-    # window averages blur them. These make the felt-smoothness regime
-    # auditable in every request record: a gap here is the GENERATOR
-    # going quiet (verify stall, cache housekeeping), as opposed to
-    # delivery-side batching downstream.
-    producer_gap_ms_p95: float | None = None
-    producer_gap_ms_max: float | None = None
-    producer_gaps_over_200ms = 0
-    if len(token_times) >= 2:
-        gaps = sorted(
-            (later - earlier) * 1000.0
-            for earlier, later in zip(token_times, token_times[1:])
-        )
-        producer_gap_ms_p95 = gaps[min(len(gaps) - 1, int(len(gaps) * 0.95))]
-        producer_gap_ms_max = gaps[-1]
-        producer_gaps_over_200ms = sum(1 for gap in gaps if gap >= 200.0)
+    producer_census = _producer_gap_census(token_times)
+    producer_gap_ms_p95 = producer_census["producer_gap_ms_p95"]
+    producer_gap_ms_max = producer_census["producer_gap_ms_max"]
+    producer_gaps_over_200ms = producer_census["producer_gaps_over_200ms"]
     prompt_eval_time_s = float(stats.get("prompt_eval_time_s") or 0.0)
     ttft_s = max(0.0, token_times[0] - request_started_s) if token_times else None
     cached_tokens = int(stats.get("cached_tokens") or 0)
@@ -16251,6 +16265,7 @@ def _record_stream_cancellation_metric(
     request_observability: dict[str, Any],
     client_disconnected: bool,
     mlx_finalize_scope: str | None = None,
+    token_times: list[float] | None = None,
 ) -> None:
     elapsed_s = max(0.0, time.perf_counter() - stream_started_s)
     streamed_tokens = int(streamed_completion_tokens)
@@ -16280,6 +16295,17 @@ def _record_stream_cancellation_metric(
         "session_cache_hit": False,
         "cache_miss_reason": None,
     }
+    if token_times:
+        envelope.update(_producer_gap_census(token_times))
+        envelope["sliding_decode_tok_s_first_32"] = _token_window_rate_first(
+            token_times, 32
+        )
+        envelope["sliding_decode_tok_s_last_32"] = _token_window_rate(token_times, 32)
+        if len(token_times) >= 2:
+            span_s = token_times[-1] - token_times[0]
+            if span_s > 0.0 and streamed_tokens > 1:
+                envelope["decode_tok_s"] = (streamed_tokens - 1) / span_s
+                envelope["partial_decode_tok_s"] = envelope["decode_tok_s"]
     if mlx_finalize_scope is not None:
         envelope["mlx_finalize_scope"] = str(mlx_finalize_scope)
     else:
@@ -21322,14 +21348,32 @@ class _IncrementalTokenDecoder:
         unflushed_chars = len(text) - self._print_len
         if unflushed_chars < 0:
             return
-        tail = self._token_cache[-self._CACHE_KEEP_TOKENS :]
-        tail_text = self._decode(tail)
-        if not tail_text or len(tail_text) < unflushed_chars:
-            return
-        if not text.endswith(tail_text):
-            return
-        self._token_cache = list(tail)
-        self._print_len = len(tail_text) - unflushed_chars
+        # The kept tail must decode to at least the unflushed suffix or
+        # truncation is impossible. A fixed 8-token tail met that on
+        # whitespace-flush paths (0–2 unflushed chars) but silently
+        # no-op'd forever on the max-hold escape path, which by design
+        # keeps _ESCAPE_TAIL_KEEP_CHARS unflushed while byte-BPE emits
+        # 1–3 chars per token on exactly the content the escape serves
+        # (table separator rows, URLs, minified code) — so the cache
+        # regrew and every feed() re-decoded it: the O(n^2) this method
+        # exists to prevent (found 2026-08-18). Grow the tail until it
+        # covers the unflushed region; the ladder is bounded by the
+        # truncate threshold, so this stays a handful of small decodes.
+        keep = self._CACHE_KEEP_TOKENS
+        while True:
+            tail = self._token_cache[-keep:]
+            tail_text = self._decode(tail)
+            if (
+                tail_text
+                and len(tail_text) >= unflushed_chars
+                and text.endswith(tail_text)
+            ):
+                self._token_cache = list(tail)
+                self._print_len = len(tail_text) - unflushed_chars
+                return
+            if keep >= min(len(self._token_cache), self._CACHE_TRUNCATE_THRESHOLD):
+                return
+            keep = min(keep * 2, self._CACHE_TRUNCATE_THRESHOLD)
 
     def feed(self, tokens: list[int]) -> str:
         if not tokens:
@@ -28086,6 +28130,13 @@ def create_app(state: ServerState) -> FastAPI:
                 history_reasoning_chunks: list[str] = []
                 history_content_chunks: list[str] = []
                 streamed_token_ids: list[int] = []
+                # One timestamp per streamed token (batch-mates share one),
+                # mirroring the completed-path census shape — so a CANCELLED
+                # request still records the producer-gap census. The founder's
+                # 2026-08-18 stutter run was cancelled mid-stream and its
+                # record had no gap fields at all: the one request that
+                # mattered was the one we were blind on.
+                streamed_token_times: list[float] = []
                 streamed_progress_tokens = 0
                 streamed_decode_started_s: float | None = None
                 streamed_assistant_tool_calls: list[dict[str, Any]] | None = None
@@ -28584,6 +28635,9 @@ def create_app(state: ServerState) -> FastAPI:
                                 token_timestamp_s = time.perf_counter()
                             if stream_tokens:
                                 streamed_token_ids.extend(int(t) for t in stream_tokens)
+                                streamed_token_times.extend(
+                                    token_timestamp_s for _ in stream_tokens
+                                )
                                 last_token_s = token_timestamp_s
                                 next_silence_warn_s = (
                                     token_timestamp_s + STREAM_SILENCE_WARN_S
@@ -29515,6 +29569,7 @@ def create_app(state: ServerState) -> FastAPI:
                                         ownership=mtp_batch_finalize_ownership,
                                     )
                                 ),
+                                token_times=streamed_token_times,
                             )
                             cancelled_metric_recorded = True
                     state.dashboard.in_flight.deregister(response_id)

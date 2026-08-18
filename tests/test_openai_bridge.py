@@ -1,4 +1,5 @@
 import asyncio
+import time
 import gc
 import json
 from threading import Event, Lock
@@ -24,6 +25,7 @@ from mtplx.server.openai import (
     _aime_visible_working_for_request,
     _anthropic_content_to_text,
     _anthropic_payload_from_openai,
+    _record_stream_cancellation_metric,
     _anthropic_stream_from_openai_sse,
     _anthropic_to_chat_request,
     _IncrementalTokenDecoder,
@@ -1443,6 +1445,69 @@ def test_incremental_token_decoder_escapes_whitespace_free_hold():
     # byte-for-byte.
     assert run.startswith(flushed)
     assert flushed + decoder.finish() == run
+
+
+def test_incremental_token_decoder_escape_path_cache_stays_bounded():
+    # 2026-08-18 follow-up: the escape path holds _ESCAPE_TAIL_KEEP_CHARS
+    # unflushed, and byte-BPE emits 1-3 chars/token on exactly that
+    # content — a fixed 8-token kept tail could never cover the held
+    # region, so cache truncation silently no-op'd and every feed()
+    # re-decoded a growing cache: O(n^2) on the content the escape
+    # exists to serve. The tail ladder must keep the cache bounded on an
+    # arbitrarily long whitespace-free run.
+    decoder = _IncrementalTokenDecoder(TinyTokenizer())
+    run = "|" + "-" * 5000
+    emitted = []
+    for ch in run:
+        emitted.append(decoder.feed(_ids(ch)))
+    # Bounded: the cache never exceeds threshold + one escape's worth.
+    assert (
+        len(decoder._token_cache)
+        <= decoder._CACHE_TRUNCATE_THRESHOLD + decoder._MAX_HOLD_CHARS
+    ), f"cache grew to {len(decoder._token_cache)} tokens"
+    flushed = "".join(emitted)
+    assert run.startswith(flushed)
+    assert flushed + decoder.finish() == run
+
+
+def test_stream_cancellation_metric_records_producer_census():
+    # The founder's 2026-08-18 stutter run was client-cancelled and its
+    # record carried NO gap census — the one request that mattered was
+    # unmeasured. Cancelled records must carry the census computed from
+    # whatever token_times accumulated before the cancel.
+    state = SimpleNamespace(
+        last_metrics=[],
+        requests_cancelled=0,
+        last_request_at=0.0,
+        args=SimpleNamespace(request_log_jsonl="off", port=0),
+        dashboard=SimpleNamespace(
+            bus=SimpleNamespace(publish=lambda event: None),
+            lifetime=SimpleNamespace(record_cancellation=lambda: None),
+        ),
+    )
+    started = time.perf_counter() - 2.0
+    token_times = [started + 0.1 + 0.05 * i for i in range(20)]
+    token_times.append(token_times[-1] + 0.5)  # one 500ms producer gap
+    _record_stream_cancellation_metric(
+        state,
+        response_id="resp_cancel",
+        session_id="sess",
+        prompt_tokens=10,
+        streamed_completion_tokens=len(token_times),
+        stream_started_s=started,
+        reason="client_disconnected",
+        request_observability={},
+        client_disconnected=True,
+        mlx_finalize_scope="test",
+        token_times=token_times,
+    )
+    record = state.last_metrics[-1]
+    assert record["request_cancelled"] is True
+    assert record["producer_gap_ms_max"] >= 500.0 - 1.0
+    assert record["producer_gaps_over_200ms"] == 1
+    assert record["producer_gap_ms_p95"] is not None
+    assert record["sliding_decode_tok_s_first_32"] is not None
+    assert record["decode_tok_s"] > 0
 
 
 def test_incremental_token_decoder_escape_preserves_close_tag_flush():
