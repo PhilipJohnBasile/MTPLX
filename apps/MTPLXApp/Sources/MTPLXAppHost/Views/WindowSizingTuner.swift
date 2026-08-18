@@ -43,13 +43,17 @@ extension NSHostingView: MTPLXHostingSizingConfigurable {
 struct WindowSizingTuner: NSViewRepresentable {
     static let contentMinSize = NSSize(width: 420, height: 540)
 
-    static var isEnabled: Bool {
+    // Cached: this gate is consulted on every constraints pass, and
+    // ProcessInfo.environment rebuilds its whole dictionary per access
+    // (uncached, it alone was ~26% of the idle main thread on
+    // 2026-08-17 — the same bug class as the AIMEDiagnostics gate).
+    static let isEnabled: Bool = {
         switch ProcessInfo.processInfo.environment["MTPLX_APP_SIZING_TUNER"]?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "0", "false", "off", "no": return false
         default: return true
         }
-    }
+    }()
 
     func makeNSView(context: Context) -> TunerView {
         TunerView()
@@ -81,12 +85,18 @@ struct WindowSizingTuner: NSViewRepresentable {
         override func updateConstraints() {
             applyIfNeeded()
             super.updateConstraints()
-            // The needs flag clears when this pass ends; re-arm it
-            // asynchronously so the next pass visits us again. Two
-            // pointer writes per display cycle, versus the O(transcript)
-            // walk this suppresses.
-            DispatchQueue.main.async { [weak self] in
-                self?.needsUpdateConstraints = true
+        }
+
+        // Activity-proportional re-arm: layout() runs whenever our
+        // superview lays out (every streaming flush; never at rest), so
+        // the NEXT constraints pass revisits us and neutralizes any
+        // scene re-arm first. The earlier async-per-cycle re-arm kept
+        // the runloop spinning at display cadence even at idle — the
+        // app burned ~95% CPU at rest doing nothing (2026-08-17).
+        override func layout() {
+            super.layout()
+            if !needsUpdateConstraints {
+                needsUpdateConstraints = true
             }
         }
 

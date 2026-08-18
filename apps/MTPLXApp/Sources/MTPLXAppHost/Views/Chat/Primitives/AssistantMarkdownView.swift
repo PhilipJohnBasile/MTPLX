@@ -474,49 +474,47 @@ private struct AssistantTableView: View {
     let hasHeader: Bool
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(Self.inline(cell))
-                                .font(.system(size: 12.5, weight: rowIndex == 0 && hasHeader ? .semibold : .regular))
-                                .foregroundStyle(rowIndex == 0 && hasHeader ? Brand.typeHi : Brand.typeBody)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                // idealWidth matters: the horizontal
-                                // ScrollView proposes nil width, and a
-                                // bare maxWidth forwards nil to the
-                                // Text — it MEASURES one line tall,
-                                // then wraps at placement and draws
-                                // over the rows below (2026-08-17
-                                // "smushed table rows" field bug).
-                                // With an ideal, measurement wraps at
-                                // 260 too, so row height is honest.
-                                .frame(idealWidth: 260, maxWidth: 260, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .background(
-                        rowIndex == 0 && hasHeader
-                            ? Color.white.opacity(0.05)
-                            : (rowIndex % 2 == 0 ? Color.clear : Color.white.opacity(0.02))
-                    )
-                    if rowIndex == 0 && hasHeader {
-                        Divider().gridCellUnsizedAxes(.horizontal)
+        // NOT Grid, NOT a horizontal ScrollView. Both shipped smushed
+        // rows (2026-08-17 field bug, verified live twice): Grid sizes
+        // rows before flexible wrapping cells resolve their heights —
+        // cells then draw their full wrapped height over a single-line
+        // row pitch. A VStack of top-aligned HStack rows with equal
+        // flexible columns cannot overlap by construction: row height
+        // IS the tallest wrapped cell, and equal fractions keep the
+        // columns aligned across rows. Wide tables compress columns
+        // instead of scrolling; correct beats scrollable.
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                        Text(Self.inline(cell))
+                            .font(.system(size: 12.5, weight: rowIndex == 0 && hasHeader ? .semibold : .regular))
+                            .foregroundStyle(rowIndex == 0 && hasHeader ? Brand.typeHi : Brand.typeBody)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    rowIndex == 0 && hasHeader
+                        ? Color.white.opacity(0.05)
+                        : (rowIndex % 2 == 0 ? Color.clear : Color.white.opacity(0.02))
+                )
+                if rowIndex == 0 && hasHeader {
+                    Divider()
+                }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Brand.bgInner.opacity(0.5))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Brand.separator, lineWidth: 0.5)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Brand.bgInner.opacity(0.5))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Brand.separator, lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private static func inline(_ text: String) -> AttributedString {
