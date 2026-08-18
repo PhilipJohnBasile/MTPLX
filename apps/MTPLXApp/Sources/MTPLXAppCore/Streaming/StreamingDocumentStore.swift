@@ -42,6 +42,8 @@ public final class StreamingDocumentStore: ObservableObject {
     private var inCodeFence = false
     private var codeFenceLanguage: String?
     private var lastScalarWasWord = false
+    private var lineCandidateCount = 0
+    private var lastCoalesceAttemptCandidateCount = -1
     private static let maxLiveLineCharacters = 2_048
 
     #if DEBUG
@@ -95,6 +97,8 @@ public final class StreamingDocumentStore: ObservableObject {
         inCodeFence = false
         codeFenceLanguage = nil
         lastScalarWasWord = false
+        lineCandidateCount = 0
+        lastCoalesceAttemptCandidateCount = -1
         #if DEBUG
         diagnostics = StreamingDocumentDiagnostics()
         #endif
@@ -199,6 +203,7 @@ public final class StreamingDocumentStore: ObservableObject {
                 line.removeLast()
             }
             upsertTail(text: line, finalized: true)
+            noteFinalizedLineCandidate(line)
             allocateNewTail()
             tailText = String(tailText[tailText.index(after: newline)...])
         }
@@ -209,11 +214,23 @@ public final class StreamingDocumentStore: ObservableObject {
             )
             let segment = String(tailText[..<split])
             upsertTail(text: segment, finalized: true)
+            noteFinalizedLineCandidate(segment)
             allocateNewTail()
             tailText = String(tailText[split...])
         }
         coalesceFinalizedLineBlocksIfNeeded()
         upsertTail(text: tailText, finalized: false)
+    }
+
+    /// Incremental merge-candidate accounting. Finalized line blocks
+    /// are newline-free by construction, so candidacy is decided here
+    /// once per line — the coalescer used to re-derive it by scanning
+    /// every block's text on EVERY 16 ms flush, O(document) per flush
+    /// (2026-08-17 field regression).
+    private func noteFinalizedLineCandidate(_ text: String) {
+        guard mode == .plainLines,
+              !StreamingMarkdownBlockSafety.isFenceLine(text) else { return }
+        lineCandidateCount += 1
     }
 
     // MARK: - Line-segment coalescing (2026-07-31 streaming-jank fix)
@@ -260,6 +277,14 @@ public final class StreamingDocumentStore: ObservableObject {
         guard mode == .plainLines else { return }
         let segmentSize = effectiveLineSegmentSize
         guard segmentSize > 0 else { return }
+        // Cheap gate before the block scan: enough candidates must
+        // exist, and at least one new line must have finalized since
+        // the last attempt (a failed contiguity search can only change
+        // outcome when the candidate set changes).
+        guard lineCandidateCount >= segmentSize + Self.lineSegmentFreshWindow,
+              lineCandidateCount != lastCoalesceAttemptCandidateCount
+        else { return }
+        lastCoalesceAttemptCandidateCount = lineCandidateCount
 
         // Single-line blocks never contain "\n"; merged segments always
         // do. That distinction is the "already merged" marker, so no
@@ -316,6 +341,8 @@ public final class StreamingDocumentStore: ObservableObject {
             finalized: true
         )
         blocks.replaceSubrange(first...last, with: [mergedBlock])
+        lineCandidateCount -= segmentSize
+        lastCoalesceAttemptCandidateCount = -1
         liveSegmentMergeCount += 1
         #if DEBUG
         diagnostics.segmentMergeCount += 1
@@ -432,7 +459,11 @@ public final class StreamingDocumentStore: ObservableObject {
             finalized: finalized
         )
 
-        if let index = blocks.firstIndex(where: { $0.id == tailBlockID }) {
+        // The tail is virtually always the LAST block — check it before
+        // the linear scan (which ran per flush, O(blocks)).
+        if let last = blocks.indices.last, blocks[last].id == tailBlockID {
+            blocks[last] = block
+        } else if let index = blocks.firstIndex(where: { $0.id == tailBlockID }) {
             blocks[index] = block
         } else {
             blocks.append(block)
@@ -934,6 +965,13 @@ public struct StreamingDocumentBlock: Identifiable, Equatable, Sendable {
     public var text: String
     public var kind: StreamingDocumentBlockKind
     public var finalized: Bool
+    /// "```" occurrences in `text`, counted once at construction. The
+    /// fence-safety classifier used to recount every block's characters
+    /// on every rendered frame — O(whole answer) per frame, the top
+    /// cost of the 2026-08-17 streaming-freeze field regression. Blocks
+    /// are value types that are rebuilt (never text-mutated) on change,
+    /// so construction is the one place the count can go stale-proof.
+    public let fenceMarkerCount: Int
 
     public init(
         id: Int,
@@ -945,6 +983,7 @@ public struct StreamingDocumentBlock: Identifiable, Equatable, Sendable {
         self.text = text
         self.kind = kind
         self.finalized = finalized
+        self.fenceMarkerCount = StreamingMarkdownBlockSafety.fenceCount(in: text)
     }
 }
 

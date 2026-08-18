@@ -18,7 +18,7 @@ import MTPLXAppCore
 // the tail side; large 14pt elsewhere).
 
 struct AssistantBubbleView: View {
-    @EnvironmentObject private var backend: MTPLXBackendStore
+    @Environment(\.mtplxPerformanceLock) private var performanceLock
     let group: AssistantTurnGroup
     private let message: ChatMessage
     private let combinedReasoning: String
@@ -127,7 +127,7 @@ struct AssistantBubbleView: View {
                             AssistantMarkdownView(
                                 message.visibleContent,
                                 isStreaming: false,
-                                plainTextOnly: backend.configuration.performanceLock
+                                plainTextOnly: performanceLock
                             )
                         }
                     }

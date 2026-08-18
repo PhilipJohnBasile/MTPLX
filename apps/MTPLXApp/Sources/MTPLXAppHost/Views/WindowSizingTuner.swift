@@ -60,8 +60,6 @@ struct WindowSizingTuner: NSViewRepresentable {
     }
 
     final class TunerView: NSView {
-        private weak var tunedWindow: NSWindow?
-
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             DispatchQueue.main.async { [weak self] in
@@ -70,14 +68,41 @@ struct WindowSizingTuner: NSViewRepresentable {
         }
 
         func applyIfNeeded() {
-            guard WindowSizingTuner.isEnabled,
-                  let window,
-                  window !== tunedWindow,
-                  let hosting = window.contentView as? MTPLXHostingSizingConfigurable
+            // 2026-08-17 field regression: the original cast
+            // `window.contentView as? MTPLXHostingSizingConfigurable`
+            // silently failed — the hosting view is a DESCENDANT of the
+            // content view on this window shape — so the tuner never
+            // applied and the min-size storm it documents shipped in
+            // 2.8.x (34% of the idle main thread; worse while
+            // streaming). Search the subtree, and re-assert on every
+            // update instead of latching: SwiftUI scene updates can
+            // re-arm `sizingOptions`, and both writes are idempotent.
+            guard WindowSizingTuner.isEnabled, let window else { return }
+            guard let hosting = Self.hostingView(in: window.contentView, depth: 4)
             else { return }
-            hosting.mtplxSizingOptions = []
-            window.contentMinSize = WindowSizingTuner.contentMinSize
-            tunedWindow = window
+            if !hosting.mtplxSizingOptions.isEmpty {
+                hosting.mtplxSizingOptions = []
+            }
+            if window.contentMinSize != WindowSizingTuner.contentMinSize {
+                window.contentMinSize = WindowSizingTuner.contentMinSize
+            }
+        }
+
+        private static func hostingView(
+            in view: NSView?,
+            depth: Int
+        ) -> MTPLXHostingSizingConfigurable? {
+            guard let view else { return nil }
+            if let hosting = view as? MTPLXHostingSizingConfigurable {
+                return hosting
+            }
+            guard depth > 0 else { return nil }
+            for subview in view.subviews {
+                if let found = hostingView(in: subview, depth: depth - 1) {
+                    return found
+                }
+            }
+            return nil
         }
     }
 }

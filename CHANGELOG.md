@@ -8,6 +8,25 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **The desktop app no longer renders the whole transcript per frame —
+  long chats stay smooth on screen, not just on the wire.** Founder
+  testing on a heavy multi-turn conversation at temperature 1.0 caught
+  the other half of the freeze-and-burst reports: the app's window
+  re-measured every realized message on every layout invalidation (a
+  third of the main thread at idle, up to 62×/s while streaming — the
+  guard meant to prevent this had silently never applied), markdown
+  fence classification re-walked every character of every block per
+  frame, per-delta paths copied the entire answer to test emptiness,
+  and scroll pacing state invalidated the full view tree per tick. All
+  of it is now O(new content): fence counts and syntax-lex state are
+  computed once per block, the min-size walk is dead, and the 10 Hz
+  metrics chip no longer re-evaluates every bubble or parses its stream
+  byte-by-byte. Catch-up after any hiccup is rate-limited (max 256
+  chars/frame) so it reads as fast typing, never a paste.
+- **Markdown tables no longer draw rows on top of each other.** Table
+  cells measured one line tall (the horizontal scroller proposes no
+  width) but drew wrapped, so long cells bled over the rows below.
+  Cells now measure at their placement width.
 - **Chat streaming no longer freezes mid-response and then dumps the
   backlog in one burst.** 2.8.0 added a wire safeguard for the uncapped
   repetition stop that held a fixed ~448-token tail off the stream on

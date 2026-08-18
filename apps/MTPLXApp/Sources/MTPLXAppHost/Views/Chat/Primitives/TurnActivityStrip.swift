@@ -213,12 +213,22 @@ enum ThoughtViewportMetrics {
 /// 2026-07-03 "frozen after search→thinking" report).
 struct StreamingThoughtWell: View {
     @ObservedObject var document: StreamingDocumentStore
-    var fallback: String = ""
+    /// Unflushed coalescing-buffer text only (small). The old shape
+    /// took the full buffer-INCLUSIVE transcript and grapheme-counted
+    /// both it and the document per revision — two O(answer) walks per
+    /// frame (2026-08-17 field regression). Document + pending is the
+    /// exact live text, so suffixing both sides is byte-for-byte what
+    /// the old max-of-the-two produced, minus the stale-capture case
+    /// (this is fresher: it never drops the buffer when the document
+    /// happens to be longer).
+    var pendingTail: String = ""
 
     private var tail: String {
-        let flushed = document.rawText
-        let live = fallback.count > flushed.count ? fallback : flushed
-        return String(live.suffix(ThoughtViewportMetrics.tailCharacterLimit))
+        let limit = ThoughtViewportMetrics.tailCharacterLimit
+        let pending = pendingTail.suffix(limit)
+        if pending.count >= limit { return String(pending) }
+        let fromDocument = document.rawText.suffix(limit - pending.count)
+        return String(fromDocument) + String(pending)
     }
 
     var body: some View {

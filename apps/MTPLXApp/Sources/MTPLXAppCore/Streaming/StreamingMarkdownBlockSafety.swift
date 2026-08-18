@@ -38,17 +38,26 @@ public enum StreamingMarkdownBlockSafety {
         return flags
     }
 
-    static func fenceCount(in text: String) -> Int {
+    /// Non-overlapping "```" occurrences. Byte scan: '`' is ASCII 0x60
+    /// and UTF-8 continuation bytes are all >= 0x80, so scanning utf8
+    /// is exactly equivalent to the Character walk this replaces — and
+    /// 10-50x cheaper (the old Substring+hasPrefix-per-Character walk
+    /// over the whole document per rendered frame was the top term of
+    /// the 2026-08-17 streaming-freeze field regression).
+    public static func fenceCount(in text: String) -> Int {
         guard !text.isEmpty else { return 0 }
         var count = 0
-        var index = text.startIndex
-        while index < text.endIndex {
-            if text[index...].hasPrefix("```") {
-                count += 1
-                index = text.index(index, offsetBy: 3)
-                continue
+        var run = 0
+        for byte in text.utf8 {
+            if byte == 0x60 {
+                run += 1
+                if run == 3 {
+                    count += 1
+                    run = 0
+                }
+            } else {
+                run = 0
             }
-            index = text.index(after: index)
         }
         return count
     }
@@ -75,18 +84,42 @@ public enum StreamingMarkdownBlockSafety {
         public let fenceRoles: [FenceRole]
     }
 
+    /// Block-based overload: consumes the fence counts stamped on the
+    /// blocks at construction instead of recounting text — O(blocks)
+    /// integer work per frame instead of O(document characters).
+    public static func classifyRoles(
+        _ blocks: [StreamingDocumentBlock]
+    ) -> Classification {
+        classifyRoles(
+            texts: blocks.lazy.map(\.text),
+            fences: blocks.lazy.map(\.fenceMarkerCount),
+            count: blocks.count
+        )
+    }
+
     public static func classifyRoles(_ blockTexts: [String]) -> Classification {
-        guard !blockTexts.isEmpty else {
+        classifyRoles(
+            texts: blockTexts.lazy.map { $0 },
+            fences: blockTexts.lazy.map { fenceCount(in: $0) },
+            count: blockTexts.count
+        )
+    }
+
+    private static func classifyRoles<Texts: Sequence<String>, Fences: Sequence<Int>>(
+        texts: Texts,
+        fences fenceCounts: Fences,
+        count: Int
+    ) -> Classification {
+        guard count > 0 else {
             return Classification(settledSafe: [], fenceRoles: [])
         }
-        var flags = [Bool](repeating: false, count: blockTexts.count)
-        var roles = [FenceRole](repeating: .none, count: blockTexts.count)
+        var flags = [Bool](repeating: false, count: count)
+        var roles = [FenceRole](repeating: .none, count: count)
         var insideFence = false
-        for (index, text) in blockTexts.enumerated() {
-            let fences = fenceCount(in: text)
+        for (index, (text, fences)) in zip(texts, fenceCounts).enumerated() {
             let opensOrCloses = fences % 2 != 0
             let startsInsideFence = insideFence
-            if index < blockTexts.count - 1 {
+            if index < count - 1 {
                 flags[index] = !startsInsideFence && !opensOrCloses
             }
             if fences == 0 {

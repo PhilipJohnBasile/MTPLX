@@ -18,6 +18,22 @@ import MTPLXAppCore
 //     }
 //   }
 
+private struct MTPLXPerformanceLockKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Chat render surfaces read this instead of observing the whole
+    /// backend store: an @EnvironmentObject subscription re-evaluated
+    /// every transcript bubble on every 10 Hz metrics tick for one
+    /// static Bool (2026-08-17 field regression). An environment value
+    /// re-evaluates readers only when it actually flips.
+    var mtplxPerformanceLock: Bool {
+        get { self[MTPLXPerformanceLockKey.self] }
+        set { self[MTPLXPerformanceLockKey.self] = newValue }
+    }
+}
+
 struct ChatView: View {
     @EnvironmentObject private var chatViewModel: ChatViewModel
     @EnvironmentObject private var router: AppRouter
@@ -46,6 +62,7 @@ struct ChatView: View {
             .background(Brand.bgOuter)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.mtplxPerformanceLock, backend.configuration.performanceLock)
         .overlay(alignment: .bottomTrailing) {
             if chatViewModel.uiPerfProbe.showsHUD {
                 UIPerfHUDView(probe: chatViewModel.uiPerfProbe)

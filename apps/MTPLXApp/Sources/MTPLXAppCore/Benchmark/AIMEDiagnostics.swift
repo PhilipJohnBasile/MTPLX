@@ -78,9 +78,13 @@ public enum AIMEDiagnostics {
     public static let logger = Logger(subsystem: "com.mtplx.app", category: "AIMEPerf")
     public static let signpostLog = OSLog(subsystem: "com.mtplx.app", category: "AIMEPerf")
 
-    public static var isEnabled: Bool {
+    /// Cached once: `ProcessInfo.environment` rebuilds the whole
+    /// dictionary from `environ` on every access, and this flag is
+    /// checked twice per document append at up to 62 Hz × 2 documents
+    /// (~250 environment rebuilds/s on the MainActor for a value that
+    /// cannot change after launch — 2026-08-17 field regression).
+    public static let isEnabled: Bool =
         isEnabled(environment: ProcessInfo.processInfo.environment)
-    }
 
     public static var renderMode: AIMERenderMode {
         renderMode(environment: ProcessInfo.processInfo.environment)

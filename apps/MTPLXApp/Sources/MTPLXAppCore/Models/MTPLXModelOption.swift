@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     public var id: String
@@ -1010,13 +1011,33 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         return parts.joined(separator: "/")
     }
 
+    /// Memoized: chrome-strip bodies call this on every 10 Hz metrics
+    /// tick, and a miss used to walk the 23-entry catalog with 5+
+    /// string normalizations per entry PLUS `URL(fileURLWithPath:)` —
+    /// which syscalls `getcwd()` — inside a view body (2026-08-17 field
+    /// regression). The result is a pure function of the id.
+    private static let displayNameCache = OSAllocatedUnfairLock<[String: String]>(
+        initialState: [:]
+    )
+
     public static func displayName(for model: String) -> String {
-        if let option = option(matching: model) {
-            return option.displayName
+        if let cached = displayNameCache.withLock({ $0[model] }) {
+            return cached
         }
-        let last = URL(fileURLWithPath: model).lastPathComponent
-        let stripped = model.split(separator: "/").last.map(String.init) ?? model
-        return last.isEmpty ? stripped : last
+        let resolved: String
+        if let option = option(matching: model) {
+            resolved = option.displayName
+        } else {
+            // Plain path-tail split — no URL(fileURLWithPath:), which
+            // hits the filesystem to resolve the working directory.
+            let tail = model.split(separator: "/").last.map(String.init) ?? model
+            resolved = tail.isEmpty ? model : tail
+        }
+        displayNameCache.withLock { cache in
+            if cache.count > 512 { cache.removeAll() }
+            cache[model] = resolved
+        }
+        return resolved
     }
 
     public static func displayName(for model: String, customModels: [MTPLXModelOption]) -> String {

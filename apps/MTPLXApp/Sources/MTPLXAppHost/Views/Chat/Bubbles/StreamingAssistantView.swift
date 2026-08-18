@@ -27,7 +27,7 @@ import MTPLXAppCore
 
 struct StreamingAssistantView: View {
     @ObservedObject var viewModel: ChatViewModel
-    @EnvironmentObject private var backend: MTPLXBackendStore
+    @Environment(\.mtplxPerformanceLock) private var performanceLock
 
     /// The open well. Auto-follows `streamingPhase`; chip taps can
     /// override until the next phase change reasserts the live tool.
@@ -54,7 +54,7 @@ struct StreamingAssistantView: View {
                 thoughtWell: {
                     StreamingThoughtWell(
                         document: viewModel.streamingReasoningDocument,
-                        fallback: viewModel.streamingReasoning
+                        pendingTail: viewModel.streamingReasoningPending
                     )
                 },
                 searchWell: {
@@ -68,10 +68,16 @@ struct StreamingAssistantView: View {
 
             if contentHasStarted {
                 HStack(alignment: .top, spacing: 0) {
+                    // Pending buffer, not `streamingContent`: the
+                    // fallback only renders while the document is still
+                    // empty, and nothing has flushed at that point — so
+                    // the buffer IS the full text. The concatenating
+                    // property cost O(answer) per body eval for a value
+                    // read on one frame (2026-08-17 field regression).
                     StreamingAssistantMarkdownView(
                         document: viewModel.streamingContentDocument,
-                        fallbackText: viewModel.streamingContent,
-                        plainTextOnly: backend.configuration.performanceLock
+                        fallbackText: viewModel.streamingContentPending,
+                        plainTextOnly: performanceLock
                     )
                     .frame(maxWidth: 576, alignment: .leading)
                     .padding(.horizontal, 14)

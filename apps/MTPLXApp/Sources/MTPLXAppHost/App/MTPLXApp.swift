@@ -258,10 +258,14 @@ struct MTPLXApp: App {
                 )
         }
         .windowStyle(.hiddenTitleBar)
-        // Window minimum follows ContentView's content min frame (420×540)
-        // with no maximum, so the user can drag it down to a thin bar or
-        // up to full screen freely.
-        .windowResizability(.contentMinSize)
+        // The 420×540 floor is pinned as an explicit AppKit
+        // `contentMinSize` by WindowSizingTuner. `.contentMinSize`
+        // resizability kept `.minSize` in the hosting view's sizing
+        // options, which re-derives window extrema with a FULL
+        // `sizeThatFits` walk of the transcript on every constraint
+        // invalidation (34% of the idle main thread on a long chat;
+        // the 2026-08-17 streaming-freeze field regression).
+        .windowResizability(.automatic)
         // Open at a generous default. Without this the window opens close to
         // its 420pt minimum, which crushed wide surfaces like the AIME
         // benchmark header on first launch ("default sizing" looked squashed).

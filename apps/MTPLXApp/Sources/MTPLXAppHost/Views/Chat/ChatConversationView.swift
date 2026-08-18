@@ -15,13 +15,33 @@ import MTPLXAppCore
 // can scroll up to detach (>120pt) and back to the bottom to reattach
 // (<28pt), matching Aphanes' tuning.
 
+/// Plain (non-observed) box for auto-scroll pacing state. Deliberately
+/// NOT individual `@State` vars: policy + task bookkeeping mutate on
+/// every revision/scroll tick (up to ~62 Hz while streaming), and as
+/// `@State` each write invalidated the whole conversation view — every
+/// bubble's body re-ran per tick (2026-08-17 field regression). Nothing
+/// in `body` reads these; scrolling goes through the AppKit driver.
+@MainActor
+final class ChatConversationScrollState {
+    var policy = ConversationAutoScrollPolicy()
+    var autoScrollTask: Task<Void, Never>?
+    var deferredScrollTask: Task<Void, Never>?
+    var finishScrollRepairTask: Task<Void, Never>?
+    var lastAutoScrollAt: ContinuousClock.Instant?
+
+    func cancelTasks() {
+        autoScrollTask?.cancel()
+        deferredScrollTask?.cancel()
+        finishScrollRepairTask?.cancel()
+        autoScrollTask = nil
+        deferredScrollTask = nil
+        finishScrollRepairTask = nil
+    }
+}
+
 struct ChatConversationView: View {
     @ObservedObject var viewModel: ChatViewModel
-    @State private var policy = ConversationAutoScrollPolicy()
-    @State private var autoScrollTask: Task<Void, Never>?
-    @State private var deferredScrollTask: Task<Void, Never>?
-    @State private var finishScrollRepairTask: Task<Void, Never>?
-    @State private var lastAutoScrollAt: ContinuousClock.Instant?
+    @State private var scroll = ChatConversationScrollState()
     @State private var scrollDriver = ChatConversationScrollDriver()
     @State private var showFullHeavyTranscript = false
     @State private var renderPlan = ChatConversationRenderPlan(
@@ -77,7 +97,7 @@ struct ChatConversationView: View {
                 ChatConversationScrollObserverView(
                     onScrollViewResolved: { scrollView in
                         scrollDriver.updateScrollView(scrollView)
-                        if scrollView != nil, policy.shouldAutoScrollForStreamingUpdate {
+                        if scrollView != nil, scroll.policy.shouldAutoScrollForStreamingUpdate {
                             scheduleDeferredBottomScroll(delays: [.milliseconds(40)])
                         }
                     },
@@ -87,7 +107,7 @@ struct ChatConversationView: View {
                             userInitiated: isUserInitiated
                         )
                         performScrollActions(
-                            policy.didScroll(
+                            scroll.policy.didScroll(
                                 distanceToBottom: distanceToBottom,
                                 isUserInitiated: isUserInitiated
                             )
@@ -117,8 +137,8 @@ struct ChatConversationView: View {
         .onChange(of: viewModel.visibleMessages.count) { _, _ in
             updateRenderPlan()
             if viewModel.visibleMessages.last?.role == .user {
-                performScrollActions(policy.didSendUserMessage())
-            } else if !viewModel.isStreaming && policy.shouldAutoScrollForStreamingUpdate {
+                performScrollActions(scroll.policy.didSendUserMessage())
+            } else if !viewModel.isStreaming && scroll.policy.shouldAutoScrollForStreamingUpdate {
                 performScrollActions([.immediate, .deferred])
                 scheduleFinishScrollRepair()
             } else {
@@ -127,25 +147,25 @@ struct ChatConversationView: View {
         }
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if streaming {
-                finishScrollRepairTask?.cancel()
-                finishScrollRepairTask = nil
-                performScrollActions(policy.didStartStreaming())
+                scroll.finishScrollRepairTask?.cancel()
+                scroll.finishScrollRepairTask = nil
+                performScrollActions(scroll.policy.didStartStreaming())
             } else {
-                performScrollActions(policy.didFinishStreaming())
+                performScrollActions(scroll.policy.didFinishStreaming())
                 scheduleFinishScrollRepair()
             }
         }
         .onAppear {
             updateRenderPlan()
-            performScrollActions(policy.didAppear())
+            performScrollActions(scroll.policy.didAppear())
         }
         .onDisappear {
-            autoScrollTask?.cancel()
-            deferredScrollTask?.cancel()
-            finishScrollRepairTask?.cancel()
-            autoScrollTask = nil
-            deferredScrollTask = nil
-            finishScrollRepairTask = nil
+            scroll.autoScrollTask?.cancel()
+            scroll.deferredScrollTask?.cancel()
+            scroll.finishScrollRepairTask?.cancel()
+            scroll.autoScrollTask = nil
+            scroll.deferredScrollTask = nil
+            scroll.finishScrollRepairTask = nil
         }
     }
 
@@ -165,22 +185,22 @@ struct ChatConversationView: View {
     // and simply no-ops once the pin has already glued the bottom.
     private func synchronousBottomPinIfNeeded() {
         guard viewModel.isStreaming,
-              policy.shouldAutoScrollForStreamingUpdate else { return }
+              scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
         if scrollDriver.scrollToBottom(animated: false) {
             viewModel.uiPerfProbe.scrollPinned()
         }
     }
 
     private func scrollToBottom(force: Bool = false) {
-        guard force || policy.shouldAutoScrollForStreamingUpdate else { return }
+        guard force || scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
         if force {
-            autoScrollTask?.cancel()
-            autoScrollTask = nil
+            scroll.autoScrollTask?.cancel()
+            scroll.autoScrollTask = nil
             performAutoScroll(animated: false)
             return
         }
 
-        guard autoScrollTask == nil else { return }
+        guard scroll.autoScrollTask == nil else { return }
 
         let minimumCadence: Duration
         if viewModel.isStreaming {
@@ -194,22 +214,22 @@ struct ChatConversationView: View {
         }
         let now = ContinuousClock.now
         let delay: Duration
-        if let lastAutoScrollAt {
-            let elapsed = now - lastAutoScrollAt
+        if let lastScrollAt = scroll.lastAutoScrollAt {
+            let elapsed = now - lastScrollAt
             delay = elapsed >= minimumCadence ? .zero : minimumCadence - elapsed
         } else {
             delay = .zero
         }
 
-        autoScrollTask = Task { @MainActor in
+        scroll.autoScrollTask = Task { @MainActor in
             if delay > .zero {
                 try? await Task.sleep(for: delay)
             } else {
                 await Task.yield()
             }
             guard !Task.isCancelled else { return }
-            autoScrollTask = nil
-            guard policy.shouldAutoScrollForStreamingUpdate else { return }
+            scroll.autoScrollTask = nil
+            guard scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
             performAutoScroll(animated: false)
         }
     }
@@ -234,24 +254,24 @@ struct ChatConversationView: View {
     }
 
     private func scheduleDeferredBottomScroll(delays: [Duration]) {
-        deferredScrollTask?.cancel()
-        deferredScrollTask = Task { @MainActor in
+        scroll.deferredScrollTask?.cancel()
+        scroll.deferredScrollTask = Task { @MainActor in
             for delay in delays {
                 try? await Task.sleep(for: delay)
-                guard !Task.isCancelled, policy.shouldAutoScrollForStreamingUpdate else { return }
+                guard !Task.isCancelled, scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
                 performAutoScroll(animated: false)
             }
         }
     }
 
     private func performAutoScroll(animated: Bool) {
-        lastAutoScrollAt = ContinuousClock.now
+        scroll.lastAutoScrollAt = ContinuousClock.now
         _ = scrollDriver.scrollToBottom(animated: animated)
     }
 
     private func scheduleFinishScrollRepair() {
-        finishScrollRepairTask?.cancel()
-        finishScrollRepairTask = Task { @MainActor in
+        scroll.finishScrollRepairTask?.cancel()
+        scroll.finishScrollRepairTask = Task { @MainActor in
             await Task.yield()
             guard !Task.isCancelled else { return }
             performFinishScrollRepairTick()
@@ -262,20 +282,20 @@ struct ChatConversationView: View {
     }
 
     private func performFinishScrollRepairTick() {
-        guard !viewModel.isStreaming, policy.shouldAutoScrollForStreamingUpdate else { return }
-        lastAutoScrollAt = ContinuousClock.now
+        guard !viewModel.isStreaming, scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
+        scroll.lastAutoScrollAt = ContinuousClock.now
         _ = scrollDriver.clampToValidOffset()
         _ = scrollDriver.scrollToBottom(animated: false)
     }
 
     private func handleConversationChange() {
-        autoScrollTask?.cancel()
-        deferredScrollTask?.cancel()
-        finishScrollRepairTask?.cancel()
-        autoScrollTask = nil
-        deferredScrollTask = nil
-        finishScrollRepairTask = nil
-        performScrollActions(policy.didOpenConversation())
+        scroll.autoScrollTask?.cancel()
+        scroll.deferredScrollTask?.cancel()
+        scroll.finishScrollRepairTask?.cancel()
+        scroll.autoScrollTask = nil
+        scroll.deferredScrollTask = nil
+        scroll.finishScrollRepairTask = nil
+        performScrollActions(scroll.policy.didOpenConversation())
         showFullHeavyTranscript = false
         updateRenderPlan(showFullHeavyTranscript: false)
     }

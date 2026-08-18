@@ -484,7 +484,16 @@ private struct AssistantTableView: View {
                                 .foregroundStyle(rowIndex == 0 && hasHeader ? Brand.typeHi : Brand.typeBody)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
-                                .frame(maxWidth: 260, alignment: .leading)
+                                // idealWidth matters: the horizontal
+                                // ScrollView proposes nil width, and a
+                                // bare maxWidth forwards nil to the
+                                // Text — it MEASURES one line tall,
+                                // then wraps at placement and draws
+                                // over the rows below (2026-08-17
+                                // "smushed table rows" field bug).
+                                // With an ideal, measurement wraps at
+                                // 260 too, so row height is honest.
+                                .frame(idealWidth: 260, maxWidth: 260, alignment: .leading)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -665,12 +674,38 @@ private enum AssistantCodeMetrics {
 
 // MARK: - StreamingAssistantMarkdownView
 
+/// Append-only lex-state chain for the currently OPEN fence card. The
+/// interior only grows at its tail while a fence streams, but the view
+/// used to re-lex the WHOLE interior per body evaluation — O(fence
+/// lines) of cache-key interpolation per frame, a top term of the
+/// 2026-08-17 streaming-freeze field regression. Prefix identity is
+/// (block id, utf8 length): frozen blocks never change text, a segment
+/// merge changes both, and a document reset restarts ids — all diverge
+/// the prefix and force a re-lex from the divergence point only.
+@MainActor
+final class StreamingFenceLexChain {
+    struct Entry {
+        let blockID: Int
+        let textUTF8Count: Int
+        let endState: MTPLXCodeHighlighter.LexState
+    }
+
+    var language: MTPLXCodeHighlighter.Language?
+    var entries: [Entry] = []
+
+    func reset(language: MTPLXCodeHighlighter.Language?) {
+        self.language = language
+        entries.removeAll(keepingCapacity: true)
+    }
+}
+
 struct StreamingAssistantMarkdownView: View {
     @ObservedObject var document: StreamingDocumentStore
     var fallbackText: String = ""
     /// Performance mode: no markdown promotion, no code card, no
     /// syntax coloring — the pure plain-line stream.
     var plainTextOnly: Bool = false
+    @State private var lexChain = StreamingFenceLexChain()
 
     var body: some View {
         Group {
@@ -696,7 +731,7 @@ struct StreamingAssistantMarkdownView: View {
                 // the exact settled code card. Per-token cost stays one
                 // linear classify pass + the tail repaint (2026-07-03
                 // contract, extended 2026-07-31).
-                let items = Self.renderItems(for: document.blocks)
+                let items = Self.renderItems(for: document.blocks, lexChain: lexChain)
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(items) { item in
                         itemView(item)
@@ -741,8 +776,13 @@ struct StreamingAssistantMarkdownView: View {
     /// roles. One linear pass per body evaluation; per-line highlight
     /// states are threaded through the cached lexer (dictionary hits
     /// for every already-frozen line, one real lex for a new line).
-    static func renderItems(for blocks: [StreamingDocumentBlock]) -> [StreamingRenderItem] {
-        let classification = StreamingMarkdownBlockSafety.classifyRoles(blocks.map(\.text))
+    static func renderItems(
+        for blocks: [StreamingDocumentBlock],
+        lexChain: StreamingFenceLexChain? = nil
+    ) -> [StreamingRenderItem] {
+        // Consumes the fence counts stamped on the blocks at
+        // construction — recounting text here was O(document) per frame.
+        let classification = StreamingMarkdownBlockSafety.classifyRoles(blocks)
         var items: [StreamingRenderItem] = []
         items.reserveCapacity(blocks.count + 4)
         var index = 0
@@ -778,7 +818,19 @@ struct StreamingAssistantMarkdownView: View {
                         language: language,
                         label: label
                     ))
+                    // Thread the lex state through the interior,
+                    // resuming from the append-only chain cache: frozen
+                    // prefix rows cost two Int compares each; only rows
+                    // past the divergence point (in practice: none, or
+                    // the just-frozen line) actually re-lex. The LAST
+                    // interior row is the growing tail — its end state
+                    // feeds nothing this frame, so it is never lexed
+                    // here; it lexes once on the frame after it freezes.
+                    if let lexChain, lexChain.language != language {
+                        lexChain.reset(language: language)
+                    }
                     var state = MTPLXCodeHighlighter.LexState.none
+                    var reusable = lexChain?.entries.count ?? 0
                     for (offset, block) in interior.enumerated() {
                         items.append(.fenceLine(
                             block: block,
@@ -786,6 +838,17 @@ struct StreamingAssistantMarkdownView: View {
                             entryTag: state.cacheTag,
                             isLast: offset == interior.count - 1
                         ))
+                        if offset == interior.count - 1 { break }
+                        let bytes = block.text.utf8.count
+                        if let lexChain, offset < reusable {
+                            let cached = lexChain.entries[offset]
+                            if cached.blockID == block.id, cached.textUTF8Count == bytes {
+                                state = cached.endState
+                                continue
+                            }
+                            lexChain.entries.removeSubrange(offset...)
+                            reusable = offset
+                        }
                         if block.text.contains("\n") {
                             state = MTPLXCodeHighlighter
                                 .highlightSegmentEndState(block.text, language: language, state: state)
@@ -794,6 +857,11 @@ struct StreamingAssistantMarkdownView: View {
                                 .highlightLine(block.text, language: language, state: state)
                                 .endState
                         }
+                        lexChain?.entries.append(.init(
+                            blockID: block.id,
+                            textUTF8Count: bytes,
+                            endState: state
+                        ))
                     }
                     if interior.isEmpty {
                         // Header-only card so an empty just-opened fence
@@ -1211,15 +1279,34 @@ private struct CodeTextViewport: NSViewRepresentable {
         )
         textView.setAccessibilityElement(false)
         apply(to: textView)
+        context.coordinator.appliedCode = code
+        context.coordinator.appliedHighlighted = highlighted
 
         scrollView.documentView = textView
         return scrollView
     }
 
+    final class Coordinator {
+        var appliedCode: String?
+        var appliedHighlighted: Bool?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        if textView.string != code {
+        // Compare against the retained applied String, NOT
+        // `textView.string`: that getter materializes the whole
+        // NSTextStorage into a fresh Swift String on every update
+        // (O(code) per frame on a giant block). The retained String
+        // shares storage with `code` when unchanged, so `==` is a
+        // pointer check. Tracking `highlighted` also fixes a latent
+        // bug: toggling performance mode used to leave stale coloring.
+        if context.coordinator.appliedCode != code
+            || context.coordinator.appliedHighlighted != highlighted {
             apply(to: textView)
+            context.coordinator.appliedCode = code
+            context.coordinator.appliedHighlighted = highlighted
         }
     }
 

@@ -28,6 +28,54 @@ public struct SSEMessage: Equatable, Sendable {
     }
 }
 
+/// Incremental SSE framing: feed bytes, get complete messages. Two
+/// compares and an array append per byte — replaces the per-byte
+/// Data.append + delimiter rescan + whole-event Foundation re-split
+/// that burned ~15% of a core at the 10 Hz snapshot rate (2026-08-17
+/// field regression). NOT built on `AsyncLineSequence`: that SKIPS
+/// blank lines (verified 2026-08-17), and the blank line IS the SSE
+/// message boundary. CR is dropped, matching the historical
+/// "\r\n" -> "\n" normalization.
+public struct SSELineAccumulator: Sendable {
+    private var line: [UInt8] = []
+    private var event = "message"
+    private var dataLines: [String] = []
+
+    public init() {
+        line.reserveCapacity(1024)
+    }
+
+    public mutating func consume(_ byte: UInt8) -> SSEMessage? {
+        if byte == 0x0D { return nil }
+        if byte != 0x0A {
+            line.append(byte)
+            return nil
+        }
+        if line.isEmpty {
+            // Blank line: one complete SSE message.
+            defer {
+                event = "message"
+                dataLines.removeAll(keepingCapacity: true)
+            }
+            guard !dataLines.isEmpty else { return nil }
+            return SSEMessage(event: event, data: dataLines.joined(separator: "\n"))
+        }
+        let text = String(decoding: line, as: UTF8.self)
+        line.removeAll(keepingCapacity: true)
+        if text.hasPrefix(":") { return nil }
+        if text.hasPrefix("event:") {
+            event = String(text.dropFirst("event:".count))
+                .trimmingCharacters(in: .whitespaces)
+        } else if text.hasPrefix("data:") {
+            dataLines.append(
+                String(text.dropFirst("data:".count))
+                    .trimmingCharacters(in: .whitespaces)
+            )
+        }
+        return nil
+    }
+}
+
 public struct SSEParser: Sendable {
     public init() {}
 
@@ -108,18 +156,11 @@ public final class MetricsStreamClient: Sendable {
                 }
                 attempt = 0
                 await onState(.open)
-                var buffer = Data()
+                var accumulator = SSELineAccumulator()
                 for try await byte in bytes {
+                    guard let message = accumulator.consume(byte) else { continue }
                     if Task.isCancelled { return }
-                    buffer.append(byte)
-                    if buffer.hasSSEDelimiterSuffix {
-                        let text = String(decoding: buffer, as: UTF8.self)
-                        let messages = parser.parse(text)
-                        buffer.removeAll(keepingCapacity: true)
-                        for message in messages {
-                            await onEvent(try decode(message: message))
-                        }
-                    }
+                    await onEvent(try decode(message: message))
                 }
             } catch {
                 if Task.isCancelled { return }

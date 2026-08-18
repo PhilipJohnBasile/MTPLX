@@ -108,6 +108,12 @@ public final class ChatViewModel: ObservableObject {
     @Published public private(set) var handoffAssistantMessageID: UUID?
     public var streamingReasoning: String { streamingReasoningDocument.rawText + streamingReasoningBuffer }
     public var streamingContent: String { streamingContentDocument.rawText + streamingContentBuffer }
+    /// The unflushed coalescing buffers alone (small, CoW-shared). Live
+    /// views that only need "what hasn't reached the document yet" read
+    /// these — the full concatenating properties above cost O(answer)
+    /// per access and are for turn-boundary persistence only.
+    public var streamingReasoningPending: String { streamingReasoningBuffer }
+    public var streamingContentPending: String { streamingContentBuffer }
     public var shouldRenderStreamingAssistant: Bool {
         guard isStreaming else { return false }
         guard let handoffAssistantMessageID else { return true }
@@ -739,7 +745,12 @@ public final class ChatViewModel: ObservableObject {
 
     private func appendStreamingReasoning(_ fragment: String) {
         guard !fragment.isEmpty else { return }
-        let wasEmpty = streamingReasoning.isEmpty
+        // NOT `streamingReasoning.isEmpty`: that computed property
+        // concatenates the whole transcript per call, and this runs per
+        // delta — O(answer) per token (2026-08-17 field regression).
+        // The has-flag mirrors emptiness exactly (set with first
+        // append, cleared with every reset).
+        let wasEmpty = !hasStreamingReasoning
         if reasoningStartedAt == nil {
             reasoningStartedAt = Date()
         }
@@ -753,14 +764,14 @@ public final class ChatViewModel: ObservableObject {
             // behind the stream even if that task stalls.
             flushStreamingBuffers(drainCompletely: false)
         }
-        if streamingContent.isEmpty, streamingPhase != .thinking {
+        if !hasStreamingContent, streamingPhase != .thinking {
             streamingPhase = .thinking
         }
     }
 
     private func appendStreamingContent(_ fragment: String) {
         guard !fragment.isEmpty else { return }
-        let wasEmpty = streamingContent.isEmpty
+        let wasEmpty = !hasStreamingContent
         streamingContentBuffer.append(fragment)
         if !wasEmpty, streamingContentBuffer.count > Self.streamBufferFlushBackstop {
             flushStreamingBuffers(drainCompletely: false)
@@ -983,15 +994,25 @@ public final class ChatViewModel: ObservableObject {
         default: return true
         }
     }()
-    private static let typewriterHardDrainCharacters = 4_096
     private static let typewriterMinRevealCharacters = 3
+    /// Per-tick reveal ceiling. The old behavior whole-drained any
+    /// buffer above 4 KB in a single frame — that WAS the visible
+    /// "vomit" paste whenever the main thread hiccuped and a backlog
+    /// built (2026-08-17 field regression). 256 chars × 62 Hz drains a
+    /// worst-case backlog at ~16k chars/s (any catch-up reads as fast
+    /// typing and clears a 4 KB backlog in ~0.26 s), while the stream
+    /// itself produces ~150 chars/s — the cap only shapes recovery.
+    private static let typewriterMaxRevealCharacters = 256
 
-    private static func pacedCut(_ buffer: String) -> (reveal: String, rest: String) {
+    // Internal (not private) so the regression test can pin the reveal
+    // ceiling — the unbounded whole-drain WAS the "vomit" paste.
+    static func pacedCut(_ buffer: String) -> (reveal: String, rest: String) {
         let count = buffer.count
-        guard count > typewriterMinRevealCharacters,
-              count <= typewriterHardDrainCharacters
-        else { return (buffer, "") }
-        let reveal = max(typewriterMinRevealCharacters, count / 4)
+        guard count > typewriterMinRevealCharacters else { return (buffer, "") }
+        let reveal = min(
+            max(typewriterMinRevealCharacters, count / 4),
+            typewriterMaxRevealCharacters
+        )
         guard reveal < count else { return (buffer, "") }
         let cut = buffer.index(buffer.startIndex, offsetBy: reveal)
         return (String(buffer[..<cut]), String(buffer[cut...]))
