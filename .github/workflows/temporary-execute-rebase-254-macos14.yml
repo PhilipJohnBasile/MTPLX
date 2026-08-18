@@ -130,7 +130,7 @@ jobs:
           fresh_condition_index = blocks[0].find(fresh_condition)
           if fresh_condition_index < 0:
               raise SystemExit("could not locate PR 254 fresh-launch resolver")
-          fresh_start = blocks[0].rfind("              if (", 0, fresh_condition_index)
+          fresh_start = blocks[0].rfind("if (", 0, fresh_condition_index)
           if fresh_start < 0:
               raise SystemExit("could not locate PR 254 fresh-launch resolver start")
           fresh_stop_marker = 'kinds.add("flush_fresh")'
