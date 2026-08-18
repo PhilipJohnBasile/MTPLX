@@ -60,6 +60,17 @@ struct WindowSizingTuner: NSViewRepresentable {
     }
 
     final class TunerView: NSView {
+        // Participate in EVERY constraints pass. Constraint updates run
+        // bottom-up, and this view is a descendant of the hosting view,
+        // so `updateConstraints` below neutralizes `sizingOptions`
+        // BEFORE NSHostingView.updateConstraints derives window extrema
+        // in the same pass — a SwiftUI scene update re-arming the
+        // options between cycles can never buy another transcript walk.
+        // (2026-08-17: the one-shot apply verifiably cleared the
+        // options, yet the A/B profile still showed ~2,300 walk samples
+        // — something re-arms; per-pass neutralization is race-free.)
+        override class var requiresConstraintBasedLayout: Bool { true }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             DispatchQueue.main.async { [weak self] in
@@ -67,7 +78,36 @@ struct WindowSizingTuner: NSViewRepresentable {
             }
         }
 
+        override func updateConstraints() {
+            applyIfNeeded()
+            super.updateConstraints()
+            // The needs flag clears when this pass ends; re-arm it
+            // asynchronously so the next pass visits us again. Two
+            // pointer writes per display cycle, versus the O(transcript)
+            // walk this suppresses.
+            DispatchQueue.main.async { [weak self] in
+                self?.needsUpdateConstraints = true
+            }
+        }
+
+        static var debugEnabled: Bool {
+            ProcessInfo.processInfo.environment["MTPLX_SIZING_TUNER_DEBUG"] == "1"
+        }
+
+        private var rearmObservations = 0
+
         func applyIfNeeded() {
+            if Self.debugEnabled,
+               let window,
+               let hosting = Self.hostingView(in: window.contentView, depth: 4),
+               !hosting.mtplxSizingOptions.isEmpty {
+                rearmObservations += 1
+                if rearmObservations <= 8 || rearmObservations % 100 == 0 {
+                    FileHandle.standardError.write(Data(
+                        "[sizing-tuner] non-empty options seen (n=\(rearmObservations)) value=\(hosting.mtplxSizingOptions.rawValue)\n".utf8
+                    ))
+                }
+            }
             // 2026-08-17 field regression: the original cast
             // `window.contentView as? MTPLXHostingSizingConfigurable`
             // silently failed — the hosting view is a DESCENDANT of the

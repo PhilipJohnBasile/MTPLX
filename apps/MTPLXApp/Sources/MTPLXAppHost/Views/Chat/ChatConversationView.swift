@@ -53,7 +53,15 @@ struct ChatConversationView: View {
     var body: some View {
         let plan = activeRenderPlan
         ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 16) {
+            // Lazy is load-bearing: SwiftUI re-arms the hosting view's
+            // .minSize sizing option on every scene update (verified
+            // 2026-08-17 — the tuner's clear wins at rest but loses to
+            // in-cycle re-arms while streaming), so window-extrema
+            // derivation WILL periodically measure this stack. With
+            // LazyVStack that measure touches realized rows only,
+            // bounding the walk by the viewport instead of the whole
+            // conversation (the streaming card inside is already lazy).
+            LazyVStack(alignment: .leading, spacing: 16) {
                 if let hiddenTranscriptSummary = plan.hiddenTranscriptSummary {
                     HiddenTranscriptSummaryView(
                         summary: hiddenTranscriptSummary,
