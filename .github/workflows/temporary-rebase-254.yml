@@ -1,0 +1,43 @@
+name: Temporary rebase diagnostic PR 254
+
+on:
+  push:
+    branches:
+      - codex/deepseek-v4-mlxserve-v26
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+
+      - name: Rebase onto current upstream main and report conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git || true
+          git fetch upstream main
+          set +e
+          git rebase upstream/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::Conflicted files"
+            git diff --name-only --diff-filter=U
+            echo "::endgroup::"
+            for file in $(git diff --name-only --diff-filter=U); do
+              echo "::group::Conflict markers: $file"
+              grep -n -B 25 -A 60 -E '^(<<<<<<<|=======|>>>>>>>)' "$file" || true
+              echo "::endgroup::"
+            done
+            exit "$rc"
+          fi
+          echo "Rebase completed without conflicts."
