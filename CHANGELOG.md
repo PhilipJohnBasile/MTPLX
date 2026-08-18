@@ -8,6 +8,40 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **The transcript can no longer go blank mid-generation.** The first
+  2.8.3 candidate swapped the chat transcript to a lazy stack for a
+  layout-cost fix; under fast streaming with the app's own scroll
+  driver, the lazy container intermittently culled every visible row —
+  flicker escalating to an entirely empty chat while the engine kept
+  streaming. The transcript and both streaming-card stacks are eager
+  again (row count stays bounded by the earlier-history slicer), and
+  live-streamed markdown tables — including wrapping cells — render
+  correctly while they arrive.
+- **Thinking is plain text now.** The reasoning well no longer runs
+  the model's thoughts through the markdown renderer, and the live
+  three-line ticker anchors its window at line breaks — rendered
+  thought lines never re-wrap or visibly rewrite themselves as new
+  tokens land.
+- **The stream no longer freezes and catches up in bursts.** Three
+  server-side delivery fixes: the incremental decoder force-flushes
+  whitespace-free runs (table separator rows, URLs, minified code)
+  instead of holding them for their full length; freshly committed
+  tokens are emitted before cache housekeeping barriers instead of
+  after; and the auth gate was rewritten as pure ASGI so it no longer
+  relays every stream frame through a buffered middleware channel.
+  Measured on the same prompt and settings as the field report:
+  sub-second delivery silences per answer dropped from ~30 to single
+  digits, and generator-side gaps over 200 ms dropped to zero. Every
+  request record now logs a producer gap census
+  (`producer_gap_ms_p95`/`_max`, `producer_gaps_over_200ms`) so
+  stream smoothness is auditable, not vibes.
+- **The app idles cold after a reply.** A follow-on of the layout fix
+  above could re-arm per-frame window re-measurement after a turn
+  ended, burning ~half a core at rest on long transcripts; the guard
+  now re-asserts itself only while something is actively re-arming it
+  and sweeps once a second as a backstop. Idle after streaming is
+  0.0% CPU in the shipped configuration.
+
 - **The desktop app no longer renders the whole transcript per frame —
   long chats stay smooth on screen, not just on the wire.** Founder
   testing on a heavy multi-turn conversation at temperature 1.0 caught
