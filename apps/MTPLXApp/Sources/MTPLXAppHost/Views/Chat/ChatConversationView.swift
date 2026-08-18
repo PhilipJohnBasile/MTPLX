@@ -53,15 +53,21 @@ struct ChatConversationView: View {
     var body: some View {
         let plan = activeRenderPlan
         ScrollView(.vertical, showsIndicators: true) {
-            // Lazy is load-bearing: SwiftUI re-arms the hosting view's
-            // .minSize sizing option on every scene update (verified
-            // 2026-08-17 — the tuner's clear wins at rest but loses to
-            // in-cycle re-arms while streaming), so window-extrema
-            // derivation WILL periodically measure this stack. With
-            // LazyVStack that measure touches realized rows only,
-            // bounding the walk by the viewport instead of the whole
-            // conversation (the streaming card inside is already lazy).
-            LazyVStack(alignment: .leading, spacing: 16) {
+            // MUST be a plain (non-lazy) VStack. LazyVStack decides
+            // which rows to realize from SwiftUI's own scroll-position
+            // bookkeeping — but this transcript is scrolled by AppKit
+            // (ChatConversationScrollDriver moves the clip view
+            // directly, including synchronously inside the document's
+            // frameDidChange during layout). Under 60 Hz content growth
+            // the lazy container's realization window desyncs from the
+            // actual visible rect and culls rows that are on screen —
+            // intermittent flicker escalating to a fully BLANK
+            // transcript mid-generation (founder screenshot,
+            // 2026-08-18). Row count is already bounded without
+            // laziness: ChatConversationRenderPlan slices heavy
+            // transcripts to a 4-item tail behind the "earlier history"
+            // card, so eager realization stays viewport-scale.
+            VStack(alignment: .leading, spacing: 16) {
                 if let hiddenTranscriptSummary = plan.hiddenTranscriptSummary {
                     HiddenTranscriptSummaryView(
                         summary: hiddenTranscriptSummary,

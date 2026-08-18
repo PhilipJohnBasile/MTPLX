@@ -77,22 +77,54 @@ struct WindowSizingTuner: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            maintenanceTimer?.invalidate()
+            maintenanceTimer = nil
+            guard window != nil else { return }
             DispatchQueue.main.async { [weak self] in
-                self?.applyIfNeeded()
+                _ = self?.applyIfNeeded()
             }
+            // 1 Hz backstop sweep. The constraint-pass chain below only
+            // sustains itself while re-arms are being OBSERVED — if a
+            // scene update re-arms sizingOptions in a period where
+            // nothing lays out this view and no pass is chained (found
+            // 2026-08-18: post-stream, an ambient animation re-armed per
+            // frame and the walk burned ~53% CPU at "rest" on an
+            // 11k-token transcript), this timer notices within a second
+            // and re-seeds the chain. Costs one options read per second;
+            // fires no constraint work when options are already empty.
+            maintenanceTimer = Timer.scheduledTimer(
+                withTimeInterval: 1.0, repeats: true
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.applyIfNeeded(), !self.needsUpdateConstraints {
+                        self.needsUpdateConstraints = true
+                    }
+                }
+            }
+            maintenanceTimer?.tolerance = 0.3
         }
 
         override func updateConstraints() {
-            applyIfNeeded()
+            let observedRearm = applyIfNeeded()
             super.updateConstraints()
+            // Chain another pass ONLY while someone is actively
+            // re-arming the options. At true rest the options stay
+            // empty, no re-arm is observed, and the chain dies — the
+            // unconditional per-cycle re-arm tried on 2026-08-17 kept
+            // the runloop at display cadence and burned ~95% CPU idle.
+            if observedRearm {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.needsUpdateConstraints else { return }
+                    self.needsUpdateConstraints = true
+                }
+            }
         }
 
         // Activity-proportional re-arm: layout() runs whenever our
-        // superview lays out (every streaming flush; never at rest), so
-        // the NEXT constraints pass revisits us and neutralizes any
-        // scene re-arm first. The earlier async-per-cycle re-arm kept
-        // the runloop spinning at display cadence even at idle — the
-        // app burned ~95% CPU at rest doing nothing (2026-08-17).
+        // superview lays out (every streaming flush), so the NEXT
+        // constraints pass revisits us and neutralizes any scene
+        // re-arm first.
         override func layout() {
             super.layout()
             if !needsUpdateConstraints {
@@ -106,19 +138,15 @@ struct WindowSizingTuner: NSViewRepresentable {
             ProcessInfo.processInfo.environment["MTPLX_SIZING_TUNER_DEBUG"] == "1"
 
         private var rearmObservations = 0
+        private var maintenanceTimer: Timer?
 
-        func applyIfNeeded() {
-            if Self.debugEnabled,
-               let window,
-               let hosting = Self.hostingView(in: window.contentView, depth: 4),
-               !hosting.mtplxSizingOptions.isEmpty {
-                rearmObservations += 1
-                if rearmObservations <= 8 || rearmObservations % 100 == 0 {
-                    FileHandle.standardError.write(Data(
-                        "[sizing-tuner] non-empty options seen (n=\(rearmObservations)) value=\(hosting.mtplxSizingOptions.rawValue)\n".utf8
-                    ))
-                }
-            }
+        /// Neutralizes the hosting view's sizing options and pins the
+        /// window minimum. Returns true when it OBSERVED non-empty
+        /// options (i.e. something re-armed since the last clear) —
+        /// the signal the caller uses to decide whether to chain
+        /// another constraints pass.
+        @discardableResult
+        func applyIfNeeded() -> Bool {
             // 2026-08-17 field regression: the original cast
             // `window.contentView as? MTPLXHostingSizingConfigurable`
             // silently failed — the hosting view is a DESCENDANT of the
@@ -128,15 +156,25 @@ struct WindowSizingTuner: NSViewRepresentable {
             // streaming). Search the subtree, and re-assert on every
             // update instead of latching: SwiftUI scene updates can
             // re-arm `sizingOptions`, and both writes are idempotent.
-            guard WindowSizingTuner.isEnabled, let window else { return }
+            guard WindowSizingTuner.isEnabled, let window else { return false }
             guard let hosting = Self.hostingView(in: window.contentView, depth: 4)
-            else { return }
-            if !hosting.mtplxSizingOptions.isEmpty {
+            else { return false }
+            let observedRearm = !hosting.mtplxSizingOptions.isEmpty
+            if observedRearm {
+                if Self.debugEnabled {
+                    rearmObservations += 1
+                    if rearmObservations <= 8 || rearmObservations % 100 == 0 {
+                        FileHandle.standardError.write(Data(
+                            "[sizing-tuner] non-empty options seen (n=\(rearmObservations)) value=\(hosting.mtplxSizingOptions.rawValue)\n".utf8
+                        ))
+                    }
+                }
                 hosting.mtplxSizingOptions = []
             }
             if window.contentMinSize != WindowSizingTuner.contentMinSize {
                 window.contentMinSize = WindowSizingTuner.contentMinSize
             }
+            return observedRearm
         }
 
         private static func hostingView(

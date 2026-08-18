@@ -1,5 +1,4 @@
 import SwiftUI
-import MarkdownUI
 import MTPLXAppCore
 
 // MARK: - TurnActivityStrip
@@ -224,11 +223,36 @@ struct StreamingThoughtWell: View {
     var pendingTail: String = ""
 
     private var tail: String {
-        let limit = ThoughtViewportMetrics.tailCharacterLimit
-        let pending = pendingTail.suffix(limit)
-        if pending.count >= limit { return String(pending) }
-        let fromDocument = document.rawText.suffix(limit - pending.count)
-        return String(fromDocument) + String(pending)
+        // Newline-ANCHORED tail, not a character-count suffix. A char
+        // window's start slides forward with every appended token, so
+        // the wrap of lines the user already read recomputed from a
+        // shifted origin — rendered lines visibly rewrote themselves
+        // (founder's 2026-08-18 "characters change after the line is
+        // rendered"). Anchoring the window at the start of the 4th-from-
+        // last physical line makes completed lines immutable: only the
+        // growing last line ever changes. The char cap still bounds
+        // pathological no-newline reasoning; only in that rare case can
+        // the old sliding behavior appear.
+        let cap = ThoughtViewportMetrics.tailCharacterLimit * 2
+        let pending = pendingTail.suffix(cap)
+        let window: String
+        if pending.count >= cap {
+            window = String(pending)
+        } else {
+            window = String(document.rawText.suffix(cap - pending.count)) + pending
+        }
+        var newlines = 0
+        var index = window.endIndex
+        while index > window.startIndex {
+            index = window.index(before: index)
+            if window[index] == "\n" {
+                newlines += 1
+                if newlines == 4 {
+                    return String(window[window.index(after: index)...])
+                }
+            }
+        }
+        return window
     }
 
     var body: some View {
@@ -236,15 +260,17 @@ struct StreamingThoughtWell: View {
     }
 }
 
-/// Settled thought well: the whole turn's reasoning as markdown,
-/// scrollable past `settledMaxHeight`.
+/// Settled thought well: the whole turn's reasoning as PLAIN TEXT,
+/// scrollable past `settledMaxHeight`. Deliberately not markdown
+/// (founder order, 2026-08-18): reasoning is the model talking to
+/// itself, styling it buys nothing, and running MarkdownUI over a
+/// 10k-char thought dump is real parse + layout work.
 struct SettledThoughtWell: View {
     let content: String
 
     var body: some View {
         ScrollView {
-            Markdown(content)
-                .markdownTheme(.mtplxChat)
+            Text(verbatim: content)
                 .font(.system(size: 13, design: .monospaced))
                 .foregroundStyle(Brand.typeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -325,16 +351,11 @@ struct ThoughtStreamViewport: View {
         let lineLimit = Int(
             ThoughtViewportMetrics.viewportHeight / ThoughtViewportMetrics.lineHeight
         )
-        let tailSize = ThoughtViewportMetrics.tailCharacterLimit
-        let tail: Substring
-        if text.count > tailSize,
-            let idx = text.index(text.endIndex, offsetBy: -tailSize, limitedBy: text.startIndex)
-        {
-            tail = text[idx...]
-        } else {
-            tail = text[...]
-        }
-        let words = tail.split(whereSeparator: \.isNewline).flatMap { segment -> [String] in
+        // No re-suffix here: the input is already the newline-anchored
+        // window from StreamingThoughtWell. Cutting it again by char
+        // count would reintroduce the sliding origin that rewrote
+        // rendered lines.
+        let words = text.split(whereSeparator: \.isNewline).flatMap { segment -> [String] in
             let trimmedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedSegment.isEmpty else { return [] }
             let stripped =

@@ -707,10 +707,19 @@ struct StreamingAssistantMarkdownView: View {
 
     var body: some View {
         Group {
+            // Both stacks below MUST be plain (non-lazy) VStacks. They
+            // live inside the transcript's NSScrollView, whose offset
+            // is driven by AppKit (ChatConversationScrollDriver) — a
+            // lazy container here estimates off-screen heights and
+            // culls rows against a scroll position SwiftUI doesn't
+            // own, which intermittently blanked the whole transcript
+            // mid-stream (2026-08-18). Row cost is already bounded:
+            // every row view is Equatable-cached, so only the growing
+            // tail repaints per flush.
             if document.blocks.isEmpty {
                 StreamingPlainTextView(text: fallbackText)
             } else if plainTextOnly {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(document.blocks) { block in
                         StreamingPlainBlockView(block: block)
                             .equatable()
@@ -730,7 +739,7 @@ struct StreamingAssistantMarkdownView: View {
                 // linear classify pass + the tail repaint (2026-07-03
                 // contract, extended 2026-07-31).
                 let items = Self.renderItems(for: document.blocks, lexChain: lexChain)
-                LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(items) { item in
                         itemView(item)
                     }
