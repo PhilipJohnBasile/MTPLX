@@ -77,48 +77,61 @@ struct WindowSizingTuner: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            maintenanceTimer?.invalidate()
-            maintenanceTimer = nil
+            removeRunLoopObserver()
             guard window != nil else { return }
             DispatchQueue.main.async { [weak self] in
                 _ = self?.applyIfNeeded()
             }
-            // 1 Hz backstop sweep. The constraint-pass chain below only
-            // sustains itself while re-arms are being OBSERVED — if a
-            // scene update re-arms sizingOptions in a period where
-            // nothing lays out this view and no pass is chained (found
-            // 2026-08-18: post-stream, an ambient animation re-armed per
-            // frame and the walk burned ~53% CPU at "rest" on an
-            // 11k-token transcript), this timer notices within a second
-            // and re-seeds the chain. Costs one options read per second;
-            // fires no constraint work when options are already empty.
-            maintenanceTimer = Timer.scheduledTimer(
-                withTimeInterval: 1.0, repeats: true
-            ) { [weak self] _ in
+            installRunLoopObserver()
+        }
+
+        // The one ordering that actually wins (2026-08-18): SwiftUI
+        // re-arms `sizingOptions` during the RENDER phase of a display
+        // cycle — i.e. AFTER that cycle's constraints flush. Clearing
+        // inside `updateConstraints` therefore always ran one phase too
+        // early: the next flush saw re-armed options and walked the
+        // whole transcript again (~60x/s post-stream, ~28% of the main
+        // thread on an 11k-token chat; two chained-re-arm designs lost
+        // the same race from different sides). A `.beforeWaiting`
+        // runloop observer runs after ALL of a turn's commit work,
+        // render included — options end every runloop turn empty, so
+        // the next flush's `NSHostingView.updateConstraints` skips the
+        // extrema derivation outright. Cost: one property read per
+        // runloop turn while the app is active; zero when idle (no
+        // turns). The `updateConstraints` clear below stays as the
+        // in-pass belt for the streaming path.
+        private var runLoopObserver: CFRunLoopObserver?
+
+        private func installRunLoopObserver() {
+            guard runLoopObserver == nil else { return }
+            let observer = CFRunLoopObserverCreateWithHandler(
+                kCFAllocatorDefault,
+                CFRunLoopActivity.beforeWaiting.rawValue,
+                true,
+                0
+            ) { [weak self] _, _ in
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if self.applyIfNeeded(), !self.needsUpdateConstraints {
-                        self.needsUpdateConstraints = true
-                    }
+                    _ = self?.applyIfNeeded()
                 }
             }
-            maintenanceTimer?.tolerance = 0.3
+            runLoopObserver = observer
+            CFRunLoopAddObserver(
+                CFRunLoopGetMain(), observer, .commonModes
+            )
+        }
+
+        private func removeRunLoopObserver() {
+            if let runLoopObserver {
+                CFRunLoopRemoveObserver(
+                    CFRunLoopGetMain(), runLoopObserver, .commonModes
+                )
+            }
+            runLoopObserver = nil
         }
 
         override func updateConstraints() {
-            let observedRearm = applyIfNeeded()
+            applyIfNeeded()
             super.updateConstraints()
-            // Chain another pass ONLY while someone is actively
-            // re-arming the options. At true rest the options stay
-            // empty, no re-arm is observed, and the chain dies — the
-            // unconditional per-cycle re-arm tried on 2026-08-17 kept
-            // the runloop at display cadence and burned ~95% CPU idle.
-            if observedRearm {
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, !self.needsUpdateConstraints else { return }
-                    self.needsUpdateConstraints = true
-                }
-            }
         }
 
         // Activity-proportional re-arm: layout() runs whenever our
@@ -138,7 +151,6 @@ struct WindowSizingTuner: NSViewRepresentable {
             ProcessInfo.processInfo.environment["MTPLX_SIZING_TUNER_DEBUG"] == "1"
 
         private var rearmObservations = 0
-        private var maintenanceTimer: Timer?
 
         /// Neutralizes the hosting view's sizing options and pins the
         /// window minimum. Returns true when it OBSERVED non-empty
