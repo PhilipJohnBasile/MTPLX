@@ -25,7 +25,6 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          import re
 
           workflow = Path(".github/workflows/temporary-rebase-254.yml")
           lines = workflow.read_text(encoding="utf-8").splitlines()
@@ -101,14 +100,11 @@ jobs:
               raise SystemExit("could not locate the PR 254 squash boundary")
           blocks[1] = blocks[1].replace(marker, cleanup + marker, 1)
 
-          blocks[3], replacements = re.subn(
-              r"--force-with-lease=\S+",
-              "--force",
-              blocks[3],
-              count=1,
-          )
-          if replacements != 1:
-              raise SystemExit("could not replace the helper-branch force-with-lease")
+          # The helper already publishes sync/rebased-254-ready with --force.
+          # Preserve that exact validated behavior, then update the original PR
+          # branch under a lease tied to the commit that triggered this run.
+          if "HEAD:sync/rebased-254-ready" not in blocks[3] or "--force" not in blocks[3]:
+              raise SystemExit("unexpected PR 254 helper publish block")
           blocks[3] += (
               "\n"
               "git push "
