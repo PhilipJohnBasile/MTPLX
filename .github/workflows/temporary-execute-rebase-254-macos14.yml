@@ -53,9 +53,8 @@ jobs:
           if len(blocks) != 4:
               raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
 
-          # The lifecycle conflict resolver lives in the first run block. Add a
-          # narrow rule for current main's non-optional native health contract
-          # versus the external backend's intentionally absent MTPLX payload.
+          # Preserve current main's non-optional native health contract while
+          # keeping the external backend's intentionally absent MTPLX payload.
           supervisor_anchor = '''def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
               kinds: set[str] = set()
               text = ours
@@ -84,11 +83,21 @@ jobs:
           '''
           if blocks[0].count(supervisor_anchor) != 1:
               raise SystemExit("could not locate PR 254 supervisor resolver")
-          blocks[0] = blocks[0].replace(
-              supervisor_anchor,
-              supervisor_replacement,
-              1,
-          )
+          blocks[0] = blocks[0].replace(supervisor_anchor, supervisor_replacement, 1)
+
+          # refreshStaticState gained parameters on current main. Insert the
+          # external-backend guard at the stable client declaration rather than
+          # replacing the old zero-argument function boundary.
+          refresh_old = r'''                      "    ) async throws {\n        let client = apiClient\n",
+                      "    ) async throws {\n"
+                      "        guard supportsMTPLXLiveControls else {\n"
+'''
+          refresh_new = r'''                      "        let client = apiClient\n",
+                      "        guard supportsMTPLXLiveControls else {\n"
+'''
+          if blocks[0].count(refresh_old) != 1:
+              raise SystemExit("could not locate PR 254 refreshStaticState resolver")
+          blocks[0] = blocks[0].replace(refresh_old, refresh_new, 1)
 
           cleanup = """rm -f \\
             .github/workflows/temporary-rebase-254.yml \\
@@ -100,9 +109,6 @@ jobs:
               raise SystemExit("could not locate the PR 254 squash boundary")
           blocks[1] = blocks[1].replace(marker, cleanup + marker, 1)
 
-          # The helper already publishes sync/rebased-254-ready with --force.
-          # Preserve that exact validated behavior, then update the original PR
-          # branch under a lease tied to the commit that triggered this run.
           if "HEAD:sync/rebased-254-ready" not in blocks[3] or "--force" not in blocks[3]:
               raise SystemExit("unexpected PR 254 helper publish block")
           blocks[3] += (
