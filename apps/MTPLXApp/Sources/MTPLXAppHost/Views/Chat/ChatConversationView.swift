@@ -843,7 +843,6 @@ private struct ChatConversationScrollObserverView: NSViewRepresentable {
             documentFrameObserver = nil
             liveScrollStartObserver = nil
             liveScrollEndObserver = nil
-            isUserLiveScrolling = false
             scrollView = nil
             onScrollViewResolved(nil)
         }
