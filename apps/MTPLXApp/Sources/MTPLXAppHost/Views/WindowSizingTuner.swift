@@ -90,9 +90,10 @@ struct WindowSizingTuner: NSViewRepresentable {
             }
         }
 
-        static var debugEnabled: Bool {
+        // Cached: applyIfNeeded now runs per constraints pass, and
+        // ProcessInfo.environment rebuilds its dictionary per access.
+        static let debugEnabled: Bool =
             ProcessInfo.processInfo.environment["MTPLX_SIZING_TUNER_DEBUG"] == "1"
-        }
 
         private var rearmObservations = 0
 
