@@ -12,7 +12,12 @@ from mtplx.profiles import (
     restore_profile_env,
 )
 
-TURBO_LADDER = "512,1024,2048,2560,4096,8192,16384,32768"
+# 2.8.3: the PRODUCT ladder is the two rungs interactive chat touches
+# early. The F6 deep walk (…,16384,32768) burned 30-60+ s of max GPU on
+# every user boot for benchmark-row cosmetics (2026-08-17 field
+# regression); harnesses that want deep buckets pre-warmed set
+# MTPLX_WARMUP_LADDER themselves (operator env wins).
+TURBO_LADDER = "512,2560"
 
 
 # ---------------------------------------------------------------------------
@@ -30,10 +35,12 @@ def test_turbo_profile_carries_warmup_ladder() -> None:
     assert rungs == sorted(rungs)
     assert len(set(rungs)) == len(rungs)
     assert all(r > 0 for r in rungs)
-    # The deepest rung reaches the turbo compiled-verify router fence, so
-    # every pow2 KV bucket a compiled benchmark row can touch is walked
-    # during warmup, not inside a measured row.
-    assert rungs[-1] == int(env["MTPLX_COMPILED_VERIFY_MAX_CONTEXT"])
+    # 2.8.3: the product ladder stays SHALLOW — every rung must sit well
+    # under the compiled-verify router fence, because walking the fence's
+    # every pow2 bucket at boot is benchmark-harness work, not something
+    # to bill every user's GPU for (2026-08-17 field regression).
+    assert rungs[-1] <= 2560
+    assert rungs[-1] < int(env["MTPLX_COMPILED_VERIFY_MAX_CONTEXT"])
 
 
 def test_warmup_ladder_is_operator_overridable() -> None:
