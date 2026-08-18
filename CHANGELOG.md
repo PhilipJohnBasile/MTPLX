@@ -4,6 +4,44 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] - 2.8.3
+
+### Fixed
+
+- **Chat streaming no longer freezes mid-response and then dumps the
+  backlog in one burst.** 2.8.0 added a wire safeguard for the uncapped
+  repetition stop that held a fixed ~448-token tail off the stream on
+  every uncapped request — which is every desktop, web, and agent chat.
+  At chat speeds that silenced the stream from roughly token 320 to
+  token 768: the visible symptom was reasoning freezing for 6-11
+  seconds while the speed readout collapsed, then a flood of text at
+  once, plus a final end-of-response burst. Capped requests (every
+  benchmark and QA row) never arm the safeguard, which is how three
+  releases shipped it unnoticed. The holdback is now engaged only while
+  the output actually shows a forming loop — healthy responses stream
+  live, byte for byte, exactly like 2.7.1 — and a real runaway loop
+  still gets trimmed before most of it reaches the wire.
+  (`MTPLX_REPETITION_STREAM_HOLDBACK=candidate|strict|off` selects the
+  new default, the 2.8.0-2.8.2 behavior, or the pre-2.8 wire.)
+- **Fresh daemons no longer burn 30-60+ seconds of full-throttle GPU
+  "warming" contexts chats never reach.** The turbo profile's 2.8.0
+  background warm ladder walked prefills up to 32,768 tokens after
+  every boot so deep-context *benchmark rows* would start warm — at the
+  cost of every real user's Mac spinning up after launch (the "idle GPU
+  burn" field reports), warm rungs re-firing between chat turns, and a
+  chat sent mid-rung seeing multi-second time-to-first-token. The
+  product ladder is back to the two rungs interactive chat actually
+  touches (boot cost ~4.5 s on the 27B, matching 2.7.1); benchmark
+  harnesses opt into the deep ladder with `MTPLX_WARMUP_LADDER`.
+  Background warm steps now also wait for 90 seconds of request quiet
+  (`MTPLX_WARMUP_IDLE_GRACE_S`) before touching the model, so warming
+  never competes with an active conversation.
+- **The release pillar gate now fails on streaming freezes.** Every
+  existing gate capped `max_tokens`, so the entire uncapped code path —
+  the one every chat client uses — was invisible to release QA. A new
+  `uncapped_stream_cadence` gate sends the real uncapped streamed chat
+  and fails the release on any delivered-content gap over 2 seconds.
+
 ## [2.8.2] - 2026-08-17
 
 ### Fixed

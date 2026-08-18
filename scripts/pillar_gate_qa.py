@@ -88,15 +88,22 @@ class Client:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
 
-    def chat(self, messages, *, max_tokens: int, timeout: float = 1800):
+    def chat(
+        self, messages, *, max_tokens: int | None, timeout: float = 1800
+    ):
         body = {
             "model": "default",
             "messages": messages,
-            "max_tokens": max_tokens,
             "temperature": 0.6,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # None = UNCAPPED, exactly what every desktop/web chat sends. Capped
+        # and uncapped requests take different server paths (the uncapped
+        # repetition stop only arms without max_tokens), so gates must be
+        # able to exercise both.
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         req = urllib.request.Request(
             self.base_url + "/v1/chat/completions",
             data=json.dumps(body).encode(),
@@ -336,6 +343,98 @@ def gate_long_output_decay(
     return ok
 
 
+def gate_uncapped_stream_cadence(
+    client: Client, report: dict[str, Any], *, watch_seconds: float = 75.0
+) -> bool:
+    """The 2.8.0-2.8.2 field-regression gate: uncapped chats must STREAM.
+
+    Every desktop/web chat is uncapped, and every other gate in this file
+    caps max_tokens — which is exactly how the F35 armed-stream holdback
+    (a 448-token wire blackout from token ~320 to ~768: a 6-11 s freeze
+    then a burst, on EVERY chat) shipped through three releases while all
+    server-side decode numbers looked healthy. This gate sends the real
+    thing — an uncapped streamed chat — and fails on delivery-cadence
+    holes, independent of decode throughput:
+
+    - TTFT above 20 s (warm daemon; ladder/warm-rung contention shows here);
+    - any inter-content gap above 2.0 s after first content (the freeze);
+    - under 200 delivered chars total (stream never really started).
+
+    The request is client-cancelled after ``watch_seconds`` — cancellation
+    is normal desktop behavior and keeps the gate bounded.
+    """
+    msgs = [
+        {
+            "role": "user",
+            "content": (
+                "Make the ultimate Flappy Bird game. Gorgeous overkill "
+                "beautiful Flappy Bird game in HTML"
+            ),
+        }
+    ]
+    body = {
+        "model": "default",
+        "messages": msgs,
+        "temperature": 0.6,
+        "stream": True,
+    }
+    req = urllib.request.Request(
+        client.base_url + "/v1/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    t0 = time.time()
+    ttft = None
+    last_content_at = None
+    max_gap = 0.0
+    max_gap_at = 0.0
+    chars = 0
+    try:
+        resp = urllib.request.urlopen(req, timeout=60)
+        while time.time() - t0 < watch_seconds:
+            # read1: return whatever bytes are available. A plain read(n)
+            # LOOPS to fill n bytes across chunked-transfer frames and
+            # fabricates multi-second "gaps" at the client (measured
+            # 2026-08-17); never use it to judge cadence.
+            block = resp.read1(65536)
+            if not block:
+                break
+            now = time.time()
+            if b'"content"' in block or b'"reasoning' in block:
+                if ttft is None:
+                    ttft = now - t0
+                elif last_content_at is not None:
+                    gap = now - last_content_at
+                    if gap > max_gap:
+                        max_gap = gap
+                        max_gap_at = now - t0
+                last_content_at = now
+                chars += len(block)
+        resp.close()  # client cancel — normal desktop behavior
+    except Exception as exc:  # noqa: BLE001 — a dead stream is a failing gate
+        report["uncapped_stream_cadence"] = {
+            "pass": False,
+            "reason": f"stream error: {type(exc).__name__}: {exc}",
+        }
+        return False
+    ok = (
+        ttft is not None
+        and ttft <= 20.0
+        and max_gap <= 2.0
+        and chars >= 200
+    )
+    report["uncapped_stream_cadence"] = {
+        "ttft_s": round(ttft, 2) if ttft is not None else None,
+        "max_content_gap_s": round(max_gap, 2),
+        "max_gap_at_s": round(max_gap_at, 1),
+        "wire_bytes": chars,
+        "watch_seconds": watch_seconds,
+        "thresholds": {"ttft_s": 20.0, "max_gap_s": 2.0, "min_bytes": 200},
+        "pass": ok,
+    }
+    return ok
+
+
 def _probe_fan_rpm() -> int:
     """Best-effort actual-fan-RPM receipt (max across fans), 0 if unknown.
 
@@ -386,7 +485,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fan-rpm-verified", type=int, default=0)
     parser.add_argument(
         "--skip", action="append", default=[],
-        choices=["vision_cache", "memory_ceiling", "long_output_decay"],
+        choices=[
+            "vision_cache",
+            "memory_ceiling",
+            "long_output_decay",
+            "uncapped_stream_cadence",
+        ],
     )
     args = parser.parse_args(argv)
 
@@ -404,6 +508,10 @@ def main(argv: list[str] | None = None) -> int:
     if "long_output_decay" not in args.skip:
         results["long_output_decay"] = gate_long_output_decay(
             client, report, max_tokens=args.long_output_tokens
+        )
+    if "uncapped_stream_cadence" not in args.skip:
+        results["uncapped_stream_cadence"] = gate_uncapped_stream_cadence(
+            client, report
         )
     report["results"] = results
     report["pass"] = all(results.values()) if results else False
