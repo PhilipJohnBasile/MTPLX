@@ -121,6 +121,45 @@ jobs:
               + blocks[0][refresh_stop:]
           )
 
+          # The fresh-launch settings helper also gained an isCurrent closure.
+          # Its conflict hunk ends before the shared pending-settings body, so
+          # preserve the current signature and insert only the external guard.
+          fresh_condition = (
+              '"private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours'
+          )
+          fresh_condition_index = blocks[0].find(fresh_condition)
+          if fresh_condition_index < 0:
+              raise SystemExit("could not locate PR 254 fresh-launch resolver")
+          fresh_start = blocks[0].rfind("              if (", 0, fresh_condition_index)
+          if fresh_start < 0:
+              raise SystemExit("could not locate PR 254 fresh-launch resolver start")
+          fresh_stop_marker = 'kinds.add("flush_fresh")'
+          fresh_stop = blocks[0].find(fresh_stop_marker, fresh_condition_index)
+          if fresh_stop < 0:
+              raise SystemExit("could not locate PR 254 fresh-launch resolver end")
+          fresh_stop += len(fresh_stop_marker)
+          fresh_replacement = '''if (
+                  "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours
+                  and "pendingLiveSettings = nil" in theirs
+                  and "supportsMTPLXLiveControls" in theirs
+              ):
+                  return (
+                      ours.rstrip()
+                      + "\\n"
+                      + "        guard supportsMTPLXLiveControls else {\\n"
+                      + "            pendingLiveSettings = nil\\n"
+                      + "            pendingLiveSettingsModel = nil\\n"
+                      + "            settings = nil\\n"
+                      + "            return\\n"
+                      + "        }\\n",
+                      {"flush_fresh"},
+                  )'''
+          blocks[0] = (
+              blocks[0][:fresh_start]
+              + fresh_replacement
+              + blocks[0][fresh_stop:]
+          )
+
           cleanup = """rm -f \\
             .github/workflows/temporary-rebase-254.yml \\
             .github/workflows/temporary-execute-rebase-254-macos14.yml \\
