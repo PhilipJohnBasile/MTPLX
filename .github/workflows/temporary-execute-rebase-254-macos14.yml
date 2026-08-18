@@ -85,9 +85,10 @@ jobs:
               raise SystemExit("could not locate PR 254 supervisor resolver")
           blocks[0] = blocks[0].replace(supervisor_anchor, supervisor_replacement, 1)
 
-          # refreshStaticState gained parameters on current main. Patch only
-          # that resolver subsection, changing its match to the stable client
-          # declaration and removing the obsolete signature from its replacement.
+          # Current main changed refreshStaticState to a multi-line signature,
+          # and the conflict hunk ends before the shared client declaration.
+          # Keep the complete current signature (ours), then insert the
+          # external-backend guard before the common body resumes.
           refresh_marker = (
               'if "public func refreshStaticState(" in ours '
               'and "supportsMTPLXLiveControls" in theirs:'
@@ -100,27 +101,23 @@ jobs:
           if refresh_stop < 0:
               raise SystemExit("could not locate PR 254 refreshStaticState end")
           refresh_stop += len(refresh_stop_marker)
-          refresh = blocks[0][refresh_start:refresh_stop]
-
-          old_match = '"    ) async throws {\\n        let client = apiClient\\n",'
-          new_match = '"        let client = apiClient\\n",'
-          if refresh.count(old_match) != 1:
-              raise SystemExit(
-                  "expected one old refreshStaticState match; "
-                  f"found {refresh.count(old_match)}"
-              )
-          refresh = refresh.replace(old_match, new_match, 1)
-
-          old_signature_literal = '"    ) async throws {\\n"'
-          if refresh.count(old_signature_literal) != 1:
-              raise SystemExit(
-                  "expected one old refreshStaticState replacement signature; "
-                  f"found {refresh.count(old_signature_literal)}"
-              )
-          refresh = refresh.replace(old_signature_literal, '""', 1)
+          refresh_replacement = '''if "public func refreshStaticState(" in ours and "supportsMTPLXLiveControls" in theirs:
+                  return (
+                      ours.rstrip()
+                      + "\\n"
+                      + "        guard supportsMTPLXLiveControls else {\\n"
+                      + "            health = nil\\n"
+                      + "            capabilities = nil\\n"
+                      + "            sessions = nil\\n"
+                      + "            prefillHistory = nil\\n"
+                      + "            models = nil\\n"
+                      + "            return\\n"
+                      + "        }\\n",
+                      {"refresh_static"},
+                  )'''
           blocks[0] = (
               blocks[0][:refresh_start]
-              + refresh
+              + refresh_replacement
               + blocks[0][refresh_stop:]
           )
 
