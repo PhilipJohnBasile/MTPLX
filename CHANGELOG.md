@@ -35,12 +35,16 @@ All notable user-facing changes to MTPLX. The format is based on
   request record now logs a producer gap census
   (`producer_gap_ms_p95`/`_max`, `producer_gaps_over_200ms`) so
   stream smoothness is auditable, not vibes.
-- **The app idles cold after a reply.** A follow-on of the layout fix
-  above could re-arm per-frame window re-measurement after a turn
-  ended, burning ~half a core at rest on long transcripts; the guard
-  now re-asserts itself only while something is actively re-arming it
-  and sweeps once a second as a backstop. Idle after streaming is
-  0.0% CPU in the shipped configuration.
+- **Finished replies no longer make the app progressively hotter.**
+  Each settled turn leaked an invisible repeat-forever pulse animation
+  (the thinking-indicator dots), and every leaked pulse drove display
+  cycles that re-measured the window against the whole transcript —
+  CPU at rest climbed with every completed reply, up to ~half a core.
+  The dots now stop by construction when they leave the screen, and
+  the window-measurement guard re-asserts itself after each render
+  phase. With no engine running the app sits at 0.0% CPU regardless
+  of transcript size; the remaining background cost while a daemon is
+  running is the dashboard feed, tracked for the next release.
 
 - **The desktop app no longer renders the whole transcript per frame —
   long chats stay smooth on screen, not just on the wire.** Founder
