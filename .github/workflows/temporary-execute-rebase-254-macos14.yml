@@ -91,10 +91,10 @@ jobs:
           refresh_old = r'''                      "    ) async throws {\n        let client = apiClient\n",
                       "    ) async throws {\n"
                       "        guard supportsMTPLXLiveControls else {\n"
-'''
+          '''
           refresh_new = r'''                      "        let client = apiClient\n",
                       "        guard supportsMTPLXLiveControls else {\n"
-'''
+          '''
           if blocks[0].count(refresh_old) != 1:
               raise SystemExit("could not locate PR 254 refreshStaticState resolver")
           blocks[0] = blocks[0].replace(refresh_old, refresh_new, 1)
