@@ -1,0 +1,85 @@
+name: Temporary execute PR 254 rebase on macOS 14
+
+on:
+  push:
+    branches:
+      - codex/deepseek-v4-mlxserve-v26
+
+permissions:
+  contents: write
+
+jobs:
+  execute-guarded-workflow:
+    runs-on: macos-14
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+
+      - name: Execute the existing guarded semantic-rebase scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          workflow = Path(".github/workflows/temporary-rebase-254.yml")
+          lines = workflow.read_text(encoding="utf-8").splitlines()
+          blocks: list[str] = []
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              if line == "        run: |":
+                  index += 1
+                  block: list[str] = []
+                  while index < len(lines):
+                      current = lines[index]
+                      if current and len(current) - len(current.lstrip()) <= 8:
+                          break
+                      if current.startswith("          "):
+                          block.append(current[10:])
+                      elif not current:
+                          block.append("")
+                      else:
+                          raise SystemExit(f"unexpected workflow indentation: {current!r}")
+                      index += 1
+                  blocks.append("\n".join(block))
+                  continue
+              index += 1
+
+          if len(blocks) != 4:
+              raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
+
+          cleanup = """rm -f \\
+            .github/workflows/temporary-rebase-254.yml \\
+            .github/workflows/temporary-execute-rebase-254-macos14.yml \\
+            .github/temporary-rebase-254-trigger.txt
+          """
+          marker = "git reset --soft upstream/main"
+          if blocks[1].count(marker) != 1:
+              raise SystemExit("could not locate the PR 254 squash boundary")
+          blocks[1] = blocks[1].replace(marker, cleanup + marker, 1)
+          blocks[3] = re.sub(
+              r"--force-with-lease=[^\\s]+",
+              "--force",
+              blocks[3],
+          )
+
+          script: list[str] = ["set -euo pipefail"]
+          for number, block in enumerate(blocks, start=1):
+              script.extend(
+                  [
+                      f'echo "::group::guarded PR 254 block {number}"',
+                      block,
+                      'echo "::endgroup::"',
+                  ]
+              )
+          Path("/tmp/pr254-guarded-workflow.sh").write_text(
+              "\n\n".join(script) + "\n", encoding="utf-8"
+          )
+          PY
+          bash /tmp/pr254-guarded-workflow.sh
