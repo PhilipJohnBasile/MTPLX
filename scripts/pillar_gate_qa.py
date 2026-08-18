@@ -133,13 +133,24 @@ class Client:
                     usage = payload["usage"]
                 for choice in payload.get("choices", []) if isinstance(payload, dict) else []:
                     delta = choice.get("delta", {})
-                    if delta.get("content"):
+                    # Count reasoning deltas too: decay/cadence gates measure
+                    # DECODE throughput, and a thinking-enabled model can spend
+                    # its whole budget in reasoning_content (2026-08-18: both
+                    # decay-leg attempts generated 6000/6000 tokens of pure
+                    # thinking -> the gate saw "0 chunks, 0 chars" and failed a
+                    # healthy engine). Tokens decode identically whichever
+                    # field they land in; blinding the gate to one field made
+                    # it measure prompt persona, not the engine.
+                    piece = (delta.get("content") or "") + (
+                        delta.get("reasoning_content") or ""
+                    )
+                    if piece:
                         now = time.time()
                         if ttft is None:
                             ttft = now - t0
-                        chars += len(delta["content"])
+                        chars += len(piece)
                         progress.append((now, chars))
-                        text.write(delta["content"])
+                        text.write(piece)
         return {
             "wall_s": time.time() - t0,
             "ttft_s": ttft,

@@ -8,6 +8,38 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Streaming stays smooth while you actually touch the app.** The
+  freeze-then-burst stutter that only appeared when a human was
+  scrolling or moving the mouse — and never under hands-off testing —
+  is fixed. The window-measurement guard ran in a run-loop phase that
+  macOS skips while input events keep arriving, so precisely when you
+  interacted, every layout pass re-measured the whole conversation and
+  screen updates coalesced into bursts. The guard now runs on every
+  run-loop turn, input storms included. Measured on the same machine,
+  build, and prompt with synthesized human input: 40 s of continuous
+  wheel-scrolling went from 70 UI stalls (18.7 s frozen, worst 1.3 s)
+  to one 197 ms stall; 30 s of mouse movement over the transcript went
+  from 91 stalls (26.7 s frozen) to zero.
+- **Scrolling up mid-generation no longer fights you.** The
+  auto-follow used to yank the view back to the bottom against your
+  fingers: its user-scroll signal was set asynchronously (the
+  synchronous bottom-pin raced it), trackpad momentum ran unguarded,
+  and classic wheel mice never registered as scrolling at all. User
+  scrolling now wins immediately and in every form — pin attempts are
+  refused while you scroll, momentum is covered, and scrolling back to
+  the bottom re-engages following, matching how it already behaved for
+  slow trackpad drags.
+- **Cancelled generations now leave full telemetry.** Stopping a reply
+  mid-stream previously logged a stub record with no stream-smoothness
+  census — the exact runs users complain about were the ones with no
+  data. Cancelled requests now record the producer gap census, sliding
+  throughput windows, and true decode rate for the streamed portion.
+- **Fixed a quadratic decode-cost path on whitespace-free content.**
+  The incremental detokenizer's force-flush escape (tables, URLs,
+  minified code) could never trim its token cache, so every new token
+  re-decoded a growing buffer. The cache now stays bounded on
+  arbitrarily long runs.
+
 - **The transcript can no longer go blank mid-generation.** The first
   2.8.3 candidate swapped the chat transcript to a lazy stack for a
   layout-cost fix; under fast streaming with the app's own scroll
