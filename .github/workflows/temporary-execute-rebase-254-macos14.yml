@@ -1,4 +1,4 @@
-name: Temporary execute PR 254 finalizer
+name: Temporary execute corrected PR 254 finalizer v2
 
 on:
   push:
@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: temporary-execute-pr-254-finalizer
-  cancel-in-progress: false
+  group: temporary-execute-pr-254-finalizer-v2
+  cancel-in-progress: true
 
 jobs:
   execute:
@@ -24,7 +24,7 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Execute the corrected finalizer from the branch
+      - name: Execute corrected finalizer directly
         shell: bash
         run: |
           set -euo pipefail
@@ -62,20 +62,8 @@ jobs:
               raise SystemExit(
                   f"expected one finalizer run block, found {len(blocks)}"
               )
-          script = blocks[0]
-          old = (
-              'wrapper = Path('
-              '".github/workflows/temporary-execute-rebase-254-macos14.yml"'
-              ')'
-          )
-          new = 'wrapper = Path(".github/pr254-wrapper-template.yml")'
-          if script.count(old) != 1:
-              raise SystemExit(
-                  f"expected one wrapper path, found {script.count(old)}"
-              )
-          script = script.replace(old, new, 1)
           Path("/tmp/pr254-current-finalizer.sh").write_text(
-              script + "\n", encoding="utf-8"
+              blocks[0] + "\n", encoding="utf-8"
           )
           PY
           bash -n /tmp/pr254-current-finalizer.sh
