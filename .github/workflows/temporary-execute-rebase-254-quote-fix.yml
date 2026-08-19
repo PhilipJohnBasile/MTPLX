@@ -31,7 +31,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          wrapper = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
+          wrapper = Path(".github/pr254-wrapper-template.yml")
           lines = wrapper.read_text(encoding="utf-8").splitlines()
           blocks: list[str] = []
           index = 0
@@ -239,6 +239,10 @@ jobs:
               indent
               + ".github/workflows/temporary-execute-rebase-254-quote-fix.yml "
               + chr(92),
+          )
+          script_lines.insert(
+              cleanup_matches[0] + 2,
+              indent + ".github/pr254-wrapper-template.yml " + chr(92),
           )
           script = "\n".join(script_lines) + "\n"
 
