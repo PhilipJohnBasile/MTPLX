@@ -1,1 +1,1 @@
-Execute direct PR 254 finalizer from preserved wrapper template.
+Execute PR 254 finalizer in fresh v2 concurrency group.
