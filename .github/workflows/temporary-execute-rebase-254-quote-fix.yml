@@ -111,6 +111,67 @@ jobs:
           script = script.replace(restart_old, restart_old_fixed, 1)
           script = script.replace(restart_new, restart_new_fixed, 1)
 
+          candidate_lines = script.splitlines()
+          dashboard_matches = [
+              index
+              for index, line in enumerate(candidate_lines)
+              if line.strip() == 'dashboard.write_text(text, encoding="utf-8")'
+              and index + 1 < len(candidate_lines)
+              and candidate_lines[index + 1].strip() == "PY_PATCH_254"
+          ]
+          if len(dashboard_matches) != 1:
+              raise SystemExit(
+                  "unexpected candidate test-patch anchor count: "
+                  f"{len(dashboard_matches)}"
+              )
+          test_patch_lines = [
+              "",
+              "tests_path = Path(",
+              '    "apps/MTPLXApp/Tests/MTPLXAppCoreTests/MTPLXAppCoreTests.swift"',
+              ")",
+              'tests_text = tests_path.read_text(encoding="utf-8")',
+              'needle = "        let readyTarget = LaunchTargetRecorder()" + chr(10)',
+              'replacement = "        let readyTarget = await LaunchTargetRecorder()" + chr(10)',
+              "if tests_text.count(needle) != 2:",
+              "    raise SystemExit(",
+              '        "expected two actor-isolated LaunchTargetRecorder initializations; "',
+              '        f"found {tests_text.count(needle)}"',
+              "    )",
+              "tests_path.write_text(",
+              '    tests_text.replace(needle, replacement), encoding="utf-8"',
+              ")",
+          ]
+          insert_at = dashboard_matches[0] + 1
+          candidate_lines[insert_at:insert_at] = test_patch_lines
+
+          dashboard_path = (
+              "apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift"
+          )
+          dashboard_add_matches = [
+              index
+              for index, line in enumerate(candidate_lines)
+              if line.strip() == dashboard_path
+          ]
+          if len(dashboard_add_matches) != 1:
+              raise SystemExit(
+                  "unexpected candidate git-add dashboard count: "
+                  f"{len(dashboard_add_matches)}"
+              )
+          dashboard_add_index = dashboard_add_matches[0]
+          dashboard_add_line = candidate_lines[dashboard_add_index]
+          dashboard_indent = dashboard_add_line[
+              : len(dashboard_add_line) - len(dashboard_add_line.lstrip())
+          ]
+          candidate_lines[dashboard_add_index] = (
+              dashboard_indent + dashboard_path + " " + chr(92)
+          )
+          candidate_lines.insert(
+              dashboard_add_index + 1,
+              dashboard_indent
+              + "apps/MTPLXApp/Tests/MTPLXAppCoreTests/MTPLXAppCoreTests.swift",
+          )
+          script = "\n".join(candidate_lines) + "\n"
+
           validation_anchor = 'blocks[2] = candidate_patch + "\\n" + blocks[2]'
           if script.count(validation_anchor) != 1:
               raise SystemExit(
@@ -161,8 +222,8 @@ jobs:
 
           script_lines = script.splitlines()
           cleanup_matches = [
-              i
-              for i, line in enumerate(script_lines)
+              index
+              for index, line in enumerate(script_lines)
               if line.strip().startswith(
                   ".github/workflows/temporary-execute-rebase-254-macos14.yml"
               )
