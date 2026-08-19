@@ -112,19 +112,24 @@ jobs:
           script = script.replace(restart_new, restart_new_fixed, 1)
 
           script_lines = script.splitlines()
-          cleanup_anchor = (
-              "  .github/workflows/temporary-execute-rebase-254-macos14.yml \\"
-          )
           cleanup_matches = [
-              i for i, line in enumerate(script_lines) if line == cleanup_anchor
+              i
+              for i, line in enumerate(script_lines)
+              if line.strip().startswith(
+                  ".github/workflows/temporary-execute-rebase-254-macos14.yml"
+              )
           ]
           if len(cleanup_matches) != 1:
               raise SystemExit(
                   f"expected one cleanup anchor, found {len(cleanup_matches)}"
               )
+          anchor_line = script_lines[cleanup_matches[0]]
+          indent = anchor_line[: len(anchor_line) - len(anchor_line.lstrip())]
           script_lines.insert(
               cleanup_matches[0] + 1,
-              "  .github/workflows/temporary-execute-rebase-254-quote-fix.yml \\",
+              indent
+              + ".github/workflows/temporary-execute-rebase-254-quote-fix.yml "
+              + chr(92),
           )
           script = "\n".join(script_lines) + "\n"
 
