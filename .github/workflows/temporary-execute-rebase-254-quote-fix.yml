@@ -68,15 +68,15 @@ jobs:
               1,
           )
 
-          cleanup_line = (
-              "  .github/workflows/temporary-execute-rebase-254-macos14.yml \\\n"
+          squash_marker = "git reset --soft upstream/main"
+          if script.count(squash_marker) != 1:
+              raise SystemExit("PR 254 squash boundary changed")
+          script = script.replace(
+              squash_marker,
+              "rm -f .github/workflows/temporary-execute-rebase-254-quote-fix.yml\n"
+              + squash_marker,
+              1,
           )
-          cleanup_replacement = cleanup_line + (
-              "  .github/workflows/temporary-execute-rebase-254-quote-fix.yml \\\n"
-          )
-          if script.count(cleanup_line) != 1:
-              raise SystemExit("temporary workflow cleanup shape changed")
-          script = script.replace(cleanup_line, cleanup_replacement, 1)
 
           Path("/tmp/pr254-corrected-wrapper.sh").write_text(
               script + "\n", encoding="utf-8"
