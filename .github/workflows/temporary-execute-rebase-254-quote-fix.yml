@@ -1,4 +1,4 @@
-name: Temporary execute PR 254 quote repair
+name: Temporary finalize PR 254
 
 on:
   push:
@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: temporary-finalize-pr-254
+  cancel-in-progress: false
+
 jobs:
-  execute-corrected-workflow:
+  finalize:
     runs-on: macos-15
+    timeout-minutes: 90
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -19,40 +24,15 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Correct nested quoting and current Swift validation mode
+      - name: Execute corrected semantic rebase and validation
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          guarded = Path(".github/workflows/temporary-rebase-254.yml")
-          guarded_text = guarded.read_text(encoding="utf-8")
-          swift_test = "            swift test"
-          swift_build = "            swift build -c release"
-          if guarded_text.count(swift_test) != 1 or guarded_text.count(swift_build) != 1:
-              raise SystemExit(
-                  "unexpected guarded Swift validation counts: "
-                  f"test={guarded_text.count(swift_test)} "
-                  f"build={guarded_text.count(swift_build)}"
-              )
-          guarded_text = guarded_text.replace(
-              swift_test,
-              "            swift test -Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
-          )
-          guarded_text = guarded_text.replace(
-              swift_build,
-              "            swift build -c release "
-              "-Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
-          )
-          guarded.write_text(guarded_text, encoding="utf-8")
-
-          workflow = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
-          lines = workflow.read_text(encoding="utf-8").splitlines()
+          wrapper = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
+          lines = wrapper.read_text(encoding="utf-8").splitlines()
           blocks: list[str] = []
           index = 0
           while index < len(lines):
@@ -68,7 +48,7 @@ jobs:
                       elif not current:
                           block.append("")
                       else:
-                          raise SystemExit(f"unexpected workflow indentation: {current!r}")
+                          raise SystemExit(f"unexpected wrapper indentation: {current!r}")
                       index += 1
                   blocks.append("\n".join(block))
                   continue
@@ -76,12 +56,12 @@ jobs:
 
           if len(blocks) != 1:
               raise SystemExit(f"expected one wrapper run block, found {len(blocks)}")
-
           script = blocks[0]
+
           start = "candidate_patch = r'''python - <<'PY_PATCH_254'"
           end = "\n'''\nblocks[2] = candidate_patch"
           if script.count(start) != 1 or script.count(end) != 1:
-              raise SystemExit("nested candidate patch delimiter shape changed")
+              raise SystemExit("candidate patch delimiter shape changed")
           script = script.replace(
               start,
               'candidate_patch = r"""python - <<\'PY_PATCH_254\'',
@@ -124,14 +104,31 @@ jobs:
               "            probeHealth: probeHealth,\n"
           )
           if script.count(restart_old) != 1 or script.count(restart_new) != 1:
-              raise SystemExit("restart forwarding patch shape changed")
+              raise SystemExit(
+                  "unexpected restart forwarding counts: "
+                  f"old={script.count(restart_old)} new={script.count(restart_new)}"
+              )
           script = script.replace(restart_old, restart_old_fixed, 1)
           script = script.replace(restart_new, restart_new_fixed, 1)
 
-          Path("/tmp/pr254-corrected-wrapper.sh").write_text(
-              script + "\n", encoding="utf-8"
+          script_lines = script.splitlines()
+          cleanup_anchor = (
+              "  .github/workflows/temporary-execute-rebase-254-macos14.yml \\"
           )
+          cleanup_matches = [
+              i for i, line in enumerate(script_lines) if line == cleanup_anchor
+          ]
+          if len(cleanup_matches) != 1:
+              raise SystemExit(
+                  f"expected one cleanup anchor, found {len(cleanup_matches)}"
+              )
+          script_lines.insert(
+              cleanup_matches[0] + 1,
+              "  .github/workflows/temporary-execute-rebase-254-quote-fix.yml \\",
+          )
+          script = "\n".join(script_lines) + "\n"
+
+          Path("/tmp/pr254-finalize.sh").write_text(script, encoding="utf-8")
           PY
-          git checkout -- .github/workflows/temporary-rebase-254.yml
-          test -z "$(git status --porcelain)"
-          bash /tmp/pr254-corrected-wrapper.sh
+          bash -n /tmp/pr254-finalize.sh
+          bash /tmp/pr254-finalize.sh
