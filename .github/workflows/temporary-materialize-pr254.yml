@@ -27,6 +27,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          echo "materializing clean PR 254 candidate"
           git fetch origin agent/pr254-rebase-inspect
           git show origin/agent/pr254-rebase-inspect:.github/workflows/temporary-rebase-254.yml > /tmp/pr254-source.yml
           python - <<'PY'
