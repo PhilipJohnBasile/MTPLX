@@ -103,18 +103,25 @@ jobs:
           script = script.replace(restart_old, restart_old_fixed, 1)
           script = script.replace(restart_new, restart_new_fixed, 1)
 
-          swift_old = "            swift test\n            swift build -c release"
-          swift_new = (
-              "            swift test "
-              "-Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal\n"
-              "            swift build -c release "
-              "-Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal"
+          swift_test = "swift test"
+          swift_build = "swift build -c release"
+          if script.count(swift_test) != 1 or script.count(swift_build) != 1:
+              raise SystemExit(
+                  "unexpected Swift validation counts: "
+                  f"test={script.count(swift_test)} build={script.count(swift_build)}"
+              )
+          script = script.replace(
+              swift_test,
+              "swift test -Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal",
+              1,
           )
-          if script.count(swift_old) != 1:
-              raise SystemExit("Swift validation command shape changed")
-          script = script.replace(swift_old, swift_new, 1)
+          script = script.replace(
+              swift_build,
+              "swift build -c release -Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal",
+              1,
+          )
 
           Path("/tmp/pr254-corrected-wrapper.sh").write_text(
               script + "\n", encoding="utf-8"
