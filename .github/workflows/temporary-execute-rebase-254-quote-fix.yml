@@ -31,7 +31,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          wrapper = Path(".github/pr254-wrapper-template.yml")
+          wrapper = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
           lines = wrapper.read_text(encoding="utf-8").splitlines()
           blocks: list[str] = []
           index = 0
