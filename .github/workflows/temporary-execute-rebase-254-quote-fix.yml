@@ -112,6 +112,38 @@ jobs:
           script = script.replace(restart_new, restart_new_fixed, 1)
 
           script_lines = script.splitlines()
+          swift_test_matches = [
+              i for i, line in enumerate(script_lines) if line.strip() == "swift test"
+          ]
+          swift_build_matches = [
+              i
+              for i, line in enumerate(script_lines)
+              if line.strip() == "swift build -c release"
+          ]
+          if len(swift_test_matches) != 1 or len(swift_build_matches) != 1:
+              raise SystemExit(
+                  "unexpected Swift validation commands: "
+                  f"test={len(swift_test_matches)} build={len(swift_build_matches)}"
+              )
+          test_index = swift_test_matches[0]
+          build_index = swift_build_matches[0]
+          test_indent = script_lines[test_index][
+              : len(script_lines[test_index]) - len(script_lines[test_index].lstrip())
+          ]
+          build_indent = script_lines[build_index][
+              : len(script_lines[build_index]) - len(script_lines[build_index].lstrip())
+          ]
+          script_lines[test_index] = (
+              test_indent
+              + "swift test -Xswiftc -swift-version -Xswiftc 5 "
+              + "-Xswiftc -strict-concurrency=minimal"
+          )
+          script_lines[build_index] = (
+              build_indent
+              + "swift build -c release -Xswiftc -swift-version -Xswiftc 5 "
+              + "-Xswiftc -strict-concurrency=minimal"
+          )
+
           cleanup_matches = [
               i
               for i, line in enumerate(script_lines)
