@@ -118,26 +118,44 @@ jobs:
                   f"{script.count(validation_anchor)}"
               )
           validation_patch = validation_anchor + '''
-          swift_test = "    swift test"
-          swift_build = "    swift build -c release"
-          if blocks[2].count(swift_test) != 1 or blocks[2].count(swift_build) != 1:
+          validation_lines = blocks[2].splitlines()
+          swift_test_matches = [
+              index
+              for index, line in enumerate(validation_lines)
+              if line.strip() == "swift test"
+          ]
+          swift_build_matches = [
+              index
+              for index, line in enumerate(validation_lines)
+              if line.strip() == "swift build -c release"
+          ]
+          if len(swift_test_matches) != 1 or len(swift_build_matches) != 1:
               raise SystemExit(
                   "unexpected embedded Swift validation counts: "
-                  f"test={blocks[2].count(swift_test)} "
-                  f"build={blocks[2].count(swift_build)}"
+                  f"test={len(swift_test_matches)} "
+                  f"build={len(swift_build_matches)}"
               )
-          blocks[2] = blocks[2].replace(
-              swift_test,
-              "    swift test -Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
+          test_index = swift_test_matches[0]
+          build_index = swift_build_matches[0]
+          test_indent = validation_lines[test_index][
+              : len(validation_lines[test_index])
+              - len(validation_lines[test_index].lstrip())
+          ]
+          build_indent = validation_lines[build_index][
+              : len(validation_lines[build_index])
+              - len(validation_lines[build_index].lstrip())
+          ]
+          validation_lines[test_index] = (
+              test_indent
+              + "swift test -Xswiftc -swift-version -Xswiftc 5 "
+              + "-Xswiftc -strict-concurrency=minimal"
           )
-          blocks[2] = blocks[2].replace(
-              swift_build,
-              "    swift build -c release -Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
+          validation_lines[build_index] = (
+              build_indent
+              + "swift build -c release -Xswiftc -swift-version -Xswiftc 5 "
+              + "-Xswiftc -strict-concurrency=minimal"
           )
+          blocks[2] = "\\n".join(validation_lines) + "\\n"
           '''
           script = script.replace(validation_anchor, validation_patch, 1)
 
