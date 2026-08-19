@@ -1,0 +1,121 @@
+name: PR 254 candidate materializer
+
+on:
+  pull_request:
+    branches:
+      - agent/pr254-workflow-base
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.head_ref == 'agent/pr254-rebase-inspect'
+    runs-on: macos-15-arm64
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/pr254-rebase-inspect
+          fetch-depth: 0
+
+      - name: Materialize the audited current-main candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path(
+              ".github/workflows/temporary-execute-rebase-254-quote-fix.yml"
+          )
+          lines = workflow.read_text(encoding="utf-8").splitlines()
+          blocks: list[str] = []
+          index = 0
+          while index < len(lines):
+              if lines[index] == "        run: |":
+                  index += 1
+                  block: list[str] = []
+                  while index < len(lines):
+                      current = lines[index]
+                      if current and len(current) - len(current.lstrip()) <= 8:
+                          break
+                      if current.startswith("          "):
+                          block.append(current[10:])
+                      elif not current:
+                          block.append("")
+                      else:
+                          raise SystemExit(
+                              f"unexpected finalizer indentation: {current!r}"
+                          )
+                      index += 1
+                  blocks.append("\n".join(block))
+                  continue
+              index += 1
+
+          if len(blocks) != 1:
+              raise SystemExit(
+                  f"expected one finalizer run block, found {len(blocks)}"
+              )
+          generator = blocks[0]
+          tail = "bash -n /tmp/pr254-finalize.sh\nbash /tmp/pr254-finalize.sh"
+          if generator.count(tail) != 1:
+              raise SystemExit("unexpected finalizer execution tail")
+          replacement = r'''bash -n /tmp/pr254-finalize.sh
+          python - <<'PY_LIGHTEN_254'
+          from pathlib import Path
+
+          path = Path("/tmp/pr254-finalize.sh")
+          text = path.read_text(encoding="utf-8")
+
+          reset_marker = "git reset --soft upstream/main"
+          cleanup = (
+              "rm -f .github/workflows/pr254-rebase-inspect.yml "
+              ".github/pr254-rebase-inspect-trigger.txt\n"
+          )
+          if text.count(reset_marker) != 1:
+              raise SystemExit("unexpected squash boundary")
+          text = text.replace(reset_marker, cleanup + reset_marker, 1)
+
+          validation_start = text.find("python -m pip install -q uv build")
+          validation_end = text.find('echo "::endgroup::"', validation_start)
+          if validation_start < 0 or validation_end < 0:
+              raise SystemExit("could not isolate heavy validation block")
+          text = (
+              text[:validation_start]
+              + "git diff --check upstream/main...HEAD\n"
+              + text[validation_end:]
+          )
+
+          if text.count("HEAD:sync/rebased-254-ready") != 1:
+              raise SystemExit("unexpected helper publish target")
+          text = text.replace(
+              "HEAD:sync/rebased-254-ready",
+              "HEAD:sync/pr254-rebased-inspect",
+              1,
+          )
+
+          lines = text.splitlines()
+          live_matches = [
+              index
+              for index, line in enumerate(lines)
+              if "HEAD:codex/deepseek-v4-mlxserve-v26" in line
+          ]
+          if len(live_matches) != 1:
+              raise SystemExit(
+                  f"unexpected live-publish count: {len(live_matches)}"
+              )
+          del lines[live_matches[0]]
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY_LIGHTEN_254
+          bash -n /tmp/pr254-finalize.sh
+          bash /tmp/pr254-finalize.sh'''
+          generator = generator.replace(tail, replacement, 1)
+          Path("/tmp/pr254-materialize-generator.sh").write_text(
+              generator + "\n", encoding="utf-8"
+          )
+          PY
+          bash -n /tmp/pr254-materialize-generator.sh
+          bash /tmp/pr254-materialize-generator.sh
