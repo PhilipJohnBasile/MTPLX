@@ -26,6 +26,31 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          guarded = Path(".github/workflows/temporary-rebase-254.yml")
+          guarded_text = guarded.read_text(encoding="utf-8")
+          swift_test = "            swift test"
+          swift_build = "            swift build -c release"
+          if guarded_text.count(swift_test) != 1 or guarded_text.count(swift_build) != 1:
+              raise SystemExit(
+                  "unexpected guarded Swift validation counts: "
+                  f"test={guarded_text.count(swift_test)} "
+                  f"build={guarded_text.count(swift_build)}"
+              )
+          guarded_text = guarded_text.replace(
+              swift_test,
+              "            swift test -Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal",
+              1,
+          )
+          guarded_text = guarded_text.replace(
+              swift_build,
+              "            swift build -c release "
+              "-Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal",
+              1,
+          )
+          guarded.write_text(guarded_text, encoding="utf-8")
+
           workflow = Path(".github/workflows/temporary-execute-rebase-254-macos14.yml")
           lines = workflow.read_text(encoding="utf-8").splitlines()
           blocks: list[str] = []
@@ -102,26 +127,6 @@ jobs:
               raise SystemExit("restart forwarding patch shape changed")
           script = script.replace(restart_old, restart_old_fixed, 1)
           script = script.replace(restart_new, restart_new_fixed, 1)
-
-          swift_test = "swift test"
-          swift_build = "swift build -c release"
-          if script.count(swift_test) != 1 or script.count(swift_build) != 1:
-              raise SystemExit(
-                  "unexpected Swift validation counts: "
-                  f"test={script.count(swift_test)} build={script.count(swift_build)}"
-              )
-          script = script.replace(
-              swift_test,
-              "swift test -Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
-          )
-          script = script.replace(
-              swift_build,
-              "swift build -c release -Xswiftc -swift-version -Xswiftc 5 "
-              "-Xswiftc -strict-concurrency=minimal",
-              1,
-          )
 
           Path("/tmp/pr254-corrected-wrapper.sh").write_text(
               script + "\n", encoding="utf-8"
