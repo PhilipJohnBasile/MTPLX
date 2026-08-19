@@ -19,7 +19,7 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Correct nested quoting and current restart forwarding shape
+      - name: Correct nested quoting and current Swift validation mode
         shell: bash
         run: |
           set -euo pipefail
@@ -102,6 +102,19 @@ jobs:
               raise SystemExit("restart forwarding patch shape changed")
           script = script.replace(restart_old, restart_old_fixed, 1)
           script = script.replace(restart_new, restart_new_fixed, 1)
+
+          swift_old = "            swift test\n            swift build -c release"
+          swift_new = (
+              "            swift test "
+              "-Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal\n"
+              "            swift build -c release "
+              "-Xswiftc -swift-version -Xswiftc 5 "
+              "-Xswiftc -strict-concurrency=minimal"
+          )
+          if script.count(swift_old) != 1:
+              raise SystemExit("Swift validation command shape changed")
+          script = script.replace(swift_old, swift_new, 1)
 
           Path("/tmp/pr254-corrected-wrapper.sh").write_text(
               script + "\n", encoding="utf-8"
