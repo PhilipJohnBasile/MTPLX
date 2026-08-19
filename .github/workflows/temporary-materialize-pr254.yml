@@ -61,13 +61,42 @@ jobs:
               index += 1
           if len(blocks) < 2:
               raise SystemExit(f"expected at least two guarded run blocks, found {len(blocks)}")
+
+          # Current Git rebases the Python and both Swift overlaps in one stop.
+          # The older guarded script expected hf_loader first and Swift second;
+          # stage hf_loader, then let its existing Swift resolver finish the
+          # same rebase stop before calling rebase --continue once.
+          rebase = blocks[0]
+          old_expected = '            test "$conflicts" = "mtplx/hf_loader.py"'
+          new_expected = (
+              "            expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/"
+              "DaemonSupervisor.swift\\napps/MTPLXApp/Sources/MTPLXAppCore/Stores/"
+              "MTPLXBackendStore.swift\\nmtplx/hf_loader.py'\n"
+              "            test \"$conflicts\" = \"$expected\""
+          )
+          if rebase.count(old_expected) != 1:
+              raise SystemExit("hf_loader conflict expectation anchor changed")
+          rebase = rebase.replace(old_expected, new_expected, 1)
+
+          old_continue = '''            git add mtplx/hf_loader.py
+            set +e
+            GIT_EDITOR=true git rebase --continue
+            rc=$?
+            set -e'''
+          new_continue = '''            git add mtplx/hf_loader.py
+            # The two Swift paths remain unmerged in this same rebase stop.
+            rc=1'''
+          if rebase.count(old_continue) != 1:
+              raise SystemExit("hf_loader continuation anchor changed")
+          rebase = rebase.replace(old_continue, new_continue, 1)
+          blocks[0] = rebase
+
           Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
           Path("/tmp/pr254-squash.sh").write_text(blocks[1] + "\n", encoding="utf-8")
           PY
 
           cat > /tmp/pr254-run.sh <<'SH'
           set -euo pipefail
-          # Start from the feature-only commit, not the accumulated workflow commits.
           git reset --hard d079df37916f646f0a5b34343f317a03aa3a2e07
           bash -n /tmp/pr254-rebase.sh
           bash -n /tmp/pr254-squash.sh
