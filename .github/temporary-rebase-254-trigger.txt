@@ -1,1 +1,1 @@
-Trigger semantic rebase validation for upstream PR 254.
+Trigger clean semantic rebase validation for upstream PR 254 after actor-isolation fixture repair.
