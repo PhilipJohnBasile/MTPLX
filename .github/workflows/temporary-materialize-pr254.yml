@@ -14,22 +14,27 @@ concurrency:
 
 jobs:
   materialize:
-    runs-on: macos-15-arm64
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Extract and run the audited semantic rebase
+      - name: Rebuild one clean feature commit on current upstream main
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "materializing clean PR 254 candidate"
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git || true
+          git fetch upstream main
           git fetch origin agent/pr254-rebase-inspect
           git show origin/agent/pr254-rebase-inspect:.github/workflows/temporary-rebase-254.yml > /tmp/pr254-source.yml
+
           python - <<'PY'
           from pathlib import Path
 
@@ -55,25 +60,61 @@ jobs:
                   continue
               index += 1
           if len(blocks) < 2:
-              raise SystemExit(f"expected at least two run blocks, found {len(blocks)}")
+              raise SystemExit(f"expected at least two guarded run blocks, found {len(blocks)}")
           Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
           Path("/tmp/pr254-squash.sh").write_text(blocks[1] + "\n", encoding="utf-8")
           PY
+
+          cat > /tmp/pr254-run.sh <<'SH'
+          set -euo pipefail
+          # Start from the feature-only commit, not the accumulated workflow commits.
+          git reset --hard d079df37916f646f0a5b34343f317a03aa3a2e07
           bash -n /tmp/pr254-rebase.sh
           bash -n /tmp/pr254-squash.sh
           bash /tmp/pr254-rebase.sh
-          rm -f .github/workflows/temporary-materialize-pr254.yml
+          rm -f \
+            .github/workflows/temporary-materialize-pr254.yml \
+            .github/workflows/temporary-rebase-254.yml \
+            .github/workflows/temporary-execute-rebase-254-macos14.yml \
+            .github/workflows/temporary-execute-rebase-254-quote-fix.yml \
+            .github/pr254-wrapper-template.yml \
+            .github/temporary-rebase-254-trigger.txt
           bash /tmp/pr254-squash.sh
           test "$(git rev-list --count upstream/main..HEAD)" = "1"
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
+          test -z "$(git diff --name-only upstream/main...HEAD -- '.github/workflows/temporary-*' '.github/pr254-wrapper-template.yml' '.github/temporary-rebase-254-trigger.txt')"
+          git show -s --format=%B HEAD | grep -F "Signed-off-by: Philip John Basile <PBasile@Basilecom.com>"
           git diff --check upstream/main...HEAD
+          SH
+
+          set +e
+          bash /tmp/pr254-run.sh > /tmp/pr254-run.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/pr254-run.log
+
+          if [ "$status" -ne 0 ]; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git reset --hard upstream/main
+            mkdir -p diagnostics
+            cp /tmp/pr254-run.log diagnostics/pr254-current-main-failure.log
+            git add diagnostics/pr254-current-main-failure.log
+            git commit -m "diagnostics: capture PR 254 current-main failure"
+            git push \
+              "https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git" \
+              HEAD:agent/pr254-failure-log --force
+            exit "$status"
+          fi
+
+          candidate="$(git rev-parse HEAD)"
           git push \
             "https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git" \
-            HEAD:sync/pr254-rebased-inspect \
-            --force
+            HEAD:sync/pr254-rebased-inspect --force
           {
             echo "## PR 254 current-main candidate"
             echo ""
             echo "- upstream main: \`$(git rev-parse upstream/main)\`"
-            echo "- candidate: \`$(git rev-parse HEAD)\`"
+            echo "- candidate: \`$candidate\`"
             echo "- commits ahead: 1"
+            echo "- temporary repair files: absent"
           } >> "$GITHUB_STEP_SUMMARY"
