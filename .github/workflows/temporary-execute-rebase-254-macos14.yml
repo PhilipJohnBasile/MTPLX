@@ -1,4 +1,4 @@
-name: Temporary execute PR 254 rebase on macOS 15
+name: Temporary execute PR 254 finalizer
 
 on:
   push:
@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: temporary-execute-pr-254-finalizer
+  cancel-in-progress: false
+
 jobs:
-  execute-guarded-workflow:
+  execute:
     runs-on: macos-15
+    timeout-minutes: 90
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -19,20 +24,21 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Execute the existing guarded semantic-rebase scripts
+      - name: Execute the corrected finalizer from the branch
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          workflow = Path(".github/workflows/temporary-rebase-254.yml")
+          workflow = Path(
+              ".github/workflows/temporary-execute-rebase-254-quote-fix.yml"
+          )
           lines = workflow.read_text(encoding="utf-8").splitlines()
           blocks: list[str] = []
           index = 0
           while index < len(lines):
-              line = lines[index]
-              if line == "        run: |":
+              if lines[index] == "        run: |":
                   index += 1
                   block: list[str] = []
                   while index < len(lines):
@@ -44,380 +50,33 @@ jobs:
                       elif not current:
                           block.append("")
                       else:
-                          raise SystemExit(f"unexpected workflow indentation: {current!r}")
+                          raise SystemExit(
+                              f"unexpected finalizer indentation: {current!r}"
+                          )
                       index += 1
                   blocks.append("\n".join(block))
                   continue
               index += 1
 
-          if len(blocks) != 4:
-              raise SystemExit(f"expected four guarded run blocks, found {len(blocks)}")
-
-          # Preserve current main's non-optional native health contract while
-          # keeping the external backend's intentionally absent MTPLX payload.
-          supervisor_anchor = '''def merge_supervisor(ours: str, theirs: str) -> tuple[str, set[str]]:
-              kinds: set[str] = set()
-              text = ours
-          '''
-          supervisor_replacement = supervisor_anchor + '''    if (
-                  ours.strip() == ") async throws -> HealthPayload {"
-                  and "waitForExternalMlxServeHealth" in theirs
-                  and "return nil" in theirs
-              ):
-                  return (
-                      "    ) async throws -> HealthPayload? {\\n"
-                      "        if backendKind == .externalMlxServe {\\n"
-                      "            try await waitForExternalMlxServeHealth(\\n"
-                      "                baseURL: baseURL,\\n"
-                      "                apiKey: apiKey,\\n"
-                      "                timeoutSeconds: timeoutSeconds,\\n"
-                      "                onPhase: onPhase\\n"
-                      "            )\\n"
-                      "            // External mlx-serve exposes only its raw\\n"
-                      "            // liveness contract; do not fabricate MTPLX\\n"
-                      "            // sessions, metrics, or launch metadata.\\n"
-                      "            return nil\\n"
-                      "        }\\n",
-                      {"wait_for_health"},
-                  )
-          '''
-          if blocks[0].count(supervisor_anchor) != 1:
-              raise SystemExit("could not locate PR 254 supervisor resolver")
-          blocks[0] = blocks[0].replace(supervisor_anchor, supervisor_replacement, 1)
-
-          # Current main changed refreshStaticState to a multi-line signature,
-          # and the conflict hunk ends before the shared client declaration.
-          # Keep the complete current signature (ours), then insert the
-          # external-backend guard before the common body resumes.
-          refresh_marker = (
-              'if "public func refreshStaticState(" in ours '
-              'and "supportsMTPLXLiveControls" in theirs:'
-          )
-          refresh_start = blocks[0].find(refresh_marker)
-          if refresh_start < 0:
-              raise SystemExit("could not locate PR 254 refreshStaticState marker")
-          refresh_stop_marker = 'kinds.add("refresh_static")'
-          refresh_stop = blocks[0].find(refresh_stop_marker, refresh_start)
-          if refresh_stop < 0:
-              raise SystemExit("could not locate PR 254 refreshStaticState end")
-          refresh_stop += len(refresh_stop_marker)
-          refresh_replacement = '''if "public func refreshStaticState(" in ours and "supportsMTPLXLiveControls" in theirs:
-                  return (
-                      ours.rstrip()
-                      + "\\n"
-                      + "        guard supportsMTPLXLiveControls else {\\n"
-                      + "            health = nil\\n"
-                      + "            capabilities = nil\\n"
-                      + "            sessions = nil\\n"
-                      + "            prefillHistory = nil\\n"
-                      + "            models = nil\\n"
-                      + "            return\\n"
-                      + "        }\\n",
-                      {"refresh_static"},
-                  )'''
-          blocks[0] = (
-              blocks[0][:refresh_start]
-              + refresh_replacement
-              + blocks[0][refresh_stop:]
-          )
-
-          # The fresh-launch settings helper also gained an isCurrent closure.
-          # Its conflict hunk ends before the shared pending-settings body, so
-          # preserve the current signature and insert only the external guard.
-          fresh_condition = (
-              '"private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours'
-          )
-          fresh_condition_index = blocks[0].find(fresh_condition)
-          if fresh_condition_index < 0:
-              raise SystemExit("could not locate PR 254 fresh-launch resolver")
-          fresh_start = blocks[0].rfind("if (", 0, fresh_condition_index)
-          if fresh_start < 0:
-              raise SystemExit("could not locate PR 254 fresh-launch resolver start")
-          fresh_stop_marker = 'kinds.add("flush_fresh")'
-          fresh_stop = blocks[0].find(fresh_stop_marker, fresh_condition_index)
-          if fresh_stop < 0:
-              raise SystemExit("could not locate PR 254 fresh-launch resolver end")
-          fresh_stop += len(fresh_stop_marker)
-          fresh_replacement = '''if (
-                  "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours
-                  and "pendingLiveSettings = nil" in theirs
-                  and "supportsMTPLXLiveControls" in theirs
-              ):
-                  return (
-                      ours.rstrip()
-                      + "\\n"
-                      + "        guard supportsMTPLXLiveControls else {\\n"
-                      + "            pendingLiveSettings = nil\\n"
-                      + "            pendingLiveSettingsModel = nil\\n"
-                      + "            settings = nil\\n"
-                      + "            return\\n"
-                      + "        }\\n",
-                      {"flush_fresh"},
-                  )'''
-          blocks[0] = (
-              blocks[0][:fresh_start]
-              + fresh_replacement
-              + blocks[0][fresh_stop:]
-          )
-
-          # Current main made post-start refresh cancellation-aware and Bool-
-          # returning. Preserve that lifecycle ownership contract, then add the
-          # external raw-server finalization before the common MTPLX refresh.
-          post_condition = '"private func refreshPostStartState(" in ours'
-          post_condition_index = blocks[0].find(post_condition)
-          if post_condition_index < 0:
-              raise SystemExit("could not locate PR 254 post-start resolver")
-          post_start = blocks[0].rfind("if (", 0, post_condition_index)
-          if post_start < 0:
-              raise SystemExit("could not locate PR 254 post-start resolver start")
-          post_stop_marker = 'kinds.add("post_start")'
-          post_stop = blocks[0].find(post_stop_marker, post_condition_index)
-          if post_stop < 0:
-              raise SystemExit("could not locate PR 254 post-start resolver end")
-          post_stop += len(post_stop_marker)
-          post_replacement = '''if (
-                  "configuration: MTPLXAppConfiguration," in ours
-                  and "recoveryGeneration: Int?" in ours
-                  and ") async -> Bool {" in ours
-                  and "daemonSessionIsCurrent(" in ours
-                  and "external mlx-serve ready" in theirs
-                  and "startExternalMlxServeHealthWatchdog" in theirs
-              ):
-                  return (
-                      ours.rstrip()
-                      + "\\n"
-                      + "        guard daemonBackendKind(for: configuration) == .mtplx else {\\n"
-                      + "            health = nil\\n"
-                      + "            capabilities = nil\\n"
-                      + "            sessions = nil\\n"
-                      + "            sessionBank = nil\\n"
-                      + "            settings = nil\\n"
-                      + "            pendingLiveSettings = nil\\n"
-                      + "            pendingLiveSettingsModel = nil\\n"
-                      + "            connectionState = .idle\\n"
-                      + "            await supervisor.logs.append(\\n"
-                      + "                \\\"external mlx-serve ready; MTPLX live controls and metrics are unavailable\\\",\\n"
-                      + "                stream: .system\\n"
-                      + "            )\\n"
-                      + "            guard daemonSessionIsCurrent(\\n"
-                      + "                lifecycleEpoch: lifecycleEpoch,\\n"
-                      + "                launchID: nil,\\n"
-                      + "                recoveryGeneration: recoveryGeneration\\n"
-                      + "            ) else { return false }\\n"
-                      + "            startExternalMlxServeHealthWatchdog()\\n"
-                      + "            return daemonSessionIsCurrent(\\n"
-                      + "                lifecycleEpoch: lifecycleEpoch,\\n"
-                      + "                launchID: nil,\\n"
-                      + "                recoveryGeneration: recoveryGeneration\\n"
-                      + "            )\\n"
-                      + "        }\\n",
-                      {"post_start"},
-                  )'''
-          blocks[0] = (
-              blocks[0][:post_start]
-              + post_replacement
-              + blocks[0][post_stop:]
-          )
-
-          cleanup = """rm -f \\
-            .github/workflows/temporary-rebase-254.yml \\
-            .github/workflows/temporary-execute-rebase-254-macos14.yml \\
-            .github/temporary-rebase-254-trigger.txt
-          """
-          marker = "git reset --soft upstream/main"
-          if blocks[1].count(marker) != 1:
-              raise SystemExit("could not locate the PR 254 squash boundary")
-          blocks[1] = blocks[1].replace(marker, cleanup + marker, 1)
-
-          # The semantic conflict resolver intentionally starts from current
-          # main. Carry the backend discriminator through main's newer retained
-          # OwnedLaunch lifecycle, and apply the Swift 6 Bool exhaustiveness
-          # correction before validating and publishing the one-commit result.
-          candidate_patch = r'''python - <<'PY_PATCH_254'
-          from pathlib import Path
-
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              if new in text:
-                  return text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one old shape, found {count}")
-              return text.replace(old, new, 1)
-
-          supervisor = Path(
-              "apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift"
-          )
-          text = supervisor.read_text(encoding="utf-8")
-          text = replace_once(
-              text,
-              '''        let apiKey: String?
-                  let probeHealth: Bool
-          ''',
-              '''        let apiKey: String?
-                  let backendKind: DaemonBackendKind
-                  let probeHealth: Bool
-          ''',
-              "OwnedLaunch backend kind",
-          )
-          text = replace_once(
-              text,
-              '''    public func start(
-                  command: DaemonCommand,
-                  healthBaseURL: URL,
-                  apiKey: String? = nil,
-                  probeHealth: Bool = true,
-          ''',
-              '''    public func start(
-                  command: DaemonCommand,
-                  healthBaseURL: URL,
-                  apiKey: String? = nil,
-                  backendKind: DaemonBackendKind = .mtplx,
-                  probeHealth: Bool = true,
-          ''',
-              "start backend argument",
-          )
-          text = replace_once(
-              text,
-              '''                healthBaseURL: healthBaseURL,
-                          apiKey: apiKey,
-                          probeHealth: probeHealth,
-          ''',
-              '''                healthBaseURL: healthBaseURL,
-                          apiKey: apiKey,
-                          backendKind: backendKind,
-                          probeHealth: probeHealth,
-          ''',
-              "OwnedLaunch backend initialization",
-          )
-          text = replace_once(
-              text,
-              '''        let healthBaseURL = launch.healthBaseURL
-                  let apiKey = launch.apiKey
-                  let probeHealth = launch.probeHealth
-          ''',
-              '''        let healthBaseURL = launch.healthBaseURL
-                  let apiKey = launch.apiKey
-                  let backendKind = launch.backendKind
-                  let probeHealth = launch.probeHealth
-          ''',
-              "retained launch backend local",
-          )
-          text = replace_once(
-              text,
-              '''    public func restart(
-                  command: DaemonCommand,
-                  healthBaseURL: URL,
-                  apiKey: String? = nil,
-                  probeHealth: Bool = true,
-          ''',
-              '''    public func restart(
-                  command: DaemonCommand,
-                  healthBaseURL: URL,
-                  apiKey: String? = nil,
-                  backendKind: DaemonBackendKind = .mtplx,
-                  probeHealth: Bool = true,
-          ''',
-              "restart backend argument",
-          )
-          text = replace_once(
-              text,
-              '''        return try await start(
-                  command: command,
-                  healthBaseURL: healthBaseURL,
-                  apiKey: apiKey,
-                  probeHealth: probeHealth,
-          ''',
-              '''        return try await start(
-                  command: command,
-                  healthBaseURL: healthBaseURL,
-                  apiKey: apiKey,
-                  backendKind: backendKind,
-                  probeHealth: probeHealth,
-          ''',
-              "restart backend forwarding",
-          )
-
-          wait_start = text.find("    public func waitForExistingHealth(")
-          wait_end = text.find("\n    private func canAdopt(", wait_start)
-          if wait_start < 0 or wait_end < 0:
-              raise SystemExit("waitForExistingHealth boundaries changed")
-          wait_segment = text[wait_start:wait_end]
-          if "backendKind: .mtplx," not in wait_segment:
-              old = '''            baseURL: healthBaseURL,
-                      apiKey: apiKey,
-                      timeoutSeconds: timeoutSeconds,
-              '''
-              new = '''            baseURL: healthBaseURL,
-                      apiKey: apiKey,
-                      backendKind: .mtplx,
-                      timeoutSeconds: timeoutSeconds,
-              '''
-              if wait_segment.count(old) != 1:
-                  raise SystemExit("waitForExistingHealth native backend call changed")
-              wait_segment = wait_segment.replace(old, new, 1)
-              text = text[:wait_start] + wait_segment + text[wait_end:]
-
-          required = (
-              "let backendKind: DaemonBackendKind",
-              "let backendKind = launch.backendKind",
-              "backendKind: backendKind,",
-          )
-          for marker in required:
-              if marker not in text:
-                  raise SystemExit(f"missing backend lifecycle marker: {marker}")
-          supervisor.write_text(text, encoding="utf-8")
-
-          dashboard = Path(
-              "apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift"
-          )
-          text = dashboard.read_text(encoding="utf-8")
-          old = '''    public var requestCacheVerdict: RequestCacheVerdict {
-                  switch values["session_cache_hit"]?.boolValue {
-                  case true: return .hit
-                  case false: return .miss
-                  case nil: return .unknown
-                  }
-              }
-          '''
-          new = '''    public var requestCacheVerdict: RequestCacheVerdict {
-                  guard let hit = values["session_cache_hit"]?.boolValue else {
-                      return .unknown
-                  }
-                  return hit ? .hit : .miss
-              }
-          '''
-          text = replace_once(text, old, new, "Swift 6 cache verdict exhaustiveness")
-          dashboard.write_text(text, encoding="utf-8")
-          PY_PATCH_254
-          git add \
-            apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift \
-            apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift
-          git commit --amend --no-edit
-          command -v rg >/dev/null 2>&1 || brew install ripgrep
-          '''
-          blocks[2] = candidate_patch + "\n" + blocks[2]
-
-          if "HEAD:sync/rebased-254-ready" not in blocks[3] or "--force" not in blocks[3]:
-              raise SystemExit("unexpected PR 254 helper publish block")
-          blocks[3] += (
-              "\n"
-              "git push "
-              "\"https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git\" "
-              "HEAD:codex/deepseek-v4-mlxserve-v26 "
-              "--force-with-lease=refs/heads/codex/deepseek-v4-mlxserve-v26:${GITHUB_SHA}\n"
-          )
-
-          script: list[str] = ["set -euo pipefail"]
-          for number, block in enumerate(blocks, start=1):
-              script.extend(
-                  [
-                      f'echo "::group::guarded PR 254 block {number}"',
-                      block,
-                      'echo "::endgroup::"',
-                  ]
+          if len(blocks) != 1:
+              raise SystemExit(
+                  f"expected one finalizer run block, found {len(blocks)}"
               )
-          Path("/tmp/pr254-guarded-workflow.sh").write_text(
-              "\n\n".join(script) + "\n", encoding="utf-8"
+          script = blocks[0]
+          old = (
+              'wrapper = Path('
+              '".github/workflows/temporary-execute-rebase-254-macos14.yml"'
+              ')'
+          )
+          new = 'wrapper = Path(".github/pr254-wrapper-template.yml")'
+          if script.count(old) != 1:
+              raise SystemExit(
+                  f"expected one wrapper path, found {script.count(old)}"
+              )
+          script = script.replace(old, new, 1)
+          Path("/tmp/pr254-current-finalizer.sh").write_text(
+              script + "\n", encoding="utf-8"
           )
           PY
-          bash /tmp/pr254-guarded-workflow.sh
+          bash -n /tmp/pr254-current-finalizer.sh
+          bash /tmp/pr254-current-finalizer.sh
