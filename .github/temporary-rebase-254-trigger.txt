@@ -1,1 +1,1 @@
-Execute PR 254 finalizer in fresh v2 concurrency group.
+Run confirmed v2 PR 254 finalizer after stale executor completion.
