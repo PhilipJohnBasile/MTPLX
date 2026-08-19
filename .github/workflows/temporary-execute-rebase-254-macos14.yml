@@ -62,8 +62,19 @@ jobs:
               raise SystemExit(
                   f"expected one finalizer run block, found {len(blocks)}"
               )
+          script = blocks[0]
+          old = (
+              'wrapper = Path('
+              '".github/workflows/temporary-execute-rebase-254-macos14.yml"'
+              ')'
+          )
+          new = 'wrapper = Path(".github/pr254-wrapper-template.yml")'
+          if old in script:
+              script = script.replace(old, new, 1)
+          elif new not in script:
+              raise SystemExit("finalizer wrapper path is neither supported shape")
           Path("/tmp/pr254-current-finalizer.sh").write_text(
-              blocks[0] + "\n", encoding="utf-8"
+              script + "\n", encoding="utf-8"
           )
           PY
           bash -n /tmp/pr254-current-finalizer.sh
