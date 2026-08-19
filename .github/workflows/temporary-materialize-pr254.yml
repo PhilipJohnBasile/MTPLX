@@ -1,0 +1,78 @@
+name: Temporary materialize PR 254 current-main candidate
+
+on:
+  push:
+    branches:
+      - codex/deepseek-v4-mlxserve-v26
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-materialize-pr254
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: macos-15-arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+
+      - name: Extract and run the audited semantic rebase
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch origin agent/pr254-rebase-inspect
+          git show origin/agent/pr254-rebase-inspect:.github/workflows/temporary-rebase-254.yml > /tmp/pr254-source.yml
+          python - <<'PY'
+          from pathlib import Path
+
+          lines = Path("/tmp/pr254-source.yml").read_text(encoding="utf-8").splitlines()
+          blocks: list[str] = []
+          index = 0
+          while index < len(lines):
+              if lines[index] == "        run: |":
+                  index += 1
+                  block: list[str] = []
+                  while index < len(lines):
+                      current = lines[index]
+                      if current and len(current) - len(current.lstrip()) <= 8:
+                          break
+                      if current.startswith("          "):
+                          block.append(current[10:])
+                      elif not current:
+                          block.append("")
+                      else:
+                          raise SystemExit(f"unexpected workflow indentation: {current!r}")
+                      index += 1
+                  blocks.append("\n".join(block))
+                  continue
+              index += 1
+          if len(blocks) < 2:
+              raise SystemExit(f"expected at least two run blocks, found {len(blocks)}")
+          Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
+          Path("/tmp/pr254-squash.sh").write_text(blocks[1] + "\n", encoding="utf-8")
+          PY
+          bash -n /tmp/pr254-rebase.sh
+          bash -n /tmp/pr254-squash.sh
+          bash /tmp/pr254-rebase.sh
+          rm -f .github/workflows/temporary-materialize-pr254.yml
+          bash /tmp/pr254-squash.sh
+          test "$(git rev-list --count upstream/main..HEAD)" = "1"
+          git diff --check upstream/main...HEAD
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git" \
+            HEAD:sync/pr254-rebased-inspect \
+            --force
+          {
+            echo "## PR 254 current-main candidate"
+            echo ""
+            echo "- upstream main: \`$(git rev-parse upstream/main)\`"
+            echo "- candidate: \`$(git rev-parse HEAD)\`"
+            echo "- commits ahead: 1"
+          } >> "$GITHUB_STEP_SUMMARY"
