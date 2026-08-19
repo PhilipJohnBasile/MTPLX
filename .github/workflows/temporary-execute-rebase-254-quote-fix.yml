@@ -19,7 +19,7 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Correct the nested patch delimiter and execute
+      - name: Correct nested quoting and current restart forwarding shape
         shell: bash
         run: |
           set -euo pipefail
@@ -67,6 +67,41 @@ jobs:
               '\n"""\nblocks[2] = candidate_patch',
               1,
           )
+
+          restart_old = (
+              "'''        return try await start(\n"
+              "        command: command,\n"
+              "        healthBaseURL: healthBaseURL,\n"
+              "        apiKey: apiKey,\n"
+              "        probeHealth: probeHealth,\n"
+          )
+          restart_old_fixed = (
+              "'''        return try await start(\n"
+              "            command: command,\n"
+              "            healthBaseURL: healthBaseURL,\n"
+              "            apiKey: apiKey,\n"
+              "            probeHealth: probeHealth,\n"
+          )
+          restart_new = (
+              "'''        return try await start(\n"
+              "        command: command,\n"
+              "        healthBaseURL: healthBaseURL,\n"
+              "        apiKey: apiKey,\n"
+              "        backendKind: backendKind,\n"
+              "        probeHealth: probeHealth,\n"
+          )
+          restart_new_fixed = (
+              "'''        return try await start(\n"
+              "            command: command,\n"
+              "            healthBaseURL: healthBaseURL,\n"
+              "            apiKey: apiKey,\n"
+              "            backendKind: backendKind,\n"
+              "            probeHealth: probeHealth,\n"
+          )
+          if script.count(restart_old) != 1 or script.count(restart_new) != 1:
+              raise SystemExit("restart forwarding patch shape changed")
+          script = script.replace(restart_old, restart_old_fixed, 1)
+          script = script.replace(restart_new, restart_new_fixed, 1)
 
           Path("/tmp/pr254-corrected-wrapper.sh").write_text(
               script + "\n", encoding="utf-8"
