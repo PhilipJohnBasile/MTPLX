@@ -90,67 +90,100 @@ jobs:
               raise SystemExit("hf_loader continuation anchor changed")
           rebase = rebase.replace(old_continue, new_continue, 1)
 
-          wait_start_marker = (
-              '    if (\n'
-              '        "private func waitForHealth(" in ours\n'
-          )
-          wait_end_marker = '        kinds.add("wait_for_health")\n'
-          wait_start = rebase.find(wait_start_marker)
-          if wait_start < 0:
-              raise SystemExit("waitForHealth resolver start anchor changed")
-          wait_end = rebase.find(wait_end_marker, wait_start)
-          if wait_end < 0:
-              raise SystemExit("waitForHealth resolver end anchor changed")
-          wait_end += len(wait_end_marker)
-          replacement_wait = (
-              '    if (\n'
-              '        ours.strip() == ") async throws -> HealthPayload {"\n'
-              '        and ") async throws -> HealthPayload?" in theirs\n'
-              '        and "waitForExternalMlxServeHealth" in theirs\n'
-              '        and "let client = MTPLXAPIClient" in theirs\n'
-              '    ):\n'
-              '        text = theirs\n'
-              '        kinds.add("wait_for_health")\n'
-          )
-          rebase = rebase[:wait_start] + replacement_wait + rebase[wait_end:]
+          def replace_resolver(start_marker: str, end_marker: str, replacement: str, label: str) -> None:
+              global rebase
+              start = rebase.find(start_marker)
+              if start < 0:
+                  raise SystemExit(f"{label} resolver start anchor changed")
+              end = rebase.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f"{label} resolver end anchor changed")
+              end += len(end_marker)
+              rebase = rebase[:start] + replacement + rebase[end:]
 
-          refresh_start_marker = (
-              '    if "public func refreshStaticState(" in ours '
-              'and "supportsMTPLXLiveControls" in theirs:\n'
+          replace_resolver(
+              '    if (\n        "private func waitForHealth(" in ours\n',
+              '        kinds.add("wait_for_health")\n',
+              (
+                  '    if (\n'
+                  '        ours.strip() == ") async throws -> HealthPayload {"\n'
+                  '        and ") async throws -> HealthPayload?" in theirs\n'
+                  '        and "waitForExternalMlxServeHealth" in theirs\n'
+                  '        and "let client = MTPLXAPIClient" in theirs\n'
+                  '    ):\n'
+                  '        text = theirs\n'
+                  '        kinds.add("wait_for_health")\n'
+              ),
+              "waitForHealth",
           )
-          refresh_end_marker = '        kinds.add("refresh_static")\n'
-          refresh_start = rebase.find(refresh_start_marker)
-          if refresh_start < 0:
-              raise SystemExit("refreshStaticState resolver start anchor changed")
-          refresh_end = rebase.find(refresh_end_marker, refresh_start)
-          if refresh_end < 0:
-              raise SystemExit("refreshStaticState resolver end anchor changed")
-          refresh_end += len(refresh_end_marker)
-          replacement_refresh = (
-              '    if (\n'
-              '        "public func refreshStaticState(" in ours\n'
-              '        and "public func refreshStaticState()" in theirs\n'
-              '        and "guard supportsMTPLXLiveControls else { return }" in theirs\n'
-              '        and "let client = apiClient" not in ours\n'
-              '    ):\n'
-              '        text = ours\n'
-              '        if not text.endswith("\\n"):\n'
-              '            text += "\\n"\n'
-              '        text += (\n'
-              '            "        guard supportsMTPLXLiveControls else {\\n"\n'
-              '            "            health = nil\\n"\n'
-              '            "            capabilities = nil\\n"\n'
-              '            "            sessions = nil\\n"\n'
-              '            "            prefillHistory = nil\\n"\n'
-              '            "            models = nil\\n"\n'
-              '            "            return\\n"\n'
-              '            "        }\\n"\n'
-              '        )\n'
-              '        kinds.add("refresh_static")\n'
+
+          replace_resolver(
+              (
+                  '    if "public func refreshStaticState(" in ours '
+                  'and "supportsMTPLXLiveControls" in theirs:\n'
+              ),
+              '        kinds.add("refresh_static")\n',
+              (
+                  '    if (\n'
+                  '        "public func refreshStaticState(" in ours\n'
+                  '        and "public func refreshStaticState()" in theirs\n'
+                  '        and "guard supportsMTPLXLiveControls else { return }" in theirs\n'
+                  '        and "let client = apiClient" not in ours\n'
+                  '    ):\n'
+                  '        text = ours\n'
+                  '        if not text.endswith("\\n"):\n'
+                  '            text += "\\n"\n'
+                  '        text += (\n'
+                  '            "        guard supportsMTPLXLiveControls else {\\n"\n'
+                  '            "            health = nil\\n"\n'
+                  '            "            capabilities = nil\\n"\n'
+                  '            "            sessions = nil\\n"\n'
+                  '            "            prefillHistory = nil\\n"\n'
+                  '            "            models = nil\\n"\n'
+                  '            "            return\\n"\n'
+                  '            "        }\\n"\n'
+                  '        )\n'
+                  '        kinds.add("refresh_static")\n'
+              ),
+              "refreshStaticState",
           )
-          rebase = rebase[:refresh_start] + replacement_refresh + rebase[refresh_end:]
+
+          replace_resolver(
+              (
+                  '    if (\n'
+                  '        "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours\n'
+              ),
+              '        kinds.add("flush_fresh")\n',
+              (
+                  '    if (\n'
+                  '        "private func flushFreshLaunchLiveOnlySettingsIfNeeded(" in ours\n'
+                  '        and "private func flushFreshLaunchLiveOnlySettingsIfNeeded()" in theirs\n'
+                  '        and "guard supportsMTPLXLiveControls else {" in theirs\n'
+                  '        and "guard let pending = pendingLiveSettings" not in ours\n'
+                  '    ):\n'
+                  '        text = ours\n'
+                  '        if not text.endswith("\\n"):\n'
+                  '            text += "\\n"\n'
+                  '        text += (\n'
+                  '            "        guard supportsMTPLXLiveControls else {\\n"\n'
+                  '            "            pendingLiveSettings = nil\\n"\n'
+                  '            "            pendingLiveSettingsModel = nil\\n"\n'
+                  '            "            settings = nil\\n"\n'
+                  '            "            return\\n"\n'
+                  '            "        }\\n"\n'
+                  '        )\n'
+                  '        kinds.add("flush_fresh")\n'
+              ),
+              "flushFreshLaunchLiveOnlySettingsIfNeeded",
+          )
+
+          extra_patch = Path(".github/temporary-pr254-extra.py")
+          if extra_patch.exists():
+              namespace = {"rebase": rebase}
+              exec(compile(extra_patch.read_text(encoding="utf-8"), str(extra_patch), "exec"), namespace)
+              rebase = namespace["rebase"]
+
           blocks[0] = rebase
-
           Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
           Path("/tmp/pr254-squash.sh").write_text(blocks[1] + "\n", encoding="utf-8")
           Path("/tmp/pr254-validate.sh").write_text(blocks[2] + "\n", encoding="utf-8")
@@ -169,11 +202,12 @@ jobs:
             .github/workflows/temporary-execute-rebase-254-macos14.yml \
             .github/workflows/temporary-execute-rebase-254-quote-fix.yml \
             .github/pr254-wrapper-template.yml \
-            .github/temporary-rebase-254-trigger.txt
+            .github/temporary-rebase-254-trigger.txt \
+            .github/temporary-pr254-extra.py
           bash /tmp/pr254-squash.sh
           test "$(git rev-list --count upstream/main..HEAD)" = "1"
           test "$(git rev-parse HEAD^)" = "$(git rev-parse upstream/main)"
-          test -z "$(git diff --name-only upstream/main...HEAD -- '.github/workflows/temporary-*' '.github/pr254-wrapper-template.yml' '.github/temporary-rebase-254-trigger.txt')"
+          test -z "$(git diff --name-only upstream/main...HEAD -- '.github/workflows/temporary-*' '.github/pr254-wrapper-template.yml' '.github/temporary-*')"
           git show -s --format=%B HEAD | grep -F "Signed-off-by: Philip John Basile <PBasile@Basilecom.com>"
           git diff --check upstream/main...HEAD
           bash /tmp/pr254-validate.sh
