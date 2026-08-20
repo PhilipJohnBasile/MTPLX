@@ -2641,6 +2641,11 @@ def build_parser() -> argparse.ArgumentParser:
             "updates every pack that has a newer published revision."
         ),
     )
+    models_p.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="With --update: emit pull-style JSON progress events (one per line)",
+    )
     models_p.set_defaults(func=cmd_list_public)
 
     env_p = sub.add_parser("env", help="Print reproducible environment snapshot")

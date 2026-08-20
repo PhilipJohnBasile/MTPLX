@@ -1225,7 +1225,12 @@ public final class MTPLXBackendStore: ObservableObject {
             Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
         }
         modelPackUpdateTask = Task { @MainActor [weak self] in
-            let stream = downloader.stream(repo: update.repoID, totalBytes: nil)
+            let stream = downloader.stream(
+                repo: update.repoID,
+                totalBytes: nil,
+                update: true,
+                sizeProbePath: update.path
+            )
             var completed = false
             for await event in stream {
                 guard let self, self.modelPackUpdatingRepoID == update.repoID else { return }

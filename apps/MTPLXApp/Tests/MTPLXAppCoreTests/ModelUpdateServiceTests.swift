@@ -91,4 +91,18 @@ final class ModelUpdateServiceTests: XCTestCase {
         XCTAssertEqual(store.modelUpdates, [])
         XCTAssertNil(store.modelPackUpdatingRepoID)
     }
+
+    func testUpdateStreamInvokesModelsUpdateNotPull() {
+        // The 2.9.0 Update button shelled plain `pull`, which reuses
+        // fresh-looking legacy caches and silently no-ops on exactly the
+        // packs an update targets. Updates must go through models --update.
+        XCTAssertEqual(
+            ModelDownloader.streamArguments(repo: "owner/pack", update: true),
+            ["models", "--update", "owner/pack", "--progress-json"]
+        )
+        XCTAssertEqual(
+            ModelDownloader.streamArguments(repo: "owner/pack", update: false),
+            ["pull", "owner/pack", "--progress-json"]
+        )
+    }
 }

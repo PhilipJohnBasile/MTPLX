@@ -355,9 +355,13 @@ def update_cached_model(
             target_revision = revision
 
     destination = cached_model_path(repo_id, cache_dir=cache_dir)
-    if not destination.exists():
+    canonical_populated = destination.exists() and any(destination.iterdir())
+    if not canonical_populated:
         # Fall back to the bare pack-name directory (forge-built or legacy
         # layouts) so an update never creates a duplicate copy of a pack.
+        # An EMPTY canonical dir counts as absent: callers sometimes
+        # pre-create it, and letting it win would turn a delta into a full
+        # re-download while the populated legacy dir stays stale.
         bare = model_cache_dir(cache_dir) / safe_model_name(repo_id).split("--")[-1]
         if bare.exists():
             destination = bare

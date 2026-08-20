@@ -74,19 +74,36 @@ public struct ModelDownloader: Sendable {
     /// fires a `.cancelled` event. Partial bytes survive on disk so
     /// a subsequent run resumes via `huggingface_hub`'s native Range
     /// support.
+    /// Build the CLI invocation for a stream. Updates go through
+    /// `models --update`, which pins to the published revision and handles
+    /// legacy cache layouts; a plain `pull` reuses "fresh-looking" caches
+    /// and silently no-ops on exactly the packs an update targets.
+    static func streamArguments(repo: String, update: Bool) -> [String] {
+        update
+            ? ["models", "--update", repo, "--progress-json"]
+            : ["pull", repo, "--progress-json"]
+    }
+
     public func stream(
         repo: String,
         totalBytes: Int64?,
-        extraEnvironment: [String: String] = [:]
+        extraEnvironment: [String: String] = [:],
+        update: Bool = false,
+        sizeProbePath: String? = nil
     ) -> AsyncStream<DownloadEvent> {
         AsyncStream { continuation in
-            let destination = self.cachedModelPath(for: repo)
-            // Make the destination dir up-front so the first poll
-            // returns 0 rather than spuriously matching "exists".
-            try? FileManager.default.createDirectory(
-                at: destination,
-                withIntermediateDirectories: true
-            )
+            let destination = sizeProbePath.map { URL(fileURLWithPath: $0) }
+                ?? self.cachedModelPath(for: repo)
+            // Make the destination dir up-front so the first poll returns 0
+            // rather than spuriously matching "exists". Never for updates:
+            // an empty canonical dir would shadow a populated legacy-layout
+            // pack and turn the delta into a full re-download.
+            if !update {
+                try? FileManager.default.createDirectory(
+                    at: destination,
+                    withIntermediateDirectories: true
+                )
+            }
             let executable: URL
             do {
                 executable = try self.resolveMtplxExecutable { message in
@@ -113,7 +130,7 @@ public struct ModelDownloader: Sendable {
 
             let process = Process()
             process.executableURL = executable
-            process.arguments = ["pull", repo, "--progress-json"]
+            process.arguments = Self.streamArguments(repo: repo, update: update)
             // Inherit a sensible PATH so Homebrew installs and wrappers can
             // find their helpers. Apply caller-owned download knobs first,
             // then pin Python's cache location so an override cannot send

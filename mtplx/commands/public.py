@@ -5682,6 +5682,11 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
     )
 
     json_mode = bool(getattr(args, "json", False))
+    progress_json = bool(getattr(args, "progress_json", False))
+
+    def emit_progress_json(event: dict[str, Any]) -> None:
+        print(json.dumps(event, sort_keys=True), flush=True)
+
     manifest = fetch_models_manifest()
     if targets:
         repos = list(dict.fromkeys(targets))
@@ -5689,7 +5694,9 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
         rows = check_model_updates(cache_dir=args.cache_dir, manifest=manifest)
         repos = [row.repo_id for row in rows if row.state == STATE_UPDATE_AVAILABLE]
         if not repos:
-            if json_mode:
+            if progress_json:
+                emit_progress_json({"event": "result", "updated": []})
+            elif json_mode:
                 _print({"updated": [], "message": "all tracked packs are current"})
             else:
                 print("all tracked packs are current")
@@ -5699,7 +5706,13 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
     for repo in repos:
         callback = None
         finalize: Callable[[], None] = lambda: None  # noqa: E731
-        if not json_mode:
+        if progress_json:
+            # The app's update stream parses the same event schema as
+            # `pull --progress-json`; update_cached_model forwards these
+            # straight from pull_model, so the shapes match by construction.
+            callback = emit_progress_json
+            emit_progress_json({"event": "resolving", "repo_id": repo})
+        elif not json_mode:
             print(f"updating {repo}")
             callback, finalize = _rich_download_progress_callback(repo_id=repo)
         try:
@@ -5714,25 +5727,36 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
             finalize()
             failed = True
             results.append({"repo_id": repo, "error": str(exc)})
-            if not json_mode:
+            if progress_json:
+                emit_progress_json(
+                    {
+                        "event": "failed",
+                        "error": "update_failed",
+                        "model": repo,
+                        "message": str(exc),
+                        "detail": str(exc),
+                    }
+                )
+            elif not json_mode:
                 print(f"error: update failed for {repo}: {exc}")
             continue
         finalize()
-        results.append(
-            {
-                "repo_id": result.get("repo_id", repo),
-                "path": result.get("path"),
-                "resolved_sha": result.get("resolved_sha"),
-                "delta_bytes": max(
-                    0,
-                    int(result.get("size_bytes") or 0)
-                    - int(result.get("started_size_bytes") or 0),
-                ),
-            }
-        )
-        if not json_mode:
+        row = {
+            "repo_id": result.get("repo_id", repo),
+            "path": result.get("path"),
+            "resolved_sha": result.get("resolved_sha"),
+            "delta_bytes": max(
+                0,
+                int(result.get("size_bytes") or 0)
+                - int(result.get("started_size_bytes") or 0),
+            ),
+        }
+        results.append(row)
+        if progress_json:
+            emit_progress_json({"event": "result", **row})
+        elif not json_mode:
             print(f"updated {repo} -> {str(result.get('resolved_sha') or 'unknown')[:10]}")
-    if json_mode:
+    if json_mode and not progress_json:
         _print({"updated": results})
     return 1 if failed else 0
 

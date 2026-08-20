@@ -401,6 +401,68 @@ def test_update_cached_model_targets_bare_layout_dir(tmp_path, monkeypatch):
     assert captured["force_sync"] is True
 
 
+def test_update_cached_model_prefers_populated_bare_over_empty_canonical(
+    tmp_path, monkeypatch
+):
+    # The app (and any caller) may pre-create the canonical owner--name dir.
+    # An empty canonical dir must not shadow the populated legacy dir the
+    # update was aimed at, or the delta becomes a full re-download.
+    (tmp_path / "owner--pack").mkdir()
+    bare = _write_pack(tmp_path, "pack", None)
+    (bare / "mtp.safetensors").write_bytes(b"x" * 100)
+
+    manifest = {"schema": 1, "models": {"owner/pack": {"revision": "sha-new"}}}
+    captured: dict = {}
+
+    def fake_pull(repo_id, **kwargs):
+        captured.update(kwargs)
+        return {"repo_id": repo_id, "path": str(bare)}
+
+    monkeypatch.setattr(model_updates, "pull_model", fake_pull)
+
+    update_cached_model("owner/pack", cache_dir=tmp_path, manifest=manifest)
+
+    assert captured["destination"] == bare
+
+
+def test_cmd_models_update_progress_json_emits_pull_schema(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from mtplx.commands import public
+
+    monkeypatch.setattr(
+        public, "fetch_models_manifest", lambda: {"schema": 1, "models": {}},
+        raising=False,
+    )
+    import mtplx.model_updates as mu
+
+    monkeypatch.setattr(
+        mu, "fetch_models_manifest", lambda: {"schema": 1, "models": {}}
+    )
+    monkeypatch.setattr(
+        mu,
+        "update_cached_model",
+        lambda repo, **kwargs: {
+            "repo_id": repo,
+            "path": "/tmp/pack",
+            "resolved_sha": "sha-new",
+            "size_bytes": 100,
+            "started_size_bytes": 40,
+        },
+    )
+
+    args = SimpleNamespace(cache_dir=None, json=False, progress_json=True)
+    rc = public._cmd_models_update(args, ["owner/pack"])
+    assert rc == 0
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "resolving"
+    assert kinds[-1] == "result"
+    assert events[-1]["resolved_sha"] == "sha-new"
+    assert events[-1]["delta_bytes"] == 60
+
+
 def test_update_cached_model_fresh_pull_lets_pull_model_resolve(tmp_path, monkeypatch):
     # Nothing cached at all: pull_model owns destination resolution.
     manifest = {"schema": 1, "models": {"owner/pack": {"revision": "sha-new"}}}
