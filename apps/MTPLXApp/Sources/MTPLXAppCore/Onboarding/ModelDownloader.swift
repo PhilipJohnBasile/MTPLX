@@ -78,10 +78,17 @@ public struct ModelDownloader: Sendable {
     /// `models --update`, which pins to the published revision and handles
     /// legacy cache layouts; a plain `pull` reuses "fresh-looking" caches
     /// and silently no-ops on exactly the packs an update targets.
-    static func streamArguments(repo: String, update: Bool) -> [String] {
-        update
-            ? ["models", "--update", repo, "--progress-json"]
-            : ["pull", repo, "--progress-json"]
+    static func streamArguments(
+        repo: String,
+        update: Bool,
+        destinationPath: String? = nil
+    ) -> [String] {
+        guard update else { return ["pull", repo, "--progress-json"] }
+        var arguments = ["models", "--update", repo, "--progress-json"]
+        if let destinationPath, !destinationPath.isEmpty {
+            arguments += ["--installed-path", destinationPath]
+        }
+        return arguments
     }
 
     public func stream(
@@ -130,7 +137,11 @@ public struct ModelDownloader: Sendable {
 
             let process = Process()
             process.executableURL = executable
-            process.arguments = Self.streamArguments(repo: repo, update: update)
+            process.arguments = Self.streamArguments(
+                repo: repo,
+                update: update,
+                destinationPath: sizeProbePath
+            )
             // Inherit a sensible PATH so Homebrew installs and wrappers can
             // find their helpers. Apply caller-owned download knobs first,
             // then pin Python's cache location so an override cannot send
@@ -151,7 +162,9 @@ public struct ModelDownloader: Sendable {
             // pumping it back to the UI live (the user doesn't need
             // raw Python progress on a Swift bar).
             let stderrBuffer = StderrTailBuffer(capacity: 2048)
-            let progressState = DownloadProgressJSONState()
+            let progressState = DownloadProgressJSONState(
+                displayBaseBytes: Self.recursiveSize(of: destination)
+            )
             let stdoutLines = LineBuffer()
             errPipe.fileHandleForReading.readabilityHandler = { handle in
                 let chunk = handle.availableData
@@ -299,9 +312,12 @@ public struct ModelDownloader: Sendable {
         state.markStructured()
         let event = rawEvent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let path = (payload["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? destination.path
-        let bytes = int64(payload["size_bytes"])
-            ?? int64(payload["bytes_on_disk"])
-            ?? int64(payload["bytes"])
+        let bytes = state.displayBytes(
+            downloadedBytes: int64(payload["downloaded_bytes"]),
+            fallback: int64(payload["size_bytes"])
+                ?? int64(payload["bytes_on_disk"])
+                ?? int64(payload["bytes"])
+        )
         let total = int64(payload["total_bytes"]) ?? fallbackTotalBytes
 
         switch event {
@@ -520,11 +536,20 @@ private final class ProgressSmoother: @unchecked Sendable {
 }
 
 private final class DownloadProgressJSONState: @unchecked Sendable {
+    private let displayBaseBytes: Int64
     private let lock = NSLock()
     private var structured = false
     private var terminal = false
     private var observedBytes: Int64?
     private var observedTotal: Int64?
+
+    init(displayBaseBytes: Int64) {
+        self.displayBaseBytes = displayBaseBytes
+    }
+
+    func displayBytes(downloadedBytes: Int64?, fallback: Int64?) -> Int64? {
+        downloadedBytes.map { displayBaseBytes + max(0, $0) } ?? fallback
+    }
 
     var sawStructuredEvents: Bool {
         lock.lock()

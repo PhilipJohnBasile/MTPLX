@@ -328,6 +328,7 @@ def update_cached_model(
     model_ref: str,
     *,
     cache_dir: str | Path | None = None,
+    destination_path: str | Path | None = None,
     manifest: dict[str, Any] | None | str = "auto",
     progress_callback: Any = None,
     progress_interval_s: float = 10.0,
@@ -354,17 +355,30 @@ def update_cached_model(
         if isinstance(revision, str) and revision:
             target_revision = revision
 
-    destination = cached_model_path(repo_id, cache_dir=cache_dir)
-    canonical_populated = destination.exists() and any(destination.iterdir())
-    if not canonical_populated:
-        # Fall back to the bare pack-name directory (forge-built or legacy
-        # layouts) so an update never creates a duplicate copy of a pack.
-        # An EMPTY canonical dir counts as absent: callers sometimes
-        # pre-create it, and letting it win would turn a delta into a full
-        # re-download while the populated legacy dir stays stale.
-        bare = model_cache_dir(cache_dir) / safe_model_name(repo_id).split("--")[-1]
-        if bare.exists():
-            destination = bare
+    cache_root = model_cache_dir(cache_dir).expanduser().resolve()
+    if destination_path is not None:
+        destination = Path(destination_path).expanduser().absolute()
+        if destination.parent.resolve() != cache_root:
+            raise ValueError(f"update path must be a direct child of {cache_root}")
+        if not destination.is_dir():
+            raise FileNotFoundError(f"installed model path does not exist: {destination}")
+        installed_repo = _cached_pack_repo_id(destination)
+        if not installed_repo or installed_repo.casefold() != repo_id.casefold():
+            raise ValueError(
+                f"installed model path {destination} does not match {repo_id}"
+            )
+    else:
+        destination = cached_model_path(repo_id, cache_dir=cache_dir)
+        canonical_populated = destination.exists() and any(destination.iterdir())
+        if not canonical_populated:
+            # Fall back to the bare pack-name directory (forge-built or legacy
+            # layouts) so an update never creates a duplicate copy of a pack.
+            # An EMPTY canonical dir counts as absent: callers sometimes
+            # pre-create it, and letting it win would turn a delta into a full
+            # re-download while the populated legacy dir stays stale.
+            bare = cache_root / safe_model_name(repo_id).split("--")[-1]
+            if bare.exists():
+                destination = bare
     marker = read_source_marker(destination) if destination.exists() else None
     if destination.exists() and isinstance((marker or {}).get("files"), dict):
         remote_sha, remote_files = _query_repo_snapshot(repo_id, revision=target_revision)

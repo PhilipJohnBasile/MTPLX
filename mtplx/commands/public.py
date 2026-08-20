@@ -5683,9 +5683,19 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
 
     json_mode = bool(getattr(args, "json", False))
     progress_json = bool(getattr(args, "progress_json", False))
+    installed_path = getattr(args, "installed_path", None)
+    downloaded_by_repo: dict[str, int] = {}
 
     def emit_progress_json(event: dict[str, Any]) -> None:
-        print(json.dumps(event, sort_keys=True), flush=True)
+        payload = dict(event)
+        event_repo = payload.get("repo_id")
+        if isinstance(event_repo, str):
+            downloaded = downloaded_by_repo.get(event_repo, 0)
+            if payload.get("event") == "progress":
+                downloaded += max(0, int(payload.get("delta_bytes") or 0))
+                downloaded_by_repo[event_repo] = downloaded
+            payload["downloaded_bytes"] = downloaded
+        print(json.dumps(payload, sort_keys=True), flush=True)
 
     manifest = fetch_models_manifest()
     if targets:
@@ -5701,6 +5711,13 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
             else:
                 print("all tracked packs are current")
             return 0
+    if installed_path and len(repos) != 1:
+        message = "--installed-path requires exactly one --update REPO"
+        if progress_json:
+            emit_progress_json({"event": "failed", "error": "invalid_request", "message": message})
+        else:
+            print(f"error: {message}", file=sys.stderr)
+        return 2
     results: list[dict[str, Any]] = []
     failed = False
     for repo in repos:
@@ -5719,6 +5736,7 @@ def _cmd_models_update(args: Any, targets: list[str]) -> int:
             result = update_cached_model(
                 repo,
                 cache_dir=args.cache_dir,
+                destination_path=installed_path,
                 manifest=manifest,
                 progress_callback=callback,
                 progress_interval_s=0.4 if callback else 10.0,

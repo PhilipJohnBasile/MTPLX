@@ -104,5 +104,16 @@ final class ModelUpdateServiceTests: XCTestCase {
             ModelDownloader.streamArguments(repo: "owner/pack", update: false),
             ["pull", "owner/pack", "--progress-json"]
         )
+        XCTAssertEqual(
+            ModelDownloader.streamArguments(
+                repo: "owner/pack",
+                update: true,
+                destinationPath: "/models/legacy-pack"
+            ),
+            [
+                "models", "--update", "owner/pack", "--progress-json",
+                "--installed-path", "/models/legacy-pack",
+            ]
+        )
     }
 }

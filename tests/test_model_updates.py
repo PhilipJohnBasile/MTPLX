@@ -425,6 +425,38 @@ def test_update_cached_model_prefers_populated_bare_over_empty_canonical(
     assert captured["destination"] == bare
 
 
+def test_update_cached_model_targets_exact_stale_path_when_duplicate_is_current(
+    tmp_path, monkeypatch
+):
+    canonical = _write_pack(tmp_path, "owner--pack", {"repo_id": "owner/pack"})
+    (canonical / "mtp.safetensors").write_bytes(b"current")
+    bare = _write_pack(tmp_path, "pack", None)
+    (bare / "mtp.safetensors").write_bytes(b"stale")
+
+    manifest = {"schema": 1, "models": {"owner/pack": {"revision": "sha-new"}}}
+    captured: dict = {}
+
+    def fake_pull(repo_id, **kwargs):
+        captured.update(kwargs)
+        return {"repo_id": repo_id, "path": str(bare)}
+
+    monkeypatch.setattr(model_updates, "pull_model", fake_pull)
+    monkeypatch.setattr(
+        model_updates,
+        "_cached_pack_repo_id",
+        lambda path: "owner/pack" if path == bare else None,
+    )
+
+    update_cached_model(
+        "owner/pack",
+        cache_dir=tmp_path,
+        destination_path=bare,
+        manifest=manifest,
+    )
+
+    assert captured["destination"] == bare
+
+
 def test_cmd_models_update_progress_json_emits_pull_schema(monkeypatch, capsys):
     from types import SimpleNamespace
 
@@ -439,21 +471,37 @@ def test_cmd_models_update_progress_json_emits_pull_schema(monkeypatch, capsys):
     monkeypatch.setattr(
         mu, "fetch_models_manifest", lambda: {"schema": 1, "models": {}}
     )
-    monkeypatch.setattr(
-        mu,
-        "update_cached_model",
-        lambda repo, **kwargs: {
+    captured: dict = {}
+
+    def fake_update(repo, **kwargs):
+        captured.update(kwargs)
+        kwargs["progress_callback"](
+            {
+                "event": "progress",
+                "repo_id": repo,
+                "delta_bytes": 25,
+                "size_bytes": 65,
+            }
+        )
+        return {
             "repo_id": repo,
             "path": "/tmp/pack",
             "resolved_sha": "sha-new",
             "size_bytes": 100,
             "started_size_bytes": 40,
-        },
-    )
+        }
 
-    args = SimpleNamespace(cache_dir=None, json=False, progress_json=True)
+    monkeypatch.setattr(mu, "update_cached_model", fake_update)
+
+    args = SimpleNamespace(
+        cache_dir=None,
+        json=False,
+        progress_json=True,
+        installed_path="/tmp/pack",
+    )
     rc = public._cmd_models_update(args, ["owner/pack"])
     assert rc == 0
+    assert captured["destination_path"] == "/tmp/pack"
 
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     kinds = [e["event"] for e in events]
@@ -461,6 +509,7 @@ def test_cmd_models_update_progress_json_emits_pull_schema(monkeypatch, capsys):
     assert kinds[-1] == "result"
     assert events[-1]["resolved_sha"] == "sha-new"
     assert events[-1]["delta_bytes"] == 60
+    assert events[-1]["downloaded_bytes"] == 25
 
 
 def test_update_cached_model_fresh_pull_lets_pull_model_resolve(tmp_path, monkeypatch):

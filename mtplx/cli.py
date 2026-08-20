@@ -2646,6 +2646,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --update: emit pull-style JSON progress events (one per line)",
     )
+    models_p.add_argument(
+        "--installed-path",
+        help="With one --update REPO: update this exact installed pack directory",
+    )
     models_p.set_defaults(func=cmd_list_public)
 
     env_p = sub.add_parser("env", help="Print reproducible environment snapshot")
