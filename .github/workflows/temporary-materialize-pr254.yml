@@ -15,7 +15,7 @@ concurrency:
 jobs:
   materialize:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -24,7 +24,7 @@ jobs:
           ref: codex/deepseek-v4-mlxserve-v26
           fetch-depth: 0
 
-      - name: Rebuild one clean feature commit on current upstream main
+      - name: Rebuild and validate one clean feature commit on current upstream main
         shell: bash
         run: |
           set -euo pipefail
@@ -59,12 +59,12 @@ jobs:
                   blocks.append("\n".join(block))
                   continue
               index += 1
-          if len(blocks) < 2:
-              raise SystemExit(f"expected at least two guarded run blocks, found {len(blocks)}")
+          if len(blocks) < 3:
+              raise SystemExit(f"expected at least three guarded run blocks, found {len(blocks)}")
 
           # Current Git rebases the Python and both Swift overlaps in one stop.
           # The extracted shell block has its YAML indentation removed, so the
-          # inner `if` body begins with two spaces here.
+          # inner shell `if` body begins with two spaces here.
           rebase = blocks[0]
           old_expected = '  test "$conflicts" = "mtplx/hf_loader.py"'
           new_expected = (
@@ -92,10 +92,38 @@ jobs:
           if rebase.count(old_continue) != 1:
               raise SystemExit("hf_loader continuation anchor changed")
           rebase = rebase.replace(old_continue, new_continue, 1)
+
+          # Current main and the feature now conflict only at the waitForHealth
+          # return/body seam. Preserve the feature's explicit external-health
+          # branch and current main's normal MTPLX client path from that hunk.
+          wait_start_marker = (
+              '    if (\n'
+              '        "private func waitForHealth(" in ours\n'
+          )
+          wait_end_marker = '        kinds.add("wait_for_health")\n'
+          wait_start = rebase.find(wait_start_marker)
+          if wait_start < 0:
+              raise SystemExit("waitForHealth resolver start anchor changed")
+          wait_end = rebase.find(wait_end_marker, wait_start)
+          if wait_end < 0:
+              raise SystemExit("waitForHealth resolver end anchor changed")
+          wait_end += len(wait_end_marker)
+          replacement_wait = (
+              '    if (\n'
+              '        ours.strip() == ") async throws -> HealthPayload {"\n'
+              '        and ") async throws -> HealthPayload?" in theirs\n'
+              '        and "waitForExternalMlxServeHealth" in theirs\n'
+              '        and "let client = MTPLXAPIClient" in theirs\n'
+              '    ):\n'
+              '        text = theirs\n'
+              '        kinds.add("wait_for_health")\n'
+          )
+          rebase = rebase[:wait_start] + replacement_wait + rebase[wait_end:]
           blocks[0] = rebase
 
           Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
           Path("/tmp/pr254-squash.sh").write_text(blocks[1] + "\n", encoding="utf-8")
+          Path("/tmp/pr254-validate.sh").write_text(blocks[2] + "\n", encoding="utf-8")
           PY
 
           cat > /tmp/pr254-run.sh <<'SH'
@@ -103,6 +131,7 @@ jobs:
           git reset --hard d079df37916f646f0a5b34343f317a03aa3a2e07
           bash -n /tmp/pr254-rebase.sh
           bash -n /tmp/pr254-squash.sh
+          bash -n /tmp/pr254-validate.sh
           bash /tmp/pr254-rebase.sh
           rm -f \
             .github/workflows/temporary-materialize-pr254.yml \
@@ -117,6 +146,7 @@ jobs:
           test -z "$(git diff --name-only upstream/main...HEAD -- '.github/workflows/temporary-*' '.github/pr254-wrapper-template.yml' '.github/temporary-rebase-254-trigger.txt')"
           git show -s --format=%B HEAD | grep -F "Signed-off-by: Philip John Basile <PBasile@Basilecom.com>"
           git diff --check upstream/main...HEAD
+          bash /tmp/pr254-validate.sh
           SH
 
           set +e
@@ -146,7 +176,8 @@ jobs:
             echo "## PR 254 current-main candidate"
             echo ""
             echo "- upstream main: \`$(git rev-parse upstream/main)\`"
-            echo "- candidate: \`$candidate\`"
+            echo "- validated candidate: \`$candidate\`"
             echo "- commits ahead: 1"
             echo "- temporary repair files: absent"
+            echo "- focused Python, package, hygiene, full Swift test, and release build: passed"
           } >> "$GITHUB_STEP_SUMMARY"
