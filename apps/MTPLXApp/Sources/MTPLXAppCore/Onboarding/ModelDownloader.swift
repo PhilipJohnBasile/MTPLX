@@ -418,6 +418,54 @@ public struct ModelDownloader: Sendable {
 
     // MARK: - Executable resolution
 
+    /// Runs `mtplx models --check --json` and decodes the per-pack update
+    /// states. The model-pack counterpart of the Sparkle appcast fetch:
+    /// network access and freshness logic live entirely in the CLI, this
+    /// just shells and decodes. Safe to run while a daemon is serving.
+    public func checkModelUpdates(
+        timeoutSeconds: TimeInterval = 120
+    ) async throws -> [ModelUpdateInfo] {
+        let executable = try resolveMtplxExecutable { _ in }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["models", "--check", "--json"]
+        var env = processEnvironment
+        env["PATH"] = MTPLXCommandBuilder.expandedPATH(environment: processEnvironment)
+        process.environment = MTPLXCommandBuilder.pythonBytecodeSafeEnvironment(
+            environment: env
+        )
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        try process.run()
+        let watchdog = Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+        defer { watchdog.cancel() }
+        let stdout = try await Task.detached(priority: .utility) { () -> Data in
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return data
+        }.value
+        guard process.terminationStatus == 0 else {
+            let stderr = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let tail = String(decoding: stderr.suffix(512), as: UTF8.self)
+            throw NSError(
+                domain: "ModelDownloader",
+                code: Int(process.terminationStatus),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "model update check exited \(process.terminationStatus): \(tail)"
+                ]
+            )
+        }
+        return try JSONDecoder().decode(ModelUpdateCheckPayload.self, from: stdout).models
+    }
+
     private func resolveMtplxExecutable(
         status: @escaping @Sendable (String) -> Void
     ) throws -> URL {
