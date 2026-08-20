@@ -63,29 +63,28 @@ jobs:
               raise SystemExit(f"expected at least two guarded run blocks, found {len(blocks)}")
 
           # Current Git rebases the Python and both Swift overlaps in one stop.
-          # The older guarded script expected hf_loader first and Swift second;
-          # stage hf_loader, then let its existing Swift resolver finish the
-          # same rebase stop before calling rebase --continue once.
+          # The extracted shell block has its YAML indentation removed, so the
+          # inner `if` body begins with two spaces here.
           rebase = blocks[0]
-          old_expected = '            test "$conflicts" = "mtplx/hf_loader.py"'
+          old_expected = '  test "$conflicts" = "mtplx/hf_loader.py"'
           new_expected = (
-              "            expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/"
+              "  expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/"
               "DaemonSupervisor.swift\\napps/MTPLXApp/Sources/MTPLXAppCore/Stores/"
               "MTPLXBackendStore.swift\\nmtplx/hf_loader.py'\n"
-              "            test \"$conflicts\" = \"$expected\""
+              "  test \"$conflicts\" = \"$expected\""
           )
           if rebase.count(old_expected) != 1:
               raise SystemExit("hf_loader conflict expectation anchor changed")
           rebase = rebase.replace(old_expected, new_expected, 1)
 
-          old_continue = '''            git add mtplx/hf_loader.py
-            set +e
-            GIT_EDITOR=true git rebase --continue
-            rc=$?
-            set -e'''
-          new_continue = '''            git add mtplx/hf_loader.py
-            # The two Swift paths remain unmerged in this same rebase stop.
-            rc=1'''
+          old_continue = '''  git add mtplx/hf_loader.py
+  set +e
+  GIT_EDITOR=true git rebase --continue
+  rc=$?
+  set -e'''
+          new_continue = '''  git add mtplx/hf_loader.py
+  # The two Swift paths remain unmerged in this same rebase stop.
+  rc=1'''
           if rebase.count(old_continue) != 1:
               raise SystemExit("hf_loader continuation anchor changed")
           rebase = rebase.replace(old_continue, new_continue, 1)
