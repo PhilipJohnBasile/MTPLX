@@ -77,14 +77,18 @@ jobs:
               raise SystemExit("hf_loader conflict expectation anchor changed")
           rebase = rebase.replace(old_expected, new_expected, 1)
 
-          old_continue = '''  git add mtplx/hf_loader.py
-  set +e
-  GIT_EDITOR=true git rebase --continue
-  rc=$?
-  set -e'''
-          new_continue = '''  git add mtplx/hf_loader.py
-  # The two Swift paths remain unmerged in this same rebase stop.
-  rc=1'''
+          old_continue = (
+              "  git add mtplx/hf_loader.py\n"
+              "  set +e\n"
+              "  GIT_EDITOR=true git rebase --continue\n"
+              "  rc=$?\n"
+              "  set -e"
+          )
+          new_continue = (
+              "  git add mtplx/hf_loader.py\n"
+              "  # The two Swift paths remain unmerged in this same rebase stop.\n"
+              "  rc=1"
+          )
           if rebase.count(old_continue) != 1:
               raise SystemExit("hf_loader continuation anchor changed")
           rebase = rebase.replace(old_continue, new_continue, 1)
