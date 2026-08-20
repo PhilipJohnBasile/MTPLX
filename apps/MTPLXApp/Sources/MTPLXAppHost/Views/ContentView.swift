@@ -21,6 +21,14 @@ private struct ContentViewBackendSnapshot: Equatable {
     let modelDownloadPresented: Bool
     let modelDownloadBusy: Bool
     let inferenceParams: InferenceParamsSnapshot
+    // Pack-update state must live in the projection: the shell renders from
+    // this snapshot only, so any field read off the store directly is frozen
+    // at the last unrelated re-render. On a quiet dashboard that meant the
+    // update banner never appeared and a clicked Update showed no progress.
+    let modelUpdates: [ModelUpdateInfo]
+    let modelPackUpdatingRepoID: String?
+    let modelPackUpdateStatus: String?
+    let modelPackUpdateNeedsRestart: ModelUpdateInfo?
 
     @MainActor
     init(backend: MTPLXBackendStore, configuredModelFamily: String) {
@@ -39,6 +47,10 @@ private struct ContentViewBackendSnapshot: Equatable {
             backend: backend,
             configuredModelFamily: configuredModelFamily
         )
+        modelUpdates = backend.modelUpdates
+        modelPackUpdatingRepoID = backend.modelPackUpdatingRepoID
+        modelPackUpdateStatus = backend.modelPackUpdateStatus
+        modelPackUpdateNeedsRestart = backend.modelPackUpdateNeedsRestart
     }
 }
 
@@ -284,10 +296,10 @@ struct ContentView: View {
                     configuration: snapshot.configuration,
                     daemonState: snapshot.daemonState,
                     presented: $router.modelPickerPresented,
-                    modelUpdates: backend.modelUpdates,
-                    modelPackUpdatingRepoID: backend.modelPackUpdatingRepoID,
-                    modelPackUpdateStatus: backend.modelPackUpdateStatus,
-                    modelPackUpdateNeedsRestart: backend.modelPackUpdateNeedsRestart
+                    modelUpdates: snapshot.modelUpdates,
+                    modelPackUpdatingRepoID: snapshot.modelPackUpdatingRepoID,
+                    modelPackUpdateStatus: snapshot.modelPackUpdateStatus,
+                    modelPackUpdateNeedsRestart: snapshot.modelPackUpdateNeedsRestart
                 )
                     .equatable()
             }

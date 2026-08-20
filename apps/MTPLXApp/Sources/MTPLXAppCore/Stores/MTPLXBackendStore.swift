@@ -1213,9 +1213,10 @@ public final class MTPLXBackendStore: ObservableObject {
         }
     }
 
-    /// One-click delta update: rides `mtplx pull --progress-json`, which
-    /// skips size-identical files — a re-published MTP head costs the head,
-    /// not the trunk. Serving is untouched until the user restarts.
+    /// One-click delta update: rides `mtplx models --update --progress-json`,
+    /// which pins to the published revision, handles legacy cache layouts,
+    /// and skips size-identical files — a re-published MTP head costs the
+    /// head, not the trunk. Serving is untouched until the user restarts.
     public func updateModelPack(_ update: ModelUpdateInfo) {
         guard modelPackUpdatingRepoID == nil else { return }
         modelPackUpdatingRepoID = update.repoID
