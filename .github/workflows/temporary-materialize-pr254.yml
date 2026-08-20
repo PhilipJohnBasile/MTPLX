@@ -62,9 +62,6 @@ jobs:
           if len(blocks) < 3:
               raise SystemExit(f"expected at least three guarded run blocks, found {len(blocks)}")
 
-          # Current Git rebases the Python and both Swift overlaps in one stop.
-          # The extracted shell block has its YAML indentation removed, so the
-          # inner shell `if` body begins with two spaces here.
           rebase = blocks[0]
           old_expected = '  test "$conflicts" = "mtplx/hf_loader.py"'
           new_expected = (
@@ -93,9 +90,6 @@ jobs:
               raise SystemExit("hf_loader continuation anchor changed")
           rebase = rebase.replace(old_continue, new_continue, 1)
 
-          # Current main and the feature now conflict only at the waitForHealth
-          # return/body seam. Preserve the feature's explicit external-health
-          # branch and current main's normal MTPLX client path from that hunk.
           wait_start_marker = (
               '    if (\n'
               '        "private func waitForHealth(" in ours\n'
@@ -119,6 +113,42 @@ jobs:
               '        kinds.add("wait_for_health")\n'
           )
           rebase = rebase[:wait_start] + replacement_wait + rebase[wait_end:]
+
+          refresh_start_marker = (
+              '    if "public func refreshStaticState(" in ours '
+              'and "supportsMTPLXLiveControls" in theirs:\n'
+          )
+          refresh_end_marker = '        kinds.add("refresh_static")\n'
+          refresh_start = rebase.find(refresh_start_marker)
+          if refresh_start < 0:
+              raise SystemExit("refreshStaticState resolver start anchor changed")
+          refresh_end = rebase.find(refresh_end_marker, refresh_start)
+          if refresh_end < 0:
+              raise SystemExit("refreshStaticState resolver end anchor changed")
+          refresh_end += len(refresh_end_marker)
+          replacement_refresh = (
+              '    if (\n'
+              '        "public func refreshStaticState(" in ours\n'
+              '        and "public func refreshStaticState()" in theirs\n'
+              '        and "guard supportsMTPLXLiveControls else { return }" in theirs\n'
+              '        and "let client = apiClient" not in ours\n'
+              '    ):\n'
+              '        text = ours\n'
+              '        if not text.endswith("\\n"):\n'
+              '            text += "\\n"\n'
+              '        text += (\n'
+              '            "        guard supportsMTPLXLiveControls else {\\n"\n'
+              '            "            health = nil\\n"\n'
+              '            "            capabilities = nil\\n"\n'
+              '            "            sessions = nil\\n"\n'
+              '            "            prefillHistory = nil\\n"\n'
+              '            "            models = nil\\n"\n'
+              '            "            return\\n"\n'
+              '            "        }\\n"\n'
+              '        )\n'
+              '        kinds.add("refresh_static")\n'
+          )
+          rebase = rebase[:refresh_start] + replacement_refresh + rebase[refresh_end:]
           blocks[0] = rebase
 
           Path("/tmp/pr254-rebase.sh").write_text(blocks[0] + "\n", encoding="utf-8")
