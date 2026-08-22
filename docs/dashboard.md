@@ -110,6 +110,7 @@ wheel via `[tool.setuptools.package-data]` so `pip install mtplx` is enough.
 | `/v1/mtplx/metrics/stream`            | GET    | Server-Sent Events: snapshots every 200 ms plus pushed bus events.                      |
 | `/v1/mtplx/snapshot`                  | GET    | One-shot dashboard snapshot (same shape as the SSE snapshot event).                      |
 | `/v1/mtplx/prefill_history`           | GET    | Bounded ring (cap 100) of recent prefill rows.                                          |
+| `/v1/mtplx/flight`                    | GET    | Live flight-recorder snapshot: in-flight phase/TPS/acceptance, stall age, text tail.    |
 | `/v1/mtplx/settings`                  | POST   | Mutate the small whitelisted surface of `state.args`; rejects restart-required keys.    |
 | `/v1/mtplx/cancel/{request_id}`       | POST   | Sets the in-flight handle's `cancel_event` (best-effort, one-token-batch worst case).   |
 

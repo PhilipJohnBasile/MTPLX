@@ -1050,6 +1050,21 @@ def _mlx_memory_stats() -> dict[str, int]:
     }
 
 
+# Live decode telemetry slot: the server installs a per-request publisher
+# (flight recorder) before dispatching a generation on the model-owner thread
+# and clears it after. _DecodeTrace captures the slot at construction and
+# publishes by-depth acceptance totals at most once per second, riding the
+# interval machinery it already has — accepted-by-depth is otherwise invisible
+# until the final receipt. Single writer (owner thread), tear-tolerant readers,
+# no lock: the progress_heartbeat precedent.
+_LIVE_DECODE_SINK: Callable[[dict[str, Any]], None] | None = None
+
+
+def set_live_decode_sink(sink: Callable[[dict[str, Any]], None] | None) -> None:
+    global _LIVE_DECODE_SINK
+    _LIVE_DECODE_SINK = sink
+
+
 class _DecodeTrace:
     def __init__(
         self,
@@ -1085,6 +1100,8 @@ class _DecodeTrace:
         self.mtp_cache_policy = mtp_cache_policy
         self.started_s = time.perf_counter()
         self.last_emit_s = self.started_s
+        self.live_sink = _LIVE_DECODE_SINK
+        self._last_live_s = 0.0
         self.bucket_index = 0
         self.last_totals: dict[str, Any] = {
             "generated_tokens": 0,
@@ -1165,6 +1182,29 @@ class _DecodeTrace:
         mtp_history_materialize_every: int,
         mtp_history_materialize_events: int,
     ) -> None:
+        sink = self.live_sink
+        if sink is not None:
+            now_live = time.perf_counter()
+            if force or final or now_live - self._last_live_s >= 1.0:
+                self._last_live_s = now_live
+                try:
+                    sink(
+                        {
+                            "generated_tokens": totals.get("generated_tokens"),
+                            "accepted_by_depth": list(
+                                totals.get("accepted_by_depth") or []
+                            ),
+                            "drafted_by_depth": list(
+                                totals.get("drafted_by_depth") or []
+                            ),
+                            "verify_calls": totals.get("verify_calls"),
+                            "verify_time_s": totals.get("verify_time_s"),
+                            "draft_time_s": totals.get("draft_time_s"),
+                        }
+                    )
+                except Exception:
+                    # A broken sink must never touch decode again this request.
+                    self.live_sink = None
         if not self.enabled or self.path is None:
             return
         now = time.perf_counter()

@@ -165,6 +165,15 @@ from mtplx.reasoning_codecs import (
     stream_splitter_for_parser,
 )
 from mtplx.server.dashboard_state import DashboardState, InFlightHandle
+from mtplx.server.flight_recorder import FlightRecorder, resolve_flight_recorder
+
+# Inert fallback so stubbed states (tests) hit no-op recorder methods instead
+# of AttributeError; real ServerState installs its own in __init__.
+_INERT_FLIGHT = FlightRecorder(None)
+
+
+def _flight(state: Any) -> FlightRecorder:
+    return getattr(state, "flight", None) or _INERT_FLIGHT
 from mtplx.server.mtp_batch import (
     MTPBatchFinalizeOwnership,
     MTPBatchGenerationService,
@@ -2316,6 +2325,10 @@ class ServerState:
                 self.model_scheduler.foreground_busy
             )
         self.last_metrics: list[dict[str, Any]] = []
+        # Per-request flight recorder (second-by-second telemetry + live
+        # in-flight endpoint). Inert when resolved off; hot paths only touch
+        # plain counters and a queue.
+        self.flight = resolve_flight_recorder(self.args)
         self.tool_parse_counters = {key: 0 for key in _TOOL_PARSE_COUNTER_KEYS}
         # Activity timestamps used by the parent-process thermal watchdog to
         # decide when to drop fans back to auto after an idle period.
@@ -12613,6 +12626,13 @@ def _record_request_metrics(state: "ServerState", record: dict[str, Any]) -> Non
     safe = _json_safe(record)
     state.last_metrics.append(safe)
     state.last_metrics = state.last_metrics[-100:]
+    # Flight recorder terminal event: every completion path (normal, cancel,
+    # disconnect) funnels through this sink, so the flight "end" is written
+    # even for requests whose client-side accounting is lost (turn-13 class).
+    try:
+        _flight(state).end(safe.get("request_id"), safe)
+    except Exception:
+        pass
     path = _request_log_path(state)
     if not path:
         return
@@ -14216,6 +14236,7 @@ def _mtplx_app_capabilities() -> dict[str, Any]:
         "snapshot": "/v1/mtplx/snapshot",
         "metrics_stream": "/v1/mtplx/metrics/stream",
         "prefill_history": "/v1/mtplx/prefill_history",
+        "flight": "/v1/mtplx/flight",
         "settings": "/v1/mtplx/settings",
         "cancel": "/v1/mtplx/cancel/{request_id}",
         "dashboard": "/dashboard/",
@@ -18200,6 +18221,10 @@ def _schedule_idle_postcommit_snapshot(
 
     def _log(outcome: dict[str, Any]) -> None:
         record = pending_record_holder.get("record")
+        try:
+            _flight(state).pc(session_id, outcome)
+        except Exception:
+            pass
         if (
             session is not None
             and record is not None
@@ -20420,6 +20445,16 @@ def _run_generation(
             # setting stays the default for real requests.
             if prefill_chunk_tokens is None:
                 prefill_chunk_tokens = getattr(state.args, "prefill_chunk_tokens", None)
+            # Install the per-request live decode sink (flight recorder) so
+            # _DecodeTrace publishes by-depth acceptance at 1 Hz mid-request.
+            # Owner-thread module slot; cleared in the lock-release finally.
+            from mtplx.generation import set_live_decode_sink
+
+            set_live_decode_sink(
+                _flight(state).live_depth_sink(
+                    str((request_observability or {}).get("request_id") or "")
+                )
+            )
             with (
                 _temporary_env(dynamic_kv_reservation["env"]),
                 prefill_chunk_size_override(prefill_chunk_tokens),
@@ -20565,6 +20600,9 @@ def _run_generation(
             # disconnects already take during decode.
             raise _StreamCancelled("client disconnected during prefill")
         finally:
+            from mtplx.generation import set_live_decode_sink
+
+            set_live_decode_sink(None)
             state.lock.release()
             if not background_request:
                 state.end_foreground()
@@ -25200,6 +25238,13 @@ def create_app(state: ServerState) -> FastAPI:
             "history": state.dashboard.prefill_history.snapshot(),
         }
 
+    @app.get("/v1/mtplx/flight")
+    def mtplx_flight() -> dict[str, Any]:
+        # Live in-flight status: phase, tokens, instantaneous TPS, live MTP
+        # acceptance, stall age, and a tail preview of the generated text —
+        # the one-curl answer to "is it hung or thinking?".
+        return _flight(state).snapshot()
+
     @app.post("/v1/mtplx/cancel/{request_id}")
     def mtplx_cancel(request_id: str) -> dict[str, Any]:
         handle = state.dashboard.in_flight.get(request_id)
@@ -26698,6 +26743,13 @@ def create_app(state: ServerState) -> FastAPI:
         if vision_splice is not None:
             request_observability["request_vision_images"] = len(vision_images)
             request_observability["request_vision_rows"] = vision_splice.total_rows
+        # Receipt identity + resolved effort: request_id joins the receipt to
+        # flight-recorder events (the cancellation lane already stamps it; this
+        # covers the normal lane via envelope.update), and the resolved effort
+        # was previously logged nowhere (2026-08-21 lane-audit telemetry gap).
+        request_observability["request_id"] = response_id
+        if reasoning_effort is not None:
+            request_observability["resolved_reasoning_effort"] = reasoning_effort
         if transient_suffix_contract_active:
             if read_only_force_answer_contract_active:
                 _restore_policy_label = "stable_without_transient_force_answer"
@@ -27345,6 +27397,13 @@ def create_app(state: ServerState) -> FastAPI:
                     prompt_tokens=len(prompt_ids),
                 )
                 state.dashboard.in_flight.register(in_flight_handle)
+                _flight(state).begin(
+                    response_id,
+                    session_id=session_id,
+                    model=model,
+                    prompt_tokens=len(prompt_ids),
+                    stream=True,
+                )
                 decoder = _IncrementalTokenDecoder(state.runtime.tokenizer)
                 splitter = _stream_splitter_for_state(
                     state,
@@ -28703,6 +28762,9 @@ def create_app(state: ServerState) -> FastAPI:
                     nonlocal pending_tool_cancel_started_s
                     if not text:
                         return []
+                    # Flight recorder sees generated truth (pre-guard, pre-
+                    # suppression) so char counts reflect what the model wrote.
+                    _flight(state).on_delta(response_id, field, text)
                     if use_orphan_guard:
                         text = apply_orphan_stream_guard(field, text)
                         if not text:
@@ -29153,7 +29215,18 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                                 if streamed_decode_started_s is None:
                                     streamed_decode_started_s = token_timestamp_s
+                                    _flight(state).note_decode_started(
+                                        response_id,
+                                        getattr(
+                                            in_flight_handle, "prefill_state", None
+                                        ),
+                                    )
                                 streamed_progress_tokens += len(stream_tokens)
+                                _flight(state).on_tokens(
+                                    response_id,
+                                    len(stream_tokens),
+                                    token_timestamp_s,
+                                )
                                 progress_payload = _stream_progress_payload(
                                     completion_tokens=streamed_progress_tokens,
                                     decode_started_s=streamed_decode_started_s,
@@ -30103,6 +30176,7 @@ def create_app(state: ServerState) -> FastAPI:
                             )
                             cancelled_metric_recorded = True
                     state.dashboard.in_flight.deregister(response_id)
+                    _flight(state).sweep(response_id)
                     state.dashboard.progress_events.forget(response_id)
 
                 if generated is None:
@@ -30151,6 +30225,13 @@ def create_app(state: ServerState) -> FastAPI:
             prompt_tokens=len(prompt_ids),
         )
         state.dashboard.in_flight.register(nonstream_handle)
+        _flight(state).begin(
+            response_id,
+            session_id=session_id,
+            model=model,
+            prompt_tokens=len(prompt_ids),
+            stream=False,
+        )
         nonstream_started_s = time.perf_counter()
 
         def mark_nonstream_client_disconnected() -> None:
@@ -30253,6 +30334,7 @@ def create_app(state: ServerState) -> FastAPI:
             with suppress(asyncio.CancelledError, TimeoutError):
                 await asyncio.wait_for(disconnect_monitor_task, timeout=0.25)
             state.dashboard.in_flight.deregister(response_id)
+            _flight(state).sweep(response_id)
             state.dashboard.progress_events.forget(response_id)
         generated.setdefault("stats", {})
         generated["stats"]["openai_bridge_mode"] = "omlx_style"
@@ -31813,6 +31895,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "with 64MB x4 rotation; pass 'off' (or set "
             "MTPLX_REQUEST_LOG_JSONL=off) to disable. Env: "
             "MTPLX_REQUEST_LOG_JSONL."
+        ),
+    )
+    parser.add_argument(
+        "--flight-recorder",
+        default=None,
+        help=(
+            "Per-request flight recorder: begin/prefill/~1Hz sample/end "
+            "events (tokens, TPS, reasoning/content chars, live MTP "
+            "acceptance) plus postcommit outcomes, as JSONL. Feeds "
+            "GET /v1/mtplx/flight and `mtplx trace`. Default: ON at "
+            "~/.mtplx/metrics/flight-<port>.jsonl with 64MB x4 rotation; "
+            "pass 'off' or a custom path. Generated text is persisted "
+            "under ~/.mtplx/metrics/gen/ only for cancelled/errored "
+            "requests by default (MTPLX_FLIGHT_TEXT=abnormal|always|off). "
+            "Env: MTPLX_FLIGHT_RECORDER."
         ),
     )
     parser.add_argument(

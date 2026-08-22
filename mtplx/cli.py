@@ -92,6 +92,7 @@ PUBLIC_COMMANDS = (
     ("stop", "Stop the MTPLX daemon answering on a port"),
     ("settings", "Get or set live daemon settings"),
     ("inspect", "Check whether a model is MTPLX-compatible"),
+    ("trace", "Diagnose coding sessions: timelines, TPS curves, autopsies, live status"),
     ("forge", "Forge, verify, brand, discover, and publish MTP models"),
     ("hardware", "Inspect Apple Silicon / MLX acceleration eligibility"),
     ("models", "List models in the local MTPLX cache"),
@@ -966,6 +967,12 @@ def cmd_config_public(args: argparse.Namespace) -> int:
 
 def cmd_forge_public(args: argparse.Namespace) -> int:
     from .commands.forge import cmd_forge_public as handler
+
+    return handler(args)
+
+
+def cmd_trace_public(args: argparse.Namespace) -> int:
+    from .commands.trace import cmd_trace as handler
 
     return handler(args)
 
@@ -2858,6 +2865,98 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
     report_p.set_defaults(func=cmd_doctor, bundle=True)
+
+    trace_p = sub.add_parser(
+        "trace",
+        help="Diagnose agent/coding sessions: join serve receipts, flight samples, and OpenCode history",
+    )
+    trace_sub = trace_p.add_subparsers(dest="trace_action", required=True)
+
+    def _trace_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--port",
+            type=int,
+            default=None,
+            help="serve port (default: newest request log)",
+        )
+        p.add_argument(
+            "--db",
+            default=os.path.expanduser("~/.local/share/opencode/opencode.db"),
+            help="opencode.db path",
+        )
+        p.add_argument("--json", action="store_true", help="machine-readable output")
+
+    trace_sessions_p = trace_sub.add_parser(
+        "sessions", help="List recent OpenCode sessions with server-request matches"
+    )
+    _trace_common(trace_sessions_p)
+    trace_sessions_p.add_argument("--limit", type=int, default=15)
+    trace_sessions_p.set_defaults(func=cmd_trace_public)
+
+    trace_session_p = trace_sub.add_parser(
+        "session",
+        help="Per-turn timeline for one session (cache, TPS, postcommit, canon, pathology flags)",
+    )
+    _trace_common(trace_session_p)
+    trace_session_p.add_argument(
+        "session", nargs="?", default="latest", help="ses_... id, substring, or 'latest'"
+    )
+    trace_session_p.set_defaults(func=cmd_trace_public)
+
+    trace_request_p = trace_sub.add_parser(
+        "request", help="Deep-dive one request receipt + per-second flight curve"
+    )
+    _trace_common(trace_request_p)
+    trace_request_p.add_argument(
+        "request",
+        nargs="?",
+        default="latest",
+        help="request_id substring, receipt index, or 'latest'",
+    )
+    trace_request_p.add_argument(
+        "--all", action="store_true", help="show every receipt field"
+    )
+    trace_request_p.set_defaults(func=cmd_trace_public)
+
+    trace_autopsy_p = trace_sub.add_parser(
+        "autopsy",
+        help="Extract + analyze a turn's reasoning (loop metrics, dup paragraphs, dump to file)",
+    )
+    _trace_common(trace_autopsy_p)
+    trace_autopsy_p.add_argument("session", nargs="?", default="latest")
+    trace_autopsy_p.add_argument(
+        "--turn",
+        type=int,
+        default=None,
+        help="1-based assistant turn (default: biggest think)",
+    )
+    trace_autopsy_p.set_defaults(func=cmd_trace_public)
+
+    trace_live_p = trace_sub.add_parser(
+        "live", help="Live in-flight status from the serve flight endpoint"
+    )
+    _trace_common(trace_live_p)
+    trace_live_p.add_argument(
+        "--watch", action="store_true", help="poll continuously"
+    )
+    trace_live_p.add_argument("--interval", type=float, default=2.0)
+    trace_live_p.set_defaults(func=cmd_trace_public)
+
+    trace_report_p = trace_sub.add_parser(
+        "report",
+        help="Self-contained HTML report with historical graphs for a session",
+    )
+    _trace_common(trace_report_p)
+    trace_report_p.add_argument("session", nargs="?", default="latest")
+    trace_report_p.add_argument(
+        "--out",
+        default=None,
+        help="output HTML path (default: ~/.mtplx/metrics/reports/<ses>.html)",
+    )
+    trace_report_p.add_argument(
+        "--open", action="store_true", help="open in browser when written"
+    )
+    trace_report_p.set_defaults(func=cmd_trace_public)
 
     inspect_public_p = sub.add_parser(
         "inspect", help="Inspect a model and auto-check MTP support"
