@@ -8025,6 +8025,32 @@ def generate_mtpk(
     # (first observe gets the span since loop entry, later ones the span
     # since the previous observe) — real cycle cost, not inter-request gaps.
     _policy_cycle_started = time.perf_counter()
+    # Greedy-chain eligibility (#313 port), PRE-BOUND: every term here is
+    # request-invariant, so it is decided once — the decode loop's prebound-
+    # policy-surface contract (test_decode_loop_uses_prebound_policy_surfaces)
+    # and one boolean per cycle instead of ~20 reads. Per-cycle terms
+    # (used_device_core, cycle_depth, _cc_draft_source_token, _steer_active —
+    # guards can arm mid-generation) stay in the loop.
+    _greedy_chain_eligible = (
+        draft_sampler.temperature <= 0
+        and sampler.temperature <= 0
+        and a3b_target_prefix_route is None
+        and constraint is None
+        and draft_margin_threshold is None
+        and adaptive_policy is None
+        and adaptive_width_policy is None
+        and mtp_corrector is None
+        and mtp_topk_reranker is None
+        and not adapter_ensemble_q
+        and not online_hidden_enabled
+        and not online_correction_cache
+        and not prompt_correction_cache
+        and not target_prefix_verify
+        and not _penalties_active
+        and mtp_cache_policy == "persistent"
+        and _mtp_history_uses_committed_cache(mtp_history_policy)
+        and _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN")
+    )
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
             # Top of iteration 2: the cumulative timers now hold exactly
@@ -8794,30 +8820,12 @@ def generate_mtpk(
         # keep the two in sync (and see the stock loop's own comment).
         _greedy_chain_used = False
         if (
-            not used_device_core
+            _greedy_chain_eligible
+            and not used_device_core
             and cycle_depth > 0
-            and draft_sampler.temperature <= 0
-            and sampler.temperature <= 0
-            and a3b_target_prefix_route is None
             and _cc_draft_source_token is None
-            and constraint is None
-            and draft_margin_threshold is None
-            and adaptive_policy is None
-            and adaptive_width_policy is None
-            and mtp_corrector is None
-            and mtp_topk_reranker is None
-            and not adapter_ensemble_q
-            and not online_hidden_enabled
-            and not correction_cache_enabled
-            and not online_correction_cache
-            and not prompt_correction_cache
-            and not target_prefix_verify
-            and not _penalties_active
             and not _steer_active
             and mtp_cache is not None
-            and mtp_cache_policy == "persistent"
-            and _mtp_history_uses_committed_cache(mtp_history_policy)
-            and _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN")
         ):
             _chain_started = time.perf_counter()
             _chain_tok = mx.array([[int(next_token)]])
