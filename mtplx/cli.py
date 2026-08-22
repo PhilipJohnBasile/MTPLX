@@ -1271,6 +1271,27 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     profile = get_profile(args.profile)
     if profile.name != "performance-cold":
         raise SystemExit(f"unknown benchmark profile: {args.profile}")
+    # #285: this profile pins its runtime shape (capture-commit, post-norm,
+    # committed history). Knobs it genuinely cannot honor are refused loudly
+    # instead of silently ignored — a benchmark tool that accepts a flag and
+    # runs something else produces convincing false results.
+    if getattr(args, "stock_ar", False):
+        raise SystemExit(
+            "--stock-ar is not supported with --profile performance-cold; "
+            "run `mtplx bench run --harness depth-sweep` for AR comparisons"
+        )
+    if getattr(args, "generation_mode", None) not in (None, "", "mtp"):
+        raise SystemExit(
+            f"--generation-mode {args.generation_mode!r} is not supported with "
+            "--profile performance-cold (the profile is an MTP sweep)"
+        )
+    requested_harness = getattr(args, "harness", None)
+    if requested_harness not in (None, "", "depth-sweep"):
+        raise SystemExit(
+            f"--harness {requested_harness!r} is not supported with "
+            "--profile performance-cold; the profile runs the depth-sweep "
+            "harness"
+        )
     model_arg = (
         NATIVE_MTP_60_MODEL
         if args.model == str(DEFAULT_RUNTIME_MODEL_DIR)
@@ -1329,18 +1350,29 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     except Exception:
         draft_lm_head = fallback_draft_lm_head
         draft_sampler = None
+    # #285: honor the user's sweep knobs. depths/seed/compare-ar were
+    # hardcoded ("3"/0/False) while the CLI accepted the flags — reuse the
+    # same resolution helpers as `mtplx bench run --harness depth-sweep` so
+    # both routes agree on defaults (depths "3", seed 0) when nothing is
+    # passed.
+    from .commands.public import _benchmark_seed, _depths_for_bench_run
+
+    resolved_depths = _depths_for_bench_run(args)
+    resolved_seed = _benchmark_seed(
+        args, runtime_profile="native_mtp_60_cold", harness="depth-sweep"
+    )
     result = run_mtp_depth_sweep(
         model_arg,
         prompts,
-        depths="3",
+        depths=resolved_depths,
         temperature=0.6,
         top_p=0.95,
         top_k=20,
         max_tokens=192 if args.max_tokens == 128 else args.max_tokens,
-        seed=0,
+        seed=resolved_seed,
         limit=args.limit,
         enable_thinking=False,
-        compare_ar=False,
+        compare_ar=bool(getattr(args, "compare_ar", False)),
         mtp_hidden_variant="post_norm",
         mtp_cache_policy="persistent",
         mtp_history_policy="committed",
@@ -1367,7 +1399,9 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
         "fast_path_env": {**profile.env_dict(), **runtime_env_overrides},
         "model": model_arg,
         "model_id": model_arg,
-        "depth": 3,
+        "depths": resolved_depths,
+        "seed": resolved_seed,
+        "compare_ar": bool(getattr(args, "compare_ar", False)),
         "verify_strategy": "capture_commit",
         "verify_core": "linear-gdn-from-conv-tape",
         "draft_lm_head": draft_lm_head,

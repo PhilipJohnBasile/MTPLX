@@ -18688,13 +18688,30 @@ def _generation_params(
     )
 
 
-def _uncapped_repetition_stop_enabled(generation_limits: dict[str, Any]) -> bool:
-    if not bool(generation_limits.get("uncapped_response_requested")):
-        return False
-    if generation_limits.get("server_max_response_tokens") is not None:
-        return False
-    raw = os.environ.get("MTPLX_UNCAPPED_REPETITION_STOP", "1").strip().lower()
+def _repetition_stop_enabled(generation_limits: dict[str, Any]) -> bool:
+    """Arm the literal-token-repetition stop on every request (#311).
+
+    The detector fires only on exact repeated token blocks (objectively
+    broken output) — it is not a thinking or length cap, so a client-sent
+    max_tokens is no reason to disarm it: Pi's 8,192-cap request burned
+    5,803 "!" tokens to budget with the guard sitting disabled. The old
+    uncapped-only predicate lived here from the guard's introduction; both
+    env names are honored (new one wins) and the historical name stays as
+    an alias for imports.
+    """
+    raw = (
+        os.environ.get(
+            "MTPLX_REPETITION_STOP",
+            os.environ.get("MTPLX_UNCAPPED_REPETITION_STOP", "1"),
+        )
+        .strip()
+        .lower()
+    )
     return raw not in _UNCAPPED_RESPONSE_LEASE_DISABLED_VALUES
+
+
+# Historical name (pre-#311 the guard armed only for uncapped responses).
+_uncapped_repetition_stop_enabled = _repetition_stop_enabled
 
 
 def _loop_guard_enabled() -> bool:
@@ -20356,7 +20373,10 @@ def _run_generation(
         presence_penalty=presence_penalty,
         frequency_penalty=frequency_penalty,
     )
-    uncapped_repetition_stop = _uncapped_repetition_stop_enabled(generation_limits)
+    # Key name is historical (pre-#311 the guard armed only for uncapped
+    # responses); it now reflects the universal literal-repetition stop and
+    # stays for receipt compatibility.
+    uncapped_repetition_stop = _repetition_stop_enabled(generation_limits)
     generation_limits["uncapped_repetition_stop_enabled"] = bool(
         uncapped_repetition_stop
     )

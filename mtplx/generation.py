@@ -2178,6 +2178,17 @@ def _detect_repeated_token_suffix(
     min_block = max(1, int(config.min_block_tokens))
     if max_block < min_block:
         return None
+    # Necessary-condition pre-gate (#311 armed the stop on every request, so
+    # this scan now sits on hot capped AR decode): any period-p suffix
+    # repetition requires tokens[-1] == tokens[-1-p]. Plain integer compares,
+    # no slicing — provably cannot change the fire point, only skip the
+    # slice work when no period is even possible.
+    last = tokens[token_count - 1]
+    if not any(
+        tokens[token_count - 1 - period] == last
+        for period in range(min_block, max_block + 1)
+    ):
+        return None
     best: RepetitionStopResult | None = None
     for block_tokens in range(min_block, max_block + 1):
         block = tokens[token_count - block_tokens : token_count]
@@ -7607,6 +7618,7 @@ def generate_mtpk(
         nonlocal target_time, draft_time
         nonlocal state_rebase_tokens_since, state_rebase_observed_tokens
         nonlocal state_rebase_events, state_rebase_time_s
+        nonlocal _batched_target_tokens
         if state_rebase_every <= 0 or current_tokens <= 0:
             return
         if current_tokens < state_rebase_observed_tokens:
@@ -7642,6 +7654,15 @@ def generate_mtpk(
         cache = rebased.trunk_cache
         logits = rebased.logits
         hidden = rebased.hidden
+        # `logits` is now a fresh full-prefill row — deliberately a DIFFERENT
+        # computation from this cycle's verify_logits (that is this knob's
+        # entire purpose: rebuild drifted incremental state). Any token
+        # pre-reduced from verify_logits is stale from here on; consumers
+        # must fall back to the stock read of the rebased `logits`. This is
+        # the single point where the staleness is created, so it is the
+        # single point of invalidation (#315 port — the authored PR carried
+        # exactly this bug on both its bonus-row and known-primary paths).
+        _batched_target_tokens = None
         mtp_history_cache = rebased.committed_mtp_cache
         trace_current_mtp_cache = mtp_history_cache
         target_time += max(
@@ -8739,7 +8760,111 @@ def generate_mtpk(
                     "requested": "device",
                     "reason": "ineligible_contract",
                 }
-        for depth_index in range(0 if used_device_core else cycle_depth):
+        # Greedy on-device draft chain (#313 port, default OFF pending our
+        # ABBA): under double-greedy (draft AND target temp<=0) with the
+        # persistent committed-history cache, the per-depth host round-trip
+        # (argmax(row).item() to feed the next depth) is pure sync latency —
+        # chain the argmax on-device and materialize all depths in ONE eval.
+        # The guard reproduces every stock-loop feature this fast path cannot
+        # express; any of them active falls through to the stock loop
+        # unchanged. Byte-identity is gated by the trio unit gates before the
+        # knob may default on. Duplicates ~40 lines of the stock loop below —
+        # keep the two in sync (and see the stock loop's own comment).
+        _greedy_chain_used = False
+        if (
+            not used_device_core
+            and cycle_depth > 0
+            and draft_sampler.temperature <= 0
+            and sampler.temperature <= 0
+            and a3b_target_prefix_route is None
+            and _cc_draft_source_token is None
+            and constraint is None
+            and draft_margin_threshold is None
+            and adaptive_policy is None
+            and adaptive_width_policy is None
+            and mtp_corrector is None
+            and mtp_topk_reranker is None
+            and not adapter_ensemble_q
+            and not online_hidden_enabled
+            and not correction_cache_enabled
+            and not online_correction_cache
+            and not prompt_correction_cache
+            and not target_prefix_verify
+            and not _penalties_active
+            and not _steer_active
+            and mtp_cache is not None
+            and mtp_cache_policy == "persistent"
+            and _mtp_history_uses_committed_cache(mtp_history_policy)
+            and _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN")
+        ):
+            _chain_started = time.perf_counter()
+            _chain_tok = mx.array([[int(next_token)]])
+            _chain_hidden = draft_hidden
+            _chain_pending: list[mx.array] = []
+            _chain_offsets: list[int | None] = []
+            for _chain_depth in range(cycle_depth):
+                _chain_offset = mtp_position_offset_for_cache(mtp_cache)
+                _chain_offsets.append(_chain_offset)
+                _chain_logits, _chain_hidden_next = rt.draft_mtp(
+                    _chain_hidden,
+                    _chain_tok,
+                    mtp_cache=mtp_cache,
+                    return_hidden=True,
+                    mtp_hidden_variant=mtp_hidden_variant,
+                    mtp_depth=_chain_depth + 1,
+                    position_offset=_chain_offset,
+                )
+                _chain_arg = mx.argmax(_chain_logits[:, -1, :][0], axis=-1)
+                _chain_pending.append(_chain_arg)
+                _chain_tok = _chain_arg.reshape(1, 1).astype(mx.int32)
+                _chain_hidden = _chain_hidden_next[:, -1:, :]
+                draft_hidden_for_update.append(_chain_hidden)
+            _eval(*_chain_pending, _chain_hidden)
+            _chain_tokens = [int(a.item()) for a in _chain_pending]
+            # Parallel-array invariant: draft_hidden_update_keys must track
+            # draft_hidden_for_update position-for-position (the online-hidden
+            # consumer indexes by position). Keys are host-cheap here — the
+            # source token of depth d is next_token for d=0 and the previous
+            # chained token after.
+            for _chain_index in range(len(_chain_tokens)):
+                _chain_feed_depth = _chain_index + 1
+                _chain_source = (
+                    int(next_token)
+                    if _chain_index == 0
+                    else _chain_tokens[_chain_index - 1]
+                )
+                draft_hidden_update_keys.append(
+                    (_chain_feed_depth, _chain_source)
+                    if online_hidden_corrector_key == "token"
+                    else _chain_feed_depth
+                )
+            _chain_elapsed = time.perf_counter() - _chain_started
+            draft_time += _chain_elapsed
+            for _chain_index, _chain_token in enumerate(_chain_tokens):
+                draft_tokens.append(_chain_token)
+                draft_probs.append(None)
+                drafted += 1
+                drafted_by_depth[_chain_index] += 1
+                _chain_event = {
+                    "depth": _chain_index + 1,
+                    "token": int(_chain_token),
+                    "timing_s": {
+                        "draft": _chain_elapsed
+                        if _chain_index == len(_chain_tokens) - 1
+                        else 0.0
+                    },
+                    "mtp_corrector": None,
+                    "draft_core": "greedy-chain",
+                }
+                if _chain_offsets[_chain_index] is not None:
+                    _chain_event["position_offset"] = int(_chain_offsets[_chain_index])
+                event["drafts"].append(_chain_event)
+            draft_hidden = _chain_hidden
+            next_token = _chain_tokens[-1]
+            _greedy_chain_used = True
+        for depth_index in range(
+            0 if (used_device_core or _greedy_chain_used) else cycle_depth
+        ):
             source_token = int(next_token)
             step_mtp_cache = (
                 mtp_cache if mtp_cache_policy == "persistent" else rt.make_mtp_cache()
@@ -9494,6 +9619,33 @@ def generate_mtpk(
             if constraint is not None
             else None
         )
+        # Batched greedy accept (#315c1 port, default OFF pending our ABBA):
+        # at temp<=0 the per-depth accept reduction is R serial
+        # argmax(row).item() host syncs; one 2-D argmax over the draft rows
+        # collapses them to a single sync. Guard mirrors the stock branch's
+        # own preconditions exactly: penalties and steering fall through to
+        # the per-row path (they mutate the row before the argmax), and the
+        # grammar clamp stays unguarded on purpose — stock's accept argmax
+        # also reads the unmasked row (the clamp applies via
+        # constraint_legal_prefix, not the row). _row_guard_overlay is
+        # provably None here: it is assigned from _steer_overlay only when
+        # _steer_active, which this guard excludes. Exactness rests on MLX
+        # argmax tie-break identity between the 1-D and 2-D dispatches —
+        # gated by test_batched_greedy_argmax_tiebreak_identity before this
+        # knob may default on. Bonus row NOT ported (stale-row hazard via
+        # maybe_rebase_decode_state on the all-accept path).
+        _batched_target_tokens: list[int] | None = None
+        if (
+            sampler.temperature <= 0
+            and not _penalties_active
+            and not _steer_active
+            and len(draft_tokens) > 0
+            and int(verify_logits.shape[1]) >= len(draft_tokens)
+            and _env_truthy("MTPLX_BATCHED_GREEDY_ACCEPT")
+        ):
+            _batched_target_tokens = mx.argmax(
+                verify_logits[0, : len(draft_tokens), :], axis=-1
+            ).tolist()
         for depth_index, draft_token in enumerate(draft_tokens):
             target_logits_for_draft = verify_logits[:, depth_index, :]
             if _steer_active:
@@ -9511,16 +9663,19 @@ def generate_mtpk(
                 _working_counts.update(draft_tokens[:depth_index])
             target_p_for_cache = None
             if sampler.temperature <= 0:
-                _greedy_row = target_logits_for_draft[0]
-                if _penalties_active or _row_guard_overlay:
-                    _greedy_row = apply_penalties_mlx(
-                        _greedy_row,
-                        _working_counts if _penalties_active else None,
-                        sampler.presence_penalty,
-                        sampler.frequency_penalty,
-                        penalty_overlay=_row_guard_overlay,
-                    )
-                target_token = int(mx.argmax(_greedy_row, axis=-1).item())
+                if _batched_target_tokens is not None:
+                    target_token = int(_batched_target_tokens[depth_index])
+                else:
+                    _greedy_row = target_logits_for_draft[0]
+                    if _penalties_active or _row_guard_overlay:
+                        _greedy_row = apply_penalties_mlx(
+                            _greedy_row,
+                            _working_counts if _penalties_active else None,
+                            sampler.presence_penalty,
+                            sampler.frequency_penalty,
+                            penalty_overlay=_row_guard_overlay,
+                        )
+                    target_token = int(mx.argmax(_greedy_row, axis=-1).item())
                 accepted_now = draft_token == target_token
                 accept_prob = 1.0 if accepted_now else 0.0
                 correction = target_token

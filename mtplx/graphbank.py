@@ -1032,6 +1032,27 @@ def _compiled_verify_donation_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _batch_paged_offsets_enabled() -> bool:
+    """Batch-materialize paged-KV offsets before the bucket walk (#318 port).
+
+    ``TensorOffsetVllmMetalPagedKVCache.size()`` does ``mx.eval(cache[2])``
+    per entry, so after a trim/rollback (offsets left lazy) the bucket walk
+    forces one serial host sync per full-attention entry.  Evaluating every
+    offset in one ``mx.eval`` first turns N syncs into one; ``mx.eval``
+    cannot change values, so the result is exact by construction.  Neutral
+    on non-trimming workloads (offsets already materialized).  Ported from
+    grzracz PR #318 with the env read hoisted out of the hot call.  Default
+    OFF until our own ABBA evidence lands (2026-08-21 trio ruling).
+    """
+    import os
+
+    raw = str(os.environ.get("MTPLX_BATCH_PAGED_OFFSETS", "0")).strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+_BATCH_PAGED_OFFSETS = _batch_paged_offsets_enabled()
+
+
 def _compiled_verify_growth_reserve() -> int:
     """Dense-leaf growth headroom granted at first promotion (tokens).
 
@@ -1946,6 +1967,24 @@ class CompiledVerifyBank:
 
     def _resolve_bucket(self, cache: Any, length: int) -> int | None:
         """Static paged-attention ceiling for this call, or None on overflow."""
+        if _BATCH_PAGED_OFFSETS:
+            # One eval for every paged offset instead of a serial sync per
+            # entry inside size() below (#318; helper docstring has the
+            # mechanism). Mirrors this loop's own iteration exactly.
+            paged_offsets = []
+            for spec_idx, spec_kind, _n in self._spec or []:
+                if spec_kind != VERIFY_SPEC_KIND_FULL_ATTN:
+                    continue
+                spec_entry = cache[spec_idx]
+                if not hasattr(spec_entry, "capacity"):
+                    continue
+                entry_state = getattr(spec_entry, "cache", None)
+                if isinstance(entry_state, (list, tuple)) and len(entry_state) > 2:
+                    entry_offset = entry_state[2]
+                    if isinstance(entry_offset, mx.array):
+                        paged_offsets.append(entry_offset)
+            if paged_offsets:
+                mx.eval(*paged_offsets)
         max_needed = 0
         min_capacity: int | None = None
         for idx, kind, _n in self._spec or []:
