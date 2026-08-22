@@ -899,17 +899,33 @@ class VllmMetalPagedKVCache:
         )
 
     @property
+    def allocated_blocks(self) -> int | None:
+        """Physical block count of the live pages (None before allocation)."""
+        return None if self.key_cache is None else int(self.key_cache.shape[0])
+
+    @property
     def capacity(self) -> int:
-        return int(self.block_size) * int(self.num_blocks)
+        # Capacity is a fact about the allocated pages, not about the mutable
+        # num_blocks claim — re-configs and snapshot restores stomp the claim
+        # without reallocating, and a lying capacity skips the growth guard
+        # into silent scatter truncation (#310).
+        allocated_blocks = self.allocated_blocks
+        return int(self.block_size) * int(
+            self.num_blocks if allocated_blocks is None else allocated_blocks
+        )
 
     def _grow_to_capacity(self, required_tokens: int) -> bool:
         if not _env_truthy("MTPLX_DYNAMIC_PAGED_KV"):
             return False
+        allocated_blocks = self.allocated_blocks
+        current_blocks = (
+            int(self.num_blocks) if allocated_blocks is None else int(allocated_blocks)
+        )
         required_blocks = (int(required_tokens) + self.block_size - 1) // self.block_size
         grown_blocks = max(
             required_blocks,
-            int((self.num_blocks * 3 + 1) // 2),
-            int(self.num_blocks) + 1,
+            int((current_blocks * 3 + 1) // 2),
+            int(current_blocks) + 1,
         )
         window_tokens = _env_int("MTPLX_CONTEXT_WINDOW_TOKENS", 0)
         if window_tokens > 0:
@@ -920,9 +936,10 @@ class VllmMetalPagedKVCache:
             window_blocks = (int(window_tokens) + self.block_size - 1) // self.block_size
             if window_blocks >= required_blocks:
                 grown_blocks = min(
-                    grown_blocks, max(window_blocks, int(self.num_blocks))
+                    grown_blocks, max(window_blocks, int(current_blocks))
                 )
-        if grown_blocks <= self.num_blocks:
+        if grown_blocks <= current_blocks:
+            self.num_blocks = int(current_blocks)
             return True
         if self.key_cache is None or self.value_cache is None:
             self.num_blocks = int(grown_blocks)
@@ -931,7 +948,7 @@ class VllmMetalPagedKVCache:
 
         import mlx.core as mx
 
-        extra_blocks = int(grown_blocks) - int(self.num_blocks)
+        extra_blocks = int(grown_blocks) - int(current_blocks)
         key_extra = mx.zeros(
             (extra_blocks, *self.key_cache.shape[1:]),
             dtype=self.key_cache.dtype,
@@ -1910,9 +1927,22 @@ class VllmMetalPagedKVCache:
     def meta_state(self, value) -> None:
         if not value:
             return
-        self.block_size = int(value[0])
-        self.num_blocks = int(value[1])
-        self.offset = int(value[2])
+        if self.key_cache is None:
+            self.block_size = int(value[0])
+            self.num_blocks = int(value[1])
+            self.offset = int(value[2])
+            return
+        # `state` already rebuilt these pages; the snapshot's block count
+        # describes a buffer that no longer exists (#310). The live pages own
+        # the geometry — only the offset is restored, and it must fit them.
+        self.num_blocks = int(self.key_cache.shape[0])
+        offset = int(value[2])
+        if offset > self.capacity:
+            raise ValueError(
+                "restored paged KV offset exceeds page capacity: "
+                f"{offset} > {self.capacity}"
+            )
+        self.offset = offset
 
     def is_trimmable(self) -> bool:
         return True
@@ -3481,8 +3511,18 @@ def install_vllm_metal_paged_attention_kv_cache(
             stats["skipped"] = int(stats["skipped"]) + 1
             continue
         if isinstance(entry, VllmMetalPagedKVCache):
-            entry.block_size = int(block_size)
-            entry.num_blocks = int(num_blocks)
+            if entry.key_cache is None:
+                entry.block_size = int(block_size)
+                entry.num_blocks = int(num_blocks)
+            else:
+                # Live pages own the geometry; a re-config is a request for
+                # room satisfied by an explicit grow — never a claim of blocks
+                # that do not exist (#310). block_size stays put too: changing
+                # it would reinterpret the live buffer.
+                entry.num_blocks = int(entry.key_cache.shape[0])
+                wanted = int(block_size) * int(num_blocks)
+                if wanted > entry.capacity:
+                    entry._grow_to_capacity(wanted)
             entry.turboquant_config = turboquant_config
             entry.turboquant = turboquant_config is not None
             entry.kv_quant_config = kv_quant_config

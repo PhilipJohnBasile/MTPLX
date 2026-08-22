@@ -10,6 +10,7 @@ from mtplx.cache_state import (
     TailOwnedKVCache,
     TensorOffsetVllmMetalPagedKVCache,
     VllmMetalPagedKVCache,
+    _dynamic_paged_num_blocks,
     _paged_gqa_sdpa_route_decision_from_env,
     _paged_gqa_sdpa_route_from_env,
     configure_owned_recurrent_state_cache,
@@ -768,6 +769,79 @@ def test_paged_kv_grows_on_dynamic_overflow(monkeypatch):
 
     assert paged.capacity >= 6
     assert paged.paged_stats()["grow_events"] == 1
+
+
+def test_install_reconfig_on_live_cache_grows_instead_of_redefining(monkeypatch):
+    """#310 re-config contract: on a LIVE allocated cache, install honors a
+    bigger num_blocks by GROWING the pages — it never redefines geometry on
+    buffers that were not reallocated, and never touches block_size."""
+
+    monkeypatch.setattr("mtplx.cache_state._load_vllm_metal_ops", lambda: object())
+    monkeypatch.setenv("MTPLX_DYNAMIC_PAGED_KV", "1")
+    monkeypatch.delenv("MTPLX_CONTEXT_WINDOW_TOKENS", raising=False)
+
+    paged = VllmMetalPagedKVCache(block_size=4, num_blocks=4)
+    keys = mx.zeros((1, 2, 10, 3), dtype=mx.float32)
+    values = mx.zeros((1, 2, 10, 3), dtype=mx.float32)
+    paged.update_without_fetch(keys, values)
+    assert paged.capacity == 16
+
+    cache = [paged]
+    stats = install_vllm_metal_paged_attention_kv_cache(
+        cache,
+        block_size=16,
+        num_blocks=64,
+    )
+
+    assert cache[0] is paged
+    assert stats["entries"] == 1
+    assert paged.capacity >= 16 * 64  # requested room honored by growing
+    assert paged.capacity == int(paged.key_cache.shape[0]) * int(
+        paged.key_cache.shape[1]
+    )
+    assert paged.num_blocks == int(paged.key_cache.shape[0])
+    assert paged.block_size == 4  # a live buffer is never reinterpreted
+    assert int(paged.offset) == 10
+
+
+def test_meta_state_restore_on_live_cache_keeps_physical_geometry():
+    """#310 restore contract: `state` already rebuilt the pages, so the
+    snapshot's geometry is history — only the offset is restored, and an
+    offset beyond the live pages fails loud instead of truncating."""
+
+    paged = VllmMetalPagedKVCache(block_size=16, num_blocks=4)
+    keys = mx.zeros((1, 2, 10, 3), dtype=mx.float32)
+    values = mx.zeros((1, 2, 10, 3), dtype=mx.float32)
+    paged.update_without_fetch(keys, values)
+    assert paged.capacity == 64
+
+    paged.meta_state = ("16", "4096", "50")
+    assert paged.offset == 50
+    assert paged.num_blocks == int(paged.key_cache.shape[0]) == 4
+    assert paged.capacity == 64
+
+    with pytest.raises(ValueError, match="exceeds page capacity"):
+        paged.meta_state = ("16", "4096", "100")
+
+    # Unallocated cache: the snapshot IS the plan (unchanged behavior).
+    fresh = VllmMetalPagedKVCache(block_size=4, num_blocks=2)
+    fresh.meta_state = ("16", "4096", "100")
+    assert fresh.block_size == 16
+    assert fresh.num_blocks == 4096
+    assert fresh.offset == 100
+
+
+def test_dynamic_paged_num_blocks_floor_is_configured_blocks(monkeypatch):
+    monkeypatch.setenv("MTPLX_DYNAMIC_PAGED_KV", "1")
+    for name in (
+        "MTPLX_DYNAMIC_PAGED_KV_TOKENS",
+        "MTPLX_DYNAMIC_PAGED_KV_MIN_BLOCKS",
+        "MTPLX_DYNAMIC_PAGED_KV_PREVIOUS_HIGH_WATER",
+        "MTPLX_DYNAMIC_PAGED_KV_MARGIN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    assert _dynamic_paged_num_blocks(block_size=16, configured_blocks=1024) == 1024
 
 
 def test_paged_active_array_assertion_guards_dense_fallback(monkeypatch):
