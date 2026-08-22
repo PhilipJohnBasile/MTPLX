@@ -947,3 +947,94 @@ def test_per_row_stream_truth_reaches_the_envelope():
         assert stats["row_accepted_drafts"] == row
         assert stats["row_rejected_drafts"] == 1
         assert stats["row_terminal_to_cohort_end_s"] >= 0.0
+
+
+def test_cohort_repetition_stop_trims_job_tokens_and_stamps_receipt():
+    """#311 batch close, service half: the driver trims its own list, but
+    job.tokens was fed pre-trim via on_token — the finalizer must apply the
+    stream's trim to job.tokens/token_times and stamp the receipt keys."""
+    from mtplx.generation import RepetitionStopResult
+
+    class _RepetitionDriver(_Driver):
+        def __call__(self, lane, requests):
+            del lane
+            self.widths.append(len(requests))
+            streams = []
+            for request in requests:
+                # The service must arm cohort rows from generation_limits.
+                assert request.repetition_stop is True
+                for token in [5] * 12:
+                    request.on_token(token)
+                streams.append(
+                    A3BMTPBatchStreamResult(
+                        request_id=request.request_id,
+                        tokens=(5, 5, 5, 5),
+                        finish_reason="stop",
+                        cycles=2,
+                        accepted_drafts=1,
+                        rejected_drafts=0,
+                        repetition_stop=RepetitionStopResult(
+                            trim_start=4,
+                            block_tokens=1,
+                            repeats=8,
+                            repeated_tokens=8,
+                        ),
+                    )
+                )
+            return A3BMTPBatchResult(
+                streams=tuple(streams),
+                cycles=2,
+                accepted_drafts=len(requests),
+                rejected_drafts=0,
+                route_id="fake-b8-t2",
+                width_histogram=MappingProxyType({8: 2}),
+            )
+
+    service = _service(_RepetitionDriver())
+    jobs = [_job(0), _job(1)]
+    for job in jobs:
+        job.generation_limits["uncapped_repetition_stop_enabled"] = True
+        job.max_tokens = 64
+        service.submit(job)
+
+    service.pump_once()
+
+    for job in jobs:
+        result = job.future.result(timeout=1)
+        assert result["tokens"] == [5, 5, 5, 5]
+        assert result["completion_tokens"] == 4
+        assert len(result["_token_times"]) == 4
+        stats = result["stats"]
+        assert stats["repetition_stop_triggered"] is True
+        assert stats["repetition_stop_reason"] == "exact_repeated_token_suffix"
+        assert stats["repetition_stop_block_tokens"] == 1
+        assert stats["repetition_stop_repeats"] == 8
+        assert stats["repetition_stop_trimmed_tokens"] == 8
+        assert stats["repetition_stop_raw_tokens"] == 12
+        # Pre-trim tokens already went to the stream callback (accepted
+        # wire-vs-usage divergence, same as the serial fire).
+        assert job.test_emitted == [5] * 12
+
+
+def test_cohort_rows_stay_unarmed_without_the_generation_limit_flag():
+    service = _service(_Driver())
+    seen = []
+    original = _Driver.__call__
+
+    class _ProbeDriver(_Driver):
+        def __call__(self, lane, requests):
+            seen.extend(request.repetition_stop for request in requests)
+            return original(self, lane, requests)
+
+    service.driver = _ProbeDriver()
+    jobs = [_job(0), _job(1)]
+    for job in jobs:
+        service.submit(job)
+
+    service.pump_once()
+
+    for job in jobs:
+        result = job.future.result(timeout=1)
+        assert result["stats"]["repetition_stop_triggered"] is False
+        assert result["stats"]["repetition_stop_reason"] is None
+    assert seen == [False, False]

@@ -19510,6 +19510,13 @@ def _run_mtp_batch_generation_dispatched(
         presence_penalty=kwargs.get("presence_penalty"),
         frequency_penalty=kwargs.get("frequency_penalty"),
     )
+    # #311 batch close: cohort rows never pass through _run_generation's arm
+    # site, so the literal-repetition stop must be armed here or width>=2
+    # requests decode unguarded. Solo/b1-exact rows re-arm downstream with
+    # the same value (harmless).
+    generation_limits["uncapped_repetition_stop_enabled"] = bool(
+        _repetition_stop_enabled(generation_limits)
+    )
     _validate_mtp_batch_request_contract(
         state,
         prompt_ids,

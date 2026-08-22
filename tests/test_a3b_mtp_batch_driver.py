@@ -179,6 +179,7 @@ def _request(
     temperature=0.0,
     top_p=1.0,
     top_k=0,
+    repetition_stop=False,
 ):
     return A3BMTPBatchRequest(
         request_id=request_id,
@@ -189,6 +190,7 @@ def _request(
         max_tokens=max_tokens,
         on_token=callback,
         cancelled=cancelled,
+        repetition_stop=repetition_stop,
     )
 
 
@@ -1044,3 +1046,44 @@ def test_merge_capacity_follows_logical_offsets_not_stale_allocation():
         np.asarray(merged.keys[0, :, :100, :]).tolist()
         == np.asarray(grown[0, :, :100, :]).tolist()
     )
+
+
+def test_repetition_guard_stops_armed_row_and_spares_unarmed_peer(monkeypatch):
+    """#311 batch close: the fake lane emits consecutive tokens mod VOCAB, a
+    pure period-16 loop — the armed row must stop and trim, the unarmed peer
+    (equally periodic) must run to its full budget."""
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MIN_TOKENS", "40")
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MIN_REPEATED_TOKENS", "32")
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MIN_REPEATS", "2")
+    monkeypatch.setenv("MTPLX_REPETITION_STOP_MAX_BLOCK_TOKENS", "16")
+    streamed: list[int] = []
+    result = generate_a3b_mtp_batch(
+        _FakeLane(),
+        [
+            _request(
+                "armed",
+                [1, 2, 3],
+                max_tokens=64,
+                callback=streamed.append,
+                repetition_stop=True,
+            ),
+            _request("peer", [7], max_tokens=48),
+        ],
+    )
+
+    armed, peer = result.streams
+    assert armed.finish_reason == "stop"
+    hit = armed.repetition_stop
+    assert hit is not None
+    assert hit.block_tokens == 16
+    assert hit.repeats >= 2
+    assert hit.repeated_tokens == hit.block_tokens * hit.repeats
+    # The stream's tokens are the trimmed truth; on_token fired pre-trim.
+    assert len(armed.tokens) == hit.trim_start
+    assert tuple(streamed[: hit.trim_start]) == armed.tokens
+    assert len(streamed) > len(armed.tokens)
+    # The guard fires within one MTP cycle (<=3 tokens) of min_tokens.
+    assert len(streamed) <= 43
+    assert peer.finish_reason == "length"
+    assert len(peer.tokens) == 48
+    assert peer.repetition_stop is None

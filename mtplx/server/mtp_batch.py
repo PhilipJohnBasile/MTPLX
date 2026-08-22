@@ -492,6 +492,9 @@ class MTPBatchGenerationService:
                     )
                 ),
                 cancelled=job.cancel_requested,
+                repetition_stop=bool(
+                    job.generation_limits.get("uncapped_repetition_stop_enabled")
+                ),
                 session_restore=job.session_restore,
                 session_commit=job.session_commit,
             )
@@ -548,6 +551,7 @@ class MTPBatchGenerationService:
                 row_accepted_drafts=int(stream.accepted_drafts),
                 row_rejected_drafts=int(stream.rejected_drafts),
                 terminal_perf_s=stream.terminal_perf_s,
+                repetition_stop=stream.repetition_stop,
             )
 
     def _finalize_on_owner(self, jobs: list[MTPBatchJob]) -> dict[str, Any]:
@@ -615,9 +619,20 @@ class MTPBatchGenerationService:
         row_accepted_drafts: int | None = None,
         row_rejected_drafts: int | None = None,
         terminal_perf_s: float | None = None,
+        repetition_stop: Any | None = None,
     ) -> None:
         if job.future.done():
             return
+        # The driver trimmed its own token list when the repetition guard
+        # fired, but job.tokens was fed by on_token BEFORE the trim — apply
+        # the same suffix delete here so the response, usage, and token_times
+        # all report the trimmed truth. (The repeated tokens already went out
+        # on any live stream; wire-vs-usage divergence is the same accepted
+        # trade-off as the serial holdback-free fire, generation.py F35 note.)
+        if repetition_stop is not None:
+            trim_start = max(0, min(len(job.tokens), int(repetition_stop.trim_start)))
+            del job.tokens[trim_start:]
+            del job.token_times[trim_start:]
         completed_s = time.perf_counter()
         request_elapsed_s = max(0.0, completed_s - job.created_s)
         decode_started_s = job.decode_started_s or cohort_started_s
@@ -669,6 +684,24 @@ class MTPBatchGenerationService:
                 max(0.0, completed_s - terminal_perf_s)
                 if terminal_perf_s is not None
                 else None
+            ),
+            "repetition_stop_triggered": repetition_stop is not None,
+            "repetition_stop_reason": (
+                "exact_repeated_token_suffix" if repetition_stop is not None else None
+            ),
+            "repetition_stop_block_tokens": (
+                0 if repetition_stop is None else int(repetition_stop.block_tokens)
+            ),
+            "repetition_stop_repeats": (
+                0 if repetition_stop is None else int(repetition_stop.repeats)
+            ),
+            "repetition_stop_trimmed_tokens": (
+                0 if repetition_stop is None else int(repetition_stop.repeated_tokens)
+            ),
+            "repetition_stop_raw_tokens": (
+                0
+                if repetition_stop is None
+                else completion_tokens + int(repetition_stop.repeated_tokens)
             ),
             "scheduler_policy": f"fixed_mtp_batch_width_{int(fixed_width)}",
             "request_id": job.request_id,
