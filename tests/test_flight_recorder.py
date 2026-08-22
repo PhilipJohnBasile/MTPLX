@@ -312,3 +312,35 @@ def test_decode_trace_without_sink_costs_nothing(monkeypatch):
         mtp_history_materialize_every=0,
         mtp_history_materialize_events=0,
     )  # no sink, file trace off: returns without touching anything
+
+
+def test_non_streaming_requests_get_sink_driven_samples(tmp_path):
+    """Non-streaming requests never enter the SSE drain (on_tokens never
+    fires) — found 2026-08-22 when an Ivan-harness arm left 75 requests with
+    begin/end and zero samples. The generation-side depth sink now emits the
+    file sample itself when the stream side hasn't."""
+    path = str(tmp_path / "flight-9998.jsonl")
+    recorder = FlightRecorder(path, text_mode="off")
+    recorder.begin(
+        "chatcmpl-ns", session_id="ses_ns", model="m", prompt_tokens=500, stream=False
+    )
+    sink = recorder.live_depth_sink("chatcmpl-ns")
+    assert sink is not None
+    sink(
+        {
+            "generated_tokens": 40,
+            "accepted_by_depth": [10, 6, 2],
+            "drafted_by_depth": [16, 16, 16],
+            "verify_time_s": 0.8,
+            "draft_time_s": 0.1,
+        }
+    )
+    recorder.end("chatcmpl-ns", {"request_id": "chatcmpl-ns", "completion_tokens": 40})
+    assert _wait_for_writer(path, ["begin", "s", "end"])
+    events = _read_events(path)
+    sample = next(e for e in events if e["ev"] == "s")
+    assert sample["gen"] == 40
+    assert sample["acc"] == [10, 6, 2]
+    assert sample["drf"] == [16, 16, 16]
+    assert sample["ctx"] == 540
+    assert "tps" not in sample, "no stream window -> no fabricated rate"
