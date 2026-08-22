@@ -4518,7 +4518,7 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     func testOpenCodeIntegrationWritesCurrentPortProviderHeadersAndNoHiddenCaps() throws {
         let url = temporaryDirectory().appendingPathComponent("opencode.json")
-        let legacyPluginURL = url.deletingLastPathComponent()
+        let managedPluginURL = url.deletingLastPathComponent()
             .appendingPathComponent("mtplx-session-headers.js")
         let existing = """
         {
@@ -4536,7 +4536,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try Data(existing.utf8).write(to: url)
-        try Data("legacy plugin".utf8).write(to: legacyPluginURL)
+        try Data("stale plugin body".utf8).write(to: managedPluginURL)
 
         let desktopSettingsURL = temporaryDirectory().appendingPathComponent("default.dat")
         let integration = OpenCodeIntegration(
@@ -4555,13 +4555,18 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(result.didChange)
         XCTAssertEqual(result.baseURL, "http://127.0.0.1:8000/v1")
         XCTAssertEqual(result.modelReference, "mtplx/mtplx-qwen36-27b-optimized-speed")
-        XCTAssertEqual(result.legacySessionHeadersPluginPath, legacyPluginURL.path)
+        XCTAssertEqual(result.sessionHeadersPluginPath, managedPluginURL.path)
         XCTAssertNotNil(result.backupPath)
         XCTAssertEqual(result.reasoningVisibilityPath, desktopSettingsURL.path)
         XCTAssertTrue(result.reasoningVisibilityDidChange)
 
         let root = try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: url))
-        XCTAssertEqual(root["plugin"]?.arrayValue, [.string("/tmp/keep-plugin.js")])
+        // The managed plugin is installed (a stale registration under a
+        // foreign path is replaced, so the hooks never double-fire).
+        XCTAssertEqual(
+            root["plugin"]?.arrayValue,
+            [.string("/tmp/keep-plugin.js"), .string(managedPluginURL.path)]
+        )
         XCTAssertEqual(root["model"]?.stringValue, "mtplx/mtplx-qwen36-27b-optimized-speed")
         XCTAssertEqual(root["small_model"]?.stringValue, "mtplx/mtplx-qwen36-27b-optimized-speed")
 
@@ -4574,11 +4579,20 @@ final class MTPLXAppCoreTests: XCTestCase {
 
         let models = try XCTUnwrap(mtplx["models"]?.objectValue)
         let model = try XCTUnwrap(models["mtplx-qwen36-27b-optimized-speed"]?.objectValue)
-        XCTAssertEqual(model["reasoning"]?.boolValue, false)
+        // Qwen3.6 trunk: verified reasoning codec so reasoning_content
+        // round-trips; no family effort dial so OpenCode's built-in effort
+        // picker is disabled tier by tier; temperature declared so explicit
+        // client choices transmit (nothing is injected for MTPLX ids).
+        XCTAssertEqual(model["reasoning"]?.boolValue, true)
         XCTAssertNil(model["interleaved"])
         XCTAssertEqual(model["tool_call"]?.boolValue, true)
-        XCTAssertEqual(model["temperature"]?.boolValue, false)
+        XCTAssertEqual(model["temperature"]?.boolValue, true)
         XCTAssertNil(model["options"])
+        let variants = try XCTUnwrap(model["variants"]?.objectValue)
+        XCTAssertEqual(Set(variants.keys), ["none", "minimal", "low", "medium", "high", "xhigh"])
+        for value in variants.values {
+            XCTAssertEqual(value.objectValue?["disabled"]?.boolValue, true)
+        }
         XCTAssertFalse(root.recursivelyContainsKey("maxTokens"))
         XCTAssertFalse(root.recursivelyContainsKey("max_response_tokens"))
 
@@ -4593,7 +4607,28 @@ final class MTPLXAppCoreTests: XCTestCase {
                 atPath: url.deletingLastPathComponent().appendingPathComponent("package.json").path
             )
         )
-        XCTAssertFalse(FileManager.default.fileExists(atPath: result.legacySessionHeadersPluginPath))
+        // The plugin file is managed in place: stale content is replaced
+        // with the template that strips exactly OpenCode's injected 32,000
+        // output cap and the <=1.18.20 qwen sampler pair.
+        let pluginSource = try XCTUnwrap(
+            String(data: Data(contentsOf: managedPluginURL), encoding: .utf8)
+        )
+        XCTAssertTrue(pluginSource.contains("const mtplxInjectedOutputCap = 32000;"))
+        XCTAssertTrue(pluginSource.contains("const mtplxInjectedQwenTemperature = 0.55;"))
+        XCTAssertTrue(pluginSource.contains("output.maxOutputTokens === mtplxInjectedOutputCap"))
+        XCTAssertTrue(pluginSource.contains("x-mtplx-session-id"))
+
+        // Repeat sync with unchanged configuration: no rewrite churn.
+        let repeated = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
+                host: "0.0.0.0",
+                port: 8000,
+                contextWindow: nil
+            )
+        )
+        XCTAssertFalse(repeated.didChange)
+        XCTAssertNil(repeated.backupPath)
     }
 
     func testOpenCodeIntegrationUsesGemmaModelIdentityForGemmaBundles() throws {
@@ -4622,10 +4657,13 @@ final class MTPLXAppCoreTests: XCTestCase {
         let mtplx = try XCTUnwrap(providers["mtplx"]?.objectValue)
         let models = try XCTUnwrap(mtplx["models"]?.objectValue)
         let model = try XCTUnwrap(models["gemma4-mtplx-optimized-speed"]?.objectValue)
+        // Gemma has no verified reasoning codec: reasoning stays declared
+        // off and no effort dial or picker is written.
         XCTAssertEqual(model["reasoning"]?.boolValue, false)
-        XCTAssertEqual(model["temperature"]?.boolValue, false)
+        XCTAssertEqual(model["temperature"]?.boolValue, true)
         XCTAssertNil(model["interleaved"])
         XCTAssertNil(model["options"])
+        XCTAssertNil(model["variants"])
     }
 
     func testOpenCodeIntegrationKeepsQwen35BModelIdentity() throws {
@@ -4708,10 +4746,82 @@ final class MTPLXAppCoreTests: XCTestCase {
         let mtplx = try XCTUnwrap(providers["mtplx"]?.objectValue)
         let models = try XCTUnwrap(mtplx["models"]?.objectValue)
         let model = try XCTUnwrap(models["step-3.7-flash-mtplx-step3p5"]?.objectValue)
-        XCTAssertEqual(model["reasoning"]?.boolValue, false)
-        XCTAssertEqual(model["temperature"]?.boolValue, false)
+        // Step ships a low/medium/high effort dial with a low default; the
+        // dial default rides options.reasoningEffort and OpenCode's built-in
+        // picker is trimmed to the family levels.
+        XCTAssertEqual(model["reasoning"]?.boolValue, true)
+        XCTAssertEqual(model["temperature"]?.boolValue, true)
         XCTAssertNil(model["interleaved"])
-        XCTAssertNil(model["options"])
+        XCTAssertEqual(
+            model["options"]?.objectValue?["reasoningEffort"]?.stringValue,
+            "low"
+        )
+        let variants = try XCTUnwrap(model["variants"]?.objectValue)
+        XCTAssertEqual(Set(variants.keys), ["none", "minimal", "xhigh"])
+        for value in variants.values {
+            XCTAssertEqual(value.objectValue?["disabled"]?.boolValue, true)
+        }
+    }
+
+    func testOpenCodeIntegrationMirrorsQwen38EffortDial() throws {
+        let url = temporaryDirectory().appendingPathComponent("opencode.json")
+        let desktopSettingsURL = temporaryDirectory().appendingPathComponent("default.dat")
+        let integration = OpenCodeIntegration(
+            configURL: url,
+            desktopSettingsStoreURL: desktopSettingsURL
+        )
+
+        // No app dial set: the family default (medium) is mirrored.
+        _ = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+                host: "127.0.0.1",
+                port: 18099,
+                contextWindow: nil
+            )
+        )
+        var root = try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: url))
+        var model = try XCTUnwrap(
+            root["provider"]?.objectValue?["mtplx"]?.objectValue?["models"]?
+                .objectValue?["mtplx-qwen38-27b-optimized-speed"]?.objectValue
+        )
+        XCTAssertEqual(model["reasoning"]?.boolValue, true)
+        XCTAssertEqual(model["temperature"]?.boolValue, true)
+        XCTAssertEqual(
+            model["options"]?.objectValue?["reasoningEffort"]?.stringValue,
+            "medium"
+        )
+        // OpenCode's effort picker is trimmed to the official Qwen3.8 dial:
+        // the client's none/minimal/high tiers are disabled, xhigh/medium/low
+        // stay selectable (an explicit pick wins for that request).
+        var variants = try XCTUnwrap(model["variants"]?.objectValue)
+        XCTAssertEqual(Set(variants.keys), ["none", "minimal", "high"])
+        for value in variants.values {
+            XCTAssertEqual(value.objectValue?["disabled"]?.boolValue, true)
+        }
+
+        // Changing the effort dial in the app updates OpenCode like a mirror.
+        let dialed = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.8-27B-MTPLX-Optimized-Speed",
+                host: "127.0.0.1",
+                port: 18099,
+                contextWindow: nil,
+                reasoningEffort: "xhigh"
+            )
+        )
+        XCTAssertTrue(dialed.didChange)
+        root = try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: url))
+        model = try XCTUnwrap(
+            root["provider"]?.objectValue?["mtplx"]?.objectValue?["models"]?
+                .objectValue?["mtplx-qwen38-27b-optimized-speed"]?.objectValue
+        )
+        XCTAssertEqual(
+            model["options"]?.objectValue?["reasoningEffort"]?.stringValue,
+            "xhigh"
+        )
+        variants = try XCTUnwrap(model["variants"]?.objectValue)
+        XCTAssertEqual(Set(variants.keys), ["none", "minimal", "high"])
     }
 
     func testPiIntegrationWritesCurrentPortAndNoHiddenCaps() throws {
@@ -4764,12 +4874,16 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(mtplx["headers"]?.objectValue?["x-mtplx-client"]?.stringValue, "pi")
         XCTAssertEqual(mtplx["compat"]?.objectValue?["maxTokensField"]?.stringValue, "max_tokens")
         XCTAssertEqual(mtplx["compat"]?.objectValue?["supportsDeveloperRole"]?.boolValue, false)
-        XCTAssertEqual(mtplx["compat"]?.objectValue?["supportsReasoningEffort"]?.boolValue, false)
+        XCTAssertEqual(mtplx["compat"]?.objectValue?["supportsReasoningEffort"]?.boolValue, true)
+        XCTAssertEqual(mtplx["compat"]?.objectValue?["thinkingFormat"]?.stringValue, "qwen")
 
         let models = try XCTUnwrap(mtplx["models"]?.arrayValue)
         let model = try XCTUnwrap(models.first?.objectValue)
         XCTAssertEqual(model["id"]?.stringValue, "mtplx-qwen36-27b-optimized-speed")
         XCTAssertEqual(model["reasoning"]?.boolValue, true)
+        let thinkingLevelMap = try XCTUnwrap(model["thinkingLevelMap"]?.objectValue)
+        XCTAssertEqual(thinkingLevelMap["minimal"], .null)
+        XCTAssertEqual(thinkingLevelMap["xhigh"]?.stringValue, "xhigh")
         XCTAssertEqual(model["contextWindow"]?.intValue, 131_072)
         XCTAssertFalse(root.recursivelyContainsKey("maxTokens"))
         XCTAssertFalse(root.recursivelyContainsKey("max_response_tokens"))
@@ -4819,7 +4933,10 @@ final class MTPLXAppCoreTests: XCTestCase {
         let providers = try XCTUnwrap(root["providers"]?.objectValue)
         let mtplx = try XCTUnwrap(providers["mtplx"]?.objectValue)
         XCTAssertEqual(mtplx["compat"]?.objectValue?["supportsReasoningEffort"]?.boolValue, true)
-        XCTAssertEqual(mtplx["compat"]?.objectValue?["reasoningEffort"]?.stringValue, "low")
+        XCTAssertEqual(mtplx["compat"]?.objectValue?["thinkingFormat"]?.stringValue, "qwen")
+        // The old per-family compat "reasoningEffort" hint is gone: it is not
+        // a Pi 0.84.x schema key, and the server owns per-family narrowing.
+        XCTAssertNil(mtplx["compat"]?.objectValue?["reasoningEffort"])
         let models = try XCTUnwrap(mtplx["models"]?.arrayValue)
         let model = try XCTUnwrap(models.first?.objectValue)
         XCTAssertEqual(model["id"]?.stringValue, "step-3.7-flash-mtplx-step3p5")

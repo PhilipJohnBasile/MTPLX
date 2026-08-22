@@ -296,6 +296,8 @@ def encode_chat_messages(
             fallback_kwargs["tools"] = tools
         return list(tokenizer.apply_chat_template(messages, **fallback_kwargs))
     except Exception:
+        if getattr(tokenizer, "chat_template", None):
+            raise
         prompt = "\n".join(
             f"{item.get('role', 'user')}: {item.get('content', '')}" for item in messages
         )

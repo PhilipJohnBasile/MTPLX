@@ -1645,16 +1645,6 @@ def _preserve_thinking_policy(args: Any) -> str:
     return mode if mode in {"auto", "on", "off", "scoped"} else "auto"
 
 
-def _pi_preserve_thinking_policy(args: Any) -> str:
-    cli_flags = getattr(args, "_cli_flags", set()) or set()
-    if (
-        "preserve-thinking" in cli_flags
-        or "strip-assistant-reasoning-history" in cli_flags
-    ):
-        return _preserve_thinking_policy(args)
-    return "off"
-
-
 def _apply_pi_history_budget_env_defaults(env: dict[str, str]) -> None:
     """Pi lane = the shared coding-agent engine block + Pi history budgets.
 
@@ -8664,7 +8654,7 @@ def _print_serve_handoff(args: Any, runtime_model: str, profile_name: str) -> No
             f"[1/6] Server config ready: {_server_url(args.host, int(args.port))}/v1"
         )
     _print_serve_start_line(f"[2/6] Model resolved: {runtime_model}")
-    _print_serve_start_line("[3/6] Runtime contract verified")
+    _print_serve_start_line(f"[3/6] Runtime contract verified — profile: {profile_name}")
     _print_serve_start_line(
         "      Loading the model can take about a minute on first start."
     )
@@ -9343,9 +9333,7 @@ def cmd_serve_public(args: Any) -> int:
         "--reasoning-mode",
         _reasoning_mode(args, default="auto"),
         "--preserve-thinking",
-        _pi_preserve_thinking_policy(args)
-        if bool(getattr(args, "quickstart_pi", False))
-        else _preserve_thinking_policy(args),
+        _preserve_thinking_policy(args),
         "--verify-strategy",
         str(getattr(args, "verify_strategy", "capture_commit") or "capture_commit"),
         "--verify-core",
@@ -11669,7 +11657,12 @@ def _quickstart_pi_payload(
     pi_temperature = _pi_sampler_temperature(args)
     pi_top_p = _pi_sampler_top_p(args)
     pi_top_k = _pi_sampler_top_k(args)
-    pi_preserve_thinking = _pi_preserve_thinking_policy(args)
+    # Pi shares the general auto resolution: the family contract governs the
+    # reasoning-history policy (Qwen 3.8 preserves, checkpoint templates run
+    # scoped). The 1.0.0-era Pi-only hard "off" predated scoped mode (2.0.2)
+    # and kept actively stripping Pi's echoed reasoning_content history after
+    # every other lane moved to the trained contract (issue #310 receipts).
+    pi_preserve_thinking = _preserve_thinking_policy(args)
     context_window = _inspection_context_window(inspection, args=args)
     api_key_command_suffix = _api_key_command_suffix(args) or "--api-key mtplx-local "
     provider = build_pi_provider_config(
@@ -11802,7 +11795,28 @@ def _quickstart_opencode_payload(
     base_url = f"http://{_connect_host_for_bind(host)}:{port}/v1"
     context_window = _inspection_context_window(inspection, args=args)
     reasoning_mode = _reasoning_mode(args, default="auto")
-    enable_thinking = reasoning_mode != "off"
+    # The declared OpenCode reasoning capability mirrors the model contract:
+    # a family with a verified codec (unless the user forced --reasoning off),
+    # never an unknown model. The resolved public id is the fallback ref so
+    # inspection-less lanes (`mtplx integrate opencode`) still resolve the
+    # family from its marker.
+    reasoning_policy = reasoning_policy_for_model(
+        model_ref=str(getattr(args, "model", "") or "") or model_id,
+        inspection=inspection,
+    )
+    enable_thinking = reasoning_mode != "off" and reasoning_policy.supported
+    # The app/CLI dial is OpenCode's source of truth for reasoning effort:
+    # an explicit --reasoning-effort wins, otherwise the family default from
+    # the descriptor codec (Qwen3.8: medium). The family's effort levels
+    # drive OpenCode's effort picker so it mirrors the MTPLX dial.
+    reasoning_effort = getattr(args, "reasoning_effort", None)
+    if reasoning_effort in (None, "auto"):
+        reasoning_effort = reasoning_policy.default_effort
+    if not enable_thinking:
+        reasoning_effort = None
+    reasoning_effort_levels = (
+        tuple(reasoning_policy.effort_levels) if reasoning_policy.supported else None
+    )
     tool_prompt_mode = _inspection_tool_prompt_mode(args, inspection)
     chat_template_profile = str(
         getattr(args, "chat_template_profile", OPENCODE_CHAT_TEMPLATE_PROFILE_DEFAULT)
@@ -11863,6 +11877,8 @@ def _quickstart_opencode_payload(
         enable_thinking=enable_thinking,
         top_p=float(getattr(args, "top_p", 0.95)),
         top_k=int(getattr(args, "top_k", 20)),
+        reasoning_effort=reasoning_effort,
+        reasoning_effort_levels=reasoning_effort_levels,
     )
     payload = {
         "integration": "opencode",
@@ -11884,7 +11900,8 @@ def _quickstart_opencode_payload(
         "context_window": context_window,
         "output_limit": output_limit,
         "transport_headers": {"x-mtplx-client": "opencode"},
-        "reasoning_field": None,
+        "reasoning_field": "reasoning_content",
+        "reasoning_effort": reasoning_effort,
         "no_hidden_max_tokens": True,
         "tool_prompt_mode": tool_prompt_mode,
         "chat_template_profile": chat_template_profile,
@@ -11936,6 +11953,8 @@ def _quickstart_opencode_payload(
             enable_thinking=enable_thinking,
             top_p=float(getattr(args, "top_p", 0.95)),
             top_k=int(getattr(args, "top_k", 20)),
+            reasoning_effort=reasoning_effort,
+            reasoning_effort_levels=reasoning_effort_levels,
         )
     return payload
 
@@ -12548,7 +12567,7 @@ def _quickstart_run_pi(
         draft_top_p=pi_top_p,
         draft_top_k=pi_top_k,
         reasoning=getattr(args, "reasoning", None),
-        preserve_thinking=_pi_preserve_thinking_policy(args),
+        preserve_thinking=_preserve_thinking_policy(args),
         reasoning_parser=getattr(args, "reasoning_parser", "qwen3"),
         reasoning_effort=getattr(args, "reasoning_effort", None),
         stats_footer=False,
@@ -14042,7 +14061,10 @@ def cmd_integrate_public(args: Any) -> int:
             },
         }
     elif action == "opencode":
+        from mtplx.opencode import build_opencode_provider_config
+
         api_key_suffix = _api_key_command_suffix(args)
+        reasoning_policy = reasoning_policy_for_model(model_ref=model_id)
         payload = {
             "integration": "opencode",
             "server_url": server_url,
@@ -14054,49 +14076,27 @@ def cmd_integrate_public(args: Any) -> int:
                 f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 f"{api_key_suffix}--reasoning auto --no-stats-footer"
             ),
-            "config": {
-                "provider": {
-                    "mtplx": {
-                        "npm": "@ai-sdk/openai-compatible",
-                        "name": "MTPLX (local)",
-                        "options": {
-                            "baseURL": api_base_url,
-                            "apiKey": (
-                                f"${args.api_key_env}"
-                                if getattr(args, "api_key", None)
-                                else "mtplx-local"
-                            ),
-                            "timeout": False,
-                            "chunkTimeout": 900000,
-                            "headers": {
-                                "x-mtplx-client": "opencode",
-                            },
-                        },
-                        "models": {
-                            model_id: {
-                                "name": "MTPLX local",
-                                "reasoning": False,
-                                "tool_call": True,
-                                "temperature": False,
-                                "limit": {
-                                    "context": 262144,
-                                    "output": 262144,
-                                },
-                                "modalities": {
-                                    "input": ["text"],
-                                    "output": ["text"],
-                                },
-                            }
-                        },
-                    }
-                },
-                "model": f"mtplx/{model_id}",
-                "small_model": f"mtplx/{model_id}",
-            },
+            "config": build_opencode_provider_config(
+                base_url=api_base_url,
+                model_id=model_id,
+                model_name="MTPLX local",
+                api_key=(
+                    f"${args.api_key_env}"
+                    if getattr(args, "api_key", None)
+                    else "mtplx-local"
+                ),
+                enable_thinking=reasoning_policy.supported,
+                reasoning_effort=reasoning_policy.default_effort,
+                reasoning_effort_levels=(
+                    tuple(reasoning_policy.effort_levels)
+                    if reasoning_policy.supported
+                    else None
+                ),
+            ),
             "notes": [
-                "OpenCode identifies itself with x-mtplx-client, but MTPLX owns reasoning and sampler policy.",
-                "Do not add OpenAI reasoningSummary/reasoningEffort fields for MTPLX; those are client-side overrides.",
-                "Use MTPLX server settings or --reasoning on when you intentionally want reasoning.",
+                "OpenCode identifies itself with x-mtplx-client; the MTPLX app/CLI dial is the source of truth for reasoning effort and the family sampler stays server-side.",
+                "options.reasoningEffort mirrors the MTPLX dial; an effort picked inside OpenCode overrides it for that request.",
+                "Use MTPLX server settings or --reasoning on|off to change reasoning policy.",
             ],
         }
     elif action == "swival":

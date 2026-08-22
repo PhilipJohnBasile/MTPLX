@@ -7,7 +7,10 @@ MTPLX_CLIENT_CONTROLS_DEFAULT=hints restores the pre-2.5.3 policy.
 
 from __future__ import annotations
 
-from mtplx.server.openai import _client_controls_allowed
+from mtplx.server.openai import (
+    _client_controls_allowed,
+    _client_thinking_controls_allowed,
+)
 
 
 def test_default_honors_anonymous_controls(monkeypatch):
@@ -40,3 +43,26 @@ def test_honor_mode_keeps_managed_surfaces_server_owned(monkeypatch):
 def test_unknown_value_falls_back_to_honor(monkeypatch):
     monkeypatch.setenv("MTPLX_CLIENT_CONTROLS_DEFAULT", "yolo")
     assert _client_controls_allowed({}, {}) is True
+
+
+def test_managed_surfaces_keep_thinking_controls(monkeypatch):
+    """Effort pickers in managed clients (OpenCode/Pi/app) govern the request
+    even though their sampler params stay server-owned."""
+    monkeypatch.delenv("MTPLX_CLIENT_CONTROLS_DEFAULT", raising=False)
+    for hint in ("opencode", "pi", "chat"):
+        headers = {"x-mtplx-client": hint}
+        assert _client_controls_allowed(headers, {}) is False
+        assert _client_thinking_controls_allowed(headers, {}) is True
+
+
+def test_anonymous_thinking_controls_follow_the_general_contract(monkeypatch):
+    monkeypatch.delenv("MTPLX_CLIENT_CONTROLS_DEFAULT", raising=False)
+    assert _client_thinking_controls_allowed({}, {}) is True
+    monkeypatch.setenv("MTPLX_CLIENT_CONTROLS_DEFAULT", "hints")
+    assert _client_thinking_controls_allowed({}, {}) is False
+    assert (
+        _client_thinking_controls_allowed(
+            {"x-mtplx-allow-client-controls": "1"}, {}
+        )
+        is True
+    )

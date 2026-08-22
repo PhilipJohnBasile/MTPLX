@@ -188,13 +188,24 @@ def build_pi_provider_config(
     Pi's OpenAI-compatible transport currently needs the Chat Completions API
     name, a dummy-or-real API key, and compatibility flags so it sends
     ``system`` instead of ``developer`` and ``max_tokens`` instead of the newer
-    OpenAI field.
+    OpenAI field. The Qwen thinking format wires Pi's thinking-level picker to
+    the server's ``enable_thinking``/``reasoning_effort`` request fields.
     """
 
     model_config: dict[str, Any] = {
         "id": str(model_id),
         "name": model_name or f"MTPLX {model_id}",
         "reasoning": True,
+        # Pi's effort ladder is off/minimal/low/medium/high/xhigh/max; the
+        # MTPLX vocabulary is low/medium/high/xhigh (mtplx/reasoning_effort.py)
+        # and the server narrows to the loaded family's declared tiers.
+        # "minimal": null hides Pi's duplicate below-low tier; "xhigh" must be
+        # mapped to appear in Pi's picker at all (Qwen 3.8's top tier); "max"
+        # stays unmapped, so hidden. Unmapped levels pass through verbatim.
+        "thinkingLevelMap": {
+            "minimal": None,
+            "xhigh": "xhigh",
+        },
         "input": ["text"],
         "contextWindow": int(context_window),
         "cost": {
@@ -219,9 +230,16 @@ def build_pi_provider_config(
         "headers": {
             "x-mtplx-client": "pi",
         },
+        # Pi 0.84.x with thinkingFormat "qwen" serializes exactly the fields
+        # the MTPLX server accepts: top-level ``enable_thinking`` (true when a
+        # thinking level is selected, false for Pi's "off" level) plus
+        # ``reasoning_effort`` mapped through thinkingLevelMap
+        # (pi-ai openai-completions buildParams). Pi's default level is
+        # "medium" — the Qwen 3.8 family coding default.
         "compat": {
             "supportsDeveloperRole": False,
-            "supportsReasoningEffort": False,
+            "supportsReasoningEffort": True,
+            "thinkingFormat": "qwen",
             "maxTokensField": "max_tokens",
         },
         "models": [model_config],

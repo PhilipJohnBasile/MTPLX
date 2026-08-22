@@ -284,14 +284,27 @@ def _control_ownership_observability(
     *,
     client_controls_allowed: bool,
     observability: dict[str, Any],
+    thinking_controls_allowed: bool | None = None,
 ) -> None:
     srv = _srv()
+    thinking_allowed = (
+        client_controls_allowed
+        if thinking_controls_allowed is None
+        else thinking_controls_allowed
+    )
     observability["mtplx_control_owner"] = (
         "client" if client_controls_allowed else "server"
     )
     observability["client_controls_allowed"] = bool(client_controls_allowed)
+    observability["thinking_controls_allowed"] = bool(thinking_allowed)
     if not client_controls_allowed:
         ignored_fields = srv._ignored_client_control_fields(request)
+        if thinking_allowed:
+            ignored_fields = [
+                field
+                for field in ignored_fields
+                if field not in ("enable_thinking", "reasoning_effort")
+            ]
         if ignored_fields:
             observability["client_control_fields_ignored"] = ignored_fields
 
@@ -499,6 +512,9 @@ def resolve_request_policy(
         no_tools_contract_applies and not post_tool_answer_contract_active
     )
     client_controls_allowed = srv._client_controls_allowed(headers, metadata)
+    thinking_controls_allowed = srv._client_thinking_controls_allowed(
+        headers, metadata
+    )
     pi_convergence_contract_active = bool(
         chat
         and not read_only_force_answer_contract_active
@@ -613,13 +629,13 @@ def resolve_request_policy(
     thinking_enabled = srv._thinking_enabled_for_request(
         state,
         request,
-        allow_client_controls=client_controls_allowed,
+        allow_client_controls=thinking_controls_allowed,
     )
     reasoning_effort = srv._reasoning_effort_for_state(
         state,
         thinking_enabled=thinking_enabled,
         request_effort=request.reasoning_effort,
-        allow_client_controls=client_controls_allowed,
+        allow_client_controls=thinking_controls_allowed,
     )
     if (
         read_only_force_answer_contract_active
@@ -717,13 +733,13 @@ def resolve_request_policy(
         server_reasoning_mode = (
             "on" if bool(getattr(state.args, "enable_thinking", True)) else "off"
         )
-    if not client_controls_allowed:
+    if not thinking_controls_allowed:
         request_reasoning_mode = (
             "off" if not thinking_enabled else server_reasoning_mode
         )
     elif request.enable_thinking is False:
         request_reasoning_mode = "off"
-    elif request.enable_thinking is True and server_reasoning_mode == "auto":
+    elif request.enable_thinking is True:
         request_reasoning_mode = "on"
     else:
         request_reasoning_mode = server_reasoning_mode
@@ -731,11 +747,12 @@ def resolve_request_policy(
     observability["request_enable_thinking"] = bool(thinking_enabled)
     observability["request_reasoning_effort"] = reasoning_effort
     observability["request_enable_thinking_override"] = (
-        request.enable_thinking is not None and client_controls_allowed
+        request.enable_thinking is not None and thinking_controls_allowed
     )
     _control_ownership_observability(
         request,
         client_controls_allowed=client_controls_allowed,
+        thinking_controls_allowed=thinking_controls_allowed,
         observability=observability,
     )
     observability["request_reasoning_parser"] = srv._reasoning_parser_for_state(state)

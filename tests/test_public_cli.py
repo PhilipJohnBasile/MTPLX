@@ -340,7 +340,9 @@ def test_bench_prefill_ladder_dry_run_json(monkeypatch, capsys):
     assert "--prompt-format chat" in payload["recommended_plugged_in_commands"][0]
     assert "--disable-thinking" in payload["recommended_plugged_in_commands"][0]
     assert payload["profile"]["env"]["MTPLX_LAZY_VERIFY_LOGITS"] == "1"
-    assert payload["profile"]["env"]["MTPLX_BATCH_TARGET_ARRAYS"] == "1"
+    # Lazy is the active strategy; the batched lane must not be claimed
+    # while the lazy gate kills it (PR #314 dead-pair fix).
+    assert payload["profile"]["env"]["MTPLX_BATCH_TARGET_ARRAYS"] == "0"
     assert payload["profile"]["env"]["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "1"
     assert payload["profile"]["env"]["MTPLX_PREFILL_CHUNK_CACHE_CLEANUP"] == "1"
     assert (
@@ -881,10 +883,15 @@ def test_start_opencode_dry_run_json_writes_no_hidden_cap(
     model_id = payload["opencode"]["model_id"]
     assert payload["opencode"]["provider"]["options"]["apiKey"] == "<configured>"
     model = payload["opencode"]["config"]["provider"]["mtplx"]["models"][model_id]
-    assert model["reasoning"] is False
-    assert model["temperature"] is False
+    # The dry-run stub resolves the default qwen3_next lane: verified codec
+    # (reasoning_content round-trips), no effort dial (OpenCode's built-in
+    # effort picker disabled tier by tier), temperature declared so explicit
+    # client-side choices transmit (nothing is injected for MTPLX ids).
+    assert model["reasoning"] is True
+    assert model["temperature"] is True
     assert "interleaved" not in model
     assert "options" not in model
+    assert all(value == {"disabled": True} for value in model["variants"].values())
 
 
 def test_start_opencode_dry_run_emits_explicit_ssd_off(monkeypatch, tmp_path, capsys):
@@ -2860,9 +2867,14 @@ def test_quickstart_pi_dry_run_json(monkeypatch, tmp_path, capsys):
     assert payload["pi"]["provider"]["authHeader"] is True
     assert payload["pi"]["provider"]["headers"] == {"x-mtplx-client": "pi"}
     assert payload["pi"]["provider"]["compat"]["supportsDeveloperRole"] is False
-    assert payload["pi"]["provider"]["compat"]["supportsReasoningEffort"] is False
+    assert payload["pi"]["provider"]["compat"]["supportsReasoningEffort"] is True
+    assert payload["pi"]["provider"]["compat"]["thinkingFormat"] == "qwen"
     assert payload["pi"]["provider"]["compat"]["maxTokensField"] == "max_tokens"
     assert payload["pi"]["provider"]["models"][0]["reasoning"] is True
+    assert payload["pi"]["provider"]["models"][0]["thinkingLevelMap"] == {
+        "minimal": None,
+        "xhigh": "xhigh",
+    }
     assert payload["pi"]["no_hidden_max_tokens"] is True
     assert payload["pi"]["provider"]["models"][0]["maxTokens"] == payload["pi"][
         "context_window"
@@ -2873,7 +2885,9 @@ def test_quickstart_pi_dry_run_json(monkeypatch, tmp_path, capsys):
     assert "--api-key mtplx-local" in payload["pi"]["server_command"]
     assert "--default-top-p 0.95" in payload["pi"]["server_command"]
     assert "--draft-top-p 0.95" in payload["pi"]["server_command"]
-    assert "--preserve-thinking off" in payload["pi"]["server_command"]
+    # Pi rides the general auto resolution (2026-08-21): the family contract
+    # owns reasoning history, replacing the 1.0.0-era Pi-only hard "off".
+    assert "--preserve-thinking auto" in payload["pi"]["server_command"]
 
 
 def test_start_pi_missing_cli_stops_before_model_check(monkeypatch, tmp_path, capsys):
@@ -5478,10 +5492,19 @@ def test_integrate_opencode_json_uses_mtplx_owned_generation_contract(capsys):
     assert (
         payload["config"]["provider"]["mtplx"]["options"]["apiKey"] == "$MTPLX_API_KEY"
     )
-    assert model["reasoning"] is False
-    assert model["temperature"] is False
+    # The default model is the Qwen3.8 coding flagship: verified reasoning
+    # codec (so reasoning_content round-trips), the family effort dial
+    # (default medium) mirrored into options.reasoningEffort, and OpenCode's
+    # built-in effort picker trimmed to the xhigh/medium/low family levels.
+    assert model["reasoning"] is True
+    assert model["temperature"] is True
     assert "interleaved" not in model
-    assert "options" not in model
+    assert model["options"] == {"reasoningEffort": "medium"}
+    assert model["variants"] == {
+        "none": {"disabled": True},
+        "minimal": {"disabled": True},
+        "high": {"disabled": True},
+    }
 
 
 def test_integrate_swival_json_emits_generic_provider_command(capsys):
@@ -7039,7 +7062,7 @@ def test_quickstart_pi_passes_launch_command_to_server(monkeypatch):
 
     assert "--launch-pi" in calls["cmd"]
     assert "--server-console" in calls["cmd"]
-    assert calls["cmd"][calls["cmd"].index("--preserve-thinking") + 1] == "off"
+    assert calls["cmd"][calls["cmd"].index("--preserve-thinking") + 1] == "auto"
     assert calls["cmd"][calls["cmd"].index("--context-window") + 1] == "262144"
     command = calls["cmd"][calls["cmd"].index("--pi-launch-command") + 1]
     assert command == "pi --model mtplx/example"

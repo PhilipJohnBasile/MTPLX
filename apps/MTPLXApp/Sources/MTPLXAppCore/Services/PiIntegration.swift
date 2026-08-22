@@ -301,8 +301,7 @@ public struct PiIntegration: Sendable {
                 baseURL: baseURL,
                 apiKey: apiKey,
                 contextWindow: contextWindow,
-                reasoningEnabled: OpenCodeIntegration.reasoningEnabled(forModelID: modelID),
-                reasoningEffort: OpenCodeIntegration.reasoningEffort(forModelID: modelID)
+                reasoningEnabled: OpenCodeIntegration.reasoningEnabled(forModelID: modelID)
             )
         )
         root["providers"] = .object(providers)
@@ -353,18 +352,14 @@ public struct PiIntegration: Sendable {
         baseURL: String,
         apiKey: String,
         contextWindow: Int,
-        reasoningEnabled: Bool,
-        reasoningEffort: String?
+        reasoningEnabled: Bool
     ) -> [String: JSONValue] {
-        var compat: [String: JSONValue] = [
-            "supportsDeveloperRole": .bool(false),
-            "supportsReasoningEffort": .bool(reasoningEffort != nil),
-            "maxTokensField": .string("max_tokens"),
-        ]
-        if let reasoningEffort {
-            compat["reasoningEffort"] = .string(reasoningEffort)
-        }
-
+        // Mirrors the CLI provider block (mtplx/pi.py build_pi_provider_config):
+        // the Qwen thinking format makes Pi 0.84.x serialize exactly the
+        // request fields the MTPLX server accepts — top-level enable_thinking
+        // plus reasoning_effort mapped through thinkingLevelMap. The server
+        // narrows effort to the loaded family's declared tiers; Pi's default
+        // level is "medium", the Qwen 3.8 family coding default.
         return [
             "baseUrl": .string(baseURL),
             "api": .string("openai-completions"),
@@ -373,12 +368,25 @@ public struct PiIntegration: Sendable {
             "headers": .object([
                 "x-mtplx-client": .string("pi"),
             ]),
-            "compat": .object(compat),
+            "compat": .object([
+                "supportsDeveloperRole": .bool(false),
+                "supportsReasoningEffort": .bool(true),
+                "thinkingFormat": .string("qwen"),
+                "maxTokensField": .string("max_tokens"),
+            ]),
             "models": .array([
                 .object([
                     "id": .string(modelID),
                     "name": .string("MTPLX \(modelID)"),
                     "reasoning": .bool(reasoningEnabled),
+                    // Pi's ladder is off/minimal/low/medium/high/xhigh/max;
+                    // MTPLX vocabulary is low/medium/high/xhigh. null hides
+                    // Pi's duplicate "minimal" tier; "xhigh" must be mapped
+                    // to appear in Pi's picker at all; "max" stays hidden.
+                    "thinkingLevelMap": .object([
+                        "minimal": .null,
+                        "xhigh": .string("xhigh"),
+                    ]),
                     "input": .array([.string("text")]),
                     "contextWindow": .number(Double(contextWindow)),
                     "cost": .object([

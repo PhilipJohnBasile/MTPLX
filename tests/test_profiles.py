@@ -218,7 +218,10 @@ def test_sustained_profile_is_native_mtp_long_context_path() -> None:
     assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY_CONTEXT_THRESHOLD"] == "16384"
     assert profile.env_dict()["MTPLX_CLEAR_CACHE_EVERY_LONG_CONTEXT"] == "1024"
     assert profile.env_dict()["MTPLX_LAZY_VERIFY_LOGITS"] == "1"
-    assert profile.env_dict()["MTPLX_BATCH_TARGET_ARRAYS"] == "1"
+    # The active verify strategy is lazy per-row distributions; the batched
+    # lane is gated off by it at runtime, so the profile must not claim it
+    # (the "1"/"1" pair shipped contradictory 1.0.0 -> 2.9.0, PR #314).
+    assert profile.env_dict()["MTPLX_BATCH_TARGET_ARRAYS"] == "0"
     assert profile.env_dict()["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "1"
     assert profile.env_dict()["MTPLX_DEFER_VERIFY_HIDDEN_EVAL"] == "1"
     assert profile.env_dict()["MTPLX_VERIFY_HIDDEN_MODE"] == "logits_first_committed_slice"

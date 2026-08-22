@@ -116,10 +116,90 @@ def test_status_flags_overridden_but_keeps_ok_true() -> None:
 
 def test_non_overridable_env_is_stomped_and_not_listed(capsys) -> None:
     # MTPLX_NAX_VERIFY is not in PROFILE_ENV_USER_OVERRIDE_KEYS: the
-    # profile stomps it (historical behavior) and the override list stays
-    # empty — no false positives.
+    # profile stomps it and the override list stays empty — no false
+    # positives. Since the turbo-truth audit the stomp itself is LOUD
+    # (one line), never silent.
     environ = {"MTPLX_NAX_VERIFY": "0"}
     apply_profile_env("turbo", environ=environ)
     assert environ["MTPLX_NAX_VERIFY"] == "1"
     assert profiles.profile_env_overridden == []
-    assert "profile env override:" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "profile env override:" not in out
+    assert out.count("profile env stomp:") == 1
+    assert "MTPLX_NAX_VERIFY=0 replaced by profile turbo value 1" in out
+
+
+# ---------------------------------------------------------------------------
+# Turbo-truth audit (2026-08-21): the batched/lazy target-distribution pair.
+# ---------------------------------------------------------------------------
+
+
+def test_profiles_do_not_claim_the_batched_lane_the_lazy_gate_kills() -> None:
+    # generation.py only builds batched target distributions when the lazy
+    # strategy is off; a profile setting both to "1" is self-contradictory
+    # (shipped that way 1.0.0 -> 2.9.0, PR #314). The profile must express
+    # the strategy that actually runs: lazy on, batched off.
+    for name in ("turbo", "sustained", "performance-cold"):
+        env = get_profile(name).env_dict()
+        assert env["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "1", name
+        assert env["MTPLX_BATCH_TARGET_ARRAYS"] == "0", name
+
+
+def test_batched_lane_ab_arm_is_operator_launchable(capsys) -> None:
+    # PR #314's measured arm: lazy off + batched on, exported before launch.
+    # Both keys must survive the profile applier and be announced.
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" in PROFILE_ENV_USER_OVERRIDE_KEYS
+    assert "MTPLX_BATCH_TARGET_ARRAYS" in PROFILE_ENV_USER_OVERRIDE_KEYS
+    environ = {
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS": "0",
+        "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    }
+    apply_profile_env("turbo", environ=environ)
+    assert environ["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "0"
+    assert environ["MTPLX_BATCH_TARGET_ARRAYS"] == "1"
+    assert sorted(entry["var"] for entry in profiles.profile_env_overridden) == [
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+    ]
+    out = capsys.readouterr().out
+    assert out.count("profile env override:") == 2
+    # lazy=0 means the batched flag is live, not gated: no dead-flag line.
+    assert "env gated at runtime:" not in out
+    status = profile_env_status("turbo", environ=environ)
+    assert status["MTPLX_LAZY_TARGET_DISTRIBUTIONS"]["ok"] is True
+    assert status["MTPLX_BATCH_TARGET_ARRAYS"]["ok"] is True
+    assert status["MTPLX_LAZY_TARGET_DISTRIBUTIONS"]["overridden"] is True
+    assert status["MTPLX_BATCH_TARGET_ARRAYS"]["overridden"] is True
+
+
+def test_runtime_gated_env_combo_is_announced_loudly(capsys) -> None:
+    # An operator (or stale launcher config) re-creating the dead pair gets
+    # one loud line naming the dead flag and its gate — never silence.
+    environ = {"MTPLX_BATCH_TARGET_ARRAYS": "1"}
+    apply_profile_env("turbo", environ=environ)  # profile keeps lazy=1
+    assert environ["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "1"
+    assert environ["MTPLX_BATCH_TARGET_ARRAYS"] == "1"  # override honored
+    out = capsys.readouterr().out
+    assert out.count("env gated at runtime:") == 1
+    assert "MTPLX_BATCH_TARGET_ARRAYS=1 has no effect" in out
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS=1" in out
+
+
+def test_coding_agent_lane_bonus_verify_pin_is_announced(capsys) -> None:
+    # The app/CLI coding-agent lanes inject MTPLX_LAZY_BONUS_VERIFY=1 into
+    # the daemon env while every product profile runs the lazy-distribution
+    # strategy that disables it (generation.py records
+    # disabled_by=lazy_target_distributions per event, which nobody reads).
+    # Serve startup must say it out loud instead.
+    environ = {"MTPLX_LAZY_BONUS_VERIFY": "1"}
+    apply_profile_env("sustained", environ=environ)
+    out = capsys.readouterr().out
+    assert out.count("env gated at runtime:") == 1
+    assert "MTPLX_LAZY_BONUS_VERIFY=1 has no effect" in out
+
+
+def test_profile_defaults_emit_no_gated_env_lines(capsys) -> None:
+    # The shipped profiles alone must be contradiction-free.
+    for name in ("turbo", "sustained", "performance-cold", "stable", "exact"):
+        apply_profile_env(name, environ={})
+    assert "env gated at runtime:" not in capsys.readouterr().out

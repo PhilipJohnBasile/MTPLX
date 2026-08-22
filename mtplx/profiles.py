@@ -55,6 +55,15 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # config being shipped), not only on profiles that leave the env
         # unset. Same operator-A/B precedent as DONATION/MAX_CONTEXT.
         "MTPLX_COMPILED_VERIFY",
+        # Verify target-distribution strategy (PR #314, 2026-08-21): lazy
+        # per-row vs batched precompute is a real A/B operators must be able
+        # to launch against the shipping profiles — the batched arm is
+        # MTPLX_LAZY_TARGET_DISTRIBUTIONS=0 MTPLX_BATCH_TARGET_ARRAYS=1.
+        # Before this entry an exported value was silently stomped back to
+        # the profile default (the reporter had to patch site-packages to
+        # measure). Same operator-A/B precedent as DONATION above.
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "MTPLX_BATCH_TARGET_ARRAYS",
         # Background warmup ladder (F6, 2026-08-16): operators sweep the
         # rung list per machine/benchmark; an explicit env must beat the
         # turbo default below, same precedent as the chunk-size knobs.
@@ -157,12 +166,102 @@ LEGACY_OPTIMIZED_PUBLIC_MODEL_ID = "mtplx-qwen36-27b-optimized"
 
 NATIVE_MTP_60_FAST_PATH_ENV = {
     "MTPLX_LAZY_VERIFY_LOGITS": "1",
-    "MTPLX_BATCH_TARGET_ARRAYS": "1",
+    # Batched vs lazy target distributions are mutually exclusive verify
+    # strategies: every batched-build site in generation.py is guarded on
+    # the lazy flag being OFF, so with LAZY_TARGET_DISTRIBUTIONS=1 a "1"
+    # here is dead configuration. The pair shipped contradictory from
+    # 1.0.0 through 2.9.0 — BATCH_TARGET_ARRAYS=1 is the May 60-tok/s
+    # stack, the lazy strategy was layered on 2026-06-09 ("Recover
+    # OpenCode MTP decode speed", eager distribution materialization
+    # dominated D3 decode) and wins at runtime. "0" states the active
+    # truth: the product strategy is lazy. The batched candidate stays
+    # launchable as MTPLX_LAZY_TARGET_DISTRIBUTIONS=0
+    # MTPLX_BATCH_TARGET_ARRAYS=1 (both operator-overridable, PR #314);
+    # flipping the DEFAULT is ABBA-gated, not a wiring call.
+    "MTPLX_BATCH_TARGET_ARRAYS": "0",
     "MTPLX_LAZY_TARGET_DISTRIBUTIONS": "1",
     "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
     "MTPLX_DROP_EVENTS": "1",
     "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
 }
+
+# Known runtime gating relations between fast-path envs: generation.py
+# consults the gated flag only inside branches that require the gating flag
+# to be OFF, so a launch where both are truthy silently kills the gated
+# flag. apply_profile_env() announces every live combination — one loud
+# line per dead flag — no matter which layer set it (profile, operator
+# env, or an app/CLI lane default). Loud beats silent: this is exactly how
+# turbo/sustained shipped a dead MTPLX_BATCH_TARGET_ARRAYS=1 for ten weeks
+# (1.0.0 -> 2.9.0) with /health reporting ok:true, and how the coding-agent
+# lanes still pin a MTPLX_LAZY_BONUS_VERIFY=1 the same gate disables.
+# Entries: (gated key, gating key, why).
+RUNTIME_GATED_ENV_PAIRS: tuple[tuple[str, str, str], ...] = (
+    (
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "batched target-distribution precompute requires the lazy per-row "
+        "strategy off",
+    ),
+    (
+        "MTPLX_BATCH_TARGET_DISTS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "batched target-distribution precompute requires the lazy per-row "
+        "strategy off",
+    ),
+    (
+        "MTPLX_LAZY_BONUS_VERIFY",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "lazy bonus verify requires the lazy-distribution strategy off",
+    ),
+)
+
+# Mirrors generation.py's _env_truthy so announcements judge the same
+# values the runtime gates do.
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def announce_runtime_gated_env(
+    environ: Mapping[str, str] | None = None,
+    *,
+    profile_name: str | None = None,
+) -> list[dict[str, str]]:
+    """Print one loud line per env flag that is dead under the current env.
+
+    Returns the gated entries so callers/health surfaces can persist them.
+    Runs against the FINAL environment (after profile + overrides), so it
+    catches profile-set, operator-set, and launcher-lane-injected combos
+    alike.
+    """
+
+    target = os.environ if environ is None else environ
+    gated: list[dict[str, str]] = []
+    for dead_key, gating_key, why in RUNTIME_GATED_ENV_PAIRS:
+        if not (_truthy_env(target.get(dead_key)) and _truthy_env(target.get(gating_key))):
+            continue
+        gated.append(
+            {
+                "var": dead_key,
+                "value": str(target.get(dead_key)),
+                "gated_by": gating_key,
+                "gated_by_value": str(target.get(gating_key)),
+                "reason": why,
+            }
+        )
+        suffix = f"; profile {profile_name}" if profile_name else ""
+        try:
+            print(
+                f"[mtplx] env gated at runtime: {dead_key}="
+                f"{target.get(dead_key)} has no effect while "
+                f"{gating_key}={target.get(gating_key)} ({why}{suffix})",
+                flush=True,
+            )
+        except Exception:
+            pass
+    return gated
 
 MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
     {
@@ -703,10 +802,27 @@ def apply_profile_env(
                 except Exception:
                     pass
             continue
+        stomped = str(target.get(key) or "").strip()
+        if stomped and stomped != value:
+            # Profile-owned key: the profile replaces a different pre-set
+            # env value. Announce the stomp — the silent version of this
+            # is how operator A/Bs die (PR #314 had to patch site-packages
+            # to get an env through). Keys meant to beat the profile
+            # belong in PROFILE_ENV_USER_OVERRIDE_KEYS.
+            try:
+                print(
+                    f"[mtplx] profile env stomp: {key}={stomped} replaced "
+                    f"by profile {profile.name} value {value} "
+                    f"({key} is profile-owned, not operator-overridable)",
+                    flush=True,
+                )
+            except Exception:
+                pass
         target[key] = value
     profile_env_overridden[:] = overridden
     for key, value in overrides.items():
         target[key] = value
+    announce_runtime_gated_env(target, profile_name=profile.name)
     return previous
 
 

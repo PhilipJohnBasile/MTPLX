@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -24,16 +25,43 @@ OPENCODE_DEFAULT_CONTEXT_WINDOW = 262_144
 OPENCODE_DEFAULT_CHUNK_TIMEOUT_MS = 900_000
 # OpenCode's own injected output ceiling when the user never set a cap. The
 # plugin strips exactly this value: anything else is a deliberate client cap
-# and must reach MTPLX intact.
-OPENCODE_INJECTED_OUTPUT_CAP = 32_768
+# and must reach MTPLX intact. Receipts: sst/opencode v1.18.21
+# provider/transform.ts `OUTPUT_TOKEN_MAX = 32_000` (min'd against
+# limit.output on every request), and request-log-8002.jsonl records 313-327
+# all showing request_max_tokens=32000. The earlier 32_768 guess never
+# matched the wire, so the guard silently stripped nothing.
+OPENCODE_INJECTED_OUTPUT_CAP = 32_000
+# OpenCode <= 1.18.20 (including Desktop 1.18.18) injects a qwen-keyed
+# sampler for any model id containing "qwen" (provider/transform.ts
+# `temperature()`/`topP()` at v1.18.18); 1.18.21 removed the rule. The plugin
+# strips exactly this injected pair so the server's family-native sampler
+# (the app's source of truth) applies; any other value is a deliberate
+# client choice and passes through.
+OPENCODE_INJECTED_QWEN_TEMPERATURE = 0.55
+OPENCODE_INJECTED_QWEN_TOP_P = 1
+# OpenCode's built-in effort tiers for reasoning-capable openai-compatible
+# models (provider/transform.ts OPENAI_EFFORTS at v1.18.18/v1.18.21). The
+# generated config disables the tiers a family contract does not define so
+# OpenCode's effort picker mirrors the MTPLX dial exactly.
+OPENCODE_OPENAI_COMPATIBLE_DEFAULT_EFFORTS = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
 OPENCODE_SESSION_HEADERS_PLUGIN_NAME = "mtplx-session-headers.js"
 OPENCODE_DESKTOP_SETTINGS_STORE_NAME = "default.dat"
 OPENCODE_DESKTOP_SETTINGS_KEY = "settings.v3"
 OPENCODE_DESKTOP_GLOBAL_STORE_NAME = "opencode.global.dat"
-OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE = """const mtplxProviderID = (input) =>
+OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE = (
+    """const mtplxProviderID = (input) =>
   input?.model?.providerID || input?.provider?.id;
 
 const mtplxInjectedOutputCap = __MTPLX_INJECTED_OUTPUT_CAP__;
+const mtplxInjectedQwenTemperature = __MTPLX_INJECTED_QWEN_TEMPERATURE__;
+const mtplxInjectedQwenTopP = __MTPLX_INJECTED_QWEN_TOP_P__;
 
 export const MTPLXSessionHeaders = async () => ({
   "chat.headers": async (input, output) => {
@@ -48,17 +76,39 @@ export const MTPLXSessionHeaders = async () => ({
   "chat.params": async (input, output) => {
     const providerID = mtplxProviderID(input);
     if (providerID && providerID !== "mtplx") return;
-    // OpenCode injects a 32k output ceiling even when the configured model
-    // advertises a larger native context. Strip only that injected default so
-    // MTPLX owns the uncapped generation contract; an explicit user cap (any
-    // other value) passes through untouched.
+    // OpenCode injects maxOutputTokens = min(limit.output, 32000) on every
+    // request even when the configured model advertises a larger native
+    // context. Strip exactly that injected default so MTPLX owns the
+    // uncapped generation contract; an explicit client cap (any other
+    // value) passes through untouched.
     if (output.maxOutputTokens === mtplxInjectedOutputCap) {
       output.maxOutputTokens = undefined;
+    }
+    // OpenCode <= 1.18.20 (Desktop 1.18.18 included) injects a qwen-keyed
+    // sampler (temperature 0.55, topP 1) for any model id containing
+    // "qwen"; 1.18.21 removed the rule. Strip exactly that injected pair so
+    // the MTPLX server's family-native sampler applies; any other value is
+    // a deliberate client choice and passes through untouched.
+    const modelID = String(input?.model?.id ?? input?.model?.modelID ?? "").toLowerCase();
+    if (modelID.includes("qwen")) {
+      if (output.temperature === mtplxInjectedQwenTemperature) {
+        output.temperature = undefined;
+      }
+      if (output.topP === mtplxInjectedQwenTopP) {
+        output.topP = undefined;
+      }
     }
   }
 });
 export default MTPLXSessionHeaders;
-""".replace("__MTPLX_INJECTED_OUTPUT_CAP__", str(OPENCODE_INJECTED_OUTPUT_CAP))
+"""
+    .replace("__MTPLX_INJECTED_OUTPUT_CAP__", str(OPENCODE_INJECTED_OUTPUT_CAP))
+    .replace(
+        "__MTPLX_INJECTED_QWEN_TEMPERATURE__",
+        str(OPENCODE_INJECTED_QWEN_TEMPERATURE),
+    )
+    .replace("__MTPLX_INJECTED_QWEN_TOP_P__", str(OPENCODE_INJECTED_QWEN_TOP_P))
+)
 
 
 def opencode_config_path(path: str | Path | None = None) -> Path:
@@ -176,6 +226,31 @@ def launch_opencode_app() -> dict[str, Any]:
     }
 
 
+def _opencode_effort_variants(
+    effort_levels: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Mirror the family effort dial into OpenCode's variant picker.
+
+    OpenCode offers its full built-in effort list for every reasoning-capable
+    openai-compatible model. Disable the tiers the family contract does not
+    define and add any family tier OpenCode does not offer, so the picker
+    shows exactly the MTPLX dial (config `variants` merge over computed
+    variants: sst/opencode provider/provider.ts, identical at 1.18.18 and
+    1.18.21).
+    """
+
+    allowed = {str(level) for level in effort_levels}
+    variants: dict[str, dict[str, Any]] = {
+        effort: {"disabled": True}
+        for effort in OPENCODE_OPENAI_COMPATIBLE_DEFAULT_EFFORTS
+        if effort not in allowed
+    }
+    for level in effort_levels:
+        if str(level) not in OPENCODE_OPENAI_COMPATIBLE_DEFAULT_EFFORTS:
+            variants[str(level)] = {"reasoningEffort": str(level)}
+    return variants
+
+
 def build_opencode_provider_config(
     *,
     base_url: str,
@@ -189,16 +264,32 @@ def build_opencode_provider_config(
     temperature: float = 0.6,
     top_p: float = 0.95,
     top_k: int | None = None,
+    reasoning_effort: str | None = None,
+    reasoning_effort_levels: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Build the OpenCode provider/config fragment MTPLX owns.
 
     OpenCode's `limit` object is model metadata, not a server-side generation
     cap. We intentionally do not write hidden maxTokens/maxOutput caps.
+
+    ``reasoning``/``temperature`` are declared capable so OpenCode round-trips
+    assistant reasoning_content (preserve_thinking) and transmits explicit
+    client-side choices; with nothing chosen, OpenCode 1.18.21 sends no
+    sampler for MTPLX model ids and the server's family defaults (the app's
+    source of truth) apply. ``reasoning_effort`` is the app's current dial and
+    rides per-model ``options.reasoningEffort`` (@ai-sdk/openai-compatible
+    maps it to the wire's ``reasoning_effort``); an effort variant picked
+    inside OpenCode merges after model options and wins for that request.
+    The family sampler args are accepted for caller symmetry but deliberately
+    not written: @ai-sdk/openai-compatible 2.0.41 has no per-model sampler
+    transport (its provider-options schema is user/reasoningEffort/
+    textVerbosity/strictJsonSchema only), so writing them would be dead
+    config posing as policy.
     """
 
     context = int(context_window or OPENCODE_DEFAULT_CONTEXT_WINDOW)
     output = int(output_limit if output_limit is not None else context)
-    _ = (enable_thinking, temperature, top_p, top_k)
+    _ = (temperature, top_p, top_k)
     options: dict[str, Any] = {
         "baseURL": str(base_url).rstrip("/"),
         "timeout": False,
@@ -209,6 +300,27 @@ def build_opencode_provider_config(
     }
     if api_key:
         options["apiKey"] = str(api_key)
+    model: dict[str, Any] = {
+        "name": model_name or f"MTPLX {model_id}",
+        "reasoning": bool(enable_thinking),
+        "tool_call": True,
+        "temperature": True,
+        "limit": {
+            "context": context,
+            "output": output,
+        },
+        "modalities": {
+            "input": ["text"],
+            "output": ["text"],
+        },
+    }
+    if enable_thinking:
+        if reasoning_effort:
+            model["options"] = {"reasoningEffort": str(reasoning_effort)}
+        if reasoning_effort_levels is not None:
+            variants = _opencode_effort_variants(reasoning_effort_levels)
+            if variants:
+                model["variants"] = variants
     return {
         "provider": {
             OPENCODE_PROVIDER_ID: {
@@ -216,20 +328,7 @@ def build_opencode_provider_config(
                 "name": "MTPLX (local)",
                 "options": options,
                 "models": {
-                    str(model_id): {
-                        "name": model_name or f"MTPLX {model_id}",
-                        "reasoning": False,
-                        "tool_call": True,
-                        "temperature": False,
-                        "limit": {
-                            "context": context,
-                            "output": output,
-                        },
-                        "modalities": {
-                            "input": ["text"],
-                            "output": ["text"],
-                        },
-                    }
+                    str(model_id): model,
                 },
             }
         },
@@ -282,6 +381,18 @@ def merge_opencode_config(
             plugins = []
         else:
             plugins = [existing_plugins]
+        # Canonicalize: stale copies of the managed plugin registered under
+        # other paths would double-fire the hooks, so keep exactly one entry
+        # at the managed location.
+        plugins = [
+            item
+            for item in plugins
+            if not (
+                isinstance(item, str)
+                and item != plugin_path
+                and Path(item).name == OPENCODE_SESSION_HEADERS_PLUGIN_NAME
+            )
+        ]
         if plugin_path not in [item for item in plugins if isinstance(item, str)]:
             plugins.append(plugin_path)
         payload["plugin"] = plugins
@@ -638,6 +749,8 @@ def write_opencode_config(
     temperature: float = 0.6,
     top_p: float = 0.95,
     top_k: int = 20,
+    reasoning_effort: str | None = None,
+    reasoning_effort_levels: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Write MTPLX into OpenCode config and return a handoff payload."""
 
@@ -664,6 +777,8 @@ def write_opencode_config(
         temperature=temperature,
         top_p=top_p,
         top_k=top_k,
+        reasoning_effort=reasoning_effort,
+        reasoning_effort_levels=reasoning_effort_levels,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
     session_headers_plugin_path = write_opencode_session_headers_plugin(config_path)
@@ -690,6 +805,7 @@ def write_opencode_config(
         "output_limit": int(output_limit if output_limit is not None else context_window),
         "chunk_timeout_ms": int(chunk_timeout_ms),
         "reasoning_field": "reasoning_content",
+        "reasoning_effort": reasoning_effort,
         "session_headers_plugin_path": str(session_headers_plugin_path),
         "reasoning_visibility": reasoning_visibility,
         "no_hidden_max_tokens": True,

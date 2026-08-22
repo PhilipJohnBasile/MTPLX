@@ -9,6 +9,8 @@ import pytest
 
 from mtplx.opencode import (
     OPENCODE_INJECTED_OUTPUT_CAP,
+    OPENCODE_INJECTED_QWEN_TEMPERATURE,
+    OPENCODE_INJECTED_QWEN_TOP_P,
     OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE,
     build_opencode_provider_config,
     ensure_opencode_reasoning_summaries_visible,
@@ -20,6 +22,14 @@ from mtplx.opencode import (
 )
 
 
+def test_opencode_injected_output_cap_matches_client_wire_truth():
+    # sst/opencode provider/transform.ts OUTPUT_TOKEN_MAX = 32_000 (v1.18.21),
+    # live receipt request-log-8002.jsonl records 313-327: request_max_tokens
+    # = 32000. The 32_768 guess never matched, so the strip was a no-op and
+    # five marathon generations truncated mid-think.
+    assert OPENCODE_INJECTED_OUTPUT_CAP == 32_000
+
+
 def test_opencode_model_ref_uses_provider_namespace():
     assert (
         opencode_model_ref("mtplx-qwen36-27b-optimized-quality")
@@ -27,7 +37,7 @@ def test_opencode_model_ref_uses_provider_namespace():
     )
 
 
-def test_build_opencode_config_keeps_policy_server_side():
+def test_build_opencode_config_keeps_sampler_policy_server_side():
     payload = build_opencode_provider_config(
         base_url="http://127.0.0.1:18083/v1",
         model_id="mtplx-qwen36-27b-optimized-quality",
@@ -43,13 +53,64 @@ def test_build_opencode_config_keeps_policy_server_side():
     assert provider["options"]["chunkTimeout"] == 900000
     assert provider["options"]["headers"]["x-mtplx-client"] == "opencode"
     assert provider["options"]["apiKey"] == "1234"
-    assert model["reasoning"] is False
+    # Reasoning + temperature are declared capable so reasoning_content
+    # round-trips and explicit client choices transmit; the family sampler
+    # itself stays server-side (no per-model sampler transport in
+    # @ai-sdk/openai-compatible 2.0.41).
+    assert model["reasoning"] is True
     assert model["tool_call"] is True
-    assert model["temperature"] is False
+    assert model["temperature"] is True
     assert model["limit"] == {"context": 262144, "output": 262144}
     assert "interleaved" not in model
     assert "options" not in model
+    assert "variants" not in model
     assert "maxTokens" not in json.dumps(payload)
+
+
+def test_build_opencode_config_carries_family_effort_dial():
+    payload = build_opencode_provider_config(
+        base_url="http://127.0.0.1:18083/v1",
+        model_id="mtplx-qwen38-27b-optimized-speed",
+        context_window=262144,
+        reasoning_effort="medium",
+        reasoning_effort_levels=("xhigh", "medium", "low"),
+    )
+
+    model = payload["provider"]["mtplx"]["models"]["mtplx-qwen38-27b-optimized-speed"]
+    assert model["reasoning"] is True
+    # The app dial rides options.reasoningEffort (the SDK's reasoning_effort
+    # transport); an effort variant picked inside OpenCode merges after model
+    # options and wins for that request.
+    assert model["options"] == {"reasoningEffort": "medium"}
+    # OpenCode's built-in effort picker is trimmed to the family dial:
+    # tiers outside xhigh/medium/low are disabled, valid tiers stay.
+    assert model["variants"] == {
+        "none": {"disabled": True},
+        "minimal": {"disabled": True},
+        "high": {"disabled": True},
+    }
+
+
+def test_build_opencode_config_no_effort_dial_disables_effort_picker():
+    payload = build_opencode_provider_config(
+        base_url="http://127.0.0.1:18083/v1",
+        model_id="mtplx-qwen36-27b-optimized-quality",
+        context_window=262144,
+        reasoning_effort=None,
+        reasoning_effort_levels=(),
+    )
+
+    model = payload["provider"]["mtplx"]["models"]["mtplx-qwen36-27b-optimized-quality"]
+    assert model["reasoning"] is True
+    assert "options" not in model
+    assert model["variants"] == {
+        "none": {"disabled": True},
+        "minimal": {"disabled": True},
+        "low": {"disabled": True},
+        "medium": {"disabled": True},
+        "high": {"disabled": True},
+        "xhigh": {"disabled": True},
+    }
 
 
 def test_build_opencode_config_keeps_gemma_policy_server_side():
@@ -57,15 +118,21 @@ def test_build_opencode_config_keeps_gemma_policy_server_side():
         base_url="http://127.0.0.1:18108/v1",
         model_id="gemma4-mtplx-optimized-speed",
         context_window=262144,
+        enable_thinking=False,
+        reasoning_effort="medium",
+        reasoning_effort_levels=("low", "medium"),
     )
 
     provider = payload["provider"]["mtplx"]
     assert "apiKey" not in provider["options"]
     model = payload["provider"]["mtplx"]["models"]["gemma4-mtplx-optimized-speed"]
     assert model["reasoning"] is False
-    assert model["temperature"] is False
+    assert model["temperature"] is True
     assert "interleaved" not in model
+    # Non-reasoning families carry no effort dial even when a caller passes
+    # one: effort is a reasoning control.
     assert "options" not in model
+    assert "variants" not in model
 
 
 def test_ensure_opencode_reasoning_summaries_visible_enables_desktop_store(tmp_path):
@@ -142,6 +209,31 @@ def test_merge_opencode_config_preserves_existing_plugins_and_injects_session_he
     assert merged["plugin"] == ["/existing/plugin.js", "/tmp/mtplx-session-headers.js"]
 
 
+def test_merge_opencode_config_canonicalizes_stale_session_headers_entries():
+    fragment = build_opencode_provider_config(
+        base_url="http://127.0.0.1:18083/v1",
+        model_id="mtplx-qwen36-27b-optimized-quality",
+    )
+
+    merged = merge_opencode_config(
+        {
+            "plugin": [
+                "/existing/plugin.js",
+                "/stale/location/mtplx-session-headers.js",
+            ],
+        },
+        config_fragment=fragment,
+        session_headers_plugin_path="/managed/mtplx-session-headers.js",
+    )
+
+    # A stale registration under another path would double-fire the hooks;
+    # exactly one entry survives, at the managed location.
+    assert merged["plugin"] == [
+        "/existing/plugin.js",
+        "/managed/mtplx-session-headers.js",
+    ]
+
+
 def test_write_opencode_config_backs_up_invalid_json(tmp_path, monkeypatch):
     path = tmp_path / "opencode.json"
     settings_store = tmp_path / "default.dat"
@@ -204,6 +296,19 @@ def test_write_opencode_config_installs_session_headers_plugin(tmp_path, monkeyp
         f"output.maxOutputTokens === mtplxInjectedOutputCap" in plugin_source
     )
     assert f"const mtplxInjectedOutputCap = {OPENCODE_INJECTED_OUTPUT_CAP};" in plugin_source
+    # Same guarded-strip contract for the qwen sampler OpenCode <= 1.18.20
+    # injects (temperature 0.55 / topP 1): exactly the injected pair is
+    # cleared so the server's family-native sampler applies.
+    assert (
+        f"const mtplxInjectedQwenTemperature = {OPENCODE_INJECTED_QWEN_TEMPERATURE};"
+        in plugin_source
+    )
+    assert (
+        f"const mtplxInjectedQwenTopP = {OPENCODE_INJECTED_QWEN_TOP_P};"
+        in plugin_source
+    )
+    assert "output.temperature === mtplxInjectedQwenTemperature" in plugin_source
+    assert "output.topP === mtplxInjectedQwenTopP" in plugin_source
     assert "process.stdout.write" not in plugin_source
     assert "message.updated" not in plugin_source
 
@@ -243,6 +348,68 @@ console.log(JSON.stringify(results));
     assert "maxOutputTokens" not in results["injected"]
     assert results["explicit"]["maxOutputTokens"] == 9000
     assert "maxOutputTokens" not in results["absent"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_opencode_plugin_strips_only_client_injected_qwen_sampler(tmp_path):
+    """Payload shapes mirror oc-recorder chat.params records: OpenCode
+    <= 1.18.20 injects temperature 0.55 / topP 1 for qwen model ids. Exactly
+    that pair is stripped for MTPLX qwen models; explicit values and
+    non-qwen models pass through untouched.
+    """
+
+    plugin = tmp_path / "plugin.mjs"
+    plugin.write_text(OPENCODE_SESSION_HEADERS_PLUGIN_SOURCE, encoding="utf-8")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import plugin from {json.dumps(str(plugin))};
+const hooks = await plugin();
+const run = async (modelID, params) => {{
+  const output = {{ ...params }};
+  await hooks["chat.params"](
+    {{ model: {{ providerID: "mtplx", id: modelID }} }},
+    output,
+  );
+  return output;
+}};
+const qwen = "mtplx-qwen38-27b-optimized-speed";
+const results = {{
+  injected: await run(qwen, {{
+    temperature: {OPENCODE_INJECTED_QWEN_TEMPERATURE},
+    topP: {OPENCODE_INJECTED_QWEN_TOP_P},
+    maxOutputTokens: {OPENCODE_INJECTED_OUTPUT_CAP},
+  }}),
+  explicit: await run(qwen, {{ temperature: 0.9, topP: 0.8 }}),
+  nonQwen: await run("step-3.7-flash-mtplx-step3p5", {{
+    temperature: {OPENCODE_INJECTED_QWEN_TEMPERATURE},
+    topP: {OPENCODE_INJECTED_QWEN_TOP_P},
+  }}),
+}};
+const foreign = {{ temperature: 0.55, topP: 1 }};
+await hooks["chat.params"]({{ model: {{ providerID: "anthropic", id: "qwen-x" }} }}, foreign);
+results.foreign = foreign;
+console.log(JSON.stringify(results));
+""",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", str(harness)], capture_output=True, text=True, check=True
+    )
+    results = json.loads(proc.stdout)
+    # JSON.stringify drops undefined-valued keys: the injected pair is gone.
+    assert "temperature" not in results["injected"]
+    assert "topP" not in results["injected"]
+    assert "maxOutputTokens" not in results["injected"]
+    assert results["explicit"]["temperature"] == 0.9
+    assert results["explicit"]["topP"] == 0.8
+    # Non-qwen MTPLX models never had the client-injected qwen sampler; any
+    # matching values there are deliberate and pass through.
+    assert results["nonQwen"]["temperature"] == OPENCODE_INJECTED_QWEN_TEMPERATURE
+    assert results["nonQwen"]["topP"] == OPENCODE_INJECTED_QWEN_TOP_P
+    # Other providers are untouched entirely.
+    assert results["foreign"]["temperature"] == 0.55
+    assert results["foreign"]["topP"] == 1
 
 
 def test_repair_opencode_desktop_state_prunes_missing_workspace(tmp_path, monkeypatch):

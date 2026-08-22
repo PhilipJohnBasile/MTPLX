@@ -127,6 +127,7 @@ from mtplx.server.response_envelope import build_generation_result
 from mtplx.profiles import (
     DEFAULT_HF_MODEL_ID,
     DEFAULT_PROFILE_NAME,
+    NATIVE_MTP_60_FAST_PATH_ENV,
     PROFILE_CHOICES,
     apply_profile_env,
     get_profile,
@@ -303,14 +304,13 @@ except Exception as exc:
         BACKGROUND_BYPASS = "background_bypass"
 
 
-FAST_PATH_ENV = {
-    "MTPLX_LAZY_VERIFY_LOGITS": "1",
-    "MTPLX_BATCH_TARGET_ARRAYS": "1",
-    "MTPLX_LAZY_TARGET_DISTRIBUTIONS": "1",
-    "MTPLX_LAZY_MTP_HISTORY_APPEND": "1",
-    "MTPLX_DROP_EVENTS": "1",
-    "MTPLX_SKIP_VERIFY_SNAPSHOT": "1",
-}
+# The native-MTP fast-path block, shared with the profile registry so
+# /health's fast_path_env can never drift from what the profiles actually
+# set. The old duplicated literal shipped 2.9.0 expecting
+# MTPLX_BATCH_TARGET_ARRAYS=1 — a value that was runtime-dead under the
+# lazy-distribution gate the same block enabled (turbo-truth audit,
+# 2026-08-21).
+FAST_PATH_ENV = dict(NATIVE_MTP_60_FAST_PATH_ENV)
 #: Verify strategies known to be correct with ``MTPLX_SKIP_VERIFY_SNAPSHOT=1``.
 #:
 #: Stated as a safe-list rather than as the complement (which used to be the
@@ -12191,7 +12191,7 @@ def _encode_messages_uncached(
                     **fallback_kwargs,
                 )
             )
-        except (TypeError, Exception):
+        except (TypeError, Exception) as chat_template_exc:
             if template_tools:
                 try:
                     if template_observability is not None:
@@ -12211,8 +12211,10 @@ def _encode_messages_uncached(
                             f"tool schemas: {schema_free_exc}"
                         ),
                     ) from schema_free_exc
-            pass
-    except Exception:
+            _raise_unless_templateless_render(
+                tokenizer, chat_template_exc, template_observability
+            )
+    except Exception as chat_template_exc:
         if template_tools:
             try:
                 if template_observability is not None:
@@ -12232,11 +12234,43 @@ def _encode_messages_uncached(
                         f"tool schemas: {schema_free_exc}"
                     ),
                 ) from schema_free_exc
-            pass
+            _raise_unless_templateless_render(
+                tokenizer, chat_template_exc, template_observability
+            )
     prompt = "\n".join(f"{item['role']}: {item['content']}" for item in normalized)
     if add_generation_prompt:
         prompt += "\nassistant:"
     return _encode_rendered_chat_text(tokenizer, prompt)
+
+
+_TEMPLATELESS_RENDER_WARNED = False
+
+
+def _raise_unless_templateless_render(
+    tokenizer: Any,
+    template_exc: Exception,
+    template_observability: dict[str, Any] | None,
+) -> None:
+    """A chat-template failure must never silently de-template a request.
+
+    Tokenizers that ship no chat template at all (generic AR backends) keep the
+    plain role-prefixed render as their only lane; everything else gets the same
+    hard failure the tool-schema legs raise.
+    """
+    if getattr(tokenizer, "chat_template", None):
+        raise HTTPException(
+            status_code=500,
+            detail=f"tokenizer chat template failed for chat request: {template_exc}",
+        ) from template_exc
+    global _TEMPLATELESS_RENDER_WARNED
+    if not _TEMPLATELESS_RENDER_WARNED:
+        _TEMPLATELESS_RENDER_WARNED = True
+        LOGGER.warning(
+            "tokenizer has no chat template; rendering plain role-prefixed text "
+            "(base-model lane)"
+        )
+    if template_observability is not None:
+        template_observability["plain_text_render"] = True
 
 
 def _render_messages_for_postcommit(
@@ -12977,6 +13011,20 @@ def _client_controls_allowed(
     if _truthy_control_value(value):
         return True
     return _client_controls_default() == "honor"
+
+
+def _client_thinking_controls_allowed(
+    headers: Mapping[str, str],
+    metadata: Mapping[str, Any],
+) -> bool:
+    """Thinking controls (enable_thinking / reasoning_effort) are user intent,
+    not sampler policy: managed MTPLX surfaces honor them so the client-side
+    effort picker governs the request, while their sampler params stay
+    server-owned. Anonymous clients keep the _client_controls_allowed
+    contract unchanged."""
+    if _app_managed_client_hint(headers, metadata):
+        return True
+    return _client_controls_allowed(headers, metadata)
 
 
 def _ignored_client_control_fields(request: BaseModel) -> list[str]:
