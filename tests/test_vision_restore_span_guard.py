@@ -85,3 +85,40 @@ def test_near_prefix_matched_ceiling_caps_candidates():
     # image); the bank is never consulted.
     assert out is None
     assert "seen" not in calls
+
+
+def test_near_prefix_lane_accepts_and_threads_vision_splice():
+    """#296 wiring: the near lane takes the splice (it was vision-blind —
+    image pads in the suffix were forwarded as plain ids and the rows never
+    reached the KV). With the ceiling refusing the restore the splice must
+    pass through untouched; consumption is guarded downstream by the
+    unconsumed-rows assert in _suffix_chunk_embeddings."""
+    from mtplx import generation as g
+
+    class Splice:
+        image_pad_token_id = 7
+        cursor = None
+
+        def remaining(self):
+            return 1
+
+    class Bank:
+        def near_prefix_candidates(self, prompt_ids, **kw):
+            return []
+
+    splice = Splice()
+    out = g._restore_near_prefix_prompt_state(
+        None,
+        [1] * 64,
+        base_hidden_variant="b",
+        mtp_hidden_variant="m",
+        mtp_history_policy="cycle",
+        session_bank=Bank(),
+        template_hash=None,
+        draft_head_identity=None,
+        policy_fingerprint=None,
+        matched_ceiling=1,
+        vision_splice=splice,
+    )
+    assert out is None
+    assert splice.cursor is None  # no restore happened; splice untouched

@@ -1461,6 +1461,10 @@ class _DecodeTrace:
             "lazy_mtp_history_append": _env_truthy("MTPLX_LAZY_MTP_HISTORY_APPEND"),
             "batch_target_arrays": _batch_target_arrays_enabled(),
             "drop_events": _env_truthy("MTPLX_DROP_EVENTS"),
+            # Trio ports (#313/#315/#318): receipts prove which lane ran —
+            # the #314 dead-switch antidote.
+            "greedy_draft_chain": _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN"),
+            "batched_greedy_accept": _env_truthy("MTPLX_BATCHED_GREEDY_ACCEPT"),
             "skip_verify_snapshot": _skip_verify_snapshot(),
             "mtp_history_materialize_every": int(mtp_history_materialize_every),
             "mtp_history_materialize_events": int(mtp_history_materialize_events),
@@ -2718,6 +2722,7 @@ def _restore_near_prefix_prompt_state(
     cache_factory: Callable[[], Any] | None = None,
     stable_prefix_len: int | None = None,
     matched_ceiling: int | None = None,
+    vision_splice: Any | None = None,
 ) -> PromptState | None:
     """matched_ceiling: hard cap on any candidate's matched length.
 
@@ -3065,6 +3070,20 @@ def _restore_near_prefix_prompt_state(
             if _gdn_boundary_capture_enabled()
             else None
         )
+        if vision_splice is not None:
+            # #296: this lane was vision-blind — with no splice the suffix
+            # forwarded image-pad ids as plain tokens and the image rows
+            # never reached the KV (silent wrong answers after a warm
+            # restore). Rows for pads inside the restored prefix are already
+            # baked into that KV; the suffix consumes strictly after them.
+            # matched_ceiling clamps restore_point to before the first pad,
+            # so this cursor is provably 0 today — computed explicitly so the
+            # invariant survives any future ceiling change, and the
+            # unconsumed-rows assert downstream stays a live guard.
+            pad_id = int(vision_splice.image_pad_token_id)
+            vision_splice.cursor = sum(
+                1 for token in prompt_ids[:restore_point] if token == pad_id
+            )
         suffix_logits, suffix_hidden, suffix_time, mtp_history_time = (
             _prefill_restored_prompt_suffix(
                 rt,
@@ -3080,6 +3099,7 @@ def _restore_near_prefix_prompt_state(
                 chunk_started_s=chunk_started_s,
                 gdn_boundary_sink=suffix_boundary_sink,
                 stable_prefix_len=stable_prefix_len,
+                vision_splice=vision_splice,
             )
         )
         entry.hits += 1
@@ -3721,6 +3741,7 @@ def restore_or_prefill_prompt_state(
                     if vision_restore_spans
                     else None
                 ),
+                vision_splice=vision_splice,
                 cache_factory=restore_cache_factory,
                 # Tool-round prefix stability (defect A): the suffix prefill
                 # behind this lane must treat the pre-nudge stable edge as a
@@ -3905,6 +3926,7 @@ def restore_or_prefill_prompt_state(
             matched_ceiling=(
                 vision_restore_spans[0][0] if vision_restore_spans else None
             ),
+            vision_splice=vision_splice,
         )
         if near_prompt_state is not None:
             return _emit_prefill_complete(near_prompt_state)
