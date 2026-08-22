@@ -1195,6 +1195,12 @@ class _DecodeTrace:
             "draft_confidence_rejected_count_by_depth": [
                 0 for _ in range(speculative_depth)
             ],
+            "draft_confidence_accepted_hist_flat": [
+                0 for _ in range(speculative_depth * 10)
+            ],
+            "draft_confidence_rejected_hist_flat": [
+                0 for _ in range(speculative_depth * 10)
+            ],
         }
         if self.enabled and self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1314,6 +1320,17 @@ class _DecodeTrace:
         ) = _conf_pair("rejected_")
         draft_confidence_width_stops_delta = int(
             self._delta(totals, "draft_confidence_width_stops")
+        )
+
+        def _hist_delta(key: str) -> list[int]:
+            raw = self._delta(totals, key)
+            return [int(item) for item in (raw if isinstance(raw, list) else [])]
+
+        draft_confidence_accepted_hist_delta = _hist_delta(
+            "draft_confidence_accepted_hist_flat"
+        )
+        draft_confidence_rejected_hist_delta = _hist_delta(
+            "draft_confidence_rejected_hist_flat"
         )
         verify_calls_delta = int(self._delta(totals, "verify_calls"))
         accepted_drafts_delta = int(self._delta(totals, "accepted_drafts"))
@@ -1455,6 +1472,12 @@ class _DecodeTrace:
             ),
             "draft_confidence_rejected_mean_by_depth_delta": (
                 draft_confidence_rejected_mean_delta
+            ),
+            "draft_confidence_accepted_hist_flat_delta": (
+                draft_confidence_accepted_hist_delta
+            ),
+            "draft_confidence_rejected_hist_flat_delta": (
+                draft_confidence_rejected_hist_delta
             ),
             "rejected_drafts_delta": int(self._delta(totals, "rejected_drafts")),
             "correction_tokens_delta": int(self._delta(totals, "correction_tokens")),
@@ -7374,6 +7397,16 @@ def generate_mtpk(
     draft_confidence_accepted_count_by_depth = [0 for _ in range(speculative_depth)]
     draft_confidence_rejected_sum_by_depth = [0.0 for _ in range(speculative_depth)]
     draft_confidence_rejected_count_by_depth = [0 for _ in range(speculative_depth)]
+    # Flat depth-major 10-bucket histograms (index = depth*10 + bucket) —
+    # flat so the trace's list-aware snapshot-diff handles them unchanged.
+    # Means alone already misled once (leg 2b: overlapping tails), so the
+    # gate-vs-distill decision reads bucket shape, not means.
+    draft_confidence_accepted_hist_flat = [
+        0 for _ in range(speculative_depth * 10)
+    ]
+    draft_confidence_rejected_hist_flat = [
+        0 for _ in range(speculative_depth * 10)
+    ]
     deferred_correction_repairs = 0
     pending_primary: int | None = None
     online_hidden_deltas: dict[object, mx.array] = {}
@@ -8005,6 +8038,12 @@ def generate_mtpk(
             ),
             "draft_confidence_rejected_count_by_depth": list(
                 draft_confidence_rejected_count_by_depth
+            ),
+            "draft_confidence_accepted_hist_flat": list(
+                draft_confidence_accepted_hist_flat
+            ),
+            "draft_confidence_rejected_hist_flat": list(
+                draft_confidence_rejected_hist_flat
             ),
         }
 
@@ -9996,16 +10035,19 @@ def generate_mtpk(
                 if _conf_value is not None:
                     draft_confidence_sum_by_depth[depth_index] += _conf_value
                     draft_confidence_count_by_depth[depth_index] += 1
+                    _conf_bucket = depth_index * 10 + min(9, int(_conf_value * 10))
                     if accepted_now:
                         draft_confidence_accepted_sum_by_depth[
                             depth_index
                         ] += _conf_value
                         draft_confidence_accepted_count_by_depth[depth_index] += 1
+                        draft_confidence_accepted_hist_flat[_conf_bucket] += 1
                     else:
                         draft_confidence_rejected_sum_by_depth[
                             depth_index
                         ] += _conf_value
                         draft_confidence_rejected_count_by_depth[depth_index] += 1
+                        draft_confidence_rejected_hist_flat[_conf_bucket] += 1
 
             if accepted_now:
                 accepted += 1

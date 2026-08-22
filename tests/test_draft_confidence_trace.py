@@ -191,3 +191,45 @@ def test_width_gate_invalid_values_stay_off(monkeypatch, tmp_path, bad):
         monkeypatch, tmp_path, mtp_token=1, flag=False, name=f"bad-gated-{bad or 'empty'}"
     )
     assert _width_fingerprint(gated) == _width_fingerprint(baseline)
+
+
+def _hist_accumulate(rows, kind):
+    hist = None
+    for row in rows:
+        flat = row.get(f"draft_confidence_{kind}_hist_flat_delta")
+        if not flat:
+            continue
+        if hist is None:
+            hist = [0] * len(flat)
+        for i, v in enumerate(flat):
+            hist[i] += int(v)
+    assert hist is not None, f"no {kind} histogram keys in trace rows"
+    return hist
+
+
+def test_histograms_land_in_the_analytic_bucket(monkeypatch, tmp_path):
+    """All tiny-lane confidence is exactly e/(3+e) ~ 0.4754 -> every
+    attributed draft lands in bucket 4 of its depth's histogram."""
+    _clear(monkeypatch)
+    _out, rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=True, name="hist-accept"
+    )
+    accepted_hist = _hist_accumulate(rows, "accepted")
+    rejected_hist = _hist_accumulate(rows, "rejected")
+    accepted_counts, _ = _accumulate(rows, "accepted_")
+    assert sum(rejected_hist) == 0
+    depths = len(accepted_hist) // 10
+    expected_bucket = int(_EXPECTED_CONF * 10)
+    for depth in range(depths):
+        row = accepted_hist[depth * 10 : depth * 10 + 10]
+        assert sum(row) == accepted_counts[depth]
+        for bucket, value in enumerate(row):
+            if bucket != expected_bucket:
+                assert value == 0, f"depth {depth} bucket {bucket} leaked {value}"
+
+    _out2, rows2 = _traced_run(
+        monkeypatch, tmp_path, mtp_token=2, flag=True, name="hist-reject"
+    )
+    rejected_hist2 = _hist_accumulate(rows2, "rejected")
+    assert rejected_hist2[expected_bucket] > 0
+    assert sum(rejected_hist2) == rejected_hist2[expected_bucket]
