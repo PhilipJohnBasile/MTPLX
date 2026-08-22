@@ -24542,9 +24542,12 @@ def create_app(state: ServerState) -> FastAPI:
             mtp_batch_service = getattr(state, "mtp_batch_service", None)
             if mtp_batch_service is not None:
                 mtp_batch_service.shutdown()
+                # park=True: the process is exiting; a clean owner-thread
+                # exit during interpreter finalization runs mlx's TLS
+                # destructor into _Py_Dealloc (#303).
             scheduler = getattr(state, "model_scheduler", None)
             if scheduler is not None:
-                scheduler.shutdown(wait=False, cancel_futures=True)
+                scheduler.shutdown(wait=False, cancel_futures=True, park=True)
             else:
                 postcommit_executor = getattr(state, "postcommit_executor", None)
                 generation_executor = getattr(state, "generation_executor", None)
@@ -31897,6 +31900,14 @@ def main(argv: list[str] | None = None) -> None:
             _startup_line(
                 "warning: --launch-hermes was set but no Hermes command was provided."
             )
+    # Main-thread insurance for the mlx 0.32.1 TLS-destructor teardown
+    # crash (#303): the owner thread parks (model_scheduler), and the main
+    # thread clears its own mlx streams before Py_Finalize.
+    import atexit
+
+    from mtplx.model_scheduler import _release_mlx_thread_state
+
+    atexit.register(_release_mlx_thread_state)
     # Graceful-with-deadline shutdown (#124): a browser tab holding an
     # infinite SSE stream (chat, dashboard, /metrics) otherwise makes
     # uvicorn wait forever on Ctrl-C. The deadline lets in-flight requests

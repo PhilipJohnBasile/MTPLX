@@ -15,7 +15,7 @@ from collections import Counter, deque
 from . import progress_heartbeat
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from threading import Condition, Thread, get_ident
+from threading import Condition, Event, Thread, get_ident
 import time
 from typing import Any, Callable
 
@@ -26,6 +26,27 @@ _QOS_CLASSES = {
     "utility": 0x11,
     "background": 0x09,
 }
+
+
+def _release_mlx_thread_state() -> None:
+    """Destroy this thread's MLX streams + thread_local compile cache.
+
+    mlx 0.32.1 (ml-explore/mlx#4248) deleted the GIL-safe pre-finalization
+    hooks that used to clear the thread_local compile cache, so a worker
+    thread exiting during Py_Finalize runs mlx's TLS destructor into
+    _Py_Dealloc on a dead interpreter -> SIGSEGV/SIGTRAP (#303). Upstream
+    closed #4327/#4347 WONTFIX: mx.clear_streams() at thread end is the
+    permanent contract. ONE-WAY for this thread — only ever the LAST mlx
+    action, or later evals raise "There is no Stream(cpu, N)".
+    """
+    try:
+        import mlx.core as mx
+
+        clear_streams = getattr(mx, "clear_streams", None)
+        if clear_streams is not None:
+            clear_streams()
+    except Exception:
+        pass
 
 
 def _pin_owner_thread_qos() -> str | None:
@@ -143,6 +164,7 @@ class ModelWorkScheduler:
         self._last_quiet_anchor_s = time.monotonic()
         self._sequence = 0
         self._shutdown = False
+        self._park_on_exit = False
         self._active_kind: str | None = None
         self._owner_thread_id: int | None = None
         self._started = 0
@@ -345,16 +367,26 @@ class ModelWorkScheduler:
             coalesce_key=coalesce_key,
         )
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+    def shutdown(
+        self,
+        wait: bool = True,
+        *,
+        cancel_futures: bool = False,
+        park: bool = False,
+    ) -> None:
         with self._condition:
             self._shutdown = True
+            if park:
+                # Process is exiting: the owner thread must never
+                # pthread_exit (#303 — see _release_mlx_thread_state).
+                self._park_on_exit = True
             if cancel_futures:
                 for queue in (self._foreground, self._idle, self._persistence):
                     while queue:
                         item = queue.popleft()
                         item.future.cancel()
             self._condition.notify_all()
-        if wait and self._thread.is_alive():
+        if wait and not park and self._thread.is_alive():
             self._thread.join()
 
     def _submit(
@@ -407,6 +439,18 @@ class ModelWorkScheduler:
         return future
 
     def _run(self) -> None:
+        try:
+            self._run_loop()
+        finally:
+            _release_mlx_thread_state()
+            if self._park_on_exit:
+                # Park, never exit: a clean thread exit runs pthread TSD
+                # cleanup -> mlx thread_local dtors -> _Py_Dealloc during
+                # interpreter finalization (#303). A never-set Event blocks
+                # in pthread_cond_wait without re-entering the interpreter.
+                Event().wait()
+
+    def _run_loop(self) -> None:
         self._owner_thread_id = get_ident()
         self.owner_qos = _pin_owner_thread_qos()
         while True:

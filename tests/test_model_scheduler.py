@@ -170,3 +170,56 @@ def test_batch_key_telemetry_collapses_per_session_suffixes():
         assert session_keys == []
     finally:
         scheduler.shutdown(wait=True, cancel_futures=True)
+
+
+def test_park_shutdown_keeps_owner_thread_alive_and_rejects_new_work():
+    # #303: at process exit the owner thread must never pthread_exit — a
+    # clean exit during interpreter finalization runs mlx's TLS destructor
+    # into _Py_Dealloc. park=True leaves the thread blocked on a never-set
+    # Event instead.
+    scheduler = ModelWorkScheduler(name="test-park-scheduler", idle_grace_s=0.01)
+    done = scheduler.submit_foreground(lambda: "ok")
+    assert done.result(timeout=2) == "ok"
+
+    scheduler.shutdown(wait=False, cancel_futures=True, park=True)
+    time.sleep(0.2)
+    assert scheduler._thread.is_alive()
+
+    late = scheduler.submit_foreground(lambda: "never")
+    assert late.cancelled() or isinstance(late.exception(timeout=2), Exception)
+
+
+def test_release_mlx_thread_state_calls_clear_streams(monkeypatch):
+    import sys
+
+    from mtplx import model_scheduler
+
+    calls: list[str] = []
+    fake_core = SimpleNamespace(clear_streams=lambda: calls.append("cleared"))
+    fake_mlx = SimpleNamespace(core=fake_core)
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+    model_scheduler._release_mlx_thread_state()
+    assert calls == ["cleared"]
+
+
+def test_release_mlx_thread_state_swallows_missing_and_raising(monkeypatch):
+    import sys
+
+    from mtplx import model_scheduler
+
+    # Older mlx without clear_streams: getattr-guarded no-op.
+    bare_core = SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=bare_core))
+    monkeypatch.setitem(sys.modules, "mlx.core", bare_core)
+    model_scheduler._release_mlx_thread_state()
+
+    # clear_streams that raises must never propagate into teardown.
+    def boom() -> None:
+        raise RuntimeError("stream teardown")
+
+    raising_core = SimpleNamespace(clear_streams=boom)
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=raising_core))
+    monkeypatch.setitem(sys.modules, "mlx.core", raising_core)
+    model_scheduler._release_mlx_thread_state()
