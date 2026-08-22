@@ -1554,6 +1554,8 @@ private struct TargetPreset {
             // sidecar posture, keep SSD off by default, use the same
             // measured sampler as OpenCode. Reasoning is app-owned; the
             // preset must not silently enable thinking behind the UI.
+            // Draft sampler stays model/stamp-owned — never target-pinned
+            // (see the openCode case).
             var piEnv = codingAgentRuntimeEnvironment(
                 processEnvironment: processEnvironment
             )
@@ -1575,9 +1577,6 @@ private struct TargetPreset {
                 prefillChunkTokens: 2048,
                 topP: 0.95,
                 topK: 20,
-                draftTemperature: 0.6,
-                draftTopP: 0.95,
-                draftTopK: 20,
                 toolPromptMode: "hybrid",
                 chatTemplateProfile: "local_qwen36",
                 adaptivePolicy: "expected_value",
@@ -1608,6 +1607,14 @@ private struct TargetPreset {
             // some long contexts, but it starves short OpenCode turns of real
             // depth-3 drafts and drops the Desktop greeting path back into the
             // 30 tok/s band.
+            //
+            // Draft sampler deliberately absent: model-family presets or the
+            // artifact's stamped recommended_draft_sampler own it (the CLI's
+            // zero-flag path injects family/stamp values, provenance-tracked
+            // so they never pin). The 3.6-era 0.7 pinned here used to fill
+            // the 3.8 family's deliberately-nil draft slot and silently
+            // override the stamp's measured 1.0/0.95/20 on every app serve
+            // (founder-session receipt 2026-08-21).
             return TargetPreset(
                 schedulerMode: "serial",
                 batchingPreset: "latency",
@@ -1617,9 +1624,6 @@ private struct TargetPreset {
                 temperature: 0.6,
                 topP: 0.95,
                 topK: 20,
-                draftTemperature: 0.7,
-                draftTopP: 0.95,
-                draftTopK: 20,
                 toolPromptMode: "hybrid",
                 chatTemplateProfile: "local_qwen36",
                 reasoning: "auto",
@@ -1631,7 +1635,8 @@ private struct TargetPreset {
             // Hermes is a foreground coding agent, not a generic batch client.
             // Keep it on the measured OpenCode latency lane so Settings'
             // throughput/agent batching experiments cannot silently slow the
-            // agent chat path.
+            // agent chat path. Draft sampler stays model/stamp-owned — never
+            // target-pinned (see the openCode case).
             var env = codingAgentRuntimeEnvironment(
                 processEnvironment: processEnvironment
             )
@@ -1644,9 +1649,6 @@ private struct TargetPreset {
                 temperature: 0.6,
                 topP: 1.0,
                 topK: 20,
-                draftTemperature: 0.6,
-                draftTopP: 1.0,
-                draftTopK: 20,
                 toolPromptMode: "hybrid",
                 chatTemplateProfile: "local_qwen36",
                 adaptivePolicy: "expected_value",
@@ -1676,7 +1678,8 @@ private struct TargetPreset {
             // AIME is a sustained 30-question benchmark. Do not force the
             // Qwen cold-burst profile here; the configured runtime profile
             // must remain the source of truth so Settings and first-run
-            // defaults actually apply.
+            // defaults actually apply. Draft sampler stays model/stamp-owned
+            // — never target-pinned (see the openCode case).
             return TargetPreset(
                 schedulerMode: "serial",
                 batchingPreset: "latency",
@@ -1684,9 +1687,6 @@ private struct TargetPreset {
                 ssdSessionCache: "off",
                 topP: 0.95,
                 topK: 20,
-                draftTemperature: 0.6,
-                draftTopP: 0.95,
-                draftTopK: 20,
                 reasoning: "auto"
             )
         }

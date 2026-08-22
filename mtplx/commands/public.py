@@ -276,9 +276,6 @@ HERMES_LATENCY_DEFAULTS: dict[str, Any] = {
     "temperature": 0.6,
     "top_p": 1.0,
     "top_k": 20,
-    "draft_temperature": 0.6,
-    "draft_top_p": 1.0,
-    "draft_top_k": 20,
     "tool_prompt_mode": "hybrid",
     "chat_template_profile": OPENCODE_CHAT_TEMPLATE_PROFILE_DEFAULT,
     "adaptive_policy": "expected_value",
@@ -11703,8 +11700,6 @@ def _quickstart_pi_payload(
             f"{_batching_command_suffix(args)} "
             f"--default-temperature {pi_temperature} "
             f"--default-top-p {pi_top_p} --top-k {pi_top_k} "
-            f"--draft-temperature {pi_temperature} "
-            f"--draft-top-p {pi_top_p} --draft-top-k {pi_top_k} "
             f"--preserve-thinking {pi_preserve_thinking} "
             f"{_reasoning_command_suffix(args)} "
             f"{_bridge_prompt_command_suffix(args)} "
@@ -12041,6 +12036,15 @@ def _quickstart_hermes_payload(
         workspace_path=workspace_path,
     )
     api_key_suffix = _api_key_command_suffix(args) or "--api-key mtplx-local "
+    draft_sampler_suffix = "".join(
+        f"{flag} {getattr(args, attr)} "
+        for attr, flag in (
+            ("draft_temperature", "--draft-temperature"),
+            ("draft_top_p", "--draft-top-p"),
+            ("draft_top_k", "--draft-top-k"),
+        )
+        if getattr(args, attr, None) is not None
+    )
     payload = {
         "integration": "hermes",
         "server_url": server_url,
@@ -12087,9 +12091,7 @@ def _quickstart_hermes_payload(
             f"--temperature {float(getattr(args, 'temperature', 0.6))} "
             f"--top-p {float(getattr(args, 'top_p', 1.0))} "
             f"--top-k {int(getattr(args, 'top_k', 20))} "
-            f"--draft-temperature {float(getattr(args, 'draft_temperature', 0.6))} "
-            f"--draft-top-p {float(getattr(args, 'draft_top_p', 1.0))} "
-            f"--draft-top-k {int(getattr(args, 'draft_top_k', 20))} "
+            f"{draft_sampler_suffix}"
             f"--tool-prompt-mode {str(getattr(args, 'tool_prompt_mode', 'hybrid'))} "
             f"--chat-template-profile {str(getattr(args, 'chat_template_profile', OPENCODE_CHAT_TEMPLATE_PROFILE_DEFAULT))} "
             f"--reasoning {_reasoning_mode(args, default='auto')} "
@@ -12563,9 +12565,9 @@ def _quickstart_run_pi(
         temperature=pi_temperature,
         top_p=pi_top_p,
         top_k=pi_top_k,
-        draft_temperature=pi_temperature,
-        draft_top_p=pi_top_p,
-        draft_top_k=pi_top_k,
+        draft_temperature=getattr(args, "draft_temperature", None),
+        draft_top_p=getattr(args, "draft_top_p", None),
+        draft_top_k=getattr(args, "draft_top_k", None),
         reasoning=getattr(args, "reasoning", None),
         preserve_thinking=_preserve_thinking_policy(args),
         reasoning_parser=getattr(args, "reasoning_parser", "qwen3"),
@@ -12735,9 +12737,9 @@ def _quickstart_run_hermes(
         temperature=float(getattr(args, "temperature", 0.6)),
         top_p=float(getattr(args, "top_p", 1.0)),
         top_k=int(getattr(args, "top_k", 20)),
-        draft_temperature=getattr(args, "draft_temperature", 0.6),
-        draft_top_p=getattr(args, "draft_top_p", 1.0),
-        draft_top_k=getattr(args, "draft_top_k", 20),
+        draft_temperature=getattr(args, "draft_temperature", None),
+        draft_top_p=getattr(args, "draft_top_p", None),
+        draft_top_k=getattr(args, "draft_top_k", None),
         reasoning=getattr(args, "reasoning", "auto"),
         preserve_thinking=getattr(args, "preserve_thinking", "auto"),
         reasoning_parser=getattr(args, "reasoning_parser", "qwen3"),

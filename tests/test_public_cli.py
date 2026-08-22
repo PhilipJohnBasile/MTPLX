@@ -1452,7 +1452,11 @@ def test_start_hermes_dry_run_json_matches_native_agent_lane(
     assert "--ssd-session-cache-min-prefix-tokens 512" in command
     assert "--temperature 0.6" in command
     assert "--top-p 1.0" in command
-    assert "--draft-top-p 1.0" in command
+    # Draft sampler is family/stamp-owned; the serve correction chain
+    # resolves it at launch, so the hermes writer emits no draft flags.
+    assert "--draft-temperature" not in command
+    assert "--draft-top-p" not in command
+    assert "--draft-top-k" not in command
     assert "--tool-prompt-mode hybrid" in command
     assert "--chat-template-profile local_qwen36" in command
     assert "--adaptive-policy expected_value" in command
@@ -2884,7 +2888,11 @@ def test_quickstart_pi_dry_run_json(monkeypatch, tmp_path, capsys):
     )
     assert "--api-key mtplx-local" in payload["pi"]["server_command"]
     assert "--default-top-p 0.95" in payload["pi"]["server_command"]
-    assert "--draft-top-p 0.95" in payload["pi"]["server_command"]
+    # Draft sampler is family/stamp-owned; the old writer cross-wired the Pi
+    # TARGET sampler into draft flags, pinning past the correction chain.
+    assert "--draft-temperature" not in payload["pi"]["server_command"]
+    assert "--draft-top-p" not in payload["pi"]["server_command"]
+    assert "--draft-top-k" not in payload["pi"]["server_command"]
     # Pi rides the general auto resolution (2026-08-21): the family contract
     # owns reasoning history, replacing the 1.0.0-era Pi-only hard "off".
     assert "--preserve-thinking auto" in payload["pi"]["server_command"]
@@ -3071,8 +3079,10 @@ def test_start_pi_handoff_writes_config_and_starts_authenticated_server(
         "model_id": "mtplx-test-model",
         "top_p": 0.95,
         "top_k": 20,
-        "draft_top_p": 0.95,
-        "draft_top_k": 20,
+        # No user draft flags: the handoff forwards None so the serve
+        # correction chain resolves the family/stamp draft sampler.
+        "draft_top_p": None,
+        "draft_top_k": None,
     }
     assert payload["providers"]["mtplx"]["baseUrl"] == "http://127.0.0.1:18012/v1"
     assert payload["providers"]["mtplx"]["models"][0]["id"] == "mtplx-test-model"

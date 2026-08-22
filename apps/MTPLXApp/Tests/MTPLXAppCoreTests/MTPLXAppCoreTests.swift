@@ -1565,9 +1565,11 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.7"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-p", "0.95"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-k", "20"]))
+        // Draft sampler is model/stamp-owned: the target preset must not pin
+        // it (the 3.6-era 0.7 here silently overrode the 3.8 stamp's 1.0).
+        XCTAssertFalse(command.arguments.contains("--draft-temperature"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-p"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-k"))
         XCTAssertTrue(command.arguments.containsInOrder(["--tool-prompt-mode", "hybrid"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--chat-template-profile", "local_qwen36"]))
         XCTAssertFalse(command.arguments.contains("--adaptive-policy"))
@@ -1642,8 +1644,8 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--reasoning", "on"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.7"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-p", "0.95"]))
+        XCTAssertFalse(command.arguments.contains("--draft-temperature"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-p"))
     }
 
     func testCommandBuilderOpenCodePresetKeepsLiteralD3OverTunedDepth() throws {
@@ -1717,9 +1719,9 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--temperature", "0.6"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "1.0"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-p", "1.0"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-k", "20"]))
+        XCTAssertFalse(command.arguments.contains("--draft-temperature"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-p"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-k"))
         XCTAssertTrue(command.arguments.containsInOrder(["--tool-prompt-mode", "hybrid"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--chat-template-profile", "local_qwen36"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--adaptive-policy", "expected_value"]))
@@ -1756,9 +1758,9 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(command.arguments.contains("--batch-wait-ms"))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-p", "0.95"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--top-k", "20"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-temperature", "0.6"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-p", "0.95"]))
-        XCTAssertTrue(command.arguments.containsInOrder(["--draft-top-k", "20"]))
+        XCTAssertFalse(command.arguments.contains("--draft-temperature"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-p"))
+        XCTAssertFalse(command.arguments.contains("--draft-top-k"))
         XCTAssertTrue(command.arguments.containsInOrder(["--reasoning", "auto"]))
         XCTAssertTrue(command.arguments.containsInOrder(["--app-launch-id", "benchmark-launch"]))
     }
