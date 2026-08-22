@@ -12698,6 +12698,32 @@ def _response_id_from_client_hint(
     return hint if hint.startswith(prefix_with_dash) else f"{prefix_with_dash}{hint}"
 
 
+# hermes-agent's custom provider serializes this floor on every request when
+# the user has not set model.max_tokens — the client cannot express "no cap".
+_HERMES_INJECTED_DEFAULT_MAX_TOKENS = 65_536
+
+
+def _strip_client_injected_output_cap(
+    request_max_tokens: int | None,
+    *,
+    headers: Mapping[str, str],
+    metadata: Mapping[str, Any],
+) -> tuple[int | None, bool]:
+    """Strip exactly hermes's injected default cap for hermes-hinted requests.
+
+    Same contract as the OpenCode plugin's 32,000 strip and Pi's
+    request-policy extension: MTPLX owns the uncapped generation contract for
+    the known client-injected value, while any other value is a deliberate
+    client choice and passes through untouched.
+    """
+
+    if request_max_tokens == _HERMES_INJECTED_DEFAULT_MAX_TOKENS and _is_hermes_client(
+        headers=headers, metadata=metadata
+    ):
+        return None, True
+    return request_max_tokens, False
+
+
 def _request_max_tokens(request: BaseModel) -> int | None:
     value = getattr(request, "max_tokens", None)
     if value is not None:
@@ -15717,6 +15743,8 @@ def _anonymous_coding_agent_tool_request(
     }
     if not names:
         return False
+    # read_file/search_files/terminal/write_file are hermes-agent's wire
+    # names; without them that lane's membership hangs on "patch" alone.
     coding_agent_tools = {
         "bash",
         "edit",
@@ -15726,11 +15754,15 @@ def _anonymous_coding_agent_tool_request(
         "multi_edit",
         "patch",
         "read",
+        "read_file",
+        "search_files",
         "str_replace_editor",
         "task",
+        "terminal",
         "todowrite",
         "webfetch",
         "write",
+        "write_file",
     }
     return bool(names & coding_agent_tools)
 
@@ -26317,7 +26349,11 @@ def create_app(state: ServerState) -> FastAPI:
             )
         headers = dict(raw_request.headers)
         metadata = _request_metadata(request)
-        request_max_tokens = _request_max_tokens(request)
+        request_max_tokens, hermes_default_cap_stripped = (
+            _strip_client_injected_output_cap(
+                _request_max_tokens(request), headers=headers, metadata=metadata
+            )
+        )
         requested_model = request.model
         # A request that names a configured embedder or reranker is a
         # capability mismatch, not a stale id: silently answering it with the
@@ -26750,6 +26786,8 @@ def create_app(state: ServerState) -> FastAPI:
         request_observability["request_id"] = response_id
         if reasoning_effort is not None:
             request_observability["resolved_reasoning_effort"] = reasoning_effort
+        if hermes_default_cap_stripped:
+            request_observability["hermes_default_cap_stripped"] = True
         if transient_suffix_contract_active:
             if read_only_force_answer_contract_active:
                 _restore_policy_label = "stable_without_transient_force_answer"

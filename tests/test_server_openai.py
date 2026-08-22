@@ -12786,3 +12786,36 @@ def test_mtp_postcommit_snapshot_keeps_committed_policy(monkeypatch):
     assert made["mtp_cache"] == 1
     assert result["stored"] is True
     assert state.sessions.bank.puts[0]["mtp_history_policy"] == "committed"
+
+
+def test_strip_client_injected_output_cap_hermes_exact_match_only():
+    from mtplx.server.openai import _strip_client_injected_output_cap
+
+    hermes_headers = {"x-mtplx-client": "hermes"}
+    assert _strip_client_injected_output_cap(
+        65_536, headers=hermes_headers, metadata={}
+    ) == (None, True)
+    # Any other value is a deliberate client choice and must pass through.
+    assert _strip_client_injected_output_cap(
+        65_535, headers=hermes_headers, metadata={}
+    ) == (65_535, False)
+    assert _strip_client_injected_output_cap(
+        None, headers=hermes_headers, metadata={}
+    ) == (None, False)
+    # The same value from any other client is not the hermes injected floor.
+    assert _strip_client_injected_output_cap(
+        65_536, headers={"x-mtplx-client": "opencode"}, metadata={}
+    ) == (65_536, False)
+    assert _strip_client_injected_output_cap(65_536, headers={}, metadata={}) == (
+        65_536,
+        False,
+    )
+
+
+def test_anonymous_coding_agent_tools_cover_hermes_names():
+    from mtplx.server.openai import _anonymous_coding_agent_tool_request
+
+    for name in ("read_file", "write_file", "search_files", "terminal"):
+        assert _anonymous_coding_agent_tool_request([name]), name
+    assert not _anonymous_coding_agent_tool_request(["calendar_lookup"])
+    assert not _anonymous_coding_agent_tool_request([])

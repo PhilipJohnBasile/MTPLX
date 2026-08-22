@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import importlib
 import importlib.metadata
@@ -1910,6 +1911,17 @@ def _opencode_doctor_report(args: Any) -> dict[str, Any]:
     }
 
 
+def _doctor_port_from_base_url(base_url: str, args: Any) -> int:
+    if base_url:
+        try:
+            port = urllib.parse.urlsplit(base_url).port
+        except ValueError:
+            port = None
+        if port:
+            return int(port)
+    return int(getattr(args, "port", None) or 8000)
+
+
 def _pi_doctor_report(args: Any) -> dict[str, Any]:
     from mtplx.pi import pi_models_json_path, pi_model_ref
 
@@ -2001,8 +2013,17 @@ def _pi_doctor_report(args: Any) -> dict[str, Any]:
             if isinstance(model_config, dict)
             else False
         ),
-        "has_hidden_max_tokens": "maxTokens" in json.dumps(model_config or {}),
-        "expected_start_command": "mtplx start pi --port 8000 --max",
+        # Presence is the healthy state for Pi: without advertised maxTokens
+        # metadata Pi silently serializes a 16,384 output ceiling, and the
+        # request-policy extension strips only the generated wire cap.
+        "advertised_max_tokens": (
+            model_config.get("maxTokens") if isinstance(model_config, dict) else None
+        ),
+        # The restart hint must name the port the config actually points at
+        # (the app serves on 8002); 8000 is only the bare-CLI fallback.
+        "expected_start_command": (
+            f"mtplx start pi --port {_doctor_port_from_base_url(base_url, args)} --max"
+        ),
     }
 
 
@@ -2489,8 +2510,14 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
                 print(f"  live model: {pi.get('live_model_id')}")
             print(f"  base URL: {pi.get('base_url') or 'missing'}")
             print(f"  auth header: {str(bool(pi.get('auth_header'))).lower()}")
+            advertised_max_tokens = pi.get("advertised_max_tokens")
             print(
-                f"  hidden maxTokens: {str(bool(pi.get('has_hidden_max_tokens'))).lower()}"
+                "  advertised maxTokens: "
+                + (
+                    str(advertised_max_tokens)
+                    if advertised_max_tokens
+                    else "missing (Pi will inject a 16,384 output ceiling)"
+                )
             )
             print(
                 "  MTPLX client header: "
@@ -11177,7 +11204,21 @@ def _hermes_config_yaml(
     base_url: str,
     api_key: str,
     workspace_path: str,
+    reasoning_effort: str | None = None,
 ) -> str:
+    # SYNC PAIR: HermesIntegration.configYAML — both writers must emit the
+    # same template shape or the shared merge sweeps each other's lines.
+    # model.default_headers is the only client-side identity hook hermes
+    # exposes; without x-mtplx-client every hermes-conditional server branch
+    # (tool contract, managed-thinking carve-out, injected-cap strip) is dead.
+    # Reasoning effort must sit under agent: — hermes reads
+    # CLI_CONFIG["agent"]["reasoning_effort"]; a model.reasoning_effort line
+    # is silently ignored.
+    effort_line = (
+        f"  reasoning_effort: {_hermes_yaml_quote(reasoning_effort)}\n"
+        if reasoning_effort
+        else ""
+    )
     return (
         "model:\n"
         f"  default: {_hermes_yaml_quote(model_id)}\n"
@@ -11185,13 +11226,16 @@ def _hermes_config_yaml(
         f"  base_url: {_hermes_yaml_quote(base_url)}\n"
         f"  api_key: {_hermes_yaml_quote(api_key)}\n"
         "  api_mode: chat_completions\n"
+        "  default_headers:\n"
+        "    x-mtplx-client: hermes\n"
         "toolsets:\n"
         + "".join(f"  - {toolset}\n" for toolset in HERMES_CODING_TOOLSETS)
         + "agent:\n"
         f"  system_prompt: {_hermes_yaml_quote(HERMES_SYSTEM_PROMPT)}\n"
         "  max_turns: 200\n"
         "  tool_use_enforcement: auto\n"
-        "terminal:\n"
+        + effort_line
+        + "terminal:\n"
         "  backend: local\n"
         f"  cwd: {_hermes_yaml_quote(workspace_path)}\n"
         "  timeout: 180\n"
@@ -11239,10 +11283,13 @@ def _hermes_dotenv(
 
 # Children owned under a template section even when the current template does
 # not emit them — conditional lines must be able to disappear instead of
-# being resurrected as user content. The app writes model.reasoning_effort
-# only while an effort is configured, and both writers share this file.
+# being resurrected as user content. Both writers emit agent.reasoning_effort
+# only while an effort is configured. "model" stays owned because
+# pre-2026-08-22 writers emitted reasoning_effort under model: (a key hermes
+# never read); owning it sweeps the stale line from user files.
 _HERMES_CONDITIONALLY_OWNED_CHILD_KEYS: dict[str, frozenset[str]] = {
     "model": frozenset({"reasoning_effort"}),
+    "agent": frozenset({"reasoning_effort"}),
 }
 
 
@@ -11384,12 +11431,27 @@ def _write_if_changed(path: Path, text: str, *, mode: int = 0o600) -> bool:
     return changed
 
 
+def _hermes_client_reasoning_effort(args: Any) -> str | None:
+    """Explicit effort for the hermes profile; "auto" stays server-side.
+
+    hermes validates ``agent.reasoning_effort`` against its fixed ladder and
+    warns + falls back to medium on unknown values, so the "auto" sentinel
+    (server-resolved family default) must never be written client-side.
+    """
+
+    reasoning_effort = getattr(args, "reasoning_effort", None)
+    if not reasoning_effort or str(reasoning_effort) == "auto":
+        return None
+    return str(reasoning_effort)
+
+
 def _sync_hermes_profile(
     *,
     model_id: str,
     base_url: str,
     api_key: str,
     workspace_path: str,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     profile_dir = _hermes_profile_dir()
     config_path = profile_dir / "config.yaml"
@@ -11410,6 +11472,7 @@ def _sync_hermes_profile(
                 base_url=base_url,
                 api_key=api_key,
                 workspace_path=workspace_path,
+                reasoning_effort=reasoning_effort,
             ),
         ),
     )
@@ -12110,6 +12173,7 @@ def _quickstart_hermes_payload(
             base_url=base_url,
             api_key=api_key,
             workspace_path=workspace_path,
+            reasoning_effort=_hermes_client_reasoning_effort(args),
         )
     return payload
 

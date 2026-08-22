@@ -1459,6 +1459,14 @@ public struct HermesIntegration: Sendable {
         showReasoning: Bool,
         reasoningEffort: String?
     ) -> String {
+        // SYNC PAIR: public.py _hermes_config_yaml — both writers must emit
+        // the same template shape or the shared merge sweeps each other's
+        // lines. model.default_headers is the only client-side identity hook
+        // hermes exposes; without x-mtplx-client every hermes-conditional
+        // server branch (tool contract, managed-thinking carve-out,
+        // injected-cap strip) is dead. Reasoning effort must sit under
+        // agent: — hermes reads CLI_CONFIG["agent"]["reasoning_effort"]; a
+        // model.reasoning_effort line is silently ignored.
         let effortLine = reasoningEffort.map { "  reasoning_effort: \(yamlQuote($0))\n" } ?? ""
         let showReasoningText = showReasoning ? "true" : "false"
         return """
@@ -1468,7 +1476,8 @@ public struct HermesIntegration: Sendable {
           base_url: \(yamlQuote(baseURL))
           api_key: \(yamlQuote(apiKey))
           api_mode: chat_completions
-        """ + "\n" + effortLine + """
+          default_headers:
+            x-mtplx-client: hermes
         toolsets:
           - terminal
           - file
@@ -1479,6 +1488,7 @@ public struct HermesIntegration: Sendable {
           system_prompt: \(yamlQuote(systemPrompt))
           max_turns: 200
           tool_use_enforcement: auto
+        """ + "\n" + effortLine + """
         terminal:
           backend: local
           cwd: \(yamlQuote(workspacePath))
@@ -1510,11 +1520,14 @@ public struct HermesIntegration: Sendable {
 
     /// Children the app owns under a template section even when the current
     /// template does not emit them — conditional lines must be able to
-    /// disappear instead of being resurrected as "user content". Today that
-    /// is only `model.reasoning_effort` (emitted only while an effort is
-    /// configured).
+    /// disappear instead of being resurrected as "user content".
+    /// `agent.reasoning_effort` is emitted only while an effort is
+    /// configured. `model` stays owned because pre-2026-08-22 writers
+    /// emitted `reasoning_effort` under `model:` (a key hermes never read);
+    /// owning it sweeps the stale line from user files.
     static let conditionallyOwnedChildKeys: [String: Set<String>] = [
-        "model": ["reasoning_effort"]
+        "model": ["reasoning_effort"],
+        "agent": ["reasoning_effort"]
     ]
 
     /// Merge the generated template over the existing profile config.

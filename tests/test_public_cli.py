@@ -8046,6 +8046,75 @@ def test_hermes_merged_config_without_existing_is_template():
     assert public._hermes_merged_config_yaml("  \n", template) == template
 
 
+def _hermes_template_blocks(template):
+    _preamble, blocks, _trailing = public._hermes_parse_top_level_blocks(template)
+    return {block["key"]: "\n".join(block["lines"]) for block in blocks}
+
+
+def test_hermes_config_yaml_identity_header_and_agent_effort():
+    template = public._hermes_config_yaml(
+        model_id="m",
+        base_url="http://127.0.0.1:9001/v1",
+        api_key="k",
+        workspace_path="/ws",
+        reasoning_effort="high",
+    )
+    by_key = _hermes_template_blocks(template)
+    # model.default_headers is the only client-side identity hook hermes
+    # exposes; every hermes-conditional server branch keys on it.
+    assert "  default_headers:\n    x-mtplx-client: hermes" in by_key["model"]
+    # hermes reads CLI_CONFIG["agent"]["reasoning_effort"]; under model: the
+    # key is silently ignored.
+    assert "  reasoning_effort: 'high'" in by_key["agent"]
+    assert "reasoning_effort" not in by_key["model"]
+
+    effortless = public._hermes_config_yaml(
+        model_id="m",
+        base_url="http://127.0.0.1:9001/v1",
+        api_key="k",
+        workspace_path="/ws",
+    )
+    assert "reasoning_effort" not in effortless
+    assert "x-mtplx-client: hermes" in effortless
+
+
+def test_hermes_merge_moves_stale_model_effort_under_agent():
+    template = public._hermes_config_yaml(
+        model_id="m",
+        base_url="http://127.0.0.1:9001/v1",
+        api_key="k",
+        workspace_path="/ws",
+        reasoning_effort="low",
+    )
+    stale = (
+        "model:\n"
+        "  default: 'old'\n"
+        "  provider: custom\n"
+        "  reasoning_effort: 'high'\n"
+        "agent:\n"
+        "  system_prompt: 'old'\n"
+    )
+    merged = public._hermes_merged_config_yaml(stale, template)
+    by_key = _hermes_template_blocks(merged)
+    assert "reasoning_effort" not in by_key["model"]
+    assert by_key["agent"].count("reasoning_effort") == 1
+    assert "  reasoning_effort: 'low'" in by_key["agent"]
+    # Idempotent with the nested default_headers child in place.
+    assert public._hermes_merged_config_yaml(merged, template) == merged
+
+
+def test_hermes_client_reasoning_effort_excludes_auto():
+    from types import SimpleNamespace
+
+    effort = public._hermes_client_reasoning_effort
+    assert effort(SimpleNamespace(reasoning_effort="xhigh")) == "xhigh"
+    # "auto" is the server-resolved sentinel; hermes warns and falls back to
+    # medium on unknown ladder values, so it must never be written.
+    assert effort(SimpleNamespace(reasoning_effort="auto")) is None
+    assert effort(SimpleNamespace(reasoning_effort=None)) is None
+    assert effort(SimpleNamespace()) is None
+
+
 def test_sync_hermes_profile_preserves_user_sections(monkeypatch, tmp_path):
     monkeypatch.setattr(public, "_hermes_home", lambda: tmp_path / ".hermes")
 

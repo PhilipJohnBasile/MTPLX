@@ -4887,8 +4887,38 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(thinkingLevelMap["minimal"], .null)
         XCTAssertEqual(thinkingLevelMap["xhigh"]?.stringValue, "xhigh")
         XCTAssertEqual(model["contextWindow"]?.intValue, 131_072)
-        XCTAssertFalse(root.recursivelyContainsKey("maxTokens"))
+        // Pi silently substitutes a 16,384 output ceiling for models whose
+        // metadata omits maxTokens, so the real context ceiling must be
+        // advertised (SYNC PAIR: mtplx/pi.py build_pi_provider_config); the
+        // request-policy extension owns stripping Pi's generated wire cap.
+        XCTAssertEqual(model["maxTokens"]?.intValue, 131_072)
         XCTAssertFalse(root.recursivelyContainsKey("max_response_tokens"))
+
+        let extensionURL = url.deletingLastPathComponent()
+            .appendingPathComponent("extensions", isDirectory: true)
+            .appendingPathComponent(PiIntegration.requestPolicyExtensionName)
+        let extensionSource = try String(contentsOf: extensionURL, encoding: .utf8)
+        XCTAssertTrue(
+            extensionSource.contains(
+                "const mtplxModelID = \"mtplx-qwen36-27b-optimized-speed\";"
+            )
+        )
+        XCTAssertTrue(
+            extensionSource.contains("const mtplxPiInjectedDefaultMaxTokens = 16384;")
+        )
+        XCTAssertTrue(extensionSource.contains("x-mtplx-session-id"))
+
+        // A repeat sync with an unchanged configuration must not report a
+        // change: both the config and the extension are content-compared.
+        let repeated = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
+                host: "0.0.0.0",
+                port: 8000,
+                contextWindow: nil
+            )
+        )
+        XCTAssertFalse(repeated.didChange)
     }
 
     func testPiIntegrationUsesGemmaModelIdentityForGemmaBundles() throws {
