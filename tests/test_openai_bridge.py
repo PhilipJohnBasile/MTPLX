@@ -38,6 +38,7 @@ from mtplx.server.openai import (
     _effective_completion_tokens,
     _generation_params,
     _generation_final_postcommit_compatibility,
+    _history_ids_for_postcommit,
     _merge_final_bridge_stats_into_latest_metrics,
     _metrics_envelope,
     _monitor_request_disconnect,
@@ -267,7 +268,12 @@ def test_generation_final_postcommit_prefix_stores_boundary_and_reports_suffix()
     assert state.sessions.bank.puts[0]["token_ids"] == prompt_ids + generated_tokens
 
 
-def test_generation_final_postcommit_rejects_tool_call_history_rewrite():
+def test_generation_final_postcommit_tool_call_mismatch_refuses_empirically():
+    """Tool-call turns are no longer refused a priori (the retired
+    tool_call_history_rewrite gate starved every coding-agent tool round of
+    the zero-recompute fast path, 2026-08-21): the byte-compare decides. A
+    generated stream that does NOT match the retokenized render still
+    refuses — and never banks."""
     state = _postcommit_state()
     messages = [ChatMessage(role="user", content="call tool")]
     prompt_ids = _encode_messages(
@@ -298,8 +304,62 @@ def test_generation_final_postcommit_rejects_tool_call_history_rewrite():
     )
 
     assert compatibility["safe"] is False
-    assert compatibility["reason"] == "tool_call_history_rewrite"
+    assert compatibility["reason"] == "retokenized_history_mismatch"
     assert state.sessions.bank.puts == []
+
+
+def test_generation_final_postcommit_accepts_byte_identical_tool_call_turn():
+    """The payoff of retiring the a-priori refusal: a tool-call turn whose
+    generated stream byte-matches the retokenized render is safe — the live
+    generation-final KV banks with zero GPU recompute and the committed
+    frontier advances inline instead of starving on the idle postcommit."""
+    state = _postcommit_state()
+    messages = [ChatMessage(role="user", content="call tool")]
+    tool_calls = [
+        {"type": "function", "function": {"name": "lookup", "arguments": {}}}
+    ]
+    prompt_ids = _encode_messages(
+        state.runtime.tokenizer,
+        messages,
+        enable_thinking=False,
+        add_generation_prompt=True,
+    )
+    history_ids, _splice = _history_ids_for_postcommit(
+        state,
+        messages=messages,
+        assistant_content="",
+        assistant_tool_calls=tool_calls,
+        thinking_enabled=False,
+        reasoning_effort=None,
+        tool_specs=None,
+        tool_prompt_mode=None,
+        committed_stream_ids=[],
+    )
+    assert list(history_ids[: len(prompt_ids)]) == list(prompt_ids), (
+        "harness precondition: the retokenized history must start with the "
+        "request prompt for a byte-identical turn to be constructible"
+    )
+    generated_tokens = [int(t) for t in history_ids[len(prompt_ids) :]]
+    generated = {
+        "tokens": generated_tokens,
+        "_final_state": _final_state(generated_tokens),
+    }
+
+    compatibility = _generation_final_postcommit_compatibility(
+        state,
+        prompt_ids=prompt_ids,
+        generated=generated,
+        messages=messages,
+        assistant_content="",
+        assistant_tool_calls=tool_calls,
+        thinking_enabled=False,
+    )
+
+    assert compatibility["safe"] is True
+    assert compatibility["mode"] in (
+        "generation_final_exact",
+        "generation_final_prefix",
+    )
 
 
 def test_idle_async_postcommit_returns_pending_and_dispatches_retokenized_commit(

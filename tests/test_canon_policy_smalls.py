@@ -240,10 +240,14 @@ def test_gate_uses_preresolved_session_id(monkeypatch):
 def test_chat_endpoint_resolves_session_once():
     """Source pin for the endpoint seam: the prologue resolves once into
     resolved_session_id, the gate consumes it, and the adoption step reuses
-    it instead of resolving again."""
+    it instead of resolving again. The adoption block sits AFTER the
+    canonicalization call (the canon-after-wait early sweep, 2026-08-21,
+    added an earlier `if resolved_session_id is not None:` for the pending
+    postcommit wait — anchor past the canon call to keep pinning adoption)."""
     source = OPENAI_PY.read_text()
     assert "session_id=resolved_session_id," in source
-    adoption = source.index("if resolved_session_id is not None:")
+    canon_call = source.index("_canonicalized = _maybe_canonicalize_committed_reasoning(")
+    adoption = source.index("if resolved_session_id is not None:", canon_call)
     window = source[adoption : adoption + 700]
     assert "resolved_session_source" in window
     assert "else:" in window

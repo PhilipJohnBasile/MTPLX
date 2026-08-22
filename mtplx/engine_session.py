@@ -870,6 +870,17 @@ class EngineSession:
                 "outcome": "completed",
                 "timeout_s": timeout_s,
             }
+            # "completed" only means the future resolved — abandoned jobs
+            # also complete (they return normally after logging their own
+            # outcome). Surface the job's result so receipts distinguish a
+            # stored commit from ran-and-gave-up (2026-08-21: every
+            # 3.7-10.2s "completed" wait could hide an abandoned job while
+            # the committed stream froze).
+            job_outcome = getattr(record, "last_outcome", None)
+            if isinstance(job_outcome, dict) and "stored" in job_outcome:
+                outcome["job_stored"] = bool(job_outcome.get("stored"))
+                outcome["job_mode"] = job_outcome.get("mode")
+                outcome["job_reason"] = job_outcome.get("reason")
         except BaseException as exc:
             exc_name = type(exc).__name__
             preempted_cancel = (

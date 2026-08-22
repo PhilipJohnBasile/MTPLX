@@ -44,6 +44,7 @@ from mtplx.server.openai import (
     _preserve_thinking_effective,
     _reasoning_history_fingerprint_component,
     _reasoning_history_mode,
+    _reasoning_history_preserve_echo_active,
     _reasoning_history_scoped_active,
     _template_supports_scoped_reasoning,
     parse_args,
@@ -99,6 +100,7 @@ def _render_history(
     *,
     strip_assistant_reasoning_history=False,
     scoped_reasoning_history=False,
+    preserve_reasoning_history=False,
     enable_thinking=True,
 ):
     tokenizer = Qwen36TemplateTokenizer()
@@ -108,6 +110,7 @@ def _render_history(
         enable_thinking=enable_thinking,
         strip_assistant_reasoning_history=strip_assistant_reasoning_history,
         scoped_reasoning_history=scoped_reasoning_history,
+        preserve_reasoning_history=preserve_reasoning_history,
     )
     assert tokenizer.last_rendered is not None
     return tokenizer.last_rendered
@@ -227,6 +230,114 @@ def test_scoped_carries_structured_reasoning_legacy_preserve_dropped():
     )
     assert "THINK_ACTIVE_ROUND" not in preserve
     assert "<think>\n\n</think>" in preserve
+
+
+# ---------------------------------------------------------------------------
+# Preserve-mode echo-carry (2026-08-21): postcommit starvation froze committed
+# streams (15,389 tokens while the true stream passed 76k) and legacy preserve
+# dropped the client's echoed reasoning, so the model re-derived a 57.8k-token
+# turn from scratch. Preserve now carries the echo as the BASE render
+# (committed-think substitution still overwrites covered turns with KV-exact
+# bytes); explicit policy `on` keeps the legacy drop as the rollback lane.
+# ---------------------------------------------------------------------------
+
+
+def test_preserve_echo_renders_structured_reasoning_history():
+    rendered = _render_history(
+        _completed_turn_history(),
+        preserve_reasoning_history=True,
+    )
+    assert "THINK_TURN_ONE" in rendered
+    assert "THINK_TURN_TWO" in rendered
+    assert "Here is the plan." in rendered
+    assert "Executed step one." in rendered
+
+
+def test_preserve_echo_flag_off_keeps_legacy_drop():
+    """The bare-function default (and policy `on`) stays byte-identical
+    legacy: structured echoes drop and completed turns render the empty
+    scaffold."""
+    rendered = _render_history(_completed_turn_history())
+    assert "THINK_TURN_ONE" not in rendered
+    assert "<think>\n\n</think>" in rendered
+
+
+def test_preserve_echo_never_renders_with_thinking_off():
+    rendered = _render_history(
+        _completed_turn_history(),
+        preserve_reasoning_history=True,
+        enable_thinking=False,
+    )
+    assert "THINK_TURN_ONE" not in rendered
+    assert "THINK_TURN_TWO" not in rendered
+
+
+def test_preserve_echo_never_renders_under_strip():
+    rendered = _render_history(
+        _completed_turn_history(),
+        preserve_reasoning_history=True,
+        strip_assistant_reasoning_history=True,
+    )
+    assert "THINK_TURN_ONE" not in rendered
+
+
+def test_preserve_echo_inline_think_content_is_single_source():
+    messages = [
+        ChatMessage(role="user", content="List the project files."),
+        ChatMessage(
+            role="assistant",
+            content="<think>\nTHINK_INLINE original\n</think>\n\nDone.",
+            reasoning_content="THINK_FIELD duplicate copy",
+        ),
+        ChatMessage(role="user", content="Thanks."),
+    ]
+    rendered = _render_history(messages, preserve_reasoning_history=True)
+    assert "THINK_INLINE" in rendered
+    assert "THINK_FIELD" not in rendered, (
+        "content already starts with an inline think block - including the "
+        "echoed field too would render the turn's thinking twice"
+    )
+
+
+def _echo_state(**arg_overrides):
+    defaults = dict(
+        strip_assistant_reasoning_history=False,
+        preserve_thinking="auto",
+    )
+    defaults.update(arg_overrides)
+    return SimpleNamespace(
+        args=SimpleNamespace(**defaults),
+        reasoning_history_scoped_capable=False,
+    )
+
+
+def test_preserve_echo_active_resolution_and_fingerprint():
+    auto_state = _echo_state()
+    assert _reasoning_history_preserve_echo_active(auto_state) is True
+    assert (
+        _reasoning_history_fingerprint_component(auto_state)
+        == "reasoning_history=preserve_echo"
+    )
+
+    on_state = _echo_state(preserve_thinking="on")
+    assert _reasoning_history_preserve_echo_active(on_state) is False
+    assert (
+        _reasoning_history_fingerprint_component(on_state) == "strip_reasoning=0"
+    ), "policy `on` must keep the exact legacy fingerprint (rollback lane)"
+
+    off_state = _echo_state(preserve_thinking="off")
+    assert _reasoning_history_preserve_echo_active(off_state) is False
+    assert (
+        _reasoning_history_fingerprint_component(off_state) == "strip_reasoning=1"
+    )
+
+    scoped_state = _echo_state(preserve_thinking="scoped")
+    scoped_state.reasoning_history_scoped_capable = True
+    assert _reasoning_history_preserve_echo_active(scoped_state) is False
+    assert (
+        _reasoning_history_fingerprint_component(scoped_state)
+        == "reasoning_history=scoped"
+    )
     scoped = _render_history(
         _active_round_history(),
         scoped_reasoning_history=True,
@@ -417,16 +528,20 @@ def test_fingerprint_component_pins_legacy_strings_for_on_and_off():
         _reasoning_history_fingerprint_component(_state("off", capable=True))
         == "strip_reasoning=1"
     )
-    assert (
-        _reasoning_history_fingerprint_component(_state("auto", capable=False))
-        == "strip_reasoning=0"
-    )
 
 
-def test_fingerprint_component_mints_new_identity_for_scoped_only():
+def test_fingerprint_component_mints_new_identity_for_scoped_and_echo():
     assert (
         _reasoning_history_fingerprint_component(_state("auto", capable=True))
         == "reasoning_history=scoped"
+    )
+    # Auto-preserve carries the client's echoed reasoning since 2026-08-21
+    # (postcommit-starvation fix), so its rendered bytes genuinely differ
+    # from legacy preserve - same honesty rule as scoped. Explicit `on`
+    # stays the byte-identical legacy lane above.
+    assert (
+        _reasoning_history_fingerprint_component(_state("auto", capable=False))
+        == "reasoning_history=preserve_echo"
     )
 
 
@@ -469,9 +584,12 @@ def test_policy_fingerprint_scoped_differs_but_on_matches_legacy():
     )
     assert "reasoning_history=scoped" in scoped
     assert "strip_reasoning=0" in preserve
-    # `on` (and auto on non-checkpoint templates) emits the exact legacy
-    # component so pre-existing warm banks stay valid.
-    assert preserve == legacy_preserve
+    # `on` keeps the exact legacy component so its warm banks stay valid;
+    # auto-preserve mints preserve_echo (echo-carry renders different bytes,
+    # 2026-08-21 postcommit-starvation fix) so it must NOT share the legacy
+    # identity - a shared fingerprint would invite guaranteed prefix misses.
+    assert "reasoning_history=preserve_echo" in legacy_preserve
+    assert preserve != legacy_preserve
     assert scoped != preserve
 
 

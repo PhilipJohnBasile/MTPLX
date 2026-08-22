@@ -59,7 +59,7 @@ TOOL_SPEC = {
 }
 
 
-def _encode(tok, messages, *, allow=False, tool_prompt_mode="compact"):
+def _encode(tok, messages, *, allow=False, preserve=False, tool_prompt_mode="compact"):
     request = oa.ChatCompletionRequest(model="m", messages=messages)
     return oa._encode_messages(
         tok,
@@ -68,6 +68,7 @@ def _encode(tok, messages, *, allow=False, tool_prompt_mode="compact"):
         reasoning_effort="medium",
         strip_assistant_reasoning_history=False,
         scoped_reasoning_history=False,
+        preserve_reasoning_history=preserve,
         tools=[TOOL_SPEC],
         tool_choice=None,
         tool_prompt_mode=tool_prompt_mode,
@@ -249,3 +250,71 @@ def test_postcommit_backfills_empty_interiors_from_session_stream(tok, monkeypat
     rendered = tok.decode(list(with_backfill))
     assert THINK in rendered, "A1's interior must be backfilled from the session"
     assert THINK2 in rendered, "the request's own generated interior must survive"
+
+
+ECHO1 = "ECHO_THINK_ONE the summary came from reading calc directly"
+U3 = {"role": "user", "content": "Now add a modulo helper too."}
+
+
+def test_raw_encode_carries_preserve_echo_and_matches_canonical(tok):
+    """Preserve echo-carry, the spiral killer: the raw encode renders the
+    client's echoed reasoning for history turns (an uncovered turn is no
+    longer an empty scaffold), and the canonical encode of the identical
+    messages produces IDENTICAL ids - one segmentation policy holds with the
+    echo present."""
+    history = [
+        SYSTEM,
+        U1,
+        {"role": "assistant", "content": ANSWER, "reasoning_content": ECHO1},
+        U2,
+    ]
+    raw = _encode(tok, history, preserve=True)
+    assert ECHO1 in tok.decode(raw), "echoed reasoning must reach the render"
+    dropped = _encode(tok, history)
+    assert ECHO1 not in tok.decode(dropped), (
+        "flag-off must stay the legacy drop (rollback lane)"
+    )
+    canon = _encode(tok, history, allow=True, preserve=True)
+    assert raw == canon, (
+        f"raw/canonical diverged with echo present: first mismatch at "
+        f"{oa._common_prefix_len(raw, canon)} of {len(raw)}/{len(canon)}"
+    )
+
+
+def test_postcommit_prefix_carries_echo_and_prefixes_next_turn(tok, monkeypatch):
+    """The postcommit prediction must render echoed turns exactly like the
+    next request's encode, or the banked prefix dies at the first echoed
+    turn. Also pins the state-level wiring: the stub state resolves
+    echo-carry ON (preserve mode, auto policy)."""
+    messages2 = [
+        SYSTEM,
+        U1,
+        {"role": "assistant", "content": ANSWER, "reasoning_content": ECHO1},
+        U2,
+    ]
+    served_prompt = _encode(tok, messages2, preserve=True)
+    generated2 = oa._encode_rendered_chat_text(
+        tok, f"{THINK2}\n</think>\n\n{ANSWER2}<|im_end|>\n"
+    )
+    request_local = list(served_prompt) + list(generated2)
+    history_ids = _history_ids(
+        tok,
+        monkeypatch,
+        request_local,
+        messages=messages2,
+        assistant_content=ANSWER2,
+    )
+    assert history_ids
+    rendered = tok.decode(list(history_ids))
+    assert ECHO1 in rendered, "postcommit render must keep the echoed turn"
+    assert THINK2 in rendered, "the request's own generated interior must survive"
+
+    history3 = messages2 + [
+        {"role": "assistant", "content": ANSWER2, "reasoning_content": THINK2},
+        U3,
+    ]
+    raw3 = _encode(tok, history3, preserve=True)
+    assert raw3[: len(history_ids)] == [int(t) for t in history_ids], (
+        "the postcommit prefix must be a byte prefix of the next turn's "
+        "echo-carrying encode"
+    )
