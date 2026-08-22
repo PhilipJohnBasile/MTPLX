@@ -2643,3 +2643,25 @@ def test_usage_payload_uses_repaired_completion_tokens():
         "completion_tokens": 34,
         "total_tokens": 46,
     }
+
+
+def test_marathon_postcommit_protection_env_resolution(monkeypatch):
+    """Marathon postcommit protection: off by default, threshold+wait armed
+    by env (the chess-gauntlet 79s re-prefill wall follow-up)."""
+    from mtplx.engine_session import (
+        _marathon_postcommit_protect_tokens,
+        _marathon_postcommit_wait_s,
+    )
+
+    monkeypatch.delenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", raising=False)
+    monkeypatch.delenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", raising=False)
+    assert _marathon_postcommit_protect_tokens() == 0  # default OFF
+    assert _marathon_postcommit_wait_s() == 30.0
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", "8000")
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", "12.5")
+    assert _marathon_postcommit_protect_tokens() == 8000
+    assert _marathon_postcommit_wait_s() == 12.5
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", "garbage")
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", "-3")
+    assert _marathon_postcommit_protect_tokens() == 0
+    assert _marathon_postcommit_wait_s() == 30.0

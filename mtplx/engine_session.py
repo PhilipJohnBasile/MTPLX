@@ -500,6 +500,48 @@ def _postcommit_arrival_wait_s() -> float:
     return value if value > 0.0 else 0.0
 
 
+def _marathon_postcommit_protect_tokens() -> int:
+    """MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS: 0 (default) disables.
+
+    A marathon turn's postcommit (50k+ tokens of think interior to render
+    and commit) can never finish inside the standard 0.6s arrival window
+    under continuous agent pressure — each next turn aborts it, the retry
+    queue starves, and the eventual cost is a multi-10k-token warm
+    re-prefill (measured: an 18,011-token, 79s TTFT wall after a 54k-think
+    turn, 2026-08-22 chess gauntlet). When set (>0), a pending postcommit
+    whose token_count meets the threshold is granted the marathon wait
+    below instead of the standard window. Off by default: the tradeoff
+    (next-turn TTFB vs the re-prefill wall) is a product decision.
+    """
+    raw = os.environ.get("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS")
+    if raw is None or not str(raw).strip():
+        return 0
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
+
+
+def _marathon_postcommit_wait_s() -> float:
+    """MTPLX_POSTCOMMIT_MARATHON_WAIT_S: escalated wait cap (default 30s).
+
+    Bounded on purpose — a wedged commit must still lose to the foreground
+    eventually; 30s covers the measured marathon commit times with margin
+    while staying far below the re-prefill wall it prevents.
+    """
+    raw = os.environ.get("MTPLX_POSTCOMMIT_MARATHON_WAIT_S")
+    if raw is None or not str(raw).strip():
+        return 30.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 30.0
+    if not math.isfinite(value) or value <= 0.0:
+        return 30.0
+    return value
+
+
 def _postcommit_wait_timeout_s() -> float:
     """Read MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S from the environment.
 
@@ -975,6 +1017,17 @@ class EngineSession:
             }
         else:
             arrival_wait_s = _postcommit_arrival_wait_s()
+            marathon_protected = False
+            protect_tokens = _marathon_postcommit_protect_tokens()
+            if (
+                protect_tokens > 0
+                and int(getattr(record, "token_count", 0) or 0) >= protect_tokens
+            ):
+                # Marathon protection: give a big commit the room to land
+                # instead of aborting it into the starvation/re-prefill
+                # cycle. See _marathon_postcommit_protect_tokens.
+                arrival_wait_s = max(arrival_wait_s, _marathon_postcommit_wait_s())
+                marathon_protected = True
             waited_s = 0.0
             finished_within_window = False
             if (
@@ -1003,6 +1056,8 @@ class EngineSession:
                     "timeout_s": arrival_wait_s,
                     "arrival_wait_s": arrival_wait_s,
                 }
+                if marathon_protected:
+                    outcome["marathon_protected"] = True
             else:
                 future_cancelled = record.abort("foreground_preempted_postcommit")
                 outcome = {
@@ -1015,6 +1070,8 @@ class EngineSession:
                     "future_cancelled": bool(future_cancelled),
                     "abort_reason": "foreground_preempted_postcommit",
                 }
+                if marathon_protected:
+                    outcome["marathon_protected"] = True
         with self._postcommit_lock:
             if self._pending_postcommit is record:
                 self._pending_postcommit = None
