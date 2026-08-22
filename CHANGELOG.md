@@ -4,6 +4,61 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.1] - 2026-08-22
+
+### Fixed
+
+- **Agent sessions could silently truncate and then crash near 19,000
+  tokens** (#310). Paged-KV capacity now derives from the pages actually
+  allocated; long coding sessions run to the model's full advertised
+  context.
+- **Shutdown segfault** (#303). The daemon parks its model-owner thread
+  and clears MLX streams at exit; quit and restart are clean.
+- **Turbo applied its full configuration.** One turbo fast-path flag
+  shipped runtime-dead in 2.9.0. The fast-path env is now a single
+  shared block, `/health` reports exactly what the profile set, and a
+  per-lane kernel selfcheck runs at startup.
+- **Multi-turn cache reuse on agent lanes.** One tokenization policy
+  across all encode paths (no more cache walls at reasoning
+  boundaries), tool-call turns bank their generated output directly
+  from live KV, and interrupted background commits retry.
+- **Long sessions stop re-deriving prior reasoning.** Client-echoed
+  reasoning is rendered for turns the committed cache has not covered,
+  ending marathon re-thinks of already-derived plans.
+- Stamped pack draft-sampler settings win over stale client-side pins.
+
+### Changed
+
+- **OpenCode** runs uncapped by default (the managed plugin strips
+  exactly the injected 32,000 ceiling; explicit caps pass through),
+  with reasoning, effort selection, reasoning round-trip, and session
+  cache identity honored end to end.
+- **Pi** gets a working reasoning-effort picker, a real advertised
+  output ceiling (instead of Pi's silent 16,384 default), and a managed
+  extension for cap hygiene and session identity — written identically
+  by the app and `mtplx start pi`.
+- **Hermes** requests carry client identity and configured reasoning
+  effort, and the server strips Hermes's injected 65,536 default cap.
+- `mtplx doctor` reports advertised output ceilings and the actual
+  configured port for agent lanes.
+
+### Added
+
+- **Flight recorder**: per-second per-request telemetry (tok/s, context,
+  speculative acceptance by depth, verify/draft time split, outcome —
+  cancelled and disconnected requests included) as local JSONL under
+  `~/.mtplx/metrics`, rotation-capped at 256 MB. Disable with
+  `MTPLX_FLIGHT_RECORDER=off`.
+- `GET /v1/mtplx/flight`: live phase, tok/s, acceptance, stall age, and
+  generated-text tail for the request in flight.
+- `mtplx trace`: session timelines joined to OpenCode history,
+  cache-reuse analysis, automatic pathology flags, repetition
+  autopsies, and per-session HTML reports.
+
+## [2.9.0] - 2026-08-20
+
+See the release notes: <https://mtplx.com/releases/notes/v2.9.0.html>.
+
 ## [2.8.3] - 2026-08-18
 
 ### Fixed
