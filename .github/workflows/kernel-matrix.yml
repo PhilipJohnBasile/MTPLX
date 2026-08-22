@@ -20,6 +20,9 @@ on:
       - "mtplx/nax_verify.py"
       - "mtplx/verify_kernels.py"
       - "mtplx/kernel_selfcheck.py"
+      - "mtplx/packed_concats.py"
+      - "mtplx/gdn_capture.py"
+      - "tests/test_exactness_320_319.py"
       - ".github/workflows/kernel-matrix.yml"
 
 permissions:
@@ -41,7 +44,8 @@ jobs:
           python -m pytest -p no:warnings \
             tests/test_nax_verify.py \
             tests/test_kernel_selfcheck.py \
-            tests/test_attention_split.py
+            tests/test_attention_split.py \
+            tests/test_exactness_320_319.py
       - name: Selfcheck matrix (bf16/fp16 x 4/6/8-bit) on this GPU family
         run: |
           python - <<'EOF'
@@ -50,6 +54,9 @@ jobs:
           import os
           os.environ["MTPLX_NAX_VERIFY"] = "1"
           os.environ["MTPLX_GQA_PACKED_SDPA"] = "1"
+          # #319: exercise the fused post-norm lane (bitwise-gated) in CI —
+          # it was silently skipped on every run before 2026-08-22.
+          os.environ["MTPLX_FUSE_POST_NORM_RESIDUAL"] = "1"
           from mtplx.kernel_selfcheck import run_kernel_selfcheck
           failures = []
           for bits in (4, 6, 8):

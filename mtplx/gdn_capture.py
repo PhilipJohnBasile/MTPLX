@@ -2956,6 +2956,26 @@ def forward_with_a3b_gdn_postconv_capture_bound_projections(
     return logits, hidden, captures
 
 
+def _fused_post_norm_tg_override() -> int | None:
+    """Threadgroup override for the fused post-norm residual lane.
+
+    None (the default) lets fused_add_rmsnorm mirror mx.fast.rms_norm's own
+    exact-fit/looped dispatch, which is bitwise-identical to the unfused
+    reference at every probed axis/row/dtype. A fixed value forces the looped
+    kernel at that lane count and changes the fp32 partial-sum partition — the
+    shipped 512 produced one-ULP fp16 flips at axes 3072/5120 from 64 rows up
+    (#319). Env knob exists for A/B archaeology only.
+    """
+    raw = os.environ.get("MTPLX_FUSE_POST_NORM_RESIDUAL_TG", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def forward_with_gdn_capture(
     model: Any,
     inputs: mx.array,
@@ -3028,12 +3048,18 @@ def forward_with_gdn_capture(
                 h = hidden_states + r
                 mlp_input = layer.post_attention_layernorm(h)
             else:
+                # threadgroup_size must stay None: the explicit 512 forced the
+                # looped kernel at stride 2048 while mx.fast.rms_norm reduces
+                # axis 5120 at stride 4096 — different fp32 partial-sum
+                # partitions, one-ULP fp16 flips from 64 rows up (#319,
+                # reproduced 2026-08-22; None is bitwise at every probed
+                # axis/row/dtype). Override knob for A/B archaeology only.
                 h, mlp_input = fused_add_rmsnorm(
                     hidden_states,
                     r,
                     layer.post_attention_layernorm.weight,
                     layer.post_attention_layernorm.eps,
-                    threadgroup_size=512,
+                    threadgroup_size=_fused_post_norm_tg_override(),
                 )
         else:
             h = hidden_states + r

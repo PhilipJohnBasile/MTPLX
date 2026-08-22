@@ -3,15 +3,26 @@
 Mechanism (mlxfast arena crown overlay, 2026-08-19 re-scrape §3.4.5): several
 projections of one layer read the SAME input activation; concatenating their
 weight rows at load time turns N quantized-matmul launches into one, then the
-output is split. Row-concat of per-output-row quantized triples is
-element-identical to separate launches (each output row's groups, scales and
-accumulation order are unchanged). Arena receipts: FA QKV concat +1.94%
-promoted; MLP gate+up (N=34816) gated S<=16 in the 3.249 crown; the DFlash2
-port measured the family at -9.8% leg time.
+output is split.
+
+Exactness contract (#320, measured 2026-08-22): row-concat keeps each output
+row's groups, scales and *arithmetic* row-independence, but element-identity
+additionally requires MLX to emit the SAME kernel family for the fused N as
+for each separate N — and kernel selection keys on (M, K, N, ...). Below
+MLX's matvec/tiled boundary the qmv family reduces per output row
+(N-invariant); above it qmm_t/qmm_t_splitk tile, and the split-K reduction
+partition is N-dependent. Measured on M5 Max / MLX 0.32.0 at the production
+shapes: attention q|k|v (N=14336) is bitwise through M<=9 and DIFFERS from
+M=10 up; the reporter's M2 measured divergence from M=6. The gate default is
+therefore the conservative cross-device window (4); receipts in
+outputs/packed-concats-ab-20260819/ and the #320 reproducer.
 
 Sites (this module): Qwen3Next Attention q|k|v (N=14336) and MLP gate|up
-(N=34816). Fused path fires only when S <= MTPLX_PACKED_PROJ_MAX_S
-(default 16) — at prefill widths the unpacked kernels win (arena S-gates).
+(N=34816). Fused path fires only when the kernel-visible row count
+M = prod(x.shape[:-1]) <= MTPLX_PACKED_PROJ_MAX_S (default 4, the measured
+element-identical window; raising it above the qmv boundary trades exactness
+for nothing measured) — at prefill widths the unpacked kernels win anyway
+(arena S-gates).
 
 Off by default: MTPLX_PACKED_PROJ_CONCATS=1 installs. Class-level wrappers
 with instance-attr payloads (unfused instances take the original path) and
@@ -22,6 +33,7 @@ before reading any A/B).
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -49,11 +61,16 @@ def enabled() -> bool:
 
 
 def _max_s() -> int:
-    raw = os.environ.get("MTPLX_PACKED_PROJ_MAX_S", "16")
+    # Default 4, not 16: the measured element-identical window (#320). MLX
+    # routes M below its matvec boundary to N-invariant qmv kernels; at and
+    # above it the tiled qmm_t/splitk reduction partition depends on the
+    # (fused) N, and identity breaks — M>=10 on this M5/MLX 0.32.0, M>=6 on
+    # the reporter's M2. 4 is exact on every measured device.
+    raw = os.environ.get("MTPLX_PACKED_PROJ_MAX_S", "4")
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):
-        return 16
+        return 4
 
 
 def _linear_kind(module: Any) -> str | None:
@@ -143,6 +160,19 @@ def install_qwen3_next_packed_concats(model: Any) -> dict[str, int] | None:
 
     if not enabled():
         return None
+    if str(os.environ.get("MTPLX_NAX_VERIFY", "") or "").strip() in {"1", "true", "on", "yes"}:
+        # The fused path calls mx.quantized_matmul directly, so the NAX verify
+        # patch (nax_verify.install_nax_qlinear_patch wraps nn.QuantizedLinear)
+        # never sees the five fused projections per layer — enabling both would
+        # silently drop them out of the verify lane and confound any A/B
+        # (#320). Refuse loudly instead of installing a half-verified overlay.
+        COUNTERS["refused_nax_verify"] = COUNTERS.get("refused_nax_verify", 0) + 1
+        logger.warning(
+            "packed-concats refused: MTPLX_NAX_VERIFY is on and the fused "
+            "projections would bypass the NAX verify lane; unset one of "
+            "MTPLX_PACKED_PROJ_CONCATS / MTPLX_NAX_VERIFY to proceed"
+        )
+        return None
     from mlx_lm.models import qwen3_next as qn
 
     max_s = _max_s()
@@ -156,7 +186,10 @@ def install_qwen3_next_packed_concats(model: Any) -> dict[str, int] | None:
 
         def attention_call_packed(self, x, mask=None, cache=None):
             payload = getattr(self, "_mtplx_fused_qkv", None)
-            if payload is None or x.shape[1] > max_s:
+            # Gate on the kernel-visible row count M = prod(leading dims), not
+            # the sequence dim alone: with B > 1 the matmul sees M = B*L and
+            # x.shape[1] would admit M >> max_s into the fused path (#320).
+            if payload is None or math.prod(x.shape[:-1]) > max_s:
                 return attention_call(self, x, mask=mask, cache=cache)
             COUNTERS["fused_attention_calls"] += 1
             # Tail replicated verbatim from the stock forward (qwen3_next
@@ -192,7 +225,7 @@ def install_qwen3_next_packed_concats(model: Any) -> dict[str, int] | None:
 
         def mlp_call_packed(self, x):
             payload = getattr(self, "_mtplx_fused_gate_up", None)
-            if payload is None or (x.ndim > 1 and x.shape[1] > max_s):
+            if payload is None or (x.ndim > 1 and math.prod(x.shape[:-1]) > max_s):
                 return mlp_call(self, x)
             COUNTERS["fused_mlp_calls"] += 1
             gate, up = _fused_forward(payload, x)
