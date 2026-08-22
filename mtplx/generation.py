@@ -254,6 +254,15 @@ def _skip_verify_snapshot() -> bool:
     return env_bool("MTPLX_SKIP_VERIFY_SNAPSHOT", default=False)
 
 
+def _draft_confidence_trace() -> bool:
+    """Head-cal diagnostic (default OFF): record the draft head's softmax
+    p(drafted token) per depth and attribute it to accept/reject at verify.
+    Greedy lane only — under temperature the drafted token is not the argmax
+    and its shaped distribution is not a raw softmax."""
+
+    return env_bool("MTPLX_DRAFT_CONFIDENCE_TRACE", default=False)
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -1154,6 +1163,20 @@ class _DecodeTrace:
             "accepted_by_depth": [0 for _ in range(speculative_depth)],
             "drafted_by_depth": [0 for _ in range(speculative_depth)],
             "accept_probability_sum_by_depth": [0.0 for _ in range(speculative_depth)],
+            "draft_confidence_sum_by_depth": [0.0 for _ in range(speculative_depth)],
+            "draft_confidence_count_by_depth": [0 for _ in range(speculative_depth)],
+            "draft_confidence_accepted_sum_by_depth": [
+                0.0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_accepted_count_by_depth": [
+                0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_rejected_sum_by_depth": [
+                0.0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_rejected_count_by_depth": [
+                0 for _ in range(speculative_depth)
+            ],
         }
         if self.enabled and self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1234,6 +1257,43 @@ class _DecodeTrace:
                 accept_probability_sum_delta, drafted_by_depth_delta
             )
         ]
+
+        def _conf_pair(kind: str) -> tuple[list[float], list[int], list[float | None]]:
+            # A lane that never carried these keys (AR after last_totals was
+            # re-snapshotted from its own totals) gets scalar-zero deltas
+            # from _delta; the tolerant shape for a by-depth counter is [].
+            raw_sums = self._delta(totals, f"draft_confidence_{kind}sum_by_depth")
+            raw_counts = self._delta(
+                totals, f"draft_confidence_{kind}count_by_depth"
+            )
+            sums = [
+                float(item)
+                for item in (raw_sums if isinstance(raw_sums, list) else [])
+            ]
+            counts = [
+                int(item)
+                for item in (raw_counts if isinstance(raw_counts, list) else [])
+            ]
+            means = [
+                (s / c if c else None) for s, c in zip(sums, counts)
+            ]
+            return sums, counts, means
+
+        (
+            _conf_sum_unused,
+            draft_confidence_count_delta,
+            draft_confidence_mean_delta,
+        ) = _conf_pair("")
+        (
+            _conf_accepted_sum_unused,
+            draft_confidence_accepted_count_delta,
+            draft_confidence_accepted_mean_delta,
+        ) = _conf_pair("accepted_")
+        (
+            _conf_rejected_sum_unused,
+            draft_confidence_rejected_count_delta,
+            draft_confidence_rejected_mean_delta,
+        ) = _conf_pair("rejected_")
         verify_calls_delta = int(self._delta(totals, "verify_calls"))
         accepted_drafts_delta = int(self._delta(totals, "accepted_drafts"))
         drafted_tokens_delta = int(self._delta(totals, "drafted_tokens"))
@@ -1360,6 +1420,20 @@ class _DecodeTrace:
             "drafted_by_depth_delta": drafted_by_depth_delta,
             "acceptance_rate_by_depth_delta": acceptance_rate_by_depth_delta,
             "mean_accept_probability_by_depth_delta": mean_accept_probability_by_depth_delta,
+            "draft_confidence_count_by_depth_delta": draft_confidence_count_delta,
+            "draft_confidence_mean_by_depth_delta": draft_confidence_mean_delta,
+            "draft_confidence_accepted_count_by_depth_delta": (
+                draft_confidence_accepted_count_delta
+            ),
+            "draft_confidence_accepted_mean_by_depth_delta": (
+                draft_confidence_accepted_mean_delta
+            ),
+            "draft_confidence_rejected_count_by_depth_delta": (
+                draft_confidence_rejected_count_delta
+            ),
+            "draft_confidence_rejected_mean_by_depth_delta": (
+                draft_confidence_rejected_mean_delta
+            ),
             "rejected_drafts_delta": int(self._delta(totals, "rejected_drafts")),
             "correction_tokens_delta": int(self._delta(totals, "correction_tokens")),
             "bonus_tokens_delta": int(self._delta(totals, "bonus_tokens")),
@@ -7260,6 +7334,17 @@ def generate_mtpk(
     accepted_by_depth = [0 for _ in range(speculative_depth)]
     drafted_by_depth = [0 for _ in range(speculative_depth)]
     accept_probability_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    # Head-cal 2a counters. Own denominators on purpose: the mean-accept-
+    # probability field divides an evaluated-depths numerator by an
+    # all-drafted denominator and under-reports at depth >= 2 after a
+    # rejection truncates the cycle; these attribute only what was measured.
+    _draft_conf_trace = _draft_confidence_trace() and sampler.temperature == 0
+    draft_confidence_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_count_by_depth = [0 for _ in range(speculative_depth)]
+    draft_confidence_accepted_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_accepted_count_by_depth = [0 for _ in range(speculative_depth)]
+    draft_confidence_rejected_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_rejected_count_by_depth = [0 for _ in range(speculative_depth)]
     deferred_correction_repairs = 0
     pending_primary: int | None = None
     online_hidden_deltas: dict[object, mx.array] = {}
@@ -7877,6 +7962,20 @@ def generate_mtpk(
             "accepted_by_depth": list(accepted_by_depth),
             "drafted_by_depth": list(drafted_by_depth),
             "accept_probability_sum_by_depth": list(accept_probability_sum_by_depth),
+            "draft_confidence_sum_by_depth": list(draft_confidence_sum_by_depth),
+            "draft_confidence_count_by_depth": list(draft_confidence_count_by_depth),
+            "draft_confidence_accepted_sum_by_depth": list(
+                draft_confidence_accepted_sum_by_depth
+            ),
+            "draft_confidence_accepted_count_by_depth": list(
+                draft_confidence_accepted_count_by_depth
+            ),
+            "draft_confidence_rejected_sum_by_depth": list(
+                draft_confidence_rejected_sum_by_depth
+            ),
+            "draft_confidence_rejected_count_by_depth": list(
+                draft_confidence_rejected_count_by_depth
+            ),
         }
 
     def emit_trace(*, force: bool = False, final: bool = False) -> None:
@@ -8237,6 +8336,9 @@ def generate_mtpk(
         adaptive_width_decision_margins: list[float] = []
         draft_tokens: list[int | None] = []
         draft_probs: list[np.ndarray | None] = []
+        # Parallel to draft_tokens when _draft_conf_trace: p(drafted) per
+        # depth, None where a lane has no draft logits (device cores, cc).
+        draft_confidences: list[float | None] = []
         draft_cache_keys: list[tuple[int, ...]] = []
         draft_hidden_for_update: list[mx.array] = []
         draft_hidden_update_keys: list[object] = []
@@ -8831,6 +8933,7 @@ def generate_mtpk(
             _chain_tok = mx.array([[int(next_token)]])
             _chain_hidden = draft_hidden
             _chain_pending: list[mx.array] = []
+            _chain_conf_pending: list[mx.array] = []
             _chain_offsets: list[int | None] = []
             for _chain_depth in range(cycle_depth):
                 _chain_offset = mtp_position_offset_for_cache(mtp_cache)
@@ -8844,13 +8947,21 @@ def generate_mtpk(
                     mtp_depth=_chain_depth + 1,
                     position_offset=_chain_offset,
                 )
-                _chain_arg = mx.argmax(_chain_logits[:, -1, :][0], axis=-1)
+                _chain_row = _chain_logits[:, -1, :][0]
+                _chain_arg = mx.argmax(_chain_row, axis=-1)
                 _chain_pending.append(_chain_arg)
+                if _draft_conf_trace:
+                    # Greedy: max(row) IS the drafted token's logit, so this
+                    # is p(drafted) without a gather. Lazy — rides the eval.
+                    _chain_conf_pending.append(
+                        mx.exp(mx.max(_chain_row) - mx.logsumexp(_chain_row))
+                    )
                 _chain_tok = _chain_arg.reshape(1, 1).astype(mx.int32)
                 _chain_hidden = _chain_hidden_next[:, -1:, :]
                 draft_hidden_for_update.append(_chain_hidden)
-            _eval(*_chain_pending, _chain_hidden)
+            _eval(*_chain_pending, *_chain_conf_pending, _chain_hidden)
             _chain_tokens = [int(a.item()) for a in _chain_pending]
+            _chain_confs = [float(c.item()) for c in _chain_conf_pending]
             # Parallel-array invariant: draft_hidden_update_keys must track
             # draft_hidden_for_update position-for-position (the online-hidden
             # consumer indexes by position). Keys are host-cheap here — the
@@ -8873,6 +8984,8 @@ def generate_mtpk(
             for _chain_index, _chain_token in enumerate(_chain_tokens):
                 draft_tokens.append(_chain_token)
                 draft_probs.append(None)
+                if _draft_conf_trace:
+                    draft_confidences.append(_chain_confs[_chain_index])
                 drafted += 1
                 drafted_by_depth[_chain_index] += 1
                 _chain_event = {
@@ -9111,6 +9224,23 @@ def generate_mtpk(
                 trace_accounting_time_s += (
                     time.perf_counter() - trace_accounting_started
                 )
+            if _draft_conf_trace:
+                # One extra scalar sync per depth (default-off diagnostic).
+                # Outside the draft_time window on purpose, self-timed into
+                # trace accounting so its cost is visible, not hidden.
+                conf_started = time.perf_counter()
+                if draft_token is not None:
+                    _conf_row = draft_logits[:, -1, :][0]
+                    draft_confidences.append(
+                        float(
+                            mx.exp(
+                                mx.max(_conf_row) - mx.logsumexp(_conf_row)
+                            ).item()
+                        )
+                    )
+                else:
+                    draft_confidences.append(None)
+                trace_accounting_time_s += time.perf_counter() - conf_started
             draft_tokens.append(draft_token)
             draft_probs.append(draft_q)
             draft_cache_keys.append(cache_key)
@@ -9817,6 +9947,28 @@ def generate_mtpk(
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
             accept_probability_sum_by_depth[depth_index] += float(accept_prob)
+            if _draft_conf_trace:
+                # After the constraint clamp: attribute to the COMMITTED
+                # outcome. Bounds guard covers lanes with no draft logits
+                # (device cores, cc) whose confidence list stayed empty.
+                _conf_value = (
+                    draft_confidences[depth_index]
+                    if depth_index < len(draft_confidences)
+                    else None
+                )
+                if _conf_value is not None:
+                    draft_confidence_sum_by_depth[depth_index] += _conf_value
+                    draft_confidence_count_by_depth[depth_index] += 1
+                    if accepted_now:
+                        draft_confidence_accepted_sum_by_depth[
+                            depth_index
+                        ] += _conf_value
+                        draft_confidence_accepted_count_by_depth[depth_index] += 1
+                    else:
+                        draft_confidence_rejected_sum_by_depth[
+                            depth_index
+                        ] += _conf_value
+                        draft_confidence_rejected_count_by_depth[depth_index] += 1
 
             if accepted_now:
                 accepted += 1
