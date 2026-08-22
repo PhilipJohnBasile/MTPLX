@@ -149,22 +149,38 @@ class FlightRecorder:
             item = self._queue.get()
             if item is None:
                 return
-            kind, payload = item
+            # Batch-drain: group every queued line into ONE open/write/close so
+            # the disk sees one append per burst, not one per event (SSD-wear
+            # and syscall frugality; ordering across kinds is preserved).
+            batch: list[tuple[str, Any]] = [item]
             try:
-                if kind == "line":
-                    self._append_line(payload)
-                elif kind == "text":
-                    dest, body = payload
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    with open(dest, "w", encoding="utf-8") as sink:
-                        sink.write(body)
+                while True:
+                    batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                pass
+            lines: list[dict[str, Any]] = []
+            try:
+                for kind, payload in batch:
+                    if kind == "line":
+                        lines.append(payload)
+                        continue
+                    if lines:
+                        self._append_lines(lines)
+                        lines = []
+                    if kind == "text":
+                        dest, body = payload
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        with open(dest, "w", encoding="utf-8") as sink:
+                            sink.write(body)
+                if lines:
+                    self._append_lines(lines)
             except Exception:
                 # Telemetry must never take down its writer; drop and continue.
                 continue
 
-    def _append_line(self, event: dict[str, Any]) -> None:
+    def _append_lines(self, events: list[dict[str, Any]]) -> None:
         path = self.path
-        if not path:
+        if not path or not events:
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
@@ -176,9 +192,13 @@ class FlightRecorder:
                 os.replace(path, f"{path}.1")
         except OSError:
             pass
+        body = "".join(
+            json.dumps(event, ensure_ascii=False, default=str) + "\n"
+            for event in events
+        )
         with open(path, "a", encoding="utf-8") as sink:
-            sink.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
-        self._lines_written += 1
+            sink.write(body)
+        self._lines_written += len(events)
 
     def _emit(self, event: dict[str, Any]) -> None:
         if not self.enabled:

@@ -4,13 +4,19 @@ Renders the joined trace (serve receipts + flight samples + OpenCode history)
 as one self-contained HTML file — inline SVG, zero external resources, opens
 from file://. Sections: summary cards, pathology flags, wall-clock timeline
 (TTFT vs decode), cache waterfall, per-request TPS (flight samples when
-present, else the receipt sliding-window sketch marked approximate) with
-draft acceptance-by-depth, the context-vs-decode-speed scatter across every
-receipt on the port, and a per-turn digest. Charts follow the dataviz method:
-validated light palette (blue #2a78d6 / orange #eb6834 — adjacent CVD dE
-24.7, both >=3:1 on the surface), thin rounded marks, hairline solid grid,
-legends on multi-series charts, tooltips that enhance but never gate (the
-digest table carries every per-turn number).
+present, else the receipt sliding-window sketch marked approximate; a
+per-second MTP-acceptance overlay renders when flight samples carry
+cumulative acc/drf counters), the MTP acceptance & verify-time section
+(per-turn acceptance rate by draft depth with always-visible percentages,
+plus the 100%-normalized draft/verify/accept/other decode time split), the
+context-vs-decode-speed scatter across every receipt on the port, and a
+per-turn digest. Charts follow the dataviz method: validated light palette
+(categorical slots 1-4 in documented order: #2a78d6 #eb6834 #1baf7a #eda100
+— worst adjacent CVD dE 9.1, aqua/yellow sub-3:1 relieved by always-visible
+value labels; MTP depth wears the ordinal blue ramp #86b6ef/#2a78d6/#104281,
+validated --ordinal), thin rounded marks, hairline solid grid, legends on
+multi-series charts, tooltips that enhance but never gate (per-row values
+stay visible without hover).
 """
 
 from __future__ import annotations
@@ -42,6 +48,18 @@ from .trace import (
 # dataviz reference palette, light mode (validated with validate_palette.js)
 _MUT, _AXIS, _SURF = "#898781", "#c3c2b7", "#fcfcfb"
 _BLUE, _ORANGE, _CRIT = "#2a78d6", "#eb6834", "#d03b3b"
+# categorical slots 3+4 (time-split series 3+4; slots 1-4 in documented order
+# pass adjacent gates — aqua/yellow sit sub-3:1 on the light surface, relieved
+# by the always-visible per-row second annotations)
+_AQUA, _YELLOW = "#1baf7a", "#eda100"
+# ordinal blue ramp for MTP draft depth (one hue, monotone lightness; each
+# count validated with validate_palette.js --ordinal in light mode)
+_DEPTH_RAMP = {
+    1: [_BLUE],
+    2: ["#6da7ec", "#1c5cab"],
+    3: ["#86b6ef", _BLUE, "#104281"],
+    4: ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"],
+}
 _W = 1112  # shared chart width
 _SLIDING = [("first 32", "first_32"), ("first 64", "first_64"),
             ("last 64", "last_64"), ("last 32", "last_32")]
@@ -84,16 +102,6 @@ def _rbar(x: float, y: float, w: float, h: float, fill: str, extra: str = "") ->
             f' q0,{r:.1f} -{r:.1f},{r:.1f} h-{w - r:.1f} z" fill="{fill}"{extra}/>')
 
 
-def _vbar(x: float, ytop: float, w: float, h: float, fill: str, tip: str) -> str:
-    """Vertical bar: 4px-rounded cap, square at the baseline; carries a tooltip."""
-    h, r = max(h, 0.5), min(4.0, max(h, 0.5) / 2, w / 2)
-    attrs = f' data-tip="{_esc(tip)}" tabindex="0"'
-    if r < 1.5:
-        return f'<rect x="{x:.1f}" y="{ytop:.1f}" width="{w:.1f}" height="{h:.1f}" fill="{fill}"{attrs}/>'
-    return (f'<path d="M{x:.1f},{ytop + h:.1f} v-{h - r:.1f} q0,-{r:.1f} {r:.1f},-{r:.1f} h{w - 2 * r:.1f}'
-            f' q{r:.1f},0 {r:.1f},{r:.1f} v{h - r:.1f} z" fill="{fill}"{attrs}/>')
-
-
 def _chips(items: list[tuple[str, str]]) -> str:
     return '<div class="legend">' + "".join(
         f'<span><span class="sw" style="background:{c}"></span>{_esc(t)}</span>' for c, t in items) + "</div>"
@@ -117,6 +125,11 @@ def _enrich(turn: dict) -> dict:
     row["sliding"] = [(lbl, receipt.get(f"sliding_decode_tok_s_{key}")) for lbl, key in _SLIDING]
     row["accepted_by_depth"] = receipt.get("accepted_by_depth") or []
     row["drafted_by_depth"] = receipt.get("drafted_by_depth") or []
+    row["mean_accept_p"] = receipt.get("mean_accept_probability_by_depth") or []
+    row["verify_calls"] = receipt.get("verify_calls")
+    row["draft_time_s"] = receipt.get("draft_time_s")
+    row["verify_time_s"] = receipt.get("verify_time_s")
+    row["accept_time_s"] = receipt.get("accept_time_s")
     row["samples"] = [e for e in turn.get("flight", []) if e.get("ev") == "s"]
     return row
 
@@ -227,13 +240,38 @@ def _sec_cache(rows: list[dict]) -> str:
     return _card("Cache waterfall (prompt = cached + new prefill)", legend + "".join(out) + "</svg>")
 
 
+def _accept_overlay(samples: list[dict]) -> tuple[list[tuple[float, float]], float | None]:
+    """FUTURE flight fields: per-second overall acceptance from cumulative
+    acc/drf per-depth arrays (rate = delta(sum(acc)) / delta(sum(drf)) between
+    consecutive samples), plus verify-share of wall from cumulative vt seconds.
+    Today's recorder emits neither — returns ([], None) so nothing is drawn."""
+    seq: list[tuple[float, float, float]] = []
+    for s in samples:
+        acc, drf = s.get("acc"), s.get("drf")
+        if isinstance(acc, list) and isinstance(drf, list) and acc and drf:
+            try:
+                seq.append((float(s.get("ts") or 0), sum(map(float, acc)), sum(map(float, drf))))
+            except (TypeError, ValueError):
+                continue
+    pts: list[tuple[float, float]] = []
+    for (_t0, a0, d0), (t1, a1, d1) in zip(seq, seq[1:]):
+        dd = d1 - d0
+        if dd > 0:  # zero drafted this second -> no rate point, never a fabricated one
+            pts.append((t1, max(0.0, min((a1 - a0) / dd, 1.0))))
+    share = None
+    vts = [(float(s.get("ts") or 0), float(s["vt"])) for s in samples
+           if isinstance(s.get("vt"), (int, float))]
+    if len(vts) >= 2 and vts[-1][0] > vts[0][0]:
+        share = max(0.0, min((vts[-1][1] - vts[0][1]) / (vts[-1][0] - vts[0][0]), 1.0))
+    return pts, share
+
+
 def _tps_cell(r: dict) -> str | None:
     sliding = [(lbl, float(v)) for lbl, v in r["sliding"] if v is not None]
-    samples, drafted = r["samples"], r["drafted_by_depth"]
-    if not samples and not sliding and not drafted:
+    samples = r["samples"]
+    if not samples and not sliding:
         return None
-    w, px0, py0, py1 = 252, 30, 10, 86
-    px1 = 166 if drafted else 240
+    w, px0, px1, py0, py1 = 252, 30, 240, 10, 86
     approx = not samples
     if samples:
         ts0 = float(samples[0].get("ts") or 0)
@@ -269,16 +307,21 @@ def _tps_cell(r: dict) -> str | None:
                f"mean {sum(vals) / len(vals):.1f} · max {max(vals):.1f} tok/s")
         out.append(f'<rect x="{px0}" y="{py0}" width="{px1 - px0}" height="{py1 - py0}" fill="transparent" data-tip="{_esc(tip)}" tabindex="0"/>'
                    f'<text x="{px0}" y="{py1 + 13}" class="ax">0s</text><text x="{px1}" y="{py1 + 13}" class="ax end">{span:.0f}s</text>')
-    if drafted:
-        bx0 = px1 + 18.0
-        bw = max(6.0, min(14.0, (w - 12 - bx0) / len(drafted) - 6))
-        for i, d in enumerate(drafted):
-            acc = r["accepted_by_depth"][i] if i < len(r["accepted_by_depth"]) else 0
-            rate = (acc / d) if d else 0.0
-            x, bh = bx0 + i * (bw + 6), rate * (py1 - py0)
-            out.append(_vbar(x, py1 - bh, bw, bh, _ORANGE, f"depth {i + 1}: {acc}/{d} drafts accepted ({rate * 100:.0f}%)"))
-            out.append(f'<text x="{x + bw / 2:.1f}" y="{py1 - bh - 3:.1f}" class="ax mid">{rate * 100:.0f}</text>'
-                       f'<text x="{x + bw / 2:.1f}" y="{py1 + 13}" class="ax mid">d{i + 1}</text>')
+    apts, vshare = _accept_overlay(samples) if samples else ([], None)
+    if apts:  # future recorder fields — dormant until samples carry acc/drf
+        axy = [(px0 + (t - ts0) / span * (px1 - px0), py1 - rt * (py1 - py0)) for t, rt in apts]
+        adr = " ".join(f"{'M' if i == 0 else 'L'}{ax:.1f},{ay:.1f}" for i, (ax, ay) in enumerate(axy))
+        if len(axy) >= 2:
+            out.append(f'<path d="{adr}" fill="none" stroke="{_ORANGE}" stroke-width="1.5"'
+                       ' stroke-linecap="round" stroke-linejoin="round"/>')
+        else:
+            out.append(f'<circle cx="{axy[0][0]:.1f}" cy="{axy[0][1]:.1f}" r="3" fill="{_ORANGE}" stroke="{_SURF}" stroke-width="2"/>')
+        out.append(f'<text x="{min(axy[-1][0], px1):.1f}" y="{max(axy[-1][1] - 5, 8):.1f}" class="ax end">accept</text>')
+        rates = [rt for _, rt in apts]
+        atip = ("MTP acceptance per second (delta accepted / delta drafted; 0-100% of cell height)\n"
+                f"min {min(rates) * 100:.0f}% · mean {sum(rates) / len(rates) * 100:.0f}% · max {max(rates) * 100:.0f}%"
+                + (f"\nverify ~{vshare * 100:.0f}% of decode wall" if vshare is not None else ""))
+        out.append(f'<path d="{adr}" fill="none" stroke="transparent" stroke-width="12" data-tip="{_esc(atip)}"/>')
     out.append(f'<line x1="{px0}" y1="{py1}" x2="{w - 8}" y2="{py1}" class="axis"/></svg>')
     tok_s = f"{r['decode_tok_s']:.1f} tok/s" if r["decode_tok_s"] else "-"
     cancel = ' · <span class="crit">cancelled</span>' if r["status"] != "ok" else ""
@@ -292,10 +335,139 @@ def _sec_tps(rows: list[dict]) -> str:
     if not cells:
         return _card("Per-request TPS", _QUIET.format("no flight samples or receipt sliding windows"))
     note = _QUIET.format(
-        "solid line — flight recorder per-second samples · dashed line with markers — 4-point sketch "
+        "solid blue line — flight recorder per-second samples · dashed line with markers — sketch "
         "from receipt sliding windows (approximation; no flight data recorded for these requests) · "
-        "orange columns — draft tokens accepted per MTP depth")
+        "thin orange overlay (only when flight samples carry cumulative accept/draft counters) — "
+        "per-second MTP acceptance rate on a 0–100% band of the cell height · per-turn acceptance "
+        "and verify-time detail lives in the MTP section below")
     return _card("Per-request TPS", note + f'<div class="cells">{"".join(cells)}</div>')
+
+
+def _pct_grid(x0: float, x1: float, h: float) -> str:
+    """Hairline grid + axis for a 0..100% horizontal scale (ticks every 25%)."""
+    parts = []
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        tx = x0 + f * (x1 - x0)
+        parts.append(f'<line x1="{tx:.1f}" y1="4" x2="{tx:.1f}" y2="{h - 34:.1f}" class="grid"/>'
+                     f'<text x="{tx:.1f}" y="{h - 18:.1f}" class="ax mid">{f * 100:.0f}%</text>')
+    parts.append(f'<line x1="{x0}" y1="{h - 34:.1f}" x2="{x1}" y2="{h - 34:.1f}" class="axis"/>')
+    return "".join(parts)
+
+
+def _mtp_accept_panel(rows: list[dict]) -> str:
+    """One row per turn: grouped bars, acceptance rate per draft depth, with the
+    percentage always visible. Turns without MTP counters get a quiet dash row."""
+    x0, bx0, x1 = 44.0, 76.0, 688.0
+    with_mtp = [r for r in rows if r["drafted_by_depth"]]
+    if not with_mtp:
+        return "<h3>Acceptance rate by draft depth</h3>" + _QUIET.format(
+            "no MTP acceptance counters in any receipt for this session")
+    depth_n = max(len(r["drafted_by_depth"]) for r in with_mtp)
+    ramp = _DEPTH_RAMP.get(depth_n, _DEPTH_RAMP[4])
+    body, y = [], 8.0
+    for r in rows:
+        drafted, accepted = r["drafted_by_depth"], r["accepted_by_depth"]
+        if not drafted:
+            reason = "no server receipt" if r["receipt_missing"] else "no MTP data"
+            if r["status"] != "ok":
+                reason += " · cancelled"
+            body.append(f'<text x="{x0 - 8}" y="{y + 9:.1f}" class="lab end">t{r["turn"]}</text>'
+                        f'<text x="{bx0}" y="{y + 9:.1f}" class="ax">— {_esc(reason)}</text>')
+            y += 20.0
+            continue
+        n = len(drafted)
+        gh = n * 9 + (n - 1) * 5  # 9px bars on a 14px pitch — label boxes never touch
+        body.append(f'<text x="{x0 - 8}" y="{y + gh / 2 + 4:.1f}" class="lab end">t{r["turn"]}</text>')
+        tip_lines = [f"t{r['turn']} · MTP acceptance by draft depth"]
+        for i, d in enumerate(drafted):
+            acc = accepted[i] if i < len(accepted) else 0
+            by = y + i * 14
+            body.append(f'<text x="{bx0 - 6}" y="{by + 8:.1f}" class="dlab end">d{i + 1}</text>')
+            if d:
+                rate = min(acc / d, 1.0)
+                body.append(_rbar(bx0, by, rate * (x1 - bx0), 9, ramp[min(i, len(ramp) - 1)]))
+                body.append(f'<text x="{bx0 + rate * (x1 - bx0) + 6:.1f}" y="{by + 8:.1f}" class="vlab">{rate * 100:.0f}%</text>')
+                mp = r["mean_accept_p"][i] if i < len(r["mean_accept_p"]) else None
+                tip_lines.append(f"d{i + 1}: {_fmt_tok(acc)}/{_fmt_tok(d)} accepted ({rate * 100:.1f}%)"
+                                 + (f" · mean p {mp:.2f}" if isinstance(mp, (int, float)) else ""))
+            else:
+                body.append(f'<text x="{bx0}" y="{by + 8:.1f}" class="ax">0 drafts</text>')
+                tip_lines.append(f"d{i + 1}: 0 drafts")
+        tot_d, tot_a = sum(drafted), sum(accepted[: len(drafted)])
+        if tot_d:
+            tip_lines.append(f"overall {_fmt_tok(tot_a)}/{_fmt_tok(tot_d)} ({tot_a / tot_d * 100:.1f}%)")
+        if r["verify_calls"] is not None:
+            tip_lines.append(f"verify calls {_fmt_tok(r['verify_calls'])}")
+        rh = gh + 11.0
+        tip = "\n".join(tip_lines)
+        body.append(f'<rect x="0" y="{y - 4:.1f}" width="{_W}" height="{rh:.1f}" fill="transparent" data-tip="{_esc(tip)}" tabindex="0"/>')
+        y += rh
+    h = y + 34
+    legend = _chips([(ramp[min(i, len(ramp) - 1)], f"d{i + 1}") for i in range(depth_n)])
+    note = _QUIET.format("share of drafted tokens accepted at each MTP depth "
+                         "(accepted_by_depth ÷ drafted_by_depth from the serve receipt)")
+    return ("<h3>Acceptance rate by draft depth</h3>" + note + legend
+            + f'<svg viewBox="0 0 {_W} {h:.0f}" role="img" aria-label="MTP acceptance rate by draft depth">'
+            + _pct_grid(bx0, x1, h) + "".join(body) + "</svg>")
+
+
+def _mtp_time_panel(rows: list[dict]) -> str:
+    """100%-normalized stacked bar per turn splitting decode_elapsed_s into
+    draft / verify / accept / other, absolute seconds always visible."""
+    x0, x1, rh = 44.0, 640.0, 26.0
+    have, skipped = [], []
+    for r in rows:
+        comps = (r["draft_time_s"], r["verify_time_s"], r["accept_time_s"])
+        if r["decode_elapsed_s"] and any(c is not None for c in comps):
+            have.append(r)
+        else:
+            skipped.append(f"t{r['turn']}" + (" (cancelled)" if r["status"] != "ok" else ""))
+    if not have:
+        return "<h3>Decode time split</h3>" + _QUIET.format(
+            "no draft/verify/accept timing in any receipt for this session")
+    h = len(have) * rh + 42
+    body = []
+    for i, r in enumerate(have):
+        y = i * rh + 8
+        total = float(r["decode_elapsed_s"])
+        d = float(r["draft_time_s"] or 0.0)
+        v = float(r["verify_time_s"] or 0.0)
+        a = float(r["accept_time_s"] or 0.0)
+        other = max(total - (d + v + a), 0.0)
+        denom = max(total, d + v + a) or 1.0
+        segs = [("draft", d, _BLUE), ("verify", v, _ORANGE), ("accept", a, _AQUA), ("other", other, _YELLOW)]
+        body.append(f'<text x="{x0 - 8}" y="{y + 10:.1f}" class="lab end">t{r["turn"]}</text>')
+        vis = [(nm, sec, col, sec / denom * (x1 - x0)) for nm, sec, col in segs if sec > 0]
+        cx = x0
+        for j, (_nm, _sec, col, wseg) in enumerate(vis):
+            if j == len(vis) - 1:  # rounded data end on the last segment only
+                body.append(_rbar(cx, y, wseg, 12, col))
+            else:  # 2px surface gap between touching segments (when it fits)
+                gap = 2.0 if wseg > 6 else 0.0
+                body.append(f'<rect x="{cx:.1f}" y="{y}" width="{max(wseg - gap, 0.5):.1f}" height="12" fill="{col}"/>')
+            cx += wseg
+        ann = (f"draft {_fmt_dur(r['draft_time_s'])} · verify {_fmt_dur(r['verify_time_s'])}"
+               f" · accept {_fmt_dur(r['accept_time_s'])} · other {_fmt_dur(other)} of {_fmt_dur(total)}")
+        body.append(f'<text x="{x1 + 10:.1f}" y="{y + 10:.1f}" class="vlab">{_esc(ann)}</text>')
+        tip_lines = [f"t{r['turn']} · decode {total:.2f}s"]
+        tip_lines.extend(f"{nm} {sec:.2f}s ({sec / denom * 100:.1f}%)" for nm, sec, _c in segs)
+        if r["verify_calls"] is not None:
+            tip_lines.append(f"verify calls {_fmt_tok(r['verify_calls'])}")
+        tip = "\n".join(tip_lines)
+        body.append(f'<rect x="0" y="{y - 3}" width="{_W}" height="{rh}" fill="transparent" data-tip="{_esc(tip)}" tabindex="0"/>')
+    legend = _chips([(_BLUE, "draft"), (_ORANGE, "verify"), (_AQUA, "accept"), (_YELLOW, "other (unattributed decode)")])
+    note = _QUIET.format("each bar = that turn's decode_elapsed_s normalized to 100% · absolute seconds annotated per row")
+    tail = _QUIET.format("omitted (receipt carries no draft/verify/accept timing): "
+                         + ", ".join(skipped)) if skipped else ""
+    return ("<h3>Decode time split (draft / verify / accept / other)</h3>" + note + legend
+            + f'<svg viewBox="0 0 {_W} {h}" role="img" aria-label="decode time split">'
+            + _pct_grid(x0, x1, float(h)) + "".join(body) + "</svg>" + tail)
+
+
+def _sec_mtp(rows: list[dict]) -> str:
+    if not rows:
+        return _card("MTP acceptance & verify time", _QUIET.format("no assistant turns"))
+    return _card("MTP acceptance & verify time", _mtp_accept_panel(rows) + _mtp_time_panel(rows))
 
 
 def _sec_scatter(receipts: list[dict], session_ids: set[int], port: int) -> str:
@@ -396,6 +568,7 @@ _CSS = (
     "body{margin:0;background:#f9f9f7;color:#0b0b0b;font:14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif}"
     "main{max-width:1160px;margin:0 auto;padding:24px 20px 60px}h1{font-size:21px;margin:0 0 4px}"
     "h2{font-size:15px;font-weight:600;margin:0 0 8px}.meta b{font-weight:600}"
+    "h3{font-size:13px;font-weight:600;margin:14px 0 6px}section h3:first-child{margin-top:2px}"
     ".meta{color:#52514e;font-size:12.5px;margin:0 0 14px;line-height:1.6}"
     "section{background:#fcfcfb;border:1px solid rgba(11,11,11,.1);border-radius:10px;padding:14px 16px;margin:14px 0}"
     ".tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0 2px}"
@@ -417,6 +590,8 @@ _CSS = (
     "text.ax{fill:#898781;font-variant-numeric:tabular-nums}text.mid{text-anchor:middle}text.end{text-anchor:end}text.lab{fill:#52514e}"
     "text.ann{font-size:10.5px;fill:#898781;paint-order:stroke;stroke:#fcfcfb;stroke-width:3px}"
     "text.wallnote{font-size:10.5px;fill:#0b0b0b;font-weight:600;paint-order:stroke;stroke:#fcfcfb;stroke-width:3px}"
+    "text.vlab{font-size:10.5px;fill:#0b0b0b;font-variant-numeric:tabular-nums;paint-order:stroke;stroke:#fcfcfb;stroke-width:3px}"
+    "text.dlab{font-size:10px;fill:#898781}"
     "line.grid{stroke:#e1e0d9;stroke-width:1}line.axis{stroke:#c3c2b7;stroke-width:1}"
     "#tip{position:fixed;display:none;background:#0b0b0b;color:#fcfcfb;font-size:12px;line-height:1.5;"
     "padding:7px 9px;border-radius:7px;white-space:pre-line;pointer-events:none;z-index:9;max-width:360px}"
@@ -513,7 +688,7 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>mtplx trace — {_esc(session_id)}</title><style>" + _CSS + "</style></head><body><main>"
             + header + pathology + _sec_timeline(rows) + _sec_cache(rows) + _sec_tps(rows)
-            + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
+            + _sec_mtp(rows) + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
             + '</main><div id="tip"></div><script>' + _JS + "</script></body></html>")
 
     out_path = Path(args.out).expanduser() if args.out else METRICS_DIR / "reports" / f"{session_id}.html"
