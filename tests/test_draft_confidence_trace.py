@@ -22,6 +22,7 @@ _EXPECTED_CONF = math.e / (3.0 + math.e)
 def _clear(monkeypatch):
     for knob in (
         "MTPLX_DRAFT_CONFIDENCE_TRACE",
+        "MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD",
         "MTPLX_GREEDY_DRAFT_CHAIN",
         "MTPLX_BATCHED_GREEDY_ACCEPT",
         "MTPLX_BATCH_PAGED_OFFSETS",
@@ -131,3 +132,62 @@ def test_confidence_rides_the_greedy_chain_eval(monkeypatch, tmp_path):
     for count, mean in zip(counts, means):
         if count:
             assert mean == pytest.approx(_EXPECTED_CONF, abs=1e-4)
+
+
+def _width_fingerprint(out):
+    return {
+        "tokens": list(out.tokens),
+        "drafted_by_depth": list(out.stats.drafted_by_depth or []),
+        "verify_calls": out.stats.verify_calls,
+    }
+
+
+def test_width_gate_fires_above_analytic_confidence(monkeypatch, tmp_path):
+    """Threshold above e/(3+e): every depth-1 draft gates the cycle — deeper
+    depths are never drafted, width_stops counts fire, and the committed
+    output tokens are invariant (verify corrects, width only costs speed)."""
+    _clear(monkeypatch)
+    baseline, _rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name="width-base"
+    )
+    monkeypatch.setenv("MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD", "0.6")
+    gated, rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name="width-gated"
+    )
+    assert list(gated.tokens) == list(baseline.tokens)
+    drafted = list(gated.stats.drafted_by_depth or [])
+    assert drafted[0] > 0
+    assert all(d == 0 for d in drafted[1:])
+    stops = sum(
+        int(row.get("draft_confidence_width_stops_delta") or 0) for row in rows
+    )
+    assert stops == drafted[0]
+
+
+def test_width_gate_inert_below_analytic_confidence(monkeypatch, tmp_path):
+    _clear(monkeypatch)
+    baseline, _rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name="inert-base"
+    )
+    monkeypatch.setenv("MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD", "0.3")
+    gated, rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name="inert-gated"
+    )
+    assert _width_fingerprint(gated) == _width_fingerprint(baseline)
+    stops = sum(
+        int(row.get("draft_confidence_width_stops_delta") or 0) for row in rows
+    )
+    assert stops == 0
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "0", "1", "1.5", "-0.2"])
+def test_width_gate_invalid_values_stay_off(monkeypatch, tmp_path, bad):
+    _clear(monkeypatch)
+    baseline, _rows = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name=f"bad-base-{bad or 'empty'}"
+    )
+    monkeypatch.setenv("MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD", bad)
+    gated, _rows2 = _traced_run(
+        monkeypatch, tmp_path, mtp_token=1, flag=False, name=f"bad-gated-{bad or 'empty'}"
+    )
+    assert _width_fingerprint(gated) == _width_fingerprint(baseline)

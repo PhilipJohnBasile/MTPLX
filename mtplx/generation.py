@@ -263,6 +263,23 @@ def _draft_confidence_trace() -> bool:
     return env_bool("MTPLX_DRAFT_CONFIDENCE_TRACE", default=False)
 
 
+def _draft_confidence_width_threshold() -> float | None:
+    """Head-cal leg 2b (default OFF): stop drafting the cycle once the draft
+    head's p(drafted) falls below this threshold. The triggering draft is
+    KEPT (native gated-stop semantics); only deeper drafts are skipped, so
+    committed output tokens are invariant — the knob trades speculation
+    width against doomed-draft verify work. Greedy stock loop only."""
+
+    raw = os.environ.get("MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -1163,6 +1180,7 @@ class _DecodeTrace:
             "accepted_by_depth": [0 for _ in range(speculative_depth)],
             "drafted_by_depth": [0 for _ in range(speculative_depth)],
             "accept_probability_sum_by_depth": [0.0 for _ in range(speculative_depth)],
+            "draft_confidence_width_stops": 0,
             "draft_confidence_sum_by_depth": [0.0 for _ in range(speculative_depth)],
             "draft_confidence_count_by_depth": [0 for _ in range(speculative_depth)],
             "draft_confidence_accepted_sum_by_depth": [
@@ -1294,6 +1312,9 @@ class _DecodeTrace:
             draft_confidence_rejected_count_delta,
             draft_confidence_rejected_mean_delta,
         ) = _conf_pair("rejected_")
+        draft_confidence_width_stops_delta = int(
+            self._delta(totals, "draft_confidence_width_stops")
+        )
         verify_calls_delta = int(self._delta(totals, "verify_calls"))
         accepted_drafts_delta = int(self._delta(totals, "accepted_drafts"))
         drafted_tokens_delta = int(self._delta(totals, "drafted_tokens"))
@@ -1420,6 +1441,7 @@ class _DecodeTrace:
             "drafted_by_depth_delta": drafted_by_depth_delta,
             "acceptance_rate_by_depth_delta": acceptance_rate_by_depth_delta,
             "mean_accept_probability_by_depth_delta": mean_accept_probability_by_depth_delta,
+            "draft_confidence_width_stops_delta": draft_confidence_width_stops_delta,
             "draft_confidence_count_by_depth_delta": draft_confidence_count_delta,
             "draft_confidence_mean_by_depth_delta": draft_confidence_mean_delta,
             "draft_confidence_accepted_count_by_depth_delta": (
@@ -7339,6 +7361,13 @@ def generate_mtpk(
     # all-drafted denominator and under-reports at depth >= 2 after a
     # rejection truncates the cycle; these attribute only what was measured.
     _draft_conf_trace = _draft_confidence_trace() and sampler.temperature == 0
+    _draft_conf_width_threshold = (
+        _draft_confidence_width_threshold() if sampler.temperature == 0 else None
+    )
+    _draft_conf_needed = (
+        _draft_conf_trace or _draft_conf_width_threshold is not None
+    )
+    draft_confidence_width_stops = 0
     draft_confidence_sum_by_depth = [0.0 for _ in range(speculative_depth)]
     draft_confidence_count_by_depth = [0 for _ in range(speculative_depth)]
     draft_confidence_accepted_sum_by_depth = [0.0 for _ in range(speculative_depth)]
@@ -7962,6 +7991,7 @@ def generate_mtpk(
             "accepted_by_depth": list(accepted_by_depth),
             "drafted_by_depth": list(drafted_by_depth),
             "accept_probability_sum_by_depth": list(accept_probability_sum_by_depth),
+            "draft_confidence_width_stops": draft_confidence_width_stops,
             "draft_confidence_sum_by_depth": list(draft_confidence_sum_by_depth),
             "draft_confidence_count_by_depth": list(draft_confidence_count_by_depth),
             "draft_confidence_accepted_sum_by_depth": list(
@@ -9224,20 +9254,27 @@ def generate_mtpk(
                 trace_accounting_time_s += (
                     time.perf_counter() - trace_accounting_started
                 )
-            if _draft_conf_trace:
-                # One extra scalar sync per depth (default-off diagnostic).
+            if _draft_conf_needed:
+                # One extra scalar sync per depth (default-off knobs).
                 # Outside the draft_time window on purpose, self-timed into
                 # trace accounting so its cost is visible, not hidden.
                 conf_started = time.perf_counter()
                 if draft_token is not None:
                     _conf_row = draft_logits[:, -1, :][0]
-                    draft_confidences.append(
-                        float(
-                            mx.exp(
-                                mx.max(_conf_row) - mx.logsumexp(_conf_row)
-                            ).item()
-                        )
+                    _conf_value_now = float(
+                        mx.exp(
+                            mx.max(_conf_row) - mx.logsumexp(_conf_row)
+                        ).item()
                     )
+                    draft_confidences.append(_conf_value_now)
+                    if (
+                        _draft_conf_width_threshold is not None
+                        and _conf_value_now < _draft_conf_width_threshold
+                    ):
+                        # Keep this draft, skip deeper ones — rides the
+                        # native gated-stop break below.
+                        adaptive_width_stop = True
+                        draft_confidence_width_stops += 1
                 else:
                     draft_confidences.append(None)
                 trace_accounting_time_s += time.perf_counter() - conf_started
