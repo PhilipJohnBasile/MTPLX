@@ -66,3 +66,37 @@ def test_heuristic_none_keeps_historical_behavior():
 def test_empty_or_partial_sets_never_shift():
     assert mtp_norms_are_delta_encoded({}) is False
     assert mtp_norms_are_delta_encoded({"some.weight": mx.zeros((8, 8))}) is False
+
+
+def test_double_shifted_trunk_refused_at_load():
+    """#306 guard: a +1.0 double-shifted trunk refuses loudly, healthy and
+    delta-family values pass through."""
+    import pytest
+
+    from mtplx.runtime import _refuse_double_shifted_trunk_norms
+
+    class _Norm:
+        def __init__(self, level):
+            self.weight = mx.full((64,), level)
+
+    class _Attn:
+        def __init__(self, level):
+            self.q_norm = _Norm(level)
+
+    class _Layer:
+        def __init__(self, level):
+            self.self_attn = _Attn(level)
+
+    class _Inner:
+        def __init__(self, level):
+            self.layers = [_Layer(level)]
+
+    class _Model:
+        def __init__(self, level):
+            self.model = _Inner(level)
+
+    config = {"model_type": "qwen3_next"}
+    _refuse_double_shifted_trunk_norms(_Model(1.79), config)  # healthy
+    with pytest.raises(ValueError, match="double-shifted"):
+        _refuse_double_shifted_trunk_norms(_Model(2.79), config)
+    _refuse_double_shifted_trunk_norms(_Model(2.79), {"model_type": "llama"})
