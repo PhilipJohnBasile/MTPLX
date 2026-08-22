@@ -8,7 +8,7 @@ import math
 import shutil
 import struct
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -736,15 +736,81 @@ def _quantized_module_prefixes(weights: dict[str, mx.array]) -> set[str]:
     return modules
 
 
-def sanitize_plain_weight(key: str, value: mx.array) -> mx.array:
+def mtp_norms_are_delta_encoded(weights: Mapping[str, Any]) -> bool:
+    """True when a set of MTP tensors stores its norms zero-centered (delta).
+
+    The two-signal test with the fleet margins from the #176 heal path (its
+    single source of truth is now here): healthy absolute sidecars have q/k
+    norm means >= 1.74 and low-set norms >= 0.87; raw delta exports sit near
+    0.75 and below 0.5 respectively. Keys may carry an ``mtp.`` prefix or
+    not. Returns False (do not shift) when the set is absolute, empty, or
+    unreadable — shifting an absolute set is the #301 corruption (0-2%
+    acceptance on forged models).
+    """
+
+    def _mean(value: Any) -> float | None:
+        try:
+            if getattr(value, "ndim", None) != 1:
+                return None
+            return float(value.mean().item())
+        except Exception:
+            return None
+
+    qk_suffixes = ("self_attn.q_norm.weight", "self_attn.k_norm.weight")
+    qk_means = [
+        m
+        for key, value in weights.items()
+        if any(key.endswith(sfx) for sfx in qk_suffixes)
+        and (m := _mean(value)) is not None
+    ]
+    low_means = [
+        m
+        for key, value in weights.items()
+        if any(key.endswith(sfx) for sfx in MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES)
+        and (m := _mean(value)) is not None
+    ]
+    if not qk_means or not low_means:
+        return False
+    if max(qk_means) >= 1.25 or min(low_means) >= 0.5:
+        return False
+    return True
+
+
+def sanitize_plain_weight(
+    key: str, value: mx.array, *, mtp_norm_shift: bool | None = None
+) -> mx.array:
+    """Sanitize one plain tensor for MLX loading.
+
+    ``mtp_norm_shift`` controls the +1.0 delta-to-absolute restoration for
+    ``mtp.*`` norms: None keeps the historical per-tensor heuristic
+    (always-shift q/k/final, shift-if-low for the rest); True/False applies
+    one explicit set-level decision to every MTP norm suffix uniformly.
+    Callers that can see the whole tensor set must decide once via
+    mtp_norms_are_delta_encoded — the per-tensor always-shift tier corrupts
+    absolute sources by double-shifting exactly three norms (#301).
+    """
     if key.endswith("conv1d.weight") and value.ndim >= 3 and value.shape[-1] != 1:
         value = value.moveaxis(2, 1)
     if value.ndim == 1:
         if key.startswith("mtp."):
-            if any(key.endswith(suffix) for suffix in MTP_RMSNORM_ALWAYS_SHIFT_SUFFIXES):
-                value = value + 1.0
-            elif any(key.endswith(suffix) for suffix in MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES):
-                if float(value.mean().item()) < 0.5:
+            if mtp_norm_shift is None:
+                if any(
+                    key.endswith(suffix) for suffix in MTP_RMSNORM_ALWAYS_SHIFT_SUFFIXES
+                ):
+                    value = value + 1.0
+                elif any(
+                    key.endswith(suffix) for suffix in MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES
+                ):
+                    if float(value.mean().item()) < 0.5:
+                        value = value + 1.0
+            elif mtp_norm_shift:
+                if any(
+                    key.endswith(suffix)
+                    for suffix in (
+                        MTP_RMSNORM_ALWAYS_SHIFT_SUFFIXES
+                        + MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES
+                    )
+                ):
                     value = value + 1.0
         elif any(key.endswith(suffix) for suffix in MAIN_RMSNORM_SHIFT_SUFFIXES):
             value = value + 1.0

@@ -369,13 +369,9 @@ def _restore_delta_encoded_mtp_norms(
     return restored
 
 
-_QK_NORM_SUFFIXES = ("self_attn.q_norm.weight", "self_attn.k_norm.weight")
-_LOW_SET_NORM_SUFFIXES = (
-    "input_layernorm.weight",
-    "post_attention_layernorm.weight",
-    "pre_fc_norm_hidden.weight",
-    "pre_fc_norm_embedding.weight",
-)
+# Norm-suffix sets and the delta-detection thresholds moved to
+# compressed_tensors.mtp_norms_are_delta_encoded (#301): one predicate for
+# this heal path and the forge's set-level shift decision.
 
 
 def _heal_raw_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
@@ -391,43 +387,22 @@ def _heal_raw_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
     healthy ones sit >= 0.87.
     """
 
-    def _mean(value: Any) -> float | None:
-        try:
-            if getattr(value, "ndim", None) != 1:
-                return None
-            return float(value.mean().item())
-        except Exception:
-            return None
+    from .compressed_tensors import mtp_norms_are_delta_encoded, sanitize_plain_weight
 
-    qk_means = [
-        m
-        for key, value in weights.items()
-        if any(key.endswith(sfx) for sfx in _QK_NORM_SUFFIXES)
-        and (m := _mean(value)) is not None
-    ]
-    low_means = [
-        m
-        for key, value in weights.items()
-        if any(key.endswith(sfx) for sfx in _LOW_SET_NORM_SUFFIXES)
-        and (m := _mean(value)) is not None
-    ]
-    if not qk_means or not low_means:
+    # Single source of truth for the two-signal detection lives in
+    # compressed_tensors.mtp_norms_are_delta_encoded (#301 lifted it there so
+    # the forge decides with the same thresholds this heal path uses).
+    if not mtp_norms_are_delta_encoded(weights):
         return weights
-    if max(qk_means) >= 1.25 or min(low_means) >= 0.5:
-        return weights
-
-    from .compressed_tensors import sanitize_plain_weight
 
     logger.warning(
-        "[MTP inject] sidecar norms are raw delta-encoded "
-        "(q/k means %.2f, lowest norm %.2f); restoring the +1.0 convention (#176)",
-        max(qk_means),
-        min(low_means),
+        "[MTP inject] sidecar norms are raw delta-encoded; "
+        "restoring the +1.0 convention (#176)"
     )
     healed = dict(weights)
     for key, value in list(healed.items()):
         if getattr(value, "ndim", None) == 1:
-            healed[key] = sanitize_plain_weight(f"mtp.{key}", value)
+            healed[key] = sanitize_plain_weight(f"mtp.{key}", value, mtp_norm_shift=True)
     return healed
 
 

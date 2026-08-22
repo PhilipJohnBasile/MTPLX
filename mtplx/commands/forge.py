@@ -1703,9 +1703,18 @@ def _copy_safetensors_subset_sanitized(
 ) -> None:
     import mlx.core as mx
 
-    from mtplx.compressed_tensors import sanitize_plain_weight
+    from mtplx.compressed_tensors import (
+        mtp_norms_are_delta_encoded,
+        sanitize_plain_weight,
+    )
 
-    tensors: dict[str, Any] = {}
+    # Collect the whole set first, decide the norm convention ONCE, then
+    # sanitize (#301). The old per-tensor path always-shifted three MTP norms
+    # regardless of source convention, so extracting from a checkpoint that
+    # already stores absolute gains double-shifted exactly those tensors —
+    # 0-2% acceptance, forged models slower than AR. by_file can span
+    # shards, hence collect-before-decide.
+    raw: dict[str, Any] = {}
     for filename, keys in by_file.items():
         shard = source_dir / filename
         try:
@@ -1715,10 +1724,14 @@ def _copy_safetensors_subset_sanitized(
         for key in keys:
             if key not in loaded:
                 raise ForgeError(f"MTP tensor {key} missing from {filename}")
-            output_key = str(key_transform(key) if key_transform is not None else key)
-            tensors[output_key] = sanitize_plain_weight(output_key, loaded[key])
-    if not tensors:
+            raw[str(key_transform(key) if key_transform is not None else key)] = loaded[key]
+    if not raw:
         raise ForgeError("embedded MTP extraction found no tensors to write")
+    shift = mtp_norms_are_delta_encoded(raw)
+    tensors: dict[str, Any] = {
+        key: sanitize_plain_weight(key, value, mtp_norm_shift=shift)
+        for key, value in raw.items()
+    }
     mx.eval(list(tensors.values()))
     target.parent.mkdir(parents=True, exist_ok=True)
     mx.save_safetensors(str(target), tensors, metadata={"format": "mlx"})
