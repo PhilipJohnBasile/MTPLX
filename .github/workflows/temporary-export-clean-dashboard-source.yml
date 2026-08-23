@@ -1,0 +1,31 @@
+name: Temporary export clean dashboard source
+
+on:
+  push:
+    branches:
+      - agent/export-clean-dashboard-source
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Archive exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > /tmp/source-head.txt
+          git rev-parse HEAD^ > /tmp/source-parent.txt
+          tar --exclude=.git -czf /tmp/mtplx-clean-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mtplx-clean-dashboard-source
+          path: |
+            /tmp/mtplx-clean-source.tar.gz
+            /tmp/source-head.txt
+            /tmp/source-parent.txt
