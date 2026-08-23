@@ -1,12 +1,9 @@
-name: Temporary semantic runtime module export
+name: Temporary semantic runtime source export
 
 on:
   push:
     branches:
       - feat/semantic-memory-expert-matrix
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -19,18 +16,18 @@ jobs:
         with:
           ref: feat/semantic-memory-expert-matrix
           fetch-depth: 0
-      - name: Export native modules and tests
+
+      - name: Export exact source
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf /tmp/semantic-runtime-modules.tar.gz \
-            mtplx/semantic_anchors.py \
-            mtplx/memory_governor.py \
-            mtplx/expert_locality.py \
-            tests/test_semantic_anchors.py \
-            tests/test_memory_governor.py \
-            tests/test_expert_locality.py
-      - uses: actions/upload-artifact@v4
+          git archive --format=tar.gz --output=/tmp/mtplx-semantic-source.tar.gz HEAD
+          git rev-parse HEAD > /tmp/head.txt
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
         with:
-          name: semantic-runtime-modules
-          path: /tmp/semantic-runtime-modules.tar.gz
+          name: mtplx-semantic-source
+          path: |
+            /tmp/mtplx-semantic-source.tar.gz
+            /tmp/head.txt
