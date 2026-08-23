@@ -1005,3 +1005,15 @@ def test_rolling_metrics_per_session_map_is_lru_bounded():
     # Most-recent sessions survive; the oldest were evicted.
     assert "session-199" in per_session
     assert "session-0" not in per_session
+
+
+def test_runtime_systems_endpoint_exposes_replay_without_automatic_promotion():
+    client = TestClient(create_app(_fake_state()))
+    response = client.get("/v1/mtplx/systems")
+    assert response.status_code == 200
+    payload = response.json()
+    replay = payload["deterministic_replay"]
+    assert replay["available"] is True
+    assert replay["runtime_mutation"] is False
+    assert replay["request_capture"]["content_capture_default"] is False
+    assert replay["replay"]["promotion_is_automatic"] is False

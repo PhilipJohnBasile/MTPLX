@@ -112,6 +112,23 @@ from mtplx.gemma4_pair import (
     resolve_gemma4_pair_paths,
 )
 from mtplx.model_scheduler import ModelWorkScheduler
+from mtplx.expert_locality import install_expert_locality_instrumentation
+from mtplx.memory_governor import (
+    MemorySafePoint,
+    RuntimeMemoryGovernor,
+    sample_process_memory,
+)
+from mtplx.runtime_systems import (
+    RuntimeSystemsRegistry,
+    env_int as _runtime_system_env_int,
+    memory_governor_enabled,
+    semantic_anchors_enabled,
+)
+from mtplx.semantic_anchors import (
+    mandatory_semantic_edges,
+    plan_semantic_anchors,
+    render_message_prefixes,
+)
 from mtplx.reasoning_effort import (
     REASONING_EFFORT_CHOICES,
     REASONING_EFFORT_LEVELS,
@@ -1929,6 +1946,7 @@ class ServerState:
     def __init__(self, args: argparse.Namespace) -> None:
         _validate_mtp_batch_settings(args)
         self.args = args
+        self.runtime_systems = RuntimeSystemsRegistry()
         try:
             args.paged_kv_quantization = normalize_paged_kv_quantization(
                 getattr(args, "paged_kv_quantization", "off")
@@ -2105,6 +2123,22 @@ class ServerState:
             load_heartbeat.set()
         self.load_time_s = time.perf_counter() - started
         _startup_line(f"[5/6] Model loaded in {self.load_time_s:.1f}s")
+        try:
+            expert_report = self.model_scheduler.submit_foreground(
+                install_expert_locality_instrumentation,
+                self.runtime,
+                batch_key="startup.expert_locality",
+            ).result()
+        except Exception as exc:
+            expert_report = {
+                "enabled": bool(os.environ.get("MTPLX_EXPERT_LOCALITY")),
+                "installed": False,
+                "instrumented_modules": 0,
+                "reason": "startup_install_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            LOGGER.warning("expert-locality instrumentation: %s", exc)
+        self.runtime_systems.set_expert_install_report(expert_report)
         self.backend_descriptor = descriptor_from_runtime(self.runtime, args)
         args.backend_id = self.backend_descriptor.backend_id
         if self.backend_descriptor.uses_draft_lm_head:
@@ -2281,11 +2315,12 @@ class ServerState:
         self.session_bank_cold_tier = _session_bank_cold_tier_from_args(args)
         from mtplx.engine_session import model_weights_bytes as _model_weights_bytes
 
+        self.model_weights_bytes = _model_weights_bytes(
+            getattr(self.runtime, "model_path", None)
+        )
         self.sessions = EngineSessionManager(
             cold_tier=self.session_bank_cold_tier,
-            model_weights_bytes=_model_weights_bytes(
-                getattr(self.runtime, "model_path", None)
-            ),
+            model_weights_bytes=self.model_weights_bytes,
         )
         # Keep the SSD cold-tier encode (full-KV byte conversion; post-#169
         # it runs at enqueue, never on the writer thread) off request and
@@ -2311,6 +2346,20 @@ class ServerState:
                 _bank.cold_enqueue_dispatch = lambda job: (
                     _scheduler.submit_idle_postcommit(job, batch_key="ssd.cold_enqueue")
                 )
+        self.memory_governor = None
+        if memory_governor_enabled() and _bank is not None:
+            try:
+                self.memory_governor = RuntimeMemoryGovernor(
+                    initial_bank_max_bytes=int(_bank.max_bytes),
+                    initial_per_session_max_bytes=int(
+                        _bank.per_session_max_bytes
+                    ),
+                )
+            except Exception as exc:
+                LOGGER.warning("runtime memory governor disabled: %s", exc)
+                self.memory_governor = None
+        self.runtime_systems.set_memory_governor(self.memory_governor)
+
         # Foreground-yield wiring (2026-08-07): the cold tier's encode runs
         # on the model-owner thread and its writer thread moves GBs through
         # unified memory — both must stand down while a request is queued or
@@ -12006,6 +12055,212 @@ def _encode_messages(
     return ids
 
 
+def _semantic_anchor_candidate_indexes(
+    messages: Sequence[Any],
+    *,
+    limit: int,
+) -> tuple[int, ...]:
+    """Choose a bounded set of complete message prefixes to render exactly."""
+
+    count = len(messages)
+    if count <= 0:
+        return ()
+    cap = max(1, int(limit))
+    preferred: list[int] = []
+
+    # The end of the leading instruction block is unusually durable and often
+    # avoids the largest amount of re-prefill work.
+    instruction_end: int | None = None
+    for index, message in enumerate(messages):
+        role = str(getattr(message, "role", None) or (
+            message.get("role") if isinstance(message, Mapping) else ""
+        )).strip().lower()
+        if role in {"system", "developer"}:
+            instruction_end = index
+            continue
+        break
+    if instruction_end is not None:
+        preferred.append(instruction_end)
+
+    # Explicit compaction/checkpoint metadata wins a slot even when old.
+    for index, message in enumerate(messages):
+        if hasattr(message, "model_dump"):
+            try:
+                raw = message.model_dump(exclude_none=True)
+            except Exception:
+                raw = {}
+        elif isinstance(message, Mapping):
+            raw = dict(message)
+        else:
+            raw = {}
+        metadata = raw.get("metadata") if isinstance(raw, Mapping) else None
+        if not isinstance(metadata, Mapping):
+            metadata = raw
+        explicit = any(
+            bool(metadata.get(key))
+            for key in (
+                "semantic_anchor",
+                "checkpoint",
+                "compaction_end",
+                "compacted",
+            )
+        )
+        if explicit:
+            preferred.append(index)
+
+    # Recent user/assistant/tool turn ends are the most likely to survive the
+    # next request. Keep newest boundaries when the candidate budget is full.
+    recent = list(range(max(0, count - cap * 2), count))
+    ordered: list[int] = []
+    for index in [*preferred, *reversed(recent)]:
+        if index not in ordered:
+            ordered.append(index)
+        if len(ordered) >= cap:
+            break
+    return tuple(sorted(ordered))
+
+
+def _plan_request_semantic_anchors(
+    state: Any,
+    *,
+    messages: list[Any],
+    prompt_ids: list[int],
+    enable_thinking: bool,
+    reasoning_effort: str | None,
+    strip_assistant_reasoning_history: bool,
+    scoped_reasoning_history: bool,
+    preserve_reasoning_history: bool,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: Any,
+    tool_prompt_mode: str,
+    request_id: str | None,
+    session_id: str | None,
+    cache_available: bool,
+    vision_active: bool,
+    special_prompt_suffix: bool,
+    observability: dict[str, Any],
+) -> None:
+    """Plan exact semantic recurrent-cache boundaries for one request.
+
+    This is fail-closed: a candidate must be rendered through the same active
+    chat template and match the final prompt token-for-token. Any render or
+    template mismatch produces telemetry only and never reaches prefill.
+    """
+
+    registry = getattr(state, "runtime_systems", None)
+    if not semantic_anchors_enabled():
+        observability["semantic_anchors_enabled"] = False
+        return
+    observability["semantic_anchors_enabled"] = True
+    if not cache_available:
+        observability["semantic_anchor_status"] = "skipped"
+        observability["semantic_anchor_skip_reason"] = "session_cache_unavailable"
+        if registry is not None:
+            registry.record_semantic_skip(
+                "session_cache_unavailable",
+                request_id=request_id,
+                session_id=session_id,
+            )
+        return
+    if vision_active:
+        observability["semantic_anchor_status"] = "skipped"
+        observability["semantic_anchor_skip_reason"] = "vision_prompt"
+        if registry is not None:
+            registry.record_semantic_skip(
+                "vision_prompt", request_id=request_id, session_id=session_id
+            )
+        return
+    if special_prompt_suffix:
+        observability["semantic_anchor_status"] = "skipped"
+        observability["semantic_anchor_skip_reason"] = "special_prompt_suffix"
+        if registry is not None:
+            registry.record_semantic_skip(
+                "special_prompt_suffix",
+                request_id=request_id,
+                session_id=session_id,
+            )
+        return
+    if not messages or len(prompt_ids) < 2:
+        observability["semantic_anchor_status"] = "skipped"
+        observability["semantic_anchor_skip_reason"] = "prompt_too_short"
+        if registry is not None:
+            registry.record_semantic_skip(
+                "prompt_too_short", request_id=request_id, session_id=session_id
+            )
+        return
+
+    candidate_limit = _runtime_system_env_int(
+        "MTPLX_SEMANTIC_ANCHOR_CANDIDATES", 16, minimum=1
+    )
+    indexes = _semantic_anchor_candidate_indexes(messages, limit=candidate_limit)
+    estimated_bytes = _runtime_system_env_int(
+        "MTPLX_SEMANTIC_ANCHOR_ESTIMATED_BYTES", 0, minimum=0
+    )
+
+    def _render_prefix(prefix: Sequence[Any]) -> list[int]:
+        return _encode_messages(
+            state.runtime.tokenizer,
+            list(prefix),
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            strip_assistant_reasoning_history=strip_assistant_reasoning_history,
+            scoped_reasoning_history=scoped_reasoning_history,
+            preserve_reasoning_history=preserve_reasoning_history,
+            add_generation_prompt=False,
+            tools=tools,
+            tool_choice=tool_choice,
+            tool_prompt_mode=tool_prompt_mode,
+            template_observability={},
+        )
+
+    try:
+        rendered = render_message_prefixes(
+            messages,
+            _render_prefix,
+            message_indexes=indexes,
+            estimated_checkpoint_bytes=estimated_bytes,
+        )
+        byte_budget_raw = _runtime_system_env_int(
+            "MTPLX_SEMANTIC_ANCHOR_MAX_BYTES", 0, minimum=0
+        )
+        plan = plan_semantic_anchors(
+            prompt_ids,
+            rendered,
+            template_hash=getattr(state, "template_hash", None),
+            max_anchors=_runtime_system_env_int(
+                "MTPLX_SEMANTIC_ANCHOR_MAX", 8, minimum=1
+            ),
+            max_checkpoint_bytes=(byte_budget_raw or None),
+            default_checkpoint_bytes=max(1, estimated_bytes),
+            min_token_offset=1,
+        )
+        edges = mandatory_semantic_edges(
+            plan,
+            upper_bound=max(0, len(prompt_ids) - 1),
+        )
+    except Exception as exc:
+        observability["semantic_anchor_status"] = "error"
+        observability["semantic_anchor_error"] = f"{type(exc).__name__}: {exc}"
+        if registry is not None:
+            registry.record_semantic_skip(
+                "planning_error", request_id=request_id, session_id=session_id
+            )
+        return
+
+    observability.update(plan.to_metrics())
+    observability["semantic_anchor_status"] = "planned"
+    observability["semantic_anchor_candidate_count"] = len(rendered)
+    observability["semantic_anchor_edges"] = list(edges)
+    observability["semantic_anchor_prefill_edges"] = len(edges)
+    if registry is not None:
+        registry.record_semantic_plan(
+            plan,
+            request_id=request_id,
+            session_id=session_id,
+            candidate_count=len(rendered),
+        )
+
+
 def _encode_messages_uncached(
     tokenizer: Any,
     messages: list[ChatMessage],
@@ -13895,16 +14150,40 @@ def _dashboard_record_completion(
     response.
     """
 
+    if bool(envelope.get("warmup")) or bool(stats.get("warmup")):
+        # Warmup generations are not captured or counted as user requests.
+        return
+
+    request_id = envelope.get("request_id") or stats.get("request_id")
+    if request_capture.capture_dir() and isinstance(request_id, str) and request_id:
+        persisted = request_capture.capture_outcome(
+            request_id,
+            {
+                "model": getattr(state, "model_id", None),
+                "session_id": envelope.get("session_id"),
+                "finish_reason": envelope.get("finish_reason"),
+                "prompt_tokens": envelope.get("prompt_tokens"),
+                "completion_tokens": envelope.get("completion_tokens"),
+                "generated_tokens": envelope.get("generated_tokens"),
+                "decode_tok_s": envelope.get("decode_tok_s"),
+                "request_elapsed_s": envelope.get("request_elapsed_s"),
+                "session_cache_hit": envelope.get("session_cache_hit"),
+                "cache_miss_reason": envelope.get("cache_miss_reason"),
+            },
+        )
+        registry = getattr(state, "runtime_systems", None)
+        if registry is not None:
+            registry.record_request_capture(
+                "completed",
+                request_id=request_id,
+                session_id=envelope.get("session_id"),
+                persisted=persisted,
+            )
+
     dashboard = getattr(state, "dashboard", None)
     if dashboard is None:
         return
-    if bool(envelope.get("warmup")) or bool(stats.get("warmup")):
-        # Warmup generations (startup pass and the silent background
-        # ladder) are not user requests: they must not tick the rolling
-        # TPS gauge, prefill history, or live bus while the user is idle.
-        return
     try:
-        request_id = envelope.get("request_id") or stats.get("request_id")
         if isinstance(request_id, str) and request_id:
             dashboard.in_flight.deregister(request_id)
             dashboard.progress_events.forget(request_id)
@@ -15242,6 +15521,131 @@ def _mtplx_dashboard_snapshot(state: "ServerState") -> dict[str, Any]:
     }
 
 
+def _mtplx_runtime_systems_snapshot(state: Any) -> dict[str, Any]:
+    registry = getattr(state, "runtime_systems", None)
+    if registry is None:
+        return {
+            "ts": time.time(),
+            "semantic_memory": {
+                "available": True,
+                "enabled": semantic_anchors_enabled(),
+                "wired": False,
+                "latest": None,
+            },
+            "expert_locality": {
+                "available": True,
+                "enabled": bool(os.environ.get("MTPLX_EXPERT_LOCALITY")),
+                "wired": False,
+                "metrics": {"enabled": False},
+            },
+            "memory_governor": {
+                "available": True,
+                "enabled": memory_governor_enabled(),
+                "wired": False,
+                "metrics": {},
+            },
+            "deterministic_replay": {
+                "available": True,
+                "mode": "offline_verifier",
+                "runtime_mutation": False,
+                "request_capture": {
+                    "available": True,
+                    "enabled": bool(request_capture.capture_dir()),
+                    "wired": True,
+                    "content_capture_default": False,
+                    "dispatched": 0,
+                    "completed": 0,
+                    "failures": 0,
+                    "latest": None,
+                },
+                "replay": {
+                    "available": True,
+                    "wired": False,
+                    "mode": "explicit_offline_call",
+                    "promotion_is_automatic": False,
+                },
+                "trace_parity": {
+                    "available": True,
+                    "wired": False,
+                    "mode": "offline_compare",
+                },
+            },
+        }
+    try:
+        return registry.snapshot()
+    except Exception as exc:
+        return {"ts": time.time(), "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _memory_governor_safe_point(state: Any) -> MemorySafePoint:
+    foreground = 0
+    try:
+        foreground = int(state.foreground_count())
+    except Exception:
+        pass
+    scheduler_pending = False
+    postcommit_active = False
+    try:
+        scheduler = getattr(state, "model_scheduler", None)
+        stats = scheduler.stats() if scheduler is not None else {}
+        pending = sum(
+            int(stats.get(key, 0) or 0)
+            for key in (
+                "foreground_pending",
+                "idle_pending",
+                "persistence_pending",
+            )
+        )
+        active_kind = stats.get("active_kind")
+        scheduler_pending = pending > 0 or active_kind is not None
+        postcommit_active = bool(
+            active_kind in {"idle", "idle_postcommit", "persistence"}
+            or int(stats.get("idle_pending", 0) or 0) > 0
+            or int(stats.get("persistence_pending", 0) or 0) > 0
+        )
+    except Exception:
+        scheduler_pending = True
+    lock_active = False
+    try:
+        lock_active = bool(state.lock.locked())
+    except Exception:
+        pass
+    return MemorySafePoint(
+        foreground_active=foreground,
+        scheduler_pending_or_active=scheduler_pending,
+        session_restore_active=lock_active,
+        session_commit_active=postcommit_active,
+        mtp_transaction_active=lock_active,
+        postcommit_active=postcommit_active,
+    )
+
+
+def _memory_governor_tick(state: Any) -> dict[str, Any] | None:
+    governor = getattr(state, "memory_governor", None)
+    bank = getattr(getattr(state, "sessions", None), "bank", None)
+    if governor is None or bank is None:
+        return None
+    sample = sample_process_memory(
+        session_bank_bytes=int(getattr(bank, "total_nbytes", 0) or 0),
+        model_bytes=getattr(state, "model_weights_bytes", None),
+        safe_point=_memory_governor_safe_point(state),
+        total_bytes=(_machine_info().get("unified_memory_bytes") or None),
+    )
+    decision = governor.observe(sample)
+    receipt = governor.apply(decision, bank=bank)
+    if receipt.applied and receipt.evicted_entries > 0:
+        try:
+            import mlx.core as _mx
+
+            _mx.clear_cache()
+        except Exception:
+            pass
+    return {
+        "decision": decision.to_dict(),
+        "apply": receipt.to_dict(),
+    }
+
+
 def _memory_pressure_level() -> int:
     """macOS memory pressure: 1 normal, 2 warning, 4 critical; 0 unknown."""
 
@@ -15414,15 +15818,22 @@ async def _memory_pressure_loop(
     """
 
     guard = _MemoryPressureGuard()
+    guard_enabled = _memory_pressure_guard_enabled()
+    governor_enabled = memory_governor_enabled()
     while True:
         try:
             level = await asyncio.to_thread(_memory_pressure_level)
             state.dashboard.last_memory_pressure_level = level
+            if governor_enabled:
+                try:
+                    await asyncio.to_thread(_memory_governor_tick, state)
+                except Exception as exc:
+                    LOGGER.warning("runtime memory governor tick: %s", exc)
             busy = False
-            if 2 <= level < 4:
+            if guard_enabled and 2 <= level < 4:
                 busy = await asyncio.to_thread(_engine_busy_signal, state)
             deferred_s = guard.deferred_for_s(time.monotonic())
-            if guard.decide(level, time.monotonic(), busy):
+            if guard_enabled and guard.decide(level, time.monotonic(), busy):
                 bank = getattr(getattr(state, "sessions", None), "bank", None)
                 evicted = 0
                 if bank is not None:
@@ -19953,8 +20364,11 @@ def _run_generation_dispatched(
         # Dispatch-time capture (#196/#197 third layer): persisted BEFORE any
         # token is generated so a hung or early-stopped agent turn still
         # leaves its bit-exact reproduction envelope on disk.
-        request_capture.capture_request(
-            request_observability_for_lane.get("request_id") or response_id,
+        capture_request_id = (
+            request_observability_for_lane.get("request_id") or response_id
+        )
+        capture_persisted = request_capture.capture_request(
+            capture_request_id,
             {
                 "model_id": str(
                     getattr(state.args, "model_id", None)
@@ -19985,6 +20399,14 @@ def _run_generation_dispatched(
                 },
             },
         )
+        capture_registry = getattr(state, "runtime_systems", None)
+        if capture_registry is not None:
+            capture_registry.record_request_capture(
+                "dispatched",
+                request_id=capture_request_id,
+                session_id=kwargs.get("session_id"),
+                persisted=capture_persisted,
+            )
     if _use_live_mtp_batch(state, effective_mode=effective_mode):
         return _run_mtp_batch_generation_dispatched(
             state,
@@ -24791,7 +25213,7 @@ def create_app(state: ServerState) -> FastAPI:
             getattr(state.args, "enable_thermal_poll", False)
         ):
             bg_tasks.append(asyncio.create_task(_thermal_poll_loop(state)))
-        if _memory_pressure_guard_enabled():
+        if _memory_pressure_guard_enabled() or memory_governor_enabled():
             bg_tasks.append(asyncio.create_task(_memory_pressure_loop(state)))
         retrieval = getattr(state, "retrieval", None)
         if retrieval is not None and retrieval.idle_timeout_s > 0:
@@ -25262,6 +25684,10 @@ def create_app(state: ServerState) -> FastAPI:
     @app.get("/v1/mtplx/snapshot")
     def mtplx_snapshot() -> dict[str, Any]:
         return _mtplx_dashboard_snapshot(state)
+
+    @app.get("/v1/mtplx/systems")
+    def mtplx_systems() -> dict[str, Any]:
+        return _mtplx_runtime_systems_snapshot(state)
 
     @app.get("/v1/mtplx/prefill_history")
     def mtplx_prefill_history() -> dict[str, Any]:
@@ -26890,6 +27316,29 @@ def create_app(state: ServerState) -> FastAPI:
             request_observability["request_model_matches_served_model"] = (
                 requested_model == state.model_id
             )
+        _plan_request_semantic_anchors(
+            state,
+            messages=messages_for_generation,
+            prompt_ids=prompt_ids,
+            enable_thinking=thinking_enabled,
+            reasoning_effort=reasoning_effort,
+            strip_assistant_reasoning_history=(
+                state.args.strip_assistant_reasoning_history
+            ),
+            scoped_reasoning_history=_reasoning_history_scoped_active(state),
+            preserve_reasoning_history=_reasoning_history_preserve_echo_active(
+                state
+            ),
+            tools=tool_specs if tools_active else None,
+            tool_choice=request.tool_choice,
+            tool_prompt_mode=template_tool_prompt_mode,
+            request_id=response_id,
+            session_id=session_id,
+            cache_available=(session is not None),
+            vision_active=(vision_splice is not None),
+            special_prompt_suffix=bool(aime_visible_working),
+            observability=template_observability,
+        )
         request_observability.update(policy.as_observability())
         request_observability["session_cache_scope"] = session_cache_scope
         request_observability["opencode_tool_history_cache_bypass"] = bool(
