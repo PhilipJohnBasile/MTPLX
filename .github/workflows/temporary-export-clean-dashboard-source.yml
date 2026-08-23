@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/export-clean-dashboard-source
+  pull_request:
+    branches:
+      - clean/upstream-2.9.1
 
 permissions:
   contents: read
