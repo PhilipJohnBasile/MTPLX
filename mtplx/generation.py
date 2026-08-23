@@ -63,7 +63,9 @@ from .graphbank import (
     SpecDecodeGraphBank,
     cache_array_tree,
     compiled_verify_mode,
+    paged_offsets_context_ok as _paged_offsets_context_ok,
     promote_kv_cache_offsets,
+    set_paged_offsets_context_ok,
 )
 from .native_mlp import set_native_mlp_context
 from .loop_guard import LoopGuard, loop_guard_config_from_env
@@ -222,6 +224,41 @@ def _eval(*values: Any, _caller_depth: int = 1) -> None:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
     if os.environ.get("MTPLX_EVAL_AUDIT_STDERR"):
         print(json.dumps(entry, sort_keys=True), file=sys.stderr)
+
+
+def _env_enabled_default_on(name: str) -> bool:
+    """Opt-out env read: unset resolves ON, "0"/"false"/"no"/"off" disables.
+
+    The greedy-trio knobs (#313/#315c1/#318) moved to this resolution on the
+    night-20260822 round-4 ruling (n=4 counterbalanced ABBA blend +2.7% mean,
+    byte-identity held on greedy and sampled-seed lanes). Same falsy set as
+    graphbank._batch_paged_offsets_enabled so the trio reads stay symmetric.
+    """
+    return str(os.environ.get(name, "1")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _trio_max_context() -> int:
+    """Prompt-token fence for the greedy-trio defaults (0 = no fence).
+
+    Night-20260822 receipts: the trio stack blends +2.5..+9.8% on the
+    0.5k-8k rungs but measured −2.9%/−2.7% at 16k/32k in the dedicated
+    order-symmetric quad — so the defaults route by context, the same
+    pattern as MTPLX_COMPILED_VERIFY_MAX_CONTEXT. Decided once per request
+    from the prompt length (a request that grows past the fence mid-decode
+    keeps its entry decision).
+    """
+    raw = os.environ.get("MTPLX_GREEDY_TRIO_MAX_CONTEXT", "12288").strip().lower()
+    if raw in ("0", "off", "none", "unlimited"):
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 12288
 
 
 def _env_truthy(name: str) -> bool:
@@ -1582,8 +1619,12 @@ class _DecodeTrace:
             "drop_events": _env_truthy("MTPLX_DROP_EVENTS"),
             # Trio ports (#313/#315/#318): receipts prove which lane ran —
             # the #314 dead-switch antidote.
-            "greedy_draft_chain": _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN"),
-            "batched_greedy_accept": _env_truthy("MTPLX_BATCHED_GREEDY_ACCEPT"),
+            "greedy_draft_chain": _env_enabled_default_on("MTPLX_GREEDY_DRAFT_CHAIN"),
+            "batched_greedy_accept": _env_enabled_default_on("MTPLX_BATCHED_GREEDY_ACCEPT"),
+            # Env resolution above; the per-request truth is the fence stamp —
+            # a >fence prompt runs all three knobs OFF regardless of env.
+            "greedy_trio_max_context": _trio_max_context(),
+            "trio_context_ok": _paged_offsets_context_ok(),
             "skip_verify_snapshot": _skip_verify_snapshot(),
             "mtp_history_materialize_every": int(mtp_history_materialize_every),
             "mtp_history_materialize_events": int(mtp_history_materialize_events),
@@ -8193,6 +8234,12 @@ def generate_mtpk(
     # (first observe gets the span since loop entry, later ones the span
     # since the previous observe) — real cycle cost, not inter-request gaps.
     _policy_cycle_started = time.perf_counter()
+    # Long-context fence for the trio defaults (#313/#315c1/#318): decided
+    # once per request from the prompt length, stamped through to graphbank
+    # for the paged-offsets read. Receipts in _trio_max_context's docstring.
+    _trio_fence = _trio_max_context()
+    _trio_context_ok = _trio_fence <= 0 or len(prompt_ids) < _trio_fence
+    set_paged_offsets_context_ok(_trio_context_ok)
     # Greedy-chain eligibility (#313 port), PRE-BOUND: every term here is
     # request-invariant, so it is decided once — the decode loop's prebound-
     # policy-surface contract (test_decode_loop_uses_prebound_policy_surfaces)
@@ -8200,11 +8247,16 @@ def generate_mtpk(
     # (used_device_core, cycle_depth, _cc_draft_source_token, _steer_active —
     # guards can arm mid-generation) stay in the loop.
     _greedy_chain_eligible = (
-        draft_sampler.temperature <= 0
+        _trio_context_ok
+        and draft_sampler.temperature <= 0
         and sampler.temperature <= 0
         and a3b_target_prefix_route is None
         and constraint is None
         and draft_margin_threshold is None
+        # Leg-2b width gating is a per-depth host check — structurally
+        # incompatible with the one-sync chain; an explicitly set threshold
+        # must win over the default lane (dead-switch scar, #314).
+        and _draft_conf_width_threshold is None
         and adaptive_policy is None
         and adaptive_width_policy is None
         and mtp_corrector is None
@@ -8217,7 +8269,7 @@ def generate_mtpk(
         and not _penalties_active
         and mtp_cache_policy == "persistent"
         and _mtp_history_uses_committed_cache(mtp_history_policy)
-        and _env_truthy("MTPLX_GREEDY_DRAFT_CHAIN")
+        and _env_enabled_default_on("MTPLX_GREEDY_DRAFT_CHAIN")
     )
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
@@ -9872,12 +9924,13 @@ def generate_mtpk(
         # maybe_rebase_decode_state on the all-accept path).
         _batched_target_tokens: list[int] | None = None
         if (
-            sampler.temperature <= 0
+            _trio_context_ok
+            and sampler.temperature <= 0
             and not _penalties_active
             and not _steer_active
             and len(draft_tokens) > 0
             and int(verify_logits.shape[1]) >= len(draft_tokens)
-            and _env_truthy("MTPLX_BATCHED_GREEDY_ACCEPT")
+            and _env_enabled_default_on("MTPLX_BATCHED_GREEDY_ACCEPT")
         ):
             _batched_target_tokens = mx.argmax(
                 verify_logits[0, : len(draft_tokens), :], axis=-1
