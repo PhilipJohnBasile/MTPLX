@@ -1,0 +1,23 @@
+name: temporary-export-pr16-source
+
+on:
+  push:
+    branches:
+      - agent/audit-native-systems-pr16
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Export source tree
+        run: |
+          tar -czf /tmp/mtplx-pr16-source.tar.gz --exclude=.git .
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mtplx-pr16-source
+          path: /tmp/mtplx-pr16-source.tar.gz
+          retention-days: 1
