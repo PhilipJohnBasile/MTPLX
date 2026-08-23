@@ -1053,7 +1053,12 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                         group_size=group_size,
                     )
                 elif (
-                    m <= 6
+                    # M=5 falls through to stock by default: three same-
+                    # process micro sessions (2026-08-22, MEASUREMENTS 22:0x)
+                    # put the padded-m6 lane +3..13% and the m16 tile worst
+                    # at every M=5 4-bit shape, while stock ~ties the best.
+                    # MTPLX_M5_PADDED_LANE=1 restores the old routing.
+                    (m == 6 or (m == 5 and _m5_padded_lane()))
                     and not lane_disabled("qmm_m6")
                     and m6_ksplit_eligible(m, k, n, bits, group_size, x.dtype)
                 ):
@@ -1062,7 +1067,8 @@ def install_nax_qlinear_patch() -> dict[str, object]:
                         group_size=group_size,
                     )
                 elif (
-                    not lane_disabled("qmm_m16_nax")
+                    (m != 5 or _m5_padded_lane())
+                    and not lane_disabled("qmm_m16_nax")
                     and m16_nax_eligible(m, k, n, bits, group_size, x.dtype)
                 ):
                     y = nax_qmm_m16(
@@ -1103,6 +1109,23 @@ def _m4_impl() -> str:
     # MTPLX_NAX_M4_IMPL=vk_k while the server boots, and an import-time
     # snapshot silently pinned whichever value happened to be set first.
     return str(os.environ.get("MTPLX_NAX_M4_IMPL", "legacy")).strip().lower()
+
+
+def _m5_padded_lane() -> bool:
+    """Opt back into padded custom lanes for M=5 (default: stock).
+
+    2026-08-22 three-session micro receipts at the production 4-bit g32
+    shapes: padded-m6 pays +3..13% over stock and the m16 tile is worst at
+    every M=5 cell; crossrow ~ties stock across sessions. Stock is the
+    only lane that never loses at M=5, so it is the default; this env
+    restores the previous padded routing for A/Bs.
+    """
+    return str(os.environ.get("MTPLX_M5_PADDED_LANE", "")).strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
 
 
 def nax_qmm_m4(
