@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/native-runtime-intelligence-builder
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -23,32 +26,44 @@ jobs:
           set -euo pipefail
           {
             echo '=== server app construction ==='
-            grep -nE 'FastAPI\(|def (create|build|make)_app|return app|uvicorn\.run|app = ' mtplx/server/openai.py | head -120 || true
+            grep -nE 'FastAPI\(|def (create|build|make)_app|return app|uvicorn\.run|app = ' mtplx/server/openai.py | head -160 || true
             echo
             echo '=== request lifecycle and streams ==='
-            grep -nE 'request_id|time_to_first|ttft|yield |StreamingResponse|streaming|finish_reason|request_observability' mtplx/server/openai.py | head -220 || true
+            grep -nE 'request_id|time_to_first|ttft|yield |StreamingResponse|streaming|finish_reason|request_observability' mtplx/server/openai.py | head -320 || true
             echo
             echo '=== stable prefix / prefill boundaries ==='
-            grep -nE 'stable_prefix_len|mandatory_edges|gdn_boundar|_iter_prefill_chunk_spans|_prefill_spans_with_tail_grid|restore_or_prefill_prompt_state' mtplx/generation.py mtplx/server/openai.py mtplx/session_bank.py | head -300 || true
+            grep -nE 'stable_prefix_len|mandatory_edges|gdn_boundar|_iter_prefill_chunk_spans|_prefill_spans_with_tail_grid|restore_or_prefill_prompt_state' mtplx/generation.py mtplx/server/openai.py mtplx/session_bank.py | head -420 || true
             echo
             echo '=== SessionBank construction / ownership ==='
-            grep -RniE 'SessionBank\(|session_bank[[:space:]]*=' mtplx | head -160 || true
+            grep -RniE 'SessionBank\(|session_bank[[:space:]]*=' mtplx | head -220 || true
             echo
             echo '=== scheduler state / safe-point signals ==='
-            grep -RniE 'foreground_active|in_flight|pending_postcommit|scheduler.*active|mtp_transaction|session_restore|session_commit' mtplx | head -240 || true
+            grep -RniE 'foreground_active|in_flight|pending_postcommit|scheduler.*active|mtp_transaction|session_restore|session_commit' mtplx | head -360 || true
             echo
             echo '=== expert routing seams ==='
-            grep -RniE 'topk|top_k|expert_indices|expert_ids|router.*indices|indices.*router' mtplx/models mtplx/kernels mtplx | head -320 || true
+            grep -RniE 'topk|top_k|expert_indices|expert_ids|router.*indices|indices.*router' mtplx/models mtplx/kernels mtplx | head -520 || true
             echo
             echo '=== CLI parser and dispatch ==='
-            grep -nE 'add_parser\(|subparsers|args\.command|PUBLIC_COMMANDS|def main\(' mtplx/cli.py | head -260 || true
+            grep -nE 'add_parser\(|subparsers|args\.command|PUBLIC_COMMANDS|def main\(' mtplx/cli.py | head -360 || true
             echo
             echo '=== pyproject extras ==='
-            grep -nA45 '^\[project.optional-dependencies\]' pyproject.toml || true
+            grep -nA60 '^\[project.optional-dependencies\]' pyproject.toml || true
           } | tee /tmp/native-runtime-map.txt
+
+      - name: Export source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --output=/tmp/mtplx-source.tar.gz HEAD
 
       - name: Upload map
         uses: actions/upload-artifact@v4
         with:
           name: native-runtime-map
           path: /tmp/native-runtime-map.txt
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-runtime-source
+          path: /tmp/mtplx-source.tar.gz
