@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/audit-native-systems-pr16
+  pull_request:
+    branches:
+      - feature/native-systems-integration
 
 permissions:
   contents: read
