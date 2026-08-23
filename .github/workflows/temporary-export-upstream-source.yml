@@ -32,3 +32,8 @@ jobs:
             /tmp/upstream-sha.txt
           if-no-files-found: error
           retention-days: 1
+      - name: Surface run ID for artifact retrieval
+        shell: bash
+        run: |
+          echo "Artifact exported successfully; failing intentionally so the run ID is delivered in the notification."
+          exit 1
