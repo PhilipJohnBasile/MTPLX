@@ -21,20 +21,105 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          {
-            echo '=== SessionBank boundary producers/consumers ==='
-            rg -n -C 5 'boundary_cache_snapshots|gdn_boundaries|recurrent_boundary_at_or_below|SessionBank\.put\(' mtplx tests || true
-            echo '=== EngineSession boundaries and manager ==='
-            rg -n -C 8 'class EngineSessionManager|def add_boundary|def _record_interval_boundaries|def commit_prompt_prefix|def commit_retokenized_prefix|def in_flight_generation' mtplx/engine_session.py || true
-            echo '=== Server call sites ==='
-            rg -n -C 6 'commit_prompt_prefix|commit_retokenized_prefix|session_commit|session_restore|EngineSessionManager' mtplx/server mtplx | head -n 1800 || true
-            echo '=== Scheduler safe points / inflight ==='
-            rg -n -C 5 'safe.?point|in_flight|idle_lane|foreground|submit_idle|scheduler' mtplx/model_scheduler.py mtplx/server mtplx/engine_session.py | head -n 1800 || true
-            echo '=== Expert router hooks ==='
-            rg -n -C 5 'topk|top_k|expert_indices|router_logits|selected_experts|indices = ' mtplx/models mtplx/kernels mtplx/a3b_mtp_batch.py | head -n 2400 || true
-            echo '=== Existing metrics/admin surfaces ==='
-            rg -n -C 5 'session_bank|cache_bank|roofline|metrics|health' mtplx/server mtplx/metrics.py mtplx/engine_session.py | head -n 1800 || true
-          } > /tmp/integration-map.txt
+          python - <<'PY' > /tmp/integration-map.txt
+          from __future__ import annotations
+
+          import re
+          from pathlib import Path
+
+          SECTIONS = [
+              (
+                  "SessionBank boundary producers/consumers",
+                  [Path("mtplx"), Path("tests")],
+                  r"boundary_cache_snapshots|gdn_boundaries|recurrent_boundary_at_or_below|SessionBank\.put\(",
+                  5,
+                  700,
+              ),
+              (
+                  "EngineSession boundaries and manager",
+                  [Path("mtplx/engine_session.py")],
+                  r"class EngineSessionManager|def add_boundary|def _record_interval_boundaries|def commit_prompt_prefix|def commit_retokenized_prefix|def in_flight_generation",
+                  8,
+                  500,
+              ),
+              (
+                  "Server call sites",
+                  [Path("mtplx/server"), Path("mtplx")],
+                  r"commit_prompt_prefix|commit_retokenized_prefix|session_commit|session_restore|EngineSessionManager",
+                  6,
+                  900,
+              ),
+              (
+                  "Scheduler safe points / inflight",
+                  [Path("mtplx/model_scheduler.py"), Path("mtplx/server"), Path("mtplx/engine_session.py")],
+                  r"safe.?point|in_flight|idle_lane|foreground|submit_idle|scheduler",
+                  5,
+                  900,
+              ),
+              (
+                  "Expert router hooks",
+                  [Path("mtplx/models"), Path("mtplx/kernels"), Path("mtplx/a3b_mtp_batch.py")],
+                  r"topk|top_k|expert_indices|router_logits|selected_experts|indices\s*=",
+                  5,
+                  1200,
+              ),
+              (
+                  "Existing metrics/admin surfaces",
+                  [Path("mtplx/server"), Path("mtplx/metrics.py"), Path("mtplx/engine_session.py")],
+                  r"session_bank|cache_bank|roofline|metrics|health",
+                  5,
+                  900,
+              ),
+          ]
+
+          def files(roots: list[Path]):
+              seen: set[Path] = set()
+              for root in roots:
+                  if root.is_file():
+                      candidates = [root]
+                  elif root.is_dir():
+                      candidates = root.rglob("*.py")
+                  else:
+                      continue
+                  for path in candidates:
+                      if path not in seen:
+                          seen.add(path)
+                          yield path
+
+          for title, roots, pattern, context, limit in SECTIONS:
+              print(f"=== {title} ===")
+              regex = re.compile(pattern, re.IGNORECASE)
+              emitted = 0
+              for path in files(roots):
+                  try:
+                      lines = path.read_text(encoding="utf-8").splitlines()
+                  except (UnicodeDecodeError, OSError):
+                      continue
+                  matches = [index for index, line in enumerate(lines) if regex.search(line)]
+                  if not matches:
+                      continue
+                  covered: set[int] = set()
+                  for index in matches:
+                      if emitted >= limit:
+                          break
+                      start = max(0, index - context)
+                      end = min(len(lines), index + context + 1)
+                      selected = [i for i in range(start, end) if i not in covered]
+                      if not selected:
+                          continue
+                      print(f"--- {path}:{index + 1} ---")
+                      for i in selected:
+                          marker = ">" if i == index else " "
+                          print(f"{marker}{i + 1:6d}: {lines[i]}")
+                          covered.add(i)
+                          emitted += 1
+                          if emitted >= limit:
+                              break
+                  if emitted >= limit:
+                      print(f"... section truncated at {limit} lines ...")
+                      break
+              print()
+          PY
           cat /tmp/integration-map.txt
           git config user.name 'Philip John Basile'
           git config user.email 'PBasile@Basilecom.com'
