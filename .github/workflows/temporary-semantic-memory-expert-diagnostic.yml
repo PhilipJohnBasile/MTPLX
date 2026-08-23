@@ -6,7 +6,7 @@ on:
       - feat/semantic-memory-expert-matrix
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   map:
@@ -14,20 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - name: Map current integration points
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo '=== SessionBank boundary producers/consumers ==='
-          rg -n -C 5 'boundary_cache_snapshots|gdn_boundaries|recurrent_boundary_at_or_below|SessionBank\.put\(' mtplx tests || true
-          echo '=== EngineSession boundaries and manager ==='
-          rg -n -C 8 'class EngineSessionManager|def add_boundary|def _record_interval_boundaries|def commit_prompt_prefix|def commit_retokenized_prefix|def in_flight_generation' mtplx/engine_session.py || true
-          echo '=== Server call sites ==='
-          rg -n -C 6 'commit_prompt_prefix|commit_retokenized_prefix|session_commit|session_restore|EngineSessionManager' mtplx/server mtplx | head -n 1600 || true
-          echo '=== Scheduler safe points / inflight ==='
-          rg -n -C 5 'safe.?point|in_flight|idle_lane|foreground|submit_idle|scheduler' mtplx/model_scheduler.py mtplx/server mtplx/engine_session.py | head -n 1600 || true
-          echo '=== Expert router hooks ==='
-          rg -n -C 5 'topk|top_k|expert_indices|router_logits|selected_experts|indices = ' mtplx/models mtplx/kernels mtplx/a3b_mtp_batch.py | head -n 2200 || true
-          echo '=== Existing metrics/admin surfaces ==='
-          rg -n -C 5 'session_bank|cache_bank|roofline|metrics|health' mtplx/server mtplx/metrics.py mtplx/engine_session.py | head -n 1600 || true
+          {
+            echo '=== SessionBank boundary producers/consumers ==='
+            rg -n -C 5 'boundary_cache_snapshots|gdn_boundaries|recurrent_boundary_at_or_below|SessionBank\.put\(' mtplx tests || true
+            echo '=== EngineSession boundaries and manager ==='
+            rg -n -C 8 'class EngineSessionManager|def add_boundary|def _record_interval_boundaries|def commit_prompt_prefix|def commit_retokenized_prefix|def in_flight_generation' mtplx/engine_session.py || true
+            echo '=== Server call sites ==='
+            rg -n -C 6 'commit_prompt_prefix|commit_retokenized_prefix|session_commit|session_restore|EngineSessionManager' mtplx/server mtplx | head -n 1800 || true
+            echo '=== Scheduler safe points / inflight ==='
+            rg -n -C 5 'safe.?point|in_flight|idle_lane|foreground|submit_idle|scheduler' mtplx/model_scheduler.py mtplx/server mtplx/engine_session.py | head -n 1800 || true
+            echo '=== Expert router hooks ==='
+            rg -n -C 5 'topk|top_k|expert_indices|router_logits|selected_experts|indices = ' mtplx/models mtplx/kernels mtplx/a3b_mtp_batch.py | head -n 2400 || true
+            echo '=== Existing metrics/admin surfaces ==='
+            rg -n -C 5 'session_bank|cache_bank|roofline|metrics|health' mtplx/server mtplx/metrics.py mtplx/engine_session.py | head -n 1800 || true
+          } > /tmp/integration-map.txt
+          cat /tmp/integration-map.txt
+          git config user.name 'Philip John Basile'
+          git config user.email 'PBasile@Basilecom.com'
+          git checkout -B agent/semantic-memory-expert-map
+          mkdir -p diagnostics
+          cp /tmp/integration-map.txt diagnostics/semantic-memory-expert-integration-map.txt
+          git add diagnostics/semantic-memory-expert-integration-map.txt
+          git commit -m 'diagnostics: map semantic memory expert integration points'
+          git push "https://x-access-token:${GH_TOKEN}@github.com/PhilipJohnBasile/MTPLX.git" HEAD:agent/semantic-memory-expert-map --force
