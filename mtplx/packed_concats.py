@@ -160,6 +160,18 @@ def install_qwen3_next_packed_concats(model: Any) -> dict[str, int] | None:
 
     if not enabled():
         return None
+    from .proj_fusion import fuse_projections_enabled
+
+    if fuse_projections_enabled():
+        # One fusion lane at a time (mirror of proj_fusion's refusal): both
+        # lanes fuse the same q|k|v / gate|up groups and stacking them would
+        # duplicate payload memory and confound any A/B.
+        COUNTERS["refused_proj_fusion"] = COUNTERS.get("refused_proj_fusion", 0) + 1
+        logger.warning(
+            "packed-concats refused: MTPLX_FUSE_PROJ is on; unset one of "
+            "MTPLX_PACKED_PROJ_CONCATS / MTPLX_FUSE_PROJ to proceed"
+        )
+        return None
     if str(os.environ.get("MTPLX_NAX_VERIFY", "") or "").strip() in {"1", "true", "on", "yes"}:
         # The fused path calls mx.quantized_matmul directly, so the NAX verify
         # patch (nax_verify.install_nax_qlinear_patch wraps nn.QuantizedLinear)
