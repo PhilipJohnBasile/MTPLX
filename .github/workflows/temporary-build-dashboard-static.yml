@@ -1,0 +1,35 @@
+name: temporary-build-dashboard-static
+
+on:
+  push:
+    branches: [chore/dashboard-static-native]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - name: Build dashboard bundle
+        working-directory: dashboard
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+      - name: Commit generated static bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add mtplx/dashboard/_static
+          if git diff --cached --quiet; then
+            echo "Dashboard bundle already current."
+            exit 0
+          fi
+          git commit -m "build(dashboard): refresh static bundle"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
