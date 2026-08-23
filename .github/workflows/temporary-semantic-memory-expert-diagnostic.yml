@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/semantic-memory-expert-matrix
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
