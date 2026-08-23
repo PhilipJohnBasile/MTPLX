@@ -19,3 +19,13 @@ MTPLX carries two vendor-neutral system families behind one truthful dashboard s
 ## Dashboard contract
 
 `GET /v1/mtplx/systems` reports whether each subsystem is available, enabled, wired, and sampled. The dashboard does not infer activity from source files or configuration alone.
+
+## Operator verification
+
+After starting the server, inspect the JSON contract directly before relying on the dashboard:
+
+```bash
+curl -fsS http://127.0.0.1:8000/v1/mtplx/systems | python -m json.tool
+```
+
+Treat `available`, `enabled`, `wired`, and `sampled` as separate states. A subsystem that is installed but disabled or has not yet observed a qualifying request must remain visibly inactive rather than being reported as healthy. Request-capture directories should be treated as private diagnostic data even when content capture remains disabled.
