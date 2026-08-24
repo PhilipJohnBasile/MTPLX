@@ -3028,12 +3028,19 @@ def forward_with_gdn_capture(
                 h = hidden_states + r
                 mlp_input = layer.post_attention_layernorm(h)
             else:
+                # 512-lane dispatch diverges from the unfused reference at
+                # fp16 above 64 rows (2^15 grid boundary; probed 2026-08-24,
+                # #319). bf16 is bit-exact at 512, so it keeps the tuned
+                # width; fp16 takes the default 1024-lane loop, bit-exact at
+                # every probed shape.
                 h, mlp_input = fused_add_rmsnorm(
                     hidden_states,
                     r,
                     layer.post_attention_layernorm.weight,
                     layer.post_attention_layernorm.eps,
-                    threadgroup_size=512,
+                    threadgroup_size=(
+                        512 if hidden_states.dtype == mx.bfloat16 else None
+                    ),
                 )
         else:
             h = hidden_states + r
