@@ -12583,7 +12583,9 @@ def _request_log_path(state: "ServerState") -> str | None:
         return raw
     # Default ON: agent-session incidents cannot be diagnosed after the fact
     # without a durable per-request trail. Records are numeric/hash telemetry
-    # only — no prompt or completion content — size-capped by rotation below,
+    # only — no prompt or completion content (the user-preview field is
+    # digest-redacted at the sink; MTPLX_REQUEST_LOG_CONTENT=1 opts back into
+    # literal previews) — size-capped by rotation below,
     # and disabled with MTPLX_REQUEST_LOG_JSONL=off. Per-port files so
     # parallel serves never interleave. Live forensics repeatedly stalled on
     # the 15-entry RAM ring; this keeps the durable trail by default.
@@ -12594,6 +12596,35 @@ def _request_log_path(state: "ServerState") -> str | None:
         return os.path.join(log_dir, f"request-log-{port}.jsonl")
     except Exception:
         return None
+
+
+_REQUEST_LOG_CONTENT_KEYS = ("request_last_user_preview",)
+
+
+def _request_log_content_opt_in() -> bool:
+    raw = os.environ.get("MTPLX_REQUEST_LOG_CONTENT", "")
+    return str(raw).strip().lower() in {"1", "on", "true", "yes"}
+
+
+def _redact_request_log_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep the durable JSONL's "no prompt or completion content" promise (#326).
+
+    Literal prompt text stays on the in-RAM surfaces (dashboard ring, trace
+    labels); the durable line carries a short non-reversible digest under the
+    same key so forensics can still correlate turns. MTPLX_REQUEST_LOG_CONTENT=1
+    opts back into literal previews for local debugging.
+    """
+    if _request_log_content_opt_in():
+        return record
+    redacted = record
+    for key in _REQUEST_LOG_CONTENT_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            if redacted is record:
+                redacted = dict(record)
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+            redacted[key] = f"sha256:{digest}"
+    return redacted
 
 
 def _rotate_request_log_if_needed(path: str) -> None:
@@ -12638,7 +12669,7 @@ def _record_request_metrics(state: "ServerState", record: dict[str, Any]) -> Non
         return
     try:
         line = json.dumps(
-            {"logged_at_s": time.time(), **safe},
+            {"logged_at_s": time.time(), **_redact_request_log_record(safe)},
             ensure_ascii=False,
             default=str,
         )
@@ -31927,7 +31958,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Append every per-request telemetry record (the dashboard "
             "'recent' schema; numeric/hash fields only, no prompt or "
-            "completion content) as one JSON line to this path. The durable "
+            "completion content — user-preview text is digest-redacted "
+            "unless MTPLX_REQUEST_LOG_CONTENT=1) as one JSON line to this "
+            "path. The durable "
             "twin of the 100-entry RAM ring; scripts/session_forensics.py "
             "reads it. Default: ON at ~/.mtplx/logs/request-log-<port>.jsonl "
             "with 64MB x4 rotation; pass 'off' (or set "
