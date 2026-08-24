@@ -9002,6 +9002,25 @@ def _collapse_repeated_user_text(text: str) -> str | None:
     return None
 
 
+def _message_has_nontext_parts(message: ChatMessage) -> bool:
+    """True when structured content carries non-text parts (images, audio).
+
+    Multimodal turns are never retry pollution: collapsing or merging them
+    through the text-only paths would silently drop the attachment before the
+    vision extractor runs (#327).
+    """
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return False
+    for item in content:
+        if isinstance(item, dict):
+            if item.get("type") not in (None, "text") or "image_url" in item:
+                return True
+        elif not isinstance(item, str):
+            return True
+    return False
+
+
 def _canonicalize_user_retry_pollution(
     messages: list[ChatMessage],
     stats: AgentTranscriptCanonicalization,
@@ -9012,7 +9031,7 @@ def _canonicalize_user_retry_pollution(
     for message in messages:
         role = str(message.role).lower()
         candidate = message
-        if role == "user":
+        if role == "user" and not _message_has_nontext_parts(candidate):
             text = _content_to_text(candidate.content)
             collapsed = _collapse_repeated_user_text(text)
             if collapsed is not None:
@@ -9024,6 +9043,11 @@ def _canonicalize_user_retry_pollution(
 
         if role == "user" and canonical and str(canonical[-1].role).lower() == "user":
             previous = canonical[-1]
+            if _message_has_nontext_parts(previous) or _message_has_nontext_parts(
+                candidate
+            ):
+                canonical.append(candidate)
+                continue
             previous_text = _content_to_text(previous.content).strip()
             current_text = _content_to_text(candidate.content).strip()
             previous_key = _retry_user_key(previous_text)
