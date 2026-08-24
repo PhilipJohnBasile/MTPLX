@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import math
 import shutil
 import struct
@@ -44,17 +45,27 @@ MAIN_RMSNORM_SHIFT_SUFFIXES = (
     "k_norm.weight",
     "model.norm.weight",
 )
-MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES = (
+# MTP RMSNorm gains arrive in one of two conventions: HF-native Qwen3.5/3.8
+# exports are zero-centered ("delta", gain-1.0) on every norm, while shipped
+# sidecars and MLX-converted checkpoints are absolute. Measured fleet means
+# (2026-08-24, #301): the low set separates at 0.30-0.39 delta vs 0.87+
+# absolute, q/k at 0.73-0.75 delta vs 1.73+ absolute. The final norm overlaps
+# across conventions (raw-delta 4B mean 2.58 vs absolute 3.8 mean 2.25), so
+# the convention is decided per sidecar from the two separable families and
+# then applied to all seven norms — never per tensor, and never "always".
+MTP_RMSNORM_LOW_SET_SUFFIXES = (
     "input_layernorm.weight",
     "post_attention_layernorm.weight",
     "pre_fc_norm_hidden.weight",
     "pre_fc_norm_embedding.weight",
 )
-MTP_RMSNORM_ALWAYS_SHIFT_SUFFIXES = (
+MTP_RMSNORM_QK_SUFFIXES = (
     "self_attn.q_norm.weight",
     "self_attn.k_norm.weight",
-    "mtp.norm.weight",
 )
+MTP_RMSNORM_FINAL_NORM_KEYS = ("norm.weight", "mtp.norm.weight")
+MTP_RMSNORM_QK_DELTA_MEAN_MAX = 1.25
+MTP_RMSNORM_LOW_DELTA_MEAN_MAX = 0.5
 
 
 def convert_compressed_tensors_awq_to_mlx(
@@ -269,6 +280,7 @@ def convert_compressed_tensors_awq_to_mlx(
 
     mtp_size = 0
     if mtp_weights:
+        mtp_weights = shift_delta_mtp_norms(mtp_weights)
         if num_experts > 0:
             mtp_weights = stack_numbered_experts(
                 mtp_weights,
@@ -737,18 +749,74 @@ def _quantized_module_prefixes(weights: dict[str, mx.array]) -> set[str]:
 
 
 def sanitize_plain_weight(key: str, value: mx.array) -> mx.array:
+    """Per-tensor sanitize for layout only (conv1d axis order, trunk norms).
+
+    MTP norm gains are deliberately NOT shifted here: their +1.0 convention
+    cannot be judged one tensor at a time (#301) — callers that assemble a
+    whole sidecar run shift_delta_mtp_norms() on the finished dict instead.
+    """
     if key.endswith("conv1d.weight") and value.ndim >= 3 and value.shape[-1] != 1:
         value = value.moveaxis(2, 1)
-    if value.ndim == 1:
-        if key.startswith("mtp."):
-            if any(key.endswith(suffix) for suffix in MTP_RMSNORM_ALWAYS_SHIFT_SUFFIXES):
-                value = value + 1.0
-            elif any(key.endswith(suffix) for suffix in MTP_RMSNORM_SHIFT_IF_LOW_SUFFIXES):
-                if float(value.mean().item()) < 0.5:
-                    value = value + 1.0
-        elif any(key.endswith(suffix) for suffix in MAIN_RMSNORM_SHIFT_SUFFIXES):
+    if value.ndim == 1 and not key.startswith("mtp."):
+        if any(key.endswith(suffix) for suffix in MAIN_RMSNORM_SHIFT_SUFFIXES):
             value = value + 1.0
     return value
+
+
+def _is_mtp_final_norm_key(key: str) -> bool:
+    return key in MTP_RMSNORM_FINAL_NORM_KEYS or key.endswith(".mtp.norm.weight")
+
+
+def _mtp_norm_means(weights: dict[str, Any], suffixes: tuple[str, ...]) -> list[float]:
+    means: list[float] = []
+    for key, value in weights.items():
+        if getattr(value, "ndim", None) != 1:
+            continue
+        if any(key.endswith(suffix) for suffix in suffixes):
+            try:
+                means.append(float(value.mean().item()))
+            except Exception:
+                continue
+    return means
+
+
+def mtp_sidecar_norms_are_delta(weights: dict[str, Any]) -> bool:
+    """True when a sidecar's RMSNorm gains are zero-centered (delta).
+
+    Both separable norm families must agree (the same two-signal gate the
+    runtime heal has shipped since #176); a sidecar missing either family is
+    treated as absolute so nothing is ever blind-shifted.
+    """
+    qk_means = _mtp_norm_means(weights, MTP_RMSNORM_QK_SUFFIXES)
+    low_means = _mtp_norm_means(weights, MTP_RMSNORM_LOW_SET_SUFFIXES)
+    if not qk_means or not low_means:
+        return False
+    return (
+        max(qk_means) < MTP_RMSNORM_QK_DELTA_MEAN_MAX
+        and min(low_means) < MTP_RMSNORM_LOW_DELTA_MEAN_MAX
+    )
+
+
+def shift_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
+    """Restore the +1.0 absolute convention on a delta-encoded MTP sidecar.
+
+    Absolute-convention sidecars pass through byte-identical (#301). Keys may
+    be namespaced ("mtp.layers.0...") or stripped ("layers.0..."); both spell
+    the final norm as one of MTP_RMSNORM_FINAL_NORM_KEYS.
+    """
+    if not mtp_sidecar_norms_are_delta(weights):
+        return weights
+    logging.getLogger(__name__).warning(
+        "[mtp norms] sidecar gains are delta-encoded; restoring the +1.0 convention"
+    )
+    norm_suffixes = MTP_RMSNORM_QK_SUFFIXES + MTP_RMSNORM_LOW_SET_SUFFIXES
+    shifted = dict(weights)
+    for key, value in shifted.items():
+        if getattr(value, "ndim", None) != 1:
+            continue
+        if any(key.endswith(suffix) for suffix in norm_suffixes) or _is_mtp_final_norm_key(key):
+            shifted[key] = value + 1.0
+    return shifted
 
 
 def _sanitize_plain_weight(key: str, value: mx.array) -> mx.array:

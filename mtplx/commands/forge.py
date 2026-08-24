@@ -1703,7 +1703,7 @@ def _copy_safetensors_subset_sanitized(
 ) -> None:
     import mlx.core as mx
 
-    from mtplx.compressed_tensors import sanitize_plain_weight
+    from mtplx.compressed_tensors import sanitize_plain_weight, shift_delta_mtp_norms
 
     tensors: dict[str, Any] = {}
     for filename, keys in by_file.items():
@@ -1719,6 +1719,8 @@ def _copy_safetensors_subset_sanitized(
             tensors[output_key] = sanitize_plain_weight(output_key, loaded[key])
     if not tensors:
         raise ForgeError("embedded MTP extraction found no tensors to write")
+    # Norm convention is a whole-sidecar property, not a per-tensor one (#301).
+    tensors = shift_delta_mtp_norms(tensors)
     mx.eval(list(tensors.values()))
     target.parent.mkdir(parents=True, exist_ok=True)
     mx.save_safetensors(str(target), tensors, metadata={"format": "mlx"})

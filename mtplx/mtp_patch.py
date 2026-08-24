@@ -369,15 +369,6 @@ def _restore_delta_encoded_mtp_norms(
     return restored
 
 
-_QK_NORM_SUFFIXES = ("self_attn.q_norm.weight", "self_attn.k_norm.weight")
-_LOW_SET_NORM_SUFFIXES = (
-    "input_layernorm.weight",
-    "post_attention_layernorm.weight",
-    "pre_fc_norm_hidden.weight",
-    "pre_fc_norm_embedding.weight",
-)
-
-
 def _heal_raw_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
     """Detect and repair a sidecar whose norms were never +1-restored.
 
@@ -385,50 +376,13 @@ def _heal_raw_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
     convention); mlx-lm's trunk sanitize restores +1.0 but the MTP tensors are
     loaded separately and must be restored here. The shipped 4B artifact
     (#176) carries raw norms with no declared encoding, which poisons every
-    draft. Detection uses two independent signals with a wide fleet margin:
-    every healthy shipped sidecar has q/k norm means >= 1.74, raw exports sit
-    near 0.75; and raw low-set norms (input/post/pre_fc) fall below 0.5 while
-    healthy ones sit >= 0.87.
+    draft. Convention detection and the shift itself live in
+    compressed_tensors.shift_delta_mtp_norms (shared with forge, #301).
     """
 
-    def _mean(value: Any) -> float | None:
-        try:
-            if getattr(value, "ndim", None) != 1:
-                return None
-            return float(value.mean().item())
-        except Exception:
-            return None
+    from .compressed_tensors import shift_delta_mtp_norms
 
-    qk_means = [
-        m
-        for key, value in weights.items()
-        if any(key.endswith(sfx) for sfx in _QK_NORM_SUFFIXES)
-        and (m := _mean(value)) is not None
-    ]
-    low_means = [
-        m
-        for key, value in weights.items()
-        if any(key.endswith(sfx) for sfx in _LOW_SET_NORM_SUFFIXES)
-        and (m := _mean(value)) is not None
-    ]
-    if not qk_means or not low_means:
-        return weights
-    if max(qk_means) >= 1.25 or min(low_means) >= 0.5:
-        return weights
-
-    from .compressed_tensors import sanitize_plain_weight
-
-    logger.warning(
-        "[MTP inject] sidecar norms are raw delta-encoded "
-        "(q/k means %.2f, lowest norm %.2f); restoring the +1.0 convention (#176)",
-        max(qk_means),
-        min(low_means),
-    )
-    healed = dict(weights)
-    for key, value in list(healed.items()):
-        if getattr(value, "ndim", None) == 1:
-            healed[key] = sanitize_plain_weight(f"mtp.{key}", value)
-    return healed
+    return shift_delta_mtp_norms(weights)
 
 
 def _infer_prequantized_group_size(weights: dict[str, Any], bits: int | None) -> int | None:
