@@ -1,0 +1,82 @@
+name: temporary-integration-branch-cleanup
+
+on:
+  push:
+    branches: [agent/native-adaptive-matrix-export-20260824]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: agent/native-adaptive-matrix-export-20260824
+          fetch-depth: 0
+      - name: Archive exact tips and delete obsolete integration branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+          branches=(
+            agent/export-pr336-source
+            agent/finalize-native-adaptive-v10-20260824
+            agent/finalize-native-adaptive-v9-20260824
+            agent/native-systems-phase2
+            agent/native-systems-phase2-final-20260824
+            agent/native-systems-phase2-local-export-20260824
+            agent/native-systems-phase2-publish
+            agent/native-systems-phase2-publisher-20260824
+            agent/promote-native-adaptive-main-20260824
+            status/native-adaptive-publisher
+            test/native-adaptive-matrix-20260824
+            clean/upstream-2.9.1
+            feature/native-systems-integration
+            agent/audit-native-systems-pr16
+            chore/dashboard-static-native
+            feature/dashboard-native-operations
+            agent/export-clean-dashboard-source
+            feat/semantic-memory-expert-matrix
+            agent/native-runtime-intelligence-builder
+            agent/semantic-memory-expert-map
+            feat/semantic-replay-observability
+            agent/native-adaptive-matrix-export-20260824
+          )
+
+          protected=(
+            main
+            upstream/native-systems-integration
+            archive/main-pre-2.9.1-20260823
+            archive/native-systems-phase2-reviewed-source-20260824
+            archive/pr336-pre-phase2-publisher-20260824
+          )
+
+          for branch in "${branches[@]}"; do
+            for keep in "${protected[@]}"; do
+              test "$branch" != "$keep"
+            done
+            ref="refs/remotes/origin/$branch"
+            if ! git show-ref --verify --quiet "$ref"; then
+              echo "SKIP missing $branch"
+              continue
+            fi
+            tip="$(git rev-parse "$ref")"
+            safe_name="${branch//\//-}"
+            tag="archive/branch-tip/${safe_name}-20260824"
+            if git show-ref --verify --quiet "refs/tags/$tag"; then
+              existing="$(git rev-parse "refs/tags/$tag^{commit}")"
+              test "$existing" = "$tip"
+            else
+              git tag "$tag" "$tip"
+              git push origin "refs/tags/$tag"
+            fi
+            echo "ARCHIVED $branch $tip -> $tag"
+          done
+
+          # Every exact tip is now preserved as a tag. Remove the obsolete refs
+          # in one operation; the live upstream PR branch and explicit archives
+          # are intentionally absent from this list.
+          git push origin --delete "${branches[@]}"
