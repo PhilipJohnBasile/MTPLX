@@ -1,0 +1,85 @@
+name: temporary-branch-audit
+
+on:
+  push:
+    branches: [agent/native-adaptive-matrix-export-20260824]
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: agent/native-adaptive-matrix-export-20260824
+          fetch-depth: 0
+      - name: Build branch audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          def run(*args, check=True):
+              proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              if check and proc.returncode:
+                  raise SystemExit(proc.stderr)
+              return proc
+
+          refs = run('git', 'for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin').stdout.splitlines()
+          rows = []
+          for ref in refs:
+              if ref == 'origin/HEAD':
+                  continue
+              branch = ref.removeprefix('origin/')
+              sha = run('git', 'rev-parse', ref).stdout.strip()
+              tree = run('git', 'rev-parse', f'{ref}^{{tree}}').stdout.strip()
+              date = run('git', 'show', '-s', '--format=%cI', ref).stdout.strip()
+              subject = run('git', 'show', '-s', '--format=%s', ref).stdout.strip()
+              def ancestor(target):
+                  return run('git', 'merge-base', '--is-ancestor', ref, target, check=False).returncode == 0
+              def counts(target):
+                  value = run('git', 'rev-list', '--left-right', '--count', f'{target}...{ref}').stdout.strip()
+                  left, right = value.split()
+                  return {'behind': int(left), 'ahead': int(right)}
+              rows.append({
+                  'branch': branch,
+                  'sha': sha,
+                  'tree': tree,
+                  'committer_date': date,
+                  'subject': subject,
+                  'vs_main': counts('origin/main'),
+                  'vs_upstream_pr': counts('origin/upstream/native-systems-integration'),
+                  'ancestor_of_main': ancestor('origin/main'),
+                  'ancestor_of_upstream_pr': ancestor('origin/upstream/native-systems-integration'),
+              })
+          rows.sort(key=lambda row: row['committer_date'], reverse=True)
+          Path('/tmp/branch-audit.json').write_text(json.dumps(rows, indent=2) + '\n', encoding='utf-8')
+          Path('/tmp/branch-audit.txt').write_text('\n'.join(
+              f"{row['committer_date']}  {row['branch']}  main={row['vs_main']}  pr={row['vs_upstream_pr']}  {row['subject']}"
+              for row in rows
+          ) + '\n', encoding='utf-8')
+          PY
+          cat /tmp/branch-audit.txt
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mtplx-branch-audit
+          path: |
+            /tmp/branch-audit.json
+            /tmp/branch-audit.txt
+          retention-days: 1
+      - name: Publish run identifier
+        shell: bash
+        run: |
+          printf '%s\n' "$GITHUB_RUN_ID" > .github/branch-audit-run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/branch-audit-run.txt
+          git commit -m "ci: record branch audit run"
+          git push origin HEAD:agent/native-adaptive-matrix-export-20260824
