@@ -519,12 +519,26 @@ private struct AssistantTableView: View {
     }
 
     private static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
+        // Models (notably thinking-mode) emit <br> for in-cell line breaks in
+        // markdown tables. cmark hands raw HTML back as literal tag text, so
+        // the cell would render "<br>" verbatim AND keep the whole cell as one
+        // unbreakable token that overflows the fixed column frame into its
+        // neighbour (the "pile of overlapping text"). Convert <br> variants to
+        // real newlines at this single choke point so cells wrap. Comparison
+        // operators ("a < b") are untouched: the pattern requires "br".
+        // Deliberately <br>-only — other raw tags (<b>, <span>) still render
+        // raw; strip-all would mangle "<"/">", so grow an allowlist if needed.
+        let readable = text.replacingOccurrences(
+            of: #"<br\s*/?>"#,
+            with: "\n",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return (try? AttributedString(
+            markdown: readable,
             options: AttributedString.MarkdownParsingOptions(
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
-        )) ?? AttributedString(text)
+        )) ?? AttributedString(readable)
     }
 }
 
