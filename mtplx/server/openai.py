@@ -32839,3 +32839,66 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+# MTPLX_NATIVE_ADAPTIVE_PHASE2
+# Installed at module import after the FastAPI app and phase-one helpers exist.
+# Every capability remains disabled/inert unless its own explicit configuration
+# or trusted in-process registration is present.
+try:
+    from mtplx.native_adaptive import (
+        augment_systems_snapshot as _augment_native_adaptive_snapshot,
+        install_native_adaptive_middleware as _install_native_adaptive_middleware,
+        native_adaptive_tick as _native_adaptive_tick,
+    )
+
+    _phase_one_systems_snapshot = globals().get("_mtplx_runtime_systems_snapshot")
+    if callable(_phase_one_systems_snapshot):
+
+        def _mtplx_runtime_systems_snapshot(  # noqa: F811
+            state: Any, *args: Any, **kwargs: Any
+        ) -> dict[str, Any]:
+            phase_one = _phase_one_systems_snapshot(state, *args, **kwargs)
+            if not isinstance(phase_one, dict):
+                phase_one = {"phase_one": phase_one}
+            return _augment_native_adaptive_snapshot(phase_one, state)
+
+    _phase_one_memory_governor_tick = globals().get("_memory_governor_tick")
+    if callable(_phase_one_memory_governor_tick):
+
+        def _memory_governor_tick(  # noqa: F811
+            state: Any, *args: Any, **kwargs: Any
+        ) -> dict[str, Any] | None:
+            phase_one = _phase_one_memory_governor_tick(state, *args, **kwargs)
+            try:
+                adaptive = _native_adaptive_tick(state)
+            except Exception as exc:
+                adaptive = {
+                    "safe": False,
+                    "reason": f"adaptive_tick_failed:{type(exc).__name__}",
+                }
+            if isinstance(phase_one, dict):
+                return {**phase_one, "native_adaptive": adaptive}
+            return {"phase_one": phase_one, "native_adaptive": adaptive}
+
+    def _native_adaptive_state_provider() -> Any | None:
+        for _state_name in ("_STATE", "STATE", "state", "_state"):
+            _candidate = globals().get(_state_name)
+            if _candidate is not None:
+                return _candidate
+        return None
+
+    for _candidate_app in list(globals().values()):
+        _module_name = getattr(type(_candidate_app), "__module__", "")
+        if _module_name.startswith("fastapi") and callable(
+            getattr(_candidate_app, "add_middleware", None)
+        ):
+            _install_native_adaptive_middleware(
+                _candidate_app,
+                runtime_state_provider=_native_adaptive_state_provider,
+            )
+            break
+except Exception:
+    # Optional native systems must never make the OpenAI-compatible server
+    # unimportable. Their unavailable state remains visible through phase-one
+    # diagnostics when installation cannot complete.
+    pass

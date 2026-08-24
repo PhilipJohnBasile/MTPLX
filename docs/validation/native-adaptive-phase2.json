@@ -1,0 +1,37 @@
+{
+  "base_sha": "88954d81dad0c40e02df4b865b838faf1b14f750",
+  "compatibility": {
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "tests": 819
+  },
+  "gates": {
+    "dashboard_typescript_vite": "pass",
+    "fresh_venv_smoke": "pass",
+    "git_diff_check": "pass",
+    "python_build": "pass",
+    "python_compileall": "pass",
+    "ruff_pyflakes_imports_upgrades": "pass",
+    "twine_check": "pass",
+    "vendor_runtime_dependency_scan": "pass"
+  },
+  "native_systems": {
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0,
+    "tests": 166
+  },
+  "runtime_boundaries": {
+    "automatic_promotion": false,
+    "content_export_default": false,
+    "default_off_or_inert": true,
+    "hard_residency_claimed_by_generic_mlx_backend": false,
+    "kv_resize_requires_explicit_capability": true,
+    "partial_prefetch_failure_preserves_warm_set": true,
+    "policy_worker_pool_is_bounded": true,
+    "response_policy_rejection_is_enforced": true,
+    "router_mutation": false
+  },
+  "schema_version": 1
+}

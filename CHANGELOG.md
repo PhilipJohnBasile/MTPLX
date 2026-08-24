@@ -6,6 +6,8 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ## [2.9.1] - 2026-08-22
 
+- Native adaptive systems: expert residency/warm-set planning, atomic unified-memory budgets, dependency-free privacy-first OTLP export, bounded lifecycle policy hooks, and capture-to-replay orchestration.
+
 ### Fixed
 
 - **Agent sessions could silently truncate and then crash near 19,000

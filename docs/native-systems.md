@@ -29,3 +29,10 @@ curl -fsS http://127.0.0.1:8000/v1/mtplx/systems | python -m json.tool
 ```
 
 Treat `available`, `enabled`, `wired`, and `sampled` as separate states. A subsystem that is installed but disabled or has not yet observed a qualifying request must remain visibly inactive rather than being reported as healthy. Request-capture directories should be treated as private diagnostic data even when content capture remains disabled.
+
+## Phase-two adaptive systems
+
+MTPLX also provides active expert warm-set planning, shared unified-memory
+budgets, privacy-first OTLP/HTTP export, bounded lifecycle policy hooks, and
+capture-to-replay planning with stale-source checks and non-automatic
+promotion receipts. See [Native adaptive systems](native-adaptive-systems.md).

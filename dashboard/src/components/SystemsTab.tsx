@@ -18,6 +18,7 @@ import type {
 } from "../lib/types";
 import { fmtBytes, fmtNumber, relativeTime } from "../lib/utils";
 import { Card } from "./Card";
+import { AdaptiveSystemsPanel } from "./AdaptiveSystemsPanel";
 
 export function SystemsTab() {
   const systems = useRuntimeSystems();
@@ -535,6 +536,10 @@ function EmptyNotice({ children }: { children: ReactNode }) {
   return (
     <div className="mt-4 rounded-xl border border-[var(--border-soft)] bg-[var(--bg-elevated)] px-3 py-3 text-xs text-[var(--text-muted)]">
       {children}
+      {/* MTPLX_NATIVE_ADAPTIVE_PANEL */}
+      <div className="col-span-12">
+        <AdaptiveSystemsPanel />
+      </div>
     </div>
   );
 }
