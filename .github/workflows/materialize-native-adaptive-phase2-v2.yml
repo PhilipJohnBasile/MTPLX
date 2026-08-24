@@ -1,0 +1,194 @@
+name: materialize-native-adaptive-phase2-v2
+
+on:
+  push:
+    branches: [agent/native-systems-phase2-final-20260824]
+
+concurrency:
+  group: materialize-native-adaptive-phase2
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      BASE_SHA: 88954d81dad0c40e02df4b865b838faf1b14f750
+      PR_HEAD: upstream/native-systems-integration
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: agent/native-systems-phase2-final-20260824
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Verify exact publication base and upstream lease
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          remote_head="$(git ls-remote origin "refs/heads/$PR_HEAD" | awk '{print $1}')"
+          test "$remote_head" = "$BASE_SHA"
+
+      - name: Apply guarded integration and preflight fixups
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/materialize_native_adaptive_phase2.py
+          python scripts/materialize_native_adaptive_phase2_fixups.py
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip
+          python -m pip install -e ".[dev,server]"
+
+      - name: Normalize and lint phase-two source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            mtplx/expert_residency.py
+            mtplx/unified_memory.py
+            mtplx/otlp_export.py
+            mtplx/policy_hooks.py
+            mtplx/replay_orchestrator.py
+            mtplx/native_adaptive.py
+            tests/test_expert_residency.py
+            tests/test_unified_memory.py
+            tests/test_otlp_export.py
+            tests/test_policy_hooks.py
+            tests/test_replay_orchestrator.py
+            tests/test_native_adaptive.py
+          )
+          python -m ruff check --fix --unsafe-fixes --select I,UP035,UP037,RUF100 "${files[@]}"
+          python -m ruff format "${files[@]}"
+          python -m ruff check --ignore BLE001,S310 "${files[@]}"
+
+      - name: Run native systems and compatibility tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mtplx-phase2-logs
+          python -m pytest -q \
+            tests/test_semantic_anchors.py \
+            tests/test_memory_governor.py \
+            tests/test_expert_locality.py \
+            tests/test_deterministic_replay.py \
+            tests/test_trace_parity.py \
+            tests/test_request_capture.py \
+            tests/test_runtime_systems.py \
+            tests/test_dashboard_endpoints.py \
+            tests/test_expert_residency.py \
+            tests/test_unified_memory.py \
+            tests/test_otlp_export.py \
+            tests/test_policy_hooks.py \
+            tests/test_replay_orchestrator.py \
+            tests/test_native_adaptive.py \
+            2>&1 | tee /tmp/mtplx-phase2-logs/native-systems.log
+          python -m pytest -q \
+            tests/test_no_mlx_imports.py \
+            tests/test_public_cli.py \
+            tests/test_runtime_kpis.py \
+            tests/test_server_openai.py \
+            tests/test_openai_bridge.py \
+            tests/test_thermal.py \
+            tests/test_cache_state.py \
+            2>&1 | tee /tmp/mtplx-phase2-logs/compatibility.log
+          python -m compileall -q mtplx tests
+          git diff --check "$BASE_SHA"
+
+      - name: Build production dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dashboard
+          bun install --frozen-lockfile 2>&1 | tee /tmp/mtplx-phase2-logs/bun-install.log
+          bun run build 2>&1 | tee /tmp/mtplx-phase2-logs/dashboard-build.log
+
+      - name: Build and smoke-test distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U build twine
+          rm -rf dist build
+          python -m build 2>&1 | tee /tmp/mtplx-phase2-logs/python-build.log
+          python -m twine check dist/* 2>&1 | tee /tmp/mtplx-phase2-logs/twine.log
+          scripts/fresh_venv_smoke.sh 2>&1 | tee /tmp/mtplx-phase2-logs/fresh-venv.log
+
+      - name: Verify staged source contains no vendor runtime dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE '(^|[^A-Za-z0-9_])(import|from)[[:space:]]+(freetoken|futureagi)([^A-Za-z0-9_]|$)' \
+            mtplx tests dashboard/src; then
+            echo "Unexpected FreeToken/Future AGI runtime dependency" >&2
+            exit 1
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          forbidden = (
+              "FlashML-org/FreeToken",
+              "future-agi/future-agi",
+          )
+          executable_roots = [Path("mtplx"), Path("dashboard/src")]
+          for root in executable_roots:
+              for path in root.rglob("*"):
+                  if not path.is_file() or path.suffix not in {".py", ".ts", ".tsx"}:
+                      continue
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+                  for marker in forbidden:
+                      if marker in text:
+                          raise SystemExit(f"vendor repository reference in executable source: {path}: {marker}")
+          PY
+
+      - name: Create one clean phase-two commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            scripts/materialize_native_adaptive_phase2.py \
+            scripts/materialize_native_adaptive_phase2_fixups.py \
+            .github/workflows/materialize-native-adaptive-phase2.yml \
+            .github/workflows/materialize-native-adaptive-phase2-v2.yml
+          git config user.name "OpenAI Integration Worker"
+          git config user.email "noreply@openai.com"
+          git reset --soft "$BASE_SHA"
+          git add -A
+          test ! -e scripts/materialize_native_adaptive_phase2.py
+          test ! -e scripts/materialize_native_adaptive_phase2_fixups.py
+          test ! -e .github/workflows/materialize-native-adaptive-phase2.yml
+          test ! -e .github/workflows/materialize-native-adaptive-phase2-v2.yml
+          git diff --cached --check
+          git commit -m "feat(runtime): complete native adaptive systems"
+          test "$(git rev-list --count "$BASE_SHA"..HEAD)" = "1"
+          test -z "$(git status --porcelain)"
+
+      - name: Publish staging branch and update upstream PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          final_sha="$(git rev-parse HEAD)"
+          git push --force origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+          git push \
+            --force-with-lease="refs/heads/$PR_HEAD:$BASE_SHA" \
+            origin "HEAD:refs/heads/$PR_HEAD"
+          echo "Published $final_sha to $PR_HEAD"
+
+      - name: Upload diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: native-adaptive-phase2-failure-logs
+          path: /tmp/mtplx-phase2-logs
+          if-no-files-found: ignore
