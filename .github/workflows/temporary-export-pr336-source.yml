@@ -1,0 +1,22 @@
+name: temporary-export-pr336-source
+
+on:
+  push:
+    branches: [agent/export-pr336-source]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Package exact source tree
+        run: |
+          git archive --format=tar.gz --output=mtplx-pr336-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mtplx-pr336-source
+          path: mtplx-pr336-source.tar.gz
+          if-no-files-found: error
