@@ -1271,6 +1271,17 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     profile = get_profile(args.profile)
     if profile.name != "performance-cold":
         raise SystemExit(f"unknown benchmark profile: {args.profile}")
+    # Every accepted flag is honored or refused loudly — never silently
+    # discarded (#285: four configs once produced byte-identical runs).
+    if getattr(args, "stock_ar", False):
+        raise SystemExit(
+            "--stock-ar is not available on the depth-sweep harness (it always "
+            "loads the MTP runtime); use --harness direct-http for stock AR, or "
+            "--generation-mode ar here for a target-only AR baseline."
+        )
+    ar_baseline = getattr(args, "generation_mode", None) == "ar"
+    requested_depths = str(getattr(args, "depths", None) or "3")
+    requested_seed = 0 if args.seed is None else int(args.seed)
     model_arg = (
         NATIVE_MTP_60_MODEL
         if args.model == str(DEFAULT_RUNTIME_MODEL_DIR)
@@ -1332,15 +1343,16 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     result = run_mtp_depth_sweep(
         model_arg,
         prompts,
-        depths="3",
-        temperature=0.6,
-        top_p=0.95,
-        top_k=20,
+        depths=requested_depths,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
         max_tokens=192 if args.max_tokens == 128 else args.max_tokens,
-        seed=0,
+        seed=requested_seed,
         limit=args.limit,
         enable_thinking=False,
-        compare_ar=False,
+        compare_ar=ar_baseline,
+        ar_only=ar_baseline,
         mtp_hidden_variant="post_norm",
         mtp_cache_policy="persistent",
         mtp_history_policy="committed",
@@ -1357,17 +1369,28 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
             "affine" if draft_lm_head is None else str(draft_lm_head["mode"])
         ),
         draft_temperature=(
-            None if draft_sampler is None else float(draft_sampler["temperature"])
+            args.draft_temperature
+            if args.draft_temperature is not None
+            else None if draft_sampler is None else float(draft_sampler["temperature"])
         ),
-        draft_top_p=None if draft_sampler is None else float(draft_sampler["top_p"]),
-        draft_top_k=None if draft_sampler is None else int(draft_sampler["top_k"]),
+        draft_top_p=(
+            args.draft_top_p
+            if args.draft_top_p is not None
+            else None if draft_sampler is None else float(draft_sampler["top_p"])
+        ),
+        draft_top_k=(
+            args.draft_top_k
+            if args.draft_top_k is not None
+            else None if draft_sampler is None else int(draft_sampler["top_k"])
+        ),
     )
     result["profile"] = {
         **profile.to_dict(),
         "fast_path_env": {**profile.env_dict(), **runtime_env_overrides},
         "model": model_arg,
         "model_id": model_arg,
-        "depth": 3,
+        "depths": requested_depths,
+        "ar_baseline": ar_baseline,
         "verify_strategy": "capture_commit",
         "verify_core": "linear-gdn-from-conv-tape",
         "draft_lm_head": draft_lm_head,
