@@ -6,20 +6,23 @@ on:
       - upstream/native-systems-integration
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
         with:
+          ref: upstream/native-systems-integration
           fetch-depth: 1
       - name: Package source tree
         run: |
           tar \
             --exclude=.git \
             --exclude=.github/workflows/temporary-export-pr336-source.yml \
+            --exclude=.github/temporary-pr336-export-run.txt \
             -czf /tmp/mtplx-pr336-source.tar.gz .
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -27,3 +30,11 @@ jobs:
           path: /tmp/mtplx-pr336-source.tar.gz
           if-no-files-found: error
           retention-days: 1
+      - name: Publish run identifier
+        run: |
+          printf '%s\n' "$GITHUB_RUN_ID" > .github/temporary-pr336-export-run.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/temporary-pr336-export-run.txt
+          git commit -m "ci: record temporary source export run"
+          git push origin HEAD:upstream/native-systems-integration
