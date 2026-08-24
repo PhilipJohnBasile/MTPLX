@@ -174,3 +174,20 @@ def test_nested_credentials_are_redacted_even_with_message_opt_in(monkeypatch, t
     assert record["messages"][0]["api_key"] == "<redacted>"
     assert "Bearer secret" not in str(record)
     assert "message-secret" not in str(record)
+
+
+def test_completed_capture_releases_request_path(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path)
+    assert request_capture.capture_request("chatcmpl-complete", {"a": 1})
+    assert "chatcmpl-complete" in request_capture._PATHS_BY_ID
+    assert request_capture.capture_outcome("chatcmpl-complete", {"b": 2})
+    assert "chatcmpl-complete" not in request_capture._PATHS_BY_ID
+
+
+def test_pruning_releases_stale_request_paths(monkeypatch, tmp_path):
+    _enable(monkeypatch, tmp_path, keep="2")
+    for index in range(5):
+        assert request_capture.capture_request(f"r{index}", {"i": index})
+    live_paths = {str(path) for path in tmp_path.glob("*.json")}
+    assert set(request_capture._PATHS_BY_ID.values()) == live_paths
+    assert len(request_capture._PATHS_BY_ID) == 2

@@ -281,10 +281,14 @@ def _prune_locked(directory: str) -> None:
     pruned_dir = os.path.join(directory, "pruned")
     os.makedirs(pruned_dir, exist_ok=True)
     for name in entries[:excess]:
+        source_path = os.path.join(directory, name)
         try:
-            os.replace(os.path.join(directory, name), os.path.join(pruned_dir, name))
+            os.replace(source_path, os.path.join(pruned_dir, name))
         except OSError:
-            pass
+            continue
+        for request_id, mapped_path in tuple(_PATHS_BY_ID.items()):
+            if mapped_path == source_path:
+                _PATHS_BY_ID.pop(request_id, None)
 
 
 def capture_request(
@@ -333,8 +337,10 @@ def capture_outcome(
         return False
     try:
         with _LOCK:
-            path = _PATHS_BY_ID.get(str(request_id))
+            request_key = str(request_id)
+            path = _PATHS_BY_ID.get(request_key)
             if not path or not os.path.exists(path):
+                _PATHS_BY_ID.pop(request_key, None)
                 return False
             with open(path, "r", encoding="utf-8") as handle:
                 record = json.load(handle)
@@ -345,6 +351,7 @@ def capture_outcome(
                 outcome=True,
             )
             _atomic_write(path, record)
+            _PATHS_BY_ID.pop(request_key, None)
         return True
     except Exception:
         return False

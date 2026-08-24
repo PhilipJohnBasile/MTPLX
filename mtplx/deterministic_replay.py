@@ -435,17 +435,19 @@ class CounterfactualReplay:
 
         candidate_values: dict[str, Any] = {}
         candidate_errors: dict[str, ReplayError] = {}
-        with ThreadPoolExecutor(max_workers=self.max_concurrency) as pool:
-            futures: dict[str, Future[Any]] = {
-                key: pool.submit(self._candidate_task, candidate, request)
-                for key, request in requests_by_key.items()
-            }
+        candidate_pool = ThreadPoolExecutor(max_workers=self.max_concurrency)
+        candidate_futures: dict[str, Future[Any]] = {
+            key: candidate_pool.submit(self._candidate_task, candidate, request)
+            for key, request in requests_by_key.items()
+        }
+        try:
             for key in requests_by_key:
                 try:
-                    candidate_values[key] = futures[key].result(
+                    candidate_values[key] = candidate_futures[key].result(
                         timeout=self.candidate_timeout_s
                     )
                 except TimeoutError:
+                    candidate_futures[key].cancel()
                     candidate_errors[key] = ReplayError(
                         phase="candidate",
                         error_type="TimeoutError",
@@ -457,6 +459,11 @@ class CounterfactualReplay:
                         error_type=type(exc).__name__,
                         message=str(exc),
                     )
+        finally:
+            # A Python thread cannot be force-killed safely. Do not let a timed-
+            # out callback hold the replay caller open while it unwinds; queued
+            # work is cancelled and any already-running callback is detached.
+            candidate_pool.shutdown(wait=False, cancel_futures=True)
 
         results: list[ReplayResult] = []
         seen_keys: set[str] = set()
@@ -484,25 +491,26 @@ class CounterfactualReplay:
             )
             evaluation_rows: list[Evaluation] = []
             evaluation_errors: list[ReplayError] = []
-            with ThreadPoolExecutor(max_workers=self.max_concurrency) as pool:
-                eval_futures: list[tuple[str, Future[Any]]] = []
-                for name, evaluator in evaluators.items():
-                    eval_case = _isolated(case, label=f"case for evaluator {name}")
-                    eval_output = _isolated(output, label=f"output for evaluator {name}")
-                    eval_baseline = _isolated(
-                        case.baseline_output,
-                        label=f"baseline for evaluator {name}",
+            evaluator_pool = ThreadPoolExecutor(max_workers=self.max_concurrency)
+            eval_futures: list[tuple[str, Future[Any]]] = []
+            for name, evaluator in evaluators.items():
+                eval_case = _isolated(case, label=f"case for evaluator {name}")
+                eval_output = _isolated(output, label=f"output for evaluator {name}")
+                eval_baseline = _isolated(
+                    case.baseline_output,
+                    label=f"baseline for evaluator {name}",
+                )
+                eval_futures.append(
+                    (
+                        name,
+                        evaluator_pool.submit(
+                            lambda fn=evaluator, c=eval_case, o=eval_output, b=eval_baseline: _resolve(
+                                fn(c, o, b)
+                            )
+                        ),
                     )
-                    eval_futures.append(
-                        (
-                            name,
-                            pool.submit(
-                                lambda fn=evaluator, c=eval_case, o=eval_output, b=eval_baseline: _resolve(
-                                    fn(c, o, b)
-                                )
-                            ),
-                        )
-                    )
+                )
+            try:
                 for name, future in eval_futures:
                     try:
                         evaluation_rows.append(
@@ -512,6 +520,7 @@ class CounterfactualReplay:
                             )
                         )
                     except TimeoutError:
+                        future.cancel()
                         evaluation_errors.append(
                             ReplayError(
                                 phase="evaluator",
@@ -529,6 +538,8 @@ class CounterfactualReplay:
                                 message=str(exc),
                             )
                         )
+            finally:
+                evaluator_pool.shutdown(wait=False, cancel_futures=True)
             results.append(
                 ReplayResult(
                     case_id=case.case_id,

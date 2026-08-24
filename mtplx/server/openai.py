@@ -15577,7 +15577,11 @@ def _mtplx_runtime_systems_snapshot(state: Any) -> dict[str, Any]:
         return {"ts": time.time(), "error": f"{type(exc).__name__}: {exc}"}
 
 
-def _memory_governor_safe_point(state: Any) -> MemorySafePoint:
+def _memory_governor_safe_point(
+    state: Any,
+    *,
+    model_lock_held: bool = False,
+) -> MemorySafePoint:
     foreground = 0
     try:
         foreground = int(state.foreground_count())
@@ -15606,10 +15610,12 @@ def _memory_governor_safe_point(state: Any) -> MemorySafePoint:
     except Exception:
         scheduler_pending = True
     lock_active = False
-    try:
-        lock_active = bool(state.lock.locked())
-    except Exception:
-        pass
+    if not model_lock_held:
+        try:
+            lock_active = bool(state.lock.locked())
+        except Exception:
+            # An unknown lock state must fail closed.
+            lock_active = True
     return MemorySafePoint(
         foreground_active=foreground,
         scheduler_pending_or_active=scheduler_pending,
@@ -15625,25 +15631,43 @@ def _memory_governor_tick(state: Any) -> dict[str, Any] | None:
     bank = getattr(getattr(state, "sessions", None), "bank", None)
     if governor is None or bank is None:
         return None
-    sample = sample_process_memory(
-        session_bank_bytes=int(getattr(bank, "total_nbytes", 0) or 0),
-        model_bytes=getattr(state, "model_weights_bytes", None),
-        safe_point=_memory_governor_safe_point(state),
-        total_bytes=(_machine_info().get("unified_memory_bytes") or None),
-    )
-    decision = governor.observe(sample)
-    receipt = governor.apply(decision, bank=bank)
-    if receipt.applied and receipt.evicted_entries > 0:
-        try:
-            import mlx.core as _mx
 
-            _mx.clear_cache()
+    model_lock = getattr(state, "lock", None)
+    acquired = False
+    if model_lock is not None:
+        try:
+            acquired = bool(model_lock.acquire(blocking=False))
         except Exception:
-            pass
-    return {
-        "decision": decision.to_dict(),
-        "apply": receipt.to_dict(),
-    }
+            acquired = False
+
+    try:
+        safe_point = (
+            _memory_governor_safe_point(state, model_lock_held=True)
+            if acquired
+            else MemorySafePoint(mtp_transaction_active=True)
+        )
+        sample = sample_process_memory(
+            session_bank_bytes=int(getattr(bank, "total_nbytes", 0) or 0),
+            model_bytes=getattr(state, "model_weights_bytes", None),
+            safe_point=safe_point,
+            total_bytes=(_machine_info().get("unified_memory_bytes") or None),
+        )
+        decision = governor.observe(sample)
+        receipt = governor.apply(decision, bank=bank)
+        if receipt.applied and receipt.evicted_entries > 0:
+            try:
+                import mlx.core as _mx
+
+                _mx.clear_cache()
+            except Exception:
+                pass
+        return {
+            "decision": decision.to_dict(),
+            "apply": receipt.to_dict(),
+        }
+    finally:
+        if acquired:
+            model_lock.release()
 
 
 def _memory_pressure_level() -> int:

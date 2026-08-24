@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -226,3 +227,39 @@ def test_invalid_evaluator_return_is_isolated():
     )
     assert report.results[0].errors[0].phase == "evaluator"
     assert report.results[0].errors[0].error_type == "ReplayValidationError"
+
+
+def test_candidate_timeout_bounds_caller_latency():
+    def candidate(_request):
+        time.sleep(0.30)
+        return {"score": 1.0}
+
+    started = time.monotonic()
+    report = CounterfactualReplay(candidate_timeout_s=0.03).run(
+        [ReplayCase("slow", {})],
+        candidate=candidate,
+        evaluators={"score": score_eval},
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.20
+    assert report.results[0].errors[0].phase == "candidate"
+    assert report.results[0].errors[0].error_type == "TimeoutError"
+
+
+def test_evaluator_timeout_bounds_caller_latency():
+    def evaluator(_case, _output, _baseline):
+        time.sleep(0.30)
+        return Evaluation("slow", score=1.0, passed=True)
+
+    started = time.monotonic()
+    report = CounterfactualReplay(evaluator_timeout_s=0.03).run(
+        [ReplayCase("slow", {})],
+        candidate=lambda _request: {"score": 1.0},
+        evaluators={"slow": evaluator},
+    )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.20
+    assert report.results[0].errors[0].phase == "evaluator"
+    assert report.results[0].errors[0].error_type == "TimeoutError"

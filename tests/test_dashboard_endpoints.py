@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 import time
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -24,8 +24,14 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
-from mtplx.dashboard import has_static_bundle
 from mtplx.benchmarks.runners.aime import AIMEProblem
+from mtplx.dashboard import has_static_bundle
+from mtplx.memory_governor import (
+    GIB,
+    MemoryGovernorConfig,
+    MemorySample,
+    RuntimeMemoryGovernor,
+)
 from mtplx.server import openai
 from mtplx.server.dashboard_state import (
     InFlightHandle,
@@ -47,8 +53,7 @@ from mtplx.server.openai import (
 )
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
-from test_server_openai import _fake_state  # noqa: E402
-
+from test_server_openai import _fake_state
 
 # ---- regression: existing public surface ----------------------------------
 
@@ -1017,3 +1022,86 @@ def test_runtime_systems_endpoint_exposes_replay_without_automatic_promotion():
     assert replay["runtime_mutation"] is False
     assert replay["request_capture"]["content_capture_default"] is False
     assert replay["replay"]["promotion_is_automatic"] is False
+
+
+class _GovernorTickBank:
+    def __init__(self, model_lock: Lock):
+        self.model_lock = model_lock
+        self.max_bytes = 20 * GIB
+        self.per_session_max_bytes = 8 * GIB
+        self.total_nbytes = 12 * GIB
+        self._entries = {"a": object(), "b": object()}
+        self.calls = 0
+
+    def rebalance_limits(self, *, max_bytes, per_session_max_bytes, reason):
+        assert self.model_lock.locked()
+        assert reason == "runtime_memory_governor"
+        self.calls += 1
+        self.max_bytes = int(max_bytes)
+        self.per_session_max_bytes = int(per_session_max_bytes)
+        if self.total_nbytes > self.max_bytes:
+            self._entries.pop("a", None)
+            self.total_nbytes = self.max_bytes
+
+
+class _GovernorTickScheduler:
+    @staticmethod
+    def stats():
+        return {
+            "foreground_pending": 0,
+            "idle_pending": 0,
+            "persistence_pending": 0,
+            "active_kind": None,
+        }
+
+
+def test_memory_governor_tick_requires_and_holds_model_lock(monkeypatch):
+    model_lock = Lock()
+    bank = _GovernorTickBank(model_lock)
+    governor = RuntimeMemoryGovernor(
+        initial_bank_max_bytes=20 * GIB,
+        initial_per_session_max_bytes=8 * GIB,
+        config=MemoryGovernorConfig(minimum_apply_interval_s=0.0),
+    )
+    state = SimpleNamespace(
+        memory_governor=governor,
+        sessions=SimpleNamespace(bank=bank),
+        model_weights_bytes=60 * GIB,
+        lock=model_lock,
+        model_scheduler=_GovernorTickScheduler(),
+        foreground_count=lambda: 0,
+    )
+
+    def fake_sample_process_memory(
+        *, session_bank_bytes, model_bytes, safe_point, total_bytes
+    ):
+        return MemorySample(
+            total_bytes=100 * GIB,
+            rss_bytes=95 * GIB,
+            session_bank_bytes=session_bank_bytes,
+            model_bytes=model_bytes,
+            timestamp_s=10.0,
+            safe_point=safe_point,
+        )
+
+    monkeypatch.setattr(openai, "sample_process_memory", fake_sample_process_memory)
+    monkeypatch.setattr(
+        openai,
+        "_machine_info",
+        lambda: {"unified_memory_bytes": 100 * GIB},
+    )
+
+    model_lock.acquire()
+    try:
+        blocked = openai._memory_governor_tick(state)
+    finally:
+        model_lock.release()
+
+    assert blocked["apply"]["applied"] is False
+    assert "mtp_transaction" in blocked["apply"]["reason"]
+    assert bank.calls == 0
+
+    applied = openai._memory_governor_tick(state)
+    assert applied["apply"]["applied"] is True
+    assert bank.calls == 1
+    assert not model_lock.locked()
