@@ -174,6 +174,14 @@ Metal memory cap.
 - Not a greedy-argmax trick. Acceptance is exact rejection sampling, correct at any temperature.
 - Not a CUDA project. MTPLX is MLX-native and Apple Silicon first. For Linux, use vLLM.
 
+## History
+
+MTPLX was the first runtime on Apple Silicon to run a model's own MTP heads
+with mathematically exact speculative sampling — 27 April 2026, before
+llama.cpp had MTP at all, and months before it reached the hybrid GDN family.
+The dated record, with a public receipt for every claim, is in
+[HISTORY.md](HISTORY.md) and at [mtplx.com/history](https://mtplx.com/history/).
+
 ## License and credit
 
 Apache-2.0: use it, modify it, ship it commercially. Keep the license and the [NOTICE](NOTICE) file if you redistribute.
