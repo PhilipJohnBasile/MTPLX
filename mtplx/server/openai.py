@@ -19043,6 +19043,7 @@ def _finalize_batched_ar_generation(
             (request_observability or {}).get("request_id"),
             {
                 "scheduler_lane": "ar_batch",
+                **request_capture.completion_token_ids(generated.get("tokens")),
                 "completion_tokens": completion_tokens,
                 "finish_reason": generated.get("finish_reason"),
                 "resolved_seed": stats.get("server_seed"),
@@ -19235,6 +19236,7 @@ def _finalize_mtp_batch_generation(
             (request_observability or {}).get("request_id"),
             {
                 "scheduler_lane": "mtp_batch",
+                **request_capture.completion_token_ids(generated.get("tokens")),
                 "completion_tokens": completion_tokens,
                 "finish_reason": generated.get("finish_reason"),
                 "resolved_seed": stats.get("server_seed"),
@@ -21001,6 +21003,7 @@ def _run_generation(
             (request_observability or {}).get("request_id"),
             {
                 "scheduler_lane": "serial",
+                **request_capture.completion_token_ids(last.get("tokens")),
                 "completion_tokens": last["completion_tokens"],
                 "finish_reason": last.get("finish_reason"),
                 "resolved_seed": last["stats"].get("server_seed"),
