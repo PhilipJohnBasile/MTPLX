@@ -358,3 +358,196 @@ export type PrefillHistoryPayload = {
   capacity: number;
   history: PrefillRow[];
 };
+
+export type SemanticAnchorRow = {
+  kind: string;
+  token_offset: number;
+  message_index: number;
+  token_prefix_hash?: string;
+  template_hash?: string | null;
+  estimated_checkpoint_bytes?: number;
+  survival_probability?: number;
+  priority?: number;
+  utility?: number;
+  source?: string;
+};
+
+export type SemanticSystemLatest = {
+  status: "planned" | "skipped" | "error" | string;
+  reason?: string;
+  request_id?: string | null;
+  session_id?: string | null;
+  updated_at_s?: number;
+  candidate_count?: number | null;
+  semantic_anchor_count?: number;
+  semantic_anchor_edges?: number[];
+  semantic_anchor_kinds?: string[];
+  semantic_anchor_rejected?: number;
+  semantic_anchor_estimated_bytes?: number;
+  semantic_anchor_final_tokens?: number;
+  anchors?: SemanticAnchorRow[];
+  rejected?: Record<string, unknown>[];
+};
+
+export type SemanticMemorySystem = {
+  available: boolean;
+  enabled: boolean;
+  wired: boolean;
+  mode?: string;
+  config?: {
+    max_anchors?: number;
+    candidate_limit?: number;
+    max_checkpoint_bytes?: number;
+    estimated_checkpoint_bytes?: number;
+  };
+  planned_requests?: number;
+  skipped_requests?: number;
+  latest?: SemanticSystemLatest | null;
+};
+
+export type ExpertLocalityLayer = {
+  layer_id: string;
+  lane: string;
+  events: number;
+  rows: number;
+  assignments: number;
+  invalid_assignments: number;
+  unique_experts: number;
+  consecutive_jaccard: number;
+  working_set_50: number;
+  working_set_90: number;
+  working_set_99: number;
+  top_experts: [number, number][];
+  reuse_distance_events: Record<string, number>;
+  lru_simulation: Record<
+    string,
+    {
+      capacity: number;
+      hits: number;
+      misses: number;
+      hit_rate: number;
+      resident: number;
+    }
+  >;
+};
+
+export type ExpertLocalitySystem = {
+  available: boolean;
+  enabled: boolean;
+  wired: boolean;
+  install?: {
+    installed?: boolean;
+    instrumented_modules?: number;
+    candidate_modules?: number;
+    reason?: string;
+    error?: string;
+    modules?: Record<string, unknown>[];
+    skipped?: Record<string, unknown>[];
+  };
+  metrics?: {
+    enabled?: boolean;
+    calls?: number;
+    accepted_calls?: number;
+    dropped_calls?: number;
+    max_events?: number;
+    sample_every?: number;
+    cache_capacities?: number[];
+    elapsed_s?: number;
+    recommended_capacity_60?: number | null;
+    recommended_capacity_80?: number | null;
+    layers?: ExpertLocalityLayer[];
+    error?: string;
+  };
+};
+
+export type MemoryGovernorDecision = {
+  action: string;
+  pressure: string;
+  current_bank_max_bytes: number;
+  target_bank_max_bytes: number;
+  target_per_session_max_bytes: number;
+  utilization?: number | null;
+  reason: string;
+  prefill_chunk_tokens?: number | null;
+  max_concurrency?: number | null;
+  speculative_allowed?: boolean | null;
+  safe?: boolean | null;
+};
+
+export type MemoryGovernorApply = {
+  applied: boolean;
+  reason: string;
+  previous_bank_max_bytes: number;
+  previous_per_session_max_bytes: number;
+  evicted_entries: number;
+  evicted_bytes: number;
+  decision: MemoryGovernorDecision;
+};
+
+export type MemoryGovernorSystem = {
+  available: boolean;
+  enabled: boolean;
+  wired: boolean;
+  config?: Record<string, number | boolean | null>;
+  metrics?: {
+    memory_governor_bank_max_bytes?: number;
+    memory_governor_per_session_max_bytes?: number;
+    memory_governor_initial_bank_max_bytes?: number;
+    memory_governor_high_streak?: number;
+    memory_governor_recovery_streak?: number;
+    memory_governor_last_decision?: MemoryGovernorDecision | null;
+    memory_governor_last_apply?: MemoryGovernorApply | null;
+    error?: string;
+  };
+};
+
+export type RequestCaptureLatest = {
+  phase: "dispatched" | "completed" | string;
+  request_id?: string | null;
+  session_id?: string | null;
+  persisted: boolean;
+  updated_at_s: number;
+};
+
+export type RequestCaptureSystem = {
+  available: boolean;
+  enabled: boolean;
+  wired: boolean;
+  content_capture_default: boolean;
+  dispatched: number;
+  completed: number;
+  failures: number;
+  latest?: RequestCaptureLatest | null;
+};
+
+export type ReplayCoreSystem = {
+  available: boolean;
+  wired: boolean;
+  mode: string;
+  promotion_is_automatic: boolean;
+};
+
+export type TraceParitySystem = {
+  available: boolean;
+  wired: boolean;
+  mode: string;
+};
+
+export type DeterministicReplaySystem = {
+  available: boolean;
+  mode: string;
+  runtime_mutation: boolean;
+  request_capture: RequestCaptureSystem;
+  replay: ReplayCoreSystem;
+  trace_parity: TraceParitySystem;
+};
+
+export type RuntimeSystemsPayload = {
+  ts: number;
+  updated_at_s?: number;
+  semantic_memory: SemanticMemorySystem;
+  expert_locality: ExpertLocalitySystem;
+  memory_governor: MemoryGovernorSystem;
+  deterministic_replay: DeterministicReplaySystem;
+  error?: string;
+};
