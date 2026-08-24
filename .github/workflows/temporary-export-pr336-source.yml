@@ -1,8 +1,8 @@
 name: temporary-export-pr336-source
 
 on:
-  push:
-    branches: [agent/export-pr336-source]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
