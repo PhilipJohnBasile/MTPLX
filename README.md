@@ -16,6 +16,72 @@ MTPLX is a native Mac app and a command line for running local language models w
 
 There is no second draft model eating your RAM, and no greedy shortcut that quietly changes what the model would have said at real sampling settings. The acceptance math is the Leviathan and Chen rejection sampling theorem with residual correction, so `temperature=0.6, top_p=0.95` behaves exactly like normal decoding, just faster.
 
+## Native runtime intelligence and adaptive systems
+
+MTPLX now includes a vendor-neutral runtime intelligence layer built directly on MLX, SessionBank, and the existing OpenAI-compatible server. It does **not** import, embed, launch, or require FreeToken, Future AGI, or another external runtime. Every serving-path feature is disabled or inert by default; enabling diagnostics or offline replay does not silently change decoding behavior.
+
+### Before and after
+
+| Area | Before | After |
+|---|---|---|
+| **Session reuse** | SessionBank reused exact token prefixes, but complete-message boundaries were not first-class recurrent-cache edges. | Exact semantic anchors admit only byte-exact, complete-message prefixes and can mark instructions, user/assistant turns, reasoning/tool boundaries, and compaction summaries as reusable edges. |
+| **MoE working set** | Expert routing ran without persistent locality evidence or an MTPLX-owned warm-set plan. | Opt-in expert-locality telemetry feeds a byte-bounded, hysteretic expert warm-set controller without changing router choices. |
+| **Memory governance** | SessionBank, expert state, and KV headroom were managed independently. | Safe-point governance and an atomic unified-memory coordinator plan SessionBank, the expert warm set, and protected KV headroom together, with rollback on failed mutations. |
+| **Production diagnosis** | Metrics and the flight recorder exposed runtime events, but there was no bounded capture-to-replay contract. | Privacy-default request capture stores counts and SHA-256 digests, then supports deterministic replay and ordered trace-parity diagnosis. |
+| **Candidate evaluation** | Candidate changes required ad hoc comparison and promotion decisions. | Offline counterfactual replay isolates candidates and evaluators, applies explicit regression gates, and writes auditable receipts; promotion is never automatic. |
+| **Observability and policy** | No native OTLP exporter or lifecycle policy bus covered the complete serving path. | Dependency-free OTLP/HTTP export and trusted, bounded request, stream-event, response, and error hooks are available without an external policy service. |
+| **Operations** | The dashboard focused on throughput, cache, memory, requests, and thermals. | `GET /v1/mtplx/systems`, a truthful Systems view, a read-only Native command surface, and a permanent cross-version/configuration test matrix expose the new systems. |
+
+### What the new systems do
+
+**Semantic and memory intelligence.** `MTPLX_SEMANTIC_ANCHORS=1` enables exact complete-message cache anchors. `MTPLX_EXPERT_LOCALITY=1` records bounded MoE reuse telemetry without changing routing. `MTPLX_MEMORY_GOVERNOR=1` allows SessionBank budget changes only at a verified safe point while the model lock is held. `MTPLX_EXPERT_RESIDENCY=1` turns locality evidence into a bounded warm-set plan; the generic MLX backend reports `materialize_only` because it can evaluate lazy expert arrays but cannot promise physical page pinning or per-expert unloading. `MTPLX_UNIFIED_MEMORY=1` coordinates SessionBank, expert, and protected KV budgets atomically.
+
+**Capture, replay, telemetry, and policy.** Setting `MTPLX_REQUEST_CAPTURE_DIR` enables bounded atomic request envelopes. Prompt tokens, messages, prompt text, response text, and exception text remain absent by default; counts and SHA-256 digests are retained for correlation. `MTPLX_OTLP_ENDPOINT` enables a bounded, fail-open OTLP/HTTP exporter with the same privacy-default treatment. Trusted application code can register deterministic request, stream-event, response, and error hooks through `mtplx.policy_hooks.PolicyBus`. Replay remains offline, rejects stale capture plans, and cannot alter live serving or promote a candidate automatically.
+
+The features are independent. A representative opt-in configuration is:
+
+```bash
+export MTPLX_SEMANTIC_ANCHORS=1
+export MTPLX_EXPERT_LOCALITY=1
+export MTPLX_MEMORY_GOVERNOR=1
+
+export MTPLX_EXPERT_RESIDENCY=1
+export MTPLX_EXPERT_RESIDENCY_BYTES=$((8 * 1024 * 1024 * 1024))
+
+export MTPLX_UNIFIED_MEMORY=1
+export MTPLX_UNIFIED_MEMORY_TARGET=0.88
+export MTPLX_UNIFIED_MEMORY_RESERVE_BYTES=$((4 * 1024 * 1024 * 1024))
+
+export MTPLX_REQUEST_CAPTURE_DIR="$HOME/.mtplx/captures"
+export MTPLX_OTLP_ENDPOINT=http://127.0.0.1:4318/v1/traces
+```
+
+Inspect the runtime's actual state instead of assuming that configuration equals successful work:
+
+```bash
+curl -fsS http://127.0.0.1:8000/v1/mtplx/systems | python -m json.tool
+```
+
+The Systems surface distinguishes availability, enablement, wiring, observation, activity, and blocked work. The safety contract is explicit: no router mutation from telemetry, no memory mutation outside a proven safe point, no live KV resize without a backend capability, no content persistence/export without a separate opt-in, fail-open observability, and no automatic replay promotion.
+
+Full operator details are in [Native runtime systems](docs/native-systems.md) and [Native adaptive systems](docs/native-adaptive-systems.md).
+
+<details>
+<summary><strong>Maintainer review map and verification</strong></summary>
+
+Suggested review order:
+
+1. `mtplx/semantic_anchors.py`, `memory_governor.py`, and `expert_locality.py`
+2. `mtplx/deterministic_replay.py`, `request_capture.py`, and `replay_orchestrator.py`
+3. `mtplx/expert_residency.py`, `unified_memory.py`, and `native_adaptive.py`
+4. `mtplx/otlp_export.py` and `policy_hooks.py`
+5. `mtplx/runtime_systems.py` and `mtplx/server/openai.py`
+6. Dashboard source, focused tests, and `docs/validation/native-adaptive-phase2.json`
+
+The permanent `native-adaptive` workflow covers pure-system tests on Python 3.11, 3.12, 3.13, and 3.14; isolated default-off, expert-only, unified-memory-only, and combined-memory process profiles; and macOS 14 ARM64 runtime integration. The validation receipt records the broader publication gate, including compatibility tests, TypeScript/Vite production build, wheel/sdist creation, Twine validation, fresh-environment installation, and external-runtime dependency scans.
+
+</details>
+
 ## Get it
 
 **The Mac app** is the easiest way in. Download the DMG at [mtplx.com](https://mtplx.com/download), drag it to Applications, and the app takes care of everything else: it checks your hardware, recommends a model that actually fits your memory, downloads it, sets up its own Python engine (no Homebrew needed), installs fan control, puts `mtplx` on your PATH, and then measures your machine to pick the fastest decoding depth.
@@ -46,7 +112,7 @@ before recommending anything.
 
 <img src="docs/assets/readme/app-dashboard.jpg" alt="MTPLX dashboard with live decode gauge" width="100%" />
 
-The dashboard shows what your model is doing while it does it: live tokens per second, acceptance rate by draft depth, the verify waterfall, cache state, and system pressure. When you start a chat, code an agent against the local server, or run a benchmark, the numbers are right there.
+The dashboard shows what your model is doing while it does it: live tokens per second, acceptance rate by draft depth, the verify waterfall, cache state, and system pressure. The Systems view separately reports each native runtime subsystem as unavailable, inactive, enabled, observed, active, or blocked; source-code presence alone is never presented as healthy operation. The Native view provides copyable, read-only commands for startup, tuning, diagnostics, inspection, and benchmarks without giving the browser a shell-execution endpoint. When you start a chat, code an agent against the local server, or run a benchmark, the numbers are right there.
 
 <img src="docs/assets/readme/app-chat.jpg" alt="Chat streaming with live speed badge" width="100%" />
 
@@ -74,7 +140,7 @@ The official catalog lives on Hugging Face under [Youssofal](https://huggingface
 
 ## The server
 
-`mtplx start` (or the app's play button) serves an OpenAI-compatible API on `127.0.0.1:8000`: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, the optional `/v1/embeddings` and `/v1/rerank` (see below), plus an Anthropic-compatible `/v1/messages` with streaming, tool calls in both styles, `/health`, and `/metrics`. Claude Code, Cline, Continue, Open WebUI, curl, the openai and anthropic Python clients: if it speaks the API, it works. The app and CLI share one server, so `mtplx start` attaches to the app's running model instead of loading a second copy.
+`mtplx start` (or the app's play button) serves an OpenAI-compatible API on `127.0.0.1:8000`: `/v1/chat/completions`, `/v1/completions`, `/v1/models`, the optional `/v1/embeddings` and `/v1/rerank` (see below), plus an Anthropic-compatible `/v1/messages` with streaming, tool calls in both styles, `/health`, `/metrics`, and the native-systems contract at `/v1/mtplx/systems`. Claude Code, Cline, Continue, Open WebUI, curl, the openai and anthropic Python clients: if it speaks the API, it works. The app and CLI share one server, so `mtplx start` attaches to the app's running model instead of loading a second copy.
 
 ```bash
 curl http://127.0.0.1:8000/v1/chat/completions \
@@ -122,10 +188,12 @@ mtplx stop                 # stop the running server cleanly
 mtplx pull <hf-repo>       # download a model safely
 mtplx models               # what is cached, sizes, validation
 mtplx inspect <model>      # compatibility report before anything runs
+mtplx inspect <model> --require-mtp --json  # fail closed unless native MTP is valid
 mtplx tune --retune        # measure AR vs D1/D2/D3 on your Mac
 mtplx forge --help         # build, verify, and publish MTP models (probe/build/publish/verify subcommands)
 mtplx bench aime --quick   # run the AIME benchmark from the terminal
-mtplx doctor               # install and integration health
+mtplx bench run --profile sustained --generation-mode mtp --strict --json
+mtplx doctor --deep --json # deep install, runtime, and integration health
 mtplx max --install        # fan control (one sudo prompt, crash-safe)
 mtplx settings get/set     # read or change live server settings
 ```
@@ -172,6 +240,9 @@ Metal memory cap.
 
 - Not an external-drafter system. The drafter is the target model's own MTP heads.
 - Not a greedy-argmax trick. Acceptance is exact rejection sampling, correct at any temperature.
+- Not a wrapper around FreeToken, Future AGI, or another runtime. The new systems are independent MTPLX implementations.
+- Not an automatic optimizer or promotion service. Replay decisions are advisory and never alter serving by themselves.
+- Not claiming hard per-expert page pinning from generic MLX. The built-in backend reports `materialize_only` unless a stronger capability exists.
 - Not a CUDA project. MTPLX is MLX-native and Apple Silicon first. For Linux, use vLLM.
 
 ## License and credit
