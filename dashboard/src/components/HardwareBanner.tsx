@@ -3,15 +3,27 @@ import { Card } from "./Card";
 import { fmtBytes } from "../lib/utils";
 import { useDashboardStore } from "../state/store";
 
+// Fallback only — the server reports the real chip string (sysctl
+// machdep.cpu.brand_string) and that always wins. Identifier prefixes map to
+// chip families, not tiers: Mac13,x is the M1-era Mac Studio, Mac14,x is the
+// M2 family (incl. Mac Studio M2 Max/Ultra, #329), Mac15/16/17 are M3/M4/M5.
 function chipFromModel(machineModel: string | null | undefined): string {
   if (!machineModel) return "Apple Silicon";
   const id = machineModel.toLowerCase();
-  if (id.includes("mac17")) return "M5 Max";
-  if (id.includes("mac16")) return "M3 Ultra";
-  if (id.includes("mac15")) return "M4";
-  if (id.includes("mac14")) return "M3";
-  if (id.includes("mac13")) return "M2";
+  if (id.includes("mac17")) return "M5";
+  if (id.includes("mac16")) return "M4";
+  if (id.includes("mac15")) return "M3";
+  if (id.includes("mac14")) return "M2";
+  if (id.includes("mac13")) return "M1";
   return "Apple Silicon";
+}
+
+function chipBadgeFor(
+  chip: string | null | undefined,
+  machineModel: string | null | undefined,
+): string {
+  const reported = (chip ?? "").replace(/^Apple\s+/i, "").trim();
+  return reported || chipFromModel(machineModel);
 }
 
 export function HardwareBanner() {
@@ -19,7 +31,7 @@ export function HardwareBanner() {
   const profileName = useDashboardStore((s) => s.profileName);
   const modelId = useDashboardStore((s) => s.modelId);
   const contextWindow = useDashboardStore((s) => s.contextWindow);
-  const chipBadge = chipFromModel(machine?.machine_model);
+  const chipBadge = chipBadgeFor(machine?.chip, machine?.machine_model);
 
   return (
     <Card title="Hardware" subtitle={machine?.machine_model ?? "unknown machine model"}>
