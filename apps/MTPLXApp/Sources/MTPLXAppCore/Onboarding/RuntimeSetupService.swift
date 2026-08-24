@@ -490,7 +490,15 @@ public struct RuntimeSetupService: Sendable {
             export PATH="$HOME/.mtplx/bin:$PATH"
             """
             let updated = existing + block + "\n"
-            try updated.write(to: zshrc, atomically: true, encoding: .utf8)
+            // Dotfiles are commonly symlinks into a version-controlled repo
+            // (stow/chezmoi/yadm). An atomic write is a temp-file rename that
+            // would replace the link with a plain file and silently detach it
+            // from that repo, so write through to the resolved target instead.
+            try updated.write(
+                to: zshrc.resolvingSymlinksInPath(),
+                atomically: true,
+                encoding: .utf8
+            )
             changed = true
         }
         return changed

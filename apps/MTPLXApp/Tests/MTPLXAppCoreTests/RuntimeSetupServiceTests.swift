@@ -337,6 +337,41 @@ final class RuntimeSetupServiceTests: XCTestCase {
         XCTAssertTrue(zshrc.contains(#"export PATH="$HOME/.mtplx/bin:$PATH""#), zshrc)
     }
 
+    /// A ~/.zshrc symlinked into a dotfiles repo (stow/chezmoi/yadm) must be
+    /// written through, never replaced by a plain file that silently detaches
+    /// it from version control (#292).
+    func testZshrcSymlinkIsPreservedWhenAddingPATHLine() async throws {
+        let home = temporaryDirectory()
+        let engine = try makeFakeCLI(in: home.appendingPathComponent("engine"), version: "1.0.0")
+        let emptyDir = home.appendingPathComponent("empty-bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: emptyDir, withIntermediateDirectories: true)
+        let dotfiles = home.appendingPathComponent("dotfiles", isDirectory: true)
+        try FileManager.default.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let target = dotfiles.appendingPathComponent("zshrc")
+        try "# dotfiles-managed\n".write(to: target, atomically: true, encoding: .utf8)
+        let link = home.appendingPathComponent(".zshrc")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let service = RuntimeSetupService(
+            processEnvironment: isolatedEnvironment(home: home, pathDir: emptyDir),
+            appVersion: "1.0.0",
+            engineInstaller: { _ in engine },
+            fanControlEnsurer: fanControlOK()
+        )
+        let result = await run(service)
+        XCTAssertEqual(result.outcome?.engineReady, true)
+
+        let destination = try FileManager.default.destinationOfSymbolicLink(atPath: link.path)
+        XCTAssertEqual(
+            destination,
+            target.path,
+            ".zshrc must remain a symlink into the dotfiles repo"
+        )
+        let repoCopy = try String(contentsOf: target, encoding: .utf8)
+        XCTAssertTrue(repoCopy.contains(".mtplx/bin"), "PATH line must land in the linked target")
+        XCTAssertTrue(repoCopy.hasPrefix("# dotfiles-managed"), "existing content preserved")
+    }
+
     func testTerminalShimInstallIsIdempotent() async throws {
         let home = temporaryDirectory()
         let engine = try makeFakeCLI(in: home.appendingPathComponent("engine"), version: "1.0.0")
