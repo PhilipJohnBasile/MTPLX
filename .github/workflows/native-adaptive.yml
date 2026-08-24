@@ -9,22 +9,123 @@ permissions:
   contents: read
 
 jobs:
-  phase-two:
-    runs-on: macos-14
+  matrix:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Python 3.11 pure systems
+            os: ubuntu-latest
+            python: "3.11"
+            suite: pure
+            profile: all
+            artifact: py311-pure
+          - name: Python 3.12 pure systems
+            os: ubuntu-latest
+            python: "3.12"
+            suite: pure
+            profile: all
+            artifact: py312-pure
+          - name: Python 3.13 pure systems
+            os: ubuntu-latest
+            python: "3.13"
+            suite: pure
+            profile: all
+            artifact: py313-pure
+          - name: Python 3.14 pure systems
+            os: ubuntu-latest
+            python: "3.14"
+            suite: pure
+            profile: all
+            artifact: py314-pure
+          - name: Default-off process profile
+            os: ubuntu-latest
+            python: "3.11"
+            suite: profile
+            profile: default-off
+            artifact: profile-default-off
+          - name: Expert-only process profile
+            os: ubuntu-latest
+            python: "3.11"
+            suite: profile
+            profile: expert-only
+            artifact: profile-expert-only
+          - name: Unified-memory-only process profile
+            os: ubuntu-latest
+            python: "3.11"
+            suite: profile
+            profile: unified-only
+            artifact: profile-unified-only
+          - name: Combined-memory process profile
+            os: ubuntu-latest
+            python: "3.11"
+            suite: profile
+            profile: combined-memory
+            artifact: profile-combined-memory
+          - name: macOS runtime integration
+            os: macos-14
+            python: "3.11"
+            suite: macos
+            profile: all
+            artifact: macos-runtime
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.0.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[dev,server]"
-      - name: Test native adaptive systems
+      - name: Run native systems matrix
+        env:
+          MTPLX_MATRIX_PROFILE: ${{ matrix.profile }}
         run: |
-          python -m pytest -q \
-            tests/test_expert_residency.py \
-            tests/test_unified_memory.py \
-            tests/test_otlp_export.py \
-            tests/test_policy_hooks.py \
-            tests/test_replay_orchestrator.py \
+          set -euo pipefail
+          junit="/tmp/${{ matrix.artifact }}.xml"
+          pure_tests=(
+            tests/test_semantic_anchors.py
+            tests/test_memory_governor.py
+            tests/test_expert_locality.py
+            tests/test_deterministic_replay.py
+            tests/test_trace_parity.py
+            tests/test_request_capture.py
+            tests/test_runtime_systems.py
+            tests/test_expert_residency.py
+            tests/test_unified_memory.py
+            tests/test_otlp_export.py
+            tests/test_policy_hooks.py
+            tests/test_replay_orchestrator.py
             tests/test_native_adaptive.py
-      - run: python -m compileall -q mtplx tests
+            tests/test_native_adaptive_matrix.py
+          )
+          case "${{ matrix.suite }}" in
+            pure)
+              python -m pytest -q --junitxml="$junit" "${pure_tests[@]}"
+              python -m compileall -q mtplx tests
+              ;;
+            profile)
+              python -m pytest -q --junitxml="$junit" \
+                tests/test_native_adaptive_matrix.py \
+                -k process_level_memory_configuration_matrix
+              ;;
+            macos)
+              python -m pytest -q --junitxml="$junit" \
+                "${pure_tests[@]}" \
+                tests/test_dashboard_endpoints.py
+              python -m compileall -q mtplx tests
+              ;;
+            *)
+              echo "unknown matrix suite: ${{ matrix.suite }}" >&2
+              exit 2
+              ;;
+          esac
+      - name: Upload matrix receipt
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: native-adaptive-${{ matrix.artifact }}
+          path: /tmp/${{ matrix.artifact }}.xml
+          if-no-files-found: warn
+          retention-days: 14
