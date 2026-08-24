@@ -1,0 +1,29 @@
+name: temporary-export-pr336-source
+
+on:
+  push:
+    branches:
+      - upstream/native-systems-integration
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 1
+      - name: Package source tree
+        run: |
+          tar \
+            --exclude=.git \
+            --exclude=.github/workflows/temporary-export-pr336-source.yml \
+            -czf /tmp/mtplx-pr336-source.tar.gz .
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: mtplx-pr336-source
+          path: /tmp/mtplx-pr336-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
