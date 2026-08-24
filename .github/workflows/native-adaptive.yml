@@ -1,0 +1,30 @@
+name: native-adaptive
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  phase-two:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -U pip
+      - run: python -m pip install -e ".[dev,server]"
+      - name: Test native adaptive systems
+        run: |
+          python -m pytest -q \
+            tests/test_expert_residency.py \
+            tests/test_unified_memory.py \
+            tests/test_otlp_export.py \
+            tests/test_policy_hooks.py \
+            tests/test_replay_orchestrator.py \
+            tests/test_native_adaptive.py
+      - run: python -m compileall -q mtplx tests
