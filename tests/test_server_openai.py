@@ -7406,6 +7406,32 @@ def test_agent_transcript_canonicalization_compacts_truncated_read_continuation_
     )
 
 
+def test_active_read_compact_threshold_env_override(monkeypatch):
+    body_lines = [f"{line_no}: source line {line_no};" for line_no in range(1, 328)]
+    read_output = (
+        "<path>main.c</path>\n"
+        "<type>file</type>\n"
+        "<content>\n" + "\n".join(body_lines) + "\n</content>"
+    )
+    assert len(read_output) > openai._ACTIVE_READ_COMPACT_THRESHOLD_CHARS
+
+    compacted = openai._compact_active_read_tool_result_text(
+        read_output, inspection_request=False
+    )
+    assert compacted is not None
+    assert compacted.startswith("<mtplx_compacted_active_read_output")
+
+    monkeypatch.setenv(
+        "MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS", str(100_000_000)
+    )
+    assert (
+        openai._compact_active_read_tool_result_text(
+            read_output, inspection_request=False
+        )
+        is None
+    )
+
+
 def test_agent_transcript_canonicalization_drops_verbatim_source_dump_assistant_history():
     source_dump = "\n".join(
         f"{line_no}: const copiedLine{line_no} = {line_no};"

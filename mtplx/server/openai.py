@@ -10280,7 +10280,13 @@ def _compact_active_read_tool_result_text(
             ),
         )
         if inspection_request
-        else _ACTIVE_READ_COMPACT_THRESHOLD_CHARS
+        else max(
+            1,
+            _env_int(
+                "MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS",
+                _ACTIVE_READ_COMPACT_THRESHOLD_CHARS,
+            ),
+        )
     )
     if len(text) <= threshold and not force_compact:
         return None
