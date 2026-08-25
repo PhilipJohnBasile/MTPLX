@@ -4834,7 +4834,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             "anthropic": {"baseUrl": "https://api.anthropic.com"},
             "mtplx": {
               "baseUrl": "http://127.0.0.1:18119/v1",
-              "models": [{"id": "stale", "maxTokens": 4096}]
+              "models": [{"id": "mtplx-stale", "maxTokens": 4096}]
             }
           }
         }
@@ -4919,6 +4919,117 @@ final class MTPLXAppCoreTests: XCTestCase {
             )
         )
         XCTAssertFalse(repeated.didChange)
+    }
+
+    func testPiIntegrationSyncPreservesUserEditsInMtplxBlock() throws {
+        // #282 (intensifi): a re-sync must not clobber user edits inside the
+        // MTPLX provider block; only connection identity is corrected.
+        let url = temporaryDirectory().appendingPathComponent("models.json")
+        let integration = PiIntegration(configURL: url)
+        _ = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
+                host: "127.0.0.1",
+                port: 8000,
+                contextWindow: nil
+            )
+        )
+
+        var root = try JSONDecoder().decode(
+            [String: JSONValue].self, from: Data(contentsOf: url)
+        )
+        var providers = try XCTUnwrap(root["providers"]?.objectValue)
+        var mtplx = try XCTUnwrap(providers["mtplx"]?.objectValue)
+        var models = try XCTUnwrap(mtplx["models"]?.arrayValue)
+        var model = try XCTUnwrap(models[0].objectValue)
+        model["input"] = .array([.string("text"), .string("image")])
+        model["maxTokens"] = .number(20_000)
+        model["name"] = .string("My Local Qwen")
+        model["thinkingLevelMap"] = .object([
+            "minimal": .null,
+            "low": .string("low"),
+            "xhigh": .string("xhigh"),
+        ])
+        models[0] = .object(model)
+        models.append(.object(["id": .string("user-second-model")]))
+        mtplx["models"] = .array(models)
+        var headers = mtplx["headers"]?.objectValue ?? [:]
+        headers["x-user-header"] = .string("kept")
+        mtplx["headers"] = .object(headers)
+        providers["mtplx"] = .object(mtplx)
+        root["providers"] = .object(providers)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try (try encoder.encode(root)).write(to: url)
+
+        // The next launch lands on a new port: identity updates, edits stay.
+        _ = try integration.sync(
+            configuration: MTPLXAppConfiguration(
+                model: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
+                host: "127.0.0.1",
+                port: 9099,
+                contextWindow: nil
+            )
+        )
+
+        let merged = try JSONDecoder().decode(
+            [String: JSONValue].self, from: Data(contentsOf: url)
+        )
+        let mergedProvider = try XCTUnwrap(merged["providers"]?.objectValue?["mtplx"]?.objectValue)
+        XCTAssertEqual(mergedProvider["baseUrl"]?.stringValue, "http://127.0.0.1:9099/v1")
+        XCTAssertEqual(
+            mergedProvider["headers"]?.objectValue?["x-mtplx-client"]?.stringValue, "pi"
+        )
+        XCTAssertEqual(
+            mergedProvider["headers"]?.objectValue?["x-user-header"]?.stringValue, "kept"
+        )
+        let mergedModels = try XCTUnwrap(mergedProvider["models"]?.arrayValue)
+        let mergedModel = try XCTUnwrap(mergedModels[0].objectValue)
+        XCTAssertEqual(
+            mergedModel["input"]?.arrayValue?.compactMap(\.stringValue),
+            ["text", "image"]
+        )
+        XCTAssertEqual(mergedModel["maxTokens"]?.intValue, 20_000)
+        XCTAssertEqual(mergedModel["name"]?.stringValue, "My Local Qwen")
+        XCTAssertEqual(
+            mergedModel["thinkingLevelMap"]?.objectValue?["low"]?.stringValue, "low"
+        )
+        XCTAssertEqual(mergedModels[1].objectValue?["id"]?.stringValue, "user-second-model")
+    }
+
+    func testPiIntegrationExtensionRespectsUserOwnership() throws {
+        // A user who replaces the managed extension owns it; MTPLX never
+        // overwrites a file without the managed markers (#282).
+        let url = temporaryDirectory().appendingPathComponent("models.json")
+        let integration = PiIntegration(configURL: url)
+        let configuration = MTPLXAppConfiguration(
+            model: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            host: "127.0.0.1",
+            port: 8000,
+            contextWindow: nil
+        )
+        _ = try integration.sync(configuration: configuration)
+        let extensionURL = url.deletingLastPathComponent()
+            .appendingPathComponent("extensions", isDirectory: true)
+            .appendingPathComponent(PiIntegration.requestPolicyExtensionName)
+        let managedSource = try String(contentsOf: extensionURL, encoding: .utf8)
+        XCTAssertTrue(managedSource.contains("MTPLX-managed"))
+
+        let userSource = "export default function (pi) {}\n"
+        try Data(userSource.utf8).write(to: extensionURL)
+        _ = try integration.sync(configuration: configuration)
+        XCTAssertEqual(
+            try String(contentsOf: extensionURL, encoding: .utf8),
+            userSource
+        )
+
+        // Restoring a managed copy re-enables updates.
+        try Data(managedSource.utf8).write(to: extensionURL)
+        _ = try integration.sync(configuration: configuration)
+        XCTAssertTrue(
+            try String(contentsOf: extensionURL, encoding: .utf8)
+                .contains("MTPLX-managed")
+        )
     }
 
     func testPiIntegrationUsesGemmaModelIdentityForGemmaBundles() throws {

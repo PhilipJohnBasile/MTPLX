@@ -8337,3 +8337,96 @@ def test_serve_missing_mtp_degrade_reaches_child_argv(monkeypatch):
     assert cmd[cmd.index("--generation-mode") + 1] == "ar"
     assert "--no-load-mtp" in cmd
     assert cmd[cmd.index("--depth") + 1] == "0"
+
+
+def test_pi_models_config_sync_preserves_user_edits_in_mtplx_block(tmp_path):
+    """#282 (intensifi): a re-sync must not clobber user edits inside the
+    MTPLX provider block. Connection identity is corrected; everything the
+    user changed or added wins."""
+    from mtplx.pi import write_pi_models_config
+
+    config_path = tmp_path / "models.json"
+    write_pi_models_config(
+        base_url="http://127.0.0.1:18012/v1",
+        model_id="mtplx-test-model",
+        path=config_path,
+    )
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    model = payload["providers"]["mtplx"]["models"][0]
+    # The user teaches the model vision, tunes the thinking map, sets a cap,
+    # renames it, and adds a private header plus their own second model.
+    model["input"] = ["text", "image"]
+    model["thinkingLevelMap"] = {
+        "minimal": None,
+        "low": "low",
+        "medium": "medium",
+        "xhigh": "xhigh",
+    }
+    model["maxTokens"] = 20_000
+    model["name"] = "My Local Qwen"
+    payload["providers"]["mtplx"]["headers"]["x-user-header"] = "kept"
+    payload["providers"]["mtplx"]["models"].append({"id": "user-second-model"})
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Next launch lands on a NEW port: connection identity must update while
+    # every user edit survives byte-level.
+    write_pi_models_config(
+        base_url="http://127.0.0.1:19099/v1",
+        model_id="mtplx-test-model",
+        path=config_path,
+    )
+
+    merged = json.loads(config_path.read_text(encoding="utf-8"))
+    provider = merged["providers"]["mtplx"]
+    assert provider["baseUrl"] == "http://127.0.0.1:19099/v1"
+    assert provider["headers"]["x-mtplx-client"] == "pi"
+    assert provider["headers"]["x-user-header"] == "kept"
+    merged_model = provider["models"][0]
+    assert merged_model["input"] == ["text", "image"]
+    assert merged_model["thinkingLevelMap"] == {
+        "minimal": None,
+        "low": "low",
+        "medium": "medium",
+        "xhigh": "xhigh",
+    }
+    assert merged_model["maxTokens"] == 20_000
+    assert merged_model["name"] == "My Local Qwen"
+    assert provider["models"][1]["id"] == "user-second-model"
+
+
+def test_pi_request_policy_extension_respects_user_ownership(tmp_path):
+    """A user who replaces the managed extension with their own content owns
+    the file: MTPLX never overwrites it again."""
+    from mtplx.pi import write_pi_models_config
+
+    config_path = tmp_path / "models.json"
+    write_pi_models_config(
+        base_url="http://127.0.0.1:18012/v1",
+        model_id="mtplx-test-model",
+        path=config_path,
+    )
+    extension_path = config_path.parent / "extensions" / "mtplx-request-policy.ts"
+    managed_source = extension_path.read_text(encoding="utf-8")
+    assert "MTPLX-managed" in managed_source
+
+    user_source = "export default function (pi) {}\n"
+    extension_path.write_text(user_source, encoding="utf-8")
+
+    write_pi_models_config(
+        base_url="http://127.0.0.1:19099/v1",
+        model_id="mtplx-test-model",
+        path=config_path,
+    )
+    assert extension_path.read_text(encoding="utf-8") == user_source
+
+    # A managed copy (marker intact) keeps receiving updates.
+    extension_path.write_text(managed_source, encoding="utf-8")
+    write_pi_models_config(
+        base_url="http://127.0.0.1:19099/v1",
+        model_id="renamed-model",
+        path=config_path,
+    )
+    assert 'const mtplxModelID = "renamed-model"' in extension_path.read_text(
+        encoding="utf-8"
+    )

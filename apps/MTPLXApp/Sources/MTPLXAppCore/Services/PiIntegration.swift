@@ -297,12 +297,15 @@ public struct PiIntegration: Sendable {
         var root = try loadRoot()
         var providers = root["providers"]?.objectValue ?? [:]
         providers[Self.providerID] = .object(
-            Self.providerConfig(
-                modelID: modelID,
-                baseURL: baseURL,
-                apiKey: apiKey,
-                contextWindow: contextWindow,
-                reasoningEnabled: OpenCodeIntegration.reasoningEnabled(forModelID: modelID)
+            Self.mergedProviderConfig(
+                existing: providers[Self.providerID],
+                fresh: Self.providerConfig(
+                    modelID: modelID,
+                    baseURL: baseURL,
+                    apiKey: apiKey,
+                    contextWindow: contextWindow,
+                    reasoningEnabled: OpenCodeIntegration.reasoningEnabled(forModelID: modelID)
+                )
             )
         )
         root["providers"] = .object(providers)
@@ -364,6 +367,10 @@ public struct PiIntegration: Sendable {
     /// id on every sync — a stale model pin here silently disarms both hooks.
     static func requestPolicyExtensionSource(modelID: String) -> String {
         """
+        // MTPLX-managed Pi extension. MTPLX keeps this file up to
+        // date on every sync. To take ownership (or disable it), edit it and delete
+        // this marker line: MTPLX never touches the file again once the marker and
+        // the mtplx identifiers below are gone from it.
         const mtplxModelID = "\(modelID)";
         const mtplxUncapped = true;
         const mtplxPiInjectedDefaultMaxTokens = 16384;
@@ -414,8 +421,19 @@ public struct PiIntegration: Sendable {
         modelID: String
     ) throws -> Bool {
         let data = Data(requestPolicyExtensionSource(modelID: modelID).utf8)
-        if let existing = try? Data(contentsOf: url), existing == data {
-            return false
+        if let existing = try? Data(contentsOf: url) {
+            if existing == data {
+                return false
+            }
+            // A user who replaced the extension with their own content owns
+            // the file: MTPLX never overwrites it again (#282). Managed
+            // copies are recognized by the marker or the mtplx identifiers.
+            let existingText = String(decoding: existing, as: UTF8.self)
+            let managed = existingText.contains("MTPLX-managed")
+                || existingText.contains("mtplxPiInjectedDefaultMaxTokens")
+            if !managed {
+                return false
+            }
         }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -427,6 +445,88 @@ public struct PiIntegration: Sendable {
             ofItemAtPath: url.path
         )
         return true
+    }
+
+    /// Existing user values win; MTPLX defaults only fill gaps, recursively.
+    private static func fillMissingDeep(
+        existing: [String: JSONValue],
+        defaults: [String: JSONValue]
+    ) -> [String: JSONValue] {
+        var merged = existing
+        for (key, defaultValue) in defaults {
+            if let current = merged[key] {
+                if let currentObject = current.objectValue,
+                   let defaultObject = defaultValue.objectValue {
+                    merged[key] = .object(
+                        fillMissingDeep(existing: currentObject, defaults: defaultObject)
+                    )
+                }
+            } else {
+                merged[key] = defaultValue
+            }
+        }
+        return merged
+    }
+
+    /// User-preserving merge of the MTPLX provider block (#282 clobber fix,
+    /// mirrors `mtplx.pi.merge_pi_provider_config`). MTPLX owns the
+    /// connection identity — baseUrl/api/apiKey/authHeader and the
+    /// x-mtplx-client header — because ports move between launches. Every
+    /// other key the user edited wins; model entries merge by id, and
+    /// user-added models or fields (vision input, custom thinkingLevelMap,
+    /// explicit maxTokens) survive a sync untouched.
+    static func mergedProviderConfig(
+        existing: JSONValue?,
+        fresh: [String: JSONValue]
+    ) -> [String: JSONValue] {
+        guard let existingObject = existing?.objectValue else { return fresh }
+        var defaults = fresh
+        defaults.removeValue(forKey: "models")
+        defaults.removeValue(forKey: "headers")
+        var merged = fillMissingDeep(existing: existingObject, defaults: defaults)
+        for key in ["baseUrl", "api", "apiKey", "authHeader"] {
+            if let value = fresh[key] { merged[key] = value }
+        }
+        var headers: [String: JSONValue] = [:]
+        if let existingHeaders = existingObject["headers"]?.objectValue {
+            for (key, value) in existingHeaders where key.lowercased() != "x-mtplx-client" {
+                headers[key] = value
+            }
+        }
+        if let freshHeaders = fresh["headers"]?.objectValue {
+            for (key, value) in freshHeaders { headers[key] = value }
+        }
+        merged["headers"] = .object(headers)
+
+        let freshModels = fresh["models"]?.arrayValue ?? []
+        guard let existingModels = existingObject["models"]?.arrayValue else {
+            merged["models"] = fresh["models"] ?? .array([])
+            return merged
+        }
+        let freshIDs = Set(freshModels.compactMap { $0.objectValue?["id"]?.stringValue })
+        // Stale MTPLX-owned entries (our own previous model ids, always
+        // "mtplx-"-prefixed) are pruned so switching models does not pile
+        // up dead picker rows; user-added models never match the prefix.
+        var resultModels = existingModels.filter { entry in
+            guard let id = entry.objectValue?["id"]?.stringValue else { return true }
+            return !(id.hasPrefix("mtplx-") && !freshIDs.contains(id))
+        }
+        for freshModel in freshModels {
+            guard let freshObject = freshModel.objectValue,
+                  let freshID = freshObject["id"]?.stringValue else { continue }
+            if let index = resultModels.firstIndex(where: {
+                $0.objectValue?["id"]?.stringValue == freshID
+            }) {
+                let existingEntry = resultModels[index].objectValue ?? [:]
+                resultModels[index] = .object(
+                    fillMissingDeep(existing: existingEntry, defaults: freshObject)
+                )
+            } else {
+                resultModels.append(freshModel)
+            }
+        }
+        merged["models"] = .array(resultModels)
+        return merged
     }
 
     private static func providerConfig(
@@ -727,5 +827,9 @@ public struct PiIntegration: Sendable {
 private extension JSONValue {
     var objectValue: [String: JSONValue]? {
         if case .object(let value) = self { value } else { nil }
+    }
+
+    var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { value } else { nil }
     }
 }

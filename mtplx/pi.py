@@ -25,6 +25,11 @@ PI_DEFAULT_MAX_TOKENS: int | None = None
 # deliberate client choice and must reach MTPLX intact.
 PI_INJECTED_DEFAULT_MAX_TOKENS = 16_384
 PI_REQUEST_POLICY_EXTENSION_NAME = "mtplx-request-policy.ts"
+# Connection identity MTPLX must keep correct for the integration to work at
+# all (ports move between launches). Everything else belongs to the user once
+# they edit it (#282: silent clobber of user edits in models.json).
+PI_OWNED_PROVIDER_CONNECTION_KEYS = ("baseUrl", "api", "apiKey", "authHeader")
+PI_EXTENSION_MANAGED_MARKER = "MTPLX-managed"
 
 
 def pi_install_command() -> str:
@@ -67,7 +72,11 @@ def build_pi_request_policy_extension_source(
 
     model_literal = json.dumps(str(model_id))
     uncapped_literal = "true" if uncapped else "false"
-    return f"""const mtplxModelID = {model_literal};
+    return f"""// {PI_EXTENSION_MANAGED_MARKER} Pi extension. MTPLX keeps this file up to
+// date on every sync. To take ownership (or disable it), edit it and delete
+// this marker line: MTPLX never touches the file again once the marker and
+// the mtplx identifiers below are gone from it.
+const mtplxModelID = {model_literal};
 const mtplxUncapped = {uncapped_literal};
 const mtplxPiInjectedDefaultMaxTokens = {PI_INJECTED_DEFAULT_MAX_TOKENS};
 
@@ -117,12 +126,23 @@ def write_pi_request_policy_extension(
 
     extension_path = pi_request_policy_extension_path(path)
     source = build_pi_request_policy_extension_source(model_id, uncapped=uncapped)
+    if extension_path.exists():
+        try:
+            current = extension_path.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        managed = (
+            PI_EXTENSION_MANAGED_MARKER in current
+            or "mtplxPiInjectedDefaultMaxTokens" in current
+        )
+        if not managed:
+            # The user replaced the extension with their own content: it is
+            # theirs now. Never overwrite a user-owned file (#282).
+            return extension_path
+        if current == source:
+            return extension_path
     extension_path.parent.mkdir(parents=True, exist_ok=True)
-    if (
-        not extension_path.exists()
-        or extension_path.read_text(encoding="utf-8") != source
-    ):
-        extension_path.write_text(source, encoding="utf-8")
+    extension_path.write_text(source, encoding="utf-8")
     try:
         extension_path.chmod(0o600)
     except OSError:
@@ -257,6 +277,86 @@ def _backup_invalid_config(path: Path) -> Path:
     return backup
 
 
+def _fill_missing_deep(existing: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+    """Existing user values win; defaults only fill gaps, recursively."""
+
+    merged = dict(existing)
+    for key, default_value in defaults.items():
+        if key not in merged:
+            merged[key] = default_value
+        elif isinstance(merged[key], dict) and isinstance(default_value, dict):
+            merged[key] = _fill_missing_deep(merged[key], default_value)
+    return merged
+
+
+def merge_pi_provider_config(
+    existing_provider: Any,
+    fresh: dict[str, Any],
+) -> dict[str, Any]:
+    """User-preserving merge of the MTPLX provider block (#282 clobber fix).
+
+    MTPLX owns the connection identity (``baseUrl``/``api``/``apiKey``/
+    ``authHeader`` and the ``x-mtplx-client`` header) because ports move
+    between launches and the integration must keep working. Every other key
+    the user edited wins: our values only fill missing keys, recursively.
+    Model entries merge by ``id`` the same way, and user-added models or
+    fields (``input: ["text", "image"]``, custom ``thinkingLevelMap``,
+    explicit ``maxTokens``) survive a sync untouched.
+    """
+
+    if not isinstance(existing_provider, dict):
+        return fresh
+    merged = _fill_missing_deep(
+        existing_provider,
+        {
+            key: value
+            for key, value in fresh.items()
+            if key not in ("models", "headers")
+        },
+    )
+    for key in PI_OWNED_PROVIDER_CONNECTION_KEYS:
+        if key in fresh:
+            merged[key] = fresh[key]
+    headers = {
+        key: value
+        for key, value in (
+            existing_provider.get("headers") or {}
+        ).items()
+        if str(key).lower() != "x-mtplx-client"
+    } if isinstance(existing_provider.get("headers"), dict) else {}
+    headers.update(fresh.get("headers") or {})
+    merged["headers"] = headers
+
+    fresh_models = fresh.get("models") or []
+    existing_models = existing_provider.get("models")
+    if not isinstance(existing_models, list):
+        merged["models"] = fresh_models
+        return merged
+    fresh_ids = {str(model.get("id")) for model in fresh_models}
+    # Stale MTPLX-owned entries (our own previous model ids, always
+    # "mtplx-"-prefixed) are pruned so switching models does not pile up
+    # dead picker rows; user-added models never match the prefix and stay.
+    result_models = [
+        entry
+        for entry in existing_models
+        if not (
+            isinstance(entry, dict)
+            and str(entry.get("id", "")).startswith("mtplx-")
+            and str(entry.get("id")) not in fresh_ids
+        )
+    ]
+    for fresh_model in fresh_models:
+        fresh_id = str(fresh_model.get("id"))
+        for index, entry in enumerate(result_models):
+            if isinstance(entry, dict) and str(entry.get("id")) == fresh_id:
+                result_models[index] = _fill_missing_deep(entry, fresh_model)
+                break
+        else:
+            result_models.append(fresh_model)
+    merged["models"] = result_models
+    return merged
+
+
 def merge_pi_models_config(
     existing: dict[str, Any] | None,
     *,
@@ -265,8 +365,9 @@ def merge_pi_models_config(
 ) -> dict[str, Any]:
     """Merge or create a Pi ``models.json`` payload.
 
-    MTPLX owns only the ``providers.mtplx`` block. Existing user providers are
-    preserved byte-for-byte at the JSON object level.
+    MTPLX owns only the ``providers.mtplx`` block, and inside it only the
+    connection identity: user edits within the block are preserved via
+    :func:`merge_pi_provider_config`. Other providers are untouched.
     """
 
     payload = dict(existing or {})
@@ -275,7 +376,10 @@ def merge_pi_models_config(
         providers = {}
     else:
         providers = dict(providers)
-    providers[str(provider_id)] = provider_config
+    providers[str(provider_id)] = merge_pi_provider_config(
+        providers.get(str(provider_id)),
+        provider_config,
+    )
     payload["providers"] = providers
     return payload
 
