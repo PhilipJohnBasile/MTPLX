@@ -4,6 +4,67 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.2] - 2026-08-25
+
+### Changed
+
+- **The serving endpoints are passthrough by default** (#282). No
+  tool-result compaction, no read trimming, no injected steering text
+  unless a rewrite feature is explicitly enabled.
+  `MTPLX_AGENT_REWRITES` is the master switch; each feature arms only
+  via its own environment variable. The macOS app stopped exporting
+  the legacy compaction settings when launching coding agents, and the
+  request log records what was and was not rewritten per request.
+- Managed client configs respect user edits: `mtplx start` and the app
+  only update files they wrote themselves (#282).
+- **Chained greedy drafting is on by default for temperature 0
+  requests below 12,288 prompt tokens** (#313, #315, #318). Gated A/B
+  runs on an M5 Max measured +2.5 to +9.8 percent decode on 0.5k to 8k
+  prompts and -2.9/-2.7 percent at 16k/32k, so a context fence keeps
+  it off at and above 12,288. Tune with
+  `MTPLX_GREEDY_TRIO_MAX_CONTEXT`, disable with
+  `MTPLX_GREEDY_DRAFT_CHAIN=off`. Sampled requests are untouched.
+
+### Fixed
+
+- The forge decides the MTP norm convention once per tensor set
+  instead of blind-shifting three norm tensors by +1.0 (#301); packs
+  from absolute-encoded sources no longer ship with draft acceptance
+  collapsed to 0 to 2 percent. The runtime refuses to load a
+  double-shifted trunk with a clear error (#306).
+- Images survive user-message canonicalization on consecutive or
+  retried turns (#327); vision rows survive near-prefix cache
+  restores (#296).
+- The literal-repetition stop covers width 2+ batched MTP cohorts
+  (#311).
+- The default request JSONL is content-free as documented (#326).
+- The installer and app write the PATH line through a symlinked
+  `~/.zshrc` instead of replacing the symlink (#292).
+- The dashboard Hardware card reports the real chip (#329).
+- `bench --harness depth-sweep` honors `--depths`, `--seed`, and
+  `--generation-mode`, and refuses `--stock-ar` loudly (#285).
+- The fp16 fused add+rmsnorm kernel uses the exact 1024-lane
+  dispatch (#319); the packed-concats exactness gate tests its claim
+  honestly (#320).
+- The NAX turbo verify path stops using padded M=5 lanes that measured
+  slower than stock.
+- The flight recorder samples non-streaming requests.
+- The app renders `<br>` variants inside markdown table cells
+  (PR #273 by @El-Patronum).
+- `quantize: false` module overrides are honored (PR #281 by
+  @shiftedx).
+- Capture tooling persists exact completion token ids on all three
+  lanes (PR #330 by @CharliePetch).
+
+### Added
+
+- Experimental, off by default: `MTPLX_FUSE_PROJ` load-time projection
+  fusion (port of PR #316 by @grzracz), `MTPLX_VK_CROSSROW` crossrow
+  wide-verify kernel, draft-confidence tracing with confidence-gated
+  draft width, and marathon postcommit protection.
+- `HISTORY.md`: the dated record of putting native MTP on Apple
+  Silicon.
+
 ## [2.9.1] - 2026-08-22
 
 ### Fixed
