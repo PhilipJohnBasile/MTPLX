@@ -26,6 +26,11 @@ All notable user-facing changes to MTPLX. The format is based on
   reasoning is rendered for turns the committed cache has not covered,
   ending marathon re-thinks of already-derived plans.
 - Stamped pack draft-sampler settings win over stale client-side pins.
+- Model pack updates resolve the exact installed pack directory, so a
+  stale legacy bare-name cache no longer shadows the canonical copy
+  into a zero-byte no-op, and update progress reports cumulative bytes
+  (first pip/brew release with the fixes app users received in the
+  2.9.0 updater hotfix, build 2009001).
 
 ### Changed
 

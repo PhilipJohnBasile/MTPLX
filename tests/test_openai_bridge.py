@@ -2169,8 +2169,12 @@ def test_generation_params_marks_server_cap_when_configured(monkeypatch):
     assert limits["context_cap_applied"] is False
 
 
-def test_uncapped_repetition_stop_only_enables_for_uncapped_requests(monkeypatch):
+def test_repetition_stop_arms_for_capped_requests(monkeypatch):
+    """#311: the literal-repetition stop arms on EVERY request. A client cap
+    is a token budget, not a licence to loop — Pi's maxTokens=8192 request
+    burned 5,803 '!' tokens with the old uncapped-only predicate."""
     monkeypatch.delenv("MTPLX_UNCAPPED_REPETITION_STOP", raising=False)
+    monkeypatch.delenv("MTPLX_REPETITION_STOP", raising=False)
     assert (
         _uncapped_repetition_stop_enabled(
             {
@@ -2180,6 +2184,7 @@ def test_uncapped_repetition_stop_only_enables_for_uncapped_requests(monkeypatch
         )
         is True
     )
+    # Capped request (the #311 shape): armed.
     assert (
         _uncapped_repetition_stop_enabled(
             {
@@ -2187,8 +2192,9 @@ def test_uncapped_repetition_stop_only_enables_for_uncapped_requests(monkeypatch
                 "server_max_response_tokens": None,
             }
         )
-        is False
+        is True
     )
+    # Server-capped: armed.
     assert (
         _uncapped_repetition_stop_enabled(
             {
@@ -2196,8 +2202,9 @@ def test_uncapped_repetition_stop_only_enables_for_uncapped_requests(monkeypatch
                 "server_max_response_tokens": 4096,
             }
         )
-        is False
+        is True
     )
+    # Both env names disarm; the new one wins over the historical one.
     monkeypatch.setenv("MTPLX_UNCAPPED_REPETITION_STOP", "off")
     assert (
         _uncapped_repetition_stop_enabled(
@@ -2208,6 +2215,48 @@ def test_uncapped_repetition_stop_only_enables_for_uncapped_requests(monkeypatch
         )
         is False
     )
+    monkeypatch.setenv("MTPLX_REPETITION_STOP", "1")
+    assert (
+        _uncapped_repetition_stop_enabled(
+            {
+                "uncapped_response_requested": False,
+                "server_max_response_tokens": 4096,
+            }
+        )
+        is True
+    )
+
+
+def test_repetition_stop_detects_single_token_punctuation_loop():
+    """#311's live shape: a 1-token block ('!') repeated to a capped budget."""
+    config = RepetitionStopConfig(
+        enabled=True,
+        min_tokens=16,
+        min_repeated_tokens=12,
+        min_repeats=4,
+        min_block_tokens=1,
+        max_block_tokens=4,
+    )
+    tokens = [201, 202, 203, 204] + [33] * 14
+    detected = _detect_repeated_token_suffix(tokens, config)
+    assert detected is not None
+    assert detected.block_tokens == 1
+    assert detected.repeated_tokens == 14
+    assert detected.trim_start == 4
+
+
+def test_repetition_stop_pregate_skips_impossible_suffixes():
+    """The O(1) pre-gate must not change the no-fire verdict on clean text."""
+    config = RepetitionStopConfig(
+        enabled=True,
+        min_tokens=12,
+        min_repeated_tokens=8,
+        min_repeats=4,
+        min_block_tokens=2,
+        max_block_tokens=4,
+    )
+    # Strictly increasing tokens: no period p has tokens[-1] == tokens[-1-p].
+    assert _detect_repeated_token_suffix(list(range(100, 140)), config) is None
 
 
 def test_repetition_stop_detects_and_trims_exact_token_loop():
@@ -2594,3 +2643,25 @@ def test_usage_payload_uses_repaired_completion_tokens():
         "completion_tokens": 34,
         "total_tokens": 46,
     }
+
+
+def test_marathon_postcommit_protection_env_resolution(monkeypatch):
+    """Marathon postcommit protection: off by default, threshold+wait armed
+    by env (the chess-gauntlet 79s re-prefill wall follow-up)."""
+    from mtplx.engine_session import (
+        _marathon_postcommit_protect_tokens,
+        _marathon_postcommit_wait_s,
+    )
+
+    monkeypatch.delenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", raising=False)
+    monkeypatch.delenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", raising=False)
+    assert _marathon_postcommit_protect_tokens() == 0  # default OFF
+    assert _marathon_postcommit_wait_s() == 30.0
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", "8000")
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", "12.5")
+    assert _marathon_postcommit_protect_tokens() == 8000
+    assert _marathon_postcommit_wait_s() == 12.5
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS", "garbage")
+    monkeypatch.setenv("MTPLX_POSTCOMMIT_MARATHON_WAIT_S", "-3")
+    assert _marathon_postcommit_protect_tokens() == 0
+    assert _marathon_postcommit_wait_s() == 30.0

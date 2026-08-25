@@ -335,6 +335,45 @@ class FlightRecorder:
 
         def publish(payload: dict[str, Any]) -> None:
             record.live_depth = payload
+            # Non-streaming requests never enter the SSE drain, so on_tokens
+            # never fires and the file got begin/end with ZERO samples
+            # (found 2026-08-22: an Ivan-harness arm — non-streaming by his
+            # protocol — left 75 sample-less requests). The generation-side
+            # sink already publishes at most ~1 Hz, so emitting the sample
+            # here when the stream side hasn't costs the same one enqueue
+            # per second; streamed requests keep their richer stream-side
+            # samples (this only fires when on_tokens hasn't sampled).
+            now = time.perf_counter()
+            if now - record.last_sample_s < _SAMPLE_INTERVAL_S:
+                return
+            record.last_sample_s = now
+            record.samples += 1
+            generated = int(payload.get("generated_tokens") or 0)
+            sample: dict[str, Any] = {
+                "ev": "s",
+                "ts": time.time(),
+                "rid": request_id,
+                "gen": max(generated, record.gen_tokens),
+                "rc": record.reasoning_chars,
+                "cc": record.content_chars,
+                "ctx": (record.prompt_tokens or 0) + max(generated, record.gen_tokens),
+            }
+            if record.token_times:
+                # Stream-fed rates only; a non-streaming request has no
+                # token-time window and a fabricated 0.0 would read as a
+                # stall. trace derives its curve from gen deltas regardless.
+                sample["tps"] = round(record.tps_window(), 2)
+                sample["tps_avg"] = round(record.tps_avg(now), 2)
+            for src, dst in (
+                ("accepted_by_depth", "acc"),
+                ("drafted_by_depth", "drf"),
+                ("verify_time_s", "vt"),
+                ("draft_time_s", "dt"),
+            ):
+                value = payload.get(src)
+                if value:
+                    sample[dst] = round(value, 3) if isinstance(value, float) else value
+            self._emit(sample)
 
         return publish
 

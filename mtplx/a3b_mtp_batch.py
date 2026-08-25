@@ -20,7 +20,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mtplx.generation import RepetitionStopResult
 
 import numpy as np
 import mlx.core as mx
@@ -190,6 +193,10 @@ class A3BMTPBatchRequest:
     on_decode_start: Callable[[], None] | None = None
     on_terminal: Callable[[str, int], None] | None = None
     cancelled: Callable[[], bool] = _not_cancelled
+    # Literal-token repetition stop (#311). The serial path arms this on
+    # every request; cohort rows must carry the same guard or a looping row
+    # burns its whole max_tokens budget inside the batch.
+    repetition_stop: bool = False
     # Session-bank hooks, resolved by the server glue and executed on the
     # model-owner thread. Both are accelerators with a fail-safe contract:
     # they must swallow their own errors (the driver additionally guards) —
@@ -213,6 +220,11 @@ class A3BMTPBatchStreamResult:
     accepted_drafts: int = 0
     rejected_drafts: int = 0
     terminal_perf_s: float | None = None
+    # Set when the row was stopped by the literal-repetition guard. ``tokens``
+    # above is already trimmed; the consumer must apply the same trim to any
+    # parallel token list it kept (the service's job.tokens is fed by
+    # on_token, which fired before the trim).
+    repetition_stop: RepetitionStopResult | None = None
 
 
 @dataclass(frozen=True)
@@ -3059,6 +3071,20 @@ def generate_a3b_mtp_batch(
     cycles = 0
     max_cycles = max(int(request.max_tokens) for request in real) + 2
 
+    # One config per cohort (5 env reads); armed rows share it. The detector
+    # is pre-gated in O(1) below min_tokens, so unarmed-cost is a bool check.
+    row_repetition: list[RepetitionStopResult | None] = [None for _ in real]
+    repetition_config = None
+    detect_repeated_suffix: Any = None
+    if any(request.repetition_stop for request in real):
+        from .generation import (
+            _detect_repeated_token_suffix,
+            _repetition_stop_config,
+        )
+
+        repetition_config = _repetition_stop_config(True)
+        detect_repeated_suffix = _detect_repeated_token_suffix
+
     def active(row: int) -> bool:
         return row < len(real) and finish[row] is None
 
@@ -3284,6 +3310,21 @@ def generate_a3b_mtp_batch(
                 if len(tokens[row]) >= int(request.max_tokens):
                     finish[row] = "length"
                     break
+            # Once per cycle, not per token: an MTP cycle commits 1-3 tokens,
+            # so the fire point may sit up to 2 tokens past the serial one —
+            # the trim is a suffix delete, so the surviving text is identical.
+            if (
+                finish[row] is None
+                and request.repetition_stop
+                and repetition_config is not None
+            ):
+                repetition_hit = detect_repeated_suffix(
+                    tokens[row], repetition_config
+                )
+                if repetition_hit is not None:
+                    row_repetition[row] = repetition_hit
+                    del tokens[row][repetition_hit.trim_start :]
+                    finish[row] = "stop"
             pending[row] = next_pending[row] if finish[row] is None else None
             notify_terminal(row, cycles + 1)
         cycles += 1
@@ -3301,6 +3342,7 @@ def generate_a3b_mtp_batch(
                 accepted_drafts=row_accepted[row],
                 rejected_drafts=row_rejected[row],
                 terminal_perf_s=row_terminal_perf[row],
+                repetition_stop=row_repetition[row],
             )
             for row, request in enumerate(real)
         ),

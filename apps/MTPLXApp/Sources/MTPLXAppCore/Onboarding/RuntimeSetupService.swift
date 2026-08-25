@@ -489,16 +489,21 @@ public struct RuntimeSetupService: Sendable {
             # Added by MTPLX.app — terminal command
             export PATH="$HOME/.mtplx/bin:$PATH"
             """
-            let updated = existing + block + "\n"
-            // Dotfiles are commonly symlinks into a version-controlled repo
-            // (stow/chezmoi/yadm). An atomic write is a temp-file rename that
-            // would replace the link with a plain file and silently detach it
-            // from that repo, so write through to the resolved target instead.
-            try updated.write(
-                to: zshrc.resolvingSymlinksInPath(),
-                atomically: true,
-                encoding: .utf8
-            )
+            // Append through a file handle, never an atomic rewrite (#292):
+            // atomic write is write-temp-then-rename, which replaces a
+            // symlinked ~/.zshrc with a plain file and silently detaches the
+            // user's dotfile repo. Appending through the handle follows the
+            // link, preserves the inode (hard links and concurrent editors
+            // survive), and only ever adds bytes the app authored.
+            let payload = Data((block + "\n").utf8)
+            if fileManager.fileExists(atPath: zshrc.path) {
+                let handle = try FileHandle(forWritingTo: zshrc)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: payload)
+            } else {
+                try payload.write(to: zshrc)
+            }
             changed = true
         }
         return changed

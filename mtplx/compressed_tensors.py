@@ -9,7 +9,7 @@ import math
 import shutil
 import struct
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -748,17 +748,43 @@ def _quantized_module_prefixes(weights: dict[str, mx.array]) -> set[str]:
     return modules
 
 
-def sanitize_plain_weight(key: str, value: mx.array) -> mx.array:
-    """Per-tensor sanitize for layout only (conv1d axis order, trunk norms).
+def mtp_norms_are_delta_encoded(weights: dict[str, Any]) -> bool:
+    """Whole-set delta detection for MTP norm gains (#301).
 
-    MTP norm gains are deliberately NOT shifted here: their +1.0 convention
-    cannot be judged one tensor at a time (#301) — callers that assemble a
-    whole sidecar run shift_delta_mtp_norms() on the finished dict instead.
+    Public name for the same two-signal decision the runtime heal has
+    shipped since #176 — forge, the AWQ convert lane, and the heal path all
+    delegate here so there is exactly one threshold source.
+    """
+    return mtp_sidecar_norms_are_delta(dict(weights))
+
+
+def sanitize_plain_weight(
+    key: str, value: mx.array, *, mtp_norm_shift: bool | None = None
+) -> mx.array:
+    """Per-tensor sanitize for layout (conv1d axis order, trunk norms).
+
+    MTP norm gains are shifted only on an explicit set-level decision:
+    ``mtp_norm_shift=True`` applies the +1.0 restoration to every MTP norm
+    suffix; ``False`` and the default never shift. The +1.0 convention
+    cannot be judged one tensor at a time (#301) — whole-sidecar callers
+    decide once via shift_delta_mtp_norms()/mtp_norms_are_delta_encoded,
+    and the historical per-tensor always-shift tier is retired (it was the
+    corruption this issue reported).
     """
     if key.endswith("conv1d.weight") and value.ndim >= 3 and value.shape[-1] != 1:
         value = value.moveaxis(2, 1)
-    if value.ndim == 1 and not key.startswith("mtp."):
-        if any(key.endswith(suffix) for suffix in MAIN_RMSNORM_SHIFT_SUFFIXES):
+    if value.ndim == 1:
+        if key.startswith("mtp."):
+            if mtp_norm_shift and (
+                any(
+                    key.endswith(suffix)
+                    for suffix in MTP_RMSNORM_QK_SUFFIXES
+                    + MTP_RMSNORM_LOW_SET_SUFFIXES
+                )
+                or _is_mtp_final_norm_key(key)
+            ):
+                value = value + 1.0
+        elif any(key.endswith(suffix) for suffix in MAIN_RMSNORM_SHIFT_SUFFIXES):
             value = value + 1.0
     return value
 

@@ -220,3 +220,34 @@ def test_qlinear_patch_routes_6bit_verify_shapes() -> None:
     finally:
         verify_kernels.vk_qmm_m4_ksplit = orig
         uninstall_nax_qlinear_patch()
+
+
+def test_m5_falls_through_to_stock_by_default(monkeypatch) -> None:
+    """2026-08-22 routing fix: M=5 4-bit skips the padded m6/m16 lanes
+    (three-session micro: padded-m6 +3..13% vs stock, m16 worst) unless
+    MTPLX_M5_PADDED_LANE opts back in. Receipt = the b4_m5 fallback counter
+    (entered the verify window, took no custom lane)."""
+    from mtplx.nax_verify import _m5_padded_lane, nax_qlinear_fallback_counts
+
+    monkeypatch.delenv("MTPLX_M5_PADDED_LANE", raising=False)
+    assert _m5_padded_lane() is False
+    monkeypatch.setenv("MTPLX_M5_PADDED_LANE", "1")
+    assert _m5_padded_lane() is True
+    monkeypatch.delenv("MTPLX_M5_PADDED_LANE", raising=False)
+
+    report = install_nax_qlinear_patch()
+    assert report["installed"] is True
+    try:
+        # K=512 %256==0, N=256 %32==0: m6-ksplit and m16 would both accept
+        # this shape at M=5 — only the new guard keeps it on stock.
+        layer = nn.QuantizedLinear(512, 256, bias=False, group_size=64, bits=4)
+        x = (mx.random.normal((5, 512), dtype=mx.float32) * 0.5).astype(mx.bfloat16)
+        before = nax_qlinear_fallback_counts.get("b4_m5", 0)
+        y = layer(x)
+        mx.eval(y)
+        assert y.shape == (5, 256)
+        assert nax_qlinear_fallback_counts.get("b4_m5", 0) == before + 1
+        ref = _stock(x, layer["weight"], layer["scales"], layer["biases"])
+        assert mx.array_equal(y, ref), "M=5 default must be the stock result"
+    finally:
+        uninstall_nax_qlinear_patch()

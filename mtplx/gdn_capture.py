@@ -2956,6 +2956,26 @@ def forward_with_a3b_gdn_postconv_capture_bound_projections(
     return logits, hidden, captures
 
 
+def _fused_post_norm_tg_override() -> int | None:
+    """Threadgroup override for the fused post-norm residual lane.
+
+    None (the default) lets fused_add_rmsnorm mirror mx.fast.rms_norm's own
+    exact-fit/looped dispatch, which is bitwise-identical to the unfused
+    reference at every probed axis/row/dtype. A fixed value forces the looped
+    kernel at that lane count and changes the fp32 partial-sum partition — the
+    shipped 512 produced one-ULP fp16 flips at axes 3072/5120 from 64 rows up
+    (#319). Env knob exists for A/B archaeology only.
+    """
+    raw = os.environ.get("MTPLX_FUSE_POST_NORM_RESIDUAL_TG", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def forward_with_gdn_capture(
     model: Any,
     inputs: mx.array,
@@ -3032,14 +3052,17 @@ def forward_with_gdn_capture(
                 # fp16 above 64 rows (2^15 grid boundary; probed 2026-08-24,
                 # #319). bf16 is bit-exact at 512, so it keeps the tuned
                 # width; fp16 takes the default 1024-lane loop, bit-exact at
-                # every probed shape.
+                # every probed shape. MTPLX_FUSE_POST_NORM_RESIDUAL_TG
+                # overrides both for A/B archaeology only.
                 h, mlp_input = fused_add_rmsnorm(
                     hidden_states,
                     r,
                     layer.post_attention_layernorm.weight,
                     layer.post_attention_layernorm.eps,
                     threadgroup_size=(
-                        512 if hidden_states.dtype == mx.bfloat16 else None
+                        override
+                        if (override := _fused_post_norm_tg_override()) is not None
+                        else (512 if hidden_states.dtype == mx.bfloat16 else None)
                     ),
                 )
         else:

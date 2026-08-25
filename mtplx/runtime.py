@@ -794,6 +794,15 @@ def load(
         if moe_pack_gate_up_enabled():
             pack_report = configure_moe_packed_projections(model)
             logger.info("[moe-pack] %s", pack_report)
+        # Must run after MTP injection and after load-coverage validation.
+        from .proj_fusion import (
+            configure_fused_projections,
+            fuse_projections_enabled,
+        )
+
+        if fuse_projections_enabled():
+            fuse_report = configure_fused_projections(model)
+            logger.info("[proj-fusion] %s", fuse_report)
         from .nax_verify import install_nax_qlinear_patch, nax_env_enabled
 
         if nax_env_enabled():
@@ -1046,7 +1055,51 @@ def _load_base_model(path: Path, config: dict[str, Any]) -> tuple[Any, Any]:
 
     from mlx_lm.utils import load as mlx_lm_load
 
-    return mlx_lm_load(str(_mtp_alias_load_path(path, config)))
+    model, tokenizer = mlx_lm_load(str(_mtp_alias_load_path(path, config)))
+    _refuse_double_shifted_trunk_norms(model, config)
+    return model, tokenizer
+
+
+def _refuse_double_shifted_trunk_norms(model: Any, config: dict[str, Any]) -> None:
+    """Fail loud on a +1.0 double-shifted trunk (#306), never serve it slow.
+
+    mlx-lm's qwen3.5-family sanitize keys the +1.0 delta restoration on the
+    bare PRESENCE of mtp.* keys in the shards, so an artifact that embeds an
+    already-absolute MTP head gets every trunk RMSNorm shifted a second time
+    — the model loads and generates, just badly (the #306 reports measured
+    0.9-6.7% acceptance and blamed the engine). Healthy absolute q-norm
+    means sit in the 1.74-1.83 fleet band; a double shift lands ~2.79. One
+    tensor mean decides it. Refusal with the cause beats silently serving a
+    corrupted trunk — the hide-nothing law.
+    """
+    family = str(config.get("model_type") or "").lower()
+    if family not in {"qwen3_5", "qwen3_next", "qwen3next"}:
+        return
+    weight = None
+    try:
+        layers = getattr(getattr(model, "model", model), "layers", None) or []
+        for layer in layers:
+            candidate = getattr(
+                getattr(layer, "self_attn", None), "q_norm", None
+            )
+            weight = getattr(candidate, "weight", None)
+            if weight is not None:
+                break
+        if weight is None or getattr(weight, "ndim", None) != 1:
+            return
+        mean = float(weight.mean().item())
+    except Exception:
+        return
+    if mean > 2.4:
+        raise ValueError(
+            "trunk RMSNorm weights read double-shifted "
+            f"(q_norm mean {mean:.2f}; healthy packs sit near 1.79): this "
+            "artifact embeds mtp.* keys in its shards with absolute gains, "
+            "and mlx-lm's presence-keyed sanitize added +1.0 to an "
+            "already-absolute trunk (issue #306). Rebuild the pack with the "
+            "MTP head as a standalone mtp.safetensors (mtplx forge does "
+            "this), or strip the embedded mtp.* tensors from the shards."
+        )
 
 
 # A chat_template that is nothing but a Jinja ``{% include %}`` redirect to a

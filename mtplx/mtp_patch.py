@@ -369,6 +369,12 @@ def _restore_delta_encoded_mtp_norms(
     return restored
 
 
+# Norm-suffix sets and the delta-detection thresholds live in
+# compressed_tensors (#301): mtp_sidecar_norms_are_delta /
+# mtp_norms_are_delta_encoded — one predicate for this heal path and
+# the forge's set-level shift decision.
+
+
 def _heal_raw_delta_mtp_norms(weights: dict[str, Any]) -> dict[str, Any]:
     """Detect and repair a sidecar whose norms were never +1-restored.
 

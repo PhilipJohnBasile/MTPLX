@@ -18,3 +18,17 @@ index, tokenizer, generation config, special tokens map, and Poolside chat
 template. Other Laguna variants — including the earlier uniform-4bit build —
 remain blocked until they have their own construction-time validation and
 runtime evidence.
+
+## Embedded MTP heads and third-party loaders (#306)
+
+An MTPLX-branded pack stores its MTP head as a standalone `mtp.safetensors`
+sidecar. Do not brand or redistribute an artifact that keeps `mtp.*` tensors
+embedded in the trunk shards with absolute norm gains: mlx-lm's qwen3.5-family
+loader keys its +1.0 delta-norm restoration on the bare presence of those
+keys, so it shifts every trunk RMSNorm of an already-absolute checkpoint a
+second time. The model still loads and generates — with acceptance collapsed
+to a few percent — so it benchmarks as "MTPLX models are slow" instead of
+failing. MTPLX's own loader refuses such a trunk at load with the cause named
+(the q-norm mean lands near 2.79 against a healthy 1.74–1.83 band). Rebuild
+the pack through `mtplx forge`, which extracts the head into the sidecar and
+decides the norm convention once per tensor set.

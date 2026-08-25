@@ -280,6 +280,54 @@ final class RuntimeSetupServiceTests: XCTestCase {
         )
     }
 
+    /// #292: a symlinked ~/.zshrc (dotfile-repo users) must survive the PATH
+    /// append. The old atomic rewrite replaced the link with a plain file and
+    /// silently detached the user's dotfiles.
+    func testSymlinkedZshrcSurvivesPathAppend() async throws {
+        let home = temporaryDirectory()
+        let engine = try makeFakeCLI(in: home.appendingPathComponent("engine"), version: "1.0.0")
+        let globalDir = home.appendingPathComponent("global-bin", isDirectory: true)
+        _ = try makeFakeCLI(in: globalDir, version: "0.3.7")
+
+        let fileManager = FileManager.default
+        let dotfiles = home.appendingPathComponent("dotfiles", isDirectory: true)
+        try fileManager.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let realZshrc = dotfiles.appendingPathComponent("zshrc")
+        let userContent = "# user's own config\nalias ll='ls -la'\n"
+        try userContent.write(to: realZshrc, atomically: true, encoding: .utf8)
+        let zshrcLink = home.appendingPathComponent(".zshrc")
+        try fileManager.createSymbolicLink(
+            at: zshrcLink,
+            withDestinationURL: realZshrc
+        )
+
+        var environment = isolatedEnvironment(home: home, pathDir: globalDir)
+        environment["MTPLX_APP_FAKE_INSTALL_KIND"] = "pipLike"
+        let service = RuntimeSetupService(
+            processEnvironment: environment,
+            appVersion: "1.0.0",
+            engineInstaller: { _ in engine },
+            fanControlEnsurer: fanControlOK(),
+            homebrewUpgrader: { engine }
+        )
+        _ = await run(service)
+
+        let destination = try? fileManager.destinationOfSymbolicLink(
+            atPath: zshrcLink.path
+        )
+        XCTAssertEqual(
+            destination,
+            realZshrc.path,
+            "~/.zshrc must still be the user's symlink, not a replacement file"
+        )
+        let target = try String(contentsOf: realZshrc, encoding: .utf8)
+        XCTAssertTrue(target.contains("alias ll"), "user content preserved")
+        XCTAssertTrue(
+            target.contains(".mtplx/bin"),
+            "PATH line written through the link into the real dotfile"
+        )
+    }
+
     /// The founder's edge case: a CLI newer than the app is the user's
     /// business — no shim, no downgrade, no nagging.
     func testNewerThanAppCLIIsLeftAlone() async throws {

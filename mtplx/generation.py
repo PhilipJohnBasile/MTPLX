@@ -63,7 +63,9 @@ from .graphbank import (
     SpecDecodeGraphBank,
     cache_array_tree,
     compiled_verify_mode,
+    paged_offsets_context_ok as _paged_offsets_context_ok,
     promote_kv_cache_offsets,
+    set_paged_offsets_context_ok,
 )
 from .native_mlp import set_native_mlp_context
 from .loop_guard import LoopGuard, loop_guard_config_from_env
@@ -224,6 +226,41 @@ def _eval(*values: Any, _caller_depth: int = 1) -> None:
         print(json.dumps(entry, sort_keys=True), file=sys.stderr)
 
 
+def _env_enabled_default_on(name: str) -> bool:
+    """Opt-out env read: unset resolves ON, "0"/"false"/"no"/"off" disables.
+
+    The greedy-trio knobs (#313/#315c1/#318) moved to this resolution on the
+    night-20260822 round-4 ruling (n=4 counterbalanced ABBA blend +2.7% mean,
+    byte-identity held on greedy and sampled-seed lanes). Same falsy set as
+    graphbank._batch_paged_offsets_enabled so the trio reads stay symmetric.
+    """
+    return str(os.environ.get(name, "1")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _trio_max_context() -> int:
+    """Prompt-token fence for the greedy-trio defaults (0 = no fence).
+
+    Night-20260822 receipts: the trio stack blends +2.5..+9.8% on the
+    0.5k-8k rungs but measured −2.9%/−2.7% at 16k/32k in the dedicated
+    order-symmetric quad — so the defaults route by context, the same
+    pattern as MTPLX_COMPILED_VERIFY_MAX_CONTEXT. Decided once per request
+    from the prompt length (a request that grows past the fence mid-decode
+    keeps its entry decision).
+    """
+    raw = os.environ.get("MTPLX_GREEDY_TRIO_MAX_CONTEXT", "12288").strip().lower()
+    if raw in ("0", "off", "none", "unlimited"):
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 12288
+
+
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {
         "1",
@@ -252,6 +289,32 @@ def _skip_verify_snapshot() -> bool:
     """
 
     return env_bool("MTPLX_SKIP_VERIFY_SNAPSHOT", default=False)
+
+
+def _draft_confidence_trace() -> bool:
+    """Head-cal diagnostic (default OFF): record the draft head's softmax
+    p(drafted token) per depth and attribute it to accept/reject at verify.
+    Greedy lane only — under temperature the drafted token is not the argmax
+    and its shaped distribution is not a raw softmax."""
+
+    return env_bool("MTPLX_DRAFT_CONFIDENCE_TRACE", default=False)
+
+
+def _draft_confidence_width_threshold() -> float | None:
+    """Head-cal leg 2b (default OFF): stop drafting the cycle once the draft
+    head's p(drafted) falls below this threshold. The triggering draft is
+    KEPT (native gated-stop semantics); only deeper drafts are skipped, so
+    committed output tokens are invariant — the knob trades speculation
+    width against doomed-draft verify work. Greedy stock loop only."""
+
+    raw = os.environ.get("MTPLX_DRAFT_CONFIDENCE_WIDTH_THRESHOLD", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 0.0 < value < 1.0 else None
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1154,6 +1217,27 @@ class _DecodeTrace:
             "accepted_by_depth": [0 for _ in range(speculative_depth)],
             "drafted_by_depth": [0 for _ in range(speculative_depth)],
             "accept_probability_sum_by_depth": [0.0 for _ in range(speculative_depth)],
+            "draft_confidence_width_stops": 0,
+            "draft_confidence_sum_by_depth": [0.0 for _ in range(speculative_depth)],
+            "draft_confidence_count_by_depth": [0 for _ in range(speculative_depth)],
+            "draft_confidence_accepted_sum_by_depth": [
+                0.0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_accepted_count_by_depth": [
+                0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_rejected_sum_by_depth": [
+                0.0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_rejected_count_by_depth": [
+                0 for _ in range(speculative_depth)
+            ],
+            "draft_confidence_accepted_hist_flat": [
+                0 for _ in range(speculative_depth * 10)
+            ],
+            "draft_confidence_rejected_hist_flat": [
+                0 for _ in range(speculative_depth * 10)
+            ],
         }
         if self.enabled and self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1234,6 +1318,57 @@ class _DecodeTrace:
                 accept_probability_sum_delta, drafted_by_depth_delta
             )
         ]
+
+        def _conf_pair(kind: str) -> tuple[list[float], list[int], list[float | None]]:
+            # A lane that never carried these keys (AR after last_totals was
+            # re-snapshotted from its own totals) gets scalar-zero deltas
+            # from _delta; the tolerant shape for a by-depth counter is [].
+            raw_sums = self._delta(totals, f"draft_confidence_{kind}sum_by_depth")
+            raw_counts = self._delta(
+                totals, f"draft_confidence_{kind}count_by_depth"
+            )
+            sums = [
+                float(item)
+                for item in (raw_sums if isinstance(raw_sums, list) else [])
+            ]
+            counts = [
+                int(item)
+                for item in (raw_counts if isinstance(raw_counts, list) else [])
+            ]
+            means = [
+                (s / c if c else None) for s, c in zip(sums, counts)
+            ]
+            return sums, counts, means
+
+        (
+            _conf_sum_unused,
+            draft_confidence_count_delta,
+            draft_confidence_mean_delta,
+        ) = _conf_pair("")
+        (
+            _conf_accepted_sum_unused,
+            draft_confidence_accepted_count_delta,
+            draft_confidence_accepted_mean_delta,
+        ) = _conf_pair("accepted_")
+        (
+            _conf_rejected_sum_unused,
+            draft_confidence_rejected_count_delta,
+            draft_confidence_rejected_mean_delta,
+        ) = _conf_pair("rejected_")
+        draft_confidence_width_stops_delta = int(
+            self._delta(totals, "draft_confidence_width_stops")
+        )
+
+        def _hist_delta(key: str) -> list[int]:
+            raw = self._delta(totals, key)
+            return [int(item) for item in (raw if isinstance(raw, list) else [])]
+
+        draft_confidence_accepted_hist_delta = _hist_delta(
+            "draft_confidence_accepted_hist_flat"
+        )
+        draft_confidence_rejected_hist_delta = _hist_delta(
+            "draft_confidence_rejected_hist_flat"
+        )
         verify_calls_delta = int(self._delta(totals, "verify_calls"))
         accepted_drafts_delta = int(self._delta(totals, "accepted_drafts"))
         drafted_tokens_delta = int(self._delta(totals, "drafted_tokens"))
@@ -1360,6 +1495,27 @@ class _DecodeTrace:
             "drafted_by_depth_delta": drafted_by_depth_delta,
             "acceptance_rate_by_depth_delta": acceptance_rate_by_depth_delta,
             "mean_accept_probability_by_depth_delta": mean_accept_probability_by_depth_delta,
+            "draft_confidence_width_stops_delta": draft_confidence_width_stops_delta,
+            "draft_confidence_count_by_depth_delta": draft_confidence_count_delta,
+            "draft_confidence_mean_by_depth_delta": draft_confidence_mean_delta,
+            "draft_confidence_accepted_count_by_depth_delta": (
+                draft_confidence_accepted_count_delta
+            ),
+            "draft_confidence_accepted_mean_by_depth_delta": (
+                draft_confidence_accepted_mean_delta
+            ),
+            "draft_confidence_rejected_count_by_depth_delta": (
+                draft_confidence_rejected_count_delta
+            ),
+            "draft_confidence_rejected_mean_by_depth_delta": (
+                draft_confidence_rejected_mean_delta
+            ),
+            "draft_confidence_accepted_hist_flat_delta": (
+                draft_confidence_accepted_hist_delta
+            ),
+            "draft_confidence_rejected_hist_flat_delta": (
+                draft_confidence_rejected_hist_delta
+            ),
             "rejected_drafts_delta": int(self._delta(totals, "rejected_drafts")),
             "correction_tokens_delta": int(self._delta(totals, "correction_tokens")),
             "bonus_tokens_delta": int(self._delta(totals, "bonus_tokens")),
@@ -1461,6 +1617,14 @@ class _DecodeTrace:
             "lazy_mtp_history_append": _env_truthy("MTPLX_LAZY_MTP_HISTORY_APPEND"),
             "batch_target_arrays": _batch_target_arrays_enabled(),
             "drop_events": _env_truthy("MTPLX_DROP_EVENTS"),
+            # Trio ports (#313/#315/#318): receipts prove which lane ran —
+            # the #314 dead-switch antidote.
+            "greedy_draft_chain": _env_enabled_default_on("MTPLX_GREEDY_DRAFT_CHAIN"),
+            "batched_greedy_accept": _env_enabled_default_on("MTPLX_BATCHED_GREEDY_ACCEPT"),
+            # Env resolution above; the per-request truth is the fence stamp —
+            # a >fence prompt runs all three knobs OFF regardless of env.
+            "greedy_trio_max_context": _trio_max_context(),
+            "trio_context_ok": _paged_offsets_context_ok(),
             "skip_verify_snapshot": _skip_verify_snapshot(),
             "mtp_history_materialize_every": int(mtp_history_materialize_every),
             "mtp_history_materialize_events": int(mtp_history_materialize_events),
@@ -2178,6 +2342,17 @@ def _detect_repeated_token_suffix(
     min_block = max(1, int(config.min_block_tokens))
     if max_block < min_block:
         return None
+    # Necessary-condition pre-gate (#311 armed the stop on every request, so
+    # this scan now sits on hot capped AR decode): any period-p suffix
+    # repetition requires tokens[-1] == tokens[-1-p]. Plain integer compares,
+    # no slicing — provably cannot change the fire point, only skip the
+    # slice work when no period is even possible.
+    last = tokens[token_count - 1]
+    if not any(
+        tokens[token_count - 1 - period] == last
+        for period in range(min_block, max_block + 1)
+    ):
+        return None
     best: RepetitionStopResult | None = None
     for block_tokens in range(min_block, max_block + 1):
         block = tokens[token_count - block_tokens : token_count]
@@ -2707,6 +2882,7 @@ def _restore_near_prefix_prompt_state(
     cache_factory: Callable[[], Any] | None = None,
     stable_prefix_len: int | None = None,
     matched_ceiling: int | None = None,
+    vision_splice: Any | None = None,
 ) -> PromptState | None:
     """matched_ceiling: hard cap on any candidate's matched length.
 
@@ -3054,6 +3230,20 @@ def _restore_near_prefix_prompt_state(
             if _gdn_boundary_capture_enabled()
             else None
         )
+        if vision_splice is not None:
+            # #296: this lane was vision-blind — with no splice the suffix
+            # forwarded image-pad ids as plain tokens and the image rows
+            # never reached the KV (silent wrong answers after a warm
+            # restore). Rows for pads inside the restored prefix are already
+            # baked into that KV; the suffix consumes strictly after them.
+            # matched_ceiling clamps restore_point to before the first pad,
+            # so this cursor is provably 0 today — computed explicitly so the
+            # invariant survives any future ceiling change, and the
+            # unconsumed-rows assert downstream stays a live guard.
+            pad_id = int(vision_splice.image_pad_token_id)
+            vision_splice.cursor = sum(
+                1 for token in prompt_ids[:restore_point] if token == pad_id
+            )
         suffix_logits, suffix_hidden, suffix_time, mtp_history_time = (
             _prefill_restored_prompt_suffix(
                 rt,
@@ -3069,6 +3259,7 @@ def _restore_near_prefix_prompt_state(
                 chunk_started_s=chunk_started_s,
                 gdn_boundary_sink=suffix_boundary_sink,
                 stable_prefix_len=stable_prefix_len,
+                vision_splice=vision_splice,
             )
         )
         entry.hits += 1
@@ -3710,6 +3901,7 @@ def restore_or_prefill_prompt_state(
                     if vision_restore_spans
                     else None
                 ),
+                vision_splice=vision_splice,
                 cache_factory=restore_cache_factory,
                 # Tool-round prefix stability (defect A): the suffix prefill
                 # behind this lane must treat the pre-nudge stable edge as a
@@ -3894,6 +4086,7 @@ def restore_or_prefill_prompt_state(
             matched_ceiling=(
                 vision_restore_spans[0][0] if vision_restore_spans else None
             ),
+            vision_splice=vision_splice,
         )
         if near_prompt_state is not None:
             return _emit_prefill_complete(near_prompt_state)
@@ -7227,6 +7420,34 @@ def generate_mtpk(
     accepted_by_depth = [0 for _ in range(speculative_depth)]
     drafted_by_depth = [0 for _ in range(speculative_depth)]
     accept_probability_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    # Head-cal 2a counters. Own denominators on purpose: the mean-accept-
+    # probability field divides an evaluated-depths numerator by an
+    # all-drafted denominator and under-reports at depth >= 2 after a
+    # rejection truncates the cycle; these attribute only what was measured.
+    _draft_conf_trace = _draft_confidence_trace() and sampler.temperature == 0
+    _draft_conf_width_threshold = (
+        _draft_confidence_width_threshold() if sampler.temperature == 0 else None
+    )
+    _draft_conf_needed = (
+        _draft_conf_trace or _draft_conf_width_threshold is not None
+    )
+    draft_confidence_width_stops = 0
+    draft_confidence_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_count_by_depth = [0 for _ in range(speculative_depth)]
+    draft_confidence_accepted_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_accepted_count_by_depth = [0 for _ in range(speculative_depth)]
+    draft_confidence_rejected_sum_by_depth = [0.0 for _ in range(speculative_depth)]
+    draft_confidence_rejected_count_by_depth = [0 for _ in range(speculative_depth)]
+    # Flat depth-major 10-bucket histograms (index = depth*10 + bucket) —
+    # flat so the trace's list-aware snapshot-diff handles them unchanged.
+    # Means alone already misled once (leg 2b: overlapping tails), so the
+    # gate-vs-distill decision reads bucket shape, not means.
+    draft_confidence_accepted_hist_flat = [
+        0 for _ in range(speculative_depth * 10)
+    ]
+    draft_confidence_rejected_hist_flat = [
+        0 for _ in range(speculative_depth * 10)
+    ]
     deferred_correction_repairs = 0
     pending_primary: int | None = None
     online_hidden_deltas: dict[object, mx.array] = {}
@@ -7607,6 +7828,7 @@ def generate_mtpk(
         nonlocal target_time, draft_time
         nonlocal state_rebase_tokens_since, state_rebase_observed_tokens
         nonlocal state_rebase_events, state_rebase_time_s
+        nonlocal _batched_target_tokens
         if state_rebase_every <= 0 or current_tokens <= 0:
             return
         if current_tokens < state_rebase_observed_tokens:
@@ -7642,6 +7864,15 @@ def generate_mtpk(
         cache = rebased.trunk_cache
         logits = rebased.logits
         hidden = rebased.hidden
+        # `logits` is now a fresh full-prefill row — deliberately a DIFFERENT
+        # computation from this cycle's verify_logits (that is this knob's
+        # entire purpose: rebuild drifted incremental state). Any token
+        # pre-reduced from verify_logits is stale from here on; consumers
+        # must fall back to the stock read of the rebased `logits`. This is
+        # the single point where the staleness is created, so it is the
+        # single point of invalidation (#315 port — the authored PR carried
+        # exactly this bug on both its bonus-row and known-primary paths).
+        _batched_target_tokens = None
         mtp_history_cache = rebased.committed_mtp_cache
         trace_current_mtp_cache = mtp_history_cache
         target_time += max(
@@ -7834,6 +8065,27 @@ def generate_mtpk(
             "accepted_by_depth": list(accepted_by_depth),
             "drafted_by_depth": list(drafted_by_depth),
             "accept_probability_sum_by_depth": list(accept_probability_sum_by_depth),
+            "draft_confidence_width_stops": draft_confidence_width_stops,
+            "draft_confidence_sum_by_depth": list(draft_confidence_sum_by_depth),
+            "draft_confidence_count_by_depth": list(draft_confidence_count_by_depth),
+            "draft_confidence_accepted_sum_by_depth": list(
+                draft_confidence_accepted_sum_by_depth
+            ),
+            "draft_confidence_accepted_count_by_depth": list(
+                draft_confidence_accepted_count_by_depth
+            ),
+            "draft_confidence_rejected_sum_by_depth": list(
+                draft_confidence_rejected_sum_by_depth
+            ),
+            "draft_confidence_rejected_count_by_depth": list(
+                draft_confidence_rejected_count_by_depth
+            ),
+            "draft_confidence_accepted_hist_flat": list(
+                draft_confidence_accepted_hist_flat
+            ),
+            "draft_confidence_rejected_hist_flat": list(
+                draft_confidence_rejected_hist_flat
+            ),
         }
 
     def emit_trace(*, force: bool = False, final: bool = False) -> None:
@@ -7982,6 +8234,43 @@ def generate_mtpk(
     # (first observe gets the span since loop entry, later ones the span
     # since the previous observe) — real cycle cost, not inter-request gaps.
     _policy_cycle_started = time.perf_counter()
+    # Long-context fence for the trio defaults (#313/#315c1/#318): decided
+    # once per request from the prompt length, stamped through to graphbank
+    # for the paged-offsets read. Receipts in _trio_max_context's docstring.
+    _trio_fence = _trio_max_context()
+    _trio_context_ok = _trio_fence <= 0 or len(prompt_ids) < _trio_fence
+    set_paged_offsets_context_ok(_trio_context_ok)
+    # Greedy-chain eligibility (#313 port), PRE-BOUND: every term here is
+    # request-invariant, so it is decided once — the decode loop's prebound-
+    # policy-surface contract (test_decode_loop_uses_prebound_policy_surfaces)
+    # and one boolean per cycle instead of ~20 reads. Per-cycle terms
+    # (used_device_core, cycle_depth, _cc_draft_source_token, _steer_active —
+    # guards can arm mid-generation) stay in the loop.
+    _greedy_chain_eligible = (
+        _trio_context_ok
+        and draft_sampler.temperature <= 0
+        and sampler.temperature <= 0
+        and a3b_target_prefix_route is None
+        and constraint is None
+        and draft_margin_threshold is None
+        # Leg-2b width gating is a per-depth host check — structurally
+        # incompatible with the one-sync chain; an explicitly set threshold
+        # must win over the default lane (dead-switch scar, #314).
+        and _draft_conf_width_threshold is None
+        and adaptive_policy is None
+        and adaptive_width_policy is None
+        and mtp_corrector is None
+        and mtp_topk_reranker is None
+        and not adapter_ensemble_q
+        and not online_hidden_enabled
+        and not online_correction_cache
+        and not prompt_correction_cache
+        and not target_prefix_verify
+        and not _penalties_active
+        and mtp_cache_policy == "persistent"
+        and _mtp_history_uses_committed_cache(mtp_history_policy)
+        and _env_enabled_default_on("MTPLX_GREEDY_DRAFT_CHAIN")
+    )
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
             # Top of iteration 2: the cumulative timers now hold exactly
@@ -8168,6 +8457,9 @@ def generate_mtpk(
         adaptive_width_decision_margins: list[float] = []
         draft_tokens: list[int | None] = []
         draft_probs: list[np.ndarray | None] = []
+        # Parallel to draft_tokens when _draft_conf_trace: p(drafted) per
+        # depth, None where a lane has no draft logits (device cores, cc).
+        draft_confidences: list[float | None] = []
         draft_cache_keys: list[tuple[int, ...]] = []
         draft_hidden_for_update: list[mx.array] = []
         draft_hidden_update_keys: list[object] = []
@@ -8739,7 +9031,104 @@ def generate_mtpk(
                     "requested": "device",
                     "reason": "ineligible_contract",
                 }
-        for depth_index in range(0 if used_device_core else cycle_depth):
+        # Greedy on-device draft chain (#313 port, default OFF pending our
+        # ABBA): under double-greedy (draft AND target temp<=0) with the
+        # persistent committed-history cache, the per-depth host round-trip
+        # (argmax(row).item() to feed the next depth) is pure sync latency —
+        # chain the argmax on-device and materialize all depths in ONE eval.
+        # The guard reproduces every stock-loop feature this fast path cannot
+        # express; any of them active falls through to the stock loop
+        # unchanged. Byte-identity is gated by the trio unit gates before the
+        # knob may default on. Duplicates ~40 lines of the stock loop below —
+        # keep the two in sync (and see the stock loop's own comment).
+        _greedy_chain_used = False
+        if (
+            _greedy_chain_eligible
+            and not used_device_core
+            and cycle_depth > 0
+            and _cc_draft_source_token is None
+            and not _steer_active
+            and mtp_cache is not None
+        ):
+            _chain_started = time.perf_counter()
+            _chain_tok = mx.array([[int(next_token)]])
+            _chain_hidden = draft_hidden
+            _chain_pending: list[mx.array] = []
+            _chain_conf_pending: list[mx.array] = []
+            _chain_offsets: list[int | None] = []
+            for _chain_depth in range(cycle_depth):
+                _chain_offset = mtp_position_offset_for_cache(mtp_cache)
+                _chain_offsets.append(_chain_offset)
+                _chain_logits, _chain_hidden_next = rt.draft_mtp(
+                    _chain_hidden,
+                    _chain_tok,
+                    mtp_cache=mtp_cache,
+                    return_hidden=True,
+                    mtp_hidden_variant=mtp_hidden_variant,
+                    mtp_depth=_chain_depth + 1,
+                    position_offset=_chain_offset,
+                )
+                _chain_row = _chain_logits[:, -1, :][0]
+                _chain_arg = mx.argmax(_chain_row, axis=-1)
+                _chain_pending.append(_chain_arg)
+                if _draft_conf_trace:
+                    # Greedy: max(row) IS the drafted token's logit, so this
+                    # is p(drafted) without a gather. Lazy — rides the eval.
+                    _chain_conf_pending.append(
+                        mx.exp(mx.max(_chain_row) - mx.logsumexp(_chain_row))
+                    )
+                _chain_tok = _chain_arg.reshape(1, 1).astype(mx.int32)
+                _chain_hidden = _chain_hidden_next[:, -1:, :]
+                draft_hidden_for_update.append(_chain_hidden)
+            _eval(*_chain_pending, *_chain_conf_pending, _chain_hidden)
+            _chain_tokens = [int(a.item()) for a in _chain_pending]
+            _chain_confs = [float(c.item()) for c in _chain_conf_pending]
+            # Parallel-array invariant: draft_hidden_update_keys must track
+            # draft_hidden_for_update position-for-position (the online-hidden
+            # consumer indexes by position). Keys are host-cheap here — the
+            # source token of depth d is next_token for d=0 and the previous
+            # chained token after.
+            for _chain_index in range(len(_chain_tokens)):
+                _chain_feed_depth = _chain_index + 1
+                _chain_source = (
+                    int(next_token)
+                    if _chain_index == 0
+                    else _chain_tokens[_chain_index - 1]
+                )
+                draft_hidden_update_keys.append(
+                    (_chain_feed_depth, _chain_source)
+                    if online_hidden_corrector_key == "token"
+                    else _chain_feed_depth
+                )
+            _chain_elapsed = time.perf_counter() - _chain_started
+            draft_time += _chain_elapsed
+            for _chain_index, _chain_token in enumerate(_chain_tokens):
+                draft_tokens.append(_chain_token)
+                draft_probs.append(None)
+                if _draft_conf_trace:
+                    draft_confidences.append(_chain_confs[_chain_index])
+                drafted += 1
+                drafted_by_depth[_chain_index] += 1
+                _chain_event = {
+                    "depth": _chain_index + 1,
+                    "token": int(_chain_token),
+                    "timing_s": {
+                        "draft": _chain_elapsed
+                        if _chain_index == len(_chain_tokens) - 1
+                        else 0.0
+                    },
+                    "mtp_corrector": None,
+                    "draft_core": "greedy-chain",
+                }
+                if _chain_offsets[_chain_index] is not None:
+                    _chain_event["position_offset"] = int(_chain_offsets[_chain_index])
+                event["drafts"].append(_chain_event)
+            draft_hidden = _chain_hidden
+            next_token = _chain_tokens[-1]
+            _greedy_chain_used = True
+        for depth_index in range(
+            0 if (used_device_core or _greedy_chain_used) else cycle_depth
+        ):
             source_token = int(next_token)
             step_mtp_cache = (
                 mtp_cache if mtp_cache_policy == "persistent" else rt.make_mtp_cache()
@@ -8956,6 +9345,30 @@ def generate_mtpk(
                 trace_accounting_time_s += (
                     time.perf_counter() - trace_accounting_started
                 )
+            if _draft_conf_needed:
+                # One extra scalar sync per depth (default-off knobs).
+                # Outside the draft_time window on purpose, self-timed into
+                # trace accounting so its cost is visible, not hidden.
+                conf_started = time.perf_counter()
+                if draft_token is not None:
+                    _conf_row = draft_logits[:, -1, :][0]
+                    _conf_value_now = float(
+                        mx.exp(
+                            mx.max(_conf_row) - mx.logsumexp(_conf_row)
+                        ).item()
+                    )
+                    draft_confidences.append(_conf_value_now)
+                    if (
+                        _draft_conf_width_threshold is not None
+                        and _conf_value_now < _draft_conf_width_threshold
+                    ):
+                        # Keep this draft, skip deeper ones — rides the
+                        # native gated-stop break below.
+                        adaptive_width_stop = True
+                        draft_confidence_width_stops += 1
+                else:
+                    draft_confidences.append(None)
+                trace_accounting_time_s += time.perf_counter() - conf_started
             draft_tokens.append(draft_token)
             draft_probs.append(draft_q)
             draft_cache_keys.append(cache_key)
@@ -9494,6 +9907,34 @@ def generate_mtpk(
             if constraint is not None
             else None
         )
+        # Batched greedy accept (#315c1 port, default OFF pending our ABBA):
+        # at temp<=0 the per-depth accept reduction is R serial
+        # argmax(row).item() host syncs; one 2-D argmax over the draft rows
+        # collapses them to a single sync. Guard mirrors the stock branch's
+        # own preconditions exactly: penalties and steering fall through to
+        # the per-row path (they mutate the row before the argmax), and the
+        # grammar clamp stays unguarded on purpose — stock's accept argmax
+        # also reads the unmasked row (the clamp applies via
+        # constraint_legal_prefix, not the row). _row_guard_overlay is
+        # provably None here: it is assigned from _steer_overlay only when
+        # _steer_active, which this guard excludes. Exactness rests on MLX
+        # argmax tie-break identity between the 1-D and 2-D dispatches —
+        # gated by test_batched_greedy_argmax_tiebreak_identity before this
+        # knob may default on. Bonus row NOT ported (stale-row hazard via
+        # maybe_rebase_decode_state on the all-accept path).
+        _batched_target_tokens: list[int] | None = None
+        if (
+            _trio_context_ok
+            and sampler.temperature <= 0
+            and not _penalties_active
+            and not _steer_active
+            and len(draft_tokens) > 0
+            and int(verify_logits.shape[1]) >= len(draft_tokens)
+            and _env_enabled_default_on("MTPLX_BATCHED_GREEDY_ACCEPT")
+        ):
+            _batched_target_tokens = mx.argmax(
+                verify_logits[0, : len(draft_tokens), :], axis=-1
+            ).tolist()
         for depth_index, draft_token in enumerate(draft_tokens):
             target_logits_for_draft = verify_logits[:, depth_index, :]
             if _steer_active:
@@ -9511,16 +9952,19 @@ def generate_mtpk(
                 _working_counts.update(draft_tokens[:depth_index])
             target_p_for_cache = None
             if sampler.temperature <= 0:
-                _greedy_row = target_logits_for_draft[0]
-                if _penalties_active or _row_guard_overlay:
-                    _greedy_row = apply_penalties_mlx(
-                        _greedy_row,
-                        _working_counts if _penalties_active else None,
-                        sampler.presence_penalty,
-                        sampler.frequency_penalty,
-                        penalty_overlay=_row_guard_overlay,
-                    )
-                target_token = int(mx.argmax(_greedy_row, axis=-1).item())
+                if _batched_target_tokens is not None:
+                    target_token = int(_batched_target_tokens[depth_index])
+                else:
+                    _greedy_row = target_logits_for_draft[0]
+                    if _penalties_active or _row_guard_overlay:
+                        _greedy_row = apply_penalties_mlx(
+                            _greedy_row,
+                            _working_counts if _penalties_active else None,
+                            sampler.presence_penalty,
+                            sampler.frequency_penalty,
+                            penalty_overlay=_row_guard_overlay,
+                        )
+                    target_token = int(mx.argmax(_greedy_row, axis=-1).item())
                 accepted_now = draft_token == target_token
                 accept_prob = 1.0 if accepted_now else 0.0
                 correction = target_token
@@ -9632,6 +10076,31 @@ def generate_mtpk(
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
             accept_probability_sum_by_depth[depth_index] += float(accept_prob)
+            if _draft_conf_trace:
+                # After the constraint clamp: attribute to the COMMITTED
+                # outcome. Bounds guard covers lanes with no draft logits
+                # (device cores, cc) whose confidence list stayed empty.
+                _conf_value = (
+                    draft_confidences[depth_index]
+                    if depth_index < len(draft_confidences)
+                    else None
+                )
+                if _conf_value is not None:
+                    draft_confidence_sum_by_depth[depth_index] += _conf_value
+                    draft_confidence_count_by_depth[depth_index] += 1
+                    _conf_bucket = depth_index * 10 + min(9, int(_conf_value * 10))
+                    if accepted_now:
+                        draft_confidence_accepted_sum_by_depth[
+                            depth_index
+                        ] += _conf_value
+                        draft_confidence_accepted_count_by_depth[depth_index] += 1
+                        draft_confidence_accepted_hist_flat[_conf_bucket] += 1
+                    else:
+                        draft_confidence_rejected_sum_by_depth[
+                            depth_index
+                        ] += _conf_value
+                        draft_confidence_rejected_count_by_depth[depth_index] += 1
+                        draft_confidence_rejected_hist_flat[_conf_bucket] += 1
 
             if accepted_now:
                 accepted += 1

@@ -246,21 +246,34 @@ def _check_gqa_packed(mx, dtype) -> float:
 
 
 def _check_fused_add_rmsnorm(mx, dtype) -> float:
+    from .gdn_capture import _fused_post_norm_tg_override
     from .kernels.fused_norm import fused_add_rmsnorm
 
+    # Probe the production configuration (same threadgroup resolution as the
+    # gdn_capture call site) at real model widths. The pre-#319 probe used
+    # axis=512 with a hardcoded threadgroup_size=512 — the one width where a
+    # forced 512-lane loop matches the reference partition, so it validated a
+    # configuration production never hit and stayed green while axes 3072/5120
+    # flipped fp16 ULPs from 64 rows up. This lane claims bitwise identity, so
+    # its tolerance at the _record call site is 0.0 — never widen it back.
     mx.random.seed(13)
-    rows, axis = 4, 512
-    x = (mx.random.normal((rows, axis), dtype=mx.float32) * 0.5).astype(dtype)
-    residual = (mx.random.normal((rows, axis), dtype=mx.float32) * 0.5).astype(dtype)
-    weight = (mx.random.normal((axis,), dtype=mx.float32) * 0.1 + 1.0).astype(dtype)
-    eps = 1e-6
-    h, normed = fused_add_rmsnorm(x, residual, weight, eps, threadgroup_size=512)
-    ref_h = x + residual
-    ref_normed = mx.fast.rms_norm(ref_h, weight, eps).astype(dtype)
-    return max(
-        _max_abs_diff(mx, h, ref_h),
-        _max_abs_diff(mx, normed, ref_normed),
-    )
+    tg = _fused_post_norm_tg_override()
+    worst = 0.0
+    for axis in (512, 3072, 5120):
+        weight = (mx.random.normal((axis,), dtype=mx.float32) * 0.1 + 1.0).astype(dtype)
+        for rows in (1, 4, 128):
+            x = (mx.random.normal((rows, axis), dtype=mx.float32) * 0.5).astype(dtype)
+            residual = (mx.random.normal((rows, axis), dtype=mx.float32) * 0.5).astype(dtype)
+            eps = 1e-6
+            h, normed = fused_add_rmsnorm(x, residual, weight, eps, threadgroup_size=tg)
+            ref_h = x + residual
+            ref_normed = mx.fast.rms_norm(ref_h, weight, eps).astype(dtype)
+            worst = max(
+                worst,
+                _max_abs_diff(mx, h, ref_h),
+                _max_abs_diff(mx, normed, ref_normed),
+            )
+    return worst
 
 
 def _check_fused_gdn_norm_gate(mx, dtype) -> float:
@@ -654,9 +667,13 @@ def run_kernel_selfcheck(dtype, bits: int, group_size: int) -> dict[str, Any]:
         lanes["gqa_packed_sdpa"] = _STATUS_SKIPPED
 
     if _env_on("MTPLX_FUSE_POST_NORM_RESIDUAL"):
+        # Bitwise gate: this lane's contract is exact identity with the
+        # unfused reference (#319). _NORM_TOLERANCE stays loose only for
+        # fused_gdn_norm_gate, whose fp32 gate/SiLU is legitimately not
+        # bitwise.
         _record(
             "fused_add_rmsnorm",
-            _NORM_TOLERANCE,
+            0.0,
             lambda: _check_fused_add_rmsnorm(mx, dtype),
         )
     else:

@@ -1279,6 +1279,13 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
             "loads the MTP runtime); use --harness direct-http for stock AR, or "
             "--generation-mode ar here for a target-only AR baseline."
         )
+    requested_harness = getattr(args, "harness", None)
+    if requested_harness not in (None, "", "depth-sweep"):
+        raise SystemExit(
+            f"--harness {requested_harness!r} is not supported with "
+            "--profile performance-cold; the profile runs the depth-sweep "
+            "harness"
+        )
     ar_baseline = getattr(args, "generation_mode", None) == "ar"
     requested_depths = str(getattr(args, "depths", None) or "3")
     requested_seed = 0 if args.seed is None else int(args.seed)
@@ -1340,6 +1347,17 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     except Exception:
         draft_lm_head = fallback_draft_lm_head
         draft_sampler = None
+    # #285: honor the user's sweep knobs. depths/seed/compare-ar were
+    # hardcoded ("3"/0/False) while the CLI accepted the flags — reuse the
+    # same resolution helpers as `mtplx bench run --harness depth-sweep` so
+    # both routes agree on defaults (depths "3", seed 0) when nothing is
+    # passed.
+    from .commands.public import _benchmark_seed, _depths_for_bench_run
+
+    resolved_depths = _depths_for_bench_run(args)
+    resolved_seed = _benchmark_seed(
+        args, runtime_profile="native_mtp_60_cold", harness="depth-sweep"
+    )
     result = run_mtp_depth_sweep(
         model_arg,
         prompts,
@@ -1351,7 +1369,7 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
         seed=requested_seed,
         limit=args.limit,
         enable_thinking=False,
-        compare_ar=ar_baseline,
+        compare_ar=ar_baseline or bool(getattr(args, "compare_ar", False)),
         ar_only=ar_baseline,
         mtp_hidden_variant="post_norm",
         mtp_cache_policy="persistent",
@@ -1390,7 +1408,9 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
         "model": model_arg,
         "model_id": model_arg,
         "depths": requested_depths,
+        "seed": requested_seed,
         "ar_baseline": ar_baseline,
+        "compare_ar": ar_baseline or bool(getattr(args, "compare_ar", False)),
         "verify_strategy": "capture_commit",
         "verify_core": "linear-gdn-from-conv-tape",
         "draft_lm_head": draft_lm_head,
