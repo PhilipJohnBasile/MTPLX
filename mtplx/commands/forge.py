@@ -1724,6 +1724,9 @@ def _copy_safetensors_subset_sanitized(
             raw[str(key_transform(key) if key_transform is not None else key)] = loaded[key]
     if not raw:
         raise ForgeError("embedded MTP extraction found no tensors to write")
+    tensors: dict[str, Any] = {
+        key: sanitize_plain_weight(key, value) for key, value in raw.items()
+    }
     # Norm convention is a whole-sidecar property, not a per-tensor one (#301).
     tensors = shift_delta_mtp_norms(tensors)
     mx.eval(list(tensors.values()))

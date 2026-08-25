@@ -9,7 +9,7 @@ import math
 import shutil
 import struct
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 

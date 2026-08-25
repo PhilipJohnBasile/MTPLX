@@ -1287,8 +1287,8 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
             "harness"
         )
     ar_baseline = getattr(args, "generation_mode", None) == "ar"
-    requested_depths = str(getattr(args, "depths", None) or "3")
-    requested_seed = 0 if args.seed is None else int(args.seed)
+    # requested_depths / requested_seed resolve below via the shared bench
+    # helpers so both harness routes agree on defaults (#285).
     model_arg = (
         NATIVE_MTP_60_MODEL
         if args.model == str(DEFAULT_RUNTIME_MODEL_DIR)
@@ -1354,8 +1354,8 @@ def _cmd_bench_profile(args: argparse.Namespace) -> int:
     # passed.
     from .commands.public import _benchmark_seed, _depths_for_bench_run
 
-    resolved_depths = _depths_for_bench_run(args)
-    resolved_seed = _benchmark_seed(
+    requested_depths = _depths_for_bench_run(args)
+    requested_seed = _benchmark_seed(
         args, runtime_profile="native_mtp_60_cold", harness="depth-sweep"
     )
     result = run_mtp_depth_sweep(
