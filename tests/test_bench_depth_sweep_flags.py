@@ -7,9 +7,20 @@ Four flags used to be accepted by argparse and silently discarded
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from mtplx.cli import _cmd_bench_profile, build_parser
+
+
+@pytest.fixture(autouse=True)
+def _isolated_environ(monkeypatch):
+    """The bench handler applies the profile's env block to os.environ
+    in-process (intended product behavior); without isolation those writes
+    leak into every later test — MTPLX_DROP_EVENTS from performance-cold
+    silenced the context-copy block events two files down the suite."""
+    monkeypatch.setattr(os, "environ", os.environ.copy())
 
 
 def _bench_args(*extra: str):
