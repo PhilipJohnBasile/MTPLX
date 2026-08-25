@@ -52,15 +52,14 @@ def test_delta_set_detected_and_all_norms_shifted():
         assert bool(mx.all(out == expected).item()), f"delta norm not shifted: {key}"
 
 
-def test_heuristic_none_keeps_historical_behavior():
+def test_default_never_shifts_without_set_level_decision():
+    # The per-tensor always-shift tier is retired: without an explicit
+    # mtp_norm_shift=True (the set-level decision from shift_delta_mtp_norms),
+    # MTP norms pass through bit-identical.
     delta = _norm_set(0.03)
     q = delta["layers.0.self_attn.q_norm.weight"]
-    assert bool(
-        mx.all(
-            sanitize_plain_weight("mtp.layers.0.self_attn.q_norm.weight", q)
-            == q + 1.0
-        ).item()
-    )
+    out = sanitize_plain_weight("mtp.layers.0.self_attn.q_norm.weight", q)
+    assert bool(mx.all(out == q).item())
 
 
 def test_empty_or_partial_sets_never_shift():
