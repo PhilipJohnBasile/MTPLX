@@ -1235,10 +1235,11 @@ private struct TargetPreset {
             "MTPLX_LAZY_BONUS_VERIFY": "1",
             "MTPLX_OPENCODE_TOOL_HISTORY_LIVE_FRONTIER": "1",
             "MTPLX_SESSION_LIVE_FRONTIER_REFERENCE_RESTORE": "1",
-            "MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES": "72",
-            "MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE": "8",
-            "MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS": "120",
-            "MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS": "12",
+            // The read-inspection compactor and force-answer contract are no
+            // longer launched here: an explicit env re-arms them even under
+            // the engine's passthrough default (MTPLX_AGENT_REWRITES), so the
+            // app exporting them silently rewrote agent transcripts. Users
+            // who want them set the MTPLX_* limits themselves.
             "MTPLX_TOOL_PROMPT_MODE": "hybrid",
             "MTPLX_CHAT_TEMPLATE_PROFILE": "local_qwen36",
         ]
@@ -1556,18 +1557,19 @@ private struct TargetPreset {
             // preset must not silently enable thinking behind the UI.
             // Draft sampler stays model/stamp-owned — never target-pinned
             // (see the openCode case).
-            var piEnv = codingAgentRuntimeEnvironment(
-                processEnvironment: processEnvironment
-            )
             // Leave long-context depth policy to the sustained runtime profile.
             // The launch-readiness Pi runs showed D2 is the current failing lane
             // above 20k, so the app must not silently cap Pi below its configured
             // depth before the runtime can measure the actual request.
-            piEnv["MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS"] = "1200"
-            piEnv["MTPLX_ACTIVE_READ_INSPECTION_COMPACT_MAX_LINES"] = "32"
-            piEnv["MTPLX_ACTIVE_READ_INSPECTION_LINE_MAX_CHARS"] = "180"
-            piEnv["MTPLX_ACTIVE_TOOL_RESULT_COMPACT_MAX_LINES"] = "32"
-            piEnv["MTPLX_ACTIVE_TOOL_RESULT_LINE_MAX_CHARS"] = "220"
+            //
+            // The May-era Pi compaction battery (tool-result 1200-char
+            // threshold + read-inspection line caps) is gone: explicit envs
+            // re-arm those compactors past the engine's passthrough default,
+            // and they were rewriting Pi transcripts behind the user's back
+            // (#282). Pi now gets the same clean lane as every other client.
+            let piEnv = codingAgentRuntimeEnvironment(
+                processEnvironment: processEnvironment
+            )
             return TargetPreset(
                 schedulerMode: "ar_batch",
                 batchingPreset: "agent",

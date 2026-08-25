@@ -1992,15 +1992,17 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertNil(command.environment["MTPLX_LONG_CONTEXT_MTP_DEPTH_THRESHOLD"])
         XCTAssertNil(command.environment["MTPLX_LONG_CONTEXT_MTP_DEPTH"])
         XCTAssertEqual(command.environment["MTPLX_LAZY_BONUS_VERIFY"], "1")
-        XCTAssertEqual(command.environment["MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS"], "1200")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_COMPACT_MAX_LINES"], "32")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_LINE_MAX_CHARS"], "180")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"], "72")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"], "8")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"], "120")
-        XCTAssertEqual(command.environment["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"], "12")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_TOOL_RESULT_COMPACT_MAX_LINES"], "32")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_TOOL_RESULT_LINE_MAX_CHARS"], "220")
+        // #282 passthrough: the app must not export the compaction battery —
+        // explicit envs re-arm those compactors past the engine default.
+        XCTAssertNil(command.environment["MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_COMPACT_MAX_LINES"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_LINE_MAX_CHARS"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"])
+        XCTAssertNil(command.environment["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_TOOL_RESULT_COMPACT_MAX_LINES"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_TOOL_RESULT_LINE_MAX_CHARS"])
         XCTAssertEqual(
             PiIntegration.launchCommand(for: "/models/Qwen3.6-27B-MTPLX-Optimized-Speed"),
             "pi --model mtplx/mtplx-qwen36-27b-optimized-speed --tools read,bash,edit,write,grep,find,ls "
@@ -2297,10 +2299,12 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(command.environment["MTPLX_LAZY_BONUS_VERIFY"], "1")
         XCTAssertEqual(command.environment["MTPLX_OPENCODE_TOOL_HISTORY_LIVE_FRONTIER"], "1")
         XCTAssertEqual(command.environment["MTPLX_SESSION_LIVE_FRONTIER_REFERENCE_RESTORE"], "1")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"], "72")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"], "8")
-        XCTAssertEqual(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"], "120")
-        XCTAssertEqual(command.environment["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"], "12")
+        // #282 passthrough: the coding-agent lane no longer exports the
+        // read-inspection compactor or the force-answer contract.
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"])
+        XCTAssertNil(command.environment["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"])
+        XCTAssertNil(command.environment["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"])
         XCTAssertEqual(command.environment["MTPLX_TOOL_PROMPT_MODE"], "hybrid")
         XCTAssertEqual(command.environment["MTPLX_CHAT_TEMPLATE_PROFILE"], "local_qwen36")
         XCTAssertNil(command.environment["MTPLX_LONG_CONTEXT_MTP_DEPTH_POLICY"])
