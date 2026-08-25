@@ -38,3 +38,15 @@ def _hermetic_mtplx_state(monkeypatch, tmp_path_factory):
         "MTPLX_APP_SETTINGS_PATH", str(isolated / "app-settings.json")
     )
     monkeypatch.setenv("MTPLX_MODEL_DIR", str(isolated / "models"))
+
+
+@pytest.fixture
+def legacy_rewrites(monkeypatch):
+    """Run one test under the full legacy agent-rewrite machinery.
+
+    #282 made the serving endpoints passthrough by default; tests that pin
+    the opt-in machinery itself (compaction forms, heuristic drops/strips,
+    toolset filtering, steering contracts, injected hints) request this
+    fixture and keep their historical assertions unchanged.
+    """
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")

@@ -241,7 +241,7 @@
  "request_metadata_keys": [],
  "request_model": "default",
  "request_model_matches_served_model": false,
- "request_pi_convergence_after_tools": 14,
+ "request_pi_convergence_after_tools": 0,
  "request_pi_convergence_contract": false,
  "request_pi_convergence_tool_result_count": 0,
  "request_read_only_inspection_force_answer": false,

@@ -8973,6 +8973,11 @@ def _resolve_runtime_options_on_args(
 def cmd_serve_public(args: Any) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     quiet_json = dry_run and bool(getattr(args, "json", False))
+    agent_rewrites = getattr(args, "agent_rewrites", None)
+    if agent_rewrites:
+        # The server child inherits os.environ; the env var is the single
+        # source of truth so in-process helpers and the spawned daemon agree.
+        os.environ["MTPLX_AGENT_REWRITES"] = str(agent_rewrites)
     runtime_options_error = _resolve_runtime_options_on_args(
         args,
         printer=_print_serve_start_line,

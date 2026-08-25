@@ -2949,7 +2949,7 @@ def test_chat_request_controls_are_server_owned_without_override(monkeypatch):
     ]
 
 
-def test_opencode_chitchat_history_reaches_model_with_tools_kept(monkeypatch):
+def test_opencode_chitchat_history_reaches_model_with_tools_kept(legacy_rewrites, monkeypatch):
     captured: dict[str, object] = {}
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
@@ -4305,7 +4305,7 @@ def test_chat_tools_are_passed_to_qwen_template_and_inherit_default_thinking(
     assert stats["request_reasoning_parser"] == "qwen3"
 
 
-def test_chat_tools_hide_task_when_latest_user_disallows_subagents(monkeypatch):
+def test_chat_tools_hide_task_when_latest_user_disallows_subagents(legacy_rewrites, monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
@@ -4335,7 +4335,7 @@ def test_chat_tools_hide_task_when_latest_user_disallows_subagents(monkeypatch):
     assert tool_names == ["session_status"]
 
 
-def test_chat_tools_hide_task_by_default_for_direct_project_work(monkeypatch):
+def test_chat_tools_hide_task_by_default_for_direct_project_work(legacy_rewrites, monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
@@ -4370,7 +4370,7 @@ def test_chat_tools_hide_task_by_default_for_direct_project_work(monkeypatch):
     assert tool_names == ["session_status"]
 
 
-def test_chat_tools_report_filtered_task_names_for_direct_project_work(monkeypatch):
+def test_chat_tools_report_filtered_task_names_for_direct_project_work(legacy_rewrites, monkeypatch):
     seen: dict[str, object] = {}
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
@@ -4408,7 +4408,7 @@ def test_chat_tools_report_filtered_task_names_for_direct_project_work(monkeypat
     assert stats["request_tools_hidden_by_bridge"] is True
 
 
-def test_chat_tools_report_no_edit_mutating_tools_hidden(monkeypatch):
+def test_chat_tools_report_no_edit_mutating_tools_hidden(legacy_rewrites, monkeypatch):
     """Generic clients (no coding-agent hint) keep the content-heuristic
     lockdown. OpenCode clients are exempt — see the pass-through test below:
     they curate the toolset per agent mode themselves, and bridge-side hiding
@@ -4548,7 +4548,7 @@ def test_chat_tools_keep_task_when_latest_user_explicitly_requests_subagent(
     assert tool_names == ["session_status", "Task"]
 
 
-def test_chat_tools_keep_todowrite_when_latest_user_explicitly_requests_plan(
+def test_chat_tools_keep_todowrite_when_latest_user_explicitly_requests_plan(legacy_rewrites, 
     monkeypatch,
 ):
     state = _fake_state()
@@ -4659,7 +4659,7 @@ def test_visible_malformed_tool_content_drops_tool_exec_blocks():
     assert visible.strip() == "Let me search.\n\nDone."
 
 
-def test_tool_contract_includes_exact_schema_keys_for_opencode_write(monkeypatch):
+def test_tool_contract_includes_exact_schema_keys_for_opencode_write(legacy_rewrites, monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = CaptureTokenizer()
     state.args.stats_footer = False
@@ -5061,7 +5061,7 @@ def test_run_generation_can_store_final_state_without_live_cache_ref(monkeypatch
     assert state.sessions.bank.puts[-1]["keep_live_ref"] is False
 
 
-def test_tool_template_schema_failure_retries_with_compact_contract(monkeypatch):
+def test_tool_template_schema_failure_retries_with_compact_contract(legacy_rewrites, monkeypatch):
     state = _fake_state()
     state.runtime.tokenizer = ToolSchemaRejectingTokenizer()
     state.args.stats_footer = False
@@ -6496,7 +6496,7 @@ def test_agent_transcript_canonicalization_strips_opencode_tool_preamble_text():
     assert stats.to_metrics()["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_strips_inspection_tool_preamble_text():
+def test_agent_transcript_canonicalization_strips_inspection_tool_preamble_text(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -6525,7 +6525,7 @@ def test_agent_transcript_canonicalization_strips_inspection_tool_preamble_text(
     assert stats.to_metrics()["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_compacts_digested_large_tool_results():
+def test_agent_transcript_canonicalization_compacts_digested_large_tool_results(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -6581,7 +6581,7 @@ def test_agent_transcript_canonicalization_compacts_digested_large_tool_results(
     )
 
 
-def test_agent_transcript_canonicalization_keeps_followup_tool_digests_small():
+def test_agent_transcript_canonicalization_keeps_followup_tool_digests_small(legacy_rewrites):
     messages = [
         openai.ChatMessage(
             role="system",
@@ -6641,7 +6641,7 @@ def test_agent_transcript_canonicalization_keeps_followup_tool_digests_small():
     )
 
 
-def test_agent_transcript_canonicalization_compacts_tool_loop_history_before_latest_assistant():
+def test_agent_transcript_canonicalization_compacts_tool_loop_history_before_latest_assistant(legacy_rewrites):
     first_call = {
         "id": "call_grep",
         "type": "function",
@@ -6713,7 +6713,7 @@ def test_agent_transcript_canonicalization_keeps_current_small_non_read_tool_res
     assert stats.to_metrics()["transcript_canonicalized"] is False
 
 
-def test_agent_transcript_canonicalization_compacts_current_large_glob_output():
+def test_agent_transcript_canonicalization_compacts_current_large_glob_output(legacy_rewrites):
     tool_call = {
         "id": "call_glob",
         "type": "function",
@@ -6769,7 +6769,7 @@ def test_agent_transcript_canonicalization_compacts_current_large_glob_output():
     assert metrics["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_adds_read_ranges_for_build_output():
+def test_agent_transcript_canonicalization_adds_read_ranges_for_build_output(legacy_rewrites):
     tool_call = {
         "id": "call_bash",
         "type": "function",
@@ -6829,7 +6829,7 @@ def test_agent_transcript_canonicalization_adds_read_ranges_for_build_output():
     assert stats.to_metrics()["transcript_compacted_active_tool_result_read_hints"] == 3
 
 
-def test_agent_transcript_canonicalization_compacts_current_large_read_outputs():
+def test_agent_transcript_canonicalization_compacts_current_large_read_outputs(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -6912,7 +6912,7 @@ def test_agent_transcript_canonicalization_compacts_current_large_read_outputs()
     assert metrics["transcript_compacted_active_read_messages"] == 1
 
 
-def test_agent_transcript_canonicalization_uses_inspection_digest_for_review_reads():
+def test_agent_transcript_canonicalization_uses_inspection_digest_for_review_reads(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -6987,7 +6987,7 @@ def test_agent_transcript_canonicalization_uses_inspection_digest_for_review_rea
     assert metrics["transcript_canonical_message_chars"] < 3_000
 
 
-def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors():
+def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -7119,7 +7119,7 @@ def test_agent_transcript_canonicalization_spreads_full_file_inspection_anchors(
     assert stats.compacted_active_read_inspection_messages == 1
 
 
-def test_agent_transcript_canonicalization_compacts_plain_read_tool_output():
+def test_agent_transcript_canonicalization_compacts_plain_read_tool_output(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -7183,7 +7183,7 @@ def test_agent_transcript_canonicalization_compacts_plain_read_tool_output():
     assert stats.compacted_active_read_inspection_messages == 1
 
 
-def test_agent_transcript_canonicalization_collapses_repeated_inspection_reads():
+def test_agent_transcript_canonicalization_collapses_repeated_inspection_reads(legacy_rewrites):
     first_call = {
         "id": "call_read_1",
         "type": "function",
@@ -7262,7 +7262,7 @@ def test_agent_transcript_canonicalization_collapses_repeated_inspection_reads()
     assert metrics["transcript_canonical_message_chars"] < 5_000
 
 
-def test_agent_transcript_canonicalization_budgets_multi_file_inspection_reads():
+def test_agent_transcript_canonicalization_budgets_multi_file_inspection_reads(legacy_rewrites):
     messages = [
         openai.ChatMessage(
             role="user",
@@ -7349,7 +7349,7 @@ def test_agent_transcript_canonicalization_budgets_multi_file_inspection_reads()
     assert metrics["transcript_canonical_message_chars"] < 18_000
 
 
-def test_agent_transcript_canonicalization_compacts_truncated_read_continuation_hints():
+def test_agent_transcript_canonicalization_compacts_truncated_read_continuation_hints(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -7415,12 +7415,31 @@ def test_active_read_compact_threshold_env_override(monkeypatch):
     )
     assert len(read_output) > openai._ACTIVE_READ_COMPACT_THRESHOLD_CHARS
 
+    # #282 default: passthrough — the compactor never runs unless enabled.
+    assert (
+        openai._compact_active_read_tool_result_text(
+            read_output, inspection_request=False
+        )
+        is None
+    )
+
+    # Legacy machinery restores the historical threshold.
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")
     compacted = openai._compact_active_read_tool_result_text(
         read_output, inspection_request=False
     )
     assert compacted is not None
     assert compacted.startswith("<mtplx_compacted_active_read_output")
+    monkeypatch.delenv("MTPLX_AGENT_REWRITES")
 
+    # An explicit env limit engages this one compactor at that limit.
+    monkeypatch.setenv("MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS", "1000")
+    compacted = openai._compact_active_read_tool_result_text(
+        read_output, inspection_request=False
+    )
+    assert compacted is not None
+
+    # A high explicit limit leaves the content untouched.
     monkeypatch.setenv(
         "MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS", str(100_000_000)
     )
@@ -7431,8 +7450,18 @@ def test_active_read_compact_threshold_env_override(monkeypatch):
         is None
     )
 
+    # off is a hard passthrough guarantee: it beats an explicit low limit.
+    monkeypatch.setenv("MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS", "1000")
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "off")
+    assert (
+        openai._compact_active_read_tool_result_text(
+            read_output, inspection_request=False
+        )
+        is None
+    )
 
-def test_agent_transcript_canonicalization_drops_verbatim_source_dump_assistant_history():
+
+def test_agent_transcript_canonicalization_drops_verbatim_source_dump_assistant_history(legacy_rewrites):
     source_dump = "\n".join(
         f"{line_no}: const copiedLine{line_no} = {line_no};"
         for line_no in range(91, 170)
@@ -7456,7 +7485,7 @@ def test_agent_transcript_canonicalization_drops_verbatim_source_dump_assistant_
     assert metrics["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_strips_inspection_tool_call_preambles():
+def test_agent_transcript_canonicalization_strips_inspection_tool_call_preambles(legacy_rewrites):
     tool_call = {
         "id": "call_read",
         "type": "function",
@@ -7494,7 +7523,7 @@ def test_agent_transcript_canonicalization_strips_inspection_tool_call_preambles
     assert stats.to_metrics()["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_skips_repeated_assistant_text():
+def test_agent_transcript_canonicalization_skips_repeated_assistant_text(legacy_rewrites):
     repeated = (
         "Let me continue:\nWrite the Sky, Game, and utils files\n"
         "Run the typecheck\nRun the dev server\n"
@@ -7513,7 +7542,7 @@ def test_agent_transcript_canonicalization_skips_repeated_assistant_text():
     assert stats.skipped_repeated_assistant_messages == 1
 
 
-def test_agent_transcript_canonicalization_skips_stalled_tool_preamble():
+def test_agent_transcript_canonicalization_skips_stalled_tool_preamble(legacy_rewrites):
     first_tool = {
         "id": "call_bash",
         "type": "function",
@@ -7616,7 +7645,7 @@ def test_agent_transcript_canonicalization_drops_duplicate_user_after_abort():
     assert stats.to_metrics()["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_drops_orphan_chitchat_assistant():
+def test_agent_transcript_canonicalization_drops_orphan_chitchat_assistant(legacy_rewrites):
     canonical, stats = openai._canonicalize_agent_transcript(
         [
             openai.ChatMessage(role="user", content="hey"),
@@ -7705,7 +7734,7 @@ def test_agent_transcript_canonicalization_collapses_short_repeated_chitchat():
     assert stats.to_metrics()["transcript_canonicalized"] is True
 
 
-def test_agent_transcript_canonicalization_marks_repeated_shell_timeouts():
+def test_agent_transcript_canonicalization_marks_repeated_shell_timeouts(legacy_rewrites):
     tool_call = {
         "id": "call_tsc_1",
         "type": "function",
@@ -7753,7 +7782,7 @@ def test_agent_transcript_canonicalization_marks_repeated_shell_timeouts():
     assert stats.compacted_repeated_timeout_tool_messages == 1
 
 
-def test_tool_contract_stabilizes_tool_schema_with_agent_tail_guardrail():
+def test_tool_contract_stabilizes_tool_schema_with_agent_tail_guardrail(legacy_rewrites):
     messages = [{"role": "user", "content": "status?"}]
 
     with_contract = openai._with_mtplx_tool_contract(
@@ -7779,7 +7808,7 @@ def test_tool_contract_stabilizes_tool_schema_with_agent_tail_guardrail():
     assert [message["role"] for message in with_contract] == ["system", "user"]
 
 
-def test_native_tool_prompt_mode_keeps_template_tools_and_adds_agent_tail():
+def test_native_tool_prompt_mode_keeps_template_tools_and_adds_agent_tail(legacy_rewrites):
     tokenizer = CaptureTokenizer()
     observability: dict[str, object] = {}
 
@@ -7829,7 +7858,7 @@ def test_native_tool_prompt_mode_suppresses_agent_tail_for_chitchat():
     assert observability["native_agent_tail_contract_active"] is False
 
 
-def test_native_tool_prompt_mode_uses_continuation_hint_after_tool_result():
+def test_native_tool_prompt_mode_uses_continuation_hint_after_tool_result(legacy_rewrites):
     tokenizer = CaptureTokenizer()
     observability: dict[str, object] = {}
 
@@ -7887,7 +7916,7 @@ def test_native_tool_prompt_mode_uses_continuation_hint_after_tool_result():
     assert observability["native_agent_tail_contract_active"] is False
 
 
-def test_hybrid_tool_prompt_mode_keeps_legacy_contract_for_rollback():
+def test_hybrid_tool_prompt_mode_keeps_legacy_contract_for_rollback(legacy_rewrites):
     tokenizer = CaptureTokenizer()
 
     openai._encode_messages(
@@ -7910,7 +7939,7 @@ def test_hybrid_tool_prompt_mode_keeps_legacy_contract_for_rollback():
     assert '{"name":' not in rendered_content
 
 
-def test_compact_tool_prompt_mode_omits_native_template_tools():
+def test_compact_tool_prompt_mode_omits_native_template_tools(legacy_rewrites):
     tokenizer = CaptureTokenizer()
 
     openai._encode_messages(
@@ -7997,7 +8026,7 @@ def test_filter_tool_specs_preserves_tools_for_simple_chitchat():
     assert filtered == tools
 
 
-def test_filter_tool_specs_keeps_only_file_tools_for_static_read_only_review():
+def test_filter_tool_specs_keeps_only_file_tools_for_static_read_only_review(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8127,7 +8156,7 @@ def test_filter_tool_specs_passes_through_when_client_manages_tools():
     assert filtered == tools
 
 
-def test_filter_tool_specs_client_managed_still_honors_explicit_no_tools():
+def test_filter_tool_specs_client_managed_still_honors_explicit_no_tools(legacy_rewrites):
     tools = [_bash_tool_schema(), _named_tool_schema("read")]
 
     filtered = openai._filter_tool_specs_for_request(
@@ -8187,7 +8216,7 @@ def test_active_read_only_phase_still_hides_mutating_tools_for_generic_clients()
     assert openai._request_disallows_file_mutation(messages) is True
 
 
-def test_filter_tool_specs_keeps_upgrade_recommendations_read_only():
+def test_filter_tool_specs_keeps_upgrade_recommendations_read_only(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8262,7 +8291,7 @@ def test_filter_tool_specs_keeps_bash_when_static_review_requests_tests():
     assert filtered == tools
 
 
-def test_filter_tool_specs_hides_file_mutation_tools_when_user_says_no_edits():
+def test_filter_tool_specs_hides_file_mutation_tools_when_user_says_no_edits(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8295,7 +8324,7 @@ def test_filter_tool_specs_hides_file_mutation_tools_when_user_says_no_edits():
     ] == ["bash", "read"]
 
 
-def test_filter_tool_specs_keeps_shallow_inventory_in_lean_read_only_lane():
+def test_filter_tool_specs_keeps_shallow_inventory_in_lean_read_only_lane(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8327,7 +8356,7 @@ def test_filter_tool_specs_keeps_shallow_inventory_in_lean_read_only_lane():
     ] == ["bash", "read"]
 
 
-def test_filter_tool_specs_keeps_discovery_tools_for_broad_no_edit_review():
+def test_filter_tool_specs_keeps_discovery_tools_for_broad_no_edit_review(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8361,7 +8390,7 @@ def test_filter_tool_specs_keeps_discovery_tools_for_broad_no_edit_review():
     ] == ["bash", "read", "glob", "grep"]
 
 
-def test_filter_tool_specs_keeps_web_and_question_when_requested():
+def test_filter_tool_specs_keeps_web_and_question_when_requested(legacy_rewrites):
     tools = [
         _bash_tool_schema(),
         _write_tool_schema(),
@@ -8506,7 +8535,7 @@ def test_laguna_opencode_keeps_poolside_native_tool_protocol(monkeypatch):
 
 
 @pytest.mark.parametrize("client_hint", ["pi", "hermes"])
-def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(
+def test_agent_tool_clients_repair_native_launch_mode_to_hybrid(legacy_rewrites, 
     monkeypatch, client_hint
 ):
     seen: dict[str, object] = {}
@@ -8776,7 +8805,7 @@ def test_final_round_after_tools_gets_post_tool_answer_contract(monkeypatch):
     assert stats["tool_contract_policy_version"] == "post_tool_full_answer:dated:v2"
 
 
-def test_chat_tools_add_no_tool_contract_for_explicit_no_tools_text(monkeypatch):
+def test_chat_tools_add_no_tool_contract_for_explicit_no_tools_text(legacy_rewrites, monkeypatch):
     seen: dict[str, object] = {}
     state = _fake_state()
     foreground = ForegroundState()
@@ -8910,7 +8939,7 @@ def test_chat_tools_add_read_only_force_answer_contract_after_read_budget(monkey
     assert stats["tool_contract_policy_version"].startswith("compact_tool_contract:")
 
 
-def test_explicit_single_tool_then_answer_forces_final_after_tool_result(monkeypatch):
+def test_explicit_single_tool_then_answer_forces_final_after_tool_result(legacy_rewrites, monkeypatch):
     seen: dict[str, object] = {}
     state = _fake_state()
     foreground = ForegroundState()
@@ -8979,7 +9008,7 @@ def test_explicit_single_tool_then_answer_forces_final_after_tool_result(monkeyp
     assert stats["tool_contract_policy_version"] == "read_only_force_answer:v1"
 
 
-def test_opencode_explicit_single_tool_stream_emits_only_first_tool(monkeypatch):
+def test_opencode_explicit_single_tool_stream_emits_only_first_tool(legacy_rewrites, monkeypatch):
     state = _fake_state()
     state.args.stream_interval = 1
     state.args.stats_footer = False
@@ -9148,7 +9177,7 @@ def test_filter_tool_specs_preserves_tools_for_concatenated_simple_chitchat():
         assert filtered == tools
 
 
-def test_filter_tool_specs_drops_tools_when_user_disallows_tools():
+def test_filter_tool_specs_drops_tools_when_user_disallows_tools(legacy_rewrites):
     tools = [_bash_tool_schema(), _tool_schema(), _named_tool_schema("read")]
 
     filtered = openai._filter_tool_specs_for_request(
@@ -9192,7 +9221,7 @@ def test_filter_tool_specs_keeps_for_explicit_tool_choice():
     assert filtered == tools
 
 
-def test_tool_contract_keeps_system_first_for_qwen_template():
+def test_tool_contract_keeps_system_first_for_qwen_template(legacy_rewrites):
     with_contract = openai._with_mtplx_tool_contract(
         [
             {"role": "system", "content": "You are OpenCode."},
@@ -9218,7 +9247,7 @@ def test_tool_contract_honors_forced_function_choice():
     assert "instead of a normal text answer" in with_contract[0]["content"]
 
 
-def test_tool_contract_adds_post_tool_continuation_hint_only_after_tool_result():
+def test_tool_contract_adds_post_tool_continuation_hint_only_after_tool_result(legacy_rewrites):
     tools = [_bash_tool_schema(), _tool_schema()]
 
     initial = openai._with_mtplx_tool_contract(
@@ -10020,7 +10049,7 @@ def test_postcommit_plain_final_answer_preserves_prior_tool_history_boundaries()
     assert next_turn_prompt[: len(postcommit_prefix)] == postcommit_prefix
 
 
-def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
+def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history(legacy_rewrites):
     tokenizer = QwenToolHistoryBoundaryTokenizer()
     tools = [_tool_schema()]
     tool_call = {
@@ -10113,7 +10142,7 @@ def test_postcommit_recanonicalizes_raw_active_read_as_next_turn_history():
     assert "<mtplx_compacted_active_read_output" not in rendered_prefix
 
 
-def test_postcommit_read_only_final_matches_next_turn_history_boundary():
+def test_postcommit_read_only_final_matches_next_turn_history_boundary(legacy_rewrites):
     tokenizer = QwenToolHistoryBoundaryTokenizer()
     tools = [_named_tool_schema("read")]
     tool_call = {
@@ -12516,7 +12545,21 @@ def test_single_tool_call_stream_policy_declared_field_wins():
     assert not policy(
         parallel_tool_calls=True, client_hint="pi", explicit_single_tool=True
     )
-    # Unset falls back to the legacy client-hint heuristics.
+    # #282 default: no hint sniffing — Pi executes every tool call in a
+    # turn, so an undeclared request never gets its stream cut.
+    assert not policy(
+        parallel_tool_calls=None, client_hint="pi", explicit_single_tool=False
+    )
+    assert not policy(
+        parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=True
+    )
+    assert not policy(
+        parallel_tool_calls=None, client_hint="", explicit_single_tool=False
+    )
+
+
+def test_single_tool_call_stream_policy_legacy_hint_sniff(legacy_rewrites):
+    policy = openai._single_tool_call_stream_policy
     assert policy(
         parallel_tool_calls=None, client_hint="pi", explicit_single_tool=False
     )
@@ -12525,9 +12568,6 @@ def test_single_tool_call_stream_policy_declared_field_wins():
     )
     assert not policy(
         parallel_tool_calls=None, client_hint="opencode", explicit_single_tool=False
-    )
-    assert not policy(
-        parallel_tool_calls=None, client_hint="", explicit_single_tool=False
     )
 
 
@@ -12845,3 +12885,237 @@ def test_anonymous_coding_agent_tools_cover_hermes_names():
         assert _anonymous_coding_agent_tool_request([name]), name
     assert not _anonymous_coding_agent_tool_request(["calendar_lookup"])
     assert not _anonymous_coding_agent_tool_request([])
+
+
+# ---------------------------------------------------------------------------
+# #282 agent-rewrites contract: the serving endpoints are passthrough by
+# default. These tests pin the DEFAULT (and "off") behavior; the legacy
+# machinery keeps its own pins above via the legacy_rewrites fixture.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_rewrites_mode_resolution(monkeypatch):
+    assert openai._agent_rewrites_mode() == "default"
+    for raw in ("on", "1", "true", "legacy", "ON"):
+        monkeypatch.setenv("MTPLX_AGENT_REWRITES", raw)
+        assert openai._agent_rewrites_mode() == "on"
+    for raw in ("off", "0", "false", "passthrough", "OFF"):
+        monkeypatch.setenv("MTPLX_AGENT_REWRITES", raw)
+        assert openai._agent_rewrites_mode() == "off"
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "banana")
+    assert openai._agent_rewrites_mode() == "default"
+
+
+def test_tool_result_compactors_default_off(monkeypatch):
+    big = "x" * 50_000
+    listing = "\n".join(f"src/file_{index}.py:42: match" for index in range(600))
+    assert openai._compact_tool_result_text(big) is None
+    assert openai._compact_active_tool_result_text(listing) is None
+
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")
+    assert openai._compact_tool_result_text(big) is not None
+    assert openai._compact_active_tool_result_text(listing) is not None
+    monkeypatch.delenv("MTPLX_AGENT_REWRITES")
+
+    # A per-feature env limit engages exactly that compactor.
+    monkeypatch.setenv("MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS", "1000")
+    assert openai._compact_tool_result_text(big) is not None
+    assert openai._compact_active_tool_result_text(listing) is None
+
+    # off beats explicit per-feature opt-ins.
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "off")
+    assert openai._compact_tool_result_text(big) is None
+
+
+def test_filter_tool_specs_passthrough_by_default():
+    tools = [
+        _bash_tool_schema(),
+        _write_tool_schema(),
+        _named_tool_schema("read"),
+        _named_tool_schema("glob"),
+        _named_tool_schema("grep"),
+        _task_tool_schema(),
+        _todowrite_tool_schema(),
+    ]
+    messages = [
+        openai.ChatMessage(
+            role="user",
+            content=(
+                "Evaluate the quality of this project. Inspect the relevant "
+                "files with tools, identify strengths and weaknesses, and "
+                "give a concise improvement plan. Do not edit any files."
+            ),
+        )
+    ]
+    assert openai._filter_tool_specs_for_request(tools, messages) == tools
+
+
+def test_filter_tool_specs_keeps_tools_on_disallow_text_by_default():
+    tools = [_bash_tool_schema(), _named_tool_schema("read")]
+    messages = [
+        openai.ChatMessage(
+            role="user",
+            content="Answer from memory. Do not use tools for this question.",
+        )
+    ]
+    assert openai._filter_tool_specs_for_request(tools, messages) == tools
+
+
+def test_pi_convergence_contract_default_off(monkeypatch):
+    headers = {"x-mtplx-client": "pi"}
+    messages = [openai.ChatMessage(role="user", content="fix the login bug")]
+    messages.extend(
+        openai.ChatMessage(
+            role="tool", tool_call_id=f"call_{index}", content=f"result {index}"
+        )
+        for index in range(20)
+    )
+
+    assert not openai._request_should_add_pi_convergence_contract(
+        messages, headers=headers, metadata={}, tools_active=True
+    )
+
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")
+    assert openai._request_should_add_pi_convergence_contract(
+        messages, headers=headers, metadata={}, tools_active=True
+    )
+
+    # Explicit env opt-in works without the master switch.
+    monkeypatch.delenv("MTPLX_AGENT_REWRITES")
+    monkeypatch.setenv("MTPLX_PI_CONVERGENCE_AFTER_TOOLS", "2")
+    assert openai._request_should_add_pi_convergence_contract(
+        messages, headers=headers, metadata={}, tools_active=True
+    )
+
+    # off beats the explicit env opt-in.
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "off")
+    assert not openai._request_should_add_pi_convergence_contract(
+        messages, headers=headers, metadata={}, tools_active=True
+    )
+
+
+def test_coding_agent_tail_and_hint_default_off(monkeypatch):
+    tools = [
+        _bash_tool_schema(),
+        _named_tool_schema("read"),
+        _named_tool_schema("edit"),
+        _named_tool_schema("write"),
+        _named_tool_schema("grep"),
+        _named_tool_schema("glob"),
+    ]
+    normalized = [{"role": "user", "content": "fix the login bug"}]
+    hint_messages = [
+        {"role": "user", "content": "run the tests"},
+        {"role": "assistant", "content": ""},
+        {"role": "tool", "content": "1 passed"},
+    ]
+
+    assert not openai._should_add_mtplx_coding_agent_tail_contract(
+        normalized, tools=tools
+    )
+    assert openai._mtplx_coding_agent_tail_contract_text(tools) is None
+    assert (
+        openai._append_tool_result_continuation_hint(hint_messages, tools=tools)
+        is False
+    )
+    assert hint_messages[-1]["role"] == "tool"
+
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")
+    assert openai._should_add_mtplx_coding_agent_tail_contract(
+        normalized, tools=tools
+    )
+    assert openai._mtplx_coding_agent_tail_contract_text(tools) is not None
+    assert (
+        openai._append_tool_result_continuation_hint(hint_messages, tools=tools)
+        is True
+    )
+    assert hint_messages[-1]["role"] == "user"
+
+
+def test_read_only_force_answer_gate(monkeypatch):
+    messages = [
+        openai.ChatMessage(
+            role="user",
+            content=(
+                "Run pytest exactly once and then answer with the failure "
+                "count."
+            ),
+        ),
+        openai.ChatMessage(role="tool", tool_call_id="call_1", content="3 failed"),
+    ]
+    assert not openai._request_should_force_answer_for_read_only_inspection(messages)
+
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "on")
+    assert openai._request_should_force_answer_for_read_only_inspection(messages)
+
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "off")
+    assert not openai._request_should_force_answer_for_read_only_inspection(messages)
+
+
+def test_canonicalization_preserves_client_messages_by_default():
+    source_dump = "\n".join(
+        f"{line_no}: const copiedLine{line_no} = {line_no};"
+        for line_no in range(91, 170)
+    )
+    tool_call = {
+        "id": "call_check",
+        "type": "function",
+        "function": {"name": "bash", "arguments": "{\"command\": \"sleep 100\"}"},
+    }
+    timeout_text = "Command timed out after 30s"
+    canonical, stats = openai._canonicalize_agent_transcript(
+        [
+            openai.ChatMessage(role="user", content="review the game loop"),
+            openai.ChatMessage(role="assistant", content=source_dump),
+            openai.ChatMessage(
+                role="assistant", content="", tool_calls=[tool_call]
+            ),
+            openai.ChatMessage(
+                role="tool", tool_call_id="call_check", content=timeout_text
+            ),
+            openai.ChatMessage(
+                role="assistant", content="", tool_calls=[dict(tool_call)]
+            ),
+            openai.ChatMessage(
+                role="tool", tool_call_id="call_check", content=timeout_text
+            ),
+        ],
+        tools_active=True,
+    )
+    contents = [str(message.content) for message in canonical]
+    assert source_dump in contents
+    assert contents.count(timeout_text) == 2
+    assert stats.skipped_verbatim_tool_output_assistant_messages == 0
+    assert stats.compacted_repeated_timeout_tool_messages == 0
+
+
+def test_tool_prompt_mode_off_forces_native(monkeypatch):
+    import argparse
+    from types import SimpleNamespace
+
+    args = argparse.Namespace(tool_prompt_mode="hybrid", backend_id=None)
+    monkeypatch.setenv("MTPLX_AGENT_REWRITES", "off")
+    mode, resolution = openai._tool_prompt_mode_for_request(
+        args,
+        headers={"x-mtplx-client": "opencode"},
+        metadata={},
+        tools_active=True,
+        backend=SimpleNamespace(
+            backend_id="test", required_tool_prompt_mode=None
+        ),
+    )
+    assert mode == "native"
+    assert resolution["tool_prompt_mode_source"] == "agent_rewrites_off"
+
+    # A backend-required mode is protocol, not policy: it outranks off.
+    mode, resolution = openai._tool_prompt_mode_for_request(
+        args,
+        headers={},
+        metadata={},
+        tools_active=True,
+        backend=SimpleNamespace(
+            backend_id="test", required_tool_prompt_mode="hybrid"
+        ),
+    )
+    assert mode == "hybrid"
+    assert resolution["tool_prompt_mode_source"] == "backend:test"

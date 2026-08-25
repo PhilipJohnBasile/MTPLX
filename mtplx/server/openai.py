@@ -5853,8 +5853,25 @@ def _with_mtplx_read_only_force_answer_contract(
     return updated
 
 
+_PI_CONVERGENCE_AFTER_TOOLS_LEGACY = 14
+
+
 def _pi_convergence_after_tools() -> int:
-    return max(0, _env_int("MTPLX_PI_CONVERGENCE_AFTER_TOOLS", 14))
+    """Tool-result count that arms the Pi convergence contract; 0 = never.
+
+    Default OFF since #282: the contract ("do not call grep/find/ls...",
+    "stop gathering more project context") was tuned for Qwen3.6-era
+    models that looped on inspection and it actively restricted real Pi
+    coding sessions. MTPLX_AGENT_REWRITES=on restores the legacy limit;
+    an explicit MTPLX_PI_CONVERGENCE_AFTER_TOOLS always wins.
+    """
+    mode = _agent_rewrites_mode()
+    if mode == "off":
+        return 0
+    explicit = _env_int_optional("MTPLX_PI_CONVERGENCE_AFTER_TOOLS")
+    if explicit is not None:
+        return max(0, explicit)
+    return _PI_CONVERGENCE_AFTER_TOOLS_LEGACY if mode == "on" else 0
 
 
 def _request_should_add_pi_convergence_contract(
@@ -5935,6 +5952,8 @@ def _with_mtplx_pi_convergence_contract(
 
 
 def _mtplx_coding_agent_tail_contract_text(tools: list[dict[str, Any]]) -> str | None:
+    if not _agent_steering_enabled():
+        return None
     if not _anonymous_coding_agent_tool_request(_tool_names(tools)):
         return None
     return (
@@ -5971,6 +5990,8 @@ def _should_add_mtplx_coding_agent_tail_contract(
     *,
     tools: list[dict[str, Any]],
 ) -> bool:
+    if not _agent_steering_enabled():
+        return False
     if not _anonymous_coding_agent_tool_request(_tool_names(tools)):
         return False
     last_user = _last_user_text(normalized)
@@ -6173,6 +6194,8 @@ def _append_tool_result_continuation_hint(
     by construction), so downstream consumers key on this explicit
     signal, not on message text.
     """
+    if not _agent_steering_enabled():
+        return False
     if not _anonymous_coding_agent_tool_request(_tool_names(tools)):
         return False
     if not messages:
@@ -6570,13 +6593,39 @@ def _single_tool_call_stream_policy(
     """
     if parallel_tool_calls is not None:
         return not parallel_tool_calls
+    if not _agent_steering_enabled():
+        # #282: the hint sniff is legacy steering. Pi executes every tool
+        # call in an assistant turn (pi-agent-core agent-loop ships both
+        # executeToolCallsSequential and executeToolCallsParallel), so
+        # cutting its stream after the first call strangled real sessions.
+        # A client that wants the cut declares parallel_tool_calls=false.
+        return False
     hint = (client_hint or "").lower()
     return "pi" in hint or ("opencode" in hint and explicit_single_tool)
+
+
+def _read_only_force_answer_enabled() -> bool:
+    """The read-only force-answer machinery is legacy steering (#282).
+
+    Enabled under MTPLX_AGENT_REWRITES=on, or when the operator opted in
+    explicitly via MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS.
+    """
+    mode = _agent_rewrites_mode()
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    return (
+        _env_int_optional("MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS")
+        is not None
+    )
 
 
 def _request_should_force_answer_for_read_only_inspection(
     messages: list[ChatMessage],
 ) -> bool:
+    if not _read_only_force_answer_enabled():
+        return False
     if _tool_result_message_count(
         messages
     ) > 0 and _request_explicit_single_tool_then_answer(messages):
@@ -6643,7 +6692,7 @@ def _filter_tool_specs_for_request(
         return tools
     if _tool_choice_forces_tools(tool_choice):
         return tools
-    if _request_disallows_tools(messages):
+    if _agent_steering_enabled() and _request_disallows_tools(messages):
         return []
     if client_manages_tools:
         # Coding-agent clients (OpenCode) curate the toolset per agent mode
@@ -6655,6 +6704,13 @@ def _filter_tool_specs_for_request(
         # rendered tool digest between rounds, which breaks banked-prefix
         # reuse at the digest bytes. The client's toolset is authoritative:
         # pass it through byte-stable.
+        return tools
+    if not _agent_steering_enabled():
+        # #282: every client's declared toolset is authoritative on the
+        # serving API. Heuristic hiding (subagent/todo suppression,
+        # read-only lockdowns, "no tools" text matches) is legacy opt-in
+        # via MTPLX_AGENT_REWRITES=on; tool_choice keeps its protocol
+        # meaning in every mode.
         return tools
     hidden_tools: set[str] = set()
     if _request_disallows_subagents(messages):
@@ -6720,6 +6776,8 @@ def _should_add_no_tool_contract(
     tools_active: bool,
     messages: list[ChatMessage],
 ) -> bool:
+    if _agent_rewrites_mode() == "off":
+        return False
     if not requested_tools or tools_active:
         return False
     if _is_simple_chitchat_text(_last_user_text(messages)):
@@ -9281,6 +9339,78 @@ _ACTIVE_TOOL_RESULT_COMPACT_THRESHOLD_CHARS = 4_000
 _ACTIVE_TOOL_RESULT_COMPACT_HEAD_LINES = 8
 _ACTIVE_TOOL_RESULT_COMPACT_TAIL_LINES = 4
 
+_AGENT_REWRITES_ENV = "MTPLX_AGENT_REWRITES"
+
+
+def _agent_rewrites_mode() -> str:
+    """Agent-rewrite posture for the serving endpoints: on | off | default.
+
+    The #282 contract: client transcripts and toolsets pass through the
+    OpenAI/Anthropic endpoints untouched apart from chat-template and
+    protocol translation. "on" restores the full legacy machinery
+    (content compaction, steering contracts, heuristic message drops and
+    toolset filtering). "off" is a hard passthrough guarantee and wins
+    over every per-feature opt-in. Unset ("default") keeps passthrough
+    while explicit per-feature env limits may re-enable an individual
+    compactor at the chosen limit.
+    """
+    raw = os.environ.get(_AGENT_REWRITES_ENV, "").strip().lower()
+    if raw in {"on", "1", "true", "yes", "legacy"}:
+        return "on"
+    if raw in {"off", "0", "false", "no", "passthrough"}:
+        return "off"
+    return "default"
+
+
+def _agent_steering_enabled() -> bool:
+    """Legacy behavior-steering rewrites: only under MTPLX_AGENT_REWRITES=on."""
+    return _agent_rewrites_mode() == "on"
+
+
+def _env_int_optional(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _compact_threshold_chars(env_name: str, legacy_default: int) -> int | None:
+    """Threshold for one content compactor, or None when it must not run.
+
+    Default posture (#282): compactors are OFF. An explicit env limit
+    enables that one compactor at the chosen limit;
+    MTPLX_AGENT_REWRITES=on restores the legacy default;
+    MTPLX_AGENT_REWRITES=off disables even explicitly-set limits.
+    """
+    mode = _agent_rewrites_mode()
+    if mode == "off":
+        return None
+    explicit = _env_int_optional(env_name)
+    if explicit is not None:
+        return max(1, explicit)
+    if mode == "on":
+        return max(1, legacy_default)
+    return None
+
+
+def _repeated_timeout_compaction_enabled() -> bool:
+    return _agent_steering_enabled()
+
+
+def _repeated_inspection_read_compaction_enabled() -> bool:
+    # The repeated-read dedup is part of the inspection-read budget system;
+    # it runs exactly when that compactor is engaged.
+    return (
+        _compact_threshold_chars(
+            "MTPLX_ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS",
+            _ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS,
+        )
+        is not None
+    )
+
 
 def _historical_read_budget() -> tuple[int, int]:
     """Fixed prefix-stable budget for HISTORICAL inspection-segment reads.
@@ -9720,14 +9850,11 @@ def _latest_assistant_step_index(messages: list[ChatMessage]) -> int | None:
 
 
 def _compact_tool_result_text(text: str) -> str | None:
-    threshold = max(
-        1,
-        _env_int(
-            "MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS",
-            _TOOL_RESULT_COMPACT_THRESHOLD_CHARS,
-        ),
+    threshold = _compact_threshold_chars(
+        "MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS",
+        _TOOL_RESULT_COMPACT_THRESHOLD_CHARS,
     )
-    if len(text) <= threshold:
+    if threshold is None or len(text) <= threshold:
         return None
     head_chars = max(
         0,
@@ -9987,14 +10114,11 @@ def _active_tool_result_read_hint_count(compacted: str) -> int:
 def _compact_active_tool_result_text(text: str) -> str | None:
     """Compact large current grep/glob/bash outputs without hiding useful paths."""
 
-    threshold = max(
-        1,
-        _env_int(
-            "MTPLX_ACTIVE_TOOL_RESULT_COMPACT_THRESHOLD_CHARS",
-            _ACTIVE_TOOL_RESULT_COMPACT_THRESHOLD_CHARS,
-        ),
+    threshold = _compact_threshold_chars(
+        "MTPLX_ACTIVE_TOOL_RESULT_COMPACT_THRESHOLD_CHARS",
+        _ACTIVE_TOOL_RESULT_COMPACT_THRESHOLD_CHARS,
     )
-    if len(text) <= threshold:
+    if threshold is None or len(text) <= threshold:
         return None
     lines = text.splitlines()
     if not lines:
@@ -10095,7 +10219,7 @@ def _compact_active_tool_result_text(text: str) -> str | None:
         f"kept_lines={len(kept)} omitted_lines={omitted_lines} "
         f"read_hint_count={len(read_hints)} source_path_count={source_path_count} "
         f'anchor="{anchor}">\n'
-        "[Large current tool output abbreviated to keep OpenCode responsive. "
+        "[Large current tool output abbreviated to keep the coding agent responsive. "
         "Important source paths, errors, and match lines are prioritized. Use "
         "the next_read_hints for exact follow-up reads; do not rerun broad "
         "list/grep/build commands unchanged.]\n"
@@ -10270,24 +10394,20 @@ def _compact_active_read_tool_result_text(
     rerun `read` narrowly for omitted exact text.
     """
 
-    force_compact = bool(_READ_CONTINUATION_HINT_RE.search(text))
     threshold = (
-        max(
-            1,
-            _env_int(
-                "MTPLX_ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS",
-                _ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS,
-            ),
+        _compact_threshold_chars(
+            "MTPLX_ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS",
+            _ACTIVE_READ_INSPECTION_COMPACT_THRESHOLD_CHARS,
         )
         if inspection_request
-        else max(
-            1,
-            _env_int(
-                "MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS",
-                _ACTIVE_READ_COMPACT_THRESHOLD_CHARS,
-            ),
+        else _compact_threshold_chars(
+            "MTPLX_ACTIVE_READ_COMPACT_THRESHOLD_CHARS",
+            _ACTIVE_READ_COMPACT_THRESHOLD_CHARS,
         )
     )
+    if threshold is None:
+        return None
+    force_compact = bool(_READ_CONTINUATION_HINT_RE.search(text))
     if len(text) <= threshold and not force_compact:
         return None
     if "<content>" not in text or "</content>" not in text:
@@ -10539,7 +10659,7 @@ def _compact_active_read_tool_result_text(
         "|".join(str(line_no) for line_no in kept[:24]),
     )
     guidance = (
-        "[Large current read abbreviated to keep OpenCode tool loops responsive. "
+        "[Large current read abbreviated to keep coding-agent tool loops responsive. "
         "The excerpt preserves file line numbers, definitions, and likely "
         "collision/navigation/runtime anchors. For review or evaluation, answer "
         "from this excerpt when the relevant anchors are visible; do not "
@@ -10690,23 +10810,40 @@ def _canonicalize_agent_transcript(
                 if _message_declares_aborted_assistant_turn(message):
                     stats.skipped_aborted_assistant_messages += 1
                     continue
-                if _looks_like_orphan_chitchat_assistant_turn(source_messages, index):
+                if _agent_steering_enabled() and _looks_like_orphan_chitchat_assistant_turn(
+                    source_messages, index
+                ):
                     stats.skipped_orphan_chitchat_assistant_messages += 1
                     continue
                 if (
                     message.tool_calls
                     and content.strip()
                     and (
-                        (segment_inspection[index] or strip_tool_call_preamble_text)
+                        # The inspection-driven strip legs are legacy steering
+                        # (#282); the managed-client strip flag (OpenCode)
+                        # keeps its tuned lane behavior in every mode.
+                        (
+                            (
+                                _agent_steering_enabled()
+                                and segment_inspection[index]
+                            )
+                            or strip_tool_call_preamble_text
+                        )
                         if historical
-                        else (inspection_request or strip_tool_call_preamble_text)
+                        else (
+                            (_agent_steering_enabled() and inspection_request)
+                            or strip_tool_call_preamble_text
+                        )
                     )
                 ):
                     stats.stripped_tool_preamble_messages += 1
                     stats.stripped_tool_preamble_chars += len(content)
                     message = _copy_chat_message(message, content="")
                     content = ""
-                if not message.tool_calls:
+                if not message.tool_calls and _agent_steering_enabled():
+                    # Content-heuristic assistant drops are legacy rewrites
+                    # (#282): a client-authored message is never discarded on
+                    # a text sniff unless MTPLX_AGENT_REWRITES=on.
                     if _looks_like_verbatim_tool_output_assistant_dump(content):
                         stats.skipped_verbatim_tool_output_assistant_messages += 1
                         stats.skipped_verbatim_tool_output_assistant_chars += len(
@@ -10728,7 +10865,11 @@ def _canonicalize_agent_transcript(
                     or ""
                 ).strip()
                 signature = tool_calls_by_id.get(tool_call_id)
-                if signature is not None and _tool_result_is_timeout(text):
+                if (
+                    signature is not None
+                    and _repeated_timeout_compaction_enabled()
+                    and _tool_result_is_timeout(text)
+                ):
                     tool_name, key_payload, command = signature
                     timeout_key = f"{tool_name}\n{key_payload}"
                     repeat_count = timeout_counts_by_key.get(timeout_key, 0) + 1
@@ -10786,7 +10927,11 @@ def _canonicalize_agent_transcript(
                             3,
                             int(len(read_meta.line_numbers) * 0.08),
                         )
-                        if prior_lines and len(new_lines) <= duplicate_threshold:
+                        if (
+                            prior_lines
+                            and len(new_lines) <= duplicate_threshold
+                            and _repeated_inspection_read_compaction_enabled()
+                        ):
                             compacted = (
                                 _compact_repeated_inspection_read_tool_result_text(
                                     read_text,
@@ -10849,7 +10994,11 @@ def _canonicalize_agent_transcript(
                             3,
                             int(len(read_meta.line_numbers) * 0.08),
                         )
-                        if prior_lines and len(new_lines) <= duplicate_threshold:
+                        if (
+                            prior_lines
+                            and len(new_lines) <= duplicate_threshold
+                            and _repeated_inspection_read_compaction_enabled()
+                        ):
                             compacted = (
                                 _compact_repeated_inspection_read_tool_result_text(
                                     read_text,
@@ -17095,6 +17244,12 @@ def _tool_prompt_mode_for_request(
             )
         mode = required_mode
         source = f"backend:{backend.backend_id}"
+    elif _agent_rewrites_mode() == "off":
+        # Hard passthrough (#282): the chat template owns the tool
+        # declaration natively and no MTPLX contract message is injected.
+        # Only a backend-required mode (protocol, not policy) outranks it.
+        mode = _TOOL_PROMPT_MODE_NATIVE
+        source = "agent_rewrites_off"
     elif requested_mode is not None:
         mode = requested_mode
         source = "request"
@@ -26955,6 +27110,7 @@ def create_app(state: ServerState) -> FastAPI:
                 requested_model == state.model_id
             )
         request_observability.update(policy.as_observability())
+        request_observability["agent_rewrites"] = _agent_rewrites_mode()
         request_observability["session_cache_scope"] = session_cache_scope
         request_observability["opencode_tool_history_cache_bypass"] = bool(
             opencode_tool_history_cache_bypass
@@ -30729,6 +30885,7 @@ def create_app(state: ServerState) -> FastAPI:
             "request_client_label": request_client_hint or "openai",
         }
         request_observability.update(policy.as_observability())
+        request_observability["agent_rewrites"] = _agent_rewrites_mode()
         if completions_cross_yield is not None:
             request_observability["postcommit_cross_session_yield"] = (
                 completions_cross_yield

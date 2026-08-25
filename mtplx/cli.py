@@ -2416,6 +2416,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download a Hugging Face model before starting if it is not cached",
     )
     quickstart_server_p.add_argument(
+        "--agent-rewrites",
+        choices=["on", "off"],
+        default=None,
+        help=(
+            "Agent transcript rewriting: unset = passthrough (default), "
+            "on = legacy rewrite machinery, off = hard passthrough guarantee."
+        ),
+    )
+    quickstart_server_p.add_argument(
         "--profile",
         type=_profile_arg,
         metavar=_PROFILE_METAVAR,
@@ -3302,6 +3311,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     serve_p.add_argument("--unsafe-force-unverified", action="store_true")
+    serve_p.add_argument(
+        "--agent-rewrites",
+        choices=["on", "off"],
+        default=None,
+        help=(
+            "Agent transcript rewriting. Unset (default) is passthrough: no "
+            "tool-result compaction, no injected steering contracts, no "
+            "heuristic toolset filtering; per-feature MTPLX_*_COMPACT_"
+            "THRESHOLD_CHARS env limits can re-enable individual compactors. "
+            "on restores the full legacy rewrite machinery. off is a hard "
+            "passthrough guarantee that also overrides per-feature env opt-ins."
+        ),
+    )
     serve_p.add_argument(
         "--yes", action="store_true", help="Confirm unsafe non-interactive actions"
     )

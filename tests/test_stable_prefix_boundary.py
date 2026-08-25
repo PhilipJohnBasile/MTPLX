@@ -190,7 +190,7 @@ def _encode_production(monkeypatch, messages, *, tool_prompt_mode="hybrid"):
     return ids, observability
 
 
-def test_real_trailing_tool_injection_writes_stable_metadata(monkeypatch):
+def test_real_trailing_tool_injection_writes_stable_metadata(legacy_rewrites, monkeypatch):
     """Production path: a genuine trailing tool result triggers the injector,
     the explicit append signal gates the stable-boundary encoder, and
     stable_prefix_len lands."""
@@ -230,7 +230,7 @@ def test_user_authored_lookalike_writes_no_stable_metadata(monkeypatch):
     assert "stable_prefix_len" not in observability
 
 
-def test_native_tail_records_explicit_append_signal():
+def test_native_tail_records_explicit_append_signal(legacy_rewrites):
     observability: dict = {}
     messages = [
         {"role": "user", "content": "task"},
