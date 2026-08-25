@@ -600,10 +600,9 @@ def test_opencode_memory_defaults_scale_on_high_memory_darwin(monkeypatch):
     assert env["MTPLX_LAZY_BONUS_VERIFY"] == "1"
     assert env["MTPLX_OPENCODE_TOOL_HISTORY_LIVE_FRONTIER"] == "1"
     assert env["MTPLX_SESSION_LIVE_FRONTIER_REFERENCE_RESTORE"] == "1"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"] == "72"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"] == "8"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"] == "120"
-    assert env["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"] == "12"
+    # #282: the launcher exports no read-inspection compaction battery.
+    assert "MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES" not in env
+    assert "MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS" not in env
     assert env["MTPLX_TOOL_PROMPT_MODE"] == "hybrid"
 
 
@@ -625,10 +624,9 @@ def test_opencode_memory_defaults_stay_conservative_below_high_memory(monkeypatc
     assert env["MTPLX_LAZY_BONUS_VERIFY"] == "1"
     assert env["MTPLX_OPENCODE_TOOL_HISTORY_LIVE_FRONTIER"] == "1"
     assert env["MTPLX_SESSION_LIVE_FRONTIER_REFERENCE_RESTORE"] == "1"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"] == "72"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"] == "8"
-    assert env["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"] == "120"
-    assert env["MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS"] == "12"
+    # #282: the launcher exports no read-inspection compaction battery.
+    assert "MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES" not in env
+    assert "MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS" not in env
     assert env["MTPLX_TOOL_PROMPT_MODE"] == "hybrid"
 
 

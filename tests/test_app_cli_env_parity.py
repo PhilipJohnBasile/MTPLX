@@ -77,25 +77,50 @@ def test_opencode_coding_agent_env_matches_app():
 
 
 def test_pi_lane_env_matches_app_composition():
-    """CLI Pi = shared coding-agent block + the app's exact Pi overrides."""
+    """CLI Pi = the shared coding-agent block, nothing more.
+
+    Since #282 the app's .pi case sets no env overrides (the compaction
+    battery re-armed compactors past the engine's passthrough default),
+    so parity here means no overrides on either side.
+    """
     app_pi = _swift_pi_overrides()
-    assert app_pi, "failed to parse the .pi overrides from Swift"
+    assert app_pi == {}, f"the app grew .pi env overrides again: {app_pi}"
 
     cli_env: dict[str, str] = {}
     _apply_pi_history_budget_env_defaults(cli_env)
 
     # The shared engine block must be present (the pre-audit CLI Pi lane had
     # no session bank / SDPA route / frontier flags at all).
-    for key in _opencode_memory_env_defaults():
+    shared = _opencode_memory_env_defaults()
+    for key in shared:
         assert key in cli_env, f"Pi lane lost shared coding-agent key {key}"
 
-    for key, value in app_pi.items():
-        assert cli_env.get(key) == value, (
-            f"Pi override drift for {key}: cli={cli_env.get(key)!r} app={value!r}"
-        )
+    # And nothing beyond it: the Pi lane adds no rewrite machinery (#282).
+    extra = sorted(set(cli_env) - set(shared))
+    assert not extra, f"Pi lane grew keys beyond the shared block: {extra}"
 
-    # The unified history budgets are the app-lane numbers, not the old
-    # CLI-only 96/16/150 triple.
-    assert cli_env["MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES"] == "72"
-    assert cli_env["MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE"] == "8"
-    assert cli_env["MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS"] == "120"
+
+_TRANSCRIPT_REWRITE_KEYS = (
+    "MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS",
+    "MTPLX_ACTIVE_READ_INSPECTION_COMPACT_MAX_LINES",
+    "MTPLX_ACTIVE_READ_INSPECTION_LINE_MAX_CHARS",
+    "MTPLX_ACTIVE_TOOL_RESULT_COMPACT_MAX_LINES",
+    "MTPLX_ACTIVE_TOOL_RESULT_LINE_MAX_CHARS",
+    "MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES",
+    "MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE",
+    "MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS",
+    "MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS",
+)
+
+
+def test_no_launcher_exports_transcript_rewrite_envs():
+    """#282 contract: an explicit env re-arms its compactor past the engine's
+    passthrough default, so no launcher may export any of them."""
+    app_env = _swift_coding_agent_env()
+    cli_env = _opencode_memory_env_defaults()
+    pi_env: dict[str, str] = {}
+    _apply_pi_history_budget_env_defaults(pi_env)
+    for key in _TRANSCRIPT_REWRITE_KEYS:
+        assert key not in app_env, f"app exports rewrite env {key}"
+        assert key not in cli_env, f"CLI exports rewrite env {key}"
+        assert key not in pi_env, f"CLI Pi lane exports rewrite env {key}"

@@ -348,10 +348,10 @@ def _opencode_memory_env_defaults() -> dict[str, str]:
         "MTPLX_LAZY_BONUS_VERIFY": "1",
         "MTPLX_OPENCODE_TOOL_HISTORY_LIVE_FRONTIER": "1",
         "MTPLX_SESSION_LIVE_FRONTIER_REFERENCE_RESTORE": "1",
-        "MTPLX_ACTIVE_READ_INSPECTION_TOTAL_MAX_LINES": "72",
-        "MTPLX_ACTIVE_READ_INSPECTION_MIN_LINES_PER_FILE": "8",
-        "MTPLX_ACTIVE_READ_INSPECTION_MULTI_FILE_LINE_MAX_CHARS": "120",
-        "MTPLX_READ_ONLY_INSPECTION_FORCE_ANSWER_AFTER_TOOLS": "12",
+        # The read-inspection compaction battery is gone (#282): an explicit
+        # env re-arms that compactor past the engine's passthrough default,
+        # so exporting the battery here silently rewrote agent transcripts.
+        # In lockstep with the app's codingAgentRuntimeEnvironment.
         "MTPLX_TOOL_PROMPT_MODE": "hybrid",
         "MTPLX_CHAT_TEMPLATE_PROFILE": OPENCODE_CHAT_TEMPLATE_PROFILE_DEFAULT,
     }
@@ -1644,21 +1644,15 @@ def _preserve_thinking_policy(args: Any) -> str:
 
 
 def _apply_pi_history_budget_env_defaults(env: dict[str, str]) -> None:
-    """Pi lane = the shared coding-agent engine block + Pi history budgets.
+    """Pi lane = the shared coding-agent engine block, nothing more.
 
-    Mirrors the app's composition exactly (codingAgentRuntimeEnvironment then
-    the Pi-specific overrides in MTPLXCommandBuilder.swift). Before the
-    2026-08-03 parity audit the CLI Pi lane carried only the history keys —
-    no session bank, SDPA route, postcommit wait, or frontier flags — and
-    three of its values (96/16/150) diverged from the app-lane numbers
-    (72/8/120) every app Pi user already runs; unified to the app values.
+    Mirrors the app's composition exactly: codingAgentRuntimeEnvironment,
+    then a .pi case that sets no env overrides. The Pi compaction battery
+    (compact threshold 1200 plus the line caps) is gone (#282): an explicit
+    env re-arms its compactor past the engine's passthrough default, which
+    silently rewrote Pi transcripts from both launchers.
     """
     _apply_opencode_memory_env_defaults(env)
-    env.setdefault("MTPLX_TOOL_RESULT_COMPACT_THRESHOLD_CHARS", "1200")
-    env.setdefault("MTPLX_ACTIVE_READ_INSPECTION_COMPACT_MAX_LINES", "32")
-    env.setdefault("MTPLX_ACTIVE_READ_INSPECTION_LINE_MAX_CHARS", "180")
-    env.setdefault("MTPLX_ACTIVE_TOOL_RESULT_COMPACT_MAX_LINES", "32")
-    env.setdefault("MTPLX_ACTIVE_TOOL_RESULT_LINE_MAX_CHARS", "220")
 
 
 def _enable_thinking_for_reasoning(mode: str) -> bool | None:
