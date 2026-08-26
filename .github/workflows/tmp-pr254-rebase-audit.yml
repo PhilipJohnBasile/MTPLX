@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Attempt current-main merge
+      - name: Attempt current-main merge and capture conflicts
         run: |
           set +e
           git config user.name "PR254 rebase audit"
@@ -24,18 +24,22 @@ jobs:
           git fetch --no-tags upstream main
           git merge --no-commit --no-ff upstream/main > merge.log 2>&1
           status=$?
+          mkdir -p conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Services
+          mkdir -p conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Stores
+          mkdir -p conflict-files/docs conflict-files/mtplx
+          cp apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Services/
+          cp apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Stores/
+          cp docs/model-compatibility.md conflict-files/docs/
+          cp mtplx/hf_loader.py conflict-files/mtplx/
           {
             echo "merge_status=$status"
             echo "conflicts:"
             git diff --name-only --diff-filter=U
             echo
-            echo "status:"
-            git status --short
-            echo
             cat merge.log
-          } | tee rebase-audit.txt
+          } > conflict-files/rebase-audit.txt
           exit 0
       - uses: actions/upload-artifact@v4
         with:
-          name: pr254-rebase-audit
-          path: rebase-audit.txt
+          name: pr254-conflict-files
+          path: conflict-files
