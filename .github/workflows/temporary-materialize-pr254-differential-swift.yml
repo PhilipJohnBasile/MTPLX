@@ -94,15 +94,8 @@ jobs:
 
               dashboard = root_path / 'apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift'
               source = dashboard.read_text(encoding='utf-8')
-              old = '''        case true: return .hit
-                  case false: return .miss
-                  case nil: return .unknown
-              '''.replace('              ', '')
-              new = '''        case true: return .hit
-                  case false: return .miss
-                  case nil: return .unknown
-                  case .some(_): return .unknown
-              '''.replace('              ', '')
+              old = "        case true: return .hit\n        case false: return .miss\n        case nil: return .unknown\n"
+              new = "        case true: return .hit\n        case false: return .miss\n        case nil: return .unknown\n        case .some(_): return .unknown\n"
               if source.count(old) != 1:
                   raise SystemExit(f'current-main dashboard Swift blocker anchor changed in {root}')
               dashboard.write_text(source.replace(old, new, 1), encoding='utf-8')
