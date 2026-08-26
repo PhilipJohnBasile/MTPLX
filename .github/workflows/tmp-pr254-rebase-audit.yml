@@ -1,0 +1,41 @@
+name: Temporary PR254 rebase audit
+
+on:
+  push:
+    branches:
+      - tmp/rebase-pr254-current-main
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Attempt current-main merge
+        run: |
+          set +e
+          git config user.name "PR254 rebase audit"
+          git config user.email "noreply@example.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git
+          git fetch --no-tags upstream main
+          git merge --no-commit --no-ff upstream/main > merge.log 2>&1
+          status=$?
+          {
+            echo "merge_status=$status"
+            echo "conflicts:"
+            git diff --name-only --diff-filter=U
+            echo
+            echo "status:"
+            git status --short
+            echo
+            cat merge.log
+          } | tee rebase-audit.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr254-rebase-audit
+          path: rebase-audit.txt
