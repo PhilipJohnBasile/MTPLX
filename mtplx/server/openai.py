@@ -114,6 +114,7 @@ from mtplx.gemma4_pair import (
     is_gemma4_pair_repo_id,
     resolve_gemma4_pair_paths,
 )
+from mtplx.expert_locality import install_expert_locality_instrumentation
 from mtplx.model_scheduler import ModelWorkScheduler
 from mtplx.server.hyper import HYPER_ADMISSION_CAP, HyperAdmissionGate
 from mtplx.reasoning_effort import (
@@ -2460,6 +2461,23 @@ class ServerState:
             load_heartbeat.set()
         self.load_time_s = time.perf_counter() - started
         _startup_line(f"[5/6] Model loaded in {self.load_time_s:.1f}s")
+        try:
+            self.expert_locality_install_report = (
+                self.model_scheduler.submit_foreground(
+                    install_expert_locality_instrumentation,
+                    self.runtime,
+                    batch_key="startup.expert_locality",
+                ).result()
+            )
+        except Exception as exc:
+            self.expert_locality_install_report = {
+                "enabled": bool(os.environ.get("MTPLX_EXPERT_LOCALITY")),
+                "installed": False,
+                "instrumented_modules": 0,
+                "reason": "startup_install_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            LOGGER.warning("expert-locality instrumentation: %s", exc)
         self.backend_descriptor = descriptor_from_runtime(self.runtime, args)
         args.backend_id = self.backend_descriptor.backend_id
         if self.backend_descriptor.uses_draft_lm_head:
