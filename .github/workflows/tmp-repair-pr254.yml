@@ -1,0 +1,88 @@
+name: Temporary repair PR254
+on:
+  push:
+    branches: [tmp/pr254-current-main-swift-baseline]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+      - name: Merge current upstream and repair Swift 6 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git || true
+          git fetch upstream main
+          if ! git merge --no-edit upstream/main; then
+            echo "MERGE_CONFLICTS_BEGIN"
+            git diff --name-only --diff-filter=U
+            echo "MERGE_CONFLICTS_END"
+            exit 2
+          fi
+
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = [
+              (
+                  Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift'),
+                  'downloadTask = Task.detached(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in',
+                  'downloadTask = Task(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in',
+              ),
+              (
+                  Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift'),
+                  '        switch values["session_cache_hit"]?.boolValue {\n        case true: return .hit\n        case false: return .miss\n        case nil: return .unknown\n        }\n',
+                  '        switch values["session_cache_hit"]?.boolValue {\n        case .some(true): return .hit\n        case .some(false): return .miss\n        case .none: return .unknown\n        }\n',
+              ),
+              (
+                  Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/WordmarkView.swift'),
+                  'private let cachedWordmarkImage: NSImage? = {',
+                  '@MainActor private let cachedWordmarkImage: NSImage? = {',
+              ),
+              (
+                  Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/WordmarkView.swift'),
+                  'func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }',
+                  '@MainActor func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }',
+              ),
+              (
+                  Path('apps/MTPLXApp/Tests/MTPLXAppHostTests/ComposerReturnToSendTests.swift'),
+                  '    private static func firstTextView(in view: NSView) -> NSTextView? {',
+                  '    @MainActor private static func firstTextView(in view: NSView) -> NSTextView? {',
+              ),
+          ]
+          for path, old, new in replacements:
+              text = path.read_text()
+              if new in text:
+                  continue
+              if old not in text:
+                  raise SystemExit(f'expected Swift 6 baseline pattern not found: {path}: {old}')
+              path.write_text(text.replace(old, new, 1))
+          PY
+
+          rm -f \
+            .github/temporary-pr254-differential-marker.txt \
+            .github/temporary-pr254-differential-marker2.txt \
+            .github/temporary-pr254-extra.py \
+            .github/workflows/temporary-materialize-pr254-differential-swift.yml \
+            .github/workflows/temporary-materialize-pr254.yml
+
+          cd apps/MTPLXApp
+          swift test list
+          swift build -c release
+          cd ../..
+          python -m pytest -q tests/test_deepseek_v4_mlxserve_backend.py
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No repair changes after upstream merge."
+          else
+            git commit -m "Merge current main and restore Swift 6 compatibility"
+          fi
+          git push origin HEAD:codex/deepseek-v4-mlxserve-v26
