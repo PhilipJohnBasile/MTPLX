@@ -1,5 +1,7 @@
-# Current main added richer source-marker provenance in hf_loader.py. Preserve
-# that behavior alongside the DeepSeek pinned-source rules.
+# Adapt the guarded PR254 rebase resolver to current main.
+# The feature and current main now overlap in richer pull provenance and one
+# documentation section. Merge the semantics rather than choosing a side.
+
 hf_start = rebase.find(
     '    elif count == 1:\n'
     '        if (\n'
@@ -12,6 +14,7 @@ hf_end = rebase.find(hf_end_marker, hf_start)
 if hf_end < 0:
     raise SystemExit("hf_loader resolver end anchor changed")
 hf_end += len(hf_end_marker)
+
 hf_replacement = '''    elif count == 1:
         if (
             "def read_source_marker(" not in ours_text
@@ -19,9 +22,7 @@ hf_replacement = '''    elif count == 1:
         ):
             raise SystemExit(
                 "unexpected source-marker helper conflict\\nOURS:\\n"
-                + ours_text
-                + "\\nTHEIRS:\\n"
-                + theirs_text
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
         output.extend(ours)
         if ours and not ours[-1].endswith("\\n"):
@@ -35,22 +36,18 @@ hf_replacement = '''    elif count == 1:
         ):
             raise SystemExit(
                 "unexpected source-marker comparison conflict\\nOURS:\\n"
-                + ours_text
-                + "\\nTHEIRS:\\n"
-                + theirs_text
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
-        output.extend(
-            [
-                "    # Preserve current-main provenance fields while enforcing the\\n",
-                "    # canonical identity of pinned model artifacts.\\n",
-                "    canonical_repo_id, canonical_revision = pinned\\n",
-                "    return (\\n",
-                "        payload.get(\\\"repo_id\\\") == canonical_repo_id\\n",
-                "        and payload.get(\\\"revision\\\") == canonical_revision\\n",
-                "        and revision == canonical_revision\\n",
-                "    )\\n",
-            ]
-        )
+        output.extend([
+            "    # Preserve current-main provenance fields while enforcing the\\n",
+            "    # canonical identity of pinned model artifacts.\\n",
+            "    canonical_repo_id, canonical_revision = pinned\\n",
+            "    return (\\n",
+            "        payload.get(\\\"repo_id\\\") == canonical_repo_id\\n",
+            "        and payload.get(\\\"revision\\\") == canonical_revision\\n",
+            "        and revision == canonical_revision\\n",
+            "    )\\n",
+        ])
     elif count == 3:
         if (
             "payload: dict[str, Any]" not in ours_text
@@ -59,10 +56,10 @@ hf_replacement = '''    elif count == 1:
         ):
             raise SystemExit(
                 "unexpected source-marker write conflict\\nOURS:\\n"
-                + ours_text
-                + "\\nTHEIRS:\\n"
-                + theirs_text
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
+        # Canonicalize a pinned identity first, then create current-main's
+        # richer marker with resolved SHA, engine version and file metadata.
         output.extend(theirs)
         output.extend(ours)
     elif count == 4:
@@ -73,42 +70,133 @@ hf_replacement = '''    elif count == 1:
         ):
             raise SystemExit(
                 "unexpected repair conflict\\nOURS:\\n"
-                + ours_text
-                + "\\nTHEIRS:\\n"
-                + theirs_text
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
-        output.extend(
-            [
-                "    if force:\\n",
-                "        # Retain a known-bad target until the replacement is complete\\n",
-                "        # and hashed; a failed repair must not discard the only local copy.\\n",
-                "        if partial.exists():\\n",
-                "            partial.unlink()\\n",
-                "    elif target.exists():\\n",
-                "        # A size-mismatched final file is stale, not an interrupted\\n",
-                "        # partial. Do not append a remote tail to old final content.\\n",
-                "        target.unlink()\\n",
-            ]
+        output.extend([
+            "    if force:\\n",
+            "        # Retain a known-bad target until the replacement is complete\\n",
+            "        # and hashed; a failed repair must not discard the only local copy.\\n",
+            "        if partial.exists():\\n",
+            "            partial.unlink()\\n",
+            "    elif target.exists():\\n",
+            "        # A size-mismatched final file is stale, not an interrupted\\n",
+            "        # partial. Do not append a remote tail to old final content.\\n",
+            "        target.unlink()\\n",
+        ])
+    elif count == 5:
+        if (
+            "marker = read_source_marker(destination)" not in ours_text
+            or "def _fresh_against_remote()" not in ours_text
+            or "pinned_integrity_errors" not in theirs_text
+            or "repair_paths" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected pull setup conflict\\nOURS:\\n"
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
+            )
+        # Keep current-main's exact remote-snapshot freshness behavior and add
+        # the feature's one-pass integrity scan / targeted atomic repair set.
+        text = ours_text
+        setup_anchor = "    if (\\n        not force_sync\\n"
+        setup = (
+            "    pinned_integrity_errors = (\\n"
+            "        _pinned_artifact_integrity_errors(destination, repo_id)\\n"
+            "        if destination.is_dir() and _pinned_source_identity(repo_id) is not None\\n"
+            "        else None\\n"
+            "    )\\n"
+            "    repair_paths = (\\n"
+            "        frozenset(\\n"
+            "            error.partition(\\\":\\\")[0]\\n"
+            "            for error in pinned_integrity_errors\\n"
+            "            if error.partition(\\\":\\\")[0]\\n"
+            "        )\\n"
+            "        if pinned_integrity_errors\\n"
+            "        else frozenset()\\n"
+            "    )\\n"
+            "    pinned_integrity_checked = pinned_integrity_errors is not None\\n"
         )
+        if text.count(setup_anchor) != 1:
+            raise SystemExit("pull setup if anchor changed")
+        text = text.replace(setup_anchor, setup + setup_anchor, 1)
+        ready_old = "        and _cached_model_ready_for_repo(destination, repo_id)\\n"
+        ready_new = (
+            "        and _cached_model_ready_for_repo(\\n"
+            "            destination,\\n"
+            "            repo_id,\\n"
+            "            pinned_integrity_errors=pinned_integrity_errors,\\n"
+            "        )\\n"
+        )
+        if text.count(ready_old) != 1:
+            raise SystemExit("cached-model readiness anchor changed")
+        text = text.replace(ready_old, ready_new, 1)
+        output.append(text)
+    elif count == 6:
+        if (
+            "download_revision" not in ours_text
+            or "remote_files" not in ours_text
+            or "DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected total-bytes conflict\\nOURS:\\n"
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
+            )
+        text = ours_text
+        laguna = (
+            "        if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():\\n"
+            "            total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES\\n"
+        )
+        deepseek = (
+            "        elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():\\n"
+            "            total_bytes = DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES\\n"
+        )
+        if text.count(laguna) != 1:
+            raise SystemExit("total-bytes Laguna anchor changed")
+        text = text.replace(laguna, laguna + deepseek, 1)
+        output.append(text)
+    elif count == 7:
+        if (
+            "_validate_pinned_laguna_files" not in ours_text
+            or "resolved_sha=remote_sha" not in ours_text
+            or "_validate_pinned_model_files" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected final provenance conflict\\nOURS:\\n"
+                + ours_text + "\\nTHEIRS:\\n" + theirs_text
+            )
+        output.extend([
+            "        _validate_pinned_model_files(resolved, repo_id)\\n",
+            "        # Preserve current-main provenance for every successful pull;\\n",
+            "        # _write_source_marker canonicalizes pinned identities first.\\n",
+            "        _write_source_marker(\\n",
+            "            resolved,\\n",
+            "            repo_id=repo_id,\\n",
+            "            revision=revision,\\n",
+            "            resolved_sha=remote_sha,\\n",
+            "            files=remote_files,\\n",
+            "        )\\n",
+        ])
     else:
-        raise SystemExit("unexpected additional hf_loader conflict")
+        raise SystemExit(
+            f"unexpected additional hf_loader conflict #{count}\\n"
+            + "OURS:\\n" + ours_text + "\\nTHEIRS:\\n" + theirs_text
+        )
 '''
 rebase = rebase[:hf_start] + hf_replacement + rebase[hf_end:]
+
 old_count_check = (
     'if count != 2:\n'
     '    raise SystemExit(f"expected two hf_loader conflicts, resolved {count}")'
 )
 new_count_check = (
-    'if count != 5:\n'
-    '    raise SystemExit(f"expected five hf_loader conflicts, resolved {count}")'
+    'if count != 8:\n'
+    '    raise SystemExit(f"expected eight hf_loader conflicts, resolved {count}")'
 )
 if rebase.count(old_count_check) != 1:
     raise SystemExit("hf_loader conflict-count anchor changed")
 rebase = rebase.replace(old_count_check, new_count_check, 1)
 
-# Current main now conflicts in model-compatibility.md as well. Keep current
-# documentation and insert the DeepSeek external-AR contract before the next
-# heading.
+# Current main now conflicts in model-compatibility.md too. Keep current docs
+# and insert the narrowly-scoped DeepSeek external runtime contract.
 old_expected = (
     "  expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift\\n"
     "apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift\\n"
@@ -163,6 +251,8 @@ if rebase.count(old_continue) != 1:
     raise SystemExit("current-main docs continuation anchor changed")
 rebase = rebase.replace(old_continue, new_continue, 1)
 
+# Preserve current-main's lifecycle-generation safeguards in the post-start path
+# while bypassing MTPLX-only admin endpoints for the external mlx-serve backend.
 post_start_begin = (
     '    if (\n'
     '        "private func refreshPostStartState(" in ours\n'
