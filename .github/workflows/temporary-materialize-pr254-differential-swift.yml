@@ -105,7 +105,12 @@ jobs:
               old = 'private let cachedWordmarkImage: NSImage? = {'
               new = '@MainActor\nprivate let cachedWordmarkImage: NSImage? = {'
               if source.count(old) != 1:
-                  raise SystemExit(f'current-main wordmark Swift blocker anchor changed in {root}')
+                  raise SystemExit(f'current-main wordmark cache Swift blocker anchor changed in {root}')
+              source = source.replace(old, new, 1)
+              old = 'func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }'
+              new = '@MainActor\nfunc wordmarkNSImage() -> NSImage? { cachedWordmarkImage }'
+              if source.count(old) != 1:
+                  raise SystemExit(f'current-main wordmark accessor Swift blocker anchor changed in {root}')
               wordmark.write_text(source.replace(old, new, 1), encoding='utf-8')
           PYSWIFT
           (
