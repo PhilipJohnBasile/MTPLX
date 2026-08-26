@@ -53,3 +53,5 @@ post_start_replacement = '''    if (
         kinds.add("post_start")
 '''
 rebase = rebase[:post_start_start] + post_start_replacement + rebase[post_start_end:]
+
+# retrigger current-main materialization on 2026-08-26
