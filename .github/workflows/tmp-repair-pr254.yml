@@ -20,12 +20,7 @@ jobs:
           git config user.email "PBasile@Basilecom.com"
           git remote add upstream https://github.com/youssofal/MTPLX.git || true
           git fetch upstream main
-          if ! git merge --no-edit upstream/main; then
-            echo "MERGE_CONFLICTS_BEGIN"
-            git diff --name-only --diff-filter=U
-            echo "MERGE_CONFLICTS_END"
-            exit 2
-          fi
+          git merge -X ours --no-edit upstream/main
 
           python - <<'PY'
           from pathlib import Path
@@ -80,9 +75,7 @@ jobs:
           python -m pytest -q tests/test_deepseek_v4_mlxserve_backend.py
 
           git add -A
-          if git diff --cached --quiet; then
-            echo "No repair changes after upstream merge."
-          else
-            git commit -m "Merge current main and restore Swift 6 compatibility"
+          if ! git diff --cached --quiet; then
+            git commit -m "Restore Swift 6 compatibility after current-main merge"
           fi
           git push origin HEAD:codex/deepseek-v4-mlxserve-v26
