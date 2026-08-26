@@ -112,6 +112,14 @@ jobs:
               if source.count(old) != 1:
                   raise SystemExit(f'current-main wordmark accessor Swift blocker anchor changed in {root}')
               wordmark.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+              composer_test = root_path / 'apps/MTPLXApp/Tests/MTPLXAppHostTests/ComposerReturnToSendTests.swift'
+              source = composer_test.read_text(encoding='utf-8')
+              old = '    private static func firstTextView(in view: NSView) -> NSTextView? {'
+              new = '    @MainActor\n    private static func firstTextView(in view: NSView) -> NSTextView? {'
+              if source.count(old) != 1:
+                  raise SystemExit(f'current-main composer host-test Swift blocker anchor changed in {root}')
+              composer_test.write_text(source.replace(old, new, 1), encoding='utf-8')
           PYSWIFT
           (
             cd /tmp/pr254-swift-upstream/apps/MTPLXApp
