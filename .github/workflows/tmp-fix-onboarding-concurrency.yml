@@ -1,4 +1,4 @@
-name: Temporary onboarding concurrency fix
+name: Temporary Swift 6 baseline fixes
 on:
   push:
     branches: [tmp/pr254-current-main-swift-baseline]
@@ -9,18 +9,36 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Apply isolated baseline fix and validate
+      - name: Apply isolated baseline fixes and validate
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift')
-          s = p.read_text()
+
+          onboarding = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift')
+          text = onboarding.read_text()
           old = 'downloadTask = Task.detached(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
           new = 'downloadTask = Task(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, new, 1))
+          assert text.count(old) == 1
+          onboarding.write_text(text.replace(old, new, 1))
+
+          dashboard = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift')
+          text = dashboard.read_text()
+          old = '''        switch values["session_cache_hit"]?.boolValue {
+          case true: return .hit
+          case false: return .miss
+          case nil: return .unknown
+          }
+'''.replace('          case', '        case').replace('          }', '        }')
+          new = '''        switch values["session_cache_hit"]?.boolValue {
+        case .some(true): return .hit
+        case .some(false): return .miss
+        case .none: return .unknown
+        }
+'''
+          assert text.count(old) == 1
+          dashboard.write_text(text.replace(old, new, 1))
           PY
           cd apps/MTPLXApp
           swift test
