@@ -1,6 +1,5 @@
-# Current main added a richer source marker helper in hf_loader.py. Preserve it
-# next to the DeepSeek pinned-source helper, then let the existing repair resolver
-# handle the following conflict as the third hunk.
+# Current main added richer source-marker provenance in hf_loader.py. Preserve
+# that behavior alongside the DeepSeek pinned-source rules.
 hf_start = rebase.find(
     '    elif count == 1:\n'
     '        if (\n'
@@ -19,7 +18,7 @@ hf_replacement = '''    elif count == 1:
             or "def _pinned_source_identity(" not in theirs_text
         ):
             raise SystemExit(
-                "unexpected source-marker conflict\\nOURS:\\n"
+                "unexpected source-marker helper conflict\\nOURS:\\n"
                 + ours_text
                 + "\\nTHEIRS:\\n"
                 + theirs_text
@@ -29,6 +28,30 @@ hf_replacement = '''    elif count == 1:
             output.append("\\n")
         output.extend(theirs)
     elif count == 2:
+        if (
+            "Subset compare" not in ours_text
+            or "canonical_repo_id" not in theirs_text
+            or "canonical_revision" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected source-marker comparison conflict\\nOURS:\\n"
+                + ours_text
+                + "\\nTHEIRS:\\n"
+                + theirs_text
+            )
+        output.extend(
+            [
+                "    # Preserve current-main provenance fields while enforcing the\\n",
+                "    # canonical identity of pinned model artifacts.\\n",
+                "    canonical_repo_id, canonical_revision = pinned\\n",
+                "    return (\\n",
+                "        payload.get(\\\"repo_id\\\") == canonical_repo_id\\n",
+                "        and payload.get(\\\"revision\\\") == canonical_revision\\n",
+                "        and revision == canonical_revision\\n",
+                "    )\\n",
+            ]
+        )
+    elif count == 3:
         if (
             "if target.exists():" not in ours_text
             or "target.unlink()" not in ours_text
@@ -62,17 +85,16 @@ old_count_check = (
     '    raise SystemExit(f"expected two hf_loader conflicts, resolved {count}")'
 )
 new_count_check = (
-    'if count != 3:\n'
-    '    raise SystemExit(f"expected three hf_loader conflicts, resolved {count}")'
+    'if count != 4:\n'
+    '    raise SystemExit(f"expected four hf_loader conflicts, resolved {count}")'
 )
 if rebase.count(old_count_check) != 1:
     raise SystemExit("hf_loader conflict-count anchor changed")
 rebase = rebase.replace(old_count_check, new_count_check, 1)
 
-# Current main now conflicts in model-compatibility.md as well. The materializer
-# already rewrites the first stop to expect both Swift paths plus hf_loader;
-# extend that expectation and resolve docs by keeping current main then inserting
-# the DeepSeek external-AR contract before the next heading.
+# Current main now conflicts in model-compatibility.md as well. Keep current
+# documentation and insert the DeepSeek external-AR contract before the next
+# heading.
 old_expected = (
     "  expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift\\n"
     "apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift\\n"
