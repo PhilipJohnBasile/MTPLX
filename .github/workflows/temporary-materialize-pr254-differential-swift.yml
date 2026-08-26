@@ -71,11 +71,10 @@ jobs:
             swift test
             swift build -c release
           )'''
-          replacement = r'''# Current upstream main is blocked under the runner's Swift strict-concurrency
-          # checker in OnboardingOrchestrator.startDownload(). Keep that unrelated fix
-          # out of PR 254: patch the same disposable source line in isolated upstream
-          # and candidate worktrees, then require the full Swift tests and release
-          # build to pass on both trees.
+          replacement = r'''# Current upstream main is blocked by strict Swift diagnostics unrelated to
+          # PR 254. Keep those fixes out of this PR: apply identical disposable
+          # workarounds to upstream and candidate worktrees, then require the full
+          # Swift tests and release build to pass on both trees.
           rm -rf /tmp/pr254-swift-upstream /tmp/pr254-swift-candidate
           git worktree add --detach /tmp/pr254-swift-upstream upstream/main
           git worktree add --detach /tmp/pr254-swift-candidate HEAD
@@ -83,13 +82,30 @@ jobs:
           from pathlib import Path
 
           for root in ('/tmp/pr254-swift-upstream', '/tmp/pr254-swift-candidate'):
-              path = Path(root) / 'apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift'
-              source = path.read_text(encoding='utf-8')
+              root_path = Path(root)
+
+              orchestrator = root_path / 'apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift'
+              source = orchestrator.read_text(encoding='utf-8')
               old = 'downloadTask = Task.detached(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
               new = 'downloadTask = Task(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
               if source.count(old) != 1:
-                  raise SystemExit(f'current-main Swift blocker anchor changed in {root}')
-              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+                  raise SystemExit(f'current-main onboarding Swift blocker anchor changed in {root}')
+              orchestrator.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+              dashboard = root_path / 'apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift'
+              source = dashboard.read_text(encoding='utf-8')
+              old = '''        case true: return .hit
+                  case false: return .miss
+                  case nil: return .unknown
+              '''.replace('              ', '')
+              new = '''        case true: return .hit
+                  case false: return .miss
+                  case nil: return .unknown
+                  case .some(_): return .unknown
+              '''.replace('              ', '')
+              if source.count(old) != 1:
+                  raise SystemExit(f'current-main dashboard Swift blocker anchor changed in {root}')
+              dashboard.write_text(source.replace(old, new, 1), encoding='utf-8')
           PYSWIFT
           (
             cd /tmp/pr254-swift-upstream/apps/MTPLXApp
