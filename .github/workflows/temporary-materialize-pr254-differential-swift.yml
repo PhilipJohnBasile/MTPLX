@@ -99,6 +99,14 @@ jobs:
               if source.count(old) != 1:
                   raise SystemExit(f'current-main dashboard Swift blocker anchor changed in {root}')
               dashboard.write_text(source.replace(old, new, 1), encoding='utf-8')
+
+              wordmark = root_path / 'apps/MTPLXApp/Sources/MTPLXAppHost/Views/WordmarkView.swift'
+              source = wordmark.read_text(encoding='utf-8')
+              old = 'private let cachedWordmarkImage: NSImage? = {'
+              new = '@MainActor\nprivate let cachedWordmarkImage: NSImage? = {'
+              if source.count(old) != 1:
+                  raise SystemExit(f'current-main wordmark Swift blocker anchor changed in {root}')
+              wordmark.write_text(source.replace(old, new, 1), encoding='utf-8')
           PYSWIFT
           (
             cd /tmp/pr254-swift-upstream/apps/MTPLXApp
