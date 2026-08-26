@@ -61,7 +61,7 @@ jobs:
           if materializer.count(anchor) != 1:
               raise SystemExit('materializer execution anchor changed')
 
-          injection = r'''python - <<'PYPATCH'
+          injection = r"""python - <<'PYPATCH'
           from pathlib import Path
 
           validate = Path('/tmp/pr254-validate.sh')
@@ -107,7 +107,7 @@ jobs:
               raise SystemExit('Swift validation block anchor changed')
           validate.write_text(text.replace(original, replacement, 1), encoding='utf-8')
           PYPATCH
-          '''
+          """
           materializer = materializer.replace(anchor, injection + anchor, 1)
           Path('/tmp/pr254-differential-materializer.sh').write_text(materializer + '\n', encoding='utf-8')
           PY
