@@ -53,6 +53,20 @@ hf_replacement = '''    elif count == 1:
         )
     elif count == 3:
         if (
+            "payload: dict[str, Any]" not in ours_text
+            or "resolved_sha" not in ours_text
+            or "pinned = _pinned_source_identity(repo_id)" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected source-marker write conflict\\nOURS:\\n"
+                + ours_text
+                + "\\nTHEIRS:\\n"
+                + theirs_text
+            )
+        output.extend(theirs)
+        output.extend(ours)
+    elif count == 4:
+        if (
             "if target.exists():" not in ours_text
             or "target.unlink()" not in ours_text
             or "if force and partial.exists():" not in theirs_text
@@ -85,8 +99,8 @@ old_count_check = (
     '    raise SystemExit(f"expected two hf_loader conflicts, resolved {count}")'
 )
 new_count_check = (
-    'if count != 4:\n'
-    '    raise SystemExit(f"expected four hf_loader conflicts, resolved {count}")'
+    'if count != 5:\n'
+    '    raise SystemExit(f"expected five hf_loader conflicts, resolved {count}")'
 )
 if rebase.count(old_count_check) != 1:
     raise SystemExit("hf_loader conflict-count anchor changed")
