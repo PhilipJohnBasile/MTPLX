@@ -284,7 +284,32 @@ expected_store_new = '''expected_store = {
     "prefill_history",
     "models",
     "late_health_recovery",
-}'''
+}
+
+# Current main moved launch parameters into an OwnedLaunch restart recipe.
+# Carry backendKind through that recipe so external launches and automatic
+# restarts do not silently fall back to MTPLX lifecycle semantics.
+supervisor_path = Path("apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift")
+supervisor_text = supervisor_path.read_text(encoding="utf-8")
+supervisor_text = replace_once(
+    supervisor_text,
+    "        let apiKey: String?\\n        let probeHealth: Bool\\n",
+    "        let apiKey: String?\\n        let backendKind: DaemonBackendKind\\n        let probeHealth: Bool\\n",
+    "OwnedLaunch backend kind field",
+)
+supervisor_text = replace_once(
+    supervisor_text,
+    "                apiKey: apiKey,\\n                probeHealth: probeHealth,\\n",
+    "                apiKey: apiKey,\\n                backendKind: backendKind,\\n                probeHealth: probeHealth,\\n",
+    "OwnedLaunch backend kind construction",
+)
+supervisor_text = replace_once(
+    supervisor_text,
+    "        let apiKey = launch.apiKey\\n        let probeHealth = launch.probeHealth\\n",
+    "        let apiKey = launch.apiKey\\n        let backendKind = launch.backendKind\\n        let probeHealth = launch.probeHealth\\n",
+    "OwnedLaunch backend kind unpacking",
+)
+supervisor_path.write_text(supervisor_text, encoding="utf-8")'''
 if rebase.count(expected_store_old) != 1:
     raise SystemExit("expected_store whitelist anchor changed")
 rebase = rebase.replace(expected_store_old, expected_store_new, 1)
