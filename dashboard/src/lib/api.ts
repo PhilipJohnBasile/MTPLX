@@ -3,6 +3,7 @@ import type {
   HealthPayload,
   MutableSettings,
   PrefillHistoryPayload,
+  RuntimeSystemsPayload,
   SessionsPayload,
 } from "./types";
 
@@ -40,6 +41,7 @@ export const api = {
   getSessions: () => getJson<SessionsPayload>("/admin/sessions"),
   getPrefillHistory: () => getJson<PrefillHistoryPayload>("/v1/mtplx/prefill_history"),
   getSnapshot: () => getJson<DashboardSnapshot>("/v1/mtplx/snapshot"),
+  getSystems: () => getJson<RuntimeSystemsPayload>("/v1/mtplx/systems"),
   postSettings: (payload: Partial<MutableSettings>) =>
     postJson<{ ok: boolean; applied: Partial<MutableSettings>; snapshot: MutableSettings }>(
       "/v1/mtplx/settings",
