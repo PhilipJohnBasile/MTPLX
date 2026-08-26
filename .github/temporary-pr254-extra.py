@@ -245,9 +245,6 @@ if rebase.count(old_continue) != 1:
     raise SystemExit("current-main docs continuation anchor changed")
 rebase = rebase.replace(old_continue, new_continue, 1)
 
-# Current main intentionally removed supervisor.isRunning() from late-health
-# recovery because the failed-start path reaps the wrapper before scheduling.
-# Keep that MTPLX recovery behavior, but retain #254's external-backend guard.
 store_start = rebase.find("def merge_store(ours: str, theirs: str)")
 if store_start < 0:
     raise SystemExit("merge_store anchor changed")
@@ -264,6 +261,33 @@ late_health = '''    if (
 
 '''
 rebase = rebase[:store_return] + late_health + rebase[store_return:]
+
+expected_store_old = '''expected_store = {
+    "restart_runtime",
+    "start_runtime",
+    "refresh_static",
+    "flush_fresh",
+    "fan_mode",
+    "thermal",
+    "post_start",
+    "prefill_history",
+    "models",
+}'''
+expected_store_new = '''expected_store = {
+    "restart_runtime",
+    "start_runtime",
+    "refresh_static",
+    "flush_fresh",
+    "fan_mode",
+    "thermal",
+    "post_start",
+    "prefill_history",
+    "models",
+    "late_health_recovery",
+}'''
+if rebase.count(expected_store_old) != 1:
+    raise SystemExit("expected_store whitelist anchor changed")
+rebase = rebase.replace(expected_store_old, expected_store_new, 1)
 
 post_start_begin = (
     '    if (\n'
