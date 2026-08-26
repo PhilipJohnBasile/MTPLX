@@ -22443,11 +22443,23 @@ def _run_generation(
             # Route Tape: recorder-level sink; the server stamps the request id
             # onto every record so generation stays rid-agnostic.
             _rt_rid = str((request_observability or {}).get("request_id") or "")
-            set_route_tape_sink(
-                lambda rec: (
-                    rec.setdefault("rid", _rt_rid), _flight(state).emit_route(rec)
-                )
-            )
+
+            def _emit_route_tape(rec: dict[str, Any]) -> None:
+                # Generation trace labels may contain a prompt preview. The
+                # canonical server request id is the sole telemetry identity.
+                rec["rid"] = _rt_rid
+                if rec.get("name") == "header":
+                    attrs = rec.setdefault("attrs", {})
+                    attrs["model_id"] = str(
+                        getattr(state.args, "model_id", None)
+                        or getattr(state.args, "model", None)
+                        or "unknown"
+                    )
+                    attrs["profile"] = getattr(state.args, "profile", None)
+                    attrs["generation_mode"] = effective_mode
+                _flight(state).emit_route(rec)
+
+            set_route_tape_sink(_emit_route_tape)
             with (
                 _temporary_env(dynamic_kv_reservation["env"]),
                 prefill_chunk_size_override(prefill_chunk_tokens),

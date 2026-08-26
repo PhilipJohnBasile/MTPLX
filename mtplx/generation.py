@@ -8401,7 +8401,10 @@ def generate_mtpk(
     # disabled the only cost is one `route_tape.enabled` check per round. The
     # tape never routes through append_event (MTPLX_DROP_EVENTS nulls it in
     # production); it emits through the Flight Recorder sink or its own JSONL.
-    route_tape = RouteTape(trace_label or session_id or f"pid{os.getpid()}")
+    # Never use trace_label here: the server's decode trace intentionally puts
+    # a prompt preview in that label. The server sink replaces this standalone
+    # opaque id with its canonical request id.
+    route_tape = RouteTape(session_id or f"rt-{os.urandom(8).hex()}")
 
     def _route_counter_snapshot() -> dict[str, dict[str, int]]:
         from .attention_split import gqa_packed_route_bail_counts
@@ -8463,6 +8466,35 @@ def generate_mtpk(
             for name, counts in cur.items()
         }
         _rt_prev = cur
+        verify_route = event.get("verify_route") or "not_run"
+        verify_width = event.get("verify_width")
+        if verify_width is None:
+            verify_width = 0 if verify_route == "not_run" else None
+        commit_route = event.get("commit_route")
+        if not commit_route:
+            context_copy = event.get("context_copy") or {}
+            if event.get("capture_repair") == "route_pending_correction":
+                commit_route = "rebase_deferred"
+            elif context_copy.get("disabled"):
+                commit_route = "rollback_reforward"
+            elif context_copy.get("block"):
+                commit_route = (
+                    "capture_commit"
+                    if int(context_copy.get("accepted") or 0)
+                    < int(context_copy["block"])
+                    else "verify_retained"
+                )
+            elif verify_route != "not_run":
+                commit_route = "verify_retained"
+            else:
+                commit_route = "primary_only"
+        required = {
+            "verify_route": verify_route,
+            "commit_route": commit_route,
+            "verify_width": verify_width,
+            "accepted_depths": event.get("accepted_depths"),
+        }
+        incomplete = [key for key, value in required.items() if value is None]
         route_tape.emit(
             "route",
             "round",
@@ -8473,10 +8505,9 @@ def generate_mtpk(
                 "verify_strategy": event.get("verify_strategy"),
                 "verify_core": event.get("verify_core"),
                 "draft_core": event.get("draft_core"),
-                "verify_route": event.get("verify_route", "unknown"),
-                "commit_route": event.get("commit_route", "none"),
-                "verify_width": event.get("verify_width"),
-                "accepted_depths": event.get("accepted_depths"),
+                **required,
+                "complete": not incomplete,
+                "incomplete_fields": incomplete,
                 "rejected_at_depth": event.get("rejected_at_depth"),
                 "bonus_token": event.get("bonus_token") is not None,
                 "drafts": [

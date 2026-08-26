@@ -112,6 +112,27 @@ class TestDroppedAccounting:
         finally:
             set_route_tape_sink(None)
 
+    def test_next_success_reports_prior_loss(self, monkeypatch):
+        monkeypatch.setenv("MTPLX_ROUTE_TAPE", "1")
+        rows = []
+
+        def flaky_sink(rec):
+            if not rows:
+                rows.append(None)
+                raise RuntimeError("first write failed")
+            rows.append(rec)
+
+        set_route_tape_sink(flaky_sink)
+        try:
+            tape = RouteTape("rid-loss")
+            tape.emit("route", "round", 1, {})
+            tape.emit("route", "round", 2, {})
+            assert tape.dropped == 1
+            assert rows[-1]["seq"] == 2
+            assert rows[-1]["dropped_before"] == 1
+        finally:
+            set_route_tape_sink(None)
+
 
 class TestFlightRecorderIntegration:
     def test_emit_route_lands_in_flight_jsonl(self, tmp_path):

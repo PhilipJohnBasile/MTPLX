@@ -31,7 +31,7 @@ VERIFY_ROUTES = frozenset({
     "compiled_bank", "graphbank", "eager_capture",
     "a3b_m3_rebased", "a3b_m3", "a3b_m2_rebased", "a3b_m2",
     "compiled_bank_tp", "graphbank_plain", "eager_plain",
-    "ccopy_bank", "ccopy_block", "ar", "unknown",
+    "ccopy_bank", "ccopy_block", "ar", "not_run", "unknown",
 })
 
 # gdn_capture.resolve_gdn_capture_backend (gdn_capture.py:1455).
@@ -43,7 +43,8 @@ GDN_CAPTURE_ROUTES = frozenset({
 
 # Commit lanes (generation.py:10668-10844).
 COMMIT_ROUTES = frozenset({
-    "capture_commit", "trim_commit", "rollback_reforward", "copy_block", "none",
+    "capture_commit", "trim_commit", "rollback_reforward", "copy_block",
+    "verify_retained", "rebase_deferred", "primary_only", "none",
 })
 
 # graphbank._fallback_reason (graphbank.py:1909-1989) + legacy bank (193-211).
@@ -146,6 +147,10 @@ class RouteTape:
             "kind": kind,
             "name": name,
             "attrs": attrs,
+            # Cumulative loss is carried by the next successful row. A sink
+            # failure therefore cannot disappear behind a contiguous-looking
+            # stream even though telemetry must never take down decode.
+            "dropped_before": self._dropped,
         }
         try:
             if self._sink is not None:
