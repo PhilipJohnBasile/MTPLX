@@ -1,4 +1,4 @@
-name: Temporary PR254 rebase audit
+name: Temporary PR254 rebase resolution
 
 on:
   push:
@@ -9,37 +9,49 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  resolve:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Attempt current-main merge and capture conflicts
+      - name: Merge current main and replay PR feature deltas
         run: |
-          set +e
-          git config user.name "PR254 rebase audit"
+          set -euo pipefail
+          git config user.name "PR254 resolution"
           git config user.email "noreply@example.com"
           git remote add upstream https://github.com/youssofal/MTPLX.git
           git fetch --no-tags upstream main
-          git merge --no-commit --no-ff upstream/main > merge.log 2>&1
-          status=$?
-          mkdir -p conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Services
-          mkdir -p conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Stores
-          mkdir -p conflict-files/docs conflict-files/mtplx
-          cp apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Services/
-          cp apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift conflict-files/apps/MTPLXApp/Sources/MTPLXAppCore/Stores/
-          cp docs/model-compatibility.md conflict-files/docs/
-          cp mtplx/hf_loader.py conflict-files/mtplx/
-          {
-            echo "merge_status=$status"
-            echo "conflicts:"
-            git diff --name-only --diff-filter=U
-            echo
-            cat merge.log
-          } > conflict-files/rebase-audit.txt
-          exit 0
+          set +e
+          git merge --no-commit --no-ff upstream/main
+          set -e
+          files=(
+            apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift
+            apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift
+            docs/model-compatibility.md
+            mtplx/hf_loader.py
+          )
+          mkdir -p resolution
+          for f in "${files[@]}"; do
+            git checkout --theirs -- "$f"
+            git add "$f"
+            patch="/tmp/$(basename "$f").patch"
+            git diff 90d8c4b57233b61731269866b13d5af697284d8c..382698a8aa5ec4501f2bf811785ed7630d8caa3b -- "$f" > "$patch"
+            set +e
+            git apply --reject --whitespace=nowarn "$patch" > "/tmp/$(basename "$f").apply.log" 2>&1
+            code=$?
+            set -e
+            echo "$code" > "resolution/$(basename "$f").apply-status"
+            cp "/tmp/$(basename "$f").apply.log" "resolution/$(basename "$f").apply.log"
+            if [ -f "$f.rej" ]; then
+              mkdir -p "resolution/$(dirname "$f")"
+              cp "$f.rej" "resolution/$f.rej"
+            fi
+            mkdir -p "resolution/$(dirname "$f")"
+            cp "$f" "resolution/$f"
+          done
+          git status --short > resolution/status.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: pr254-conflict-files
-          path: conflict-files
+          name: pr254-resolution-attempt
+          path: resolution
