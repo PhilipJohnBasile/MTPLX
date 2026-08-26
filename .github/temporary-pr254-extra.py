@@ -58,8 +58,6 @@ hf_replacement = '''    elif count == 1:
                 "unexpected source-marker write conflict\\nOURS:\\n"
                 + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
-        # Canonicalize a pinned identity first, then create current-main's
-        # richer marker with resolved SHA, engine version and file metadata.
         output.extend(theirs)
         output.extend(ours)
     elif count == 4:
@@ -94,8 +92,6 @@ hf_replacement = '''    elif count == 1:
                 "unexpected pull setup conflict\\nOURS:\\n"
                 + ours_text + "\\nTHEIRS:\\n" + theirs_text
             )
-        # Keep current-main's exact remote-snapshot freshness behavior and add
-        # the feature's one-pass integrity scan / targeted atomic repair set.
         text = ours_text
         setup_anchor = "    if (\\n        not force_sync\\n"
         setup = (
@@ -195,8 +191,6 @@ if rebase.count(old_count_check) != 1:
     raise SystemExit("hf_loader conflict-count anchor changed")
 rebase = rebase.replace(old_count_check, new_count_check, 1)
 
-# Current main now conflicts in model-compatibility.md too. Keep current docs
-# and insert the narrowly-scoped DeepSeek external runtime contract.
 old_expected = (
     "  expected=$'apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift\\n"
     "apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift\\n"
@@ -251,8 +245,26 @@ if rebase.count(old_continue) != 1:
     raise SystemExit("current-main docs continuation anchor changed")
 rebase = rebase.replace(old_continue, new_continue, 1)
 
-# Preserve current-main's lifecycle-generation safeguards in the post-start path
-# while bypassing MTPLX-only admin endpoints for the external mlx-serve backend.
+# Current main intentionally removed supervisor.isRunning() from late-health
+# recovery because the failed-start path reaps the wrapper before scheduling.
+# Keep that MTPLX recovery behavior, but retain #254's external-backend guard.
+store_start = rebase.find("def merge_store(ours: str, theirs: str)")
+if store_start < 0:
+    raise SystemExit("merge_store anchor changed")
+store_return = rebase.find("    return text, kinds\n", store_start)
+if store_return < 0:
+    raise SystemExit("merge_store return anchor changed")
+late_health = '''    if (
+        "Never guard this on supervisor.isRunning()" in ours
+        and "guard supportsMTPLXLiveControls else { return }" in theirs
+        and "guard supervisor.isRunning() else { return }" in theirs
+    ):
+        text = "        guard supportsMTPLXLiveControls else { return }\\n" + ours
+        kinds.add("late_health_recovery")
+
+'''
+rebase = rebase[:store_return] + late_health + rebase[store_return:]
+
 post_start_begin = (
     '    if (\n'
     '        "private func refreshPostStartState(" in ours\n'
