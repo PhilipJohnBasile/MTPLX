@@ -1,3 +1,74 @@
+# Current main added a richer source marker helper in hf_loader.py. Preserve it
+# next to the DeepSeek pinned-source helper, then let the existing repair resolver
+# handle the following conflict as the third hunk.
+hf_start = rebase.find(
+    '    elif count == 1:\n'
+    '        if (\n'
+    '            "if target.exists():" not in ours_text\n'
+)
+if hf_start < 0:
+    raise SystemExit("hf_loader second-conflict resolver anchor changed")
+hf_end_marker = '    else:\n        raise SystemExit("unexpected additional hf_loader conflict")\n'
+hf_end = rebase.find(hf_end_marker, hf_start)
+if hf_end < 0:
+    raise SystemExit("hf_loader resolver end anchor changed")
+hf_end += len(hf_end_marker)
+hf_replacement = '''    elif count == 1:
+        if (
+            "def read_source_marker(" not in ours_text
+            or "def _pinned_source_identity(" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected source-marker conflict\\nOURS:\\n"
+                + ours_text
+                + "\\nTHEIRS:\\n"
+                + theirs_text
+            )
+        output.extend(ours)
+        if ours and not ours[-1].endswith("\\n"):
+            output.append("\\n")
+        output.extend(theirs)
+    elif count == 2:
+        if (
+            "if target.exists():" not in ours_text
+            or "target.unlink()" not in ours_text
+            or "if force and partial.exists():" not in theirs_text
+        ):
+            raise SystemExit(
+                "unexpected repair conflict\\nOURS:\\n"
+                + ours_text
+                + "\\nTHEIRS:\\n"
+                + theirs_text
+            )
+        output.extend(
+            [
+                "    if force:\\n",
+                "        # Retain a known-bad target until the replacement is complete\\n",
+                "        # and hashed; a failed repair must not discard the only local copy.\\n",
+                "        if partial.exists():\\n",
+                "            partial.unlink()\\n",
+                "    elif target.exists():\\n",
+                "        # A size-mismatched final file is stale, not an interrupted\\n",
+                "        # partial. Do not append a remote tail to old final content.\\n",
+                "        target.unlink()\\n",
+            ]
+        )
+    else:
+        raise SystemExit("unexpected additional hf_loader conflict")
+'''
+rebase = rebase[:hf_start] + hf_replacement + rebase[hf_end:]
+old_count_check = (
+    'if count != 2:\n'
+    '    raise SystemExit(f"expected two hf_loader conflicts, resolved {count}")'
+)
+new_count_check = (
+    'if count != 3:\n'
+    '    raise SystemExit(f"expected three hf_loader conflicts, resolved {count}")'
+)
+if rebase.count(old_count_check) != 1:
+    raise SystemExit("hf_loader conflict-count anchor changed")
+rebase = rebase.replace(old_count_check, new_count_check, 1)
+
 # Current main now conflicts in model-compatibility.md as well. The materializer
 # already rewrites the first stop to expect both Swift paths plus hf_loader;
 # extend that expectation and resolve docs by keeping current main then inserting
