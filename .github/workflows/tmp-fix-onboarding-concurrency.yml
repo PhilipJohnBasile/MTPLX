@@ -1,0 +1,27 @@
+name: Temporary onboarding concurrency fix
+on:
+  push:
+    branches: [tmp/pr254-current-main-swift-baseline]
+permissions:
+  contents: read
+jobs:
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply isolated baseline fix and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift')
+          s = p.read_text()
+          old = 'downloadTask = Task.detached(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
+          new = 'downloadTask = Task(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new, 1))
+          PY
+          cd apps/MTPLXApp
+          swift test
+          swift build -c release
