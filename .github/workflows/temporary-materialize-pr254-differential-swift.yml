@@ -1,0 +1,115 @@
+name: Temporary materialize PR 254 with differential Swift gate
+
+on:
+  push:
+    branches:
+      - codex/deepseek-v4-mlxserve-v26
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-materialize-pr254-differential-swift
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/deepseek-v4-mlxserve-v26
+          fetch-depth: 0
+
+      - name: Reuse guarded materializer with isolated Swift baseline workaround
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/temporary-materialize-pr254.yml').read_text(encoding='utf-8').splitlines()
+          blocks = []
+          index = 0
+          while index < len(source):
+              if source[index] == '        run: |':
+                  index += 1
+                  block = []
+                  while index < len(source):
+                      line = source[index]
+                      if line and len(line) - len(line.lstrip()) <= 8:
+                          break
+                      if line.startswith('          '):
+                          block.append(line[10:])
+                      elif not line:
+                          block.append('')
+                      else:
+                          raise SystemExit(f'unexpected workflow indentation: {line!r}')
+                      index += 1
+                  blocks.append('\n'.join(block))
+                  continue
+              index += 1
+          if len(blocks) != 1:
+              raise SystemExit(f'expected one materializer run block, found {len(blocks)}')
+
+          materializer = blocks[0]
+          anchor = '''set +e
+          bash /tmp/pr254-run.sh > /tmp/pr254-run.log 2>&1'''.replace('          ', '')
+          if materializer.count(anchor) != 1:
+              raise SystemExit('materializer execution anchor changed')
+
+          injection = r'''python - <<'PYPATCH'
+          from pathlib import Path
+
+          validate = Path('/tmp/pr254-validate.sh')
+          text = validate.read_text(encoding='utf-8')
+          original = '''(
+            cd apps/MTPLXApp
+            swift test
+            swift build -c release
+          )'''
+          replacement = r'''# Current upstream main is blocked under the runner's Swift strict-concurrency
+          # checker in OnboardingOrchestrator.startDownload(). Keep that unrelated fix
+          # out of PR 254: patch the same disposable source line in isolated upstream
+          # and candidate worktrees, then require the full Swift tests and release
+          # build to pass on both trees.
+          rm -rf /tmp/pr254-swift-upstream /tmp/pr254-swift-candidate
+          git worktree add --detach /tmp/pr254-swift-upstream upstream/main
+          git worktree add --detach /tmp/pr254-swift-candidate HEAD
+          python - <<'PYSWIFT'
+          from pathlib import Path
+
+          for root in ('/tmp/pr254-swift-upstream', '/tmp/pr254-swift-candidate'):
+              path = Path(root) / 'apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.swift'
+              source = path.read_text(encoding='utf-8')
+              old = 'downloadTask = Task.detached(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
+              new = 'downloadTask = Task(priority: .userInitiated) { [weak self, downloader, repo, totalBytes, extraEnvironment] in'
+              if source.count(old) != 1:
+                  raise SystemExit(f'current-main Swift blocker anchor changed in {root}')
+              path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PYSWIFT
+          (
+            cd /tmp/pr254-swift-upstream/apps/MTPLXApp
+            swift test
+            swift build -c release
+          )
+          (
+            cd /tmp/pr254-swift-candidate/apps/MTPLXApp
+            swift test
+            swift build -c release
+          )
+          git worktree remove --force /tmp/pr254-swift-upstream
+          git worktree remove --force /tmp/pr254-swift-candidate'''
+          if text.count(original) != 1:
+              raise SystemExit('Swift validation block anchor changed')
+          validate.write_text(text.replace(original, replacement, 1), encoding='utf-8')
+          PYPATCH
+          '''
+          materializer = materializer.replace(anchor, injection + anchor, 1)
+          Path('/tmp/pr254-differential-materializer.sh').write_text(materializer + '\n', encoding='utf-8')
+          PY
+          bash -n /tmp/pr254-differential-materializer.sh
+          bash /tmp/pr254-differential-materializer.sh
