@@ -1,0 +1,21 @@
+name: Temporary PR254 current-main Swift baseline
+
+on:
+  push:
+    branches:
+      - tmp/pr254-current-main-swift-baseline
+
+permissions:
+  contents: read
+
+jobs:
+  swift-baseline:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exact Swift validation used by PR254 materializer
+        run: |
+          set -euo pipefail
+          cd apps/MTPLXApp
+          swift test
+          swift build -c release
