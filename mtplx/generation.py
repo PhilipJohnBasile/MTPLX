@@ -9594,6 +9594,7 @@ def generate_mtpk(
                     )
                 started_forward = time.perf_counter()
                 with attention_phase("decode_verify"):
+                    event["verify_width"] = 1 + len(_cc_block)
                     if _cc_bank_route:
                         # Native-length dispatch; the bank's extended window
                         # accepts T up to MTPLX_CCOPY_BANK_MAX_LEN and falls
