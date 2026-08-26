@@ -92,6 +92,7 @@ from .sampling import (
 )
 from .session_bank import _boundary_true_restore_enabled
 from .runtime_options import block_prefix_restore_enabled, env_bool
+from .route_tape import RouteTape, counter_deltas
 
 Mode = Literal["ar", "mtp1", "mtpk", "mtpa"]
 VerifyStrategy = Literal[
@@ -8396,6 +8397,105 @@ def generate_mtpk(
     )
     trace_current_mtp_cache = mtp_history_cache
 
+    # Route Tape (Pulse X-Ray): per-round route census. Off means off — when
+    # disabled the only cost is one `route_tape.enabled` check per round. The
+    # tape never routes through append_event (MTPLX_DROP_EVENTS nulls it in
+    # production); it emits through the Flight Recorder sink or its own JSONL.
+    route_tape = RouteTape(trace_label or session_id or f"pid{os.getpid()}")
+
+    def _route_counter_snapshot() -> dict[str, dict[str, int]]:
+        from .attention_split import gqa_packed_route_bail_counts
+        from .gdn_capture import gdn_capture_fallback_counts
+        from .nax_verify import nax_qlinear_fallback_counts
+
+        snap: dict[str, dict[str, int]] = {
+            "nax_qlinear_fallback": dict(nax_qlinear_fallback_counts),
+            "gdn_capture_fallback": dict(gdn_capture_fallback_counts),
+            "gqa_packed_bail": dict(gqa_packed_route_bail_counts),
+        }
+        if compiled_verify_bank is not None:
+            fb = getattr(compiled_verify_bank, "stats", {}).get("fallback_reasons")
+            if fb:
+                snap["bank_fallback"] = {str(k): int(v) for k, v in fb.items()}
+        return snap
+
+    _rt_prev = _route_counter_snapshot() if route_tape.enabled else {}
+
+    if route_tape.enabled:
+        from .kernel_selfcheck import _DISABLED_LANES
+        from .nax_verify import nax_available
+
+        route_tape.emit(
+            "route",
+            "header",
+            None,
+            {
+                "verify_strategy": verify_strategy,
+                "verify_core": verify_core_backend,
+                "draft_core": draft_core,
+                "speculative_depth": int(speculative_depth),
+                "sampler": {
+                    "temperature": float(sampler.temperature),
+                    "top_p": float(sampler.top_p),
+                    "top_k": int(sampler.top_k),
+                },
+                "mtp_history_policy": mtp_history_policy,
+                "mtp_cache_policy": mtp_cache_policy,
+                "cache_class": type(cache[0]).__name__ if cache else None,
+                "cache_physical_capacity": getattr(cache[0], "capacity", None) if cache else None,
+                "disabled_lanes": sorted(_DISABLED_LANES),
+                "nax_available": bool(nax_available()),
+                "prompt_tokens": len(prompt_ids),
+                "max_tokens": int(max_tokens),
+            },
+        )
+
+    def emit_round(event: dict) -> None:
+        """Single choke point for round completion: preserves append_event
+        semantics and emits the per-round route census when the tape is on."""
+        append_event(event)
+        if not route_tape.enabled:
+            return
+        nonlocal _rt_prev
+        cur = _route_counter_snapshot()
+        deltas = {
+            name: counter_deltas(_rt_prev.get(name, {}), counts)
+            for name, counts in cur.items()
+        }
+        _rt_prev = cur
+        route_tape.emit(
+            "route",
+            "round",
+            event.get("step"),
+            {
+                "depth": event.get("depth"),
+                "requested_depth": event.get("requested_depth"),
+                "verify_strategy": event.get("verify_strategy"),
+                "verify_core": event.get("verify_core"),
+                "draft_core": event.get("draft_core"),
+                "verify_route": event.get("verify_route", "unknown"),
+                "commit_route": event.get("commit_route", "none"),
+                "verify_width": event.get("verify_width"),
+                "accepted_depths": event.get("accepted_depths"),
+                "rejected_at_depth": event.get("rejected_at_depth"),
+                "bonus_token": event.get("bonus_token") is not None,
+                "drafts": [
+                    {
+                        "depth": d.get("depth"),
+                        "accepted": d.get("accepted"),
+                        "accept_probability": d.get("accept_probability"),
+                    }
+                    for d in (event.get("drafts") or [])
+                    if isinstance(d, dict)
+                ],
+                "timing_s": event.get("timing_s"),
+                "cache_offset": _cache_offset(cache),
+                "fallback_deltas": {k: v for k, v in deltas.items() if v},
+                "draft_core_error": event.get("draft_core_error"),
+                "context_copy": event.get("context_copy"),
+            },
+        )
+
     def own_live_output_leaf(value: Any) -> Any:
         nonlocal live_output_detach_events
         nonlocal live_output_detach_time_s
@@ -9273,7 +9373,7 @@ def generate_mtpk(
         if len(tokens) >= max_tokens or _is_stop(primary, stop_token_ids):
             if stop_origin is None and _is_stop(primary, stop_token_ids):
                 stop_origin = "primary"
-            append_event(event)
+            emit_round(event)
             emit_trace()
             break
 
@@ -9500,6 +9600,7 @@ def generate_mtpk(
                         # back internally (same runtime forward, same capture
                         # backend — byte-identical to the eager branch) when
                         # a gate refuses.
+                        event["verify_route"] = "ccopy_bank"
                         _cc_logits, _cc_hidden, _cc_captures = (
                             compiled_verify_bank.forward_ar_capture(
                                 mx.array([[primary] + _cc_block]),
@@ -9510,6 +9611,7 @@ def generate_mtpk(
                             )
                         )
                     else:
+                        event["verify_route"] = "ccopy_block"
                         _cc_logits, _cc_hidden, _cc_captures = rt.forward_ar_capture(
                             mx.array([[primary] + _cc_block]),
                             cache=cache,
@@ -9661,7 +9763,7 @@ def generate_mtpk(
                     ccopy_active = False
                     ccopy_disabled_reason = "no_per_position_commit"
                     event["context_copy"] = {"disabled": "no_per_position_commit"}
-                    append_event(event)
+                    emit_round(event)
                     continue
                 _cc_round_pos = len(tokens)
                 _cc_acc = _cc_block[:_cc_nacc]
@@ -9738,7 +9840,7 @@ def generate_mtpk(
                     )
                 logits = _cc_logits[:, _cc_m - 1, :]
                 hidden = _cc_hidden[:, _cc_m - 1:_cc_m, :]
-                append_event(event)
+                emit_round(event)
                 emit_new_tokens()
                 if _cc_finished:
                     break
@@ -10805,6 +10907,7 @@ def generate_mtpk(
             )
             verified_token_count = len(verify_input)
             verify_input_array = mx.array([verify_input])
+        event["verify_width"] = int(verified_token_count)
         if lazy_bonus_verify:
             lazy_bonus_verify_calls += 1
         event["lazy_bonus_verify"] = {
@@ -10863,6 +10966,7 @@ def generate_mtpk(
         ):
             if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:
                 if compiled_verify_bank is not None:
+                    event["verify_route"] = "compiled_bank"
                     verify_logits, verify_hidden, captures = (
                         compiled_verify_bank.forward_ar_capture(
                             verify_input_array,
@@ -10872,6 +10976,7 @@ def generate_mtpk(
                         )
                     )
                 elif graphbank is not None:
+                    event["verify_route"] = "graphbank"
                     verify_logits, verify_hidden, captures = (
                         graphbank.forward_ar_capture(
                             verify_input_array,
@@ -10881,6 +10986,7 @@ def generate_mtpk(
                         )
                     )
                 else:
+                    event["verify_route"] = "eager_capture"
                     capture_forward = capture_forward_routes[len(draft_tokens) - 1]
                     verify_logits, verify_hidden, captures = capture_forward(
                         verify_input_array,
@@ -10894,6 +11000,7 @@ def generate_mtpk(
                 # (post-row-0, post-row-1); the accept loop picks which one the
                 # next cycle rebases from after a d1 or d2 reject.
                 if a3b_rebase_state is not None:
+                    event["verify_route"] = "a3b_m3_rebased"
                     (
                         verify_logits,
                         verify_hidden,
@@ -10904,6 +11011,7 @@ def generate_mtpk(
                     )
                     a3b_rebase_state = None
                 else:
+                    event["verify_route"] = "a3b_m3"
                     (
                         verify_logits,
                         verify_hidden,
@@ -10918,6 +11026,7 @@ def generate_mtpk(
                     # this cycle's primary and the verify runs from the
                     # stashed post-primary state of the cycle that rejected
                     # it -- the repair_m1 forward never happens.
+                    event["verify_route"] = "a3b_m2_rebased"
                     verify_logits, verify_hidden, a3b_primary_state = (
                         a3b_target_prefix_route.verify_m2_rebased(
                             verify_input_array, a3b_rebase_state
@@ -10925,6 +11034,7 @@ def generate_mtpk(
                     )
                     a3b_rebase_state = None
                 else:
+                    event["verify_route"] = "a3b_m2"
                     verify_logits, verify_hidden, a3b_primary_state = (
                         a3b_target_prefix_route.verify_m2(verify_input_array)
                     )
@@ -10932,6 +11042,7 @@ def generate_mtpk(
                 # Replace only the target forward. target_prefix keeps its
                 # authoritative snapshot/trim, pre-sampling, and correction
                 # forward; captures here must not change its commit semantics.
+                event["verify_route"] = "compiled_bank_tp"
                 verify_logits, verify_hidden, _compiled_captures = (
                     compiled_verify_bank.forward_ar_capture(
                         verify_input_array,
@@ -10941,6 +11052,7 @@ def generate_mtpk(
                     )
                 )
             elif graphbank is not None:
+                event["verify_route"] = "graphbank_plain"
                 verify_logits, verify_hidden = graphbank.forward_ar(
                     verify_input_array,
                     cache=cache,
@@ -10948,6 +11060,7 @@ def generate_mtpk(
                     hidden_variant=base_hidden_variant,
                 )
             else:
+                event["verify_route"] = "eager_plain"
                 verify_logits, verify_hidden = rt.forward_ar(
                     verify_input_array,
                     cache=cache,
@@ -11688,7 +11801,7 @@ def generate_mtpk(
                 maybe_detach_dirty_state(len(tokens))
                 maybe_eval_state_roots(event, len(tokens))
                 emit_new_tokens()
-                append_event(event)
+                emit_round(event)
                 break
             detach_capture_committed_state(len(tokens))
             maybe_detach_dirty_state(len(tokens))
@@ -11698,7 +11811,7 @@ def generate_mtpk(
                 if omit_speculative_bonus:
                     event["bonus_token_omitted"] = True
                     maybe_eval_state_roots(event, len(tokens))
-                    append_event(event)
+                    emit_round(event)
                     emit_trace()
                     continue
                 started_bonus = time.perf_counter()
@@ -11788,7 +11901,7 @@ def generate_mtpk(
                     # distribution.
                     event["bonus_token_constraint_skipped"] = True
                     maybe_eval_state_roots(event, len(tokens))
-                    append_event(event)
+                    emit_round(event)
                     emit_trace()
                     continue
                 tokens.append(bonus)
@@ -11799,11 +11912,11 @@ def generate_mtpk(
                 if _is_stop(bonus, stop_token_ids):
                     stop_origin = "bonus"
                     maybe_eval_state_roots(event, len(tokens))
-                    append_event(event)
+                    emit_round(event)
                     emit_trace()
                     break
             maybe_eval_state_roots(event, len(tokens))
-            append_event(event)
+            emit_round(event)
             emit_trace()
             continue
 
@@ -11861,7 +11974,7 @@ def generate_mtpk(
             )
             maybe_rebase_decode_state(cache_committed_token_count)
             maybe_eval_state_roots(event, cache_committed_token_count)
-            append_event(event)
+            emit_round(event)
 
             if any(_is_stop(token, stop_token_ids) for token in committed):
                 stop_origin = _stop_origin_for_committed(
@@ -12133,7 +12246,14 @@ def generate_mtpk(
         )
         maybe_rebase_decode_state(cache_committed_token_count)
         maybe_eval_state_roots(event, cache_committed_token_count)
-        append_event(event)
+        event["commit_route"] = (
+            "capture_commit"
+            if committed_from_capture
+            else "trim_commit"
+            if committed_from_trim
+            else "rollback_reforward"
+        )
+        emit_round(event)
 
         if any(_is_stop(token, stop_token_ids) for token in committed):
             stop_origin = _stop_origin_for_committed(

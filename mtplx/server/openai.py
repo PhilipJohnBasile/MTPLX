@@ -22433,10 +22433,19 @@ def _run_generation(
             # _DecodeTrace publishes by-depth acceptance at 1 Hz mid-request.
             # Owner-thread module slot; cleared in the lock-release finally.
             from mtplx.generation import set_live_decode_sink
+            from mtplx.route_tape import set_route_tape_sink
 
             set_live_decode_sink(
                 _flight(state).live_depth_sink(
                     str((request_observability or {}).get("request_id") or "")
+                )
+            )
+            # Route Tape: recorder-level sink; the server stamps the request id
+            # onto every record so generation stays rid-agnostic.
+            _rt_rid = str((request_observability or {}).get("request_id") or "")
+            set_route_tape_sink(
+                lambda rec: (
+                    rec.setdefault("rid", _rt_rid), _flight(state).emit_route(rec)
                 )
             )
             with (
@@ -22608,8 +22617,10 @@ def _run_generation(
             raise _StreamCancelled("client disconnected during prefill")
         finally:
             from mtplx.generation import set_live_decode_sink
+            from mtplx.route_tape import set_route_tape_sink
 
             set_live_decode_sink(None)
+            set_route_tape_sink(None)
             state.lock.release()
             if not background_request:
                 state.end_foreground()

@@ -377,6 +377,13 @@ class FlightRecorder:
 
         return publish
 
+    def emit_route(self, event: dict[str, Any]) -> None:
+        """Route Tape record (model-owner thread; enqueue only). The smallest
+        public wrapper over _emit so mtplx.route_tape never touches the queue."""
+        if not self.enabled:
+            return
+        self._emit(event)
+
     def pc(self, session_id: str | None, payload: dict[str, Any]) -> None:
         """Postcommit outcome event (model-owner thread; enqueue only)."""
         if not self.enabled:
