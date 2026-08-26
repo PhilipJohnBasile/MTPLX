@@ -35,6 +35,10 @@ jobs:
           old = 'private let cachedWordmarkImage: NSImage? = {'
           new = '@MainActor private let cachedWordmarkImage: NSImage? = {'
           assert text.count(old) == 1
+          text = text.replace(old, new, 1)
+          old = 'func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }'
+          new = '@MainActor func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }'
+          assert text.count(old) == 1
           wordmark.write_text(text.replace(old, new, 1))
           PY
           cd apps/MTPLXApp
