@@ -3,7 +3,7 @@ name: Temporary materialize PR 254 with differential Swift gate
 on:
   push:
     branches:
-      - codex/deepseek-v4-mlxserve-v26
+      - tmp/pr254-differential-run
 
 permissions:
   contents: write
@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: codex/deepseek-v4-mlxserve-v26
+          ref: tmp/pr254-differential-run
           fetch-depth: 0
 
       - name: Reuse guarded materializer with isolated Swift baseline workaround
