@@ -40,6 +40,13 @@ jobs:
           new = '@MainActor func wordmarkNSImage() -> NSImage? { cachedWordmarkImage }'
           assert text.count(old) == 1
           wordmark.write_text(text.replace(old, new, 1))
+
+          composer_test = Path('apps/MTPLXApp/Tests/MTPLXAppHostTests/ComposerReturnToSendTests.swift')
+          text = composer_test.read_text()
+          old = '    private static func firstTextView(in view: NSView) -> NSTextView? {'
+          new = '    @MainActor private static func firstTextView(in view: NSView) -> NSTextView? {'
+          assert text.count(old) == 1
+          composer_test.write_text(text.replace(old, new, 1))
           PY
           cd apps/MTPLXApp
           swift test
