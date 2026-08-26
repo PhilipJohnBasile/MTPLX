@@ -10,12 +10,18 @@ permissions:
 
 jobs:
   swift-baseline:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Exact Swift validation used by PR254 materializer
+      - name: Capture exact Swift baseline
         run: |
-          set -euo pipefail
+          set +e
           cd apps/MTPLXApp
-          swift test
-          swift build -c release
+          swift test > "$RUNNER_TEMP/swift-baseline.log" 2>&1
+          status=$?
+          echo "swift_test_status=$status" >> "$RUNNER_TEMP/swift-baseline.log"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr254-current-main-swift-baseline
+          path: ${{ runner.temp }}/swift-baseline.log
