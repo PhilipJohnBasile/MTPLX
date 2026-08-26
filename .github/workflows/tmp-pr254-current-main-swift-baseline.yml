@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   swift-baseline:
-    runs-on: macos-15
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Exact Swift validation used by PR254 materializer
