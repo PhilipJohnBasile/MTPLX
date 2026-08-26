@@ -25,18 +25,8 @@ jobs:
 
           dashboard = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/DashboardModels.swift')
           text = dashboard.read_text()
-          old = '''        switch values["session_cache_hit"]?.boolValue {
-          case true: return .hit
-          case false: return .miss
-          case nil: return .unknown
-          }
-'''.replace('          case', '        case').replace('          }', '        }')
-          new = '''        switch values["session_cache_hit"]?.boolValue {
-        case .some(true): return .hit
-        case .some(false): return .miss
-        case .none: return .unknown
-        }
-'''
+          old = '        switch values["session_cache_hit"]?.boolValue {\n        case true: return .hit\n        case false: return .miss\n        case nil: return .unknown\n        }\n'
+          new = '        switch values["session_cache_hit"]?.boolValue {\n        case .some(true): return .hit\n        case .some(false): return .miss\n        case .none: return .unknown\n        }\n'
           assert text.count(old) == 1
           dashboard.write_text(text.replace(old, new, 1))
           PY
