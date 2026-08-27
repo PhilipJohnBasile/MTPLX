@@ -219,6 +219,7 @@ public struct MTPLXCommandBuilder: Sendable {
         // and a persisted/tuned depth would fail the daemon launch. One seam
         // here covers every app launch path.
         let arOnlyModel = MTPLXModelOption.isAROnlyReference(configuration.model)
+        let externalAROnlyModel = MTPLXModelOption.isExternalAROnlyReference(configuration.model)
         if arOnlyModel {
             arguments.append("--no-mtp")
         }
@@ -308,7 +309,12 @@ public struct MTPLXCommandBuilder: Sendable {
         if configuration.enableThermalPolling {
             arguments.append("--enable-thermal-poll")
         }
-        let fanMode = MTPLXFanMode.normalized(configuration.fanMode)
+        // The external mlx-serve bridge has no MTPLX fan-controller contract;
+        // preserve its admission requirement instead of forwarding an app
+        // setting that guarantees a launch refusal.
+        let fanMode: MTPLXFanMode = externalAROnlyModel
+            ? .default
+            : MTPLXFanMode.normalized(configuration.fanMode)
         arguments.append(contentsOf: ["--fan-mode", fanMode.rawValue])
         if fanMode == .max {
             arguments.append("--require-max-fans")

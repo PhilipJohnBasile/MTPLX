@@ -944,6 +944,11 @@ private struct CustomModelProbeRow: View {
     @Binding var acknowledgedNoMTP: Bool
     let onAddAnyway: () -> Void
 
+    private var isExternalTargetOnlyRoute: Bool {
+        probe.diagnostic == "external_target_only_verified"
+            && MTPLXModelOption.isCanonicalExternalAROnlyRepoID(probe.hfRepo)
+    }
+
     var body: some View {
         let (symbol, color) = icon
         VStack(alignment: .leading, spacing: 8) {
@@ -966,13 +971,17 @@ private struct CustomModelProbeRow: View {
             if probe.verdict == .noMTP {
                 HStack(alignment: .center, spacing: 10) {
                     Toggle(isOn: $acknowledgedNoMTP) {
-                        Text("Add anyway without the speed boost")
+                        Text(
+                            isExternalTargetOnlyRoute
+                                ? "I have mlx-serve and a 128 GB Apple Silicon Mac"
+                                : "Add anyway without the speed boost"
+                        )
                             .font(.caption)
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     .toggleStyle(.checkbox)
                     Spacer(minLength: 8)
-                    Button("Add") {
+                    Button(isExternalTargetOnlyRoute ? "Add route" : "Add") {
                         onAddAnyway()
                     }
                     .font(.system(size: 11, weight: .semibold))

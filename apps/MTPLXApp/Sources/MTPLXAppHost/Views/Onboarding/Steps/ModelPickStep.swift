@@ -605,6 +605,8 @@ struct ModelPickStep: View {
     @ViewBuilder
     private func probeResultRow(_ probe: OtherModelProbe) -> some View {
         let (symbol, color) = probeIcon(for: probe.verdict)
+        let isExternalTargetOnlyRoute = probe.diagnostic == "external_target_only_verified"
+            && MTPLXModelOption.isCanonicalExternalAROnlyRepoID(probe.hfRepo)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: symbol)
@@ -627,7 +629,11 @@ struct ModelPickStep: View {
                     get: { orchestrator.state.hasAcknowledgedOtherWarning },
                     set: { newValue in if newValue { orchestrator.acknowledgeOtherWarning() } }
                 )) {
-                    Text("Continue anyway - I know it'll be slower")
+                    Text(
+                        isExternalTargetOnlyRoute
+                            ? "Continue - I have mlx-serve and a 128 GB Apple Silicon Mac"
+                            : "Continue anyway - I know it'll be slower"
+                    )
                         .font(.caption)
                         .foregroundStyle(Brand.typeSecondary)
                 }
