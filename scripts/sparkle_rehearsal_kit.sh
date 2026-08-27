@@ -175,24 +175,8 @@ render_notes() {
   # render_notes <version> <markdown-file>
   local version="$1"
   local source_md="$2"
-  "$PYTOOLS_VENV/bin/python" - "$source_md" "$NOTES_OUT/v$version.html" "$version" <<'PY'
-import pathlib
-import sys
-
-import markdown
-
-source, destination, version = sys.argv[1], sys.argv[2], sys.argv[3]
-body = markdown.markdown(
-    pathlib.Path(source).read_text(encoding="utf-8"), extensions=["extra"]
-)
-html = (
-    "<!doctype html>\n"
-    '<meta charset="utf-8">\n'
-    f"<title>MTPLX {version}</title>\n"
-    f"{body}\n"
-)
-pathlib.Path(destination).write_text(html, encoding="utf-8")
-PY
+  "$PYTOOLS_VENV/bin/python" "$ROOT/scripts/render_release_notes.py" \
+    "$source_md" "$NOTES_OUT/v$version.html" "$version"
   /usr/bin/ditto --norsrc "$NOTES_OUT/v$version.html" "$SPARKLE_ARCHIVES/MTPLX-$version.html"
 }
 
