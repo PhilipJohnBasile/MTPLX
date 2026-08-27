@@ -138,6 +138,39 @@ class InFlightHandle:
     prompt_tokens: int | None = None
     last_progress: dict[str, Any] = field(default_factory=dict)
     prefill_state: dict[str, Any] | None = None
+    _cancellation_source: str | None = field(default=None, init=False, repr=False)
+    _cancellation_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+
+    @property
+    def cancellation_source(self) -> str | None:
+        with self._cancellation_lock:
+            return self._cancellation_source
+
+    def request_cancel(self, source: str) -> None:
+        """Record the first cancellation source, then wake the worker.
+
+        Several server-owned stop paths share ``cancel_event`` with the public
+        cancel endpoint. Keeping the first writer alongside the event prevents
+        an internal stop from being reported as an explicit API cancellation.
+        Direct legacy ``cancel_event.set()`` calls remain source-less instead
+        of being retroactively misattributed by a later writer.
+        """
+
+        normalized_source = str(source or "request_cancelled").strip()
+        with self._cancellation_lock:
+            if not self.cancel_event.is_set() and self._cancellation_source is None:
+                self._cancellation_source = normalized_source
+            self.cancel_event.set()
+
+    def note_cancellation_source(self, source: str) -> None:
+        """Fill a missing source when the worker supplies later evidence."""
+
+        normalized_source = str(source or "request_cancelled").strip()
+        with self._cancellation_lock:
+            if self._cancellation_source is None:
+                self._cancellation_source = normalized_source
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,6 +184,7 @@ class InFlightHandle:
             "last_progress": dict(self.last_progress),
             "prefill_state": dict(self.prefill_state) if self.prefill_state else None,
             "cancelled": bool(self.cancel_event.is_set()),
+            "cancellation_source": self.cancellation_source,
         }
 
 
@@ -184,7 +218,7 @@ class InFlightRegistry:
             handle = self._handles.get(request_id)
         if handle is None:
             return False
-        handle.cancel_event.set()
+        handle.request_cancel("explicit_cancel")
         return True
 
     def update_progress(self, request_id: str, progress: dict[str, Any]) -> None:

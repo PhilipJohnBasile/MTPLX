@@ -548,16 +548,15 @@ def test_settings_post_rejects_mtp_mode_when_runtime_has_no_mtp():
 def test_cancel_endpoint_flips_handle_event():
     state = _fake_state()
     ev = Event()
-    state.dashboard.in_flight.register(
-        InFlightHandle(
-            request_id="r1",
-            cancel_event=ev,
-            started_s=time.time(),
-            model="m",
-            prompt_preview="hi",
-            prompt_tokens=2,
-        )
+    handle = InFlightHandle(
+        request_id="r1",
+        cancel_event=ev,
+        started_s=time.time(),
+        model="m",
+        prompt_preview="hi",
+        prompt_tokens=2,
     )
+    state.dashboard.in_flight.register(handle)
     client = TestClient(create_app(state))
     response = client.post("/v1/mtplx/cancel/r1")
     assert response.status_code == 200
@@ -565,6 +564,7 @@ def test_cancel_endpoint_flips_handle_event():
     assert body["ok"] is True
     assert body["cancelled"] is True
     assert ev.is_set()
+    assert handle.cancellation_source == "explicit_cancel"
 
 
 def test_cancel_endpoint_returns_ok_false_for_unknown_request():
@@ -574,6 +574,45 @@ def test_cancel_endpoint_returns_ok_false_for_unknown_request():
     body = response.json()
     assert body["ok"] is False
     assert body["cancelled"] is False
+
+
+def test_cancel_endpoint_does_not_overwrite_an_internal_first_writer():
+    state = _fake_state()
+    handle = InFlightHandle(
+        request_id="r-internal",
+        cancel_event=Event(),
+        started_s=time.time(),
+    )
+    handle.request_cancel("stop_sequence")
+    state.dashboard.in_flight.register(handle)
+
+    response = TestClient(create_app(state)).post(
+        "/v1/mtplx/cancel/r-internal"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True
+    assert handle.cancellation_source == "stop_sequence"
+
+
+def test_in_flight_handle_preserves_the_first_cancel_source():
+    internal_first = InFlightHandle(
+        request_id="internal-first",
+        cancel_event=Event(),
+        started_s=time.time(),
+    )
+    internal_first.request_cancel("early_tool_call")
+    internal_first.request_cancel("explicit_cancel")
+    assert internal_first.cancellation_source == "early_tool_call"
+
+    explicit_first = InFlightHandle(
+        request_id="explicit-first",
+        cancel_event=Event(),
+        started_s=time.time(),
+    )
+    explicit_first.request_cancel("explicit_cancel")
+    explicit_first.request_cancel("stream_cleanup")
+    assert explicit_first.cancellation_source == "explicit_cancel"
 
 
 # ---- /v1/mtplx/app/capabilities ------------------------------------------

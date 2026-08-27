@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from threading import Event
+from threading import Event, Thread
 
 import pytest
 
@@ -226,8 +226,157 @@ def test_explicit_cancel_ends_chat_stream_with_terminal_frame(monkeypatch):
         if record.get("request_cancelled")
     ]
     assert cancel_records
-    assert cancel_records[-1]["cancellation_reason"] == "stream_cancelled"
+    assert cancel_records[-1]["cancellation_reason"] == "explicit_cancel"
     assert cancel_records[-1]["stream_cancelled_by_client"] is False
+
+
+def test_explicit_cancel_tags_nonstream_metric(monkeypatch):
+    state = _fake_state()
+    state.requests_cancelled = 0
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3]
+    )
+
+    def cancellable_generation(_state, _prompt_ids, **kwargs):
+        assert kwargs["cancel_event"].wait(10.0)
+        raise openai._StreamCancelled("request cancelled")
+
+    monkeypatch.setattr(openai, "_run_generation", cancellable_generation)
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected", _never_disconnected
+    )
+
+    result = {}
+    with TestClient(create_app(state)) as client:
+        request_thread = Thread(
+            target=lambda: result.setdefault(
+                "response",
+                client.post(
+                    "/v1/chat/completions",
+                    headers={"x-mtplx-cache-mode": "bypass"},
+                    json={
+                        "messages": [{"role": "user", "content": "Wait"}],
+                        "stream": False,
+                        "max_tokens": 8,
+                    },
+                ),
+            )
+        )
+        request_thread.start()
+        deadline = time.monotonic() + 10.0
+        request_id = None
+        while request_id is None and time.monotonic() < deadline:
+            handles = state.dashboard.in_flight.snapshot()
+            if handles:
+                request_id = handles[0]["request_id"]
+            else:
+                time.sleep(0.01)
+        assert request_id is not None
+        assert state.dashboard.in_flight.cancel(request_id) is True
+        request_thread.join(10.0)
+        assert not request_thread.is_alive()
+
+    assert result["response"].status_code == 499
+    cancel_records = [
+        record
+        for record in state.last_metrics
+        if record.get("request_cancelled")
+    ]
+    assert cancel_records
+    assert cancel_records[-1]["cancellation_reason"] == "explicit_cancel"
+    assert cancel_records[-1]["stream_cancelled_by_client"] is False
+
+
+def test_internal_cancel_gap_never_claims_the_post_endpoint(monkeypatch):
+    """#381: a source-less worker cancel must remain an internal cancel."""
+
+    state = _fake_state()
+    state.requests_cancelled = 0
+    monkeypatch.setattr(
+        openai, "_encode_messages", lambda *_args, **_kwargs: [1, 2, 3]
+    )
+
+    def internally_cancelled_generation(_state, _prompt_ids, **kwargs):
+        token_callback = kwargs["token_callback"]
+        token_callback([ord("O")])
+        kwargs["cancel_event"].set()
+        time.sleep(0.7)
+        raise openai._StreamCancelled("mtp batch callback failed")
+
+    monkeypatch.setattr(
+        openai, "_run_generation", internally_cancelled_generation
+    )
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected", _never_disconnected
+    )
+
+    with TestClient(create_app(state)) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            headers={"x-mtplx-cache-mode": "bypass"},
+            json={
+                "messages": [{"role": "user", "content": "Say OK"}],
+                "stream": True,
+                "max_tokens": 8,
+            },
+        ) as response:
+            assert response.status_code == 200
+            body = response.read().decode()
+
+    assert "request cancelled via POST /v1/mtplx/cancel" not in body
+    assert "request cancelled internally (mtp batch callback failed)" in body
+    cancel_records = [
+        record
+        for record in state.last_metrics
+        if record.get("request_cancelled")
+    ]
+    assert cancel_records
+    assert cancel_records[-1]["cancellation_reason"] == "internal_cancel"
+    assert cancel_records[-1]["stream_cancelled_by_client"] is False
+
+
+def test_internal_cancel_without_ack_is_bounded_by_stall_watchdog(monkeypatch):
+    state = _fake_streaming_session_state()
+    release_worker = Event()
+    monkeypatch.setattr(openai, "STREAM_STALL_DEADLINE_S", 1.0)
+    monkeypatch.setattr(openai, "STREAM_HEARTBEAT_INTERVAL_S", 0.05)
+
+    def unacknowledged_internal_cancel(_state, _prompt_ids, **kwargs):
+        kwargs["token_callback"]([ord("O")])
+        kwargs["cancel_event"].set()
+        release_worker.wait(30.0)
+        raise openai._StreamCancelled("late internal acknowledgement")
+
+    monkeypatch.setattr(
+        openai, "_run_generation", unacknowledged_internal_cancel
+    )
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected", _never_disconnected
+    )
+
+    started = time.monotonic()
+    try:
+        with TestClient(create_app(state)) as client:
+            with client.stream(
+                "POST",
+                "/v1/chat/completions",
+                headers={"x-mtplx-cache-mode": "bypass"},
+                json={
+                    "messages": [{"role": "user", "content": "Wait"}],
+                    "stream": True,
+                    "max_tokens": 8,
+                },
+            ) as response:
+                assert response.status_code == 200
+                body = response.read().decode()
+    finally:
+        release_worker.set()
+
+    assert time.monotonic() - started < 10.0
+    assert "data: [DONE]" in body
+    assert "stall watchdog" in body
+    assert "request cancelled via POST /v1/mtplx/cancel" not in body
 
 
 def test_cancel_ack_ends_completions_stream_with_terminal_frame(monkeypatch):

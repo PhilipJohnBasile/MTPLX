@@ -584,15 +584,44 @@ def _raise_if_stream_cancelled(
 
 
 def _cancel_stream_generation(
-    cancel_event: Event, generation_future: Any | None
+    cancel_event: Event,
+    generation_future: Any | None,
+    *,
+    cancel_handle: InFlightHandle | None = None,
+    source: str | None = None,
 ) -> None:
-    cancel_event.set()
+    if cancel_handle is not None:
+        cancel_handle.request_cancel(source or "request_cancelled")
+    else:
+        cancel_event.set()
     if generation_future is None:
         return
     try:
         generation_future.cancel()
     except Exception:
         return
+
+
+def _stream_cancellation_error_message(
+    *,
+    source: str | None,
+    worker_reason: str | None,
+    streamed_tokens: int,
+) -> str:
+    if source == "explicit_cancel":
+        return (
+            "request cancelled via POST /v1/mtplx/cancel after "
+            f"{streamed_tokens} streamed tokens"
+        )
+    reason = str(
+        worker_reason
+        if source in {None, "internal_cancel"} and worker_reason
+        else source or worker_reason or "unknown source"
+    ).strip()
+    return (
+        f"request cancelled internally ({reason}) after "
+        f"{streamed_tokens} streamed tokens"
+    )
 
 
 async def _monitor_request_disconnect(
@@ -27716,7 +27745,12 @@ def create_app(state: ServerState) -> FastAPI:
                     if stop_sequence_cancel_fired:
                         return
                     stop_sequence_cancel_fired = True
-                    _cancel_stream_generation(cancel_event, generation_future)
+                    _cancel_stream_generation(
+                        cancel_event,
+                        generation_future,
+                        cancel_handle=in_flight_handle,
+                        source="stop_sequence",
+                    )
 
                 stream_interval = max(1, int(state.args.stream_interval))
                 content_tool_translator = (
@@ -29116,7 +29150,12 @@ def create_app(state: ServerState) -> FastAPI:
                         ):
                             early_tool_cancel_used = True
                             pending_tool_cancel_started_s = None
-                            _cancel_stream_generation(cancel_event, generation_future)
+                            _cancel_stream_generation(
+                                cancel_event,
+                                generation_future,
+                                cancel_handle=in_flight_handle,
+                                source="early_tool_call",
+                            )
                             return chunks
                         if content_tool_translator.invalid_trailing_after_tool_call:
                             streamed_assistant_tool_calls = (
@@ -29132,7 +29171,12 @@ def create_app(state: ServerState) -> FastAPI:
                                 )
                             early_tool_cancel_used = True
                             pending_tool_cancel_started_s = None
-                            _cancel_stream_generation(cancel_event, generation_future)
+                            _cancel_stream_generation(
+                                cancel_event,
+                                generation_future,
+                                cancel_handle=in_flight_handle,
+                                source="early_tool_call",
+                            )
                         elif content_tool_translator.ready_to_finish_tool_turn:
                             streamed_assistant_tool_calls = (
                                 content_tool_translator.tool_calls
@@ -29148,7 +29192,10 @@ def create_app(state: ServerState) -> FastAPI:
                                 early_tool_cancel_used = True
                                 pending_tool_cancel_started_s = None
                                 _cancel_stream_generation(
-                                    cancel_event, generation_future
+                                    cancel_event,
+                                    generation_future,
+                                    cancel_handle=in_flight_handle,
+                                    source="early_tool_call",
                                 )
                             elif pending_tool_cancel_started_s is None:
                                 pending_tool_cancel_started_s = time.perf_counter()
@@ -29362,7 +29409,12 @@ def create_app(state: ServerState) -> FastAPI:
                         try:
                             kind, item = await queue.get(0.25)
                         except Empty:
-                            if stop_monitor is not None and stop_monitor.stopped:
+                            if (
+                                stop_monitor is not None
+                                and stop_monitor.stopped
+                                and in_flight_handle.cancellation_source
+                                != "explicit_cancel"
+                            ):
                                 # Stop-sequence cancel in flight: keep
                                 # draining until the worker acknowledges with
                                 # "cancelled"/"done" so the client still gets
@@ -29374,61 +29426,70 @@ def create_app(state: ServerState) -> FastAPI:
                             client_disconnected_now = (
                                 await raw_request.is_disconnected()
                             )
-                            if (
-                                cancel_event.is_set()
-                                and not early_tool_cancel_used
-                            ) or client_disconnected_now:
-                                # `and not early_tool_cancel_used` because the
-                                # early tool-call cancel below sets the very
-                                # same event and then `continue`s straight back
-                                # into this branch. The worker only observes
-                                # the event once per committed token batch
-                                # (`on_tokens`), so whenever that batch gap
-                                # outlives the 0.25s poll above, the loop read
-                                # its own cancel as a foreign one and killed a
-                                # healthy tool-calling turn. Excluding it keeps
-                                # draining until the worker acknowledges, which
-                                # lands on the `kind == "cancelled"` handler
-                                # and its `early_tool_cancel_used and
-                                # streamed_assistant_tool_calls` terminal
-                                # frame. The completions loop already guards
-                                # its own `stop_hit` cancel this way.
-                                #
-                                # Truthful cancel accounting (#F36): only a
-                                # genuinely dead transport is a client
-                                # disconnect; an explicit server-side cancel
-                                # (POST /v1/mtplx/cancel/{id}) leaves the
-                                # client connected and MUST still receive a
-                                # terminal frame + [DONE] instead of a silent
-                                # close.
-                                stream_cancelled_by_client = (
-                                    client_disconnected_now
-                                )
+                            if client_disconnected_now:
+                                stream_cancelled_by_client = True
                                 _cancel_stream_generation(
-                                    cancel_event, generation_future
+                                    cancel_event,
+                                    generation_future,
+                                    cancel_handle=in_flight_handle,
+                                    source="client_disconnected",
                                 )
                                 if session is not None and hasattr(
                                     session, "abort_pending_postcommit"
                                 ):
                                     session.abort_pending_postcommit(
                                         "stream_client_disconnected"
-                                        if client_disconnected_now
-                                        else "stream_cancelled"
                                     )
-                                if not client_disconnected_now:
+                                return
+                            if cancel_event.is_set():
+                                cancel_source = in_flight_handle.cancellation_source
+                                if cancel_source is None:
+                                    in_flight_handle.note_cancellation_source(
+                                        "internal_cancel"
+                                    )
+                                    cancel_source = "internal_cancel"
+                                if cancel_source in {
+                                    "stop_sequence",
+                                    "early_tool_call",
+                                }:
+                                    # Server-owned stop paths share the worker
+                                    # event. Drain their queued terminal item so
+                                    # done, stop, and tool-call outcomes keep
+                                    # their normal completion contracts.
+                                    continue
+                                if cancel_source == "explicit_cancel":
+                                    _cancel_stream_generation(
+                                        cancel_event,
+                                        generation_future,
+                                        cancel_handle=in_flight_handle,
+                                        source="explicit_cancel",
+                                    )
+                                    if session is not None and hasattr(
+                                        session, "abort_pending_postcommit"
+                                    ):
+                                        session.abort_pending_postcommit(
+                                            "stream_cancelled"
+                                        )
                                     yield mark_sse_sent(
                                         error_chunk(
                                             RuntimeError(
-                                                "request cancelled via "
-                                                "POST /v1/mtplx/cancel "
-                                                "after "
-                                                f"{streamed_progress_tokens} "
-                                                "streamed tokens"
+                                                _stream_cancellation_error_message(
+                                                    source=cancel_source,
+                                                    worker_reason=None,
+                                                    streamed_tokens=(
+                                                        streamed_progress_tokens
+                                                    ),
+                                                )
                                             )
                                         )
                                     )
                                     yield mark_sse_sent("data: [DONE]\n\n")
-                                return
+                                    return
+                                # Source-less internal cancellation still
+                                # drains for the worker's real terminal item,
+                                # but it must not bypass heartbeat and owner
+                                # stall checks if that acknowledgement never
+                                # arrives.
                             now_s = time.perf_counter()
                             if (
                                 pending_tool_cancel_started_s is not None
@@ -29439,7 +29500,10 @@ def create_app(state: ServerState) -> FastAPI:
                                 early_tool_cancel_used = True
                                 pending_tool_cancel_started_s = None
                                 _cancel_stream_generation(
-                                    cancel_event, generation_future
+                                    cancel_event,
+                                    generation_future,
+                                    cancel_handle=in_flight_handle,
+                                    source="early_tool_call",
                                 )
                                 continue
                             frozen_for_s = owner_stall_probe.observe(now_s)
@@ -29460,7 +29524,10 @@ def create_app(state: ServerState) -> FastAPI:
                                     streamed_tokens=streamed_progress_tokens,
                                 )
                                 _cancel_stream_generation(
-                                    cancel_event, generation_future
+                                    cancel_event,
+                                    generation_future,
+                                    cancel_handle=in_flight_handle,
+                                    source="stream_stall_watchdog",
                                 )
                                 if session is not None and hasattr(
                                     session, "abort_pending_postcommit"
@@ -29588,7 +29655,10 @@ def create_app(state: ServerState) -> FastAPI:
                                     if streamed_assistant_tool_calls:
                                         early_tool_cancel_used = True
                                         _cancel_stream_generation(
-                                            cancel_event, generation_future
+                                            cancel_event,
+                                            generation_future,
+                                            cancel_handle=in_flight_handle,
+                                            source="early_tool_call",
                                         )
                                     else:
                                         reason = (
@@ -29604,7 +29674,10 @@ def create_app(state: ServerState) -> FastAPI:
                                             stream=True,
                                         )
                                         _cancel_stream_generation(
-                                            cancel_event, generation_future
+                                            cancel_event,
+                                            generation_future,
+                                            cancel_handle=in_flight_handle,
+                                            source="malformed_tool_call",
                                         )
                                         yield mark_sse_sent(
                                             error_chunk(
@@ -30322,7 +30395,17 @@ def create_app(state: ServerState) -> FastAPI:
                             yield mark_sse_sent("data: [DONE]\n\n")
                             return
                         elif kind == "cancelled":
-                            if stop_monitor is not None and stop_monitor.stopped:
+                            cancel_source = in_flight_handle.cancellation_source
+                            worker_cancel_reason = str(item or "").strip()
+                            if cancel_source is None:
+                                in_flight_handle.note_cancellation_source(
+                                    "internal_cancel"
+                                )
+                            if (
+                                stop_monitor is not None
+                                and stop_monitor.stopped
+                                and cancel_source != "explicit_cancel"
+                            ):
                                 # Stop-sequence cancel: the worker unwound
                                 # through the normal cancellation path, but for
                                 # the client this is a successful completion
@@ -30356,7 +30439,11 @@ def create_app(state: ServerState) -> FastAPI:
                                     state, generated["stats"]
                                 )
                                 break
-                            if early_tool_cancel_used and streamed_assistant_tool_calls:
+                            if (
+                                early_tool_cancel_used
+                                and streamed_assistant_tool_calls
+                                and cancel_source != "explicit_cancel"
+                            ):
                                 generated = {
                                     "text": streamed_history_content(),
                                     "tokens": list(streamed_token_ids),
@@ -30396,20 +30483,22 @@ def create_app(state: ServerState) -> FastAPI:
                                     state, generated["stats"]
                                 )
                                 break
-                            if await raw_request.is_disconnected():
+                            if (
+                                await raw_request.is_disconnected()
+                                or cancel_source == "client_disconnected"
+                            ):
                                 stream_cancelled_by_client = True
                             else:
-                                # Explicit cancel acknowledged by the worker
-                                # with the transport still up: end the stream
-                                # with a visible terminal frame + [DONE]
-                                # instead of silently closing (#F36).
                                 yield mark_sse_sent(
                                     error_chunk(
                                         RuntimeError(
-                                            "request cancelled via "
-                                            "POST /v1/mtplx/cancel after "
-                                            f"{streamed_progress_tokens} "
-                                            "streamed tokens"
+                                            _stream_cancellation_error_message(
+                                                source=cancel_source,
+                                                worker_reason=worker_cancel_reason,
+                                                streamed_tokens=(
+                                                    streamed_progress_tokens
+                                                ),
+                                            )
                                         )
                                     )
                                 )
@@ -30425,7 +30514,12 @@ def create_app(state: ServerState) -> FastAPI:
                             return
                 except asyncio.CancelledError:
                     stream_cancelled_by_client = True
-                    _cancel_stream_generation(cancel_event, generation_future)
+                    _cancel_stream_generation(
+                        cancel_event,
+                        generation_future,
+                        cancel_handle=in_flight_handle,
+                        source="client_disconnected",
+                    )
                     raise
                 except GeneratorExit:
                     # Starlette closes the async generator when the client
@@ -30442,12 +30536,24 @@ def create_app(state: ServerState) -> FastAPI:
                     yield mark_sse_sent("data: [DONE]\n\n")
                     return
                 finally:
+                    _cancel_stream_generation(
+                        cancel_event,
+                        generation_future,
+                        cancel_handle=in_flight_handle,
+                        source=(
+                            "client_disconnected"
+                            if stream_cancelled_by_client
+                            else "stream_cleanup"
+                        ),
+                    )
                     nonlocal_cancel_reason = (
                         "client_disconnected"
                         if stream_cancelled_by_client
-                        else "stream_cancelled"
+                        else (
+                            in_flight_handle.cancellation_source
+                            or "stream_cancelled"
+                        )
                     )
-                    _cancel_stream_generation(cancel_event, generation_future)
                     if (
                         stream_cancelled_by_client
                         and session is not None
@@ -30608,6 +30714,9 @@ def create_app(state: ServerState) -> FastAPI:
                 }
             )
         except _StreamCancelled as exc:
+            cancellation_reason = (
+                nonstream_handle.cancellation_source or nonstream_cancel_reason
+            )
             state.dashboard.lifetime.record_cancellation()
             _record_stream_cancellation_metric(
                 state,
@@ -30616,7 +30725,7 @@ def create_app(state: ServerState) -> FastAPI:
                 prompt_tokens=len(prompt_ids),
                 streamed_completion_tokens=nonstream_completion_tokens,
                 stream_started_s=nonstream_started_s,
-                reason=nonstream_cancel_reason,
+                reason=cancellation_reason,
                 request_observability=request_observability,
                 client_disconnected=nonstream_client_disconnected,
                 mlx_finalize_scope=_claim_mtp_batch_cancellation_finalize(
