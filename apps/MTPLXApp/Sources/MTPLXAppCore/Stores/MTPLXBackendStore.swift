@@ -142,6 +142,21 @@ public struct ClientHandoffNotice: Equatable, Sendable {
         )
     }
 
+    public static func omp(result: OMPLaunchResult) -> ClientHandoffNotice? {
+        if result.action == .launched && !result.launchedProcessIDs.isEmpty {
+            return nil
+        }
+        let detail = result.action == .unavailable
+            ? result.detail
+            : "MTPLX opened Terminal, but no OMP agent process was detected. Install OMP, then pick OMP again."
+        return ClientHandoffNotice(
+            target: .omp,
+            status: result.action == .unavailable ? "OMP handoff unavailable" : "OMP not detected",
+            detail: detail,
+            isWarning: true
+        )
+    }
+
     public static func hermes(result: HermesLaunchResult) -> ClientHandoffNotice? {
         guard result.action == .unavailable else { return nil }
         return ClientHandoffNotice(
@@ -219,6 +234,10 @@ public final class MTPLXBackendStore: ObservableObject {
     @Published public private(set) var piTerminalAgentProcessIDs: [Int] = []
     @Published public private(set) var piTerminalLaunchCommand: String?
     @Published public private(set) var piTerminalLaunchDetail: String?
+    @Published public private(set) var ompTerminalAgentRunning: Bool = false
+    @Published public private(set) var ompTerminalAgentProcessIDs: [Int] = []
+    @Published public private(set) var ompTerminalLaunchCommand: String?
+    @Published public private(set) var ompTerminalLaunchDetail: String?
     @Published public private(set) var clientHandoffNotice: ClientHandoffNotice?
     /// One-line banner shown after the configured port was occupied and the
     /// daemon moved to the next free port (persisted to settings).
@@ -307,6 +326,7 @@ public final class MTPLXBackendStore: ObservableObject {
     private let supervisor: DaemonSupervisor
     private let openCodeIntegration: OpenCodeIntegration
     private let piIntegration: PiIntegration
+    private let ompIntegration: OMPIntegration
     private let hermesIntegration: HermesIntegration
     private let modelDownloader: ModelDownloader
     private let autoTuner: AutoTuner
@@ -323,9 +343,11 @@ public final class MTPLXBackendStore: ObservableObject {
     /// start a real AppKit desktop client.
     private let cancelOpenCodeDesktop: (MTPLXDesktopHandoffIdentity) -> Bool
     private var launchedPiAgentPIDs: Set<Int> = []
+    private var launchedOMPAgentPIDs: Set<Int> = []
     /// Store-owned terminal launches are reaped by their UUID receipts, never
     /// by a process-list scan. The PID set remains presentation-only.
     private var launchedPiHandoffLeases: [UUID: MTPLXTerminalHandoffLease] = [:]
+    private var launchedOMPHandoffLeases: [UUID: MTPLXTerminalHandoffLease] = [:]
     private var launchedHermesHandoffLeases: [UUID: MTPLXTerminalHandoffLease] = [:]
     private var activeClientHandoffID: UUID?
     private var streamTask: Task<Void, Never>?
@@ -361,6 +383,7 @@ public final class MTPLXBackendStore: ObservableObject {
         supervisor: DaemonSupervisor = DaemonSupervisor(),
         openCodeIntegration: OpenCodeIntegration = OpenCodeIntegration(),
         piIntegration: PiIntegration = PiIntegration(),
+        ompIntegration: OMPIntegration = OMPIntegration(),
         hermesIntegration: HermesIntegration = HermesIntegration(),
         modelDownloader: ModelDownloader = ModelDownloader(),
         autoTuner: AutoTuner = AutoTuner(),
@@ -379,6 +402,7 @@ public final class MTPLXBackendStore: ObservableObject {
         self.supervisor = supervisor
         self.openCodeIntegration = openCodeIntegration
         self.piIntegration = piIntegration
+        self.ompIntegration = ompIntegration
         self.hermesIntegration = hermesIntegration
         self.modelDownloader = modelDownloader
         self.modelUpdateChecker = modelUpdateChecker
@@ -478,6 +502,13 @@ public final class MTPLXBackendStore: ObservableObject {
                 let result = try piIntegration.sync(configuration: next)
                 await supervisor.logs.append(
                     "synced Pi config \(result.configPath) -> \(result.baseURL) \(result.modelReference)",
+                    stream: .system
+                )
+            }
+            if target == .omp {
+                let result = try ompIntegration.sync(configuration: next)
+                await supervisor.logs.append(
+                    "synced OMP config \(result.configPath) -> \(result.baseURL) \(result.modelReference)",
                     stream: .system
                 )
             }
@@ -721,6 +752,13 @@ public final class MTPLXBackendStore: ObservableObject {
                 let result = try piIntegration.sync(configuration: configuration)
                 await supervisor.logs.append(
                     "synced Pi config \(result.configPath) -> \(result.baseURL) \(result.modelReference)",
+                    stream: .system
+                )
+            }
+            if target == .omp {
+                let result = try ompIntegration.sync(configuration: configuration)
+                await supervisor.logs.append(
+                    "synced OMP config \(result.configPath) -> \(result.baseURL) \(result.modelReference)",
                     stream: .system
                 )
             }
@@ -1128,6 +1166,7 @@ public final class MTPLXBackendStore: ObservableObject {
         let shouldWarnIfFanRestoreFails = shouldRestoreFanModeOnStop()
         let startupPID = health?.startup?.pid.map(pid_t.init)
         let piHandoffsToStop = Array(launchedPiHandoffLeases.values)
+        let ompHandoffsToStop = Array(launchedOMPHandoffLeases.values)
         let hermesHandoffsToStop = Array(launchedHermesHandoffLeases.values)
         modelDownloadTask?.cancel()
         modelDownloadTask = nil
@@ -1141,11 +1180,17 @@ public final class MTPLXBackendStore: ObservableObject {
         daemonTransportGeneration &+= 1
         launchedPiAgentPIDs.removeAll()
         launchedPiHandoffLeases.removeAll()
+        launchedOMPAgentPIDs.removeAll()
+        launchedOMPHandoffLeases.removeAll()
         launchedHermesHandoffLeases.removeAll()
         piTerminalAgentRunning = false
         piTerminalAgentProcessIDs = []
         piTerminalLaunchCommand = nil
         piTerminalLaunchDetail = nil
+        ompTerminalAgentRunning = false
+        ompTerminalAgentProcessIDs = []
+        ompTerminalLaunchCommand = nil
+        ompTerminalLaunchDetail = nil
         clientHandoffNotice = nil
         activeClientHandoffID = nil
         daemonState = .stopping
@@ -1183,6 +1228,15 @@ public final class MTPLXBackendStore: ObservableObject {
             if stoppedPi > 0 {
                 await supervisor.logs.append(
                     "stopped \(stoppedPi) Pi Terminal handoff(s)",
+                    stream: .system
+                )
+            }
+            let stoppedOMP = ompHandoffsToStop.reduce(into: 0) { count, lease in
+                if ompIntegration.cancelTerminalHandoff(lease) { count += 1 }
+            }
+            if stoppedOMP > 0 {
+                await supervisor.logs.append(
+                    "stopped \(stoppedOMP) OMP Terminal handoff(s)",
                     stream: .system
                 )
             }
@@ -2195,6 +2249,7 @@ public final class MTPLXBackendStore: ObservableObject {
         }
         let shouldRestoreFans = shouldRestoreFansAfterTerminalExit()
         let piHandoffsToStop = Array(launchedPiHandoffLeases.values)
+        let ompHandoffsToStop = Array(launchedOMPHandoffLeases.values)
         let hermesHandoffsToStop = Array(launchedHermesHandoffLeases.values)
         healthWatchTask?.cancel()
         healthWatchTask = nil
@@ -2204,6 +2259,7 @@ public final class MTPLXBackendStore: ObservableObject {
         lateHealthRecoveryTask?.cancel()
         lateHealthRecoveryTask = nil
         launchedPiAgentPIDs.removeAll()
+        launchedOMPAgentPIDs.removeAll()
         // Keep exact ownership until the asynchronous terminal gate proves
         // this remains a true terminal exit. Automatic recovery returns at
         // that gate, and a later explicit Stop must still be able to reap the
@@ -2212,6 +2268,10 @@ public final class MTPLXBackendStore: ObservableObject {
         piTerminalAgentProcessIDs = []
         piTerminalLaunchCommand = nil
         piTerminalLaunchDetail = nil
+        ompTerminalAgentRunning = false
+        ompTerminalAgentProcessIDs = []
+        ompTerminalLaunchCommand = nil
+        ompTerminalLaunchDetail = nil
         clientHandoffNotice = nil
         activeClientHandoffID = nil
         connectionState = terminalConnectionState
@@ -2266,6 +2326,9 @@ public final class MTPLXBackendStore: ObservableObject {
             for lease in piHandoffsToStop {
                 launchedPiHandoffLeases.removeValue(forKey: lease.handoffID)
             }
+            for lease in ompHandoffsToStop {
+                launchedOMPHandoffLeases.removeValue(forKey: lease.handoffID)
+            }
             let stoppedHermes = hermesHandoffsToStop.reduce(into: 0) { count, lease in
                 if hermesIntegration.cancelTerminalHandoff(lease) { count += 1 }
             }
@@ -2281,6 +2344,15 @@ public final class MTPLXBackendStore: ObservableObject {
             if stoppedPi > 0 {
                 await supervisor.logs.append(
                     "stopped \(stoppedPi) Pi Terminal handoff(s) after daemon exit",
+                    stream: .system
+                )
+            }
+            let stoppedOMP = ompHandoffsToStop.reduce(into: 0) { count, lease in
+                if ompIntegration.cancelTerminalHandoff(lease) { count += 1 }
+            }
+            if stoppedOMP > 0 {
+                await supervisor.logs.append(
+                    "stopped \(stoppedOMP) OMP Terminal handoff(s) after daemon exit",
                     stream: .system
                 )
             }
@@ -2308,6 +2380,17 @@ public final class MTPLXBackendStore: ObservableObject {
         recordLaunchedPiAgentProcessIDs([lease.processID])
     }
 
+    func recordLaunchedOMPAgentProcessIDs(_ processIDs: [Int]) {
+        launchedOMPAgentPIDs.formUnion(processIDs)
+        ompTerminalAgentRunning = !launchedOMPAgentPIDs.isEmpty
+        ompTerminalAgentProcessIDs = Array(launchedOMPAgentPIDs).sorted()
+    }
+
+    func recordLaunchedOMPTerminalHandoffLease(_ lease: MTPLXTerminalHandoffLease) {
+        launchedOMPHandoffLeases[lease.handoffID] = lease
+        recordLaunchedOMPAgentProcessIDs([lease.processID])
+    }
+
     /// Hermes has no Pi-style presentation state, but it still needs the
     /// exact receipt retained across automatic daemon recovery.
     func recordLaunchedHermesTerminalHandoffLease(_ lease: MTPLXTerminalHandoffLease) {
@@ -2315,7 +2398,9 @@ public final class MTPLXBackendStore: ObservableObject {
     }
 
     var terminalHandoffLeaseIDsForTesting: Set<UUID> {
-        Set(launchedPiHandoffLeases.keys).union(launchedHermesHandoffLeases.keys)
+        Set(launchedPiHandoffLeases.keys)
+            .union(launchedOMPHandoffLeases.keys)
+            .union(launchedHermesHandoffLeases.keys)
     }
 
     /// Package tests can exercise transport-failure policy without starting a
@@ -3269,6 +3354,15 @@ public final class MTPLXBackendStore: ObservableObject {
                 handoffID: handoffID
             ) else { return false }
         }
+        if target == .omp {
+            let handoffID = UUID()
+            guard await launchOMPTerminalHandoff(
+                configuration: configuration,
+                replaceExisting: replaceExisting,
+                isCurrent: isCurrent,
+                handoffID: handoffID
+            ) else { return false }
+        }
         guard isCurrent() else { return false }
         onDaemonReady?(target)
         return isCurrent()
@@ -3555,6 +3649,68 @@ public final class MTPLXBackendStore: ObservableObject {
         return true
     }
 
+    private func launchOMPTerminalHandoff(
+        configuration: MTPLXAppConfiguration,
+        replaceExisting: Bool,
+        isCurrent: @escaping () -> Bool,
+        handoffID: UUID
+    ) async -> Bool {
+        guard isCurrent() else { return false }
+        if replaceExisting && !launchedOMPHandoffLeases.isEmpty {
+            let stopped = launchedOMPHandoffLeases.values.reduce(into: 0) { count, lease in
+                if ompIntegration.cancelTerminalHandoff(lease) { count += 1 }
+            }
+            launchedOMPHandoffLeases.removeAll()
+            launchedOMPAgentPIDs.removeAll()
+            ompTerminalAgentRunning = false
+            ompTerminalAgentProcessIDs = []
+            if stopped > 0 {
+                guard isCurrent() else { return false }
+                await supervisor.logs.append(
+                    "stopped \(stopped) previous OMP Terminal handoff(s)",
+                    stream: .system
+                )
+                guard isCurrent() else { return false }
+            }
+        } else if !replaceExisting && !launchedOMPHandoffLeases.isEmpty {
+            return isCurrent()
+        }
+
+        guard isCurrent() else { return false }
+        await beforeClientHandoffLaunch(.omp)
+        guard isCurrent() else { return false }
+        let launch = await ompIntegration.launchInTerminal(
+            configuration: configuration,
+            isCurrent: isCurrent
+        )
+        guard isCurrent() else {
+            reapStaleOMPHandoff(launch, handoffID: handoffID)
+            return false
+        }
+        if let lease = launch.terminalHandoffLease {
+            recordLaunchedOMPTerminalHandoffLease(lease)
+        } else {
+            recordLaunchedOMPAgentProcessIDs(launch.launchedProcessIDs)
+        }
+        ompTerminalLaunchCommand = launch.command
+        ompTerminalLaunchDetail = launch.detail
+        clientHandoffNotice = ClientHandoffNotice.omp(result: launch)
+        activeClientHandoffID = handoffID
+        guard isCurrent() else {
+            reapStaleOMPHandoff(launch, handoffID: handoffID)
+            return false
+        }
+        await supervisor.logs.append(
+            "OMP handoff \(launch.action.rawValue): \(launch.detail)",
+            stream: .system
+        )
+        guard isCurrent() else {
+            reapStaleOMPHandoff(launch, handoffID: handoffID)
+            return false
+        }
+        return true
+    }
+
     private func clearClientHandoffNotice(for handoffID: UUID) {
         guard activeClientHandoffID == handoffID else { return }
         clientHandoffNotice = nil
@@ -3611,6 +3767,24 @@ public final class MTPLXBackendStore: ObservableObject {
         if activeClientHandoffID == handoffID {
             piTerminalLaunchCommand = nil
             piTerminalLaunchDetail = nil
+            clearClientHandoffNotice(for: handoffID)
+        }
+    }
+
+    private func reapStaleOMPHandoff(
+        _ launch: OMPLaunchResult,
+        handoffID: UUID
+    ) {
+        if let lease = launch.terminalHandoffLease {
+            _ = ompIntegration.cancelTerminalHandoff(lease)
+            launchedOMPHandoffLeases.removeValue(forKey: lease.handoffID)
+            launchedOMPAgentPIDs.remove(lease.processID)
+        }
+        ompTerminalAgentRunning = !launchedOMPAgentPIDs.isEmpty
+        ompTerminalAgentProcessIDs = Array(launchedOMPAgentPIDs).sorted()
+        if activeClientHandoffID == handoffID {
+            ompTerminalLaunchCommand = nil
+            ompTerminalLaunchDetail = nil
             clearClientHandoffNotice(for: handoffID)
         }
     }

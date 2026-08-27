@@ -15,6 +15,7 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
                      // tools, conversation persistence)
     case openWebUI   // Open WebUI streaming server
     case pi          // Pi terminal
+    case omp         // Oh My Pi terminal
     case openCode    // OpenCode Desktop D3 MTP; reasoning follows MTPLXApp
     case hermes      // Hermes Agent launched in Terminal against MTPLX
     case benchmark   // AIME 2026 native benchmark overlay. The overlay
@@ -29,6 +30,7 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
         case .chat: return "Chat"
         case .openWebUI: return "Web UI"
         case .pi: return "Pi"
+        case .omp: return "OMP"
         case .openCode: return "OpenCode"
         case .hermes: return "Hermes"
         case .benchmark: return "Benchmark"
@@ -45,6 +47,8 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
             return "Chat in your browser."
         case .pi:
             return "Use Pi in the terminal."
+        case .omp:
+            return "Use Oh My Pi in the terminal."
         case .openCode:
             return "Use OpenCode Desktop, powered by MTPLX."
         case .hermes:
@@ -73,6 +77,7 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
         case .chat: return "text.bubble"
         case .openWebUI: return "globe"
         case .pi: return "pi"
+        case .omp: return "option"
         case .openCode: return "square"
         case .hermes: return "sparkles"  // fallback only; launch picker renders the real Hermes logo
         case .benchmark: return "function"
