@@ -1,0 +1,1686 @@
+HEAD is now at d079df3 feat(app): add DeepSeek V4 target-only mlx-serve backend
+error: remote upstream already exists.
+From https://github.com/youssofal/MTPLX
+ * branch            main       -> FETCH_HEAD
+Rebasing (1/1)Auto-merging README.md
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift
+CONFLICT (content): Merge conflict in apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppCore/Services/MTPLXCommandBuilder.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift
+CONFLICT (content): Merge conflict in apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppHost/Views/Inference/InferenceParamsOverlay.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppHost/Views/Models/ModelPickerOverlay.swift
+Auto-merging apps/MTPLXApp/Sources/MTPLXAppHost/Views/Onboarding/Steps/ModelPickStep.swift
+Auto-merging apps/MTPLXApp/Tests/MTPLXAppCoreTests/MTPLXAppCoreTests.swift
+Auto-merging docs/model-compatibility.md
+CONFLICT (content): Merge conflict in docs/model-compatibility.md
+Auto-merging docs/quickstart.md
+Auto-merging mtplx/artifacts.py
+Auto-merging mtplx/backends/descriptors.py
+Auto-merging mtplx/commands/public.py
+Auto-merging mtplx/hf_loader.py
+CONFLICT (content): Merge conflict in mtplx/hf_loader.py
+error: could not apply d079df3... feat(app): add DeepSeek V4 target-only mlx-serve backend
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply d079df3... # feat(app): add DeepSeek V4 target-only mlx-serve backend
+Updated 1 path from the index
+apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift: resolved 2 conflict(s): ['initial_health', 'wait_for_health']
+apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift: resolved 9 conflict(s): ['fan_mode', 'flush_fresh', 'late_health_recovery', 'models', 'post_start', 'prefill_history', 'refresh_static', 'restart_runtime', 'start_runtime', 'thermal']
+[detached HEAD 175adbd] feat(app): add DeepSeek V4 target-only mlx-serve backend
+ 23 files changed, 2486 insertions(+), 66 deletions(-)
+ create mode 100644 apps/MTPLXApp/Sources/MTPLXAppCore/Services/ExternalMlxServeAdapter.swift
+ create mode 100644 mtplx/backends/deepseek_v4_mlxserve.py
+ create mode 100644 mtplx/models/deepseek_v4_target_only_config.py
+ create mode 100644 tests/test_deepseek_v4_mlxserve_backend.py
+Successfully rebased and updated refs/heads/codex/deepseek-v4-mlxserve-v26.
+[codex/deepseek-v4-mlxserve-v26 3e5dc29] feat(app): add DeepSeek V4 target-only mlx-serve backend
+ Date: Wed Aug 19 01:53:41 2026 -0400
+ 27 files changed, 2495 insertions(+), 75 deletions(-)
+ create mode 100644 apps/MTPLXApp/Sources/MTPLXAppCore/Services/ExternalMlxServeAdapter.swift
+ create mode 100644 mtplx/backends/deepseek_v4_mlxserve.py
+ create mode 100644 mtplx/models/deepseek_v4_target_only_config.py
+ create mode 100644 tests/test_deepseek_v4_mlxserve_backend.py
+[codex/deepseek-v4-mlxserve-v26 623e309] feat: add DeepSeek V4 target-only mlx-serve backend
+ 27 files changed, 2495 insertions(+), 75 deletions(-)
+ create mode 100644 apps/MTPLXApp/Sources/MTPLXAppCore/Services/ExternalMlxServeAdapter.swift
+ create mode 100644 mtplx/backends/deepseek_v4_mlxserve.py
+ create mode 100644 mtplx/models/deepseek_v4_target_only_config.py
+ create mode 100644 tests/test_deepseek_v4_mlxserve_backend.py
+Signed-off-by: Philip John Basile <PBasile@Basilecom.com>
+::warning::The following taps are not trusted:%0A  aws/tap%0A%0AHomebrew is currently ignoring formulae, casks and commands from these taps because tap trust is required.%0AUntap them with:%0A  brew untap aws/tap%0ATrust specific formulae, casks and commands with:%0A  brew trust --formula <user>/<tap>/<formula>%0A  brew trust --cask <user>/<tap>/<cask>%0A  brew trust --command <user>/<tap>/<command>%0AWhole-tap trust is broader and includes all current and future formulae,%0Acasks and commands from the listed taps. Trust whole taps with:%0A  brew trust aws/tap%0ATo disable trust checks:%0A  export HOMEBREW_NO_REQUIRE_TAP_TRUST=1%0AThis is not recommended and will be removed in a later release.%0AFor more information, see:%0A  https://docs.brew.sh/Tap-Trust%0A
+[34m==>[0m [1mWould install 1 formula:[0m
+ripgrep
+[34m==>[0m [1mDownloading https://ghcr.io/v2/homebrew/core/ripgrep/manifests/15.2.0[0m
+[32m==>[0m [1mFetching downloads for: [32mripgrep[39m[0m
+✔︎ Bottle ripgrep (15.2.0)
+[34m==>[0m [1mPouring ripgrep--15.2.0.arm64_sequoia.bottle.tar.gz[0m
+🍺  /opt/homebrew/Cellar/ripgrep/15.2.0: 14 files, 6.8MB
+[32m==>[0m [1mCaveats[0m
+Bash completion has been installed to:
+  /opt/homebrew/etc/bash_completion.d
+
+[notice] A new release of pip is available: 26.1.2 -> 26.2.1
+[notice] To update, run: python -m pip install --upgrade pip
+Using CPython 3.14.6 interpreter at: /opt/homebrew/opt/python@3.14/bin/python3.14
+Creating virtual environment at: .venv
+   Building mtplx @ file:///Users/runner/work/MTPLX/MTPLX
+Downloading pygments (1.2MiB)
+Downloading ruff (9.9MiB)
+Downloading numpy (5.0MiB)
+Downloading nh3 (1.4MiB)
+Downloading transformers (10.1MiB)
+Downloading tokenizers (2.8MiB)
+Downloading hf-xet (3.6MiB)
+Downloading llguidance (3.0MiB)
+Downloading sentencepiece (1.2MiB)
+Downloading mlx-metal (38.9MiB)
+Downloading pillow (4.6MiB)
+Downloading pydantic-core (1.9MiB)
+ Downloaded sentencepiece
+ Downloaded nh3
+ Downloaded pydantic-core
+ Downloaded tokenizers
+ Downloaded llguidance
+ Downloaded hf-xet
+ Downloaded pygments
+ Downloaded pillow
+ Downloaded ruff
+ Downloaded mlx-metal
+ Downloaded numpy
+ Downloaded transformers
+      Built mtplx @ file:///Users/runner/work/MTPLX/MTPLX
+Installed 66 packages in 146ms
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 60%]
+........................................................................ [ 80%]
+........................................................................ [100%]
+=============================== warnings summary ===============================
+tests/test_public_cli.py::test_terminal_quickstart_max_uses_verified_max_session
+  <frozen importlib._bootstrap>:491: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+tests/test_public_cli.py::test_terminal_quickstart_max_uses_verified_max_session
+  <frozen importlib._bootstrap>:491: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+<sys>:0: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+* Creating isolated environment: venv+pip...
+* Installing packages in isolated environment:
+  - setuptools>=69
+  - wheel
+* Getting build dependencies for sdist...
+running egg_info
+writing mtplx.egg-info/PKG-INFO
+writing dependency_links to mtplx.egg-info/dependency_links.txt
+writing entry points to mtplx.egg-info/entry_points.txt
+writing requirements to mtplx.egg-info/requires.txt
+writing top-level names to mtplx.egg-info/top_level.txt
+reading manifest file 'mtplx.egg-info/SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+adding license file 'LICENSE'
+adding license file 'NOTICE'
+writing manifest file 'mtplx.egg-info/SOURCES.txt'
+* Building sdist...
+running sdist
+running egg_info
+writing mtplx.egg-info/PKG-INFO
+writing dependency_links to mtplx.egg-info/dependency_links.txt
+writing entry points to mtplx.egg-info/entry_points.txt
+writing requirements to mtplx.egg-info/requires.txt
+writing top-level names to mtplx.egg-info/top_level.txt
+reading manifest file 'mtplx.egg-info/SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+adding license file 'LICENSE'
+adding license file 'NOTICE'
+writing manifest file 'mtplx.egg-info/SOURCES.txt'
+running check
+creating mtplx-2.9.2
+creating mtplx-2.9.2/mtplx
+creating mtplx-2.9.2/mtplx.egg-info
+creating mtplx-2.9.2/mtplx/backends
+creating mtplx-2.9.2/mtplx/batching
+creating mtplx-2.9.2/mtplx/benchmarks
+creating mtplx-2.9.2/mtplx/benchmarks/prompts
+creating mtplx-2.9.2/mtplx/benchmarks/runners
+creating mtplx-2.9.2/mtplx/benchmarks/validators
+creating mtplx-2.9.2/mtplx/cache_bank
+creating mtplx-2.9.2/mtplx/commands
+creating mtplx-2.9.2/mtplx/correctors
+creating mtplx-2.9.2/mtplx/dashboard
+creating mtplx-2.9.2/mtplx/dashboard/_static
+creating mtplx-2.9.2/mtplx/dashboard/_static/assets
+creating mtplx-2.9.2/mtplx/kernels
+creating mtplx-2.9.2/mtplx/kpi
+creating mtplx-2.9.2/mtplx/models
+creating mtplx-2.9.2/mtplx/server
+creating mtplx-2.9.2/mtplx/server/omlx_bridge
+creating mtplx-2.9.2/mtplx/templates/qwen36_froggeric_v19
+creating mtplx-2.9.2/mtplx/templates/qwen36_froggeric_v21_3
+creating mtplx-2.9.2/mtplx/ui
+creating mtplx-2.9.2/mtplx/vision
+creating mtplx-2.9.2/scripts
+creating mtplx-2.9.2/scripts/ocspeed-20260703
+creating mtplx-2.9.2/scripts/prodqa-20260703
+creating mtplx-2.9.2/scripts/walltime-lab
+creating mtplx-2.9.2/tests
+creating mtplx-2.9.2/vllm_metal
+creating mtplx-2.9.2/vllm_metal/metal
+creating mtplx-2.9.2/vllm_metal/metal/kernels_v1
+creating mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying files to mtplx-2.9.2...
+copying CHANGELOG.md -> mtplx-2.9.2
+copying CITATION.cff -> mtplx-2.9.2
+copying LICENSE -> mtplx-2.9.2
+copying MANIFEST.in -> mtplx-2.9.2
+copying NOTICE -> mtplx-2.9.2
+copying README.md -> mtplx-2.9.2
+copying pyproject.toml -> mtplx-2.9.2
+copying mtplx/__init__.py -> mtplx-2.9.2/mtplx
+copying mtplx/a3b_compiled_target_prefix.py -> mtplx-2.9.2/mtplx
+copying mtplx/a3b_mtp_batch.py -> mtplx-2.9.2/mtplx
+copying mtplx/a3b_whole_moe.py -> mtplx-2.9.2/mtplx
+copying mtplx/adaptive.py -> mtplx-2.9.2/mtplx
+copying mtplx/app_settings.py -> mtplx-2.9.2/mtplx
+copying mtplx/arrays_cache_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/artifacts.py -> mtplx-2.9.2/mtplx
+copying mtplx/attention_context.py -> mtplx-2.9.2/mtplx
+copying mtplx/attention_split.py -> mtplx-2.9.2/mtplx
+copying mtplx/batched_decode.py -> mtplx-2.9.2/mtplx
+copying mtplx/block_attention.py -> mtplx-2.9.2/mtplx
+copying mtplx/cache_state.py -> mtplx-2.9.2/mtplx
+copying mtplx/chat_encode_cache.py -> mtplx-2.9.2/mtplx
+copying mtplx/chat_encoding.py -> mtplx-2.9.2/mtplx
+copying mtplx/cli.py -> mtplx-2.9.2/mtplx
+copying mtplx/compile_state.py -> mtplx-2.9.2/mtplx
+copying mtplx/compiled_forward.py -> mtplx-2.9.2/mtplx
+copying mtplx/compressed_tensors.py -> mtplx-2.9.2/mtplx
+copying mtplx/config.py -> mtplx-2.9.2/mtplx
+copying mtplx/constants.py -> mtplx-2.9.2/mtplx
+copying mtplx/constrained.py -> mtplx-2.9.2/mtplx
+copying mtplx/context_copy.py -> mtplx-2.9.2/mtplx
+copying mtplx/daemon_client.py -> mtplx-2.9.2/mtplx
+copying mtplx/deepseek_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/deepseek_v4_adaptive_width.py -> mtplx-2.9.2/mtplx
+copying mtplx/deepseek_v4_attention_island.py -> mtplx-2.9.2/mtplx
+copying mtplx/deepseek_v4_attn_proj_wide_m3.py -> mtplx-2.9.2/mtplx
+copying mtplx/default_models.py -> mtplx-2.9.2/mtplx
+copying mtplx/diagnostics.py -> mtplx-2.9.2/mtplx
+copying mtplx/draft_lm_head.py -> mtplx-2.9.2/mtplx
+copying mtplx/draft_sampling.py -> mtplx-2.9.2/mtplx
+copying mtplx/engine_session.py -> mtplx-2.9.2/mtplx
+copying mtplx/env.py -> mtplx-2.9.2/mtplx
+copying mtplx/errors.py -> mtplx-2.9.2/mtplx
+copying mtplx/expert_layout.py -> mtplx-2.9.2/mtplx
+copying mtplx/fan_mode.py -> mtplx-2.9.2/mtplx
+copying mtplx/fast_sampling.py -> mtplx-2.9.2/mtplx
+copying mtplx/gdn_capture.py -> mtplx-2.9.2/mtplx
+copying mtplx/gemma4_pair.py -> mtplx-2.9.2/mtplx
+copying mtplx/generation.py -> mtplx-2.9.2/mtplx
+copying mtplx/glm_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/graphbank.py -> mtplx-2.9.2/mtplx
+copying mtplx/hardware.py -> mtplx-2.9.2/mtplx
+copying mtplx/hf_loader.py -> mtplx-2.9.2/mtplx
+copying mtplx/hy_v3_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/kernel_selfcheck.py -> mtplx-2.9.2/mtplx
+copying mtplx/kv_quant.py -> mtplx-2.9.2/mtplx
+copying mtplx/laguna_alt_step.py -> mtplx-2.9.2/mtplx
+copying mtplx/laguna_compiled_step.py -> mtplx-2.9.2/mtplx
+copying mtplx/lfm2_fast.py -> mtplx-2.9.2/mtplx
+copying mtplx/loop_guard.py -> mtplx-2.9.2/mtplx
+copying mtplx/metadata_scrub.py -> mtplx-2.9.2/mtplx
+copying mtplx/mimo_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/model_catalog.py -> mtplx-2.9.2/mtplx
+copying mtplx/model_scheduler.py -> mtplx-2.9.2/mtplx
+copying mtplx/model_updates.py -> mtplx-2.9.2/mtplx
+copying mtplx/moe_packed_projections.py -> mtplx-2.9.2/mtplx
+copying mtplx/mtp_activation_stats.py -> mtplx-2.9.2/mtplx
+copying mtplx/mtp_adapters.py -> mtplx-2.9.2/mtplx
+copying mtplx/mtp_batch_numerics.py -> mtplx-2.9.2/mtplx
+copying mtplx/mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/native_mlp.py -> mtplx-2.9.2/mtplx
+copying mtplx/nax_verify.py -> mtplx-2.9.2/mtplx
+copying mtplx/nemotron_h_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/opencode.py -> mtplx-2.9.2/mtplx
+copying mtplx/optimization_profiles.py -> mtplx-2.9.2/mtplx
+copying mtplx/packed_concats.py -> mtplx-2.9.2/mtplx
+copying mtplx/pi.py -> mtplx-2.9.2/mtplx
+copying mtplx/prefill_bench.py -> mtplx-2.9.2/mtplx
+copying mtplx/prefill_rungs.py -> mtplx-2.9.2/mtplx
+copying mtplx/profiles.py -> mtplx-2.9.2/mtplx
+copying mtplx/progress_heartbeat.py -> mtplx-2.9.2/mtplx
+copying mtplx/proj_fusion.py -> mtplx-2.9.2/mtplx
+copying mtplx/proj_quant.py -> mtplx-2.9.2/mtplx
+copying mtplx/proposal_reranker.py -> mtplx-2.9.2/mtplx
+copying mtplx/qwen3_5_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/qwen_row_owned_router.py -> mtplx-2.9.2/mtplx
+copying mtplx/ragged_attention.py -> mtplx-2.9.2/mtplx
+copying mtplx/ragged_kv_cache.py -> mtplx-2.9.2/mtplx
+copying mtplx/reasoning_codecs.py -> mtplx-2.9.2/mtplx
+copying mtplx/reasoning_effort.py -> mtplx-2.9.2/mtplx
+copying mtplx/request_capture.py -> mtplx-2.9.2/mtplx
+copying mtplx/retrieval.py -> mtplx-2.9.2/mtplx
+copying mtplx/roofline_profile.py -> mtplx-2.9.2/mtplx
+copying mtplx/runtime.py -> mtplx-2.9.2/mtplx
+copying mtplx/runtime_options.py -> mtplx-2.9.2/mtplx
+copying mtplx/sampling.py -> mtplx-2.9.2/mtplx
+copying mtplx/server_urls.py -> mtplx-2.9.2/mtplx
+copying mtplx/session_bank.py -> mtplx-2.9.2/mtplx
+copying mtplx/speculative.py -> mtplx-2.9.2/mtplx
+copying mtplx/step3p5_mtp_patch.py -> mtplx-2.9.2/mtplx
+copying mtplx/swival.py -> mtplx-2.9.2/mtplx
+copying mtplx/thermal.py -> mtplx-2.9.2/mtplx
+copying mtplx/thermal_sidecar.py -> mtplx-2.9.2/mtplx
+copying mtplx/thinking_guard.py -> mtplx-2.9.2/mtplx
+copying mtplx/trace_parity.py -> mtplx-2.9.2/mtplx
+copying mtplx/turboquant.py -> mtplx-2.9.2/mtplx
+copying mtplx/vendored_arrays_cache.py -> mtplx-2.9.2/mtplx
+copying mtplx/vendored_hy_v3.py -> mtplx-2.9.2/mtplx
+copying mtplx/verify_crossrow.py -> mtplx-2.9.2/mtplx
+copying mtplx/verify_kernels.py -> mtplx-2.9.2/mtplx
+copying mtplx/verify_qmv.py -> mtplx-2.9.2/mtplx
+copying mtplx/version.py -> mtplx-2.9.2/mtplx
+copying mtplx/vision_graft.py -> mtplx-2.9.2/mtplx
+copying mtplx.egg-info/PKG-INFO -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx.egg-info/SOURCES.txt -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx.egg-info/dependency_links.txt -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx.egg-info/entry_points.txt -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx.egg-info/requires.txt -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx.egg-info/top_level.txt -> mtplx-2.9.2/mtplx.egg-info
+copying mtplx/backends/__init__.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/deepseek_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/deepseek_v4_mlxserve.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/descriptors.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/gemma4_assistant.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/glm_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/hy_v3_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/mimo_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/nemotron_h_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/qwen3_next.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/registry.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/backends/step3p5_mtp.py -> mtplx-2.9.2/mtplx/backends
+copying mtplx/batching/__init__.py -> mtplx-2.9.2/mtplx/batching
+copying mtplx/batching/admission.py -> mtplx-2.9.2/mtplx/batching
+copying mtplx/batching/buckets.py -> mtplx-2.9.2/mtplx/batching
+copying mtplx/batching/scheduler.py -> mtplx-2.9.2/mtplx/batching
+copying mtplx/batching/state.py -> mtplx-2.9.2/mtplx/batching
+copying mtplx/benchmarks/__init__.py -> mtplx-2.9.2/mtplx/benchmarks
+copying mtplx/benchmarks/code_eval.py -> mtplx-2.9.2/mtplx/benchmarks
+copying mtplx/benchmarks/programming_prompts.py -> mtplx-2.9.2/mtplx/benchmarks
+copying mtplx/benchmarks/schema.py -> mtplx-2.9.2/mtplx/benchmarks
+copying mtplx/benchmarks/prompts/aime_2026.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/calibration_coding.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/default.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/flappy.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/long_code.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/long_code_uncapped.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/python_modules_long.jsonl -> mtplx-2.9.2/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/runners/__init__.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/aime.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/batch_equivalence.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/capture_commit_equivalence.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/competitor_baselines.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/contract_probe.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/harness.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp1_gate.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp1_sampler_smoke.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_adaptive.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_chain_probe.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_depth_grid.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_depth_sweep.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_tree_probe.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/multi_qmv_probe.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/preflight.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/runtime_smoke.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/session_bank.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/truth.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_profile.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_qmm_probe.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_ratio.py -> mtplx-2.9.2/mtplx/benchmarks/runners
+copying mtplx/benchmarks/validators/__init__.py -> mtplx-2.9.2/mtplx/benchmarks/validators
+copying mtplx/benchmarks/validators/aime.py -> mtplx-2.9.2/mtplx/benchmarks/validators
+copying mtplx/benchmarks/validators/basic.py -> mtplx-2.9.2/mtplx/benchmarks/validators
+copying mtplx/cache_bank/__init__.py -> mtplx-2.9.2/mtplx/cache_bank
+copying mtplx/cache_bank/codec.py -> mtplx-2.9.2/mtplx/cache_bank
+copying mtplx/cache_bank/cold_tier.py -> mtplx-2.9.2/mtplx/cache_bank
+copying mtplx/commands/__init__.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/commands/forge.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/commands/forge_mixed_convert.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/commands/public.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/commands/trace.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/commands/trace_report.py -> mtplx-2.9.2/mtplx/commands
+copying mtplx/correctors/__init__.py -> mtplx-2.9.2/mtplx/correctors
+copying mtplx/correctors/diagonal_affine.py -> mtplx-2.9.2/mtplx/correctors
+copying mtplx/correctors/low_rank.py -> mtplx-2.9.2/mtplx/correctors
+copying mtplx/dashboard/__init__.py -> mtplx-2.9.2/mtplx/dashboard
+copying mtplx/dashboard/_static/index.html -> mtplx-2.9.2/mtplx/dashboard/_static
+copying mtplx/dashboard/_static/assets/index-CMiJLDy7.js -> mtplx-2.9.2/mtplx/dashboard/_static/assets
+copying mtplx/dashboard/_static/assets/index-DYvLRZ33.css -> mtplx-2.9.2/mtplx/dashboard/_static/assets
+copying mtplx/kernels/__init__.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/a3b_whole_moe.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/copy_leaf.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/fused_norm.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/gdn_blocked_prefill.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/gdn_tape_headquarter.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_decode.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_dense_mlp.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_gated_oproj.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_moe_combine.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_moe_gather_gemm.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_moe_merged.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_moe_shared.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_moe_swiglu.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_moe_combine.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_qk_rope.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_router.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_qk_rope_sliding.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_qk_yarn_full.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_qkvg_fused.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_residual_router.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_route_csort.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_router_topk.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_sdpa_2pass.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_sdpa_pair.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/laguna_steel_attn.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/lm_head_topk.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/logits_topk.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/native_gdn_tail.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass_paged.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass_paged_q8.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/sdpa_gqa_packed.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kernels/verify_mlp_fused.py -> mtplx-2.9.2/mtplx/kernels
+copying mtplx/kpi/__init__.py -> mtplx-2.9.2/mtplx/kpi
+copying mtplx/kpi/reference_vllm.py -> mtplx-2.9.2/mtplx/kpi
+copying mtplx/kpi/runtime_kpis.py -> mtplx-2.9.2/mtplx/kpi
+copying mtplx/models/__init__.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/models/deepseek_v4.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/models/deepseek_v4_target_only_config.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/models/laguna.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/models/laguna_config.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/models/laguna_fused.py -> mtplx-2.9.2/mtplx/models
+copying mtplx/server/__init__.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/dashboard_state.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/flight_recorder.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/mtp_batch.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/openai.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/request_policy.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/response_envelope.py -> mtplx-2.9.2/mtplx/server
+copying mtplx/server/omlx_bridge/__init__.py -> mtplx-2.9.2/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/adapter.py -> mtplx-2.9.2/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/thinking.py -> mtplx-2.9.2/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/tool_calling.py -> mtplx-2.9.2/mtplx/server/omlx_bridge
+copying mtplx/templates/qwen36_froggeric_v19/chat_template.jinja -> mtplx-2.9.2/mtplx/templates/qwen36_froggeric_v19
+copying mtplx/templates/qwen36_froggeric_v21_3/chat_template.jinja -> mtplx-2.9.2/mtplx/templates/qwen36_froggeric_v21_3
+copying mtplx/ui/__init__.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/banner.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/chat_printer.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/download_progress.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/onboarding.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/panels.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/ui/progress.py -> mtplx-2.9.2/mtplx/ui
+copying mtplx/vision/__init__.py -> mtplx-2.9.2/mtplx/vision
+copying mtplx/vision/processing.py -> mtplx-2.9.2/mtplx/vision
+copying mtplx/vision/qwen3_vl_tower.py -> mtplx-2.9.2/mtplx/vision
+copying mtplx/vision/splice.py -> mtplx-2.9.2/mtplx/vision
+copying scripts/agent_user_path_qa.py -> mtplx-2.9.2/scripts
+copying scripts/aime_serve_gate.py -> mtplx-2.9.2/scripts
+copying scripts/aime_shape_memory_bench.py -> mtplx-2.9.2/scripts
+copying scripts/analyze_head_sweeps.py -> mtplx-2.9.2/scripts
+copying scripts/audit_catalog_sizes.py -> mtplx-2.9.2/scripts
+copying scripts/code_eval_gate.py -> mtplx-2.9.2/scripts
+copying scripts/collect_mtp_activation_stats.py -> mtplx-2.9.2/scripts
+copying scripts/collect_mtp_hidden_calib.py -> mtplx-2.9.2/scripts
+copying scripts/combine_mtp_adapters.py -> mtplx-2.9.2/scripts
+copying scripts/compiled_verify_exactness.py -> mtplx-2.9.2/scripts
+copying scripts/convert_step37_to_mtplx_step3p5.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_adaptive_width_arms.sh -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_adaptive_width_guarded.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_attention_island_arms.sh -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_attention_island_guarded.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_attn_proj_wide_m3_arms.sh -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_attn_proj_wide_m3_guarded.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_build_mtp_model.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_decode_verify.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_dispatch_census.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_guard_window.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_logits_gate.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_moe_tail_arms.sh -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_moe_tail_gate.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_moe_tail_guarded_bracket.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_mtp_bind_check.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_mtpk_bench.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_op_census.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_smoke_generate.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_sparse_gate_probe.py -> mtplx-2.9.2/scripts
+copying scripts/deepseek_v4_validate_moe_tail_k3_bracket.py -> mtplx-2.9.2/scripts
+copying scripts/eval_mtp_corrector.py -> mtplx-2.9.2/scripts
+copying scripts/filter_mtp_adapter.py -> mtplx-2.9.2/scripts
+copying scripts/fp16_turbo_exactness_20260707.py -> mtplx-2.9.2/scripts
+copying scripts/fresh_venv_smoke.sh -> mtplx-2.9.2/scripts
+copying scripts/gauntlet_scoreboard.py -> mtplx-2.9.2/scripts
+copying scripts/gen_models_manifest.py -> mtplx-2.9.2/scripts
+copying scripts/graft_vision_tower.py -> mtplx-2.9.2/scripts
+copying scripts/hygiene_scan.sh -> mtplx-2.9.2/scripts
+copying scripts/install_macos.sh -> mtplx-2.9.2/scripts
+copying scripts/install_preview_global.sh -> mtplx-2.9.2/scripts
+copying scripts/kvcache_exactness_audit_20260703.py -> mtplx-2.9.2/scripts
+copying scripts/kvcache_soak_20260703.py -> mtplx-2.9.2/scripts
+copying scripts/kvcache_warm_probe_20260703.py -> mtplx-2.9.2/scripts
+copying scripts/make_fp16_precision_sibling.py -> mtplx-2.9.2/scripts
+copying scripts/midform_gate.py -> mtplx-2.9.2/scripts
+copying scripts/oc_tap.py -> mtplx-2.9.2/scripts
+copying scripts/oc_tap_diff.py -> mtplx-2.9.2/scripts
+copying scripts/opencode_concurrency_qa.py -> mtplx-2.9.2/scripts
+copying scripts/phase0h_paged_verifier_exactness.py -> mtplx-2.9.2/scripts
+copying scripts/pillar_gate_qa.py -> mtplx-2.9.2/scripts
+copying scripts/probe_mlx_pr3026_qsdpa.py -> mtplx-2.9.2/scripts
+copying scripts/probe_mx_compile_buckets.py -> mtplx-2.9.2/scripts
+copying scripts/probe_paged_gqa_sdpa_routes.py -> mtplx-2.9.2/scripts
+copying scripts/quality_fp16_parent_logitdiff_20260707.py -> mtplx-2.9.2/scripts
+copying scripts/qwen35b_mtp_batch_evalplus_guarded.py -> mtplx-2.9.2/scripts
+copying scripts/qwen35b_mtp_batch_numerics_attribution.py -> mtplx-2.9.2/scripts
+copying scripts/qwen35b_mtp_batch_numerics_guarded.py -> mtplx-2.9.2/scripts
+copying scripts/r1_chisquare_verifier_correctness.py -> mtplx-2.9.2/scripts
+copying scripts/release_macos_v1.sh -> mtplx-2.9.2/scripts
+copying scripts/restamp_head_quant_packs.py -> mtplx-2.9.2/scripts
+copying scripts/run_context_degradation_diagnostics.py -> mtplx-2.9.2/scripts
+copying scripts/serve_openai_mtplx.py -> mtplx-2.9.2/scripts
+copying scripts/session_cache_followup_qa.py -> mtplx-2.9.2/scripts
+copying scripts/session_forensics.py -> mtplx-2.9.2/scripts
+copying scripts/sparkle_rehearsal_kit.sh -> mtplx-2.9.2/scripts
+copying scripts/step_acceptance.py -> mtplx-2.9.2/scripts
+copying scripts/step_smoke.py -> mtplx-2.9.2/scripts
+copying scripts/stream_qa_gate.sh -> mtplx-2.9.2/scripts
+copying scripts/streamscope_run.py -> mtplx-2.9.2/scripts
+copying scripts/train_mtp_adapter_c4.py -> mtplx-2.9.2/scripts
+copying scripts/upload_head_quant_packs.py -> mtplx-2.9.2/scripts
+copying scripts/validate_step_mtp_injector.py -> mtplx-2.9.2/scripts
+copying scripts/ocspeed-20260703/abba_final.sh -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/accept_depth_probe.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/arm_runner.sh -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/forward_depth_bisect.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/longgen_probe.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/loop_degradation_probe.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/paired_longgen.sh -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/sdpa_microbench.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/ocspeed-20260703/snapshot_tail.py -> mtplx-2.9.2/scripts/ocspeed-20260703
+copying scripts/prodqa-20260703/candidate_truecold_20260703.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/cold_pair_recheck.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/competitors_20260703.sh -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/decode_gap_matrix.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/hermes_pty_driver.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/omlx_probe.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/pi_pty_driver.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/pillar_ab_20260703.py -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/prodqa-20260703/tool_gauntlet_20260703.sh -> mtplx-2.9.2/scripts/prodqa-20260703
+copying scripts/walltime-lab/run_project.py -> mtplx-2.9.2/scripts/walltime-lab
+copying tests/test_a3b_compiled_target_prefix.py -> mtplx-2.9.2/tests
+copying tests/test_a3b_mtp_batch.py -> mtplx-2.9.2/tests
+copying tests/test_a3b_mtp_batch_driver.py -> mtplx-2.9.2/tests
+copying tests/test_a3b_whole_moe.py -> mtplx-2.9.2/tests
+copying tests/test_adaptive.py -> mtplx-2.9.2/tests
+copying tests/test_aime_serve_gate.py -> mtplx-2.9.2/tests
+copying tests/test_api_benchmark_contracts.py -> mtplx-2.9.2/tests
+copying tests/test_app_cli_env_parity.py -> mtplx-2.9.2/tests
+copying tests/test_ar_batch_penalties.py -> mtplx-2.9.2/tests
+copying tests/test_arrays_cache_patch.py -> mtplx-2.9.2/tests
+copying tests/test_artifacts.py -> mtplx-2.9.2/tests
+copying tests/test_attention_split.py -> mtplx-2.9.2/tests
+copying tests/test_background_warmup.py -> mtplx-2.9.2/tests
+copying tests/test_batched_decode.py -> mtplx-2.9.2/tests
+copying tests/test_batched_greedy_argmax_tiebreak.py -> mtplx-2.9.2/tests
+copying tests/test_batching_foundation.py -> mtplx-2.9.2/tests
+copying tests/test_bench_depth_sweep_flags.py -> mtplx-2.9.2/tests
+copying tests/test_bracket_tool_rescue.py -> mtplx-2.9.2/tests
+copying tests/test_cache_bank.py -> mtplx-2.9.2/tests
+copying tests/test_cache_state.py -> mtplx-2.9.2/tests
+copying tests/test_canon_gate_hardening.py -> mtplx-2.9.2/tests
+copying tests/test_canon_policy_smalls.py -> mtplx-2.9.2/tests
+copying tests/test_canon_postcommit_extension.py -> mtplx-2.9.2/tests
+copying tests/test_canonicalize_multimodal.py -> mtplx-2.9.2/tests
+copying tests/test_chat_encode_cache.py -> mtplx-2.9.2/tests
+copying tests/test_cli_parity_tools.py -> mtplx-2.9.2/tests
+copying tests/test_client_controls_default.py -> mtplx-2.9.2/tests
+copying tests/test_code_eval.py -> mtplx-2.9.2/tests
+copying tests/test_code_eval_gate.py -> mtplx-2.9.2/tests
+copying tests/test_cold_prefix_ram_shadow.py -> mtplx-2.9.2/tests
+copying tests/test_cold_tier_disk_usage_scan.py -> mtplx-2.9.2/tests
+copying tests/test_cold_tier_foreground_yield.py -> mtplx-2.9.2/tests
+copying tests/test_cold_tier_min_useful_matched.py -> mtplx-2.9.2/tests
+copying tests/test_cold_tier_stats_cache.py -> mtplx-2.9.2/tests
+copying tests/test_cold_tier_write_budget.py -> mtplx-2.9.2/tests
+copying tests/test_committed_reasoning_canonicalization.py -> mtplx-2.9.2/tests
+copying tests/test_compile_state.py -> mtplx-2.9.2/tests
+copying tests/test_compiled_ar_wiring.py -> mtplx-2.9.2/tests
+copying tests/test_compiled_forward.py -> mtplx-2.9.2/tests
+copying tests/test_compressed_tensors.py -> mtplx-2.9.2/tests
+copying tests/test_config.py -> mtplx-2.9.2/tests
+copying tests/test_config_profile_precedence.py -> mtplx-2.9.2/tests
+copying tests/test_constrained.py -> mtplx-2.9.2/tests
+copying tests/test_context_copy_stats.py -> mtplx-2.9.2/tests
+copying tests/test_context_degradation_profiles.py -> mtplx-2.9.2/tests
+copying tests/test_correctors.py -> mtplx-2.9.2/tests
+copying tests/test_cost_depth_policy.py -> mtplx-2.9.2/tests
+copying tests/test_daemon_client.py -> mtplx-2.9.2/tests
+copying tests/test_dashboard_endpoints.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_adaptive_width_bracket.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_adaptive_width_policy.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_attention_island.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_attention_island_bracket.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_attn_proj_wide_m3.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_attn_proj_wide_m3_bracket.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_decode.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_dtypes.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_indexer.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_kernel_paths.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_loader.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_mlxserve_backend.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_moe_tail.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_moe_tail_bracket.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_mtp.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_new_math.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_o_lora.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_parity.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_sinkhorn_kernel.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_spec.py -> mtplx-2.9.2/tests
+copying tests/test_deepseek_v4_swiglu_clamp.py -> mtplx-2.9.2/tests
+copying tests/test_default_models.py -> mtplx-2.9.2/tests
+copying tests/test_descriptor_family_collisions.py -> mtplx-2.9.2/tests
+copying tests/test_device_draft_core.py -> mtplx-2.9.2/tests
+copying tests/test_diagnostics.py -> mtplx-2.9.2/tests
+copying tests/test_download_progress.py -> mtplx-2.9.2/tests
+copying tests/test_draft_confidence_trace.py -> mtplx-2.9.2/tests
+copying tests/test_draft_launch_provenance.py -> mtplx-2.9.2/tests
+copying tests/test_draft_lm_head.py -> mtplx-2.9.2/tests
+copying tests/test_draft_telemetry_truth.py -> mtplx-2.9.2/tests
+copying tests/test_draft_temp_policy.py -> mtplx-2.9.2/tests
+copying tests/test_encode_seam_unification.py -> mtplx-2.9.2/tests
+copying tests/test_endpoint_probe_hygiene.py -> mtplx-2.9.2/tests
+copying tests/test_engine_session_concurrency.py -> mtplx-2.9.2/tests
+copying tests/test_engine_session_env.py -> mtplx-2.9.2/tests
+copying tests/test_env_flag_parsing.py -> mtplx-2.9.2/tests
+copying tests/test_exactness_320_319.py -> mtplx-2.9.2/tests
+copying tests/test_fast_sampling.py -> mtplx-2.9.2/tests
+copying tests/test_final_committed_frontier_byte_skip.py -> mtplx-2.9.2/tests
+copying tests/test_final_tool_preamble_stream_parity.py -> mtplx-2.9.2/tests
+copying tests/test_flight_recorder.py -> mtplx-2.9.2/tests
+copying tests/test_forge_cli.py -> mtplx-2.9.2/tests
+copying tests/test_forge_discover_filter.py -> mtplx-2.9.2/tests
+copying tests/test_forge_mixed_convert.py -> mtplx-2.9.2/tests
+copying tests/test_forge_mtp_norm_convention.py -> mtplx-2.9.2/tests
+copying tests/test_fused_add_rmsnorm_exactness.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_blocked_prefill.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_boundary_retention.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_capture_rows.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_postconv_fusion.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_postconv_impl_gate.py -> mtplx-2.9.2/tests
+copying tests/test_gdn_tape_headquarter.py -> mtplx-2.9.2/tests
+copying tests/test_generation_store_on_prefill.py -> mtplx-2.9.2/tests
+copying tests/test_generation_sustained.py -> mtplx-2.9.2/tests
+copying tests/test_graphbank_compiled_verify.py -> mtplx-2.9.2/tests
+copying tests/test_greedy_draft_coupling.py -> mtplx-2.9.2/tests
+copying tests/test_greedy_trio_ports.py -> mtplx-2.9.2/tests
+copying tests/test_hf_loader.py -> mtplx-2.9.2/tests
+copying tests/test_hy_v3_mtp_backend.py -> mtplx-2.9.2/tests
+copying tests/test_hy_v3_mtp_graft.py -> mtplx-2.9.2/tests
+copying tests/test_hygiene_scan.py -> mtplx-2.9.2/tests
+copying tests/test_idle_postcommit_subagent.py -> mtplx-2.9.2/tests
+copying tests/test_kernel_selfcheck.py -> mtplx-2.9.2/tests
+copying tests/test_kv_quant_memory.py -> mtplx-2.9.2/tests
+copying tests/test_laguna_alt_step.py -> mtplx-2.9.2/tests
+copying tests/test_laguna_compiled_step.py -> mtplx-2.9.2/tests
+copying tests/test_laguna_fused.py -> mtplx-2.9.2/tests
+copying tests/test_laguna_model.py -> mtplx-2.9.2/tests
+copying tests/test_laguna_steel_attn.py -> mtplx-2.9.2/tests
+copying tests/test_lazy_snapshot_cow.py -> mtplx-2.9.2/tests
+copying tests/test_lfm2_descriptor_resolution.py -> mtplx-2.9.2/tests
+copying tests/test_lfm2_fast.py -> mtplx-2.9.2/tests
+copying tests/test_loop_guard.py -> mtplx-2.9.2/tests
+copying tests/test_max_idle_watchdog.py -> mtplx-2.9.2/tests
+copying tests/test_max_lifecycle.py -> mtplx-2.9.2/tests
+copying tests/test_memory_pressure_guard.py -> mtplx-2.9.2/tests
+copying tests/test_metadata_scrub.py -> mtplx-2.9.2/tests
+copying tests/test_metal_memory_caps.py -> mtplx-2.9.2/tests
+copying tests/test_midform_gate.py -> mtplx-2.9.2/tests
+copying tests/test_model_catalog.py -> mtplx-2.9.2/tests
+copying tests/test_model_scheduler.py -> mtplx-2.9.2/tests
+copying tests/test_model_scheduler_persistence.py -> mtplx-2.9.2/tests
+copying tests/test_model_updates.py -> mtplx-2.9.2/tests
+copying tests/test_moe_force_unsorted.py -> mtplx-2.9.2/tests
+copying tests/test_moe_packed_projections.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_activation_stats.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_adapters.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_alias_load_path.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_batch_numerics.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_batch_serving.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_depth_n.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_depth_sweep.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_norm_convention.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_patch.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_payload_guards.py -> mtplx-2.9.2/tests
+copying tests/test_mtp_weightless_degrade.py -> mtplx-2.9.2/tests
+copying tests/test_nax_verify.py -> mtplx-2.9.2/tests
+copying tests/test_no_mlx_imports.py -> mtplx-2.9.2/tests
+copying tests/test_omlx_bridge.py -> mtplx-2.9.2/tests
+copying tests/test_onboarding.py -> mtplx-2.9.2/tests
+copying tests/test_openai_bridge.py -> mtplx-2.9.2/tests
+copying tests/test_opencode.py -> mtplx-2.9.2/tests
+copying tests/test_optimization_profiles.py -> mtplx-2.9.2/tests
+copying tests/test_orphan_tool_markup.py -> mtplx-2.9.2/tests
+copying tests/test_passive_probe_telemetry.py -> mtplx-2.9.2/tests
+copying tests/test_penalties.py -> mtplx-2.9.2/tests
+copying tests/test_penalty_request_wiring.py -> mtplx-2.9.2/tests
+copying tests/test_persistent_replay.py -> mtplx-2.9.2/tests
+copying tests/test_phase0h_paged_verifier_exactness.py -> mtplx-2.9.2/tests
+copying tests/test_policy_fingerprint_stability.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_arrival_wait.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_cross_session_yield.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_prefix_reuse.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_resolve_for_request.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_tools_plumbing.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_wait.py -> mtplx-2.9.2/tests
+copying tests/test_postcommit_wait_integration.py -> mtplx-2.9.2/tests
+copying tests/test_pre_first_token_telemetry.py -> mtplx-2.9.2/tests
+copying tests/test_prefill_bench.py -> mtplx-2.9.2/tests
+copying tests/test_prefill_chunk_defaults.py -> mtplx-2.9.2/tests
+copying tests/test_prefill_tps_regression.py -> mtplx-2.9.2/tests
+copying tests/test_profile_default_resolution.py -> mtplx-2.9.2/tests
+copying tests/test_profiles.py -> mtplx-2.9.2/tests
+copying tests/test_proj_fusion.py -> mtplx-2.9.2/tests
+copying tests/test_proj_quant.py -> mtplx-2.9.2/tests
+copying tests/test_prompt_encoding.py -> mtplx-2.9.2/tests
+copying tests/test_public_cli.py -> mtplx-2.9.2/tests
+copying tests/test_qwen35b_mtp_batch_evalplus_guarded.py -> mtplx-2.9.2/tests
+copying tests/test_qwen35b_mtp_batch_numerics_attribution.py -> mtplx-2.9.2/tests
+copying tests/test_qwen35b_mtp_batch_numerics_guarded.py -> mtplx-2.9.2/tests
+copying tests/test_qwen38_family.py -> mtplx-2.9.2/tests
+copying tests/test_qwen3_5_mtp_backend.py -> mtplx-2.9.2/tests
+copying tests/test_qwen3_5_mtp_object_level.py -> mtplx-2.9.2/tests
+copying tests/test_qwen_row_owned_router.py -> mtplx-2.9.2/tests
+copying tests/test_ragged_kv_cache.py -> mtplx-2.9.2/tests
+copying tests/test_reasoning_stream_split.py -> mtplx-2.9.2/tests
+copying tests/test_release_qa_fixwave.py -> mtplx-2.9.2/tests
+copying tests/test_request_capture.py -> mtplx-2.9.2/tests
+copying tests/test_request_log_privacy.py -> mtplx-2.9.2/tests
+copying tests/test_request_observability_golden.py -> mtplx-2.9.2/tests
+copying tests/test_response_envelope_parity.py -> mtplx-2.9.2/tests
+copying tests/test_retrieval.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_ar_final_state.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_deepseek_v4_o_lora.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_env_latebind.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_kpis.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_model_alias.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_obs_graphbank.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_obs_kernel_bails.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_obs_profiles.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_obs_stream_holdback.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_scheduler_histogram.py -> mtplx-2.9.2/tests
+copying tests/test_runtime_session_sizing.py -> mtplx-2.9.2/tests
+copying tests/test_sampling.py -> mtplx-2.9.2/tests
+copying tests/test_scoped_reasoning_history.py -> mtplx-2.9.2/tests
+copying tests/test_sdpa_gqa_packed.py -> mtplx-2.9.2/tests
+copying tests/test_serve_network_share.py -> mtplx-2.9.2/tests
+copying tests/test_server_obs_caps_and_health.py -> mtplx-2.9.2/tests
+copying tests/test_server_obs_reasoning_rows.py -> mtplx-2.9.2/tests
+copying tests/test_server_obs_stream_termination.py -> mtplx-2.9.2/tests
+copying tests/test_server_openai.py -> mtplx-2.9.2/tests
+copying tests/test_session_bank.py -> mtplx-2.9.2/tests
+copying tests/test_session_bank_env_caps.py -> mtplx-2.9.2/tests
+copying tests/test_session_bank_restore_aliasing.py -> mtplx-2.9.2/tests
+copying tests/test_snapshot_free_rejection_repair.py -> mtplx-2.9.2/tests
+copying tests/test_ssd_boundary_repersist.py -> mtplx-2.9.2/tests
+copying tests/test_stable_prefix_boundary.py -> mtplx-2.9.2/tests
+copying tests/test_stats_footer_scope.py -> mtplx-2.9.2/tests
+copying tests/test_step3p5_mtp_patch.py -> mtplx-2.9.2/tests
+copying tests/test_stream_guard_env.py -> mtplx-2.9.2/tests
+copying tests/test_stream_stall_watchdog.py -> mtplx-2.9.2/tests
+copying tests/test_stream_transcript_golden.py -> mtplx-2.9.2/tests
+copying tests/test_stream_visible_cadence.py -> mtplx-2.9.2/tests
+copying tests/test_sustained_long_context_qa.py -> mtplx-2.9.2/tests
+copying tests/test_tail_ar_warm_restore_identity.py -> mtplx-2.9.2/tests
+copying tests/test_tail_config_sampler_presence.py -> mtplx-2.9.2/tests
+copying tests/test_tail_gemma4_stream_holdback.py -> mtplx-2.9.2/tests
+copying tests/test_tail_profile_truth.py -> mtplx-2.9.2/tests
+copying tests/test_thermal.py -> mtplx-2.9.2/tests
+copying tests/test_thermal_sidecar.py -> mtplx-2.9.2/tests
+copying tests/test_thinking_guard.py -> mtplx-2.9.2/tests
+copying tests/test_tool_aware_stream_translator.py -> mtplx-2.9.2/tests
+copying tests/test_tool_call_hidden_guard_and_key_repair.py -> mtplx-2.9.2/tests
+copying tests/test_tool_nested_args_streaming.py -> mtplx-2.9.2/tests
+copying tests/test_trace_parity.py -> mtplx-2.9.2/tests
+copying tests/test_tune_record_wizard_parity.py -> mtplx-2.9.2/tests
+copying tests/test_turboquant.py -> mtplx-2.9.2/tests
+copying tests/test_turboquant_fallback.py -> mtplx-2.9.2/tests
+copying tests/test_ui_progress.py -> mtplx-2.9.2/tests
+copying tests/test_validators.py -> mtplx-2.9.2/tests
+copying tests/test_verify_crossrow.py -> mtplx-2.9.2/tests
+copying tests/test_vision_restore_span_guard.py -> mtplx-2.9.2/tests
+copying tests/test_vision_session_cache.py -> mtplx-2.9.2/tests
+copying tests/test_vision_session_frontier_gate.py -> mtplx-2.9.2/tests
+copying tests/test_vision_tower.py -> mtplx-2.9.2/tests
+copying tests/test_vllm_reference.py -> mtplx-2.9.2/tests
+copying vllm_metal/__init__.py -> mtplx-2.9.2/vllm_metal
+copying vllm_metal/metal/README.md -> mtplx-2.9.2/vllm_metal/metal
+copying vllm_metal/metal/__init__.py -> mtplx-2.9.2/vllm_metal/metal
+copying vllm_metal/metal/build.py -> mtplx-2.9.2/vllm_metal/metal
+copying vllm_metal/metal/constants.py -> mtplx-2.9.2/vllm_metal/metal
+copying vllm_metal/metal/paged_ops.cpp -> mtplx-2.9.2/vllm_metal/metal
+copying vllm_metal/metal/kernels_v1/copy_blocks.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/float8.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/gather_kv_cache.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/kv_scale_update.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/pagedattention.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/reshape_and_cache.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/utils.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v2/copy_blocks.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/float8.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/gather_kv_cache.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/gdn_linear_attention.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/kv_scale_update.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/pagedattention.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/reshape_and_cache.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/turboquant.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/utils.metal -> mtplx-2.9.2/vllm_metal/metal/kernels_v2
+Writing mtplx-2.9.2/setup.cfg
+Creating tar archive
+removing 'mtplx-2.9.2' (and everything under it)
+* Building wheel from sdist
+* Creating isolated environment: venv+pip...
+* Installing packages in isolated environment:
+  - setuptools>=69
+  - wheel
+* Getting build dependencies for wheel...
+running egg_info
+writing mtplx.egg-info/PKG-INFO
+writing dependency_links to mtplx.egg-info/dependency_links.txt
+writing entry points to mtplx.egg-info/entry_points.txt
+writing requirements to mtplx.egg-info/requires.txt
+writing top-level names to mtplx.egg-info/top_level.txt
+reading manifest file 'mtplx.egg-info/SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+adding license file 'LICENSE'
+adding license file 'NOTICE'
+writing manifest file 'mtplx.egg-info/SOURCES.txt'
+* Building wheel...
+running bdist_wheel
+running build
+running build_py
+creating build/lib/vllm_metal
+copying vllm_metal/__init__.py -> build/lib/vllm_metal
+creating build/lib/mtplx
+copying mtplx/compressed_tensors.py -> build/lib/mtplx
+copying mtplx/reasoning_effort.py -> build/lib/mtplx
+copying mtplx/roofline_profile.py -> build/lib/mtplx
+copying mtplx/gdn_capture.py -> build/lib/mtplx
+copying mtplx/thermal.py -> build/lib/mtplx
+copying mtplx/app_settings.py -> build/lib/mtplx
+copying mtplx/speculative.py -> build/lib/mtplx
+copying mtplx/deepseek_v4_adaptive_width.py -> build/lib/mtplx
+copying mtplx/vision_graft.py -> build/lib/mtplx
+copying mtplx/hf_loader.py -> build/lib/mtplx
+copying mtplx/fan_mode.py -> build/lib/mtplx
+copying mtplx/config.py -> build/lib/mtplx
+copying mtplx/version.py -> build/lib/mtplx
+copying mtplx/env.py -> build/lib/mtplx
+copying mtplx/generation.py -> build/lib/mtplx
+copying mtplx/lfm2_fast.py -> build/lib/mtplx
+copying mtplx/mtp_adapters.py -> build/lib/mtplx
+copying mtplx/moe_packed_projections.py -> build/lib/mtplx
+copying mtplx/fast_sampling.py -> build/lib/mtplx
+copying mtplx/mtp_patch.py -> build/lib/mtplx
+copying mtplx/laguna_compiled_step.py -> build/lib/mtplx
+copying mtplx/proj_fusion.py -> build/lib/mtplx
+copying mtplx/attention_context.py -> build/lib/mtplx
+copying mtplx/native_mlp.py -> build/lib/mtplx
+copying mtplx/mimo_mtp_patch.py -> build/lib/mtplx
+copying mtplx/batched_decode.py -> build/lib/mtplx
+copying mtplx/optimization_profiles.py -> build/lib/mtplx
+copying mtplx/kv_quant.py -> build/lib/mtplx
+copying mtplx/deepseek_v4_attention_island.py -> build/lib/mtplx
+copying mtplx/trace_parity.py -> build/lib/mtplx
+copying mtplx/diagnostics.py -> build/lib/mtplx
+copying mtplx/deepseek_v4_attn_proj_wide_m3.py -> build/lib/mtplx
+copying mtplx/proposal_reranker.py -> build/lib/mtplx
+copying mtplx/expert_layout.py -> build/lib/mtplx
+copying mtplx/request_capture.py -> build/lib/mtplx
+copying mtplx/kernel_selfcheck.py -> build/lib/mtplx
+copying mtplx/vendored_arrays_cache.py -> build/lib/mtplx
+copying mtplx/prefill_rungs.py -> build/lib/mtplx
+copying mtplx/progress_heartbeat.py -> build/lib/mtplx
+copying mtplx/ragged_kv_cache.py -> build/lib/mtplx
+copying mtplx/compiled_forward.py -> build/lib/mtplx
+copying mtplx/constants.py -> build/lib/mtplx
+copying mtplx/laguna_alt_step.py -> build/lib/mtplx
+copying mtplx/model_scheduler.py -> build/lib/mtplx
+copying mtplx/mtp_activation_stats.py -> build/lib/mtplx
+copying mtplx/mtp_batch_numerics.py -> build/lib/mtplx
+copying mtplx/draft_sampling.py -> build/lib/mtplx
+copying mtplx/a3b_mtp_batch.py -> build/lib/mtplx
+copying mtplx/compile_state.py -> build/lib/mtplx
+copying mtplx/turboquant.py -> build/lib/mtplx
+copying mtplx/verify_crossrow.py -> build/lib/mtplx
+copying mtplx/__init__.py -> build/lib/mtplx
+copying mtplx/daemon_client.py -> build/lib/mtplx
+copying mtplx/prefill_bench.py -> build/lib/mtplx
+copying mtplx/pi.py -> build/lib/mtplx
+copying mtplx/opencode.py -> build/lib/mtplx
+copying mtplx/runtime.py -> build/lib/mtplx
+copying mtplx/server_urls.py -> build/lib/mtplx
+copying mtplx/verify_kernels.py -> build/lib/mtplx
+copying mtplx/constrained.py -> build/lib/mtplx
+copying mtplx/adaptive.py -> build/lib/mtplx
+copying mtplx/thermal_sidecar.py -> build/lib/mtplx
+copying mtplx/deepseek_mtp_patch.py -> build/lib/mtplx
+copying mtplx/verify_qmv.py -> build/lib/mtplx
+copying mtplx/model_catalog.py -> build/lib/mtplx
+copying mtplx/cli.py -> build/lib/mtplx
+copying mtplx/block_attention.py -> build/lib/mtplx
+copying mtplx/qwen_row_owned_router.py -> build/lib/mtplx
+copying mtplx/graphbank.py -> build/lib/mtplx
+copying mtplx/step3p5_mtp_patch.py -> build/lib/mtplx
+copying mtplx/ragged_attention.py -> build/lib/mtplx
+copying mtplx/context_copy.py -> build/lib/mtplx
+copying mtplx/glm_mtp_patch.py -> build/lib/mtplx
+copying mtplx/engine_session.py -> build/lib/mtplx
+copying mtplx/nemotron_h_mtp_patch.py -> build/lib/mtplx
+copying mtplx/sampling.py -> build/lib/mtplx
+copying mtplx/metadata_scrub.py -> build/lib/mtplx
+copying mtplx/retrieval.py -> build/lib/mtplx
+copying mtplx/a3b_compiled_target_prefix.py -> build/lib/mtplx
+copying mtplx/hardware.py -> build/lib/mtplx
+copying mtplx/default_models.py -> build/lib/mtplx
+copying mtplx/packed_concats.py -> build/lib/mtplx
+copying mtplx/swival.py -> build/lib/mtplx
+copying mtplx/runtime_options.py -> build/lib/mtplx
+copying mtplx/artifacts.py -> build/lib/mtplx
+copying mtplx/errors.py -> build/lib/mtplx
+copying mtplx/a3b_whole_moe.py -> build/lib/mtplx
+copying mtplx/thinking_guard.py -> build/lib/mtplx
+copying mtplx/proj_quant.py -> build/lib/mtplx
+copying mtplx/qwen3_5_mtp_patch.py -> build/lib/mtplx
+copying mtplx/arrays_cache_patch.py -> build/lib/mtplx
+copying mtplx/loop_guard.py -> build/lib/mtplx
+copying mtplx/model_updates.py -> build/lib/mtplx
+copying mtplx/reasoning_codecs.py -> build/lib/mtplx
+copying mtplx/draft_lm_head.py -> build/lib/mtplx
+copying mtplx/hy_v3_mtp_patch.py -> build/lib/mtplx
+copying mtplx/vendored_hy_v3.py -> build/lib/mtplx
+copying mtplx/nax_verify.py -> build/lib/mtplx
+copying mtplx/session_bank.py -> build/lib/mtplx
+copying mtplx/chat_encode_cache.py -> build/lib/mtplx
+copying mtplx/profiles.py -> build/lib/mtplx
+copying mtplx/chat_encoding.py -> build/lib/mtplx
+copying mtplx/cache_state.py -> build/lib/mtplx
+copying mtplx/gemma4_pair.py -> build/lib/mtplx
+copying mtplx/attention_split.py -> build/lib/mtplx
+creating build/lib/vllm_metal/metal
+copying vllm_metal/metal/build.py -> build/lib/vllm_metal/metal
+copying vllm_metal/metal/constants.py -> build/lib/vllm_metal/metal
+copying vllm_metal/metal/__init__.py -> build/lib/vllm_metal/metal
+creating build/lib/mtplx/ui
+copying mtplx/ui/download_progress.py -> build/lib/mtplx/ui
+copying mtplx/ui/onboarding.py -> build/lib/mtplx/ui
+copying mtplx/ui/__init__.py -> build/lib/mtplx/ui
+copying mtplx/ui/progress.py -> build/lib/mtplx/ui
+copying mtplx/ui/banner.py -> build/lib/mtplx/ui
+copying mtplx/ui/chat_printer.py -> build/lib/mtplx/ui
+copying mtplx/ui/panels.py -> build/lib/mtplx/ui
+creating build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_moe_swiglu.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_dense_mlp.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_qkvg_fused.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/verify_mlp_fused.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_sdpa_pair.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_moe_shared.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass_paged_q8.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/native_gdn_tail.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/gdn_blocked_prefill.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_moe_merged.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/__init__.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_qk_rope_sliding.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/logits_topk.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_router_topk.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_moe_combine.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/sdpa_2pass_paged.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_residual_router.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_router.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_gated_oproj.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/gdn_tape_headquarter.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/sdpa_gqa_packed.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_qk_rope.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/lm_head_topk.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_steel_attn.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_sdpa_2pass.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/a3b_whole_moe.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_decode.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_moe_gather_gemm.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_prefill_moe_combine.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_route_csort.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/fused_norm.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/laguna_qk_yarn_full.py -> build/lib/mtplx/kernels
+copying mtplx/kernels/copy_leaf.py -> build/lib/mtplx/kernels
+creating build/lib/mtplx/correctors
+copying mtplx/correctors/low_rank.py -> build/lib/mtplx/correctors
+copying mtplx/correctors/__init__.py -> build/lib/mtplx/correctors
+copying mtplx/correctors/diagonal_affine.py -> build/lib/mtplx/correctors
+creating build/lib/mtplx/cache_bank
+copying mtplx/cache_bank/__init__.py -> build/lib/mtplx/cache_bank
+copying mtplx/cache_bank/cold_tier.py -> build/lib/mtplx/cache_bank
+copying mtplx/cache_bank/codec.py -> build/lib/mtplx/cache_bank
+creating build/lib/mtplx/backends
+copying mtplx/backends/step3p5_mtp.py -> build/lib/mtplx/backends
+copying mtplx/backends/deepseek_v4_mlxserve.py -> build/lib/mtplx/backends
+copying mtplx/backends/mimo_mtp.py -> build/lib/mtplx/backends
+copying mtplx/backends/registry.py -> build/lib/mtplx/backends
+copying mtplx/backends/glm_mtp.py -> build/lib/mtplx/backends
+copying mtplx/backends/__init__.py -> build/lib/mtplx/backends
+copying mtplx/backends/deepseek_mtp.py -> build/lib/mtplx/backends
+copying mtplx/backends/gemma4_assistant.py -> build/lib/mtplx/backends
+copying mtplx/backends/descriptors.py -> build/lib/mtplx/backends
+copying mtplx/backends/nemotron_h_mtp.py -> build/lib/mtplx/backends
+copying mtplx/backends/qwen3_next.py -> build/lib/mtplx/backends
+copying mtplx/backends/hy_v3_mtp.py -> build/lib/mtplx/backends
+creating build/lib/mtplx/server
+copying mtplx/server/request_policy.py -> build/lib/mtplx/server
+copying mtplx/server/flight_recorder.py -> build/lib/mtplx/server
+copying mtplx/server/mtp_batch.py -> build/lib/mtplx/server
+copying mtplx/server/__init__.py -> build/lib/mtplx/server
+copying mtplx/server/openai.py -> build/lib/mtplx/server
+copying mtplx/server/dashboard_state.py -> build/lib/mtplx/server
+copying mtplx/server/response_envelope.py -> build/lib/mtplx/server
+creating build/lib/mtplx/models
+copying mtplx/models/laguna_fused.py -> build/lib/mtplx/models
+copying mtplx/models/deepseek_v4.py -> build/lib/mtplx/models
+copying mtplx/models/laguna_config.py -> build/lib/mtplx/models
+copying mtplx/models/__init__.py -> build/lib/mtplx/models
+copying mtplx/models/laguna.py -> build/lib/mtplx/models
+copying mtplx/models/deepseek_v4_target_only_config.py -> build/lib/mtplx/models
+creating build/lib/mtplx/vision
+copying mtplx/vision/qwen3_vl_tower.py -> build/lib/mtplx/vision
+copying mtplx/vision/__init__.py -> build/lib/mtplx/vision
+copying mtplx/vision/processing.py -> build/lib/mtplx/vision
+copying mtplx/vision/splice.py -> build/lib/mtplx/vision
+creating build/lib/mtplx/dashboard
+copying mtplx/dashboard/__init__.py -> build/lib/mtplx/dashboard
+creating build/lib/mtplx/benchmarks
+copying mtplx/benchmarks/programming_prompts.py -> build/lib/mtplx/benchmarks
+copying mtplx/benchmarks/code_eval.py -> build/lib/mtplx/benchmarks
+copying mtplx/benchmarks/__init__.py -> build/lib/mtplx/benchmarks
+copying mtplx/benchmarks/schema.py -> build/lib/mtplx/benchmarks
+creating build/lib/mtplx/batching
+copying mtplx/batching/__init__.py -> build/lib/mtplx/batching
+copying mtplx/batching/buckets.py -> build/lib/mtplx/batching
+copying mtplx/batching/scheduler.py -> build/lib/mtplx/batching
+copying mtplx/batching/admission.py -> build/lib/mtplx/batching
+copying mtplx/batching/state.py -> build/lib/mtplx/batching
+creating build/lib/mtplx/kpi
+copying mtplx/kpi/reference_vllm.py -> build/lib/mtplx/kpi
+copying mtplx/kpi/__init__.py -> build/lib/mtplx/kpi
+copying mtplx/kpi/runtime_kpis.py -> build/lib/mtplx/kpi
+creating build/lib/mtplx/commands
+copying mtplx/commands/forge.py -> build/lib/mtplx/commands
+copying mtplx/commands/trace.py -> build/lib/mtplx/commands
+copying mtplx/commands/public.py -> build/lib/mtplx/commands
+copying mtplx/commands/__init__.py -> build/lib/mtplx/commands
+copying mtplx/commands/trace_report.py -> build/lib/mtplx/commands
+copying mtplx/commands/forge_mixed_convert.py -> build/lib/mtplx/commands
+creating build/lib/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/adapter.py -> build/lib/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/__init__.py -> build/lib/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/thinking.py -> build/lib/mtplx/server/omlx_bridge
+copying mtplx/server/omlx_bridge/tool_calling.py -> build/lib/mtplx/server/omlx_bridge
+creating build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/batch_equivalence.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/capture_commit_equivalence.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_chain_probe.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/harness.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp1_sampler_smoke.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_adaptive.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_depth_sweep.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/competitor_baselines.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_qmm_probe.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/__init__.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_depth_grid.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/runtime_smoke.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_profile.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/verify_ratio.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/truth.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/multi_qmv_probe.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp_tree_probe.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/session_bank.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/aime.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/contract_probe.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/preflight.py -> build/lib/mtplx/benchmarks/runners
+copying mtplx/benchmarks/runners/mtp1_gate.py -> build/lib/mtplx/benchmarks/runners
+creating build/lib/mtplx/benchmarks/validators
+copying mtplx/benchmarks/validators/__init__.py -> build/lib/mtplx/benchmarks/validators
+copying mtplx/benchmarks/validators/basic.py -> build/lib/mtplx/benchmarks/validators
+copying mtplx/benchmarks/validators/aime.py -> build/lib/mtplx/benchmarks/validators
+running egg_info
+writing mtplx.egg-info/PKG-INFO
+writing dependency_links to mtplx.egg-info/dependency_links.txt
+writing entry points to mtplx.egg-info/entry_points.txt
+writing requirements to mtplx.egg-info/requires.txt
+writing top-level names to mtplx.egg-info/top_level.txt
+reading manifest file 'mtplx.egg-info/SOURCES.txt'
+reading manifest template 'MANIFEST.in'
+adding license file 'LICENSE'
+adding license file 'NOTICE'
+writing manifest file 'mtplx.egg-info/SOURCES.txt'
+creating build/lib/mtplx/templates/qwen36_froggeric_v19
+copying mtplx/templates/qwen36_froggeric_v19/chat_template.jinja -> build/lib/mtplx/templates/qwen36_froggeric_v19
+creating build/lib/mtplx/templates/qwen36_froggeric_v21_3
+copying mtplx/templates/qwen36_froggeric_v21_3/chat_template.jinja -> build/lib/mtplx/templates/qwen36_froggeric_v21_3
+copying vllm_metal/metal/README.md -> build/lib/vllm_metal/metal
+copying vllm_metal/metal/paged_ops.cpp -> build/lib/vllm_metal/metal
+creating build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/pagedattention.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/utils.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/float8.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/copy_blocks.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/gather_kv_cache.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/reshape_and_cache.metal -> build/lib/vllm_metal/metal/kernels_v1
+copying vllm_metal/metal/kernels_v1/kv_scale_update.metal -> build/lib/vllm_metal/metal/kernels_v1
+creating build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/gdn_linear_attention.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/pagedattention.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/utils.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/float8.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/copy_blocks.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/turboquant.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/gather_kv_cache.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/reshape_and_cache.metal -> build/lib/vllm_metal/metal/kernels_v2
+copying vllm_metal/metal/kernels_v2/kv_scale_update.metal -> build/lib/vllm_metal/metal/kernels_v2
+creating build/lib/mtplx/dashboard/_static
+copying mtplx/dashboard/_static/index.html -> build/lib/mtplx/dashboard/_static
+creating build/lib/mtplx/dashboard/_static/assets
+copying mtplx/dashboard/_static/assets/index-CMiJLDy7.js -> build/lib/mtplx/dashboard/_static/assets
+copying mtplx/dashboard/_static/assets/index-DYvLRZ33.css -> build/lib/mtplx/dashboard/_static/assets
+creating build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/python_modules_long.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/default.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/long_code.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/long_code_uncapped.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/calibration_coding.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/aime_2026.jsonl -> build/lib/mtplx/benchmarks/prompts
+copying mtplx/benchmarks/prompts/flappy.jsonl -> build/lib/mtplx/benchmarks/prompts
+installing to build/bdist.macosx-10.15-universal2/wheel
+running install
+running install_lib
+creating build/bdist.macosx-10.15-universal2/wheel
+creating build/bdist.macosx-10.15-universal2/wheel/vllm_metal
+creating build/bdist.macosx-10.15-universal2/wheel/vllm_metal/metal
+creating build/bdist.macosx-10.15-universal2/wheel/vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/pagedattention.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/utils.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/float8.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/copy_blocks.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/gather_kv_cache.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/reshape_and_cache.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/kernels_v1/kv_scale_update.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v1
+copying build/lib/vllm_metal/metal/build.py -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal
+copying build/lib/vllm_metal/metal/constants.py -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal
+copying build/lib/vllm_metal/metal/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal
+copying build/lib/vllm_metal/metal/README.md -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal
+creating build/bdist.macosx-10.15-universal2/wheel/vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/gdn_linear_attention.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/pagedattention.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/utils.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/float8.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/copy_blocks.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/turboquant.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/gather_kv_cache.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/reshape_and_cache.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/kernels_v2/kv_scale_update.metal -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal/kernels_v2
+copying build/lib/vllm_metal/metal/paged_ops.cpp -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal/metal
+copying build/lib/vllm_metal/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./vllm_metal
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx
+copying build/lib/mtplx/compressed_tensors.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/reasoning_effort.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/ui
+copying build/lib/mtplx/ui/download_progress.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/onboarding.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/progress.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/banner.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/chat_printer.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/ui/panels.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/ui
+copying build/lib/mtplx/roofline_profile.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_moe_swiglu.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_dense_mlp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_qkvg_fused.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/verify_mlp_fused.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_sdpa_pair.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_moe_shared.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/sdpa_2pass_paged_q8.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/native_gdn_tail.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/sdpa_2pass.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/gdn_blocked_prefill.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_moe_merged.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_qk_rope_sliding.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/logits_topk.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_router_topk.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_moe_combine.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/sdpa_2pass_paged.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_residual_router.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_prefill_router.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_gated_oproj.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/gdn_tape_headquarter.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/sdpa_gqa_packed.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_prefill_qk_rope.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/lm_head_topk.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_steel_attn.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_sdpa_2pass.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/a3b_whole_moe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_decode.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_moe_gather_gemm.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_prefill_moe_combine.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_route_csort.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/fused_norm.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/laguna_qk_yarn_full.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/kernels/copy_leaf.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kernels
+copying build/lib/mtplx/gdn_capture.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/thermal.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/app_settings.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/speculative.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/correctors
+copying build/lib/mtplx/correctors/low_rank.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/correctors
+copying build/lib/mtplx/correctors/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/correctors
+copying build/lib/mtplx/correctors/diagonal_affine.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/correctors
+copying build/lib/mtplx/deepseek_v4_adaptive_width.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/vision_graft.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/hf_loader.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/fan_mode.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/config.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/version.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/env.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/generation.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/lfm2_fast.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/mtp_adapters.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/moe_packed_projections.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/fast_sampling.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/laguna_compiled_step.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/proj_fusion.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/cache_bank
+copying build/lib/mtplx/cache_bank/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/cache_bank
+copying build/lib/mtplx/cache_bank/cold_tier.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/cache_bank
+copying build/lib/mtplx/cache_bank/codec.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/cache_bank
+copying build/lib/mtplx/attention_context.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/native_mlp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/mimo_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/batched_decode.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/optimization_profiles.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/kv_quant.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/deepseek_v4_attention_island.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/trace_parity.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/diagnostics.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/deepseek_v4_attn_proj_wide_m3.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/proposal_reranker.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/expert_layout.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/request_capture.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/kernel_selfcheck.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/backends
+copying build/lib/mtplx/backends/step3p5_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/deepseek_v4_mlxserve.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/mimo_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/registry.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/glm_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/deepseek_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/gemma4_assistant.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/descriptors.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/nemotron_h_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/qwen3_next.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/backends/hy_v3_mtp.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/backends
+copying build/lib/mtplx/vendored_arrays_cache.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/prefill_rungs.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/progress_heartbeat.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/ragged_kv_cache.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/compiled_forward.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/constants.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/laguna_alt_step.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/model_scheduler.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/mtp_activation_stats.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/mtp_batch_numerics.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/draft_sampling.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/a3b_mtp_batch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/compile_state.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/turboquant.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/verify_crossrow.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/daemon_client.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/prefill_bench.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/server
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/server/omlx_bridge
+copying build/lib/mtplx/server/omlx_bridge/adapter.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server/omlx_bridge
+copying build/lib/mtplx/server/omlx_bridge/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server/omlx_bridge
+copying build/lib/mtplx/server/omlx_bridge/thinking.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server/omlx_bridge
+copying build/lib/mtplx/server/omlx_bridge/tool_calling.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server/omlx_bridge
+copying build/lib/mtplx/server/request_policy.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/flight_recorder.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/mtp_batch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/openai.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/dashboard_state.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+copying build/lib/mtplx/server/response_envelope.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/server
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/models
+copying build/lib/mtplx/models/laguna_fused.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+copying build/lib/mtplx/models/deepseek_v4.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+copying build/lib/mtplx/models/laguna_config.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+copying build/lib/mtplx/models/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+copying build/lib/mtplx/models/laguna.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+copying build/lib/mtplx/models/deepseek_v4_target_only_config.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/models
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/vision
+copying build/lib/mtplx/vision/qwen3_vl_tower.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/vision
+copying build/lib/mtplx/vision/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/vision
+copying build/lib/mtplx/vision/processing.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/vision
+copying build/lib/mtplx/vision/splice.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/vision
+copying build/lib/mtplx/pi.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/opencode.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/runtime.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/server_urls.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/verify_kernels.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/constrained.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/dashboard
+copying build/lib/mtplx/dashboard/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/dashboard
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/dashboard/_static
+copying build/lib/mtplx/dashboard/_static/index.html -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/dashboard/_static
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/dashboard/_static/assets
+copying build/lib/mtplx/dashboard/_static/assets/index-CMiJLDy7.js -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/dashboard/_static/assets
+copying build/lib/mtplx/dashboard/_static/assets/index-DYvLRZ33.css -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/dashboard/_static/assets
+copying build/lib/mtplx/adaptive.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/thermal_sidecar.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/deepseek_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/verify_qmv.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/model_catalog.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/cli.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/block_attention.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/qwen_row_owned_router.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/graphbank.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/step3p5_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/ragged_attention.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/context_copy.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/glm_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/benchmarks
+copying build/lib/mtplx/benchmarks/programming_prompts.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks
+copying build/lib/mtplx/benchmarks/code_eval.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks
+copying build/lib/mtplx/benchmarks/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/python_modules_long.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/default.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/long_code.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/long_code_uncapped.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/calibration_coding.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/aime_2026.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+copying build/lib/mtplx/benchmarks/prompts/flappy.jsonl -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/prompts
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/batch_equivalence.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/capture_commit_equivalence.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp_chain_probe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/harness.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp1_sampler_smoke.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp_adaptive.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp_depth_sweep.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/competitor_baselines.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/verify_qmm_probe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp_depth_grid.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/runtime_smoke.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/verify_profile.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/verify_ratio.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/truth.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/multi_qmv_probe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp_tree_probe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/session_bank.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/aime.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/contract_probe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/preflight.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+copying build/lib/mtplx/benchmarks/runners/mtp1_gate.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/runners
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/benchmarks/validators
+copying build/lib/mtplx/benchmarks/validators/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/validators
+copying build/lib/mtplx/benchmarks/validators/basic.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/validators
+copying build/lib/mtplx/benchmarks/validators/aime.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks/validators
+copying build/lib/mtplx/benchmarks/schema.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/benchmarks
+copying build/lib/mtplx/engine_session.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/batching
+copying build/lib/mtplx/batching/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/batching
+copying build/lib/mtplx/batching/buckets.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/batching
+copying build/lib/mtplx/batching/scheduler.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/batching
+copying build/lib/mtplx/batching/admission.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/batching
+copying build/lib/mtplx/batching/state.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/batching
+copying build/lib/mtplx/nemotron_h_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/sampling.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/metadata_scrub.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/retrieval.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/a3b_compiled_target_prefix.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/hardware.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/default_models.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/kpi
+copying build/lib/mtplx/kpi/reference_vllm.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kpi
+copying build/lib/mtplx/kpi/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kpi
+copying build/lib/mtplx/kpi/runtime_kpis.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/kpi
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/templates
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/templates/qwen36_froggeric_v19
+copying build/lib/mtplx/templates/qwen36_froggeric_v19/chat_template.jinja -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/templates/qwen36_froggeric_v19
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/templates/qwen36_froggeric_v21_3
+copying build/lib/mtplx/templates/qwen36_froggeric_v21_3/chat_template.jinja -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/templates/qwen36_froggeric_v21_3
+copying build/lib/mtplx/packed_concats.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/swival.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/runtime_options.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx/commands
+copying build/lib/mtplx/commands/forge.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/commands/trace.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/commands/public.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/commands/__init__.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/commands/trace_report.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/commands/forge_mixed_convert.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx/commands
+copying build/lib/mtplx/artifacts.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/errors.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/a3b_whole_moe.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/thinking_guard.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/proj_quant.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/qwen3_5_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/arrays_cache_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/loop_guard.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/model_updates.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/reasoning_codecs.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/draft_lm_head.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/hy_v3_mtp_patch.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/vendored_hy_v3.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/nax_verify.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/session_bank.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/chat_encode_cache.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/profiles.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/chat_encoding.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/cache_state.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/gemma4_pair.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+copying build/lib/mtplx/attention_split.py -> build/bdist.macosx-10.15-universal2/wheel/./mtplx
+running install_egg_info
+Copying mtplx.egg-info to build/bdist.macosx-10.15-universal2/wheel/./mtplx-2.9.2-py3.14.egg-info
+running install_scripts
+creating build/bdist.macosx-10.15-universal2/wheel/mtplx-2.9.2.dist-info/WHEEL
+creating '/Users/runner/work/MTPLX/MTPLX/dist/.tmp-p8d059i1/mtplx-2.9.2-py3-none-any.whl' and adding 'build/bdist.macosx-10.15-universal2/wheel' to it
+adding 'mtplx/__init__.py'
+adding 'mtplx/a3b_compiled_target_prefix.py'
+adding 'mtplx/a3b_mtp_batch.py'
+adding 'mtplx/a3b_whole_moe.py'
+adding 'mtplx/adaptive.py'
+adding 'mtplx/app_settings.py'
+adding 'mtplx/arrays_cache_patch.py'
+adding 'mtplx/artifacts.py'
+adding 'mtplx/attention_context.py'
+adding 'mtplx/attention_split.py'
+adding 'mtplx/batched_decode.py'
+adding 'mtplx/block_attention.py'
+adding 'mtplx/cache_state.py'
+adding 'mtplx/chat_encode_cache.py'
+adding 'mtplx/chat_encoding.py'
+adding 'mtplx/cli.py'
+adding 'mtplx/compile_state.py'
+adding 'mtplx/compiled_forward.py'
+adding 'mtplx/compressed_tensors.py'
+adding 'mtplx/config.py'
+adding 'mtplx/constants.py'
+adding 'mtplx/constrained.py'
+adding 'mtplx/context_copy.py'
+adding 'mtplx/daemon_client.py'
+adding 'mtplx/deepseek_mtp_patch.py'
+adding 'mtplx/deepseek_v4_adaptive_width.py'
+adding 'mtplx/deepseek_v4_attention_island.py'
+adding 'mtplx/deepseek_v4_attn_proj_wide_m3.py'
+adding 'mtplx/default_models.py'
+adding 'mtplx/diagnostics.py'
+adding 'mtplx/draft_lm_head.py'
+adding 'mtplx/draft_sampling.py'
+adding 'mtplx/engine_session.py'
+adding 'mtplx/env.py'
+adding 'mtplx/errors.py'
+adding 'mtplx/expert_layout.py'
+adding 'mtplx/fan_mode.py'
+adding 'mtplx/fast_sampling.py'
+adding 'mtplx/gdn_capture.py'
+adding 'mtplx/gemma4_pair.py'
+adding 'mtplx/generation.py'
+adding 'mtplx/glm_mtp_patch.py'
+adding 'mtplx/graphbank.py'
+adding 'mtplx/hardware.py'
+adding 'mtplx/hf_loader.py'
+adding 'mtplx/hy_v3_mtp_patch.py'
+adding 'mtplx/kernel_selfcheck.py'
+adding 'mtplx/kv_quant.py'
+adding 'mtplx/laguna_alt_step.py'
+adding 'mtplx/laguna_compiled_step.py'
+adding 'mtplx/lfm2_fast.py'
+adding 'mtplx/loop_guard.py'
+adding 'mtplx/metadata_scrub.py'
+adding 'mtplx/mimo_mtp_patch.py'
+adding 'mtplx/model_catalog.py'
+adding 'mtplx/model_scheduler.py'
+adding 'mtplx/model_updates.py'
+adding 'mtplx/moe_packed_projections.py'
+adding 'mtplx/mtp_activation_stats.py'
+adding 'mtplx/mtp_adapters.py'
+adding 'mtplx/mtp_batch_numerics.py'
+adding 'mtplx/mtp_patch.py'
+adding 'mtplx/native_mlp.py'
+adding 'mtplx/nax_verify.py'
+adding 'mtplx/nemotron_h_mtp_patch.py'
+adding 'mtplx/opencode.py'
+adding 'mtplx/optimization_profiles.py'
+adding 'mtplx/packed_concats.py'
+adding 'mtplx/pi.py'
+adding 'mtplx/prefill_bench.py'
+adding 'mtplx/prefill_rungs.py'
+adding 'mtplx/profiles.py'
+adding 'mtplx/progress_heartbeat.py'
+adding 'mtplx/proj_fusion.py'
+adding 'mtplx/proj_quant.py'
+adding 'mtplx/proposal_reranker.py'
+adding 'mtplx/qwen3_5_mtp_patch.py'
+adding 'mtplx/qwen_row_owned_router.py'
+adding 'mtplx/ragged_attention.py'
+adding 'mtplx/ragged_kv_cache.py'
+adding 'mtplx/reasoning_codecs.py'
+adding 'mtplx/reasoning_effort.py'
+adding 'mtplx/request_capture.py'
+adding 'mtplx/retrieval.py'
+adding 'mtplx/roofline_profile.py'
+adding 'mtplx/runtime.py'
+adding 'mtplx/runtime_options.py'
+adding 'mtplx/sampling.py'
+adding 'mtplx/server_urls.py'
+adding 'mtplx/session_bank.py'
+adding 'mtplx/speculative.py'
+adding 'mtplx/step3p5_mtp_patch.py'
+adding 'mtplx/swival.py'
+adding 'mtplx/thermal.py'
+adding 'mtplx/thermal_sidecar.py'
+adding 'mtplx/thinking_guard.py'
+adding 'mtplx/trace_parity.py'
+adding 'mtplx/turboquant.py'
+adding 'mtplx/vendored_arrays_cache.py'
+adding 'mtplx/vendored_hy_v3.py'
+adding 'mtplx/verify_crossrow.py'
+adding 'mtplx/verify_kernels.py'
+adding 'mtplx/verify_qmv.py'
+adding 'mtplx/version.py'
+adding 'mtplx/vision_graft.py'
+adding 'mtplx/backends/__init__.py'
+adding 'mtplx/backends/deepseek_mtp.py'
+adding 'mtplx/backends/deepseek_v4_mlxserve.py'
+adding 'mtplx/backends/descriptors.py'
+adding 'mtplx/backends/gemma4_assistant.py'
+adding 'mtplx/backends/glm_mtp.py'
+adding 'mtplx/backends/hy_v3_mtp.py'
+adding 'mtplx/backends/mimo_mtp.py'
+adding 'mtplx/backends/nemotron_h_mtp.py'
+adding 'mtplx/backends/qwen3_next.py'
+adding 'mtplx/backends/registry.py'
+adding 'mtplx/backends/step3p5_mtp.py'
+adding 'mtplx/batching/__init__.py'
+adding 'mtplx/batching/admission.py'
+adding 'mtplx/batching/buckets.py'
+adding 'mtplx/batching/scheduler.py'
+adding 'mtplx/batching/state.py'
+adding 'mtplx/benchmarks/__init__.py'
+adding 'mtplx/benchmarks/code_eval.py'
+adding 'mtplx/benchmarks/programming_prompts.py'
+adding 'mtplx/benchmarks/schema.py'
+adding 'mtplx/benchmarks/prompts/aime_2026.jsonl'
+adding 'mtplx/benchmarks/prompts/calibration_coding.jsonl'
+adding 'mtplx/benchmarks/prompts/default.jsonl'
+adding 'mtplx/benchmarks/prompts/flappy.jsonl'
+adding 'mtplx/benchmarks/prompts/long_code.jsonl'
+adding 'mtplx/benchmarks/prompts/long_code_uncapped.jsonl'
+adding 'mtplx/benchmarks/prompts/python_modules_long.jsonl'
+adding 'mtplx/benchmarks/runners/__init__.py'
+adding 'mtplx/benchmarks/runners/aime.py'
+adding 'mtplx/benchmarks/runners/batch_equivalence.py'
+adding 'mtplx/benchmarks/runners/capture_commit_equivalence.py'
+adding 'mtplx/benchmarks/runners/competitor_baselines.py'
+adding 'mtplx/benchmarks/runners/contract_probe.py'
+adding 'mtplx/benchmarks/runners/harness.py'
+adding 'mtplx/benchmarks/runners/mtp1_gate.py'
+adding 'mtplx/benchmarks/runners/mtp1_sampler_smoke.py'
+adding 'mtplx/benchmarks/runners/mtp_adaptive.py'
+adding 'mtplx/benchmarks/runners/mtp_chain_probe.py'
+adding 'mtplx/benchmarks/runners/mtp_depth_grid.py'
+adding 'mtplx/benchmarks/runners/mtp_depth_sweep.py'
+adding 'mtplx/benchmarks/runners/mtp_tree_probe.py'
+adding 'mtplx/benchmarks/runners/multi_qmv_probe.py'
+adding 'mtplx/benchmarks/runners/preflight.py'
+adding 'mtplx/benchmarks/runners/runtime_smoke.py'
+adding 'mtplx/benchmarks/runners/session_bank.py'
+adding 'mtplx/benchmarks/runners/truth.py'
+adding 'mtplx/benchmarks/runners/verify_profile.py'
+adding 'mtplx/benchmarks/runners/verify_qmm_probe.py'
+adding 'mtplx/benchmarks/runners/verify_ratio.py'
+adding 'mtplx/benchmarks/validators/__init__.py'
+adding 'mtplx/benchmarks/validators/aime.py'
+adding 'mtplx/benchmarks/validators/basic.py'
+adding 'mtplx/cache_bank/__init__.py'
+adding 'mtplx/cache_bank/codec.py'
+adding 'mtplx/cache_bank/cold_tier.py'
+adding 'mtplx/commands/__init__.py'
+adding 'mtplx/commands/forge.py'
+adding 'mtplx/commands/forge_mixed_convert.py'
+adding 'mtplx/commands/public.py'
+adding 'mtplx/commands/trace.py'
+adding 'mtplx/commands/trace_report.py'
+adding 'mtplx/correctors/__init__.py'
+adding 'mtplx/correctors/diagonal_affine.py'
+adding 'mtplx/correctors/low_rank.py'
+adding 'mtplx/dashboard/__init__.py'
+adding 'mtplx/dashboard/_static/index.html'
+adding 'mtplx/dashboard/_static/assets/index-CMiJLDy7.js'
+adding 'mtplx/dashboard/_static/assets/index-DYvLRZ33.css'
+adding 'mtplx/kernels/__init__.py'
+adding 'mtplx/kernels/a3b_whole_moe.py'
+adding 'mtplx/kernels/copy_leaf.py'
+adding 'mtplx/kernels/fused_norm.py'
+adding 'mtplx/kernels/gdn_blocked_prefill.py'
+adding 'mtplx/kernels/gdn_tape_headquarter.py'
+adding 'mtplx/kernels/laguna_decode.py'
+adding 'mtplx/kernels/laguna_dense_mlp.py'
+adding 'mtplx/kernels/laguna_gated_oproj.py'
+adding 'mtplx/kernels/laguna_moe_combine.py'
+adding 'mtplx/kernels/laguna_moe_gather_gemm.py'
+adding 'mtplx/kernels/laguna_moe_merged.py'
+adding 'mtplx/kernels/laguna_moe_shared.py'
+adding 'mtplx/kernels/laguna_moe_swiglu.py'
+adding 'mtplx/kernels/laguna_prefill_moe_combine.py'
+adding 'mtplx/kernels/laguna_prefill_qk_rope.py'
+adding 'mtplx/kernels/laguna_prefill_router.py'
+adding 'mtplx/kernels/laguna_qk_rope_sliding.py'
+adding 'mtplx/kernels/laguna_qk_yarn_full.py'
+adding 'mtplx/kernels/laguna_qkvg_fused.py'
+adding 'mtplx/kernels/laguna_residual_router.py'
+adding 'mtplx/kernels/laguna_route_csort.py'
+adding 'mtplx/kernels/laguna_router_topk.py'
+adding 'mtplx/kernels/laguna_sdpa_2pass.py'
+adding 'mtplx/kernels/laguna_sdpa_pair.py'
+adding 'mtplx/kernels/laguna_steel_attn.py'
+adding 'mtplx/kernels/lm_head_topk.py'
+adding 'mtplx/kernels/logits_topk.py'
+adding 'mtplx/kernels/native_gdn_tail.py'
+adding 'mtplx/kernels/sdpa_2pass.py'
+adding 'mtplx/kernels/sdpa_2pass_paged.py'
+adding 'mtplx/kernels/sdpa_2pass_paged_q8.py'
+adding 'mtplx/kernels/sdpa_gqa_packed.py'
+adding 'mtplx/kernels/verify_mlp_fused.py'
+adding 'mtplx/kpi/__init__.py'
+adding 'mtplx/kpi/reference_vllm.py'
+adding 'mtplx/kpi/runtime_kpis.py'
+adding 'mtplx/models/__init__.py'
+adding 'mtplx/models/deepseek_v4.py'
+adding 'mtplx/models/deepseek_v4_target_only_config.py'
+adding 'mtplx/models/laguna.py'
+adding 'mtplx/models/laguna_config.py'
+adding 'mtplx/models/laguna_fused.py'
+adding 'mtplx/server/__init__.py'
+adding 'mtplx/server/dashboard_state.py'
+adding 'mtplx/server/flight_recorder.py'
+adding 'mtplx/server/mtp_batch.py'
+adding 'mtplx/server/openai.py'
+adding 'mtplx/server/request_policy.py'
+adding 'mtplx/server/response_envelope.py'
+adding 'mtplx/server/omlx_bridge/__init__.py'
+adding 'mtplx/server/omlx_bridge/adapter.py'
+adding 'mtplx/server/omlx_bridge/thinking.py'
+adding 'mtplx/server/omlx_bridge/tool_calling.py'
+adding 'mtplx/templates/qwen36_froggeric_v19/chat_template.jinja'
+adding 'mtplx/templates/qwen36_froggeric_v21_3/chat_template.jinja'
+adding 'mtplx/ui/__init__.py'
+adding 'mtplx/ui/banner.py'
+adding 'mtplx/ui/chat_printer.py'
+adding 'mtplx/ui/download_progress.py'
+adding 'mtplx/ui/onboarding.py'
+adding 'mtplx/ui/panels.py'
+adding 'mtplx/ui/progress.py'
+adding 'mtplx/vision/__init__.py'
+adding 'mtplx/vision/processing.py'
+adding 'mtplx/vision/qwen3_vl_tower.py'
+adding 'mtplx/vision/splice.py'
+adding 'mtplx-2.9.2.dist-info/licenses/LICENSE'
+adding 'mtplx-2.9.2.dist-info/licenses/NOTICE'
+adding 'vllm_metal/__init__.py'
+adding 'vllm_metal/metal/README.md'
+adding 'vllm_metal/metal/__init__.py'
+adding 'vllm_metal/metal/build.py'
+adding 'vllm_metal/metal/constants.py'
+adding 'vllm_metal/metal/paged_ops.cpp'
+adding 'vllm_metal/metal/kernels_v1/copy_blocks.metal'
+adding 'vllm_metal/metal/kernels_v1/float8.metal'
+adding 'vllm_metal/metal/kernels_v1/gather_kv_cache.metal'
+adding 'vllm_metal/metal/kernels_v1/kv_scale_update.metal'
+adding 'vllm_metal/metal/kernels_v1/pagedattention.metal'
+adding 'vllm_metal/metal/kernels_v1/reshape_and_cache.metal'
+adding 'vllm_metal/metal/kernels_v1/utils.metal'
+adding 'vllm_metal/metal/kernels_v2/copy_blocks.metal'
+adding 'vllm_metal/metal/kernels_v2/float8.metal'
+adding 'vllm_metal/metal/kernels_v2/gather_kv_cache.metal'
+adding 'vllm_metal/metal/kernels_v2/gdn_linear_attention.metal'
+adding 'vllm_metal/metal/kernels_v2/kv_scale_update.metal'
+adding 'vllm_metal/metal/kernels_v2/pagedattention.metal'
+adding 'vllm_metal/metal/kernels_v2/reshape_and_cache.metal'
+adding 'vllm_metal/metal/kernels_v2/turboquant.metal'
+adding 'vllm_metal/metal/kernels_v2/utils.metal'
+adding 'mtplx-2.9.2.dist-info/METADATA'
+adding 'mtplx-2.9.2.dist-info/WHEEL'
+adding 'mtplx-2.9.2.dist-info/entry_points.txt'
+adding 'mtplx-2.9.2.dist-info/top_level.txt'
+adding 'mtplx-2.9.2.dist-info/RECORD'
+removing build/bdist.macosx-10.15-universal2/wheel
+Successfully built mtplx-2.9.2.tar.gz and mtplx-2.9.2-py3-none-any.whl
+Preparing worktree (detached HEAD 623e309)
+HEAD is now at 623e309 feat: add DeepSeek V4 target-only mlx-serve backend
+current-main onboarding Swift blocker anchor changed in candidate
