@@ -7746,7 +7746,7 @@ def test_bare_serve_invokes_server_onboarding_in_tty(monkeypatch):
     monkeypatch.setattr(
         public,
         "_resolve_runtime_model_path",
-        lambda model, cache_dir=None: (model, None),
+        lambda model, cache_dir=None, search_dirs=None: (model, None),
     )
     monkeypatch.setattr(
         public,
@@ -7779,7 +7779,8 @@ def test_bare_serve_invokes_server_onboarding_in_tty(monkeypatch):
     args = SimpleNamespace(
         command="serve",
         model="models/configured",
-        cache_dir=None,
+        cache_dir="/models/cache",
+        model_search_dirs=["/models/archive", "/models/shared"],
         download=False,
         profile="stable",
         unsafe_force_unverified=False,
@@ -7810,6 +7811,8 @@ def test_bare_serve_invokes_server_onboarding_in_tty(monkeypatch):
 
     assert len(invocations) == 1
     assert invocations[0]["configured_model"] == "models/configured"
+    assert invocations[0]["cache_dir"] == "/models/cache"
+    assert invocations[0]["search_dirs"] == ["/models/archive", "/models/shared"]
     assert invocations[0]["port"] == 8765
     assert args._onboarded is True
     assert args.model == "models/onboarded"

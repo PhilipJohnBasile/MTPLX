@@ -9253,6 +9253,8 @@ def cmd_serve_public(args: Any) -> int:
 
         choice = run_serve_flow(
             configured_model=getattr(args, "model", None),
+            cache_dir=getattr(args, "cache_dir", None),
+            search_dirs=getattr(args, "model_search_dirs", None),
             host=str(getattr(args, "host", "127.0.0.1")),
             port=int(getattr(args, "port", 8000)),
             default_open_browser=bool(getattr(args, "open_browser", False)),
@@ -13911,6 +13913,8 @@ def cmd_quickstart_public(args: Any) -> int:
         choice = run_quickstart_flow(
             fresh=fresh,
             configured_model=configured_model,
+            cache_dir=getattr(args, "cache_dir", None),
+            search_dirs=getattr(args, "model_search_dirs", None),
             open_dashboard_override=explicit_open_dashboard,
             host=str(getattr(args, "host", "127.0.0.1")),
             port=int(getattr(args, "port", 8000)),
