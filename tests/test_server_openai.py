@@ -890,12 +890,22 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
         verify_strategy="capture_commit",
         model=str(tmp_path),
     )
-    for key in (*_QWEN4_EXP_FAMILY_ENV_DEFAULTS, "MTPLX_NAX_VERIFY"):
+    for key in (
+        *_QWEN4_EXP_FAMILY_ENV_DEFAULTS,
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+        "MTPLX_NAX_VERIFY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
     overrides = openai._server_runtime_env_overrides(args, {})
     for key in _QWEN4_EXP_FAMILY_ENV_DEFAULTS:
         assert overrides.get(key) == "1", key
+    # PR #391 step 1 (davidtai) is ported dark: without its opt-in gate the
+    # family keeps turbo's lazy target-distribution defaults untouched.
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in overrides
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in overrides
     assert overrides.get("MTPLX_NAX_VERIFY") == "0"
 
     # Every emitted key must survive the boot-time validator — the 08-27
@@ -905,22 +915,45 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
 
     assert normalize_runtime_env_overrides(overrides) == overrides
 
+    # The opt-in gate pins the batched pair, from an operator export ...
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "1")
+    batched = openai._server_runtime_env_overrides(args, {})
+    assert batched.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert batched.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert normalize_runtime_env_overrides(batched) == batched
+    # ... or from the pack contract's runtime_env_overrides.
+    monkeypatch.delenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", raising=False)
+    from_pack = openai._server_runtime_env_overrides(
+        args, {"MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS": "1"}
+    )
+    assert from_pack.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert from_pack.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert normalize_runtime_env_overrides(from_pack) == from_pack
+
     # Operator env beats every family default (the launch-time export lane).
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "1")
     monkeypatch.setenv("MTPLX_FUSED_GDN_STEP", "0")
+    monkeypatch.setenv("MTPLX_BATCH_TARGET_ARRAYS", "0")
+    monkeypatch.setenv("MTPLX_LAZY_TARGET_DISTRIBUTIONS", "1")
     monkeypatch.setenv("MTPLX_NAX_VERIFY", "1")
     monkeypatch.setenv("MTPLX_QSA_GATHER", "0")
     pinned = openai._server_runtime_env_overrides(args, {})
     assert "MTPLX_FUSED_GDN_STEP" not in pinned
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in pinned
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in pinned
     assert "MTPLX_NAX_VERIFY" not in pinned
     assert "MTPLX_QSA_GATHER" not in pinned
 
-    # Non-family models get neither the octet nor the neutralize.
+    # Non-family models get neither the octet nor the neutralize, and the
+    # opt-in gate (still exported here) pins nothing outside the family.
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "config.json").write_text(
         json.dumps({"model_type": "qwen3_next"}), encoding="utf-8"
     )
     monkeypatch.delenv("MTPLX_FUSED_GDN_STEP", raising=False)
+    monkeypatch.delenv("MTPLX_BATCH_TARGET_ARRAYS", raising=False)
+    monkeypatch.delenv("MTPLX_LAZY_TARGET_DISTRIBUTIONS", raising=False)
     monkeypatch.delenv("MTPLX_NAX_VERIFY", raising=False)
     other = openai._server_runtime_env_overrides(
         SimpleNamespace(
@@ -930,7 +963,12 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
         ),
         {},
     )
-    for key in (*_QWEN4_EXP_FAMILY_ENV_DEFAULTS, "MTPLX_NAX_VERIFY"):
+    for key in (
+        *_QWEN4_EXP_FAMILY_ENV_DEFAULTS,
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "MTPLX_NAX_VERIFY",
+    ):
         assert key not in other, key
 
 

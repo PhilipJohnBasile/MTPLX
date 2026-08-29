@@ -374,6 +374,11 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_COMPILED_VERIFY",
         "MTPLX_COMPILED_VERIFY_MAX_LEN",
         "MTPLX_COMPILED_TARGET_PREFIX",
+        # PR #391 Flash-Next ports (davidtai), every one dark by default: each
+        # key is the opt-in gate for one ported step, registered so operator
+        # A/B launches and pack contracts pass the boot-time runtime-env
+        # validator (the MTPLX_FUSED_GDN_STEP boot-trap lesson).
+        "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
         "MTPLX_FUSE_GDN_POST_CONV",
         "MTPLX_A3B_GDN_POSTCONV_IMPL",
         "MTPLX_LINEAR_GDN_FROM_CONV_TGY",

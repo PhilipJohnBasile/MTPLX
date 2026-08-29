@@ -841,6 +841,24 @@ def _server_runtime_env_overrides(
             for key in ("MTPLX_COMPILED_GDN", "MTPLX_QWEN4EXP_COMPILE"):
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
+        if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS"):
+            # Fixed-M4 target distributions (PR #391 step 1 by davidtai, his
+            # 2026-08-29 production A/B/A/B): batch all four temperature-1 /
+            # top-k-20 rows at one materialization boundary instead of
+            # synchronizing one row at a time during accept. Lazy mean 53.46
+            # tok/s; batched mean 53.89 tok/s (+0.81%), same output digest,
+            # 578/1,282 acceptance, 432 verifier calls, zero repair. Ported
+            # dark: the pair is pinned only when the operator export (or the
+            # pack contract) sets MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS=1,
+            # so turbo's generic lazy defaults stay the family default until
+            # the arm earns a receipt on main. Explicit operator exports of
+            # either key and model-pack overrides still win.
+            for key, value in (
+                ("MTPLX_BATCH_TARGET_ARRAYS", "1"),
+                ("MTPLX_LAZY_TARGET_DISTRIBUTIONS", "0"),
+            ):
+                if os.environ.get(key) is None:
+                    overrides.setdefault(key, value)
         if os.environ.get("MTPLX_NAX_VERIFY") is None:
             # The turbo profile arms the 27B NAX verify patch
             # (MTPLX_NAX_VERIFY=1); on this family it is unmeasured and
@@ -864,6 +882,22 @@ def _served_model_type_is_qwen4_exp(args: argparse.Namespace) -> bool:
     mt = str(cfg.get("model_type") or "").lower()
     tmt = str((cfg.get("text_config") or {}).get("model_type") or "").lower()
     return "qwen4_exp" in (mt, tmt) or "qwen4_exp_text" in (mt, tmt)
+
+
+_QWEN4_PORT_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _qwen4_port_opt_in(overrides: Mapping[str, str], key: str) -> bool:
+    """Opt-in gate for the PR #391 Flash-Next ports (dark by default).
+
+    An explicit operator export wins; otherwise the pack contract's
+    runtime_env_overrides may stamp the key. Unset means the port stays off
+    and the family keeps main's shipped defaults.
+    """
+    raw = os.environ.get(key)
+    if raw is None:
+        raw = overrides.get(key)
+    return raw is not None and str(raw).strip().lower() in _QWEN4_PORT_TRUTHY
 
 
 def _assert_fast_path_env() -> dict[str, dict[str, Any]]:
