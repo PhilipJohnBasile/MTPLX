@@ -12023,12 +12023,14 @@ def _quickstart_pi_payload(
     pi_preserve_thinking = _preserve_thinking_policy(args)
     context_window = _inspection_context_window(inspection, args=args)
     api_key_command_suffix = _api_key_command_suffix(args) or "--api-key mtplx-local "
+    vision_enabled = _model_vision_enabled(str(getattr(args, "model", "")))
     provider = build_pi_provider_config(
         base_url=base_url,
         model_id=model_id,
         model_name=f"MTPLX {model_id}",
         api_key=api_key,
         context_window=context_window,
+        vision=vision_enabled,
     )
     payload = {
         "integration": "pi",
@@ -12079,8 +12081,27 @@ def _quickstart_pi_payload(
             model_name=f"MTPLX {model_id}",
             api_key=api_key,
             context_window=context_window,
+            vision=vision_enabled,
         )
     return payload
+
+
+def _model_vision_enabled(model_ref: str) -> bool:
+    """True when the resolved model dir carries a servable vision tower.
+
+    Uses the same spec probe as the server's /health vision block so the Pi
+    ``input`` capability can never disagree with what serve would report.
+    Unresolvable refs answer False (text-only is the safe advertisement).
+    """
+    if not model_ref:
+        return False
+    try:
+        from mtplx.hf_loader import resolve_model_path
+        from mtplx.vision import vision_spec_for_model_dir
+
+        return vision_spec_for_model_dir(str(resolve_model_path(model_ref))) is not None
+    except Exception:
+        return False
 
 
 def _inspection_context_window(

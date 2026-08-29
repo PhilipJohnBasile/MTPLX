@@ -202,6 +202,7 @@ def build_pi_provider_config(
     api_key: str = PI_LOCAL_API_KEY,
     context_window: int = PI_DEFAULT_CONTEXT_WINDOW,
     max_tokens: int | None = PI_DEFAULT_MAX_TOKENS,
+    vision: bool = False,
 ) -> dict[str, Any]:
     """Build the Pi provider block MTPLX needs.
 
@@ -226,7 +227,11 @@ def build_pi_provider_config(
             "minimal": None,
             "xhigh": "xhigh",
         },
-        "input": ["text"],
+        # Engine capability, not a preference: Pi only offers/sends image
+        # parts when this lists "image". A hardcoded ["text"] here kept Pi
+        # text-only even for vision-enabled packs (issue #328) while the same
+        # model served images fine through the built-in chat.
+        "input": ["text", "image"] if vision else ["text"],
         "contextWindow": int(context_window),
         "cost": {
             "input": 0,
@@ -300,8 +305,11 @@ def merge_pi_provider_config(
     between launches and the integration must keep working. Every other key
     the user edited wins: our values only fill missing keys, recursively.
     Model entries merge by ``id`` the same way, and user-added models or
-    fields (``input: ["text", "image"]``, custom ``thinkingLevelMap``,
-    explicit ``maxTokens``) survive a sync untouched.
+    fields (custom ``thinkingLevelMap``, explicit ``maxTokens``) survive a
+    sync untouched. ``input`` is the exception: like ``compat`` it states
+    what the ENGINE supports (text vs text+image), so the fresh value always
+    wins — a stale ``["text"]`` written by a pre-vision MTPLX must not
+    outlive the engine that wrote it (issue #328).
     """
 
     if not isinstance(existing_provider, dict):
@@ -363,7 +371,11 @@ def merge_pi_provider_config(
         fresh_id = str(fresh_model.get("id"))
         for index, entry in enumerate(result_models):
             if isinstance(entry, dict) and str(entry.get("id")) == fresh_id:
-                result_models[index] = _fill_missing_deep(entry, fresh_model)
+                merged_model = _fill_missing_deep(entry, fresh_model)
+                # ``input`` is engine capability (see docstring): fresh wins.
+                if "input" in fresh_model:
+                    merged_model["input"] = fresh_model["input"]
+                result_models[index] = merged_model
                 break
         else:
             result_models.append(fresh_model)
@@ -408,6 +420,7 @@ def write_pi_models_config(
     provider_id: str = PI_PROVIDER_ID,
     context_window: int = PI_DEFAULT_CONTEXT_WINDOW,
     max_tokens: int | None = PI_DEFAULT_MAX_TOKENS,
+    vision: bool = False,
 ) -> dict[str, Any]:
     """Write the MTPLX provider into Pi's config and return a handoff payload."""
 
@@ -429,6 +442,7 @@ def write_pi_models_config(
         api_key=api_key,
         context_window=context_window,
         max_tokens=max_tokens,
+        vision=vision,
     )
     merged = merge_pi_models_config(
         existing,
