@@ -47,6 +47,35 @@ def current_model_forward_kind() -> str:
     return normalize_model_forward_kind(_MODEL_FORWARD_KIND.get())
 
 
+_EXACT_VERIFY_REQUIRED: ContextVar[bool] = ContextVar(
+    "mtplx_exact_verify_required",
+    default=False,
+)
+
+
+def exact_verify_required() -> bool:
+    """True while the current forward must use stock (bit-exact) matmuls.
+
+    The greedy exactness contract: at temperature <= 0 the product promise is
+    MTP output == AR output token-for-token. The vk/nax verify kernels are
+    argmax- and distribution-validated but NOT bit-exact vs stock (~6e-3
+    dmax, lane-strided fp32 accumulation), and AR decode runs M=1 stock — so
+    a near-tie logit row can flip argmax between the two paths. While this
+    flag is set, the QuantizedLinear verify patch falls through to stock so
+    both paths share one numeric frame.
+    """
+    return bool(_EXACT_VERIFY_REQUIRED.get())
+
+
+@contextmanager
+def exact_verify(required: bool) -> Iterator[None]:
+    token = _EXACT_VERIFY_REQUIRED.set(bool(required))
+    try:
+        yield
+    finally:
+        _EXACT_VERIFY_REQUIRED.reset(token)
+
+
 @contextmanager
 def attention_phase(phase: str | None) -> Iterator[None]:
     token = _ATTENTION_PHASE.set(normalize_attention_phase(phase))

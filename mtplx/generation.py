@@ -33,7 +33,7 @@ from .a3b_compiled_target_prefix import (
 from .a3b_whole_moe import validate_a3b_whole_moe_request
 from .adaptive import AdaptiveDepthPolicy, ExpectedValueDepthPolicy
 from .adaptive_dtemp import build_adaptive_dtemp_controller
-from .attention_context import attention_phase, model_forward_kind
+from .attention_context import attention_phase, exact_verify, model_forward_kind
 from .deepseek_v4_adaptive_width import (
     validate_installed_deepseek_v4_adaptive_width_policy,
 )
@@ -10592,6 +10592,11 @@ def generate_mtpk(
         with (
             attention_phase("decode_verify"),
             model_forward_kind("target_verify"),
+            # Greedy exactness contract: at t<=0 the verify forward must use
+            # stock matmuls so MTP argmax matches AR argmax at near-ties (the
+            # vk/nax lanes are ~6e-3 off stock, flip band ~1.6e-2 measured
+            # 2026-08-29). Sampled requests keep the fast kernels.
+            exact_verify(sampler.temperature <= 0),
             family_capture_scope,
         ):
             if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:

@@ -2387,6 +2387,8 @@ class CompiledVerifyBank:
         if not _env_enabled("MTPLX_COMPILED_VERIFY_SHARED_TRACES", default=True):
             return mx.compile(self._make_verify_step(length, hidden_variant))
         spec_sig = tuple(self._spec or [])
+        from .attention_context import exact_verify_required
+
         global_key = (
             id(self.runtime),
             self.capture_backend,
@@ -2394,6 +2396,12 @@ class CompiledVerifyBank:
             int(length),
             str(hidden_variant or ""),
             int(key[2]),
+            # Kernel-route dimension: a trace compiled under the sampled
+            # (vk/nax) verify route bakes those kernels into the graph; a
+            # greedy (t<=0, stock-route) request must never replay it, and
+            # vice versa. Without this key a t=0.6 request's shared trace
+            # would silently serve a t=0 request with non-exact kernels.
+            bool(exact_verify_required()),
         )
         entry = _SHARED_VERIFY_STEPS.get(global_key)
         if entry is not None:
