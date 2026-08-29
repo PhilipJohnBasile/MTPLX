@@ -3566,6 +3566,52 @@ def _ngram_resident_policy() -> bool:
     return ngram_table_resident_policy()
 
 
+def _ngram_rows_np(
+    ids_np,
+    prev_np,
+    *,
+    mult,
+    sizes,
+    offs,
+    eos: int,
+    ngram_size: int,
+    heads_per_ngram: int,
+):
+    """Exact host row arithmetic shared by staged and fixed-M4 paths."""
+    import numpy as np
+
+    hist = np.concatenate([prev_np, ids_np], axis=1)
+
+    def shift(h, s):
+        if s == 0:
+            return h
+        b, ln = h.shape
+        pos = np.arange(ln, dtype=np.int64)[None, :]
+        eos_pos = np.where(h == eos, pos, np.int64(-1))
+        prev_incl = np.maximum.accumulate(eos_pos, axis=1)
+        prev = np.concatenate(
+            [np.full((b, 1), -1, dtype=np.int64), prev_incl[:, :-1]], axis=1
+        )
+        pos_in_seg = pos - (prev + 1)
+        src = np.maximum(pos - s, 0)
+        shifted = np.take_along_axis(h, src, axis=1)
+        valid = (pos_in_seg >= s) & (pos - s >= 0)
+        return np.where(valid, shifted, np.int64(eos))
+
+    shifted = [shift(hist, s) for s in range(ngram_size)]
+    blocks = []
+    for ngram in range(2, ngram_size + 1):
+        start = (ngram - 2) * heads_per_ngram
+        end = start + heads_per_ngram
+        mixed = shifted[0] * mult[0]
+        for p in range(1, ngram):
+            mixed = mixed ^ (shifted[p] * mult[p])
+        blocks.append(mixed[..., None] % sizes[start:end] + offs[start:end])
+    S = ids_np.shape[1]
+    rows = np.concatenate(blocks, axis=-1)[:, -S:]
+    return rows, hist[:, -(ngram_size - 1) :]
+
+
 class NGramEmbedding(nn.Module):
     def __init__(self, args: TextArgs, ple_index: int):
         super().__init__()
@@ -3634,39 +3680,17 @@ class NGramEmbedding(nn.Module):
         return c
 
     def _rows_np(self, ids_np, prev_np):
-        import numpy as np
-
-        mult, sizes, offs, eos = *self._np_consts(), self.eos_id
-        hist = np.concatenate([prev_np, ids_np], axis=1)
-
-        def shift(h, s):
-            if s == 0:
-                return h
-            b, ln = h.shape
-            pos = np.arange(ln, dtype=np.int64)[None, :]
-            eos_pos = np.where(h == eos, pos, np.int64(-1))
-            prev_incl = np.maximum.accumulate(eos_pos, axis=1)
-            prev = np.concatenate(
-                [np.full((b, 1), -1, dtype=np.int64), prev_incl[:, :-1]], axis=1
-            )
-            pos_in_seg = pos - (prev + 1)
-            src = np.maximum(pos - s, 0)
-            shifted = np.take_along_axis(h, src, axis=1)
-            valid = (pos_in_seg >= s) & (pos - s >= 0)
-            return np.where(valid, shifted, np.int64(eos))
-
-        shifted = [shift(hist, s) for s in range(self.ngram_size)]
-        blocks = []
-        for ngram in range(2, self.ngram_size + 1):
-            start = (ngram - 2) * self.heads_per_ngram
-            end = start + self.heads_per_ngram
-            mixed = shifted[0] * mult[0]
-            for p in range(1, ngram):
-                mixed = mixed ^ (shifted[p] * mult[p])
-            blocks.append(mixed[..., None] % sizes[start:end] + offs[start:end])
-        S = ids_np.shape[1]
-        rows = np.concatenate(blocks, axis=-1)[:, -S:]
-        return rows, hist[:, -self.context_len :]
+        mult, sizes, offs = self._np_consts()
+        return _ngram_rows_np(
+            ids_np,
+            prev_np,
+            mult=mult,
+            sizes=sizes,
+            offs=offs,
+            eos=self.eos_id,
+            ngram_size=self.ngram_size,
+            heads_per_ngram=self.heads_per_ngram,
+        )
 
     def stage(self, input_ids: mx.array, cache: Optional[ArraysCache], state_idx: int):
         """Precompute this step's rows before any graph is built."""

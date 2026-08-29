@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from types import MethodType
 from typing import Any
 
 import mlx.core as mx
+import numpy as np
 
 from .models.qwen4_exp import (
+    _ngram_rows_np,
     compiled_verify_ple_scope,
     verify_capture_scope,
 )
@@ -106,6 +109,102 @@ def _prepare_compiled_verify_aux(self: Any, input_ids, cache) -> mx.array:
     return embedding
 
 
+class _FixedM4SidecarAux:
+    """Construction-bound host row gather for the physical-M4 verifier."""
+
+    __slots__ = ("_entry", "_gather", "_ngram_idx", "_output_dim", "_rows")
+
+    def __init__(self, *, entry, ngram_idx, rows, gather, output_dim):
+        self._entry = entry
+        self._ngram_idx = ngram_idx
+        self._rows = rows
+        self._gather = gather
+        self._output_dim = output_dim
+
+    def __call__(self, input_ids) -> mx.array:
+        ids_np = np.asarray(input_ids, dtype=np.int64)
+        prev_np = np.asarray(self._entry[self._ngram_idx], dtype=np.int64)
+        rows, _new_history = self._rows(ids_np, prev_np)
+        return self._gather(rows.reshape(-1)).reshape(1, 4, self._output_dim)
+
+
+def _build_fixed_m4_compiled_verify_aux(self: Any, cache):
+    """Validate and bind the production sidecar gather once after prefill."""
+
+    inner = _inner(self)
+    layer_index = int(inner._ple_stage_idx)
+    ple = inner.layers[layer_index].ple
+    embedding = ple.ple_embedding
+    sidecar = embedding.ngram_embedding._sidecar
+    entry = cache[layer_index]
+    previous = entry[ple.NGRAM_IDX]
+    observed = (
+        int(embedding.context_len),
+        int(embedding.ngram_size),
+        int(embedding.heads_per_ngram),
+        tuple(previous.shape),
+        previous.dtype,
+        int(inner.args.ple_embed_dim),
+    )
+    production = int(inner.args.hidden_size) == 2560
+    exact = observed == (2, 3, 8, (1, 2), mx.int64, 2560)
+    internally_consistent = (
+        observed[0:2] == (2, 3)
+        and observed[2] > 0
+        and observed[3] == (1, 2)
+        and observed[4] == mx.int64
+        and observed[5] == int(inner.args.hidden_size)
+    )
+    if sidecar is None or (not exact if production else not internally_consistent):
+        raise ValueError(
+            f"qwen4 fixed-M4 sidecar auxiliary geometry mismatch: {observed}"
+        )
+    mult, sizes, offs = embedding._np_consts()
+    const_shapes = tuple(tuple(value.shape) for value in (mult, sizes, offs))
+    if const_shapes != ((3,), (2 * observed[2],), (2 * observed[2],)):
+        raise ValueError(
+            f"qwen4 fixed-M4 sidecar auxiliary constants mismatch: {const_shapes}"
+        )
+    if production:
+        storage = (
+            int(sidecar.bits),
+            int(sidecar.group_size),
+            tuple(
+                (name, tuple(sidecar._maps[name][0].shape[1:]), sidecar._maps[name][1])
+                for name in ("weight", "scales", "biases")
+            ),
+        )
+        expected_storage = (
+            4,
+            32,
+            (
+                ("weight", (20,), "U32"),
+                ("scales", (5,), "BF16"),
+                ("biases", (5,), "BF16"),
+            ),
+        )
+        if storage != expected_storage:
+            raise ValueError(
+                f"qwen4 fixed-M4 sidecar auxiliary storage mismatch: {storage}"
+            )
+    rows = partial(
+        _ngram_rows_np,
+        mult=mult,
+        sizes=sizes,
+        offs=offs,
+        eos=int(embedding.eos_id),
+        ngram_size=int(embedding.ngram_size),
+        heads_per_ngram=int(embedding.heads_per_ngram),
+    )
+    return _FixedM4SidecarAux(
+        entry=entry,
+        ngram_idx=ple.NGRAM_IDX,
+        rows=rows,
+        gather=sidecar.gather_np,
+        output_dim=int(inner.args.ple_embed_dim),
+    )
+
+
 def _forward_ar_capture(
     self: Any,
     input_ids,
@@ -134,7 +233,9 @@ def _forward_ar_capture(
         entry = cache[index]
         rows = getattr(entry, "_mtplx_verify_rows", None)
         if rows is None or len(rows) != len(_GDN_ROW_NAMES):
-            raise RuntimeError(f"qwen4 fixed-M4 capture missing GDN rows at layer {index}")
+            raise RuntimeError(
+                f"qwen4 fixed-M4 capture missing GDN rows at layer {index}"
+            )
         layer_capture = dict(zip(_GDN_ROW_NAMES, rows))
         if getattr(layer, "ple", None) is not None:
             ple_rows = getattr(entry, "_mtplx_verify_ple", None)
@@ -190,9 +291,7 @@ def install_qwen4_fixed_verify_route(runtime: Any) -> dict[str, Any]:
             int(args.indexer_compress_ratio),
         )
         if observed != (48, 36, 12, 4, 4):
-            raise ValueError(
-                f"qwen4 fixed-M4 production geometry mismatch: {observed}"
-            )
+            raise ValueError(f"qwen4 fixed-M4 production geometry mismatch: {observed}")
 
     extra = []
     for index in linear:
@@ -203,6 +302,11 @@ def install_qwen4_fixed_verify_route(runtime: Any) -> dict[str, Any]:
     runtime.prepare_compiled_verify_aux = MethodType(
         _prepare_compiled_verify_aux, runtime
     )
+    ple_embedding = layers[ple[0]].ple.ple_embedding
+    if ple_embedding.ngram_embedding._sidecar is not None:
+        runtime.build_fixed_m4_compiled_verify_aux = MethodType(
+            _build_fixed_m4_compiled_verify_aux, runtime
+        )
     runtime.commit_compiled_verify_captures = MethodType(
         _commit_compiled_verify_captures, runtime
     )

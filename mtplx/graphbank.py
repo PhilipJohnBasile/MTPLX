@@ -12,6 +12,7 @@ import os
 import time
 import weakref
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from typing import Any
 
 import mlx.core as mx
@@ -918,6 +919,11 @@ VERIFY_SPEC_KIND_FULL_ATTN = "fa"
 VERIFY_SPEC_KIND_GDN = "gdn"
 VERIFY_SPEC_KIND_QSA = "qsa"
 
+# Fixed-M4 replay install receipts printed so far in this process (the first
+# few installs announce their auxiliary route; the request report carries it
+# for every request).
+_FIXED_M4_INSTALL_RECEIPTS = 0
+
 TAPE_CAPTURE_KEYS = ("conv_states", "conv_out", "g", "state_in", "tape")
 STANDARD_CAPTURE_KEYS = ("conv_states", "states")
 _UNSUPPORTED_CAPTURE_BACKENDS = {
@@ -1606,6 +1612,10 @@ class CompiledVerifyBank:
         )
         prepare_aux = getattr(runtime, "prepare_compiled_verify_aux", None)
         self._prepare_compiled_aux = prepare_aux if callable(prepare_aux) else None
+        build_fixed_aux = getattr(runtime, "build_fixed_m4_compiled_verify_aux", None)
+        self._build_fixed_m4_aux = (
+            build_fixed_aux if callable(build_fixed_aux) else None
+        )
         commit_captures = getattr(runtime, "commit_compiled_verify_captures", None)
         self._commit_compiled_captures = (
             commit_captures if callable(commit_captures) else None
@@ -1748,8 +1758,16 @@ class CompiledVerifyBank:
             capture_pos += len(names)
 
         boundary = _compiled_verify_boundary()
+        if self._build_fixed_m4_aux is not None and boundary in ("both", "pre"):
+            prepare_aux = self._build_fixed_m4_aux(cache)
+            aux_route = "staged_sidecar"
+        else:
+            prepare_aux = partial(self._prepare_compiled_aux, cache=cache)
+            aux_route = "materialized"
         self._fixed_m4_dispatch = {
             "fn": fn,
+            "prepare_aux": prepare_aux,
+            "aux_route": aux_route,
             "state_plan": state_plan,
             "state_leaves": sum(n for _kind, _entry, n in state_plan),
             "capture_plan": tuple(capture_plan),
@@ -1760,6 +1778,20 @@ class CompiledVerifyBank:
                 and boundary in ("both", "post")
             ),
         }
+        # Engagement receipt (counters law): the request report carries the
+        # bound auxiliary route (to_dict -> compiled_verify.fixed_m4) and the
+        # first installs per process announce it in the serve log, so an A/B
+        # can prove the staged sidecar lane ran rather than the materialized
+        # PLE embedding.
+        global _FIXED_M4_INSTALL_RECEIPTS
+        if _FIXED_M4_INSTALL_RECEIPTS < 3:
+            _FIXED_M4_INSTALL_RECEIPTS += 1
+            print(
+                "[qwen4-fixed-M4-verify] replay installed: "
+                f"aux={aux_route} boundary={boundary} "
+                f"donate={self._fixed_m4_dispatch['donate']}",
+                flush=True,
+            )
 
     def _forward_installed_fixed_m4(self, input_ids, cache: Any):
         dispatch = self._fixed_m4_dispatch
@@ -1784,7 +1816,7 @@ class CompiledVerifyBank:
             else:
                 state_in.extend(entry.cache[:n_leaves])
 
-        compiled_aux = self._prepare_compiled_aux(input_ids, cache)
+        compiled_aux = dispatch["prepare_aux"](input_ids)
         if boundary in ("both", "pre"):
             mx.async_eval(compiled_aux, *state_in)
         outputs = dispatch["fn"](input_ids, compiled_aux, *state_in)
@@ -2517,6 +2549,16 @@ class CompiledVerifyBank:
             f"m{length}:{variant or 'default'}:b{bucket}"
             for length, variant, bucket in sorted(self._compiled)
         ]
+        dispatch = self._fixed_m4_dispatch
+        if dispatch is not None:
+            data["fixed_m4"] = {
+                "installed": True,
+                "aux_route": dispatch["aux_route"],
+                "boundary": dispatch["boundary"],
+                "donate": bool(dispatch["donate"]),
+                "state_leaves": int(dispatch["state_leaves"]),
+                "capture_leaves": int(dispatch["capture_leaves"]),
+            }
         return data
 
     # -- dispatch preconditions ----------------------------------------------
