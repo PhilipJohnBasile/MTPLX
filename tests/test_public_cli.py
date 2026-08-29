@@ -3401,6 +3401,81 @@ def test_pi_provider_merge_owns_compat_but_keeps_user_extras():
     assert merged["baseUrl"] == "http://127.0.0.1:8000/v1"
 
 
+def test_pi_provider_vision_flag_controls_input_capability():
+    # Issue #328: Pi never offered image parts because ``input`` was a
+    # hardcoded ["text"] regardless of the pack's vision tower. The builder
+    # must advertise image capability exactly when the engine has it.
+    from mtplx.pi import build_pi_provider_config
+
+    text_only = build_pi_provider_config(
+        base_url="http://127.0.0.1:8000/v1", model_id="mtplx-x"
+    )
+    assert text_only["models"][0]["input"] == ["text"]
+    vision = build_pi_provider_config(
+        base_url="http://127.0.0.1:8000/v1", model_id="mtplx-x", vision=True
+    )
+    assert vision["models"][0]["input"] == ["text", "image"]
+
+
+def test_pi_provider_merge_owns_input_capability():
+    # ``input`` is engine capability like ``compat``: a stale ["text"] written
+    # by a pre-vision MTPLX sync must not survive and keep Pi text-only for a
+    # vision-enabled pack (issue #328). Other user model fields still win.
+    from mtplx.pi import build_pi_provider_config, merge_pi_provider_config
+
+    fresh = build_pi_provider_config(
+        base_url="http://127.0.0.1:8000/v1",
+        model_id="mtplx-flash-next-optimized-speed",
+        vision=True,
+    )
+    model_id = fresh["models"][0]["id"]
+    existing = {
+        "baseUrl": "http://127.0.0.1:8000/v1",
+        "models": [
+            {"id": model_id, "input": ["text"], "maxTokens": 4321}
+        ],
+    }
+    merged = merge_pi_provider_config(existing, fresh)
+    entry = next(m for m in merged["models"] if m["id"] == model_id)
+    assert entry["input"] == ["text", "image"]
+    assert entry["maxTokens"] == 4321  # user-set field still wins
+
+
+def test_model_vision_enabled_probe(tmp_path):
+    # The Pi capability must key off the same spec probe as /health: a dir
+    # with vision_config + an indexed vision_tower prefix answers True,
+    # anything unresolvable answers False.
+    import mtplx.commands.public as public_mod
+
+    model_dir = tmp_path / "pack"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "qwen4_exp",
+                "vision_config": {
+                    "patch_size": 16,
+                    "spatial_merge_size": 2,
+                    "temporal_patch_size": 2,
+                    "out_hidden_size": 2560,
+                },
+                "image_token_id": 248056,
+                "video_token_id": 248057,
+                "vision_start_token_id": 248053,
+                "vision_end_token_id": 248054,
+            }
+        )
+    )
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {"weight_map": {"vision_tower.blocks.0.attn.qkv.weight": "model-vision.safetensors"}}
+        )
+    )
+    assert public_mod._model_vision_enabled(str(model_dir)) is True
+    assert public_mod._model_vision_enabled(str(tmp_path / "missing")) is False
+    assert public_mod._model_vision_enabled("") is False
+
+
 def test_start_pi_missing_cli_stops_before_model_check(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "missing-config.toml"))
 
