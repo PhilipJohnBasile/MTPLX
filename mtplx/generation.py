@@ -300,6 +300,25 @@ def _family_capture_commit_enabled() -> bool:
     return env_bool("MTPLX_FAMILY_CAPTURE_COMMIT", default=False)
 
 
+def _qwen4_fixed_m4_compiled_verify_requested(
+    rt: Any,
+    *,
+    verify_strategy: str,
+    compiled_mode: str,
+    max_tokens: int,
+    cached_tokens: int,
+) -> bool:
+    """Construction gate for the measured cold-prompt M4 verifier lane."""
+
+    return (
+        bool(getattr(rt, "qwen4_fixed_m4_compiled_verify", False))
+        and verify_strategy == "batched"
+        and compiled_mode != "off"
+        and 0 < int(max_tokens) <= 1024
+        and int(cached_tokens) == 0
+    )
+
+
 def _defer_repair_eval() -> bool:
     """Leave the post-rejection repair forward lazy (``MTPLX_DEFER_REPAIR_EVAL``).
 
@@ -7945,9 +7964,22 @@ def generate_mtpk(
         and not exact_a3b_target_prefix
         and _env_truthy("MTPLX_COMPILED_TARGET_PREFIX")
     )
+    qwen4_fixed_m4_compiled_verify = (
+        # M-RoPE tables slice by the host offset; the fixed bank carries a
+        # tensor offset, so vision requests keep main's verify routes.
+        vision_splice is None
+        and _qwen4_fixed_m4_compiled_verify_requested(
+            rt,
+            verify_strategy=verify_strategy,
+            compiled_mode=_compiled_verify_mode,
+            max_tokens=max_tokens,
+            cached_tokens=int(getattr(prompt_state, "cached_tokens", 0) or 0),
+        )
+    )
     compiled_verify_bank = (
         CompiledVerifyBank(
             rt,
+            max_verify_len=4 if qwen4_fixed_m4_compiled_verify else None,
             request_max_tokens=max_tokens,
             capture_backend=verify_core_backend,
             parity=_compiled_verify_mode == "parity",
@@ -7962,9 +7994,23 @@ def generate_mtpk(
         and (
             verify_strategy in {"capture_commit", "graphbank_capture_commit"}
             or generic_compiled_target_prefix
+            or qwen4_fixed_m4_compiled_verify
         )
         else None
     )
+    if (
+        qwen4_fixed_m4_compiled_verify
+        and compiled_verify_bank is not None
+        and _compiled_verify_mode == "on"
+    ):
+        # The install keys and binds the shared verify trace, so it must see
+        # the same kernel route the request's verify forwards run under
+        # (main keys shared traces on exact_verify for the greedy contract).
+        with exact_verify(sampler.temperature <= 0):
+            compiled_verify_bank.install_fixed_m4(
+                cache,
+                hidden_variant=base_hidden_variant,
+            )
     a3b_target_prefix_route = None
     a3b_rebase_state = None  # stashed post-primary state for a deferred correction
     snapshot_time = accept_time = rollback_time = repair_time = 0.0
@@ -11066,6 +11112,22 @@ def generate_mtpk(
                     verify_logits, verify_hidden, a3b_primary_state = (
                         a3b_target_prefix_route.verify_m2(verify_input_array)
                     )
+            elif (
+                qwen4_fixed_m4_compiled_verify
+                and compiled_verify_bank is not None
+                and verified_token_count == 4
+            ):
+                verify_logits, verify_hidden, captures = (
+                    compiled_verify_bank.forward_ar_capture(
+                        verify_input_array,
+                        cache=cache,
+                        return_hidden=True,
+                        hidden_variant=base_hidden_variant,
+                    )
+                )
+                event["verify_route"] = (
+                    compiled_verify_bank.last_dispatch_route("compiled_bank_m4")
+                )
             elif compiled_verify_bank is not None:
                 # Replace only the target forward. target_prefix keeps its
                 # authoritative snapshot/trim, pre-sampling, and correction

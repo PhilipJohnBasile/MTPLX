@@ -9,6 +9,7 @@ asked about the same spelling and must answer the same thing.
 from __future__ import annotations
 
 import argparse
+import json
 
 import pytest
 
@@ -268,6 +269,87 @@ def test_vetted_verify_strategies_still_skip(strategy: str) -> None:
     args = argparse.Namespace(verify_strategy=strategy, generation_mode="mtp")
     overrides = _server_runtime_env_overrides(args, {"MTPLX_SKIP_VERIFY_SNAPSHOT": "1"})
     assert overrides["MTPLX_SKIP_VERIFY_SNAPSHOT"] == "1"
+
+
+def _flash_next_fixed_m4_config() -> dict:
+    return {
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "hidden_size": 2560,
+            "num_hidden_layers": 48,
+            "hc_count": 4,
+            "hc_lowrank": 320,
+            "indexer_compress_ratio": 4,
+            "linear_num_key_heads": 16,
+            "linear_num_value_heads": 48,
+            "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128,
+            "ple_layer_ids": [2],
+            "ngram_size": 3,
+            "ngram_vocab_size_base": 20_000_000,
+            "heads_per_ngram": 8,
+            "ple_embed_dim": 2560,
+            "ngram_sidecar": True,
+            "num_experts": 512,
+            "num_experts_per_tok": 10,
+            "moe_intermediate_size": 640,
+            "vocab_size": 248_320,
+        },
+    }
+
+
+def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
+    tmp_path, monkeypatch
+) -> None:
+    """PR #391 step 2 (davidtai) ported dark: the fixed-M4 verifier and its
+    compiled-verify companion are pinned only when the opt-in gate is set,
+    and only on the one measured Flash-Next geometry."""
+
+    from mtplx.server.openai import _server_runtime_env_overrides
+
+    model = tmp_path / "flash-next"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps(_flash_next_fixed_m4_config()))
+    for key in ("MTPLX_COMPILED_VERIFY", "MTPLX_QWEN4_FIXED_M4_VERIFY"):
+        monkeypatch.delenv(key, raising=False)
+    args = argparse.Namespace(
+        model=str(model),
+        verify_strategy="batched",
+        generation_mode="mtp",
+        scheduler_mode="serial",
+    )
+
+    # Dark by default: the measured geometry alone arms nothing.
+    overrides = _server_runtime_env_overrides(args, {})
+    assert "MTPLX_COMPILED_VERIFY" not in overrides
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+
+    # Pack contract opt-in: the gate is carried and the companion is pinned.
+    overrides = _server_runtime_env_overrides(
+        args, {"MTPLX_QWEN4_FIXED_M4_VERIFY": "1"}
+    )
+    assert overrides["MTPLX_COMPILED_VERIFY"] == "1"
+    assert overrides["MTPLX_QWEN4_FIXED_M4_VERIFY"] == "1"
+
+    # Operator export opt-in: the env already carries the gate, the
+    # companion is pinned, and an explicit compiled-verify export wins.
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_VERIFY", "1")
+    overrides = _server_runtime_env_overrides(args, {})
+    assert overrides["MTPLX_COMPILED_VERIFY"] == "1"
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY", "parity")
+    overrides = _server_runtime_env_overrides(args, {})
+    assert "MTPLX_COMPILED_VERIFY" not in overrides
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY", raising=False)
+
+    # Any other qwen4_exp layout leaves both keys unpinned even with the gate.
+    config = _flash_next_fixed_m4_config()
+    config["text_config"]["hidden_size"] = 2048
+    (model / "config.json").write_text(json.dumps(config))
+    overrides = _server_runtime_env_overrides(args, {})
+    assert "MTPLX_COMPILED_VERIFY" not in overrides
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
 
 
 # ---------------------------------------------------------------------------

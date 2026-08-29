@@ -967,6 +967,19 @@ def load(
         a3b_whole_moe_installed=False,
         qwen_row_owned_router_report=router_report,
     )
+    if str((config or {}).get("model_type") or "").lower() in {
+        "qwen4_exp",
+        "qwen4_exp_text",
+    }:
+        from .qwen4_fixed_verify import (
+            install_qwen4_fixed_verify_route,
+            qwen4_fixed_verify_enabled,
+        )
+
+        if qwen4_fixed_verify_enabled():
+            qwen4_verify_report = install_qwen4_fixed_verify_route(runtime)
+            runtime.qwen4_fixed_verify_report = qwen4_verify_report
+            logger.info("[qwen4-fixed-M4-verify] %s", qwen4_verify_report)
     if whole_moe_plan is not None:
         if compiled_target_factory is None:
             from .a3b_whole_moe import A3BWholeMoeConfigError

@@ -379,6 +379,7 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # A/B launches and pack contracts pass the boot-time runtime-env
         # validator (the MTPLX_FUSED_GDN_STEP boot-trap lesson).
         "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+        "MTPLX_QWEN4_FIXED_M4_VERIFY",
         "MTPLX_FUSE_GDN_POST_CONV",
         "MTPLX_A3B_GDN_POSTCONV_IMPL",
         "MTPLX_LINEAR_GDN_FROM_CONV_TGY",

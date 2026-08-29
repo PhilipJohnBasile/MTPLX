@@ -351,6 +351,16 @@ def _accepts_capture_backend(runtime: Any) -> bool:
     return "capture_backend" in signature.parameters
 
 
+def _accepts_runtime_keyword(runtime: Any, name: str) -> bool:
+    import inspect
+
+    try:
+        signature = inspect.signature(runtime.forward_ar_capture)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return name in signature.parameters
+
+
 def cache_has_python_offsets(cache: Any) -> bool:
     for entry in cache or []:
         if entry is None:
@@ -577,6 +587,144 @@ class TensorOffsetKVCache:
         return entry
 
 
+class TensorOffsetQSACache:
+    """Fixed-capacity Qwen4 QSA state for compiled target verification.
+
+    QSA owns five graph leaves: attention keys, attention values, the logical
+    token offset, raw index keys, and pooled index keys.  The logical pooled
+    length is always ``offset // ratio`` and therefore does not need a second
+    mutable offset.  All buffers are granted once when the verifier bank is
+    constructed; the enabled path only performs fixed-shape slice updates.
+    """
+
+    fixed_capacity = True
+    step = 256
+
+    def __init__(
+        self,
+        kv: TensorOffsetKVCache,
+        raw_keys: mx.array,
+        pooled: mx.array,
+        *,
+        compress_ratio: int,
+        rows_gather: bool = False,
+    ) -> None:
+        self.kv = kv
+        self.raw_keys = raw_keys
+        self.pooled = pooled
+        self.ratio = max(1, int(compress_ratio))
+        self.step = int(getattr(kv, "step", 256))
+        self.fixed_rows_gather = bool(rows_gather)
+
+    @classmethod
+    def from_qsa_cache(
+        cls, entry: Any, *, reserve_tokens: int
+    ) -> "TensorOffsetQSACache":
+        reserve_tokens = max(1, int(reserve_tokens))
+        offset = int(entry.offset)
+        ratio = max(1, int(entry.ratio))
+        if entry.raw_keys is None or entry.pooled is None:
+            raise ValueError("QSA index state is empty")
+        if entry.kv.keys is None or entry.kv.values is None:
+            raise ValueError("QSA attention state is empty")
+
+        logical_capacity = offset + reserve_tokens
+        raw_capacity = ((logical_capacity + ratio - 1) // ratio) * ratio
+        pooled_capacity = raw_capacity // ratio
+
+        def fixed_bank(value: mx.array, capacity: int, axis: int) -> mx.array:
+            current = int(value.shape[axis])
+            if current == capacity:
+                return value
+            if current > capacity:
+                slices = [slice(None)] * value.ndim
+                slices[axis] = slice(0, capacity)
+                return value[tuple(slices)]
+            shape = list(value.shape)
+            shape[axis] = capacity - current
+            return mx.concatenate(
+                [value, mx.zeros(tuple(shape), dtype=value.dtype)], axis=axis
+            )
+
+        kv = TensorOffsetKVCache.from_kv_cache(
+            entry.kv, reserve_tokens=reserve_tokens
+        )
+        kv.keys = fixed_bank(kv.keys, raw_capacity, 2)
+        kv.values = fixed_bank(kv.values, raw_capacity, 2)
+        raw = fixed_bank(entry.raw_keys, raw_capacity, 1)
+        pooled = fixed_bank(entry.pooled, pooled_capacity, 1)
+        from .models.qwen4_exp import (
+            _qsa_gather_enabled,
+            _qsa_gather_min_context,
+        )
+
+        return cls(
+            kv,
+            raw,
+            pooled,
+            compress_ratio=ratio,
+            rows_gather=(
+                _qsa_gather_enabled() and offset >= _qsa_gather_min_context()
+            ),
+        )
+
+    @property
+    def offset(self):
+        return self.kv.offset
+
+    @property
+    def pooled_len(self):
+        return self.kv.offset // self.ratio
+
+    @property
+    def state_leaves(self) -> list[mx.array]:
+        return [*self.kv.cache, self.raw_keys, self.pooled]
+
+    def pooled_f32_view(self, nb: int) -> mx.array:
+        """fp32-transposed [1, 1, D, nb] view of the fixed pooled bank.
+
+        The stock QSACache keeps a lockstep mirror for allocation hygiene;
+        the fixed bank has static capacity and lives inside one compiled
+        trace, so the cast is a single graph node and needs no mirror.
+        """
+        return mx.swapaxes(self.pooled.astype(mx.float32), 1, 2)[:, None][..., :nb]
+
+    def write_raw(self, keys: mx.array) -> None:
+        self.raw_keys = mx.slice_update(
+            self.raw_keys, keys, self.kv.offset, axes=(1,)
+        )
+
+    def write_pooled(self, blocks: mx.array, nb_start, nb_total) -> None:
+        del nb_total
+        self.pooled = mx.slice_update(
+            self.pooled, blocks, nb_start, axes=(1,)
+        )
+
+    def size(self) -> int:
+        return self.kv.size()
+
+    def is_trimmable(self) -> bool:
+        return True
+
+    def trim(self, n: int) -> int:
+        return self.kv.trim(n)
+
+    @property
+    def nbytes(self) -> int:
+        return int(self.kv.nbytes + self.raw_keys.nbytes + self.pooled.nbytes)
+
+    def demote(self):
+        from .models.qwen4_exp import QSACache
+
+        offset = self.kv.size()
+        entry = QSACache(self.ratio)
+        entry.kv = self.kv.demote()
+        entry.raw_keys = self.raw_keys
+        entry.pooled = self.pooled
+        entry.pooled_len = min(int(self.pooled.shape[1]), offset // self.ratio)
+        return entry
+
+
 def promote_kv_cache_offsets(
     cache: Any,
     *,
@@ -605,8 +753,31 @@ def promote_kv_cache_offsets(
     for idx, entry in enumerate(cache):
         if entry is None:
             continue
+        if isinstance(entry, TensorOffsetQSACache):
+            continue
         if isinstance(entry, TensorOffsetKVCache):
             entry.ensure_capacity(entry.size() + reserve_tokens)
+            continue
+        try:
+            from .models.qwen4_exp import QSACache
+        except Exception:  # pragma: no cover - optional model import
+            QSACache = None
+        if QSACache is not None and isinstance(entry, QSACache):
+            try:
+                cache[idx] = TensorOffsetQSACache.from_qsa_cache(
+                    entry,
+                    reserve_tokens=(
+                        initial_reserve_tokens
+                        if initial_reserve_tokens is not None
+                        else reserve_tokens
+                    ),
+                )
+            except (TypeError, ValueError):
+                failures["auxiliary_qsa_state"] = (
+                    failures.get("auxiliary_qsa_state", 0) + 1
+                )
+                continue
+            promoted += 1
             continue
         if preserve_paged:
             try:
@@ -745,6 +916,7 @@ def cache_array_tree(cache: Any) -> list[Any]:
 
 VERIFY_SPEC_KIND_FULL_ATTN = "fa"
 VERIFY_SPEC_KIND_GDN = "gdn"
+VERIFY_SPEC_KIND_QSA = "qsa"
 
 TAPE_CAPTURE_KEYS = ("conv_states", "conv_out", "g", "state_in", "tape")
 STANDARD_CAPTURE_KEYS = ("conv_states", "states")
@@ -904,6 +1076,9 @@ def build_verify_state_spec(cache: Any) -> tuple[list[tuple[int, str, int]] | No
     for idx, entry in enumerate(cache or []):
         if entry is None:
             continue
+        if isinstance(entry, TensorOffsetQSACache):
+            spec.append((idx, VERIFY_SPEC_KIND_QSA, 5))
+            continue
         if isinstance(entry, TensorOffsetKVCache) or (
             TensorOffsetVllmMetalPagedKVCache is not None
             and isinstance(entry, TensorOffsetVllmMetalPagedKVCache)
@@ -911,9 +1086,12 @@ def build_verify_state_spec(cache: Any) -> tuple[list[tuple[int, str, int]] | No
             spec.append((idx, VERIFY_SPEC_KIND_FULL_ATTN, len(entry.cache)))
             continue
         if ArraysCache is not None and isinstance(entry, ArraysCache):
-            if len(entry.cache) != 2:
+            if len(entry.cache) not in (2, 4):
                 return None, f"unsupported_container:ArraysCache[{len(entry.cache)}]"
-            spec.append((idx, VERIFY_SPEC_KIND_GDN, 2))
+            n_leaves = len(entry.cache)
+            if n_leaves == 4 and any(leaf is None for leaf in entry.cache):
+                return None, "unsupported_container:ArraysCache[partial_ple]"
+            spec.append((idx, VERIFY_SPEC_KIND_GDN, n_leaves))
             continue
         return None, f"unsupported_container:{type(entry).__name__}"
     return spec, None
@@ -1414,6 +1592,41 @@ class CompiledVerifyBank:
             )
             _record_permanent_eager(self.permanent_eager_reason, once=True)
         self._capture_accepts_backend = _accepts_capture_backend(runtime)
+        capture_layout = getattr(runtime, "_mtplx_capture_layout", None)
+        self._capture_layout_override = (
+            None
+            if capture_layout is None
+            else tuple(str(name) for name in capture_layout)
+        )
+        self._extra_capture_layout = tuple(
+            (int(layer_index), tuple(str(name) for name in names))
+            for layer_index, names in tuple(
+                getattr(runtime, "_mtplx_capture_extra_layout", ()) or ()
+            )
+        )
+        prepare_aux = getattr(runtime, "prepare_compiled_verify_aux", None)
+        self._prepare_compiled_aux = prepare_aux if callable(prepare_aux) else None
+        commit_captures = getattr(runtime, "commit_compiled_verify_captures", None)
+        self._commit_compiled_captures = (
+            commit_captures if callable(commit_captures) else None
+        )
+        self._runtime_accepts_compiled_aux = _accepts_runtime_keyword(
+            runtime, "compiled_aux"
+        )
+        self.strict_no_fallback = bool(
+            getattr(runtime, "qwen4_fixed_m4_compiled_verify", False)
+        )
+        if self._prepare_compiled_aux is not None and not self._runtime_accepts_compiled_aux:
+            raise TypeError(
+                "compiled verify auxiliary preparation requires a compiled_aux input"
+            )
+        if (
+            bool(getattr(runtime, "qwen4_fixed_m4_compiled_verify", False))
+            and self.request_max_tokens is not None
+            and self.request_max_tokens > 1024
+        ):
+            self.permanent_eager = True
+            self.permanent_eager_reason = "qwen4_fixed_m4_request_above_1024"
         self._compiled: dict[tuple[int, str, int], Any] = {}
         self._spec: list[tuple[int, str, int]] | None = None
         self._shadow: list[Any] | None = None
@@ -1421,6 +1634,12 @@ class CompiledVerifyBank:
         self._gdn_meta_cache: dict[int, dict[str, int] | None] = {}
         self._exception_failures = 0
         self._held_state_refs: list = []
+        # The Qwen4 fixed-M4 lane installs one construction-owned replay plan
+        # after prompt prefill.  Production calls then bypass the generic
+        # eligibility, promotion, bucket, shadow, and fallback machinery.
+        # Parity modes intentionally stay on the generic dispatcher because
+        # they need its eager comparison paths.
+        self._fixed_m4_dispatch: dict[str, Any] | None = None
         # Dense leaves that outgrow the capacity granted at first promotion
         # would retrace the compiled graph on every cache-growth step. A
         # generation request supplies its known output budget plus one maximum
@@ -1481,6 +1700,144 @@ class CompiledVerifyBank:
             return compiled_route
         return "not_run"
 
+    def install_fixed_m4(
+        self,
+        cache: Any,
+        *,
+        hidden_variant: str | None,
+    ) -> None:
+        """Install the exact Qwen4 physical-M4 replay once after prefill."""
+
+        if not self.strict_no_fallback:
+            raise ValueError("fixed-M4 installation requires the Qwen4 runtime route")
+        if self.parity or self.parity2:
+            raise ValueError("fixed-M4 direct replay is disabled in parity modes")
+
+        class _M4Shape:
+            shape = (1, 4)
+
+        reason = self._fallback_reason(_M4Shape(), cache, True)
+        if reason is not None:
+            raise RuntimeError(f"qwen4 fixed-M4 installation refused: {reason}")
+        bucket = self._resolve_bucket(cache, 4)
+        if bucket != 0:
+            raise RuntimeError(
+                f"qwen4 fixed-M4 installation requires dense state; bucket={bucket}"
+            )
+        self._ensure_shadow(cache)
+        key = (4, str(hidden_variant or ""), 0)
+        fn = self._compiled.get(key)
+        if fn is None:
+            fn = self._shared_or_new_verify_step(key, 4, hidden_variant)
+            self._compiled[key] = fn
+
+        state_plan = tuple(
+            (kind, cache[idx], n_leaves)
+            for idx, kind, n_leaves in self._spec or ()
+        )
+        if not state_plan or any(
+            kind not in (VERIFY_SPEC_KIND_QSA, VERIFY_SPEC_KIND_GDN)
+            for kind, _entry, _n in state_plan
+        ):
+            raise RuntimeError("qwen4 fixed-M4 installation found unsupported state")
+
+        capture_plan = []
+        capture_pos = 0
+        for idx, names in self._extra_capture_layout:
+            capture_plan.append((cache[idx], capture_pos, len(names)))
+            capture_pos += len(names)
+
+        boundary = _compiled_verify_boundary()
+        self._fixed_m4_dispatch = {
+            "fn": fn,
+            "state_plan": state_plan,
+            "state_leaves": sum(n for _kind, _entry, n in state_plan),
+            "capture_plan": tuple(capture_plan),
+            "capture_leaves": capture_pos,
+            "boundary": boundary,
+            "donate": (
+                _compiled_verify_donation_enabled()
+                and boundary in ("both", "post")
+            ),
+        }
+
+    def _forward_installed_fixed_m4(self, input_ids, cache: Any):
+        dispatch = self._fixed_m4_dispatch
+        assert dispatch is not None
+        boundary = dispatch["boundary"]
+        donate = dispatch["donate"]
+        if donate:
+            self._clear_shadow_leaf_refs()
+
+        state_in: list[Any] = []
+        for kind, entry, n_leaves in dispatch["state_plan"]:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                state_in.extend(
+                    (
+                        entry.kv.cache[0],
+                        entry.kv.cache[1],
+                        entry.kv.cache[2],
+                        entry.raw_keys,
+                        entry.pooled,
+                    )
+                )
+            else:
+                state_in.extend(entry.cache[:n_leaves])
+
+        compiled_aux = self._prepare_compiled_aux(input_ids, cache)
+        if boundary in ("both", "pre"):
+            mx.async_eval(compiled_aux, *state_in)
+        outputs = dispatch["fn"](input_ids, compiled_aux, *state_in)
+
+        capture_end = 2 + dispatch["capture_leaves"]
+        logits, hidden = outputs[:2]
+        captures_flat = outputs[2:capture_end]
+        state_out = outputs[capture_end:]
+
+        if not donate and boundary in ("both", "post"):
+            mx.async_eval(*outputs)
+            self._held_state_refs.clear()
+        elif not donate:
+            self._held_state_refs.append(state_in)
+            if len(self._held_state_refs) > 3:
+                self._held_state_refs.pop(0)
+
+        state_pos = 0
+        for kind, entry, n_leaves in dispatch["state_plan"]:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                entry.kv.cache[0] = state_out[state_pos]
+                entry.kv.cache[1] = state_out[state_pos + 1]
+                entry.kv.cache[2] = state_out[state_pos + 2]
+                entry.raw_keys = state_out[state_pos + 3]
+                entry.pooled = state_out[state_pos + 4]
+                for slot in range(len(entry.kv.rollback_state)):
+                    entry.kv.rollback_state[slot] = None
+            else:
+                for slot in range(n_leaves):
+                    entry.cache[slot] = state_out[state_pos + slot]
+            state_pos += n_leaves
+
+        for entry, start, count in dispatch["capture_plan"]:
+            entry._mtplx_verify_rows = tuple(captures_flat[start : start + 6])
+            if count > 6:
+                entry._mtplx_verify_ple = tuple(
+                    captures_flat[start + 6 : start + count]
+                )
+
+        if donate:
+            state_in = None
+            self._held_state_refs.clear()
+            mx.async_eval(*outputs)
+
+        # Route Tape receipt (main contract): the installed replay is a
+        # compiled dispatch, so last_dispatch_route() reports it as such.
+        self.last_dispatch_kind = "compiled"
+        self.last_fallback_reason = None
+        self.last_fallback_transition = False
+        self.stats["compiled_calls"] += 1
+        self.stats["buckets"]["0"] = self.stats["buckets"].get("0", 0) + 1
+        return logits, hidden, {}
+
     def forward_ar_capture(
         self,
         input_ids,
@@ -1507,6 +1864,22 @@ class CompiledVerifyBank:
         exactness is unaffected either way.
         """
         global _PREWARM_DONE
+        if self._fixed_m4_dispatch is not None:
+            self.stats["calls"] += 1
+            if _decode_length(input_ids) == 4:
+                return self._forward_installed_fixed_m4(input_ids, cache)
+            # Shorter adaptive windows take the normal family capture route.
+            # Not a fallback (no counter), but the Route Tape must still
+            # see that this call ran eager through the bank.
+            self.last_dispatch_kind = "eager"
+            self.last_fallback_reason = "fixed_m4_short_window"
+            self.last_fallback_transition = False
+            return self._runtime_forward(
+                input_ids,
+                cache=cache,
+                return_hidden=return_hidden,
+                hidden_variant=hidden_variant,
+            )
         if (
             not _PREWARM_DONE
             and not self.parity
@@ -1661,9 +2034,21 @@ class CompiledVerifyBank:
                     hidden_variant=hidden_variant,
                     reason="empty_state_leaf",
                 )
+            compiled_aux = (
+                self._prepare_compiled_aux(input_ids, cache)
+                if self._prepare_compiled_aux is not None
+                else None
+            )
             if boundary in ("both", "pre"):
-                mx.async_eval(*state_in)
-            outputs = fn(input_ids, *state_in)
+                mx.async_eval(
+                    *((compiled_aux,) if compiled_aux is not None else ()),
+                    *state_in,
+                )
+            outputs = (
+                fn(input_ids, compiled_aux, *state_in)
+                if compiled_aux is not None
+                else fn(input_ids, *state_in)
+            )
             logits, hidden, captures_flat, state_out = self._unpack_outputs(outputs)
             if donate:
                 # A2.1 commit-first ownership handoff — commit + schedule
@@ -1714,6 +2099,7 @@ class CompiledVerifyBank:
                 input_ids,
                 cache=cache,
                 hidden_variant=hidden_variant,
+                compiled_aux=compiled_aux,
                 state_in=state_in,
                 compiled_logits=logits,
                 compiled_hidden=hidden,
@@ -1725,6 +2111,7 @@ class CompiledVerifyBank:
                 input_ids,
                 cache=cache,
                 hidden_variant=hidden_variant,
+                compiled_aux=compiled_aux,
                 bucket=int(bucket),
                 compiled_logits=logits,
                 compiled_hidden=hidden,
@@ -1732,6 +2119,8 @@ class CompiledVerifyBank:
                 compiled_state_out=state_out,
             )
         self._mirror_commit(cache, state_out)
+        if self._commit_compiled_captures is not None:
+            self._commit_compiled_captures(cache, captures)
         if donate:
             # A2.1 commit-first ownership handoff: the real cache is already
             # rebound to the output leaves, so dropping the dispatcher's
@@ -2079,7 +2468,10 @@ class CompiledVerifyBank:
             TensorOffsetVllmMetalPagedKVCache = None
         count = 0
         for idx, entry in enumerate(cache or []):
-            if isinstance(entry, TensorOffsetKVCache):
+            if isinstance(entry, TensorOffsetQSACache):
+                cache[idx] = entry.demote()
+                count += 1
+            elif isinstance(entry, TensorOffsetKVCache):
                 cache[idx] = entry.demote()
                 count += 1
             elif TensorOffsetVllmMetalPagedKVCache is not None and isinstance(
@@ -2345,7 +2737,21 @@ class CompiledVerifyBank:
         shadow: list[Any] = [None] * len(cache)
         for idx, kind, _n in self._spec or []:
             entry = cache[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                kv = TensorOffsetKVCache(
+                    entry.kv.cache[0],
+                    entry.kv.cache[1],
+                    entry.kv.cache[2],
+                    step=entry.kv.step,
+                )
+                twin = TensorOffsetQSACache(
+                    kv,
+                    entry.raw_keys,
+                    entry.pooled,
+                    compress_ratio=entry.ratio,
+                    rows_gather=entry.fixed_rows_gather,
+                )
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):
                     twin = TensorOffsetKVCache(
                         entry.cache[0],
@@ -2411,6 +2817,9 @@ class CompiledVerifyBank:
         global_key = (
             id(self.runtime),
             self.capture_backend,
+            self._capture_layout_override,
+            self._extra_capture_layout,
+            self._prepare_compiled_aux is not None,
             spec_sig,
             int(length),
             str(hidden_variant or ""),
@@ -2452,10 +2861,15 @@ class CompiledVerifyBank:
 
         del bank
 
-        def verify_step(input_ids, *state_in):
+        def verify_step(input_ids, *args):
             # Python body executes at trace time only; replays skip it.
             live = host["bank"]
             shadow = live._shadow
+            if live._prepare_compiled_aux is not None:
+                compiled_aux, *state_in = args
+            else:
+                compiled_aux = None
+                state_in = args
             live.stats["traces"] += 1
             if _decode_length(input_ids) != length:
                 raise ValueError("compiled verify length mismatch")
@@ -2465,14 +2879,22 @@ class CompiledVerifyBank:
             pos = 0
             for idx, kind, n_leaves in spec:
                 entry = shadow[idx]
-                if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+                if kind == VERIFY_SPEC_KIND_QSA:
+                    entry.kv.cache[0] = state_in[pos]
+                    entry.kv.cache[1] = state_in[pos + 1]
+                    entry.kv.cache[2] = state_in[pos + 2]
+                    entry.raw_keys = state_in[pos + 3]
+                    entry.pooled = state_in[pos + 4]
+                    for slot in range(len(entry.kv.rollback_state)):
+                        entry.kv.rollback_state[slot] = None
+                elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                     for slot in range(n_leaves):
                         entry.cache[slot] = state_in[pos + slot]
                     for slot in range(len(entry.rollback_state)):
                         entry.rollback_state[slot] = None
                 else:
-                    entry.cache[0] = state_in[pos]
-                    entry.cache[1] = state_in[pos + 1]
+                    for slot in range(n_leaves):
+                        entry.cache[slot] = state_in[pos + slot]
                 pos += n_leaves
             # (2) The existing runtime forward, on shadow containers only.
             with attention_phase("decode_verify"):
@@ -2481,6 +2903,7 @@ class CompiledVerifyBank:
                     cache=shadow,
                     return_hidden=True,
                     hidden_variant=hidden_variant,
+                    compiled_aux=compiled_aux,
                 )
             logits, hidden, captures = result
             # (3) Read every leaf back out and return it explicitly.
@@ -2491,18 +2914,26 @@ class CompiledVerifyBank:
                 layer_capture = captures[idx]
                 for key_name in layout:
                     captures_flat.append(layer_capture[key_name])
+            for idx, names in live._extra_capture_layout:
+                layer_capture = captures[idx]
+                for key_name in names:
+                    captures_flat.append(layer_capture[key_name])
             state_out: list[Any] = []
             for idx, kind, _n in spec:
                 entry = shadow[idx]
-                if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+                if kind == VERIFY_SPEC_KIND_QSA:
+                    state_out.extend(entry.state_leaves)
+                elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                     state_out.extend(entry.cache[slot] for slot in range(_n))
                 else:
-                    state_out.extend((entry.cache[0], entry.cache[1]))
+                    state_out.extend(entry.cache[slot] for slot in range(_n))
             return (logits, hidden, *captures_flat, *state_out)
 
         return verify_step
 
     def _capture_layout(self) -> tuple[str, ...]:
+        if self._capture_layout_override is not None:
+            return self._capture_layout_override
         if self.capture_backend == "linear_gdn_from_conv_tape":
             return TAPE_CAPTURE_KEYS
         return STANDARD_CAPTURE_KEYS
@@ -2513,6 +2944,7 @@ class CompiledVerifyBank:
         n_captures = sum(
             len(layout) for _idx, kind, _n in spec if kind == VERIFY_SPEC_KIND_GDN
         )
+        n_captures += sum(len(names) for _idx, names in self._extra_capture_layout)
         n_state = sum(n for _idx, _kind, n in spec)
         expected = 2 + n_captures + n_state
         if len(outputs) != expected:
@@ -2540,6 +2972,11 @@ class CompiledVerifyBank:
             if self.capture_backend == "linear_gdn_from_conv_tape":
                 layer_capture["gdn_meta"] = self._gdn_meta(idx)
             captures[idx] = layer_capture
+        for idx, names in self._extra_capture_layout:
+            layer_capture = captures.setdefault(idx, {})
+            for key_name in names:
+                layer_capture[key_name] = captures_flat[pos]
+                pos += 1
         return captures
 
     def _gdn_meta(self, layer_idx: int) -> dict[str, int] | None:
@@ -2565,10 +3002,12 @@ class CompiledVerifyBank:
         leaves: list[Any] = []
         for idx, kind, _n in self._spec or []:
             entry = cache[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                layer_leaves = tuple(entry.state_leaves)
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 layer_leaves = tuple(entry.cache[slot] for slot in range(_n))
             else:
-                layer_leaves = (entry.cache[0], entry.cache[1])
+                layer_leaves = tuple(entry.cache[slot] for slot in range(_n))
             if any(leaf is None for leaf in layer_leaves):
                 return None
             leaves.extend(layer_leaves)
@@ -2578,7 +3017,15 @@ class CompiledVerifyBank:
         pos = 0
         for idx, kind, n_leaves in self._spec or []:
             entry = cache[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                entry.kv.cache[0] = state_out[pos]
+                entry.kv.cache[1] = state_out[pos + 1]
+                entry.kv.cache[2] = state_out[pos + 2]
+                entry.raw_keys = state_out[pos + 3]
+                entry.pooled = state_out[pos + 4]
+                for slot in range(len(entry.kv.rollback_state)):
+                    entry.kv.rollback_state[slot] = None
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 for slot in range(n_leaves):
                     entry.cache[slot] = state_out[pos + slot]
                 # Cleared rollback forces trim() onto the offset-only branch,
@@ -2586,8 +3033,8 @@ class CompiledVerifyBank:
                 for slot in range(len(entry.rollback_state)):
                     entry.rollback_state[slot] = None
             else:
-                entry.cache[0] = state_out[pos]
-                entry.cache[1] = state_out[pos + 1]
+                for slot in range(n_leaves):
+                    entry.cache[slot] = state_out[pos + slot]
             pos += n_leaves
 
     def _clear_shadow_leaf_refs(self) -> None:
@@ -2603,6 +3050,14 @@ class CompiledVerifyBank:
         """
         for entry in self._shadow or []:
             if entry is None:
+                continue
+            if isinstance(entry, TensorOffsetQSACache):
+                for slot in range(len(entry.kv.cache)):
+                    entry.kv.cache[slot] = None
+                for slot in range(len(entry.kv.rollback_state)):
+                    entry.kv.rollback_state[slot] = None
+                entry.raw_keys = None
+                entry.pooled = None
                 continue
             cache_list = getattr(entry, "cache", None)
             if isinstance(cache_list, list):
@@ -2622,7 +3077,13 @@ class CompiledVerifyBank:
         cache,
         return_hidden: bool,
         hidden_variant: str | None,
+        compiled_aux=None,
     ):
+        kwargs = (
+            {"compiled_aux": compiled_aux}
+            if self._runtime_accepts_compiled_aux
+            else {}
+        )
         if self._capture_accepts_backend:
             return self.runtime.forward_ar_capture(
                 input_ids,
@@ -2630,12 +3091,14 @@ class CompiledVerifyBank:
                 return_hidden=return_hidden,
                 hidden_variant=hidden_variant,
                 capture_backend=self.capture_backend,
+                **kwargs,
             )
         return self.runtime.forward_ar_capture(
             input_ids,
             cache=cache,
             return_hidden=return_hidden,
             hidden_variant=hidden_variant,
+            **kwargs,
         )
 
     def _fallback(
@@ -2647,6 +3110,8 @@ class CompiledVerifyBank:
         hidden_variant: str | None,
         reason: str,
     ):
+        if self.strict_no_fallback:
+            raise RuntimeError(f"qwen4 fixed-M4 verifier refused: {reason}")
         self.last_dispatch_kind = "eager"
         self.last_fallback_reason = reason
         growth_transition = (
@@ -2677,6 +3142,7 @@ class CompiledVerifyBank:
         *,
         cache,
         hidden_variant: str | None,
+        compiled_aux,
         state_in: list[Any],
         compiled_logits,
         compiled_hidden,
@@ -2691,14 +3157,17 @@ class CompiledVerifyBank:
                 cache=cache,
                 return_hidden=True,
                 hidden_variant=hidden_variant,
+                compiled_aux=compiled_aux,
             )
         eager_state = []
         for idx, kind, _n in self._spec or []:
             entry = cache[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                eager_state.extend(entry.state_leaves)
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 eager_state.extend(entry.cache[slot] for slot in range(_n))
             else:
-                eager_state.extend((entry.cache[0], entry.cache[1]))
+                eager_state.extend(entry.cache[slot] for slot in range(_n))
         reference = self._named_outputs(eager_logits, eager_hidden, eager_captures, eager_state)
         candidate = self._named_outputs(
             compiled_logits, compiled_hidden, compiled_captures, compiled_state_out
@@ -2715,6 +3184,7 @@ class CompiledVerifyBank:
         *,
         cache,
         hidden_variant: str | None,
+        compiled_aux,
         bucket: int,
         compiled_logits,
         compiled_hidden,
@@ -2745,16 +3215,19 @@ class CompiledVerifyBank:
                 cache=clone,
                 return_hidden=True,
                 hidden_variant=hidden_variant,
+                compiled_aux=compiled_aux,
             )
         # Compiled is authoritative: the live stream advances on compiled state.
         self._mirror_commit(cache, compiled_state_out)
         clone_state: list[Any] = []
         for idx, kind, _n in self._spec or []:
             entry = clone[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                clone_state.extend(entry.state_leaves)
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 clone_state.extend(entry.cache[slot] for slot in range(_n))
             else:
-                clone_state.extend((entry.cache[0], entry.cache[1]))
+                clone_state.extend(entry.cache[slot] for slot in range(_n))
         reference = self._named_outputs(
             eager_logits, eager_hidden, eager_captures, clone_state
         )
@@ -2787,7 +3260,21 @@ class CompiledVerifyBank:
         clone: list[Any] = [None] * len(cache)
         for idx, kind, _n in self._spec or []:
             entry = cache[idx]
-            if kind == VERIFY_SPEC_KIND_FULL_ATTN:
+            if kind == VERIFY_SPEC_KIND_QSA:
+                kv = TensorOffsetKVCache(
+                    _copy_state_leaf(entry.kv.cache[0]),
+                    _copy_state_leaf(entry.kv.cache[1]),
+                    _copy_state_leaf(entry.kv.cache[2]),
+                    step=entry.kv.step,
+                )
+                twin = TensorOffsetQSACache(
+                    kv,
+                    _copy_state_leaf(entry.raw_keys),
+                    _copy_state_leaf(entry.pooled),
+                    compress_ratio=entry.ratio,
+                    rows_gather=entry.fixed_rows_gather,
+                )
+            elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):
                     twin = TensorOffsetKVCache(
                         _copy_state_leaf(entry.cache[0]),
@@ -2823,7 +3310,7 @@ class CompiledVerifyBank:
                     twin.static_max_offset = int(bucket)
             else:
                 twin = type(entry)(len(entry.cache))
-                for slot, leaf in enumerate(entry.cache):
+                for slot, leaf in enumerate(entry.cache[:_n]):
                     twin[slot] = _copy_state_leaf(leaf)
             clone[idx] = twin
         return clone

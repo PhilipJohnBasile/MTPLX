@@ -859,6 +859,23 @@ def _server_runtime_env_overrides(
             ):
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, value)
+        if _qwen4_port_opt_in(
+            overrides, "MTPLX_QWEN4_FIXED_M4_VERIFY"
+        ) and _served_model_is_qwen4_fixed_m4(args):
+            # Construction-bound fixed-M4 verifier (PR #391 step 2 by davidtai,
+            # his 2026-08-29 production repeats): one traced replay over the
+            # exact Flash-Next geometry. Ported dark: the operator export (or
+            # the pack contract) MTPLX_QWEN4_FIXED_M4_VERIFY=1 arms it, and the
+            # config predicate keeps the companion pins off every unmeasured
+            # qwen4_exp layout (the runtime installer refuses a mismatched
+            # production geometry loudly). The lane needs the compiled-verify
+            # mode on, so it is pinned here unless an explicit export set it.
+            for key in (
+                "MTPLX_COMPILED_VERIFY",
+                "MTPLX_QWEN4_FIXED_M4_VERIFY",
+            ):
+                if os.environ.get(key) is None:
+                    overrides.setdefault(key, "1")
         if os.environ.get("MTPLX_NAX_VERIFY") is None:
             # The turbo profile arms the 27B NAX verify patch
             # (MTPLX_NAX_VERIFY=1); on this family it is unmeasured and
@@ -898,6 +915,17 @@ def _qwen4_port_opt_in(overrides: Mapping[str, str], key: str) -> bool:
     if raw is None:
         raw = overrides.get(key)
     return raw is not None and str(raw).strip().lower() in _QWEN4_PORT_TRUTHY
+
+
+def _served_model_is_qwen4_fixed_m4(args: argparse.Namespace) -> bool:
+    try:
+        with open(Path(str(args.model)) / "config.json", "rb") as fh:
+            config = json.load(fh)
+    except Exception:
+        return False
+    from mtplx.qwen4_fixed_verify import is_qwen4_fixed_verify_config
+
+    return is_qwen4_fixed_verify_config(config)
 
 
 def _assert_fast_path_env() -> dict[str, dict[str, Any]]:
