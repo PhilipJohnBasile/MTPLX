@@ -911,10 +911,19 @@ def install_nax_qlinear_patch() -> dict[str, object]:
 
     original = nn.QuantizedLinear.__call__
 
-    from .attention_context import current_attention_phase
+    from .attention_context import current_attention_phase, exact_verify_required
     from .kernel_selfcheck import lane_disabled
 
     def patched(self, x: mx.array) -> mx.array:  # type: ignore[no-untyped-def]
+        if exact_verify_required():
+            # Greedy (t<=0) verify forwards demand bit-exact stock matmuls:
+            # the vk/nax lanes trade ~6e-3 accumulation-order drift for speed,
+            # which flips argmax at near-tie logit rows and breaks the
+            # MTP==AR greedy identity (the product's exactness promise).
+            nax_qlinear_fallback_counts["exact_t0"] = (
+                nax_qlinear_fallback_counts.get("exact_t0", 0) + 1
+            )
+            return original(self, x)
         bits = int(getattr(self, "bits", 0) or 0)
         group_size = int(getattr(self, "group_size", 0) or 0)
         if bits == 8 and x.ndim >= 2 and current_attention_phase() != "prefill":
