@@ -11,7 +11,6 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping, MutableMapping
 
-
 ProfileName = str
 
 DEFAULT_PROFILE_NAME = "sustained"
@@ -303,6 +302,38 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_FUSED_GDN_INPROJ",
         "MTPLX_FUSED_GDN_OUT",
         "MTPLX_FUSED_QSA_QKV",
+        # Exact fused QSA score/mask/top-k selector (2026-08-29 candidate).
+        # Keep this registered while it is opt-in so model contracts and
+        # operator A/B launches can exercise the kill switch without failing
+        # the boot-time runtime-env validator.
+        "MTPLX_FUSED_QSA_INDEXER",
+        # Pure explicit-state mx.compile wrapper around projection/query
+        # preparation/cache staging/selection. Independently gated so the
+        # Metal selector can be A/B tested without graph capture.
+        "MTPLX_COMPILED_QSA_INDEXER",
+        # Matrix-shaped QSA prefill pipeline: byte-bounded tiled MLX scoring,
+        # dedicated Metal top-k, and direct block-sparse attention.  All
+        # shipped profiles keep it off until numeric and production A/B gates.
+        "MTPLX_QSA_PREFILL",
+        "MTPLX_QSA_PREFILL_MIN_ROWS",
+        # Independent measured crossovers: the tiled score/top-k producer can
+        # amortize before the direct scattered K/V consumer does.
+        "MTPLX_QSA_PREFILL_MIN_CONTEXT",
+        "MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT",
+        "MTPLX_QSA_PREFILL_SCORE_MB",
+        # Portable gathered-attention tier for the flash_prefill contract:
+        # the universal (non-NAX) consumer of the same block selections.
+        "MTPLX_QSA_PREFILL_GATHER",
+        "MTPLX_QSA_PREFILL_GATHER_TILE",
+        # Engagement-receipt atexit print for lane A/Bs (counters law).
+        "MTPLX_QSA_PREFILL_DEBUG",
+        # Capture only one canonical chunk width so arbitrary final/restored
+        # suffix sizes cannot grow the mx.compile graph bank without bound.
+        "MTPLX_QSA_PREFILL_COMPILE_ROWS",
+        # Phase-3 QSA/MTP capacity staging and exact replay reconciliation.
+        # Default-off until the fused+compiled model/MTP gates are complete;
+        # registered now so that those explicit A/B launches are valid.
+        "MTPLX_QSA_MTP_PRECOMPUTE",
         "MTPLX_FUSED_GDN_CONVNORM",
         # One-dispatch GDN decode step (2026-08-27 family default; two
         # boot-triple receipt in the server's family octet comment).

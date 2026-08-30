@@ -22,6 +22,7 @@ Added for 2.9.3 (founder directive, 2026-08-26) against two burn classes:
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -56,7 +57,9 @@ def test_turbo_ships_the_32k_compiled_verify_ceiling():
     """12288 -> 32768 landed 2026-08-14 (dropday verify-wall calibration,
     ABBA-receipted: compiled-at-32k beat eager at 20k and 30k). Losing this
     silently costs every 6k-32k request the compiled verify bank."""
-    assert get_profile("turbo").env_dict()["MTPLX_COMPILED_VERIFY_MAX_CONTEXT"] == "32768"
+    assert (
+        get_profile("turbo").env_dict()["MTPLX_COMPILED_VERIFY_MAX_CONTEXT"] == "32768"
+    )
 
 
 def test_turbo_ships_the_packed_verify_kernel():
@@ -102,6 +105,22 @@ def test_pyproject_mlx_floor_is_the_receipted_version():
     """The floor itself is a release decision with measurements behind it;
     lowering it must be deliberate, not a merge accident."""
     assert _pyproject_mlx_floor() >= (0, 32, 2)
+
+
+def test_editable_lock_version_matches_project_version():
+    """The in-tree package entry must not retain the previous release number."""
+
+    root = Path(__file__).resolve().parent.parent
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    editable = [
+        package
+        for package in lock["package"]
+        if package["name"] == "mtplx" and package.get("source") == {"editable": "."}
+    ]
+
+    assert len(editable) == 1
+    assert editable[0]["version"] == project["project"]["version"]
 
 
 def test_installed_mlx_meets_the_pyproject_floor():
