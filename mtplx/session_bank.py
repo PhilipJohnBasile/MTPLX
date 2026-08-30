@@ -92,20 +92,25 @@ def _lazy_snapshot_enabled() -> bool:
 
 
 def _snapshot_settle_enabled() -> bool:
-    """Idle-lane settling of the lazy snapshot right after a put.
+    """Idle-lane owner-copy settling of the lazy snapshot after a put.
 
-    The lazy put keeps response tails flat, but every unevaluated snapshot
-    view holds a reference to a live cache buffer: until the views settle,
-    buffer donation on the live cache is blocked and the NEXT turn's first
-    write to each buffer pays a full COW divergence copy. Under
-    back-to-back agent turns the SSD encode (the historical settler) may
-    never get an idle window, so the divergence lands inside the following
-    request — measured 10.7 s of prompt_state time on a warm 91K
-    OpenCode-shaped turn (decodecliff probe, 2026-08-30). Settling is a
-    ~0.1-0.4 s idle-lane eval that converts that landmine into GPU memcpy
-    between turns. Off-switch only.
+    Motivation: every unevaluated snapshot view holds a reference to a
+    live cache buffer, blocking donation, so the next turn's first write
+    pays a full COW divergence copy (measured: first slice_update with an
+    alias alive = 66 ms/GB + doubled memory; plain mx.eval of a
+    full-range view ALIASES and releases nothing, so only owner copies
+    decouple).
+
+    DEFAULT OFF — falsified as a default by the 2026-08-30 phase-3 A/B
+    (settle_on/settle_off x2, warm 91K turns): stall magnitude is
+    dominated by idle-lane/SSD scheduling nondeterminism (the next
+    request queues behind multi-GB cold encodes), and adding the settle
+    copy to that lane produced the worst observed stall (27.6 s) instead
+    of removing the class. Kept as an opt-in instrument; the structural
+    fix for the stall class is the #391-style fixed-capacity banks (no
+    per-turn multi-GB snapshot at all) plus a preemptible idle lane.
     """
-    raw = str(os.environ.get("MTPLX_SESSION_SNAPSHOT_SETTLE", "1")).strip().lower()
+    raw = str(os.environ.get("MTPLX_SESSION_SNAPSHOT_SETTLE", "0")).strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
 
@@ -262,29 +267,6 @@ def _tree_nbytes(value: Any) -> int:
     if isinstance(value, dict):
         return sum(_tree_nbytes(item) for item in value.values())
     return 0
-
-
-def _tree_mx_arrays(value: Any, out: list[mx.array] | None = None) -> list[mx.array]:
-    if out is None:
-        out = []
-    if value is None:
-        return out
-    if isinstance(value, CacheSnapshot):
-        _tree_mx_arrays(value.states, out)
-        _tree_mx_arrays(value.meta_states, out)
-        return out
-    if isinstance(value, mx.array):
-        out.append(value)
-        return out
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            _tree_mx_arrays(item, out)
-        return out
-    if isinstance(value, dict):
-        for item in value.values():
-            _tree_mx_arrays(item, out)
-        return out
-    return out
 
 
 def _snapshot_nbytes(snapshot: CacheSnapshot) -> int:
@@ -1761,17 +1743,44 @@ class SessionBank:
             return
 
         def _settle_job() -> None:
+            # Plain mx.eval of a full-range lazy view ALIASES the source
+            # buffer (measured 2026-08-30: eval(base[...]) allocates
+            # nothing, and mx.contiguous no-ops on already-contiguous
+            # inputs), so the donation-blocking reference survives eval.
+            # Only an owner copy (metal_copy_leaf) actually decouples the
+            # snapshot from the live buffers; each leaf is copied and
+            # evaluated individually so a foreground request that lands
+            # mid-settle waits at most one leaf.
             try:
-                arrays = _tree_mx_arrays(
-                    (
-                        entry.cache_snapshot,
-                        entry.mtp_history_snapshot,
-                        entry.logits,
-                        entry.hidden,
-                    )
-                )
-                for array in arrays:
-                    mx.eval(array)
+                from mtplx.kernels.copy_leaf import metal_copy_leaf
+
+                def _own(value: Any) -> Any:
+                    if value is None:
+                        return None
+                    if isinstance(value, CacheSnapshot):
+                        return CacheSnapshot(
+                            states=_own(value.states),
+                            meta_states=_own(value.meta_states),
+                        )
+                    if isinstance(value, mx.array):
+                        owned = metal_copy_leaf(value)
+                        mx.eval(owned)
+                        return owned
+                    if isinstance(value, tuple):
+                        return tuple(_own(item) for item in value)
+                    if isinstance(value, list):
+                        return [_own(item) for item in value]
+                    if isinstance(value, dict):
+                        return {key: _own(item) for key, item in value.items()}
+                    return value
+
+                # Field-at-a-time rebinding: every intermediate state is
+                # valid (same values, different buffers), so a concurrent
+                # restore reading the entry mid-settle stays correct.
+                entry.cache_snapshot = _own(entry.cache_snapshot)
+                entry.mtp_history_snapshot = _own(entry.mtp_history_snapshot)
+                entry.logits = _own(entry.logits)
+                entry.hidden = _own(entry.hidden)
                 entry.snapshot_settled_at = time.monotonic()
             except Exception as exc:
                 self.eviction_log.append(

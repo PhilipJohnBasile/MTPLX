@@ -1943,6 +1943,7 @@ class QSAIndexer(nn.Module):
             # dense mask staged, no gathered copies (both measured slower:
             # dense = full-context reads, gather = -5.25% from two
             # materialized copies per layer per token, d6171d2c).
+            _qsa_prefill_count("decode_flash_skip")
             blk_idx = mx.sort(top_idx[0].astype(mx.int32))
             tail_start = ((pos_start + 1) // self.ratio) * self.ratio
             return ("flash", blk_idx, tail_start)
@@ -1964,6 +1965,7 @@ class QSAIndexer(nn.Module):
             # Host-side int (no .item() sync — a per-layer eval would stall
             # the AR pipeline): for the single decode row qpos == pos_start,
             # so the visible-complete-block count is (pos_start+1) // ratio.
+            _qsa_prefill_count("decode_gather")
             tail_start = ((pos_start + 1) // self.ratio) * self.ratio
             tail_ids = mx.arange(tail_start, total, dtype=mx.int32)
             return mx.concatenate([tok_from_blocks, tail_ids])
@@ -2004,6 +2006,8 @@ class QSAIndexer(nn.Module):
             return ("gather_rows", token_idx, token_ok)
 
         # Blocks -> tokens, plus the visible tail, intersected with causal.
+        if S == 1:
+            _qsa_prefill_count("decode_dense_mask")
         tok_sel = mx.repeat(selected, self.ratio, axis=1)
         if nb_total * self.ratio < total:
             pad = mx.zeros((S, total - nb_total * self.ratio), dtype=mx.bool_)
