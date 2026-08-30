@@ -55,7 +55,27 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
            runtime(existing, satisfies: minimumVersion),
            bundledWheel == nil || isAppManagedRuntime(existing),
            installedRuntimeMatchesBundledWheel(installedExecutable: existing) {
-            return existing
+            // The version floor and wheel fingerprint prove which bytes are
+            // installed, not that they can run: a torn dependency upgrade or
+            // a foreign pip session can leave mlx's native extension unable
+            // to dlopen its own dylib ("Symbol not found: ..._scaled_dot_
+            // product_attention..."), and the daemon then dies before
+            // /health on every launch. `mtplx --version` never imports mlx,
+            // so both checks above stay green, and reinstalling the app
+            // cannot heal it because the venv lives in Application Support
+            // with a still-matching fingerprint. Prove the imports once per
+            // wheel (marker), re-prove after any daemon death (breadcrumb),
+            // and rebuild the venv from scratch when the probe fails.
+            if runtimeImportHealthAccepted(installedExecutable: existing) {
+                return existing
+            }
+            if let wheel = bundledWheel {
+                status?("Repairing MTPLX runtime")
+                return try installBundledRuntime(
+                    wheel: URL(fileURLWithPath: wheel),
+                    rebuildFromScratch: true
+                )
+            }
         }
         if let wheel = bundledWheel {
             status?("Installing MTPLX runtime")
@@ -145,6 +165,125 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
             atomically: true,
             encoding: .utf8
         )
+    }
+
+    // MARK: - Runtime import health (self-healing venv)
+
+    /// The imports a daemon launch actually needs to survive. `mlx.core`
+    /// is the native-extension pair (core.cpython-*.so ↔ libmlx dylib)
+    /// that a torn upgrade or a foreign pip session leaves mismatched;
+    /// `mtplx` catches a gutted package install.
+    static let importHealthProbeSource = "import mlx.core, mtplx"
+
+    /// Marker recording the wheel fingerprint whose venv passed the
+    /// import probe. Lives inside the venv so it dies with the install
+    /// it vouches for (a `--clear` rebuild wipes it).
+    static func importHealthMarkerURL(runtimeDir: URL) -> URL {
+        runtimeDir.appendingPathComponent("runtime-import-health.sha256")
+    }
+
+    static func recordedImportHealth(runtimeDir: URL) -> String? {
+        guard let raw = try? String(
+            contentsOf: importHealthMarkerURL(runtimeDir: runtimeDir),
+            encoding: .utf8
+        ) else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func recordImportHealth(fingerprint: String, runtimeDir: URL) {
+        try? fingerprint.write(
+            to: importHealthMarkerURL(runtimeDir: runtimeDir),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    /// Breadcrumb requesting a full import re-probe on the next launch.
+    /// Written when a daemon dies before /health became ready; lives
+    /// beside the venv (not inside it) so a rebuild starts from a clean
+    /// slate and clearing is always an explicit act after the probe ran.
+    static func importRecheckRequestURL(environment: [String: String]) -> URL {
+        URL(fileURLWithPath: MTPLXCommandBuilder.appRuntimeDirectory(environment: environment))
+            .deletingLastPathComponent()
+            .appendingPathComponent("runtime-import-recheck")
+    }
+
+    /// Called by the launch failure path: a daemon that exits before
+    /// /health may be sitting on a venv that can no longer import mlx.
+    /// The next `installOrUpdate` re-probes and rebuilds if broken.
+    public static func requestRuntimeImportRecheck(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        let url = importRecheckRequestURL(environment: environment)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? Data("a daemon launch died before /health; verify runtime imports before the next launch\n".utf8)
+            .write(to: url, options: .atomic)
+    }
+
+    static func clearRuntimeImportRecheck(environment: [String: String]) {
+        try? FileManager.default.removeItem(
+            at: importRecheckRequestURL(environment: environment)
+        )
+    }
+
+    /// Exit-0 iff the venv's python can import the native stack. `-I`
+    /// (isolated mode) ignores PYTHONPATH and user site-packages, so the
+    /// probe sees exactly what the daemon's hermetic launch sees.
+    func runtimeImportProbeSucceeds(runtimeDir: URL) -> Bool {
+        let venvPython = runtimeDir
+            .appendingPathComponent("bin")
+            .appendingPathComponent("python")
+        do {
+            _ = try run(
+                executable: venvPython,
+                arguments: ["-I", "-c", Self.importHealthProbeSource],
+                displayCommand: "runtime python -c '\(Self.importHealthProbeSource)'",
+                timeout: 120
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Reuse gate for an already-installed app-managed venv: fast-path on
+    /// the recorded health marker (one stat per launch), probe on first
+    /// adoption of a wheel or when a daemon death requested a recheck.
+    func runtimeImportHealthAccepted(installedExecutable: URL) -> Bool {
+        guard let wheelPath = MTPLXCommandBuilder.bundledRuntimeWheelPath(
+            environment: environment
+        ) else {
+            // No wheel to rebuild from: Homebrew/system runtimes keep
+            // their existing contract (doctor guides those users).
+            return true
+        }
+        guard isAppManagedRuntime(installedExecutable) else { return true }
+        let runtimeDir = URL(
+            fileURLWithPath: MTPLXCommandBuilder.appRuntimeDirectory(environment: environment)
+        )
+        let fingerprint = try? Self.wheelFingerprint(of: URL(fileURLWithPath: wheelPath))
+        let recheckRequested = FileManager.default.fileExists(
+            atPath: Self.importRecheckRequestURL(environment: environment).path
+        )
+        if !recheckRequested,
+           let fingerprint,
+           Self.recordedImportHealth(runtimeDir: runtimeDir) == fingerprint {
+            return true
+        }
+        guard runtimeImportProbeSucceeds(runtimeDir: runtimeDir) else {
+            return false
+        }
+        if let fingerprint {
+            Self.recordImportHealth(fingerprint: fingerprint, runtimeDir: runtimeDir)
+        }
+        Self.clearRuntimeImportRecheck(environment: environment)
+        return true
     }
 
     public func upgradeHomebrewRuntime() throws -> URL {
@@ -307,14 +446,14 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
         return env
     }
 
-    private func installBundledRuntime(wheel: URL) throws -> URL {
+    private func installBundledRuntime(wheel: URL, rebuildFromScratch: Bool = false) throws -> URL {
         let runtimeDir = URL(fileURLWithPath: MTPLXCommandBuilder.appRuntimeDirectory(environment: environment))
         try FileManager.default.createDirectory(
             at: runtimeDir.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
         let python = try resolvePythonExecutable()
-        try createRuntimeVenv(python: python, runtimeDir: runtimeDir)
+        try createRuntimeVenv(python: python, runtimeDir: runtimeDir, forceClear: rebuildFromScratch)
         let venvPython = runtimeDir.appendingPathComponent("bin").appendingPathComponent("python")
         // Best effort: the venv's ensurepip pip is already new enough
         // to install the bundled wheel, so a PyPI hiccup or blocked
@@ -358,7 +497,21 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
                 output: "Bundled runtime installed \(observed), but \(minimumVersion?.description ?? "the required version") is required."
             )
         }
+        // A fresh install must also prove the native stack imports before
+        // being trusted: pip can resolve an mlx whose extension and dylib
+        // disagree, and surfacing that here (with a retryable error) beats
+        // a daemon that dies before /health with no explanation.
+        guard runtimeImportProbeSucceeds(runtimeDir: runtimeDir) else {
+            throw MTPLXRuntimeBootstrapperError.runtimeStillMissing(
+                output: "Bundled runtime installed, but the engine failed its import check "
+                    + "(mlx native libraries). Check network access to PyPI, then press Retry."
+            )
+        }
         Self.recordWheelFingerprint(for: wheel, runtimeDir: runtimeDir)
+        if let fingerprint = try? Self.wheelFingerprint(of: wheel) {
+            Self.recordImportHealth(fingerprint: fingerprint, runtimeDir: runtimeDir)
+        }
+        Self.clearRuntimeImportRecheck(environment: environment)
         return executable
     }
 
@@ -375,18 +528,20 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
     /// and retry once with `--clear` on any other creation failure.
     /// A healthy venv keeps the plain no-clear path so same-venv
     /// updates reuse installed dependencies (fast and offline-safe).
-    func createRuntimeVenv(python: URL, runtimeDir: URL) throws {
+    func createRuntimeVenv(python: URL, runtimeDir: URL, forceClear: Bool = false) throws {
         let fileManager = FileManager.default
         // Probe bin/python — the executable the install steps below
         // actually invoke. isExecutableFile resolves symlinks, so a
         // dangling chain reads as not-executable — exactly the broken
-        // state.
+        // state. `forceClear` is the import-health repair path: the venv
+        // python runs but its site-packages are poisoned, so nothing in
+        // it can be reused.
         let venvPython = runtimeDir
             .appendingPathComponent("bin")
             .appendingPathComponent("python")
         let venvBroken = fileManager.fileExists(atPath: runtimeDir.path)
             && !fileManager.isExecutableFile(atPath: venvPython.path)
-        if venvBroken {
+        if forceClear || venvBroken {
             _ = try run(
                 executable: python,
                 arguments: ["-m", "venv", "--clear", runtimeDir.path],

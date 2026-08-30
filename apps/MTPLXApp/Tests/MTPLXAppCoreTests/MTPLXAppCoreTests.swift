@@ -10043,6 +10043,238 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertNotEqual(try MTPLXRuntimeBootstrapper.wheelFingerprint(of: fixture.wheel), first)
     }
 
+    // MARK: - Runtime import health (self-healing venv)
+    //
+    // A venv whose mlx native extension can no longer dlopen its dylib
+    // passes the version floor (`mtplx --version` never imports mlx) and
+    // the wheel fingerprint (the wheel bytes never changed), so the
+    // daemon dies before /health on every launch and app reinstalls
+    // cannot heal it. The bootstrapper must prove imports before
+    // trusting a venv, and rebuild from scratch when the proof fails.
+
+    /// Fixture: an app-managed venv whose `bin/python` exits
+    /// `probeExitCode` for import probes (`-I -c ...`) and logs every
+    /// invocation, plus a bundled wheel with a recorded fingerprint.
+    ///
+    /// Standard search paths stay ENABLED: that is what puts the
+    /// app-managed venv bin first in `searchPaths` (it follows the
+    /// fixture's temp HOME, so nothing real leaks in). The outer fake
+    /// python (venv/pip handler, same heredoc shape as
+    /// `testRuntimeBootstrapperRepairsStaleRuntimeFromBundledWheel`)
+    /// guards every fixture against ever reaching a real interpreter.
+    private func makeImportHealthFixture(
+        probeExitCode: Int32
+    ) throws -> (environment: [String: String], runtimeDir: URL, wheel: URL, home: URL, probeLog: URL, installLog: URL) {
+        let fixture = try makeRuntimeFixture(wheelContents: "wheel-A")
+        MTPLXRuntimeBootstrapper.recordWheelFingerprint(
+            for: fixture.wheel,
+            runtimeDir: fixture.runtimeDir
+        )
+        let probeLog = fixture.home.appendingPathComponent("probe.log")
+        let venvPython = fixture.runtimeDir
+            .appendingPathComponent("bin")
+            .appendingPathComponent("python")
+        try """
+        #!/bin/sh
+        echo "$*" >> "\(probeLog.path)"
+        if [ "$1" = "-I" ]; then
+          exit \(probeExitCode)
+        fi
+        exit 0
+        """.data(using: .utf8)!.write(to: venvPython)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: venvPython.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fixture.runtimeDir
+                .appendingPathComponent("bin")
+                .appendingPathComponent("mtplx").path
+        )
+        let installLog = fixture.home.appendingPathComponent("runtime-install.log")
+        let outerPython = fixture.home.appendingPathComponent("fake-python")
+        try """
+        #!/bin/sh
+        echo "$*" >> "$MTPLX_FAKE_LOG"
+        if [ "$1" = "--version" ]; then
+          echo "Python 3.13.0"
+          exit 0
+        fi
+        if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+          venv="$3"
+          if [ "$venv" = "--clear" ]; then
+            venv="$4"
+            rm -rf "$venv"
+          fi
+          mkdir -p "$venv/bin"
+          cat > "$venv/bin/python" <<'PYTHON'
+        #!/bin/sh
+        echo "$*" >> "$MTPLX_FAKE_LOG"
+        if [ "$1" = "--version" ]; then
+          echo "Python 3.13.0"
+          exit 0
+        fi
+        if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+          case "$*" in
+            *mtplx-1.0.0-py3-none-any.whl*)
+              cat > "$(dirname "$0")/mtplx" <<'MTPLX'
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+          echo "mtplx 1.0.0 (1.0.0)"
+          exit 0
+        fi
+        echo ok
+        MTPLX
+              chmod +x "$(dirname "$0")/mtplx"
+              ;;
+          esac
+          exit 0
+        fi
+        exit 0
+        PYTHON
+          chmod +x "$venv/bin/python"
+          exit 0
+        fi
+        exit 1
+        """.data(using: .utf8)!.write(to: outerPython)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: outerPython.path
+        )
+        var environment = fixture.environment
+        environment["PATH"] = "/usr/bin:/bin"
+        environment["MTPLX_APP_PYTHON_PATH"] = outerPython.path
+        environment["MTPLX_FAKE_LOG"] = installLog.path
+        return (environment, fixture.runtimeDir, fixture.wheel, fixture.home, probeLog, installLog)
+    }
+
+    private func probeInvocations(_ probeLog: URL) -> [String] {
+        ((try? String(contentsOf: probeLog, encoding: .utf8)) ?? "")
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.hasPrefix("-I ") }
+    }
+
+    func testHealthyImportMarkerSkipsProbeOnReuse() throws {
+        // Probe would FAIL if it ran — proving the marker fast path
+        // never spawns a process on a healthy steady-state launch.
+        let fixture = try makeImportHealthFixture(probeExitCode: 1)
+        let fingerprint = try MTPLXRuntimeBootstrapper.wheelFingerprint(of: fixture.wheel)
+        MTPLXRuntimeBootstrapper.recordImportHealth(
+            fingerprint: fingerprint,
+            runtimeDir: fixture.runtimeDir
+        )
+
+        let statuses = StatusCapture()
+        let executable = try MTPLXRuntimeBootstrapper(environment: fixture.environment)
+            .installOrUpdate { statuses.append($0) }
+
+        XCTAssertEqual(statuses.snapshot(), ["Checking MTPLX runtime"])
+        XCTAssertTrue(executable.path.hasSuffix("runtime-venv/bin/mtplx"))
+        XCTAssertEqual(probeInvocations(fixture.probeLog), [])
+    }
+
+    func testFirstAdoptionProbesAndRecordsImportHealth() throws {
+        let fixture = try makeImportHealthFixture(probeExitCode: 0)
+
+        let statuses = StatusCapture()
+        let executable = try MTPLXRuntimeBootstrapper(environment: fixture.environment)
+            .installOrUpdate { statuses.append($0) }
+
+        XCTAssertEqual(statuses.snapshot(), ["Checking MTPLX runtime"])
+        XCTAssertTrue(executable.path.hasSuffix("runtime-venv/bin/mtplx"))
+        XCTAssertEqual(
+            probeInvocations(fixture.probeLog),
+            ["-I -c \(MTPLXRuntimeBootstrapper.importHealthProbeSource)"]
+        )
+        XCTAssertEqual(
+            MTPLXRuntimeBootstrapper.recordedImportHealth(runtimeDir: fixture.runtimeDir),
+            try MTPLXRuntimeBootstrapper.wheelFingerprint(of: fixture.wheel)
+        )
+    }
+
+    func testDeathBreadcrumbForcesReprobeDespiteHealthyMarker() throws {
+        let fixture = try makeImportHealthFixture(probeExitCode: 0)
+        let fingerprint = try MTPLXRuntimeBootstrapper.wheelFingerprint(of: fixture.wheel)
+        MTPLXRuntimeBootstrapper.recordImportHealth(
+            fingerprint: fingerprint,
+            runtimeDir: fixture.runtimeDir
+        )
+        MTPLXRuntimeBootstrapper.requestRuntimeImportRecheck(environment: fixture.environment)
+
+        let executable = try MTPLXRuntimeBootstrapper(environment: fixture.environment)
+            .installOrUpdate()
+
+        XCTAssertTrue(executable.path.hasSuffix("runtime-venv/bin/mtplx"))
+        XCTAssertEqual(probeInvocations(fixture.probeLog).count, 1, "breadcrumb must force one probe")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: MTPLXRuntimeBootstrapper
+                    .importRecheckRequestURL(environment: fixture.environment).path
+            ),
+            "a passed probe must clear the recheck breadcrumb"
+        )
+    }
+
+    func testFailingImportProbeRebuildsVenvFromScratch() throws {
+        // The resident venv python fails the probe (the kstudio state:
+        // mlx core extension ↔ libmlx symbol mismatch). The bootstrapper
+        // must fall through to a --clear rebuild from the bundled wheel.
+        let fixture = try makeImportHealthFixture(probeExitCode: 3)
+
+        let statuses = StatusCapture()
+        let executable = try MTPLXRuntimeBootstrapper(environment: fixture.environment)
+            .installOrUpdate { statuses.append($0) }
+
+        XCTAssertEqual(statuses.snapshot(), ["Checking MTPLX runtime", "Repairing MTPLX runtime"])
+        XCTAssertTrue(executable.path.hasSuffix("runtime-venv/bin/mtplx"))
+        let calls = try String(contentsOf: fixture.installLog, encoding: .utf8)
+        XCTAssertTrue(calls.contains("-m venv --clear"), calls)
+        XCTAssertTrue(calls.contains("mtplx-1.0.0-py3-none-any.whl[server]"), calls)
+        // The rebuilt venv passed the post-install probe and is now
+        // vouched for — the next launch takes the marker fast path.
+        XCTAssertEqual(
+            MTPLXRuntimeBootstrapper.recordedImportHealth(runtimeDir: fixture.runtimeDir),
+            try MTPLXRuntimeBootstrapper.wheelFingerprint(of: fixture.wheel)
+        )
+    }
+
+    func testFailureClassifierMatchesDaemonDeathNotCancellationOrPorts() {
+        XCTAssertTrue(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.launchFailed(
+                    "daemon exited before /health became ready: ImportError: dlopen(...)"
+                )
+            )
+        )
+        XCTAssertTrue(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.launchFailed("daemon exited during launch with status 1")
+            )
+        )
+        XCTAssertFalse(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.launchFailed("daemon launch was cancelled")
+            )
+        )
+        XCTAssertFalse(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.launchFailed(
+                    "daemon exited during launch with status 1: [Errno 48] address already in use"
+                )
+            )
+        )
+        XCTAssertFalse(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.portOccupied(pid: 123, launchID: nil)
+            )
+        )
+        XCTAssertFalse(
+            MTPLXBackendStore.failureIndicatesRuntimeDeathBeforeReady(
+                DaemonSupervisorError.healthTimeout
+            )
+        )
+    }
+
     func testPreflightMovesPortAwayFromForeignOccupantAndPersists() async throws {
         let occupiedPort = try freeTCPPort()
         let garbage = try startGarbageHTTPServer(port: occupiedPort)

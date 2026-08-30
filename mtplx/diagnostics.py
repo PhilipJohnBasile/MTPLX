@@ -387,9 +387,14 @@ def build_diagnostic_checks(
             "error",
             mlx if mlx else "not probed",
             "mlx importable",
-            "Install MLX into this same native Python environment.",
+            # "Symbol not found" / dlopen failures mean the mlx native
+            # extension and its dylib disagree (torn upgrade), not that
+            # mlx is missing — a plain `pip install mlx` is a no-op then.
+            "MLX is broken or mismatched in this environment. App installs: "
+            "quit and relaunch the MTPLX app — it verifies and repairs its own "
+            "runtime. CLI installs: force-reinstall with the command below.",
             DOCS["mlx"],
-            "python3 -m pip install mlx",
+            "python3 -m pip install --force-reinstall mlx 'mtplx[server]'",
         )
     )
     memory_check = _default_model_memory_check(host)
