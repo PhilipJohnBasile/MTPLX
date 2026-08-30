@@ -1550,6 +1550,33 @@ def compiled_verify_ple_scope(embedding: Optional[mx.array]):
         _COMPILED_VERIFY_PLE.reset(token)
 
 
+def _qsa_stock_rows_gather_kv(
+    keys: mx.array, values: mx.array, token_idx: mx.array
+) -> tuple[mx.array, mx.array]:
+    """Materialize per-row QSA K/V with the two stock gather dispatches."""
+
+    h_kv = int(keys.shape[1])
+    rows, selected = token_idx.shape
+    head_dim = int(keys.shape[-1])
+    flat = token_idx.reshape(-1)
+    return (
+        mx.take(keys, flat, axis=2).reshape(
+            1, h_kv, int(rows), int(selected), head_dim
+        ),
+        mx.take(values, flat, axis=2).reshape(
+            1, h_kv, int(rows), int(selected), head_dim
+        ),
+    )
+
+
+def _qsa_rows_gather_kv_route(cache: Any, rows: int) -> Any:
+    """Select the construction-bound gather only for its physical M=4 lane."""
+
+    if int(rows) == 4:
+        return cache.rows_gather_kv_m4
+    return _qsa_stock_rows_gather_kv
+
+
 class QSACache:
     """Cache for one QSA layer: the attention KV plus the indexer's raw key
     stream and the incrementally maintained pooled (mean->norm->rope) block
@@ -1572,6 +1599,7 @@ class QSACache:
     def __init__(self, compress_ratio: int = 4):
         self.kv = KVCache()
         self.ratio = max(1, int(compress_ratio))
+        self.rows_gather_kv_m4 = _qsa_stock_rows_gather_kv
         self.raw_keys: Optional[mx.array] = None  # [1, cap, index_head_dim]
         self.pooled: Optional[mx.array] = None  # [1, cap_blocks, index_head_dim]
         self.pooled_len = 0  # valid pooled blocks
@@ -2828,6 +2856,7 @@ def _qsa_rows_gather_attention(
     token_idx: mx.array,
     token_ok: mx.array,
     scale: float,
+    gather_kv: Any,
 ) -> mx.array:
     """Attention over per-row gathered tokens (rows-gather lane).
 
@@ -2848,9 +2877,7 @@ def _qsa_rows_gather_attention(
     B, H, S, D = q.shape
     H_kv = int(k.shape[1])
     K = int(token_idx.shape[-1])
-    flat = token_idx.reshape(-1)
-    k_sel = mx.take(k, flat, axis=2).reshape(1, H_kv, S, K, D)
-    v_sel = mx.take(v, flat, axis=2).reshape(1, H_kv, S, K, D)
+    k_sel, v_sel = gather_kv(k, v, token_idx)
     neg = mx.array(-mx.inf, dtype=mx.float32)
     if H != H_kv:
         rep = H // H_kv
@@ -3210,7 +3237,15 @@ class Attention(nn.Module):
             # through a dense [S, T] mask. See _qsa_rows_gather_attention
             # (adapting community PR #380 by @maceip).
             _, tok_idx, tok_ok = sel_mask
-            out = _qsa_rows_gather_attention(q, k, v, tok_idx, tok_ok, self.scale)
+            out = _qsa_rows_gather_attention(
+                q,
+                k,
+                v,
+                tok_idx,
+                tok_ok,
+                self.scale,
+                _qsa_rows_gather_kv_route(cache, S),
+            )
             out = out.transpose(0, 2, 1, 3).reshape(B, S, -1)
             return self.o_proj(out * mx.sigmoid(gate))
 

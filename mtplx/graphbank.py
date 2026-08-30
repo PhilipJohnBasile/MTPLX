@@ -622,6 +622,7 @@ class TensorOffsetQSACache:
         *,
         compress_ratio: int,
         rows_gather: bool = False,
+        rows_gather_kv_m4: Any,
     ) -> None:
         self.kv = kv
         self.raw_keys = raw_keys
@@ -629,6 +630,7 @@ class TensorOffsetQSACache:
         self.ratio = max(1, int(compress_ratio))
         self.step = int(getattr(kv, "step", 256))
         self.fixed_rows_gather = bool(rows_gather)
+        self.rows_gather_kv_m4 = rows_gather_kv_m4
 
     @classmethod
     def from_qsa_cache(
@@ -672,14 +674,42 @@ class TensorOffsetQSACache:
             _qsa_gather_min_context,
         )
 
+        rows_gather = _qsa_gather_enabled() and offset >= _qsa_gather_min_context()
+        rows_gather_kv_m4 = entry.rows_gather_kv_m4
+        if _env_enabled("MTPLX_QSA_M4_FUSED_KV_GATHER"):
+            expected_shape = (1, 2, raw_capacity, 256)
+            if not _env_enabled("MTPLX_QWEN4_FIXED_M4_VERIFY"):
+                raise RuntimeError(
+                    "QSA fused K/V gather requires the fixed-M4 verifier"
+                )
+            if not rows_gather or ratio != 4:
+                raise RuntimeError(
+                    "QSA fused K/V gather requires the fixed rows-gather ratio-4 lane"
+                )
+            if (
+                tuple(kv.keys.shape) != expected_shape
+                or tuple(kv.values.shape) != expected_shape
+                or kv.keys.dtype != mx.bfloat16
+                or kv.values.dtype != mx.bfloat16
+            ):
+                raise RuntimeError(
+                    "QSA fused K/V gather requires BF16 [1,2,capacity,256] cache ownership"
+                )
+            from .kernels.qwen4_qsa_m4_fused_kv_gather import (
+                bind_qwen4_qsa_m4_fused_kv_gather,
+            )
+
+            rows_gather_kv_m4 = bind_qwen4_qsa_m4_fused_kv_gather(
+                capacity=raw_capacity
+            )
+
         return cls(
             kv,
             raw,
             pooled,
             compress_ratio=ratio,
-            rows_gather=(
-                _qsa_gather_enabled() and offset >= _qsa_gather_min_context()
-            ),
+            rows_gather=rows_gather,
+            rows_gather_kv_m4=rows_gather_kv_m4,
         )
 
     @property
@@ -1784,11 +1814,23 @@ class CompiledVerifyBank:
             )
             aux_route = "materialized"
             aux_inputs = "device_history"
+        from .models.qwen4_exp import _qsa_stock_rows_gather_kv
+
+        kv_gather = (
+            "fused_m4"
+            if any(
+                kind == VERIFY_SPEC_KIND_QSA
+                and entry.rows_gather_kv_m4 is not _qsa_stock_rows_gather_kv
+                for kind, entry, _n in state_plan
+            )
+            else "stock"
+        )
         self._fixed_m4_dispatch = {
             "fn": fn,
             "prepare_aux": prepare_aux,
             "aux_route": aux_route,
             "aux_inputs": aux_inputs,
+            "kv_gather": kv_gather,
             "state_plan": state_plan,
             "state_leaves": sum(n for _kind, _entry, n in state_plan),
             "capture_plan": tuple(capture_plan),
@@ -1810,7 +1852,7 @@ class CompiledVerifyBank:
             print(
                 "[qwen4-fixed-M4-verify] replay installed: "
                 f"aux={aux_route} inputs={aux_inputs} boundary={boundary} "
-                f"donate={self._fixed_m4_dispatch['donate']}",
+                f"donate={self._fixed_m4_dispatch['donate']} kv_gather={kv_gather}",
                 flush=True,
             )
 
@@ -2625,6 +2667,7 @@ class CompiledVerifyBank:
                 "installed": True,
                 "aux_route": dispatch["aux_route"],
                 "aux_inputs": dispatch["aux_inputs"],
+                "kv_gather": dispatch["kv_gather"],
                 "boundary": dispatch["boundary"],
                 "donate": bool(dispatch["donate"]),
                 "state_leaves": int(dispatch["state_leaves"]),
@@ -2863,6 +2906,7 @@ class CompiledVerifyBank:
                     entry.pooled,
                     compress_ratio=entry.ratio,
                     rows_gather=entry.fixed_rows_gather,
+                    rows_gather_kv_m4=entry.rows_gather_kv_m4,
                 )
             elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):
@@ -3386,6 +3430,7 @@ class CompiledVerifyBank:
                     _copy_state_leaf(entry.pooled),
                     compress_ratio=entry.ratio,
                     rows_gather=entry.fixed_rows_gather,
+                    rows_gather_kv_m4=entry.rows_gather_kv_m4,
                 )
             elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):

@@ -352,6 +352,9 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # Registered ahead of any default flip per the boot-trap law.
         "MTPLX_QSA_GATHER_MIN_CONTEXT",
         "MTPLX_QSA_GATHER_MAX_ROWS",
+        # Fixed-M4 QSA rows-gather candidate: read each token index once and
+        # materialize selected K and V in one prebound Metal dispatch.
+        "MTPLX_QSA_M4_FUSED_KV_GATHER",
         # QSA block-sparse flash-skip attention (2026-08-27 candidate):
         # selected blocks iterated inside the kernel, no staging/copies.
         "MTPLX_QSA_FLASH",

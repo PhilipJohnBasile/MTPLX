@@ -315,6 +315,7 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
         "MTPLX_COMPILED_VERIFY",
         "MTPLX_QWEN4_FIXED_M4_VERIFY",
         "MTPLX_QWEN4_M4_STAGE3",
+        "MTPLX_QSA_M4_FUSED_KV_GATHER",
     ):
         monkeypatch.delenv(key, raising=False)
     args = argparse.Namespace(
@@ -337,6 +338,7 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     assert overrides["MTPLX_COMPILED_VERIFY"] == "1"
     assert overrides["MTPLX_QWEN4_FIXED_M4_VERIFY"] == "1"
     assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
+    assert "MTPLX_QSA_M4_FUSED_KV_GATHER" not in overrides
 
     # The combine tail gate (step 5) is consumed at model load: the server
     # carries a pack-stamped value unchanged and pins nothing else for it ...
@@ -358,6 +360,19 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
     assert "MTPLX_COMPILED_VERIFY" not in overrides
     monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_VERIFY")
+    # The fused QSA K/V gather gate (step 8) is consumed at cache promotion:
+    # carried from a pack, never pinned, and an operator export beats it.
+    overrides = _server_runtime_env_overrides(
+        args, {"MTPLX_QSA_M4_FUSED_KV_GATHER": "1"}
+    )
+    assert overrides["MTPLX_QSA_M4_FUSED_KV_GATHER"] == "1"
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    monkeypatch.setenv("MTPLX_QSA_M4_FUSED_KV_GATHER", "0")
+    overrides = _server_runtime_env_overrides(
+        args, {"MTPLX_QSA_M4_FUSED_KV_GATHER": "1"}
+    )
+    assert "MTPLX_QSA_M4_FUSED_KV_GATHER" not in overrides
+    monkeypatch.delenv("MTPLX_QSA_M4_FUSED_KV_GATHER")
 
     # Operator export opt-in: the env already carries the gate, the
     # companion is pinned, and an explicit compiled-verify export wins.
@@ -378,6 +393,7 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     assert "MTPLX_COMPILED_VERIFY" not in overrides
     assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
     assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
+    assert "MTPLX_QSA_M4_FUSED_KV_GATHER" not in overrides
 
 
 # ---------------------------------------------------------------------------
