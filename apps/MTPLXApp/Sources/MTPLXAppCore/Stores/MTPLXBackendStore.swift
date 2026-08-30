@@ -579,6 +579,14 @@ public final class MTPLXBackendStore: ObservableObject {
                 error,
                 port: configuration.port
             )
+            if Self.failureIndicatesRuntimeDeathBeforeReady(error) {
+                // The venv may no longer import mlx (torn upgrade / foreign
+                // pip session). Ask the bootstrapper to re-prove imports on
+                // the next launch; it rebuilds the venv if the probe fails.
+                MTPLXRuntimeBootstrapper.requestRuntimeImportRecheck(
+                    environment: commandBuilder.environment
+                )
+            }
             daemonState = .degraded(failureDescription)
             startupPhase = .failed(failureDescription)
             await refreshLogs()
@@ -819,6 +827,14 @@ public final class MTPLXBackendStore: ObservableObject {
                     )
                 }
             }
+            if Self.failureIndicatesRuntimeDeathBeforeReady(error) {
+                // The venv may no longer import mlx (torn upgrade / foreign
+                // pip session). Ask the bootstrapper to re-prove imports on
+                // the next launch; it rebuilds the venv if the probe fails.
+                MTPLXRuntimeBootstrapper.requestRuntimeImportRecheck(
+                    environment: commandBuilder.environment
+                )
+            }
             daemonState = .degraded(failureDescription)
             startupPhase = .failed(failureDescription)
             await refreshLogs()
@@ -963,6 +979,20 @@ public final class MTPLXBackendStore: ObservableObject {
         if case DaemonSupervisorError.launchFailed(let detail) = error {
             let lowered = detail.lowercased()
             return lowered.contains("already in use") || lowered.contains("errno 48")
+        }
+        return false
+    }
+
+    /// True when the daemon process itself died before /health became
+    /// ready — the signature of a broken runtime venv (torn mlx upgrade,
+    /// foreign pip session) — as opposed to cancellations, port
+    /// conflicts, or slow model loads. Matches the supervisor's
+    /// "daemon exited before /health became ready" and "daemon exited
+    /// during launch with status N" details.
+    nonisolated static func failureIndicatesRuntimeDeathBeforeReady(_ error: Error) -> Bool {
+        guard !failureIndicatesPortConflict(error) else { return false }
+        if case DaemonSupervisorError.launchFailed(let detail) = error {
+            return detail.lowercased().contains("daemon exited")
         }
         return false
     }
