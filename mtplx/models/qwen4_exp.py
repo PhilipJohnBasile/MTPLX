@@ -1034,6 +1034,22 @@ def _qsa_flash_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _qsa_score_tile_rows() -> int:
+    """Prefill indexer scoring tile (MTPLX_QSA_SCORE_TILE_ROWS, 0 = off).
+
+    The whole-chunk scores matmul stages [1, S, H, nb] fp32 plus its relu
+    twin — ~2.1 GB per layer per 2048-chunk at 262K context, the dominant
+    term in the #393 prefill transient. Tiling the query rows caps the live
+    fp32 at tile/S of that with per-row-identical selection math (each
+    row's dot, relu-sum, mask and top-k never see other rows). Opt-in
+    until the per-tile eval sync cost is measured on GPU (no default flip
+    without a receipt)."""
+    try:
+        return max(0, int(os.environ.get("MTPLX_QSA_SCORE_TILE_ROWS") or 0))
+    except ValueError:
+        return 0
+
+
 def _fused_hc_enabled() -> bool:
     raw = (os.environ.get("MTPLX_FUSED_HC") or "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -1332,6 +1348,46 @@ class QSAIndexer(nn.Module):
             return None
         return cache.pooled[:, :nb_total, :]
 
+    def _tiled_selected(
+        self,
+        q: mx.array,
+        pooled_t: mx.array,
+        nb_q: mx.array,
+        blk: mx.array,
+        neg: mx.array,
+        k_eff: int,
+        nb_total: int,
+        tile: int,
+    ) -> mx.array:
+        """Per-tile scoring + selection; concatenated [S, nb_total] bool.
+
+        Row math is identical to the whole-chunk path (each row's dot,
+        relu-sum, validity mask, tie-break and top-k involve no other row);
+        the per-tile mx.eval is the point — it retires each tile's fp32
+        score intermediates before the next tile is built, so the live
+        transient is bounded by ONE tile instead of the whole chunk."""
+        parts = []
+        S = q.shape[1]
+        tie = blk.astype(mx.float32)[None, :] * 1e-12
+        for s0 in range(0, S, tile):
+            s1 = min(s0 + tile, S)
+            sc = mx.matmul(q[:, s0:s1].astype(mx.float32), pooled_t)
+            sc = mx.maximum(sc, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
+            sc = sc[0]  # [s1-s0, nb]
+            valid_t = blk[None, :] < nb_q[s0:s1, None]
+            masked_t = mx.where(valid_t, sc, neg) - tie
+            top_t = mx.argpartition(masked_t, kth=nb_total - k_eff, axis=-1)[
+                :, nb_total - k_eff :
+            ]
+            sel_t = mx.zeros((s1 - s0, nb_total), dtype=mx.bool_)
+            sel_t = mx.put_along_axis(
+                sel_t, top_t.astype(mx.int64), mx.array(True), axis=-1
+            )
+            sel_t = sel_t & valid_t
+            mx.eval(sel_t)
+            parts.append(sel_t)
+        return mx.concatenate(parts, axis=0)
+
     def __call__(
         self,
         hidden: mx.array,
@@ -1369,29 +1425,42 @@ class QSAIndexer(nn.Module):
         # bf16 blocks -> bit-identical scores), without re-materializing
         # 33.5 MB per layer per token at 262K.
         pooled_t = cache.pooled_f32_view(nb_total)  # [1,1,D,nb]
-        scores = mx.matmul(q.astype(mx.float32), pooled_t)  # [1,S,H,nb]
-        scores = mx.maximum(scores, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
-        scores = scores[0]  # [S, nb]
-
         qpos = mx.arange(pos_start, pos_start + S, dtype=mx.int32)  # abs position
         nb_q = (qpos + 1) // self.ratio  # complete blocks visible per query [S]
         blk = mx.arange(nb_total, dtype=mx.int32)
-        valid = blk[None, :] < nb_q[:, None]  # [S, nb]
         neg = mx.array(-mx.inf, dtype=mx.float32)
-        masked_scores = mx.where(valid, scores, neg)
-        # torch.topk tie-break (lowest index wins). Exact ties are common:
-        # a block whose every head-dot is negative relu-scores exactly 0.0.
-        masked_scores = masked_scores - blk.astype(mx.float32)[None, :] * 1e-12
-
         k_eff = min(self.block_topk, nb_total)
-        top_idx = mx.argpartition(masked_scores, kth=nb_total - k_eff, axis=-1)[
-            :, nb_total - k_eff :
-        ]
-        selected = mx.zeros((S, nb_total), dtype=mx.bool_)
-        selected = mx.put_along_axis(
-            selected, top_idx.astype(mx.int64), mx.array(True), axis=-1
-        )
-        selected = selected & valid  # -inf padding rows never select
+
+        tile = _qsa_score_tile_rows()
+        if S > 1 and 0 < tile < S:
+            # Tiled scoring (see _qsa_score_tile_rows): the fast lanes below
+            # are structurally out of reach here (flash/gather-decode are
+            # S==1; rows-gather caps at _qsa_gather_max_rows, far under any
+            # sane tile), so this branch only ever feeds the dense mask
+            # fallthrough.
+            selected = self._tiled_selected(
+                q, pooled_t, nb_q, blk, neg, k_eff, nb_total, tile
+            )
+        else:
+            scores = mx.matmul(q.astype(mx.float32), pooled_t)  # [1,S,H,nb]
+            scores = (
+                mx.maximum(scores, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
+            )
+            scores = scores[0]  # [S, nb]
+            valid = blk[None, :] < nb_q[:, None]  # [S, nb]
+            masked_scores = mx.where(valid, scores, neg)
+            # torch.topk tie-break (lowest index wins). Exact ties are
+            # common: a block whose every head-dot is negative relu-scores
+            # exactly 0.0.
+            masked_scores = masked_scores - blk.astype(mx.float32)[None, :] * 1e-12
+            top_idx = mx.argpartition(masked_scores, kth=nb_total - k_eff, axis=-1)[
+                :, nb_total - k_eff :
+            ]
+            selected = mx.zeros((S, nb_total), dtype=mx.bool_)
+            selected = mx.put_along_axis(
+                selected, top_idx.astype(mx.int64), mx.array(True), axis=-1
+            )
+            selected = selected & valid  # -inf padding rows never select
 
         if S == 1 and _qsa_flash_enabled():
             # Flash-skip lane (MTPLX_QSA_FLASH): hand attention the sorted
@@ -1427,6 +1496,7 @@ class QSAIndexer(nn.Module):
 
         if (
             S > 1
+            and not (0 < tile < S)  # tiled branch produced no top_idx
             and _qsa_gather_enabled()
             and S <= _qsa_gather_max_rows()
             and T >= _qsa_gather_min_context()
