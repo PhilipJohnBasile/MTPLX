@@ -4145,7 +4145,9 @@ def _expand_image_pads(
 # this, each turn re-preprocesses and re-forwards the tower for pixels that
 # cannot have changed. Row-budgeted LRU: ~28 MB per 2.7k-token screenshot at
 # 5120 bf16, so the 32k-row default caps at ~340 MB.
-_VISION_EMBED_CACHE: "OrderedDict[tuple[str, int], tuple[Any, int]]" = OrderedDict()
+_VISION_EMBED_CACHE: (
+    "OrderedDict[tuple[str, int], tuple[Any, int, tuple[int, int, int]]]"
+) = OrderedDict()
 _VISION_EMBED_CACHE_MAX_ROWS = 32768
 
 
@@ -4181,8 +4183,8 @@ def _image_content_digest(raw: bytes) -> int:
 
 def _vision_rows_for_image(
     state: Any, model_dir: Any, preprocessor_config: dict, raw: bytes, digest: int
-) -> tuple[Any, int]:
-    """Embedding rows + pad count for one image, via the digest LRU."""
+) -> tuple[Any, int, tuple[int, int, int]]:
+    """Embedding rows, pad count and (t, h, w) grid for one image (digest LRU)."""
 
     from mtplx.vision import load_vision_tower
     from mtplx.vision.processing import (
@@ -4199,20 +4201,21 @@ def _vision_rows_for_image(
             return hit
     pixel_values, grids = preprocess_images([decode_image(raw)], preprocessor_config)
     pad_count = image_pad_token_count(grids[0])
+    grid = tuple(int(x) for x in grids[0])
     tower = load_vision_tower(str(model_dir))
     rows, _deepstack = tower(pixel_values, grids)
     import mlx.core as _mx
 
     _mx.eval(rows)
     if _vision_embed_cache_enabled():
-        _VISION_EMBED_CACHE[cache_key] = (rows, pad_count)
+        _VISION_EMBED_CACHE[cache_key] = (rows, pad_count, grid)
         cached_rows = sum(entry[1] for entry in _VISION_EMBED_CACHE.values())
         while (
             cached_rows > _VISION_EMBED_CACHE_MAX_ROWS and len(_VISION_EMBED_CACHE) > 1
         ):
             _, evicted = _VISION_EMBED_CACHE.popitem(last=False)
             cached_rows -= evicted[1]
-    return rows, pad_count
+    return rows, pad_count, grid
 
 
 def _materialize_vision_splice(
@@ -4235,14 +4238,16 @@ def _materialize_vision_splice(
     digests: list[int] = []
     row_blocks: list[Any] = []
     pad_counts: list[int] = []
+    grids: list[tuple[int, int, int]] = []
     for raw in images:
         digest = _image_content_digest(raw)
-        rows, pad_count = _vision_rows_for_image(
+        rows, pad_count, grid = _vision_rows_for_image(
             state, model_dir, preprocessor_config, raw, digest
         )
         digests.append(digest)
         row_blocks.append(rows)
         pad_counts.append(pad_count)
+        grids.append(grid)
     expanded_ids = _expand_image_pads(
         prompt_ids,
         image_pad_id=int(spec.image_token_id),
@@ -4256,11 +4261,36 @@ def _materialize_vision_splice(
     # Materialize before handing off: the generation worker runs on a
     # different thread, and a pending lazy graph must not cross it.
     _mx.eval(embeddings)
+
+    # M-RoPE table for families that rope image tokens at grid positions.
+    # Pure function of (expanded ids, grids) — recomputed per request, never
+    # persisted in cache state. A None result (video pads, layout mismatch)
+    # falls back to plain sequential rope rather than a wrong table.
+    mrope_table = None
+    mrope_delta = 0
+    if spec.mrope_section and spec.model_type == "qwen4_exp":
+        from mtplx.vision.mrope import build_mrope_positions
+
+        built = build_mrope_positions(
+            expanded_ids,
+            image_token_id=int(spec.image_token_id),
+            image_grids=grids,
+            spatial_merge_size=int(spec.spatial_merge_size),
+            video_token_id=int(spec.video_token_id),
+        )
+        if built is not None:
+            table_np, mrope_delta = built
+            mrope_table = _mx.array(table_np)
+            _mx.eval(mrope_table)
+
     return expanded_ids, VisionSplice(
         image_pad_token_id=int(spec.image_token_id),
         embeddings=embeddings,
         image_digests=tuple(digests),
         pad_counts=tuple(pad_counts),
+        image_grids=tuple(grids),
+        mrope_table=mrope_table,
+        mrope_delta=mrope_delta,
     )
 
 

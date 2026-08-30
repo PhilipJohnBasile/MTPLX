@@ -52,6 +52,30 @@ _EXACT_VERIFY_REQUIRED: ContextVar[bool] = ContextVar(
     default=False,
 )
 
+# Multi-axis rope state for vision requests: (positions [3, prompt_len] mx
+# array or None, rope_delta int). Families that implement M-RoPE (qwen4_exp)
+# read it inside their attention layers and self-slice by cache offset; every
+# other family ignores it. Set per request around generation entry points —
+# never stored in cache state, so bank restores stay format-stable (the
+# request re-derives it from its own content).
+_VISION_ROPE: ContextVar["tuple[object, int] | None"] = ContextVar(
+    "mtplx_vision_rope",
+    default=None,
+)
+
+
+def vision_rope_state() -> "tuple[object, int] | None":
+    return _VISION_ROPE.get()
+
+
+@contextmanager
+def vision_rope(positions: object, delta: int) -> Iterator[None]:
+    token = _VISION_ROPE.set((positions, int(delta)))
+    try:
+        yield
+    finally:
+        _VISION_ROPE.reset(token)
+
 
 def exact_verify_required() -> bool:
     """True while the current forward must use stock (bit-exact) matmuls.

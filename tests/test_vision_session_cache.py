@@ -139,14 +139,17 @@ class TestVisionEmbedCache:
 
         def counting_preprocess(imgs, cfg):
             calls.append(1)
-            return mx.zeros((4, 3)), [None]
+            return mx.zeros((4, 3)), [(1, 4, 4)]
 
         monkeypatch.setattr(processing_pkg, "preprocess_images", counting_preprocess)
         srv._VISION_EMBED_CACHE.clear()
 
-        rows_1, count_1 = srv._vision_rows_for_image(None, "/m", {}, b"img-a", 111)
-        rows_2, count_2 = srv._vision_rows_for_image(None, "/m", {}, b"img-a", 111)
+        rows_1, count_1, grid_1 = srv._vision_rows_for_image(None, "/m", {}, b"img-a", 111)
+        rows_2, count_2, grid_2 = srv._vision_rows_for_image(None, "/m", {}, b"img-a", 111)
         assert count_1 == count_2 == 4
+        assert grid_1 == grid_2 == (1, 4, 4), (
+            "the digest cache must carry the (t, h, w) grid for M-RoPE"
+        )
         assert len(calls) == 1, "second identical image must hit the digest cache"
         srv._vision_rows_for_image(None, "/m", {}, b"img-b", 222)
         assert len(calls) == 2

@@ -3715,6 +3715,43 @@ def _debug_prefix_divergence(rt: MTPLXRuntime, prompt_ids: list[int], session_ba
         print(f"[mtplx] prefix-diverge diagnostic failed: {exc}", file=sys.stderr)
 
 
+def _vision_rope_scope_for(vision_splice: Any | None):
+    """Context manager arming M-RoPE for forwards of a vision request.
+
+    The (table, delta) pair rides the splice (derived per request from ids +
+    grids by the serve layer); families that implement M-RoPE (qwen4_exp)
+    read it via vision_rope_state() inside attention and self-slice by cache
+    offset, so no per-forward plumbing is needed. Text requests and families
+    without a table get a nullcontext — zero behavior change.
+    """
+    table = getattr(vision_splice, "mrope_table", None) if vision_splice else None
+    delta = int(getattr(vision_splice, "mrope_delta", 0) or 0) if vision_splice else 0
+    if table is None and delta == 0:
+        return contextlib.nullcontext()
+    from .attention_context import vision_rope
+
+    return vision_rope(table, delta)
+
+
+def _with_vision_rope(fn):
+    """Open the M-RoPE scope around a prompt-state builder.
+
+    Applied to restore_or_prefill_prompt_state so every prefill forward —
+    request lane, warm-restore re-forward, and the idle postcommit history
+    store — ropes vision spans identically. Wrong rope on any one of these
+    would poison banked states for later exact restores.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _vision_rope_scope_for(kwargs.get("vision_splice")):
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@_with_vision_rope
 def restore_or_prefill_prompt_state(
     rt: MTPLXRuntime,
     prompt_ids: list[int],
@@ -10597,6 +10634,10 @@ def generate_mtpk(
             # vk/nax lanes are ~6e-3 off stock, flip band ~1.6e-2 measured
             # 2026-08-29). Sampled requests keep the fast kernels.
             exact_verify(sampler.temperature <= 0),
+            # Vision requests: decode-time trunk forwards rope at
+            # sequence_index + mrope delta (equal axes past the prompt
+            # table). Nullcontext for text requests.
+            _vision_rope_scope_for(vision_splice),
             family_capture_scope,
         ):
             if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:

@@ -30,6 +30,14 @@ class VisionSplice:
     # disabled for the request (bypass semantics).
     image_digests: tuple[int, ...] | None = None
     pad_counts: tuple[int, ...] | None = None
+    # Raw (t, h, w) patch grids per image, prompt order — the M-RoPE inputs.
+    image_grids: tuple[tuple[int, int, int], ...] | None = None
+    # M-RoPE position table [3, expanded_prompt_len] (mx.array) and the
+    # decode-time position delta, derived per request from ids + grids by
+    # mtplx.vision.mrope.build_mrope_positions. None/0 for families without
+    # an mrope contract; attention then keeps plain sequential rope.
+    mrope_table: Any | None = None
+    mrope_delta: int = 0
 
     @property
     def total_rows(self) -> int:

@@ -52,6 +52,8 @@ import mlx.nn as nn
 
 from mlx_lm.models.base import BaseModelArgs, create_ssm_mask
 from mlx_lm.models.cache import ArraysCache, KVCache
+
+from mtplx.attention_context import vision_rope_state
 from mlx_lm.models.qwen3_5 import GatedDeltaNet as _Qwen3_5GatedDeltaNet
 from mlx_lm.models.qwen3_next import (
     Qwen3NextSparseMoeBlock as _Qwen3NextSparseMoeBlock,
@@ -119,6 +121,12 @@ class TextArgs(BaseModelArgs):
     rope_parameters: Optional[Dict[str, Any]] = None
     partial_rotary_factor: float = 0.25
     rope_theta: float = 10_000_000.0
+    # M-RoPE contract (vision): per-axis frequency counts over the rotary
+    # pairs and the interleaved layout flag. Text-only requests are exactly
+    # plain rope under it (equal t/h/w axes), so these only change behavior
+    # when a vision request supplies a position table.
+    mrope_section: Optional[list] = None
+    mrope_interleaved: bool = False
 
     def __post_init__(self):
         if self.rope_parameters:
@@ -126,6 +134,12 @@ class TextArgs(BaseModelArgs):
                 "partial_rotary_factor", self.partial_rotary_factor
             )
             self.rope_theta = self.rope_parameters.get("rope_theta", self.rope_theta)
+            section = self.rope_parameters.get("mrope_section")
+            if isinstance(section, (list, tuple)) and section:
+                self.mrope_section = [int(x) for x in section]
+            self.mrope_interleaved = bool(
+                self.rope_parameters.get("mrope_interleaved", self.mrope_interleaved)
+            )
         if self.layer_types is None:
             self.layer_types = [
                 "linear_attention"
@@ -154,6 +168,45 @@ class TextArgs(BaseModelArgs):
 def _rope_cos_sin(positions: mx.array, inv_freq: mx.array) -> tuple[mx.array, mx.array]:
     """Non-interleaved (rotate-half) rope tables for arbitrary integer positions."""
     angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
+    emb = mx.concatenate([angles, angles], axis=-1)
+    return mx.cos(emb), mx.sin(emb)
+
+
+def _build_mrope_axes(section: list, interleaved: bool) -> list[int]:
+    """Per-frequency axis assignment (0=t, 1=h, 2=w) over the rotary pairs.
+
+    Interleaved layout is round-robin t,h,w while each axis has budget left
+    (Qwen3.8-Flash-Next [11,11,10] -> t@0,3..30, h@1,4..31, w@2,5..29);
+    non-interleaved is contiguous section blocks. Matches the reference
+    Qwen-VL family layout (mlx-vlm / transformers).
+    """
+    remaining = [int(x) for x in section]
+    axes: list[int] = []
+    if interleaved:
+        axis = 0
+        while sum(remaining) > 0:
+            if remaining[axis] > 0:
+                axes.append(axis)
+                remaining[axis] -= 1
+            axis = (axis + 1) % len(remaining)
+    else:
+        for axis, count in enumerate(remaining):
+            axes.extend([axis] * count)
+    return axes
+
+
+def _mrope_cos_sin(
+    positions3: mx.array, inv_freq: mx.array, axes: mx.array
+) -> tuple[mx.array, mx.array]:
+    """Rope tables for 3-axis (t, h, w) positions.
+
+    ``positions3`` is [3, S] int32; ``axes`` maps each of the len(inv_freq)
+    frequencies to its position axis. With equal axes this reduces exactly
+    to ``_rope_cos_sin`` (the text case), which is why text-only serving
+    never needs it.
+    """
+    pos = mx.take(positions3.astype(mx.float32), axes, axis=0)  # [F, S]
+    angles = pos.transpose(1, 0) * inv_freq[None, :]  # [S, F]
     emb = mx.concatenate([angles, angles], axis=-1)
     return mx.cos(emb), mx.sin(emb)
 
@@ -1443,10 +1496,19 @@ class Attention(nn.Module):
         self._inv_freq = args.rope_theta ** (
             -mx.arange(0, rot, 2, dtype=mx.float32) / rot
         )
+        self._mrope_axes = (
+            mx.array(
+                _build_mrope_axes(args.mrope_section, args.mrope_interleaved),
+                dtype=mx.int32,
+            )
+            if args.mrope_section and sum(args.mrope_section) == rot // 2
+            else None
+        )
 
     def __call__(self, x: mx.array, cache: QSACache) -> mx.array:
         B, S, _ = x.shape
         pos_start = cache.offset
+        vrope = vision_rope_state()
 
         fused = getattr(self, "qkv_fused", None)
         if fused is not None:
@@ -1480,8 +1542,26 @@ class Attention(nn.Module):
 
         q = self.q_norm(q)
         k = self.k_norm(k)
-        positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
-        cos, sin = _rope_cos_sin(positions, self._inv_freq)
+        if vrope is not None and self._mrope_axes is not None:
+            # Vision request: image tokens rope at (t, h, w) grid positions
+            # from the request's M-RoPE table; spans past the table (decode
+            # continuation) are equal-axes at sequence_index + delta, which
+            # is plain rope shifted by delta. Table and delta are derived
+            # per request from content — nothing new rides cache state.
+            table, delta = vrope
+            end = pos_start + S
+            if table is not None and end <= int(table.shape[1]):
+                cos, sin = _mrope_cos_sin(
+                    table[:, pos_start:end], self._inv_freq, self._mrope_axes
+                )
+            else:
+                positions = mx.arange(
+                    pos_start + delta, pos_start + delta + S, dtype=mx.int32
+                )
+                cos, sin = _rope_cos_sin(positions, self._inv_freq)
+        else:
+            positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
+            cos, sin = _rope_cos_sin(positions, self._inv_freq)
         q = _apply_partial_rope(q, cos, sin)
         k = _apply_partial_rope(k, cos, sin)
 
@@ -1490,6 +1570,16 @@ class Attention(nn.Module):
         v = v.transpose(0, 2, 1, 3)
         k, v = cache.kv.update_and_fetch(k, v)
         T = k.shape[2]
+
+        if vrope is not None:
+            # Vision request: QSA sparse selection is bypassed and attention
+            # runs dense-causal — the reference qwen4_exp implementation
+            # serves multimodal exactly this way (its sparse fast paths
+            # exclude M-RoPE). The indexer above still ran, so the QSA cache
+            # streams (raw/pooled) stay byte-identical with text serving and
+            # bank state keeps one format. Masks key on sequence order,
+            # which remains correct under M-RoPE; only rope reads the axes.
+            sel_mask = None
 
         if isinstance(sel_mask, tuple) and sel_mask and sel_mask[0] == "flash":
             # Block-sparse flash attention over the indexer's exact visible
@@ -2635,17 +2725,24 @@ class ModelArgs(BaseModelArgs):
 
 
 class Model(nn.Module):
-    """House-shaped wrapper: language_model.{model,lm_head}. Vision tensors
-    ship in the pack (model-vision.safetensors) but are not constructed here —
-    text serving is the phase-1 contract; the honest capability report for
-    image inputs is "not yet supported for this family"."""
+    """House-shaped wrapper: language_model.{model,lm_head}.
+
+    Vision serving: the tower (model-vision.safetensors) is constructed
+    out-of-band by mtplx.vision.load_vision_tower — lazily, on the first
+    image, digest-LRU-cached — never here, so text-only sessions pay
+    nothing for it. Image rows enter through ``input_embeddings`` and the
+    attention layers read the request's M-RoPE table via
+    ``vision_rope_state()`` (2026-08-29); ``sanitize`` therefore still
+    filters ``vision_tower.*`` keys from the LM load."""
 
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.args = args
         self.model_type = args.model_type
         text_config = dict(args.text_config)
-        # eos flows from the top-level config when text_config omits it
+        # NOTE: no top-level->text_config merge happens here; the shipped
+        # packs carry eos_token_id inside text_config, which is what
+        # TextArgs reads.
         self.language_model = TextModel(TextArgs.from_dict(text_config))
 
     def __call__(
