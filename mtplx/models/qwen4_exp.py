@@ -1180,11 +1180,45 @@ def _compiled_qsa_indexer_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _qsa_prefill_enabled() -> bool:
-    """Large-S score -> top-k -> sparse-attention pipeline kill switch."""
+def qsa_prefill_lane_auto_supported() -> bool:
+    """Device gate for the auto default: the lane's fast consumer must exist.
 
-    raw = (os.environ.get("MTPLX_QSA_PREFILL") or "0").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    Mirrors the flash kernel's own eligibility (Metal GPU + Metal 4
+    TensorOps). Machines without it would ride the eager selector into the
+    dense-mask reconstruction — pure tax — so auto stays off there until the
+    portable gather tier carries its own receipts on that hardware class.
+    """
+
+    try:
+        import mlx.core as _mx
+
+        if not _mx.metal.is_available() or _mx.default_device() != _mx.gpu:
+            return False
+        from mtplx.kernels.qsa_indexer_select import (
+            qsa_indexer_select_nax_available,
+        )
+
+        return bool(qsa_indexer_select_nax_available())
+    except Exception:
+        return False
+
+
+def _qsa_prefill_enabled() -> bool:
+    """Large-S score -> top-k -> sparse-attention pipeline resolution.
+
+    Explicit env wins both ways. Unset resolves AUTO: on where the NAX flash
+    kernel is supported (2026-08-30 ABBA receipts, Flash-Next M5 Max 128GB:
+    flat at/below the 32K crossover both orders, +34.8% paired at 98K,
+    810 tok/s at 131K, and 262K cold prefill completing at 87.4 GB peak on
+    the machine class that previously wedged — issue #393), off elsewhere.
+    """
+
+    raw = (os.environ.get("MTPLX_QSA_PREFILL") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return qsa_prefill_lane_auto_supported()
 
 
 def _qsa_prefill_min_rows() -> int:
@@ -1215,15 +1249,21 @@ def _qsa_prefill_min_context() -> int:
 
 
 def _qsa_prefill_flash_min_context() -> int:
-    """Conservative crossover for the direct block-sparse attention consumer."""
+    """Crossover for the direct block-sparse attention consumer.
+
+    32768 matches the selector crossover: the 2026-08-30 ABBA battery ran the
+    flash consumer from 32K history and measured flat at the 32K rung (both
+    orders) with the full win from there up, so the earlier conservative
+    65536 default gave away the 32-64K span for nothing.
+    """
 
     try:
         return max(
             2049,
-            int(os.environ.get("MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT") or 65536),
+            int(os.environ.get("MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT") or 32768),
         )
     except ValueError:
-        return 65536
+        return 32768
 
 
 def _qsa_prefill_score_workspace_bytes() -> int:
