@@ -165,6 +165,77 @@ def dense_kv_bytes_per_token_from_config(config: dict | None) -> int | None:
     return n_full * 2 * kv_heads * head_dim * 2
 
 
+# QSA prefill transient model (issue #393): the indexer's dense-mask lane
+# materializes ~12.75 bytes per (chunk_row x context_token) per QSA layer —
+# fp32 scores [S, H, nb] + relu twin + the [S, nb] fp32 chain + argpartition
+# + five [S, T] bool masks (derived at the file level, 2026-08-29 audit).
+# Lazy evaluation keeps roughly QSA_TRANSIENT_LIVE_LAYERS layers' worth of
+# those intermediates simultaneously live at the peak; 4 reproduces the
+# observed #393 blowup (119.2 GB peak on a 262K admit whose resident terms
+# sum to ~92 GB -> ~27 GB transient ~= 12.75 x 2048 x 262144 x 4) and is
+# deliberately NOT tuned tighter — the estimator must model the mechanism,
+# not pad a constant until one repro fits (AGENTS.md: no bug-masking).
+QSA_INDEXER_TRANSIENT_BYTES_PER_ELEM = 12.75
+QSA_TRANSIENT_LIVE_LAYERS = 4
+
+
+def _qsa_geometry(config: dict | None) -> tuple[int, int, int, int, int] | None:
+    """(n_qsa_layers, indexer_head_dim, compress_ratio, kv_heads, head_dim)
+    for QSA hybrids (qwen4_exp), else None."""
+    if not isinstance(config, dict):
+        return None
+    text = config.get("text_config") if isinstance(config.get("text_config"), dict) else config
+    idx_heads = text.get("indexer_n_heads")
+    if not (isinstance(idx_heads, int) and idx_heads > 0):
+        return None
+    layer_types = text.get("layer_types")
+    if not (isinstance(layer_types, list) and layer_types):
+        return None
+    n_qsa = sum(1 for t in layer_types if t != "linear_attention")
+    idx_dim = int(text.get("indexer_head_dim") or 128)
+    ratio = max(1, int(text.get("indexer_compress_ratio") or 4))
+    kv_heads = int(text.get("num_key_value_heads") or 0)
+    head_dim = int(text.get("head_dim") or 0)
+    if n_qsa <= 0 or kv_heads <= 0 or head_dim <= 0:
+        return None
+    return n_qsa, idx_dim, ratio, kv_heads, head_dim
+
+
+def qsa_aux_bytes_per_token_from_config(config: dict | None) -> int:
+    """Per-token QSA bookkeeping the KV term does not cover (issue #393).
+
+    Per QSA layer: raw indexer keys (idx_dim x bf16) + pooled block keys
+    (idx_dim x bf16 / ratio) + the fp32-transposed pooled mirror
+    (idx_dim x fp32 / ratio). One extra QSA cache serves the MTP head, whose
+    full-length KV (2 x kv_heads x head_dim x bf16) the layer_types-derived
+    KV term also misses. Zero for non-QSA families.
+    """
+    geo = _qsa_geometry(config)
+    if geo is None:
+        return 0
+    n_qsa, idx_dim, ratio, kv_heads, head_dim = geo
+    per_layer = idx_dim * 2 + (idx_dim * 2) // ratio + (idx_dim * 4) // ratio
+    mtp_head_kv = 2 * kv_heads * head_dim * 2
+    return (n_qsa + 1) * per_layer + mtp_head_kv
+
+
+def qsa_prefill_transient_bytes_per_token_from_config(
+    config: dict | None, *, chunk_size: int = 2048
+) -> int:
+    """Peak prefill transient per context token for QSA hybrids, else 0.
+
+    Linear in context because the last chunk's indexer intermediates scale
+    with the full token count; see QSA_INDEXER_TRANSIENT_BYTES_PER_ELEM.
+    """
+    if _qsa_geometry(config) is None:
+        return 0
+    return int(
+        QSA_INDEXER_TRANSIENT_BYTES_PER_ELEM
+        * max(1, int(chunk_size))
+        * QSA_TRANSIENT_LIVE_LAYERS
+    )
+
+
 def detect_total_ram_bytes() -> int | None:
     """Physical RAM, PATH-immune.
 
@@ -238,6 +309,11 @@ class MemoryPlan:
     kv_bytes_per_token: int = DEFAULT_DENSE_KV_BYTES_PER_TOKEN
     kv_quantization: str = "off"
     kv_bytes_per_token_effective: int = DEFAULT_DENSE_KV_BYTES_PER_TOKEN
+    # Family working set the KV term does not cover (QSA raw/pooled streams,
+    # MTP-head KV) and the peak prefill transient per token (the #393 terms).
+    # Zero for families without them — the fit then matches the legacy solve.
+    aux_bytes_per_token: int = 0
+    prefill_transient_bytes_per_token: int = 0
 
     model_fits: bool = True
     # Largest window the machine can commit to (weights + full-window KV +
@@ -283,6 +359,10 @@ class MemoryPlan:
             "kv_bytes_per_token": int(self.kv_bytes_per_token),
             "kv_quantization": self.kv_quantization,
             "kv_bytes_per_token_effective": int(self.kv_bytes_per_token_effective),
+            "aux_bytes_per_token": int(self.aux_bytes_per_token),
+            "prefill_transient_bytes_per_token": int(
+                self.prefill_transient_bytes_per_token
+            ),
             "model_fits": self.model_fits,
             "context_window_fit": int(self.context_window_fit),
             "context_window_resolved": int(self.context_window_resolved),
@@ -314,6 +394,8 @@ def plan_memory(
     memory_budget_bytes: int | None = None,
     usable_bytes_override: int | None = None,
     ngram_table_streamed_bytes: int = 0,
+    aux_bytes_per_token: int = 0,
+    prefill_transient_bytes_per_token: int = 0,
 ) -> MemoryPlan:
     """Solve the machine's memory geometry.
 
@@ -353,8 +435,16 @@ def plan_memory(
     notes: list[str] = []
 
     # --- context window fit -------------------------------------------------
+    # Per-token cost = KV + family aux (QSA streams, MTP-head KV) + the peak
+    # prefill transient, which for QSA hybrids is LINEAR in context, not the
+    # flat legacy constant (#393: 262K admitted with 2.4x phantom headroom
+    # because the transient was priced at 3 GiB while the indexer's dense
+    # lane peaks at ~27 GB there).
+    aux_pt = max(0, int(aux_bytes_per_token))
+    transient_pt = max(0, int(prefill_transient_bytes_per_token))
+    per_token = kv_effective + aux_pt + transient_pt
     kv_budget = usable - weights - RUNTIME_TRANSIENTS_BYTES - BANK_FLOOR_BYTES
-    fit_raw = _align_down(max(0, kv_budget) // kv_effective)
+    fit_raw = _align_down(max(0, kv_budget) // per_token)
     model_fits = fit_raw >= CONTEXT_FLOOR_TOKENS
     if not model_fits:
         notes.append(
@@ -415,6 +505,8 @@ def plan_memory(
         kv_bytes_per_token=kv_per_token,
         kv_quantization=quant,
         kv_bytes_per_token_effective=kv_effective,
+        aux_bytes_per_token=aux_pt,
+        prefill_transient_bytes_per_token=transient_pt,
         model_fits=model_fits,
         context_window_fit=context_fit,
         context_window_resolved=resolved,
