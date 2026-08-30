@@ -306,10 +306,14 @@ def merge_pi_provider_config(
     the user edited wins: our values only fill missing keys, recursively.
     Model entries merge by ``id`` the same way, and user-added models or
     fields (custom ``thinkingLevelMap``, explicit ``maxTokens``) survive a
-    sync untouched. ``input`` is the exception: like ``compat`` it states
-    what the ENGINE supports (text vs text+image), so the fresh value always
-    wins — a stale ``["text"]`` written by a pre-vision MTPLX must not
-    outlive the engine that wrote it (issue #328).
+    sync untouched. ``input`` is half an exception: it states what the
+    ENGINE supports, so when the engine POSITIVELY knows the pack does vision
+    the fresh ``["text", "image"]`` wins — a stale ``["text"]`` written by a
+    pre-vision MTPLX must not outlive the engine that wrote it (issue #328).
+    When the engine does NOT advertise vision (which includes "could not
+    resolve the model dir"), a user-taught ``input`` survives like any other
+    edit (#282): the user may proxy to a capable endpoint, and an engine
+    "unknown" must never delete what a human wrote.
     """
 
     if not isinstance(existing_provider, dict):
@@ -372,9 +376,12 @@ def merge_pi_provider_config(
         for index, entry in enumerate(result_models):
             if isinstance(entry, dict) and str(entry.get("id")) == fresh_id:
                 merged_model = _fill_missing_deep(entry, fresh_model)
-                # ``input`` is engine capability (see docstring): fresh wins.
-                if "input" in fresh_model:
-                    merged_model["input"] = fresh_model["input"]
+                # ``input`` upgrade rule (see docstring): the engine's
+                # positive vision knowledge wins; its absence never
+                # downgrades a user-taught value.
+                fresh_input = fresh_model.get("input")
+                if isinstance(fresh_input, list) and "image" in fresh_input:
+                    merged_model["input"] = fresh_input
                 result_models[index] = merged_model
                 break
         else:
