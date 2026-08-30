@@ -1,4 +1,4 @@
-"""Durable sequential Graph executor backed by the MTPLX runtime.
+"""Durable Graph executor backed by the MTPLX runtime.
 
 The executor never loads a model. Model nodes call the already-running MTPLX
 OpenAI-compatible endpoint, so routing, scheduler admission, session-bank use,
@@ -118,6 +118,10 @@ class GraphExecutor:
             max_workers=max(1, min(int(max_workers), 16)),
             thread_name_prefix="mtplx-graph",
         )
+        self._node_executor = ThreadPoolExecutor(
+            max_workers=max(2, min(int(max_workers), 16)),
+            thread_name_prefix="mtplx-graph-node",
+        )
         self._model_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="mtplx-graph-model",
@@ -133,6 +137,7 @@ class GraphExecutor:
             for event in self._cancel_events.values():
                 event.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
+        self._node_executor.shutdown(wait=False, cancel_futures=True)
         self._model_executor.shutdown(wait=False, cancel_futures=True)
 
     def _run_lock(self, run_id: str) -> threading.Lock:
@@ -253,12 +258,22 @@ class GraphExecutor:
             except WorkspaceStoreError:
                 pass
         states = {key: dict(value) for key, value in run.node_states.items()}
-        if run.current_node_id and run.current_node_id in states:
+        if run.graph_revision and run.current_node_id and run.current_node_id in states:
             state = states[run.current_node_id]
             if state.get("status") not in {"completed", "failed"}:
                 state["status"] = "cancelled"
                 state["completed_at"] = utc_now()
                 state["pending_approval_id"] = None
+        try:
+            graph = self._pinned_graph(run)
+        except GraphError:
+            graph = None
+        if graph is not None and graph.schema_version >= 2:
+            for state in states.values():
+                if state.get("status") in {"pending", "running", "waiting_approval"}:
+                    state["status"] = "cancelled"
+                    state["completed_at"] = utc_now()
+                    state["pending_approval_id"] = None
         updated = self.graph_store.update_run(
             run.id,
             status="cancelled",
@@ -452,6 +467,49 @@ class GraphExecutor:
                 recovered.append(run.id)
                 continue
             states = {key: dict(value) for key, value in run.node_states.items()}
+            if graph.schema_version >= 2:
+                interrupted: list[str] = []
+                for node_id, state in states.items():
+                    if state.get("status") != "running":
+                        continue
+                    node = graph.node_map.get(node_id)
+                    if node and self._node_has_side_effect(node):
+                        state["status"] = "failed"
+                        state["recovery_guard"] = "interrupted_side_effect"
+                        state["error"] = (
+                            "side-effect execution was interrupted after its durable start guard; "
+                            "MTPLX will not execute it again automatically"
+                        )
+                    else:
+                        state["status"] = "pending"
+                        state["error"] = None
+                        state["idempotency_key"] = None
+                        state["pending_approval_id"] = None
+                    interrupted.append(node_id)
+                error = "MTPLX restarted before this Graph scheduler wave reached a checkpoint"
+                self.graph_store.update_run(
+                    run.id,
+                    status="paused",
+                    node_states=states,
+                    resource_metrics=self._suspend_active_metrics(
+                        run,
+                        stop_at=run.updated_at,
+                    ),
+                    pause_requested=True,
+                    error=error,
+                )
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_recovered",
+                    {
+                        "current_node_id": run.current_node_id,
+                        "pending_approval_id": run.pending_approval_id,
+                        "interrupted_node_ids": interrupted,
+                        "reason": error,
+                    },
+                )
+                recovered.append(run.id)
+                continue
             current = states.get(run.current_node_id or "")
             error = "MTPLX restarted before this Graph run reached a checkpoint"
             if current and current.get("status") == "running":
@@ -510,6 +568,9 @@ class GraphExecutor:
         graph = self._pinned_graph(run)
         if run.graph_sha256 != graph.content_sha256:
             self._fail_run(run, "pinned Graph revision hash no longer matches")
+            return
+        if graph.schema_version >= 2:
+            self._run_parallel_locked(run, graph)
             return
         if run.current_node_id is None:
             input_node = next(node for node in graph.nodes if node.type == "input")
@@ -826,6 +887,426 @@ class GraphExecutor:
                 return
             self.graph_store.update_run(run.id, current_node_id=next_id)
 
+    def _run_parallel_locked(self, run: GraphRun, graph: GraphDefinition) -> None:
+        """Run a schema-v2 DAG in checkpointed scheduler waves.
+
+        The scheduler may overlap independent pure and model nodes, but retains
+        one exclusive lane for side effects, approvals, and loops. Model work
+        still goes through MTPLX's single admission lease, so a Graph never
+        bypasses the runtime's memory and thermal controls.
+        """
+        run = self.graph_store.update_run(
+            run.id,
+            status="running",
+            resource_metrics=self._start_active_metrics(run),
+            pause_requested=False,
+            error=None,
+        )
+        self.workspace_store.append_event(
+            run.id,
+            "graph_started",
+            {
+                "graph_id": graph.id,
+                "graph_revision": graph.revision,
+                "pinned_model": run.pinned_model,
+                "runtime_profile": run.runtime_profile,
+                "scheduler": dict(graph.schedule),
+            },
+        )
+        max_steps = int(graph.limits["max_steps"])
+        while True:
+            run = self.graph_store.get_run(run.id)
+            if run.status == "cancelled":
+                return
+            if self._cancel_event(run.id).is_set():
+                self.cancel(run.id)
+                return
+            if run.pause_requested:
+                self.graph_store.update_run(
+                    run.id,
+                    status="paused",
+                    resource_metrics=self._suspend_active_metrics(run),
+                )
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_paused",
+                    {"current_node_id": run.current_node_id},
+                )
+                return
+            if self._deadline_exceeded(run, graph):
+                self._fail_run(run, "Graph run timeout exceeded")
+                return
+            if int(run.resource_metrics.get("steps_completed") or 0) >= max_steps:
+                self._fail_run(run, f"Graph step limit exceeded: {max_steps}")
+                return
+
+            ready, skipped = self._parallel_ready_nodes(run, graph)
+            if skipped:
+                states = {key: dict(value) for key, value in run.node_states.items()}
+                for node_id in skipped:
+                    state = states[node_id]
+                    state.update(
+                        {
+                            "status": "skipped",
+                            "completed_at": utc_now(),
+                            "error": None,
+                            "pending_approval_id": None,
+                        }
+                    )
+                    self.workspace_store.append_event(
+                        run.id,
+                        "graph_node_skipped",
+                        {"node_id": node_id, "reason": "no selected incoming route"},
+                    )
+                self.graph_store.update_run(run.id, node_states=states)
+                continue
+            if not ready:
+                terminal = {"completed", "skipped", "failed", "cancelled"}
+                if all(
+                    state.get("status") in terminal
+                    for state in run.node_states.values()
+                ):
+                    self._fail_run(run, "Graph reached no output through the selected routes")
+                else:
+                    self._fail_run(run, "Graph scheduler has no executable node")
+                return
+
+            wave = self._parallel_wave(graph, ready)
+            states = {key: dict(value) for key, value in run.node_states.items()}
+            prepared: list[tuple[GraphNode, dict[str, Any], str]] = []
+            for node in wave:
+                resource = self._check_resources(replace(run, current_node_id=node.id), graph, node)
+                if resource is not None:
+                    if resource.status == "waiting_approval":
+                        self.graph_store.update_run(
+                            run.id,
+                            status="paused",
+                            resource_metrics=self._suspend_active_metrics(run),
+                            pause_requested=True,
+                            error=resource.error,
+                        )
+                        self.workspace_store.append_event(
+                            run.id,
+                            "graph_resource_paused",
+                            {"node_id": node.id, "reason": resource.error},
+                        )
+                    else:
+                        self._fail_node_and_run(
+                            run,
+                            node,
+                            states[node.id],
+                            resource.error or "resource failure",
+                        )
+                    return
+                state = states[node.id]
+                attempt = int(state.get("attempts") or 0) + 1
+                execution_key = str(state.get("idempotency_key") or "")
+                if not execution_key:
+                    execution_key = f"{run.id}:{node.id}:attempt:{attempt}"
+                state.update(
+                    {
+                        "status": "running",
+                        "attempts": attempt,
+                        "started_at": state.get("started_at") or utc_now(),
+                        "completed_at": None,
+                        "error": None,
+                        "idempotency_key": execution_key,
+                        "pending_approval_id": None,
+                    }
+                )
+                prepared.append((node, dict(state), execution_key))
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_node_queued",
+                    {
+                        "node_id": node.id,
+                        "node_type": node.type,
+                        "scheduler_policy": graph.schedule.get("policy", "fifo"),
+                        "wave_size": len(wave),
+                    },
+                )
+            run = self.graph_store.update_run(
+                run.id,
+                node_states=states,
+                current_node_id=prepared[0][0].id,
+                pending_approval_id=None,
+            )
+            futures: list[tuple[GraphNode, dict[str, Any], str, Any]] = []
+            for node, state, execution_key in prepared:
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_node_started",
+                    {
+                        "node_id": node.id,
+                        "node_type": node.type,
+                        "attempt": state["attempts"],
+                        "idempotency_key": execution_key,
+                    },
+                )
+                snapshot = replace(run, current_node_id=node.id)
+                future = self._node_executor.submit(
+                    self._execute_node,
+                    snapshot,
+                    graph,
+                    node,
+                    state,
+                    execution_key=execution_key,
+                    approval_id=None,
+                )
+                futures.append((node, state, execution_key, future))
+
+            outcomes: list[tuple[GraphNode, dict[str, Any], NodeOutcome]] = []
+            for node, state, _execution_key, future in futures:
+                try:
+                    outcome = future.result()
+                except Exception as exc:
+                    outcome = NodeOutcome(
+                        status="failed",
+                        error=f"{type(exc).__name__}: {exc}",
+                        retryable=node.type not in SIDE_EFFECT_NODE_TYPES,
+                    )
+                outcomes.append((node, state, outcome))
+
+            run = self.graph_store.get_run(run.id)
+            states = {key: dict(value) for key, value in run.node_states.items()}
+            metrics = dict(run.resource_metrics)
+            failure: tuple[GraphNode, dict[str, Any], NodeOutcome] | None = None
+            waiting: tuple[GraphNode, dict[str, Any], NodeOutcome] | None = None
+            output: tuple[GraphNode, dict[str, Any], NodeOutcome] | None = None
+            retry_seconds = 0.0
+            for node, _started_state, outcome in outcomes:
+                state = states[node.id]
+                state.update(outcome.state_updates)
+                if outcome.status == "waiting_approval":
+                    state.update(
+                        {
+                            "status": "waiting_approval",
+                            "pending_approval_id": outcome.approval_id,
+                            "error": None,
+                        }
+                    )
+                    states[node.id] = state
+                    waiting = (node, state, outcome)
+                    continue
+                if outcome.status != "completed":
+                    state.update(
+                        {
+                            "status": "failed",
+                            "error": outcome.error or "node failed",
+                            "completed_at": utc_now(),
+                            "metrics": dict(outcome.metrics),
+                        }
+                    )
+                    if outcome.retryable and int(state.get("attempts") or 0) < self._max_attempts(graph, node):
+                        state["status"] = "pending"
+                        state["idempotency_key"] = None
+                        retry_seconds = max(retry_seconds, self._retry_backoff(graph, node))
+                        self.workspace_store.append_event(
+                            run.id,
+                            "graph_node_retry_scheduled",
+                            {
+                                "node_id": node.id,
+                                "attempt": int(state.get("attempts") or 0) + 1,
+                                "backoff_seconds": self._retry_backoff(graph, node),
+                            },
+                        )
+                    elif failure is None:
+                        failure = (node, state, outcome)
+                    states[node.id] = state
+                    continue
+                state.update(
+                    {
+                        "status": "completed",
+                        "output": outcome.output,
+                        "error": None,
+                        "completed_at": utc_now(),
+                        "pending_approval_id": None,
+                        "metrics": dict(outcome.metrics),
+                        "recovery_guard": None,
+                        "selected_targets": self._selected_targets(graph, node, outcome.output, run),
+                    }
+                )
+                states[node.id] = state
+                metrics["steps_completed"] = int(metrics.get("steps_completed") or 0) + 1
+                metrics["last_node_metrics"] = dict(outcome.metrics)
+                metrics["last_completed_node_id"] = node.id
+                if node.type == "output":
+                    output = (node, state, outcome)
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_node_completed",
+                    {
+                        "node_id": node.id,
+                        "node_type": node.type,
+                        "attempt": state["attempts"],
+                        "metrics": outcome.metrics,
+                    },
+                )
+
+            run = self.graph_store.update_run(
+                run.id,
+                node_states=states,
+                resource_metrics=metrics,
+                current_node_id=(output[0].id if output else run.current_node_id),
+                pending_approval_id=(waiting[2].approval_id if waiting else None),
+            )
+            if failure is not None:
+                self._fail_node_and_run(
+                    run,
+                    failure[0],
+                    failure[1],
+                    failure[2].error or "node failed",
+                    persist_node=False,
+                )
+                return
+            if waiting is not None:
+                self.graph_store.update_run(
+                    run.id,
+                    status="waiting_approval",
+                    resource_metrics=self._suspend_active_metrics(run),
+                    pending_approval_id=waiting[2].approval_id,
+                )
+                self.workspace_store.append_event(
+                    run.id,
+                    "graph_waiting_approval",
+                    {"node_id": waiting[0].id, "approval_id": waiting[2].approval_id},
+                )
+                return
+            if output is not None:
+                self._complete_run(
+                    run,
+                    graph,
+                    output[2].output,
+                    output_state=output[1],
+                    output_metrics=output[2].metrics,
+                    attempt=int(output[1].get("attempts") or 1),
+                )
+                return
+            if retry_seconds > 0 and not self._wait_retry_backoff(run.id, retry_seconds):
+                continue
+
+    def _parallel_ready_nodes(
+        self,
+        run: GraphRun,
+        graph: GraphDefinition,
+    ) -> tuple[list[GraphNode], list[str]]:
+        incoming: dict[str, list[Any]] = {node.id: [] for node in graph.nodes}
+        for edge in graph.edges:
+            incoming.setdefault(edge.target, []).append(edge)
+        ready: list[GraphNode] = []
+        skipped: list[str] = []
+        for node in graph.nodes:
+            state = run.node_states.get(node.id, {})
+            if state.get("status") != "pending":
+                continue
+            edges = incoming.get(node.id, [])
+            if not edges:
+                if node.type == "input":
+                    ready.append(node)
+                continue
+            source_states = [run.node_states.get(edge.source, {}) for edge in edges]
+            terminal = {"completed", "skipped", "failed", "cancelled"}
+            if not all(source.get("status") in terminal for source in source_states):
+                continue
+            active = [
+                edge
+                for edge in edges
+                if self._edge_is_active(graph, edge, run.node_states.get(edge.source, {}))
+            ]
+            if not active:
+                skipped.append(node.id)
+                continue
+            if any(
+                run.node_states.get(edge.source, {}).get("status") != "completed"
+                for edge in active
+            ):
+                continue
+            if node.type == "join" and str(node.config.get("mode") or "all") == "any":
+                ready.append(node)
+            elif node.type != "join" and len(active) != 1:
+                continue
+            else:
+                ready.append(node)
+        return ready, skipped
+
+    def _parallel_wave(
+        self,
+        graph: GraphDefinition,
+        ready: list[GraphNode],
+    ) -> list[GraphNode]:
+        distances = self._critical_path_distances(graph)
+        policy = str(graph.schedule.get("policy") or "fifo")
+        ordered = sorted(
+            ready,
+            key=lambda node: (
+                -node.priority,
+                -distances.get(node.id, 0) if policy == "critical_path" else 0,
+                node.id,
+            ),
+        )
+        exclusive = [
+            node
+            for node in ordered
+            if node.type in {"loop", "tool", "human_approval", "memory_write", "memory_curate"}
+        ]
+        if exclusive:
+            return [exclusive[0]]
+        return ordered[: max(1, int(graph.limits.get("max_concurrency") or 1))]
+
+    @staticmethod
+    def _critical_path_distances(graph: GraphDefinition) -> dict[str, int]:
+        outgoing: dict[str, list[str]] = {node.id: [] for node in graph.nodes}
+        for edge in graph.edges:
+            outgoing.setdefault(edge.source, []).append(edge.target)
+        distances: dict[str, int] = {}
+
+        def visit(node_id: str) -> int:
+            if node_id in distances:
+                return distances[node_id]
+            children = outgoing.get(node_id, [])
+            distances[node_id] = 0 if not children else 1 + max(visit(item) for item in children)
+            return distances[node_id]
+
+        for node in graph.nodes:
+            visit(node.id)
+        return distances
+
+    def _selected_targets(
+        self,
+        graph: GraphDefinition,
+        node: GraphNode,
+        output: Any,
+        run: GraphRun,
+    ) -> list[str]:
+        outgoing = [edge for edge in graph.edges if edge.source == node.id]
+        if node.type != "conditional":
+            return [edge.target for edge in outgoing]
+        context = {**self._context(run), "condition": output}
+        default: str | None = None
+        for edge in outgoing:
+            condition = edge.condition or {}
+            if condition.get("default"):
+                default = edge.target
+                continue
+            selector = str(condition.get("path") or "condition")
+            if self._condition_matches(self._lookup(context, selector), condition):
+                return [edge.target]
+        return [default] if default else []
+
+    @staticmethod
+    def _edge_is_active(
+        graph: GraphDefinition,
+        edge: Any,
+        source_state: Mapping[str, Any],
+    ) -> bool:
+        if source_state.get("status") != "completed":
+            return False
+        selected = source_state.get("selected_targets")
+        if isinstance(selected, list):
+            return edge.target in selected
+        source = graph.node_map.get(edge.source)
+        return source is not None and source.type != "conditional"
+
     def _execute_node(
         self,
         run: GraphRun,
@@ -845,6 +1326,24 @@ class GraphExecutor:
                 self._render(mapping, context)
                 if isinstance(mapping, Mapping)
                 else context.get("last_output")
+            )
+            return NodeOutcome(status="completed", output=output)
+        if node.type == "join":
+            active_inputs = {
+                edge.source: run.node_states.get(edge.source, {}).get("output")
+                for edge in graph.edges
+                if edge.target == node.id
+                and self._edge_is_active(
+                    graph,
+                    edge,
+                    run.node_states.get(edge.source, {}),
+                )
+            }
+            mapping = node.config.get("mapping")
+            output = (
+                self._render(mapping, {**context, "join": active_inputs})
+                if isinstance(mapping, Mapping)
+                else active_inputs
             )
             return NodeOutcome(status="completed", output=output)
         if node.type == "model":

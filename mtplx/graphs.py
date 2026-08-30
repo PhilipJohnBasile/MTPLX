@@ -33,6 +33,7 @@ from .workspace_tools import (
 
 
 GRAPH_SCHEMA_VERSION = 1
+GRAPH_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2})
 GRAPH_NODE_TYPES = (
     "input",
     "output",
@@ -44,6 +45,7 @@ GRAPH_NODE_TYPES = (
     "memory_read",
     "memory_write",
     "memory_curate",
+    "join",
 )
 GRAPH_RUN_STATUSES = (
     "queued",
@@ -102,6 +104,8 @@ GRAPH_TOP_LEVEL_KEYS = frozenset(
         "retry",
         "timeout_seconds",
         "approval_requirements",
+        "schedule",
+        "layout",
         "created_at",
         "updated_at",
         "content_sha256",
@@ -175,6 +179,7 @@ _NODE_CONFIG_KEYS: dict[str, frozenset[str]] = {
     "memory_curate": frozenset(
         {"path", "expected_sha256", "query", "max_context_chars", "max_tokens"}
     ),
+    "join": frozenset({"mode", "mapping"}),
 }
 
 
@@ -704,6 +709,13 @@ def _validate_node_config(
             )
             if not 1 <= value <= upper:
                 issues.append(f"{field_name}.{key} must be from 1 to {upper}")
+    if node_type == "join":
+        mode = str(config.get("mode") or "all").strip().lower()
+        if mode not in {"all", "any"}:
+            issues.append(f"{field_name}.mode must be all or any")
+        mapping = config.get("mapping")
+        if mapping is not None and not isinstance(mapping, Mapping):
+            issues.append(f"{field_name}.mapping must be an object")
 
 
 @dataclass(frozen=True)
@@ -715,6 +727,7 @@ class GraphNode:
     timeout_seconds: int | None = None
     retry: dict[str, Any] = field(default_factory=dict)
     approval: dict[str, Any] = field(default_factory=dict)
+    priority: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -725,6 +738,7 @@ class GraphNode:
             "timeout_seconds": self.timeout_seconds,
             "retry": dict(self.retry),
             "approval": dict(self.approval),
+            "priority": self.priority,
         }
 
 
@@ -761,6 +775,8 @@ class GraphDefinition:
     retry: dict[str, Any]
     timeout_seconds: int
     approval_requirements: dict[str, Any]
+    schedule: dict[str, Any]
+    layout: dict[str, Any]
     created_at: str
     updated_at: str
     content_sha256: str
@@ -784,6 +800,8 @@ class GraphDefinition:
             "retry": dict(self.retry),
             "timeout_seconds": self.timeout_seconds,
             "approval_requirements": dict(self.approval_requirements),
+            "schedule": dict(self.schedule),
+            "layout": dict(self.layout),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -867,9 +885,11 @@ def validate_graph_payload(
         default=GRAPH_SCHEMA_VERSION,
         issues=issues,
     )
-    if schema_version != GRAPH_SCHEMA_VERSION:
+    if schema_version not in GRAPH_SUPPORTED_SCHEMA_VERSIONS:
         issues.append(
-            f"schema_version must be {GRAPH_SCHEMA_VERSION}, found {schema_version}"
+            "schema_version must be one of: "
+            + ", ".join(str(item) for item in sorted(GRAPH_SUPPORTED_SCHEMA_VERSIONS))
+            + f", found {schema_version}"
         )
     identifier = safe_id(
         graph_id or str(payload.get("id") or f"graph_{uuid.uuid4().hex}"),
@@ -886,7 +906,7 @@ def validate_graph_payload(
         issues.append("project_id is required")
     elif workspace_id and project_id != workspace_id:
         issues.append(
-            "schema version 1 requires project_id to equal workspace_id"
+            f"schema version {schema_version} requires project_id to equal workspace_id"
         )
     name = str(payload.get("name") or "").strip()
     if not name:
@@ -948,6 +968,7 @@ def validate_graph_payload(
             "timeout_seconds",
             "retry",
             "approval",
+            "priority",
         }
         if unknown_node_fields:
             issues.append(
@@ -970,6 +991,14 @@ def validate_graph_payload(
             field_name=f"node {node_id} approval",
             issues=issues,
         )
+        priority = _validated_int(
+            raw.get("priority", 0),
+            field_name=f"node {node_id} priority",
+            default=0,
+            issues=issues,
+        )
+        if not -100 <= priority <= 100:
+            issues.append(f"node {node_id} priority must be from -100 to 100")
         timeout = raw.get("timeout_seconds")
         timeout_value = (
             _validated_int(
@@ -1010,6 +1039,7 @@ def validate_graph_payload(
                 timeout_seconds=timeout_value,
                 retry=retry_config,
                 approval=approval,
+                priority=priority,
             )
         )
 
@@ -1077,14 +1107,32 @@ def validate_graph_payload(
         node_incoming = incoming.get(node.id, [])
         if node.type != "output" and not node_outgoing:
             issues.append(f"node {node.id} is a dead end")
-        if node.type != "conditional" and len(node_outgoing) > 1:
+        if (
+            schema_version == 1
+            and node.type != "conditional"
+            and len(node_outgoing) > 1
+        ):
             issues.append(
                 f"node {node.id} branches but is not a conditional node"
             )
-        if node.type not in {"input", "output"} and len(node_incoming) > 1:
+        if (
+            schema_version == 1
+            and node.type not in {"input", "output"}
+            and len(node_incoming) > 1
+        ):
             issues.append(
                 f"node {node.id} has multiple incoming edges; joins are not supported yet"
             )
+        if (
+            schema_version == 2
+            and node.type != "join"
+            and len(node_incoming) > 1
+        ):
+            issues.append(
+                f"node {node.id} has multiple incoming edges; use a join node"
+            )
+        if node.type == "join" and len(node_incoming) < 2:
+            issues.append(f"join node {node.id} requires at least two incoming edges")
         if node.type == "conditional":
             if len(node_outgoing) < 1:
                 issues.append(f"conditional node {node.id} requires outgoing edges")
@@ -1411,8 +1459,10 @@ def validate_graph_payload(
         issues.append("limits.max_steps must be from 1 to 10000")
     if not 1_024 <= max_context_tokens <= 1_048_576:
         issues.append("limits.max_context_tokens must be from 1024 to 1048576")
-    if max_concurrency != 1:
+    if schema_version == 1 and max_concurrency != 1:
         issues.append("version 1 Graphs require limits.max_concurrency = 1")
+    if schema_version == 2 and not 1 <= max_concurrency <= 16:
+        issues.append("version 2 Graphs require limits.max_concurrency from 1 to 16")
     if max_memory_bytes < 0:
         issues.append("limits.max_memory_bytes may not be negative")
     limits.update(
@@ -1423,6 +1473,77 @@ def validate_graph_payload(
             "max_memory_bytes": max_memory_bytes,
         }
     )
+    schedule = _json_object(payload.get("schedule"), field_name="schedule")
+    unknown_schedule = set(schedule) - {"policy", "max_parallel_model_requests"}
+    if unknown_schedule:
+        issues.append(
+            "schedule has unknown keys: " + ", ".join(sorted(unknown_schedule))
+        )
+    schedule_policy = str(schedule.get("policy") or "fifo").strip().lower()
+    if schedule_policy not in {"fifo", "critical_path"}:
+        issues.append("schedule.policy must be fifo or critical_path")
+    max_parallel_models = _validated_int(
+        schedule.get("max_parallel_model_requests"),
+        field_name="schedule.max_parallel_model_requests",
+        default=1,
+        issues=issues,
+    )
+    if max_parallel_models != 1:
+        issues.append(
+            "schedule.max_parallel_model_requests must be 1 because MTPLX owns model admission"
+        )
+    schedule = {
+        "policy": schedule_policy,
+        "max_parallel_model_requests": 1,
+    }
+
+    layout = _json_object(payload.get("layout"), field_name="layout")
+    unknown_layout = set(layout) - {"nodes", "viewport"}
+    if unknown_layout:
+        issues.append("layout has unknown keys: " + ", ".join(sorted(unknown_layout)))
+    layout_nodes = layout.get("nodes", {})
+    if not isinstance(layout_nodes, Mapping):
+        issues.append("layout.nodes must be an object")
+        layout_nodes = {}
+    normalized_layout_nodes: dict[str, dict[str, float]] = {}
+    for node_id, position in layout_nodes.items():
+        normalized_id = safe_id(str(node_id), fallback="")
+        if normalized_id not in node_ids:
+            issues.append(f"layout.nodes references unknown node: {node_id}")
+            continue
+        if not isinstance(position, Mapping):
+            issues.append(f"layout.nodes.{normalized_id} must be an object")
+            continue
+        if set(position) - {"x", "y"}:
+            issues.append(f"layout.nodes.{normalized_id} has unknown keys")
+            continue
+        x, y = position.get("x"), position.get("y")
+        if (
+            isinstance(x, bool)
+            or isinstance(y, bool)
+            or not isinstance(x, (int, float))
+            or not isinstance(y, (int, float))
+            or not -100_000 <= float(x) <= 100_000
+            or not -100_000 <= float(y) <= 100_000
+        ):
+            issues.append(f"layout.nodes.{normalized_id} requires finite x and y coordinates")
+            continue
+        normalized_layout_nodes[normalized_id] = {"x": float(x), "y": float(y)}
+    layout = {"nodes": normalized_layout_nodes}
+    viewport = layout.get("viewport")
+    if isinstance(payload.get("layout"), Mapping):
+        raw_viewport = payload["layout"].get("viewport")
+        if raw_viewport is not None:
+            if not isinstance(raw_viewport, Mapping) or set(raw_viewport) - {"x", "y", "scale"}:
+                issues.append("layout.viewport must contain only x, y, and scale")
+            else:
+                values = {key: raw_viewport.get(key) for key in ("x", "y", "scale")}
+                if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in values.values()):
+                    issues.append("layout.viewport x, y, and scale must be numbers")
+                elif not 0.1 <= float(values["scale"]) <= 4:
+                    issues.append("layout.viewport.scale must be from 0.1 to 4")
+                else:
+                    layout["viewport"] = {key: float(item) for key, item in values.items()}
     policies_raw = payload.get("policies")
     if policies_raw is not None and not isinstance(policies_raw, Mapping):
         issues.append("policies must be an object")
@@ -1661,6 +1782,8 @@ def validate_graph_payload(
         retry=retry,
         timeout_seconds=timeout_seconds,
         approval_requirements=approval_requirements,
+        schedule=schedule,
+        layout=layout,
         created_at=created_at or str(payload.get("created_at") or now),
         updated_at=updated_at or str(payload.get("updated_at") or now),
         content_sha256="",
