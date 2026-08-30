@@ -1591,8 +1591,11 @@ class CompiledVerifyBank:
         self.speculative_headroom = (
             self.max_verify_len if self.request_max_tokens is not None else 0
         )
-        # The request budget can only TIGHTEN the reserve, never raise it
-        # past the env ceiling. Server requests default max_tokens to the
+        self.strict_no_fallback = bool(
+            getattr(runtime, "qwen4_fixed_m4_compiled_verify", False)
+        )
+        # Generic banks let the request budget only TIGHTEN the reserve; it
+        # never raises it past the env ceiling. Server requests default max_tokens to the
         # whole remaining context window (~262k on a 256k model), and
         # granting that verbatim made every request materialize a
         # multi-gigabyte KV reserve across all promoted leaves at first
@@ -1604,18 +1607,26 @@ class CompiledVerifyBank:
         # the request remainder (measured flat vs eager-only). Explicit
         # small budgets still reserve exactly budget + one speculative
         # window; raise MTPLX_COMPILED_VERIFY_GROWTH_RESERVE to widen the
-        # ceiling for known-budget batch runs.
-        self.growth_reserve_tokens = (
-            min(
-                self.request_max_tokens + self.speculative_headroom,
-                max(
-                    _compiled_verify_growth_reserve(),
-                    self.max_verify_len,
-                ),
+        # ceiling for known-budget batch runs. The construction-owned Qwen4
+        # fixed-M4 lane cannot demote or fall back after installation, so its
+        # admitted <=1024-token request instead reserves the full request plus
+        # one physical-M4 speculative window up front.
+        if self.strict_no_fallback and self.request_max_tokens is not None:
+            self.growth_reserve_tokens = (
+                self.request_max_tokens + self.speculative_headroom
             )
-            if self.request_max_tokens is not None
-            else _compiled_verify_growth_reserve()
-        )
+        else:
+            self.growth_reserve_tokens = (
+                min(
+                    self.request_max_tokens + self.speculative_headroom,
+                    max(
+                        _compiled_verify_growth_reserve(),
+                        self.max_verify_len,
+                    ),
+                )
+                if self.request_max_tokens is not None
+                else _compiled_verify_growth_reserve()
+            )
         self.capture_backend = resolve_gdn_capture_backend(capture_backend)
         self.parity = bool(parity)
         self.parity2 = bool(parity2)
@@ -1665,9 +1676,6 @@ class CompiledVerifyBank:
         )
         self._runtime_accepts_compiled_aux = _accepts_runtime_keyword(
             runtime, "compiled_aux"
-        )
-        self.strict_no_fallback = bool(
-            getattr(runtime, "qwen4_fixed_m4_compiled_verify", False)
         )
         if self._prepare_compiled_aux is not None and not self._runtime_accepts_compiled_aux:
             raise TypeError(

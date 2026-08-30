@@ -1232,6 +1232,19 @@ def test_env_reserve_raises_ceiling_for_known_budget_runs(monkeypatch):
     assert int(cache[0].keys.shape[2]) % int(cache[0].step) == 0
 
 
+def test_fixed_m4_strict_lane_reserves_the_full_request_budget(monkeypatch):
+    """The no-fallback fixed-M4 lane must not outgrow its installed leaves."""
+
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", "512")
+    rt = _ExactKVRuntime()
+    rt.qwen4_fixed_m4_compiled_verify = True
+
+    bank = CompiledVerifyBank(rt, max_verify_len=4, request_max_tokens=1024)
+
+    assert bank.strict_no_fallback is True
+    assert bank.growth_reserve_tokens == 1028
+
+
 def test_parity_mode_passes_on_toy_model_and_commits_eager_state():
     rt = ToyHybridRuntime()
     bank = CompiledVerifyBank(rt, parity=True)
