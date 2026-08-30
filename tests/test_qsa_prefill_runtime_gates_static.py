@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INDEXER_PATH = ROOT / "scripts" / "qsa_indexer_prefill_numeric_check.py"
 FLASH_PATH = ROOT / "scripts" / "qsa_prefill_flash_numeric_check.py"
-MODEL_PROCESS_PATTERN = "mtplx.cli serve|mtplx.server.openai|mlx_lm"
+MODEL_PROCESS_PATTERN = "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm"
 
 
 def _source_and_tree(path: Path) -> tuple[str, ast.Module]:
@@ -273,4 +273,5 @@ def test_runtime_gates_are_tiny_fixture_only_and_do_not_touch_system_limits():
         assert "mx.load" not in source
         assert "load_model" not in source
         assert "iogpu.wired_limit_mb" not in source
-        assert "mtplx.cli serve" in source
+        # The safety gate's pgrep pattern must still name the serve form.
+        assert "mtplx(\\\\.cli)? (serve|bench prefill-ladder)" in source

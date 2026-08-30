@@ -10,7 +10,7 @@ SCRIPTS = {
     "numeric": ROOT / "scripts" / "qwen4exp_numeric_check.py",
     "mtp": ROOT / "scripts" / "qwen4exp_mtp_tiny_smoke.py",
 }
-MODEL_PROCESS_PATTERN = "mtplx.cli serve|mtplx.server.openai|mlx_lm"
+MODEL_PROCESS_PATTERN = "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm"
 
 
 def _tree(name: str) -> ast.Module:

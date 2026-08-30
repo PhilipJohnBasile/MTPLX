@@ -1277,6 +1277,38 @@ def _qsa_prefill_flash_attention_enabled(rows: int, total_tokens: int) -> bool:
     )
 
 
+_QSA_PREFILL_COUNTS: Dict[str, int] = {}
+_QSA_PREFILL_DEBUG_ARMED = False
+
+
+def _qsa_prefill_count(lane: str) -> None:
+    """Engagement receipt for the large-prefill lanes (A/B law: never read a
+    benchmark without proof the arm's code actually ran)."""
+
+    global _QSA_PREFILL_DEBUG_ARMED
+    _QSA_PREFILL_COUNTS[lane] = _QSA_PREFILL_COUNTS.get(lane, 0) + 1
+    if not _QSA_PREFILL_DEBUG_ARMED:
+        _QSA_PREFILL_DEBUG_ARMED = True
+        raw = (os.environ.get("MTPLX_QSA_PREFILL_DEBUG") or "0").strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            import atexit
+            import sys
+
+            atexit.register(
+                lambda: print(
+                    f"qsa_prefill_engagement={_QSA_PREFILL_COUNTS}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            )
+
+
+def qsa_prefill_engagement() -> Dict[str, int]:
+    """Snapshot of per-lane large-prefill engagement counters."""
+
+    return dict(_QSA_PREFILL_COUNTS)
+
+
 def _qsa_prefill_gather_enabled() -> bool:
     """Portable gathered-attention tier for the flash_prefill block contract.
 
@@ -1839,6 +1871,7 @@ class QSAIndexer(nn.Module):
                 block_ids,
                 mx.array(0, dtype=mx.int32),
             )
+            _qsa_prefill_count("eager_selector")
             return ("flash_prefill", block_ids, block_valid)
 
         selected = mx.zeros((S, nb_total), dtype=mx.bool_)
@@ -2413,6 +2446,7 @@ class QSAIndexer(nn.Module):
             return ("flash", block_ids[0], tail_start)
         if mode == "prefill_blocks":
             block_ids, block_valid, _ = result.selection
+            _qsa_prefill_count("compiled_selector")
             return ("flash_prefill", block_ids, block_valid)
         if mode == "row_tokens":
             token_idx, token_ok = result.selection
@@ -2498,6 +2532,7 @@ class QSAIndexer(nn.Module):
                 logical_blocks=nb_total,
                 score_workspace_bytes=_qsa_prefill_score_workspace_bytes(),
             )
+            _qsa_prefill_count("metal_selector")
             return ("flash_prefill", block_ids, block_valid)
 
         # The original custom selector scores a row serially inside one
@@ -2930,6 +2965,7 @@ class Attention(nn.Module):
                     total_tokens=T,
                     scale=self.scale,
                 )
+                _qsa_prefill_count("flash_kernel")
                 out = out.transpose(0, 2, 1, 3).reshape(B, S, -1)
                 return self.o_proj(out * mx.sigmoid(gate))
 
@@ -2950,12 +2986,14 @@ class Attention(nn.Module):
                     scale=self.scale,
                     tile_rows=_qsa_prefill_gather_tile_rows(),
                 )
+                _qsa_prefill_count("gather_tier")
                 out = out.transpose(0, 2, 1, 3).reshape(B, S, -1)
                 return self.o_proj(out * mx.sigmoid(gate))
 
             # Static unsupported geometry falls back exactly.  Once the
             # supported kernel is dispatched, failures propagate instead of
             # being hidden behind a dense retry.
+            _qsa_prefill_count("dense_fallback")
             sel_mask = _qsa_blocks_to_dense_mask(
                 block_ids,
                 block_valid,

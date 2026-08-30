@@ -197,7 +197,9 @@ def test_env_off_is_an_exact_eager_kill_switch(indexer, monkeypatch):
     original_eager = QSAIndexer._select_eager
 
     def counted_eager(self, *args, **kwargs):
-        eager_calls.append((int(args[0].shape[1]), int(args[2].shape[1])))
+        # args = (q, pos_start, cache, pooled, total): the merged signature
+        # threads the cache so _select_eager reads the fp32 pooled mirror.
+        eager_calls.append((int(args[0].shape[1]), int(args[3].shape[1])))
         return original_eager(self, *args, **kwargs)
 
     monkeypatch.setattr(QSAIndexer, "_select_eager", counted_eager)
