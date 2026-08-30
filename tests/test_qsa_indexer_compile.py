@@ -9,6 +9,7 @@ composition behind one pure ``mx.compile`` boundary with explicit state.
 from __future__ import annotations
 
 import inspect
+import math
 
 import mlx.core as mx
 import pytest
@@ -59,6 +60,7 @@ def _core(
     project=False,
     scratch_bytes=32 * 1024 * 1024,
     compile_factory=mx.compile,
+    rope_attention_scaling=1.0,
 ):
     q_norm, k_norm, inv_freq = _weights()
     return QSACompiledIndexerCore(
@@ -71,6 +73,7 @@ def _core(
         k_norm_weight=k_norm,
         inv_freq=inv_freq,
         rms_norm_eps=EPS,
+        rope_attention_scaling=rope_attention_scaling,
         project_qk=(lambda hidden: hidden) if project else None,
         selector_scratch_bytes=scratch_bytes,
         compile_factory=compile_factory,
@@ -111,6 +114,7 @@ def _oracle(
     logical_blocks: int,
     pooled_len: int,
     mode: str,
+    rope_attention_scaling: float = 1.0,
 ):
     rows = int(qk_rows.shape[1])
     q_norm, k_norm, inv_freq = _weights(qk_rows.dtype)
@@ -130,6 +134,7 @@ def _oracle(
             inv_freq,
             pos_start=pos_start,
             eps=EPS,
+            attention_scaling=rope_attention_scaling,
         )
     )
     raw_next = mx.slice_update(
@@ -157,6 +162,7 @@ def _oracle(
         block_start=block_start,
         compress_ratio=RATIO,
         eps=EPS,
+        attention_scaling=rope_attention_scaling,
     )
     pooled_next = mx.slice_update(
         pooled,
@@ -220,11 +226,16 @@ def test_shared_capacity_bucket_contract_is_logarithmic():
         513: 1024,
         768: 1024,
         65_536: 65_536,
+        125_000: 131_072,
+        250_000: 262_144,
+        500_000: 524_288,
+        1_000_000: 1_048_576,
     }
     assert {value: qsa_indexer_capacity_bucket(value) for value in expected} == expected
     assert qsa_indexer_is_bucket_capacity(0)
     assert qsa_indexer_is_bucket_capacity(256)
     assert qsa_indexer_is_bucket_capacity(65_536)
+    assert qsa_indexer_is_bucket_capacity(1_048_576)
     assert not qsa_indexer_is_bucket_capacity(768)
 
 
@@ -293,6 +304,48 @@ def test_compiled_complete_core_matches_eager_composition(mode):
     assert report["modes"][mode] == 1
     assert report["compiled_keys"][0]["source"] == "qk_rows"
     assert report["compiled_keys"][0]["mode"] == mode
+
+
+@requires_metal
+def test_compiled_core_preserves_static_yarn_attention_scaling():
+    rows = 3
+    pos = 1_000_000
+    total = pos + rows
+    logical = total // RATIO
+    pooled_len = pos // RATIO
+    rope_scale = 1.0 + 0.1 * math.log(4.0)
+    qk_rows, raw, pooled = _fixture_with_capacities(
+        177,
+        rows,
+        raw_capacity=1_048_576,
+        pooled_capacity=524_288,
+    )
+    core = _core(rope_attention_scaling=rope_scale)
+
+    actual = core.select_qk_rows(
+        qk_rows,
+        raw,
+        pooled,
+        pos_start=pos,
+        total_tokens=total,
+        logical_blocks=logical,
+        pooled_len=pooled_len,
+        mode="blocks",
+    )
+    expected_selection, expected_raw, expected_pooled = _oracle(
+        qk_rows,
+        raw,
+        pooled,
+        pos_start=pos,
+        total_tokens=total,
+        logical_blocks=logical,
+        pooled_len=pooled_len,
+        mode="blocks",
+        rope_attention_scaling=rope_scale,
+    )
+    _selection_equal(actual.selection, expected_selection)
+    _array_equal(actual.raw_keys, expected_raw)
+    _array_equal(actual.pooled, expected_pooled)
 
 
 @requires_metal

@@ -145,7 +145,19 @@ def test_indexer_gate_covers_boundaries_seeds_ties_and_forced_chunks():
     totals = {row[3] for row in values}
     assert len(seeds) >= 8
     assert {2, 3, 7, 33, 65, 129, 257, 2048}.issubset(rows)
-    assert {2048, 2049, 2052, 2053, 2054, 2055, 2056, 8196, 262144}.issubset(totals)
+    assert {
+        2048,
+        2049,
+        2052,
+        2053,
+        2054,
+        2055,
+        2056,
+        8196,
+        262144,
+        1_000_000,
+        1_048_576,
+    }.issubset(totals)
     assert {total % 4 for total in totals} == {0, 1, 2, 3}
     assert "exact_zero_ties" in names
     tie_call = next(

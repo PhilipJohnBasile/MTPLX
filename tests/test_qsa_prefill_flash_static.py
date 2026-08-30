@@ -48,7 +48,7 @@ def test_production_geometry_is_narrow_and_explicit():
     assert _literal("_KV_HEADS") == 2
     assert _literal("_GQA") == 12
     assert _literal("_HEAD_DIM") == 256
-    assert _literal("_MAX_CONTEXT") == 262_144
+    assert _literal("_MAX_CONTEXT") == 1_048_576
     assert _literal("_COMPRESS_RATIO") == 4
     assert _literal("_TOP_K_BLOCKS") == 512
     assert _literal("_M_ROWS") == 16

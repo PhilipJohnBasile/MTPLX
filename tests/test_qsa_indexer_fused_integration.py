@@ -277,7 +277,11 @@ def test_env_on_dense_routes_full_backing_and_matches_eager(indexer, monkeypatch
         (
             "query",
             (1, 3, indexer.n_heads, indexer.head_dim),
-            {"pos_start": prefix, "eps": indexer.rms_norm_eps},
+            {
+                "pos_start": prefix,
+                "eps": indexer.rms_norm_eps,
+                "attention_scaling": indexer._rope_attention_scaling,
+            },
         ),
         (
             "pool",
@@ -286,6 +290,7 @@ def test_env_on_dense_routes_full_backing_and_matches_eager(indexer, monkeypatch
                 "block_start": prefix // indexer.ratio,
                 "compress_ratio": indexer.ratio,
                 "eps": indexer.rms_norm_eps,
+                "attention_scaling": indexer._rope_attention_scaling,
             },
         ),
     ]

@@ -175,7 +175,11 @@ def test_producer_aware_chunk_planner_charges_only_materialized_score_planes():
     budget = 128 * 1024 * 1024
     assert planner(2_048, 4, 65_536, budget, producer="mpp") == 512
     assert planner(2_048, 4, 65_536, budget, producer="mlx") == 96
+    assert planner(2_048, 4, 131_072, budget, producer="mpp") == 256
+    assert planner(2_048, 4, 262_144, budget, producer="mpp") == 128
     assert 512 * 65_536 * 4 == budget
+    assert 256 * 131_072 * 4 == budget
+    assert 128 * 262_144 * 4 == budget
     assert 96 * 65_536 * 4 * 5 <= budget
     with pytest.raises(ValueError, match="producer"):
         planner(2_048, 4, 65_536, budget, producer="unknown")

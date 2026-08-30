@@ -14,6 +14,7 @@ from mtplx.kernels.qsa_indexer_prepare import (
     qsa_indexer_pool_keys_metal,
     qsa_indexer_prepare_queries_metal,
 )
+from mtplx.models.qwen4_exp import TextArgs, _rope_inv_freq_and_scaling
 
 pytestmark = pytest.mark.skipif(
     not mx.metal.is_available() or mx.default_device() != mx.gpu,
@@ -29,11 +30,12 @@ def _partial_rope(
     values: mx.array,
     positions: mx.array,
     inv_freq: mx.array,
+    attention_scaling: float = 1.0,
 ) -> mx.array:
     angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
     angles = mx.concatenate([angles, angles], axis=-1)
-    cosine = mx.cos(angles)
-    sine = mx.sin(angles)
+    cosine = mx.cos(angles) * float(attention_scaling)
+    sine = mx.sin(angles) * float(attention_scaling)
     rotary_dim = int(cosine.shape[-1])
     half = rotary_dim // 2
     rotary = values[..., :rotary_dim]
@@ -52,6 +54,7 @@ def _query_oracle(
     inv_freq: mx.array,
     pos_start: int,
     eps: float,
+    attention_scaling: float = 1.0,
 ) -> mx.array:
     normalized = mx.fast.rms_norm(raw, weight, eps)
     positions = mx.arange(
@@ -59,7 +62,12 @@ def _query_oracle(
         pos_start + int(raw.shape[1]),
         dtype=mx.int32,
     )
-    return _partial_rope(normalized, positions, inv_freq)
+    return _partial_rope(
+        normalized,
+        positions,
+        inv_freq,
+        attention_scaling,
+    )
 
 
 def _pool_oracle(
@@ -69,6 +77,7 @@ def _pool_oracle(
     block_start: int,
     ratio: int,
     eps: float,
+    attention_scaling: float = 1.0,
 ) -> mx.array:
     blocks = int(raw.shape[1]) // ratio
     values = raw.reshape(1, blocks, ratio, int(raw.shape[-1]))
@@ -77,7 +86,12 @@ def _pool_oracle(
     positions = mx.arange(block_start, block_start + blocks, dtype=mx.int32) * ratio
     # _partial_rope expects [1,S,H,D]; the indexer pooled stream has one
     # implicit head and drops it after rotation.
-    return _partial_rope(normalized[:, :, None, :], positions, inv_freq)[:, :, 0, :]
+    return _partial_rope(
+        normalized[:, :, None, :],
+        positions,
+        inv_freq,
+        attention_scaling,
+    )[:, :, 0, :]
 
 
 def _assert_numeric_equal(
@@ -109,6 +123,8 @@ def _assert_numeric_equal(
         (3, 7, 4, 128, 64, 8191),
         (4, 3, 2, 32, 16, 7),
         (5, 2, 3, 7, 6, 1),
+        (6, 2, 4, 128, 64, 999_998),
+        (7, 2, 4, 128, 64, 1_048_574),
     ],
 )
 def test_query_prepare_matches_eager(
@@ -149,6 +165,8 @@ def test_query_prepare_matches_eager(
         (16, 5, 4, 128, 64, 16_383),
         (14, 3, 2, 32, 16, 7),
         (15, 2, 3, 7, 6, 2),
+        (17, 2, 4, 128, 64, 249_999),
+        (18, 2, 4, 128, 64, 262_142),
     ],
 )
 def test_pool_prepare_matches_eager(
@@ -245,6 +263,79 @@ def test_real_prefill_sized_query_preparation_is_bit_identical():
         eps=1e-6,
     )
     _assert_numeric_equal(actual, expected, exact=True)
+
+
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16])
+@pytest.mark.parametrize(
+    "factor,max_position,pos_start,block_start",
+    [
+        (2.0, 524_288, 524_286, 131_070),
+        (4.0, 1_048_576, 1_048_574, 262_142),
+    ],
+)
+def test_static_yarn_query_and_pool_preparation_match_eager(
+    dtype,
+    factor: float,
+    max_position: int,
+    pos_start: int,
+    block_start: int,
+):
+    """The fused indexer applies the same static-YaRN scale as attention."""
+
+    args = TextArgs(
+        max_position_embeddings=max_position,
+        rope_parameters={
+            "rope_type": "yarn",
+            "rope_theta": 10_000_000.0,
+            "partial_rotary_factor": 0.25,
+            "factor": factor,
+            "original_max_position_embeddings": 262_144,
+            "mrope_interleaved": True,
+            "mrope_section": [11, 11, 10],
+        },
+    )
+    inv_freq, attention_scaling = _rope_inv_freq_and_scaling(args)
+    mx.random.seed(int(factor * 101))
+    raw_q = mx.random.normal((1, 2, 4, 128)).astype(dtype)
+    raw_k = mx.random.normal((1, 8, 128)).astype(dtype)
+    weight = mx.random.uniform(low=0.5, high=1.5, shape=(128,)).astype(dtype)
+
+    expected_q = _query_oracle(
+        raw_q,
+        weight,
+        inv_freq,
+        pos_start,
+        1e-6,
+        attention_scaling,
+    )
+    actual_q = qsa_indexer_prepare_queries_metal(
+        raw_q,
+        weight,
+        inv_freq,
+        pos_start=pos_start,
+        eps=1e-6,
+        attention_scaling=attention_scaling,
+    )
+    expected_k = _pool_oracle(
+        raw_k,
+        weight,
+        inv_freq,
+        block_start,
+        4,
+        1e-6,
+        attention_scaling,
+    )
+    actual_k = qsa_indexer_pool_keys_metal(
+        raw_k,
+        weight,
+        inv_freq,
+        block_start=block_start,
+        compress_ratio=4,
+        eps=1e-6,
+        attention_scaling=attention_scaling,
+    )
+    _assert_numeric_equal(actual_q, expected_q, exact=True)
+    _assert_numeric_equal(actual_k, expected_k, exact=True)
 
 
 def test_query_prepare_compiles_once_with_dynamic_position():

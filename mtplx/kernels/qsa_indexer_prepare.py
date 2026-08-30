@@ -19,6 +19,7 @@ closed eligibility check and keeps its stock MLX implementation as the oracle.
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 
 import mlx.core as mx
@@ -60,6 +61,25 @@ def _dtype_tag(dtype: mx.Dtype) -> str:
         mx.bfloat16: "bf16",
         mx.float32: "f32",
     }[dtype]
+
+
+def _attention_scaling(value: float) -> float:
+    scaling = float(value)
+    if not math.isfinite(scaling) or scaling <= 0.0:
+        raise ValueError(
+            "attention_scaling must be finite and positive; "
+            f"got {scaling}"
+        )
+    return scaling
+
+
+def _float_tag(value: float) -> str:
+    return (
+        format(float(value), ".9g")
+        .replace("-", "m")
+        .replace("+", "p")
+        .replace(".", "d")
+    )
 
 
 def _validate_common(
@@ -134,6 +154,7 @@ def _prepare_queries_kernel(
     head_dim: int,
     rotary_dim: int,
     eps: float,
+    attention_scaling: float,
     dtype: mx.Dtype,
 ):
     half_rotary = rotary_dim // 2
@@ -145,6 +166,7 @@ def _prepare_queries_kernel(
         constant constexpr uint ROTARY_DIM = {rotary_dim};
         constant constexpr uint HALF_ROTARY = {half_rotary};
         constant constexpr float RMS_EPS = {float(eps)!r}f;
+        constant constexpr float ROPE_ATTENTION_SCALE = {float(attention_scaling)!r}f;
     """
     source = r"""
         const uint row_head = threadgroup_position_in_grid.x;
@@ -192,8 +214,10 @@ def _prepare_queries_kernel(
                 static_cast<T>(float(raw_q[second_at]) * inverse_rms);
             const float theta = position * float(inv_freq[
                 (size_t)pair * inv_freq_strides[0]]);
-            const float cosine = metal::precise::cos(theta);
-            const float sine = metal::precise::sin(theta);
+            const float cosine =
+                metal::precise::cos(theta) * ROPE_ATTENTION_SCALE;
+            const float sine =
+                metal::precise::sin(theta) * ROPE_ATTENTION_SCALE;
             const float first = float(first_norm);
             const float second = float(second_norm);
             // Keep the products as distinct fp32 operations.  The stock
@@ -222,7 +246,7 @@ def _prepare_queries_kernel(
     return mx.fast.metal_kernel(
         name=(
             f"mtplx_qsa_prepare_q_h{heads}_d{head_dim}_r{rotary_dim}_"
-            f"{_dtype_tag(dtype)}"
+            f"s{_float_tag(attention_scaling)}_{_dtype_tag(dtype)}"
         ),
         input_names=["raw_q", "norm_weight", "inv_freq", "pos_start"],
         output_names=["prepared_q"],
@@ -239,6 +263,7 @@ def qsa_indexer_prepare_queries_metal(
     *,
     pos_start: int | mx.array,
     eps: float,
+    attention_scaling: float = 1.0,
 ) -> mx.array:
     """Fuse query RMSNorm and partial RoPE into one Metal dispatch.
 
@@ -258,11 +283,13 @@ def qsa_indexer_prepare_queries_metal(
     if rows <= 0 or heads <= 0:
         raise ValueError(f"raw_q dimensions must be positive, got {tuple(raw_q.shape)}")
     start = _as_i32_scalar(pos_start, "pos_start")
+    rope_scale = _attention_scaling(attention_scaling)
     kernel = _prepare_queries_kernel(
         heads,
         head_dim,
         rotary_dim,
         float(eps),
+        rope_scale,
         raw_q.dtype,
     )
     return kernel(
@@ -281,6 +308,7 @@ def _pool_keys_kernel(
     rotary_dim: int,
     ratio: int,
     eps: float,
+    attention_scaling: float,
     dtype: mx.Dtype,
 ):
     half_rotary = rotary_dim // 2
@@ -292,6 +320,7 @@ def _pool_keys_kernel(
         constant constexpr uint HALF_ROTARY = {half_rotary};
         constant constexpr uint RATIO = {ratio};
         constant constexpr float RMS_EPS = {float(eps)!r}f;
+        constant constexpr float ROPE_ATTENTION_SCALE = {float(attention_scaling)!r}f;
     """
     source = r"""
         const uint block = threadgroup_position_in_grid.x;
@@ -336,8 +365,10 @@ def _pool_keys_kernel(
                     rounded_means[pair + HALF_ROTARY] * inverse_rms);
             const float theta = position * float(inv_freq[
                 (size_t)pair * inv_freq_strides[0]]);
-            const float cosine = metal::precise::cos(theta);
-            const float sine = metal::precise::sin(theta);
+            const float cosine =
+                metal::precise::cos(theta) * ROPE_ATTENTION_SCALE;
+            const float sine =
+                metal::precise::sin(theta) * ROPE_ATTENTION_SCALE;
             const float first = float(first_norm);
             const float second = float(second_norm);
             const float first_cosine = first * cosine;
@@ -357,7 +388,8 @@ def _pool_keys_kernel(
     """
     return mx.fast.metal_kernel(
         name=(
-            f"mtplx_qsa_pool_k_d{head_dim}_r{rotary_dim}_c{ratio}_{_dtype_tag(dtype)}"
+            f"mtplx_qsa_pool_k_d{head_dim}_r{rotary_dim}_c{ratio}_"
+            f"s{_float_tag(attention_scaling)}_{_dtype_tag(dtype)}"
         ),
         input_names=["raw_keys", "norm_weight", "inv_freq", "block_start"],
         output_names=["pooled"],
@@ -375,6 +407,7 @@ def qsa_indexer_pool_keys_metal(
     block_start: int | mx.array,
     compress_ratio: int,
     eps: float,
+    attention_scaling: float = 1.0,
 ) -> mx.array:
     """Fuse completed-block mean, RMSNorm, and partial RoPE.
 
@@ -401,11 +434,13 @@ def qsa_indexer_pool_keys_metal(
         )
     blocks = token_count // ratio
     start = _as_i32_scalar(block_start, "block_start")
+    rope_scale = _attention_scaling(attention_scaling)
     kernel = _pool_keys_kernel(
         head_dim,
         rotary_dim,
         ratio,
         float(eps),
+        rope_scale,
         raw_keys.dtype,
     )
     return kernel(

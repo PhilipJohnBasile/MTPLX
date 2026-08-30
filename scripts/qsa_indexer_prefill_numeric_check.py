@@ -47,7 +47,8 @@ class IndexerCase:
 # The radix-boundary case crosses 2,048 historical blocks.  The canonical
 # 2,048-row production query chunk is deliberately split into sixteen score
 # workspaces; final fixtures cover a rounded-away positive tie and the full
-# 262,144-token/65,536-block production context geometry.
+# million-token/250,000-block and maximum 1,048,576-token/262,144-block
+# production context geometries.
 INDEXER_CASES = (
     IndexerCase("dense_boundary", 11, 2, 2048, "float16", 1),
     IndexerCase("boundary_plus_one", 23, 3, 2049, "bfloat16", 1),
@@ -68,8 +69,19 @@ INDEXER_CASES = (
         1,
         positive_tie=True,
     ),
-    IndexerCase("max_context_random", 97, 2, 262144, "bfloat16", 1),
-    IndexerCase("max_context_zero_ties", 101, 2, 262144, "float16", 1, True),
+    IndexerCase("legacy_262k_random", 97, 2, 262144, "bfloat16", 1),
+    IndexerCase("half_million_zero_ties", 101, 2, 500_000, "float16", 1, True),
+    IndexerCase("binary_512k_zero_ties", 103, 2, 524_288, "float16", 1, True),
+    IndexerCase("one_million_random", 107, 2, 1_000_000, "bfloat16", 1),
+    IndexerCase(
+        "max_context_zero_ties",
+        109,
+        2,
+        1_048_576,
+        "float16",
+        1,
+        True,
+    ),
 )
 
 
@@ -87,7 +99,11 @@ def _machine_safety_gate() -> bool:
     """Refuse a GPU gate while a model worker is live."""
 
     processes = _command_output(
-        ["pgrep", "-fl", "mtplx.cli serve|mtplx.server.openai|mlx_lm"]
+        [
+            "pgrep",
+            "-fl",
+            "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm",
+        ]
     )
     pressure = _command_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"])
     print(
