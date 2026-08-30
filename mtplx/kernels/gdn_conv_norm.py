@@ -201,3 +201,50 @@ def fused_gdn_conv_norm(qkv_row, conv_state, conv_w):
         output_dtypes=[qkv_row.dtype] * 4,
     )
     return q, kk, v, ns
+
+
+# Device-capability probes (issue #400): MLX validates the requested
+# threadgroup size against the COMPILED pipeline's own
+# maxTotalThreadsPerThreadgroup at encode time, and on G14-family GPUs
+# (M2/M3 class) register pressure caps these 1024-thread pipelines at 896
+# — the dispatch raises ValueError and serve cannot boot with the family
+# env set armed. The channel math is structurally 1024-wide, so on such
+# devices the honest route is the eager chain the env kill-switches reach
+# — automatically. Only the real pipeline proves anything (the limit is
+# per-pipeline register pressure, not a device constant), so each probe
+# dispatches the real kernel once on dummy family-shaped inputs and
+# caches the verdict for the process lifetime.
+
+
+@lru_cache(maxsize=1)
+def device_supports_gdn_conv_norm() -> bool:
+    try:
+        row = mx.zeros((10240,), dtype=mx.bfloat16)
+        state = mx.zeros((3, 10240), dtype=mx.bfloat16)
+        cw = mx.zeros((10240, 4), dtype=mx.bfloat16)
+        mx.eval(*fused_gdn_conv_norm(row, state, cw))
+        return True
+    except Exception as exc:
+        print(
+            "[mtplx] fused GDN conv+norm disabled: this GPU cannot dispatch "
+            f"its 1024-thread pipeline; using the eager chain ({exc})",
+            flush=True,
+        )
+        return False
+
+
+@lru_cache(maxsize=1)
+def device_supports_gdn_conv_norm_rows() -> bool:
+    try:
+        rows = mx.zeros((2, 10240), dtype=mx.bfloat16)
+        state = mx.zeros((3, 10240), dtype=mx.bfloat16)
+        cw = mx.zeros((10240, 4), dtype=mx.bfloat16)
+        mx.eval(*fused_gdn_conv_norm_rows(rows, state, cw))
+        return True
+    except Exception as exc:
+        print(
+            "[mtplx] fused verify-width conv+norm disabled: this GPU cannot "
+            f"dispatch its 1024-thread pipeline; using the eager chain ({exc})",
+            flush=True,
+        )
+        return False
