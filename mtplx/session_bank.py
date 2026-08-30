@@ -91,6 +91,24 @@ def _lazy_snapshot_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
+def _snapshot_settle_enabled() -> bool:
+    """Idle-lane settling of the lazy snapshot right after a put.
+
+    The lazy put keeps response tails flat, but every unevaluated snapshot
+    view holds a reference to a live cache buffer: until the views settle,
+    buffer donation on the live cache is blocked and the NEXT turn's first
+    write to each buffer pays a full COW divergence copy. Under
+    back-to-back agent turns the SSD encode (the historical settler) may
+    never get an idle window, so the divergence lands inside the following
+    request — measured 10.7 s of prompt_state time on a warm 91K
+    OpenCode-shaped turn (decodecliff probe, 2026-08-30). Settling is a
+    ~0.1-0.4 s idle-lane eval that converts that landmine into GPU memcpy
+    between turns. Off-switch only.
+    """
+    raw = str(os.environ.get("MTPLX_SESSION_SNAPSHOT_SETTLE", "1")).strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
 def _near_prefix_tiny_gap_limit() -> int:
     """Token gap treated as tokenizer-boundary drift (long-shipped tolerance)."""
     raw = os.environ.get("MTPLX_SESSION_NEAR_PREFIX_MAX_TOKEN_GAP")
@@ -246,6 +264,29 @@ def _tree_nbytes(value: Any) -> int:
     return 0
 
 
+def _tree_mx_arrays(value: Any, out: list[mx.array] | None = None) -> list[mx.array]:
+    if out is None:
+        out = []
+    if value is None:
+        return out
+    if isinstance(value, CacheSnapshot):
+        _tree_mx_arrays(value.states, out)
+        _tree_mx_arrays(value.meta_states, out)
+        return out
+    if isinstance(value, mx.array):
+        out.append(value)
+        return out
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _tree_mx_arrays(item, out)
+        return out
+    if isinstance(value, dict):
+        for item in value.values():
+            _tree_mx_arrays(item, out)
+        return out
+    return out
+
+
 def _snapshot_nbytes(snapshot: CacheSnapshot) -> int:
     return _tree_nbytes(snapshot.states) + _tree_nbytes(snapshot.meta_states)
 
@@ -277,6 +318,11 @@ class SessionBankEntry:
     # entries with the SAME token hash, and an old entry finishing its
     # encode must never report a newer lazy replacement as settled.
     cold_encode_completed_at: float | None = None
+    # Monotonic time the idle-lane settle evaluated this entry's lazy
+    # snapshot views (releasing their references to live cache buffers so
+    # the next turn's writes can donate), or None. Same exact-object
+    # contract as cold_encode_completed_at.
+    snapshot_settled_at: float | None = None
     created_at_s: float = field(default_factory=time.time)
     last_access_s: float = field(default_factory=time.time)
     hits: int = 0
@@ -836,6 +882,8 @@ class SessionBank:
         )
         if timing_out is not None:
             timing_out["entry_build_s"] = time.perf_counter() - trunk_snapshot_done
+        if lazy_kv:
+            self._schedule_snapshot_settle(entry, timing_out=timing_out)
         self._enqueue_cold_entry(entry, timing_out=timing_out)
         self._entries[tokens] = entry
         self._supersede_contained_prefixes(tokens)
@@ -1688,6 +1736,78 @@ class SessionBank:
             ],
             "eviction_log": list(self.eviction_log)[-16:],
         }
+
+    def _schedule_snapshot_settle(
+        self,
+        entry: SessionBankEntry,
+        timing_out: dict[str, Any] | None = None,
+    ) -> None:
+        """Materialize the entry's lazy snapshot views off the request tail.
+
+        Runs on the same model-owner idle lane as the cold encode, dispatched
+        FIRST so the views settle before the (much heavier, coalesced) SSD
+        serialize touches them. No dispatch lane means no settle — the lazy
+        contract stays exactly as before rather than paying a synchronous
+        eval on the response tail. Per-array evals keep any foreground
+        request that lands mid-settle waiting at most one array (~10 ms),
+        not the whole snapshot.
+        """
+        if entry.live_ref_only or not _snapshot_settle_enabled():
+            return
+        dispatch = self.cold_enqueue_dispatch
+        if dispatch is None:
+            if timing_out is not None:
+                timing_out["snapshot_settle"] = {"dispatched": False}
+            return
+
+        def _settle_job() -> None:
+            try:
+                arrays = _tree_mx_arrays(
+                    (
+                        entry.cache_snapshot,
+                        entry.mtp_history_snapshot,
+                        entry.logits,
+                        entry.hidden,
+                    )
+                )
+                for array in arrays:
+                    mx.eval(array)
+                entry.snapshot_settled_at = time.monotonic()
+            except Exception as exc:
+                self.eviction_log.append(
+                    {
+                        "reason": "snapshot_settle_error",
+                        "session_id": entry.session_id,
+                        "prefix_len": entry.prefix_len,
+                        "token_hash": entry.token_hash,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        job = _settle_job
+        # Newest-wins per session: settling a superseded entry's snapshot
+        # is pure waste, and the key namespace is disjoint from the SSD
+        # encode's so a settle never coalesces away a persist (or vice
+        # versa).
+        job.coalesce_key = (
+            f"snapshot_settle:{entry.session_id}"
+            if entry.session_id
+            else f"snapshot_settle:hash:{entry.token_hash}"
+        )
+        try:
+            dispatch(job)
+            if timing_out is not None:
+                timing_out["snapshot_settle"] = {"dispatched": True}
+        except BaseException as exc:
+            self.eviction_log.append(
+                {
+                    "reason": "snapshot_settle_dispatch_error",
+                    "session_id": entry.session_id,
+                    "prefix_len": entry.prefix_len,
+                    "token_hash": entry.token_hash,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
 
     def _enqueue_cold_entry(
         self,
