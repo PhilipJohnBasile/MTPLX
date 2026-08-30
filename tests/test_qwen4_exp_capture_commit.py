@@ -660,6 +660,7 @@ def test_fixed_m4_capacity_grows_without_leaving_the_installed_lane(
         prompt_ids=_host_ids(prefill),
         hidden_variant=None,
     )
+    assert bank._fixed_m4_dispatch["growth_tokens"] == 8
     qsa_index, qsa = next(
         (index, entry)
         for index, entry in enumerate(cache)
@@ -692,9 +693,16 @@ def test_fixed_m4_capacity_grows_without_leaving_the_installed_lane(
 
     assert int(qsa.raw_keys.shape[1]) > initial_capacity
     assert bank.stats["fixed_m4_capacity_transitions"] == 1
+    assert bank._fixed_m4_dispatch["growth_tokens"] == 16
     assert bank.stats["fixed_m4_route_transitions"] == 1
     assert bank.stats["compiled_calls"] == 2
     assert bank.stats["fallback_calls"] == 0
+    # Request-report receipts for the grown generation (port addition).
+    report = bank.to_dict()["fixed_m4"]
+    assert report["base_offset"] == PREFILL
+    assert report["capacity"] == int(qsa.raw_keys.shape[1])
+    assert report["growth_tokens"] == 16
+    assert report["kv_gather"] == "stock"
 
     bank.demote(cache)
     _keys, _values, raw, pooled = cache[qsa_index].state

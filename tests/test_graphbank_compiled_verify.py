@@ -1118,7 +1118,7 @@ def test_unbounded_request_budget_clamps_to_env_ceiling_and_demotes(monkeypatch)
     cache = [KVCache()]
     rt.forward_ar_capture(mx.array([[0, 1, 2]]), cache=cache)
     bank = CompiledVerifyBank(rt, request_max_tokens=262_133, parity=True)
-    assert bank.growth_reserve_tokens == 512  # env ceiling, not the budget
+    assert bank.growth_reserve_tokens == 512  # generic ceiling, not the budget
 
     routes: list[str] = []
     growth_delta_calls: list[int] = []
@@ -1235,14 +1235,44 @@ def test_env_reserve_raises_ceiling_for_known_budget_runs(monkeypatch):
 def test_fixed_m4_strict_lane_uses_bounded_generation_headroom(monkeypatch):
     """A large output limit must not become a dense up-front allocation."""
 
-    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", "512")
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", raising=False)
     rt = _ExactKVRuntime()
     rt.qwen4_fixed_m4_compiled_verify = True
 
     bank = CompiledVerifyBank(rt, max_verify_len=4, request_max_tokens=4096)
 
     assert bank.strict_no_fallback is True
-    assert bank.growth_reserve_tokens == 512
+    assert bank.growth_reserve_tokens == 1024
+
+    short = CompiledVerifyBank(rt, max_verify_len=4, request_max_tokens=97)
+    assert short.growth_reserve_tokens == 101
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (1024, 2048),
+        (2048, 4096),
+        (4096, 8192),
+        (8192, 16384),
+        (16384, 16384),
+    ],
+)
+def test_fixed_m4_growth_grant_doubles_to_16k_cap(current, expected):
+    from mtplx.graphbank import _next_fixed_m4_growth_tokens
+
+    assert _next_fixed_m4_growth_tokens(current) == expected
+
+
+def test_fixed_m4_capacity_growth_clamps_to_reachable_request_end():
+    from mtplx.graphbank import _fixed_m4_capacity_growth
+
+    assert _fixed_m4_capacity_growth(
+        capacity=20_000,
+        required_end=20_004,
+        growth_tokens=8_192,
+        capacity_limit=24_000,
+    ) == (24_000, 16_384)
 
 
 def test_parity_mode_passes_on_toy_model_and_commits_eager_state():

@@ -1457,6 +1457,48 @@ def _compiled_verify_growth_reserve() -> int:
         return 512
 
 
+def _fixed_m4_initial_growth_reserve() -> int:
+    """Construction-time reserve for the strict Qwen4 fixed-M4 lane."""
+
+    if "MTPLX_COMPILED_VERIFY_GROWTH_RESERVE" in os.environ:
+        return _compiled_verify_growth_reserve()
+    return 1024
+
+
+_FIXED_M4_MAX_GROWTH_TOKENS = 16384
+
+
+def _next_fixed_m4_growth_tokens(current: int) -> int:
+    """Next construction-owned grant for an overrun fixed-M4 generation."""
+
+    current = max(1, int(current))
+    return min(
+        current * 2,
+        max(current, _FIXED_M4_MAX_GROWTH_TOKENS),
+    )
+
+
+def _fixed_m4_capacity_growth(
+    *,
+    capacity: int,
+    required_end: int,
+    growth_tokens: int,
+    capacity_limit: int | None,
+) -> tuple[int, int]:
+    """Resolve one host-boundary capacity transition and its next grant."""
+
+    next_capacity = max(
+        int(required_end),
+        int(capacity) + max(1, int(growth_tokens)),
+    )
+    if capacity_limit is not None:
+        next_capacity = max(
+            int(required_end),
+            min(next_capacity, int(capacity_limit)),
+        )
+    return next_capacity, _next_fixed_m4_growth_tokens(growth_tokens)
+
+
 def _post_restore_eager_rounds() -> int:
     """Verify rounds routed eager after a large session-bank restore (opt-in).
 
@@ -1672,18 +1714,24 @@ class CompiledVerifyBank:
         # small budgets still reserve exactly budget + one speculative
         # window; raise MTPLX_COMPILED_VERIFY_GROWTH_RESERVE to widen the
         # stable-capacity generation. The construction-owned Qwen4 fixed-M4
-        # lane uses the same bounded grant, but grows and reinstalls its graph
-        # at capacity boundaries instead of demoting to eager.
+        # lane has its own 1K default, then grows and reinstalls its graph at
+        # capacity boundaries instead of demoting to eager. An explicit env
+        # reserve remains authoritative for both lanes.
+        reserve_ceiling = (
+            _fixed_m4_initial_growth_reserve()
+            if self.strict_no_fallback
+            else _compiled_verify_growth_reserve()
+        )
         self.growth_reserve_tokens = (
             min(
                 self.request_max_tokens + self.speculative_headroom,
                 max(
-                    _compiled_verify_growth_reserve(),
+                    reserve_ceiling,
                     self.max_verify_len,
                 ),
             )
             if self.request_max_tokens is not None
-            else _compiled_verify_growth_reserve()
+            else reserve_ceiling
         )
         self.capture_backend = resolve_gdn_capture_backend(capture_backend)
         self.parity = bool(parity)
@@ -1894,6 +1942,19 @@ class CompiledVerifyBank:
             )
             else "stock"
         )
+        initial_growth_tokens = max(
+            self.max_verify_len,
+            self.growth_reserve_tokens,
+        )
+        capacity_limit = (
+            None
+            if self.request_max_tokens is None
+            else (
+                len(prompt_ids)
+                + self.request_max_tokens
+                + self.speculative_headroom
+            )
+        )
         self._fixed_m4_dispatch = {
             "fn": fn,
             "prepare_aux": prepare_aux,
@@ -1907,7 +1968,10 @@ class CompiledVerifyBank:
             "boundary": boundary,
             "base_offset": len(prompt_ids),
             "capacity": min(entry.capacity for entry in qsa_entries),
-            "growth_tokens": max(self.max_verify_len, self.growth_reserve_tokens),
+            "growth_tokens": _next_fixed_m4_growth_tokens(
+                initial_growth_tokens
+            ),
+            "capacity_limit": capacity_limit,
             "hidden_variant": hidden_variant,
             "qsa_entries": qsa_entries,
             "route_transition_at": (
@@ -1966,10 +2030,13 @@ class CompiledVerifyBank:
 
         qsa_entries = dispatch["qsa_entries"]
         capacity_changed = False
+        next_growth_tokens = int(dispatch["growth_tokens"])
         if capacity_needed:
-            next_capacity = max(
-                required_end,
-                int(dispatch["capacity"]) + int(dispatch["growth_tokens"]),
+            next_capacity, next_growth_tokens = _fixed_m4_capacity_growth(
+                capacity=int(dispatch["capacity"]),
+                required_end=required_end,
+                growth_tokens=int(dispatch["growth_tokens"]),
+                capacity_limit=dispatch["capacity_limit"],
             )
             for entry in qsa_entries:
                 capacity_changed = (
@@ -2012,8 +2079,22 @@ class CompiledVerifyBank:
         dispatch["fn"] = fn
         dispatch["capacity"] = min(entry.capacity for entry in qsa_entries)
         if capacity_changed:
+            dispatch["growth_tokens"] = next_growth_tokens
             self.stats["fixed_m4_capacity_transitions"] += 1
         if route_changed:
+            # Receipt refresh: the rows-gather activation may have bound the
+            # fused kernel, so the request report must not keep carrying the
+            # install-time gather label.
+            from .models.qwen4_exp import _qsa_stock_rows_gather_kv
+
+            dispatch["kv_gather"] = (
+                "fused_m4"
+                if any(
+                    entry.rows_gather_kv_m4 is not _qsa_stock_rows_gather_kv
+                    for entry in qsa_entries
+                )
+                else "stock"
+            )
             self.stats["fixed_m4_route_transitions"] += 1
 
     def _forward_installed_fixed_m4(
