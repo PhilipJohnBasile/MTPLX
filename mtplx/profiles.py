@@ -54,6 +54,10 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # A/Bs (2026-07-17 the sweep needed a site-packages patch because the
         # profile stomped the env). Same precedent as DONATION above.
         "MTPLX_COMPILED_VERIFY_MAX_CONTEXT",
+        # Dense fixed-verify capacity ceiling: operators benchmark bounded
+        # generation sizes against graph-reinstall costs. Resolve once when
+        # the bank is constructed; never reread it in the verify hot path.
+        "MTPLX_COMPILED_VERIFY_GROWTH_RESERVE",
         # Compiled-verify mode switch: parity/parity2 exactness gates must be
         # launchable against the turbo profile itself (Gate A on the exact
         # config being shipped), not only on profiles that leave the env
@@ -296,6 +300,7 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_AR_PIPELINE",
         "MTPLX_COMPILED_GDN",
         "MTPLX_QWEN4EXP_COMPILE",
+        "MTPLX_COMPILED_VERIFY_GROWTH_RESERVE",
         "MTPLX_DEFER_REPAIR_EVAL",
         "MTPLX_FAMILY_CAPTURE_COMMIT",
         "MTPLX_NGRAM_RESIDENT",
