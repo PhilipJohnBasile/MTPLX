@@ -49,7 +49,6 @@ from typing import Any, Dict, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from mlx_lm.models.base import BaseModelArgs, create_ssm_mask
 from mlx_lm.models.cache import ArraysCache, KVCache
 
@@ -58,6 +57,8 @@ from mlx_lm.models.qwen3_5 import GatedDeltaNet as _Qwen3_5GatedDeltaNet
 from mlx_lm.models.qwen3_next import (
     Qwen3NextSparseMoeBlock as _Qwen3NextSparseMoeBlock,
 )
+
+from mtplx.attention_context import current_attention_phase
 
 
 @dataclass
@@ -165,11 +166,129 @@ class TextArgs(BaseModelArgs):
         return int(eos if eos is not None else 0)
 
 
-def _rope_cos_sin(positions: mx.array, inv_freq: mx.array) -> tuple[mx.array, mx.array]:
-    """Non-interleaved (rotate-half) rope tables for arbitrary integer positions."""
+def _rope_inv_freq_and_scaling(args: TextArgs) -> tuple[mx.array, float]:
+    """Build the exact Transformers RoPE parameters used by Qwen4-Exp.
+
+    The released checkpoint is native at 262,144 tokens.  Qwen's documented
+    one-million-token configuration switches ``rope_type`` to static YaRN.
+    Static matters here: the same corrected frequencies and attention scale
+    apply at every position, including short rows in a long-context run.
+    """
+
+    rotary_dim = int(args.rotary_dim)
+    if rotary_dim <= 0 or rotary_dim % 2:
+        raise ValueError(f"rotary_dim must be a positive even integer, got {rotary_dim}")
+
+    parameters = args.rope_parameters or {}
+    rope_type = str(parameters.get("rope_type") or "default").strip().lower()
+    base = float(parameters.get("rope_theta", args.rope_theta))
+    if not math.isfinite(base) or base <= 1.0:
+        raise ValueError(f"rope_theta must be finite and greater than 1, got {base}")
+
+    positions = mx.arange(0, rotary_dim, 2, dtype=mx.float32)
+    position_frequencies = base ** (positions / rotary_dim)
+    if rope_type == "default":
+        return 1.0 / position_frequencies, 1.0
+    if rope_type != "yarn":
+        raise ValueError(
+            "Qwen4-Exp supports rope_type 'default' and static 'yarn'; "
+            f"got {rope_type!r}"
+        )
+
+    try:
+        factor = float(parameters["factor"])
+        original_max = int(parameters["original_max_position_embeddings"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "static YaRN requires numeric factor and "
+            "original_max_position_embeddings"
+        ) from exc
+    if not math.isfinite(factor) or factor < 1.0:
+        raise ValueError(f"YaRN factor must be finite and >= 1, got {factor}")
+    if original_max <= 0:
+        raise ValueError(
+            "YaRN original_max_position_embeddings must be positive, "
+            f"got {original_max}"
+        )
+
+    def mscale(scale: float, multiplier: float = 1.0) -> float:
+        if scale <= 1.0:
+            return 1.0
+        return 0.1 * multiplier * math.log(scale) + 1.0
+
+    configured_attention_scale = parameters.get("attention_factor")
+    if configured_attention_scale is None:
+        mscale_value = parameters.get("mscale")
+        mscale_all_dim = parameters.get("mscale_all_dim")
+        if mscale_value and mscale_all_dim:
+            attention_scaling = mscale(factor, float(mscale_value)) / mscale(
+                factor,
+                float(mscale_all_dim),
+            )
+        else:
+            attention_scaling = mscale(factor)
+    else:
+        attention_scaling = float(configured_attention_scale)
+    if not math.isfinite(attention_scaling) or attention_scaling <= 0.0:
+        raise ValueError(
+            "YaRN attention_factor must be finite and positive, "
+            f"got {attention_scaling}"
+        )
+
+    beta_fast = float(parameters.get("beta_fast") or 32.0)
+    beta_slow = float(parameters.get("beta_slow") or 1.0)
+    if beta_fast < beta_slow:
+        raise ValueError(
+            f"YaRN beta_fast must be >= beta_slow, got {beta_fast} < {beta_slow}"
+        )
+
+    def correction_dimension(rotations: float) -> float:
+        return (
+            rotary_dim
+            * math.log(original_max / (rotations * 2.0 * math.pi))
+            / (2.0 * math.log(base))
+        )
+
+    low = correction_dimension(beta_fast)
+    high = correction_dimension(beta_slow)
+    if bool(parameters.get("truncate", True)):
+        low = math.floor(low)
+        high = math.ceil(high)
+    low = max(low, 0.0)
+    high = min(high, float(rotary_dim - 1))
+    if low == high:
+        high += 0.001
+
+    ramp = mx.clip(
+        (mx.arange(rotary_dim // 2, dtype=mx.float32) - low) / (high - low),
+        0.0,
+        1.0,
+    )
+    inv_freq_extrapolation = 1.0 / position_frequencies
+    inv_freq_interpolation = inv_freq_extrapolation / factor
+    extrapolation_factor = 1.0 - ramp
+    inv_freq = (
+        inv_freq_interpolation * (1.0 - extrapolation_factor)
+        + inv_freq_extrapolation * extrapolation_factor
+    )
+    return inv_freq.astype(mx.float32), float(attention_scaling)
+
+
+def _rope_cos_sin(
+    positions: mx.array,
+    inv_freq: mx.array,
+    attention_scaling: float = 1.0,
+) -> tuple[mx.array, mx.array]:
+    """Non-interleaved RoPE tables, including static-YaRN amplitude scaling."""
+
     angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
     emb = mx.concatenate([angles, angles], axis=-1)
-    return mx.cos(emb), mx.sin(emb)
+    cosine = mx.cos(emb)
+    sine = mx.sin(emb)
+    if attention_scaling != 1.0:
+        cosine = cosine * float(attention_scaling)
+        sine = sine * float(attention_scaling)
+    return cosine, sine
 
 
 def _build_mrope_axes(section: list, interleaved: bool) -> list[int]:
@@ -915,9 +1034,10 @@ def _fuse_qsa_qkv_sanitize(model, out: dict) -> dict:
             for w, s, _ in parts[:3]
         ):
             continue
-        # The shipped forge keeps the indexer projection at 8-bit (selection
-        # precision) while q/k/v are 4-bit — a mixed-bits member cannot join
-        # one GEMV, so it drops out and keeps its own dispatch.
+        # Include the indexer projection only when its actual pack geometry
+        # matches q/k/v; never infer this from names or config.  The v2.10
+        # production artifact is 4-bit group-64 here, despite the stale older
+        # 8-bit artifact assumption.
         if len(parts) == 4 and (
             parts[3][0].shape[-1] != k_words or parts[3][1].shape[-1] != n_groups
         ):
@@ -1048,6 +1168,137 @@ def _qsa_score_tile_rows() -> int:
         return max(0, int(os.environ.get("MTPLX_QSA_SCORE_TILE_ROWS") or 0))
     except ValueError:
         return 0
+
+
+def _fused_qsa_indexer_enabled() -> bool:
+    raw = (os.environ.get("MTPLX_FUSED_QSA_INDEXER") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _compiled_qsa_indexer_enabled() -> bool:
+    raw = (os.environ.get("MTPLX_COMPILED_QSA_INDEXER") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _qsa_prefill_enabled() -> bool:
+    """Large-S score -> top-k -> sparse-attention pipeline kill switch."""
+
+    raw = (os.environ.get("MTPLX_QSA_PREFILL") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _qsa_prefill_min_rows() -> int:
+    """Keep decode/short verify lanes separate from matrix-shaped prefill."""
+
+    try:
+        return max(2, int(os.environ.get("MTPLX_QSA_PREFILL_MIN_ROWS") or 32))
+    except ValueError:
+        return 32
+
+
+def _qsa_prefill_min_context() -> int:
+    """History crossover for the matrix indexer/selector pipeline.
+
+    The exact Metal selector has a fixed dispatch/radix cost.  Production A/B
+    on this machine showed that cost does not amortize against v2.10's eager
+    matmul/argpartition path until roughly 32K tokens, so chunks whose earliest
+    query is below that history remain entirely on the stock path.
+    """
+
+    try:
+        return max(
+            2049,
+            int(os.environ.get("MTPLX_QSA_PREFILL_MIN_CONTEXT") or 32768),
+        )
+    except ValueError:
+        return 32768
+
+
+def _qsa_prefill_flash_min_context() -> int:
+    """Conservative crossover for the direct block-sparse attention consumer."""
+
+    try:
+        return max(
+            2049,
+            int(os.environ.get("MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT") or 65536),
+        )
+    except ValueError:
+        return 65536
+
+
+def _qsa_prefill_score_workspace_bytes() -> int:
+    """Byte budget for per-head float32 logits plus the reduced score plane."""
+
+    try:
+        mib = max(1, int(os.environ.get("MTPLX_QSA_PREFILL_SCORE_MB") or 128))
+    except ValueError:
+        mib = 128
+    return mib * 1024 * 1024
+
+
+def _qsa_prefill_compile_rows() -> int:
+    """Canonical large prefill width captured by the graph bank.
+
+    Normal prefill uses 2,048-token chunks.  Restricting graph capture to one
+    operator-selected width prevents every arbitrary final/restored suffix
+    from creating another shape-specialized ``mx.compile`` trace.  The Metal
+    prefill path still serves non-canonical tails without graph capture.
+    """
+
+    try:
+        return max(2, int(os.environ.get("MTPLX_QSA_PREFILL_COMPILE_ROWS") or 2048))
+    except ValueError:
+        return 2048
+
+
+def _qsa_large_prefill_enabled(rows: int, total_tokens: int) -> bool:
+    # S>1 is not sufficient: MTP target verification also uses multiple rows.
+    # The request-scoped phase signal keeps speculative verify/rollback on its
+    # existing exact cache path and reserves this matrix-shaped lane for the
+    # prompt/SSD-restored prefill it was designed to accelerate.
+    return (
+        _qsa_prefill_enabled()
+        and current_attention_phase() == "prefill"
+        and int(rows) >= _qsa_prefill_min_rows()
+        # Gate on the earliest query in the chunk, not its final T.  A large
+        # restored/SSD chunk may straddle the crossover; routing it by final T
+        # would make its early rows pay the exact fixed-cost pathology this
+        # guard exists to avoid.
+        and int(total_tokens) - int(rows) >= _qsa_prefill_min_context()
+    )
+
+
+def _qsa_prefill_flash_attention_enabled(rows: int, total_tokens: int) -> bool:
+    """Whether compact block selections should bypass stock dense SDPA."""
+
+    return (
+        _qsa_large_prefill_enabled(rows, total_tokens)
+        and int(total_tokens) - int(rows) >= _qsa_prefill_flash_min_context()
+    )
+
+
+def _qsa_prefill_gather_enabled() -> bool:
+    """Portable gathered-attention tier for the flash_prefill block contract.
+
+    Serves the same compact per-row block selections as the NAX flash kernel,
+    on any Metal device, by gathering the bounded visible set (top-k blocks +
+    causal tail, <= budget + ratio - 1 rows per query) and running a bounded
+    fp32 softmax over it — the oMLX PR #3244 portable-lane approach. Without
+    this tier a non-NAX machine that armed MTPLX_QSA_PREFILL would fall back
+    to reconstructing the dense [S, T] mask, paying the whale the lane exists
+    to remove."""
+
+    raw = (os.environ.get("MTPLX_QSA_PREFILL_GATHER") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _qsa_prefill_gather_tile_rows() -> int:
+    """Query-row tile for the portable gathered tier (bounds gathered K/V)."""
+
+    try:
+        return max(8, int(os.environ.get("MTPLX_QSA_PREFILL_GATHER_TILE") or 64))
+    except ValueError:
+        return 64
 
 
 def _fused_hc_enabled() -> bool:
@@ -1185,6 +1436,11 @@ class QSACache:
         # (#393 audit). Same values (astype of the same bf16 blocks), so
         # selection is bit-identical; this is allocation hygiene only.
         self.pooled_f32_t: Optional[mx.array] = None
+        # Host-planned graph buckets can be reserved before the first array
+        # write, when dtype/head width are not known yet.  The next write
+        # materializes the pending capacity with the actual projected dtype.
+        self._reserved_raw_capacity = 0
+        self._reserved_pooled_capacity = 0
 
     @property
     def offset(self) -> int:
@@ -1212,7 +1468,9 @@ class QSACache:
         end = start + keys.shape[1]
         if self.raw_keys is None or end > self.raw_keys.shape[1]:
             current = 0 if self.raw_keys is None else self.raw_keys.shape[1]
-            cap = self._grown_cap(end, current, self.step)
+            # Geometric growth bounds copy traffic; a staged host reservation
+            # (compiled-indexer graph buckets) may demand a wider backing.
+            cap = max(self._grown_cap(end, current, self.step), self._reserved_raw_capacity)
             grown = mx.zeros((1, cap, keys.shape[2]), keys.dtype)
             if self.raw_keys is not None:
                 grown[:, : self.raw_keys.shape[1], :] = self.raw_keys
@@ -1222,7 +1480,10 @@ class QSACache:
     def write_pooled(self, blocks: mx.array, nb_start: int, nb_total: int) -> None:
         if self.pooled is None or nb_total > self.pooled.shape[1]:
             current = 0 if self.pooled is None else self.pooled.shape[1]
-            cap = self._grown_cap(nb_total, current, self.step)
+            cap = max(
+                self._grown_cap(nb_total, current, self.step),
+                self._reserved_pooled_capacity,
+            )
             grown = mx.zeros((1, cap, blocks.shape[2]), blocks.dtype)
             if self.pooled is not None:
                 grown[:, : self.pooled.shape[1], :] = self.pooled
@@ -1255,12 +1516,75 @@ class QSACache:
         """[1, 1, D, nb] fp32 view of the valid pooled blocks.
 
         Rebuilds the mirror from ``pooled`` after a state restore (setter
-        drops it); otherwise a zero-copy slice of the maintained buffer."""
+        drops it) or a compiled-indexer commit (which replaces ``pooled``
+        wholesale and nulls the mirror); otherwise a zero-copy slice of the
+        maintained buffer."""
         if self.pooled_f32_t is None or self.pooled_f32_t.shape[3] < nb:
             self.pooled_f32_t = mx.swapaxes(
                 self.pooled.astype(mx.float32), 1, 2
             )[:, None]
         return self.pooled_f32_t[..., :nb]
+
+    def reserve_indexer_capacity(
+        self,
+        *,
+        raw_capacity: int,
+        pooled_capacity: int,
+    ) -> None:
+        """Reserve fixed backing shapes before an indexer graph is traced.
+
+        The MTP replay planner calls this on the host.  Existing allocations
+        grow immediately and retain their active prefix; a pristine cache
+        records the request until its first projected rows establish dtype and
+        head width.  No reservation may truncate a live logical frontier.
+        """
+
+        raw_requested = int(raw_capacity)
+        pooled_requested = int(pooled_capacity)
+        if raw_requested < 0 or pooled_requested < 0:
+            raise ValueError(
+                "QSA reserved capacities must be non-negative; got "
+                f"raw={raw_requested}, pooled={pooled_requested}"
+            )
+
+        raw_existing = 0 if self.raw_keys is None else int(self.raw_keys.shape[1])
+        pooled_existing = 0 if self.pooled is None else int(self.pooled.shape[1])
+        raw_target = max(
+            raw_requested,
+            raw_existing,
+            self._reserved_raw_capacity,
+        )
+        pooled_target = max(
+            pooled_requested,
+            pooled_existing,
+            self._reserved_pooled_capacity,
+        )
+        if raw_target < self.offset:
+            raise ValueError(
+                f"raw capacity {raw_target} cannot cover QSA offset {self.offset}"
+            )
+        if pooled_target < self.pooled_len:
+            raise ValueError(
+                "pooled capacity cannot truncate the valid QSA frontier: "
+                f"{pooled_target} < {self.pooled_len}"
+            )
+
+        self._reserved_raw_capacity = raw_target
+        self._reserved_pooled_capacity = pooled_target
+        if self.raw_keys is not None and raw_target > raw_existing:
+            grown = mx.zeros(
+                (1, raw_target, self.raw_keys.shape[2]),
+                self.raw_keys.dtype,
+            )
+            grown[:, :raw_existing, :] = self.raw_keys
+            self.raw_keys = grown
+        if self.pooled is not None and pooled_target > pooled_existing:
+            grown = mx.zeros(
+                (1, pooled_target, self.pooled.shape[2]),
+                self.pooled.dtype,
+            )
+            grown[:, :pooled_existing, :] = self.pooled
+            self.pooled = grown
 
     def is_trimmable(self) -> bool:
         return True
@@ -1306,6 +1630,8 @@ class QSACache:
         # Derived mirror: rebuilt lazily on the first pooled_f32_view read.
         # Restored snapshots stay 4-leaf — the state contract is unchanged.
         self.pooled_f32_t = None
+        self._reserved_raw_capacity = 0 if raw is None else int(raw.shape[1])
+        self._reserved_pooled_capacity = 0 if pooled is None else int(pooled.shape[1])
 
 
 class QSAIndexer(nn.Module):
@@ -1313,6 +1639,14 @@ class QSAIndexer(nn.Module):
     causal case (B=1, no padding): every query selects its top
     (budget/compress_ratio) complete key blocks by relu-scored pooled keys,
     plus the visible incomplete tail."""
+
+    # The selector carries one private float32 score row per pooled backing
+    # block. Bound that hidden output per Metal dispatch without imposing any
+    # cap on logical history length. An irreducible one-row dispatch can exceed
+    # the target at extreme capacities; MLX may also retain multiple lazy
+    # chunks until their concatenated consumer is evaluated, so this is not a
+    # claim about graph-wide peak memory.
+    _fused_score_scratch_bytes = 32 * 1024 * 1024
 
     def __init__(self, args: TextArgs):
         super().__init__()
@@ -1322,14 +1656,58 @@ class QSAIndexer(nn.Module):
         self.budget = args.indexer_budget
         self.ratio = args.indexer_compress_ratio
         self.block_topk = self.budget // self.ratio
+        self.rms_norm_eps = float(args.rms_norm_eps)
         self.index_qk_proj = nn.Linear(
             args.hidden_size, (self.n_heads + self.kv_heads) * self.head_dim, bias=False
         )
         self.q_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
-        rot = args.rotary_dim
-        self._inv_freq = args.rope_theta ** (
-            -mx.arange(0, rot, 2, dtype=mx.float32) / rot
+        self._inv_freq, self._rope_attention_scaling = (
+            _rope_inv_freq_and_scaling(args)
+        )
+        # Kept outside the nn.Module parameter tree.  The graph bank is built
+        # lazily on the first eligible inference call, after checkpoint load
+        # and sanitize-time projection fusion have finalized every weight.
+        object.__setattr__(self, "_compiled_indexer_core", None)
+        object.__setattr__(self, "_compiled_indexer_parameter_signature", None)
+
+    def _pool_keys_eager(
+        self,
+        fresh: mx.array,
+        nb_old: int,
+        nb_total: int,
+    ) -> mx.array:
+        """Stock completed-block preparation kept as the numeric oracle."""
+
+        fresh = fresh.reshape(1, nb_total - nb_old, self.ratio, self.head_dim)
+        pooled = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
+        pooled = self.k_layernorm(pooled)
+        starts = mx.arange(nb_old, nb_total, dtype=mx.int32) * self.ratio
+        cos, sin = _rope_cos_sin(
+            starts,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
+        return _apply_partial_rope(pooled[:, :, None, :], cos, sin)[:, :, 0, :]
+
+    def _prepare_kernel_supported(
+        self,
+        values: mx.array,
+        norm_weight: mx.array,
+        *,
+        expected_ndim: int,
+    ) -> bool:
+        if not _fused_qsa_indexer_enabled():
+            return False
+        from mtplx.kernels.qsa_indexer_prepare import (
+            qsa_indexer_prepare_supported,
+        )
+
+        return qsa_indexer_prepare_supported(
+            values,
+            norm_weight,
+            self._inv_freq,
+            expected_ndim=expected_ndim,
         )
 
     def _extend_pooled(self, cache: QSACache, total: int) -> Optional[mx.array]:
@@ -1337,18 +1715,32 @@ class QSAIndexer(nn.Module):
         nb_old = min(cache.pooled_len, nb_total)
         if nb_total > nb_old:
             fresh = cache.raw_keys[:, nb_old * self.ratio : nb_total * self.ratio, :]
-            fresh = fresh.reshape(1, nb_total - nb_old, self.ratio, self.head_dim)
-            pooled = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
-            pooled = self.k_layernorm(pooled)
-            starts = mx.arange(nb_old, nb_total, dtype=mx.int32) * self.ratio
-            cos, sin = _rope_cos_sin(starts, self._inv_freq)
-            pooled = _apply_partial_rope(pooled[:, :, None, :], cos, sin)[:, :, 0, :]
+            if self._prepare_kernel_supported(
+                fresh,
+                self.k_layernorm.weight,
+                expected_ndim=3,
+            ):
+                from mtplx.kernels.qsa_indexer_prepare import (
+                    qsa_indexer_pool_keys_metal,
+                )
+
+                pooled = qsa_indexer_pool_keys_metal(
+                    fresh,
+                    self.k_layernorm.weight,
+                    self._inv_freq,
+                    block_start=nb_old,
+                    compress_ratio=self.ratio,
+                    eps=self.rms_norm_eps,
+                    attention_scaling=self._rope_attention_scaling,
+                )
+            else:
+                pooled = self._pool_keys_eager(fresh, nb_old, nb_total)
             cache.write_pooled(pooled, nb_old, nb_total)
         if nb_total == 0:
             return None
         return cache.pooled[:, :nb_total, :]
 
-    def _tiled_selected(
+    def _tiled_topk(
         self,
         q: mx.array,
         pooled_t: mx.array,
@@ -1359,7 +1751,7 @@ class QSAIndexer(nn.Module):
         nb_total: int,
         tile: int,
     ) -> mx.array:
-        """Per-tile scoring + selection; concatenated [S, nb_total] bool.
+        """Per-tile scoring + top-k; concatenated [S, k_eff] indices.
 
         Row math is identical to the whole-chunk path (each row's dot,
         relu-sum, validity mask, tie-break and top-k involve no other row);
@@ -1379,66 +1771,40 @@ class QSAIndexer(nn.Module):
             top_t = mx.argpartition(masked_t, kth=nb_total - k_eff, axis=-1)[
                 :, nb_total - k_eff :
             ]
-            sel_t = mx.zeros((s1 - s0, nb_total), dtype=mx.bool_)
-            sel_t = mx.put_along_axis(
-                sel_t, top_t.astype(mx.int64), mx.array(True), axis=-1
-            )
-            sel_t = sel_t & valid_t
-            mx.eval(sel_t)
-            parts.append(sel_t)
+            mx.eval(top_t)
+            parts.append(top_t)
         return mx.concatenate(parts, axis=0)
 
-    def __call__(
+    def _select_eager(
         self,
-        hidden: mx.array,
+        q: mx.array,
         pos_start: int,
         cache: QSACache,
-        qk_rows: Optional[mx.array] = None,
-    ) -> Optional[mx.array]:
-        B, S, _ = hidden.shape
-        if B != 1:
-            raise NotImplementedError("qwen4_exp QSA serves single sequences (B=1)")
-        # qk_rows: the layer's fused shared-input GEMV already produced this
-        # projection (MTPLX_FUSED_QSA_QKV) — same rows bit-exactly.
-        qk = self.index_qk_proj(hidden) if qk_rows is None else qk_rows
-        q, k = mx.split(qk, [self.n_heads * self.head_dim], axis=-1)
-        q = q.reshape(B, S, self.n_heads, self.head_dim)
-        k = k.reshape(B, S, self.head_dim)
-        q = self.q_layernorm(q)
-        positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
-        cos, sin = _rope_cos_sin(positions, self._inv_freq)
-        q = _apply_partial_rope(q, cos, sin)
+        pooled: mx.array,
+        total: int,
+    ):
+        """Stock MLX selector kept as the correctness oracle and kill-switch."""
 
-        cache.write_raw(k)
-        T = pos_start + S  # == the KV length after this forward's update
-        pooled = self._extend_pooled(cache, T)
-        nb_total = 0 if pooled is None else pooled.shape[1]
-
-        # Per-query complete-block counts. If every visible prefix fits inside
-        # the budget the selection is the full causal mask — skip the work.
-        last_nb = (pos_start + S) // self.ratio
-        if last_nb <= self.block_topk:
-            return None  # dense == sparse in this regime
-
-        # Cached fp32-transposed pooled view: same values as the old
-        # per-call astype+swapaxes of the whole table (astype of the same
-        # bf16 blocks -> bit-identical scores), without re-materializing
-        # 33.5 MB per layer per token at 262K.
+        S = q.shape[1]
+        nb_total = pooled.shape[1]
+        # Cached fp32-transposed pooled view: same values as the old per-call
+        # astype+swapaxes of the whole table (astype of the same bf16 blocks
+        # -> bit-identical scores), without re-materializing 33.5 MB per
+        # layer per token at 262K (#393).
         pooled_t = cache.pooled_f32_view(nb_total)  # [1,1,D,nb]
+
         qpos = mx.arange(pos_start, pos_start + S, dtype=mx.int32)  # abs position
         nb_q = (qpos + 1) // self.ratio  # complete blocks visible per query [S]
         blk = mx.arange(nb_total, dtype=mx.int32)
+        valid = blk[None, :] < nb_q[:, None]  # [S, nb]
         neg = mx.array(-mx.inf, dtype=mx.float32)
         k_eff = min(self.block_topk, nb_total)
 
         tile = _qsa_score_tile_rows()
         if S > 1 and 0 < tile < S:
-            # Tiled scoring (see _qsa_score_tile_rows): the fast lanes below
-            # are structurally out of reach here (flash/gather-decode are
-            # S==1; rows-gather caps at _qsa_gather_max_rows, far under any
-            # sane tile), so this branch only ever feeds the dense mask
-            # fallthrough.
-            selected = self._tiled_selected(
+            # Tiled scoring (see _qsa_score_tile_rows): bounds the live fp32
+            # score transient at one tile; per-row selection math identical.
+            top_idx = self._tiled_topk(
                 q, pooled_t, nb_q, blk, neg, k_eff, nb_total, tile
             )
         else:
@@ -1447,7 +1813,6 @@ class QSAIndexer(nn.Module):
                 mx.maximum(scores, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
             )
             scores = scores[0]  # [S, nb]
-            valid = blk[None, :] < nb_q[:, None]  # [S, nb]
             masked_scores = mx.where(valid, scores, neg)
             # torch.topk tie-break (lowest index wins). Exact ties are
             # common: a block whose every head-dot is negative relu-scores
@@ -1456,11 +1821,31 @@ class QSAIndexer(nn.Module):
             top_idx = mx.argpartition(masked_scores, kth=nb_total - k_eff, axis=-1)[
                 :, nb_total - k_eff :
             ]
-            selected = mx.zeros((S, nb_total), dtype=mx.bool_)
-            selected = mx.put_along_axis(
-                selected, top_idx.astype(mx.int64), mx.array(True), axis=-1
+
+        if S > 1 and _qsa_large_prefill_enabled(S, total):
+            # Preserve the eager score/top-k expression as an independently
+            # selectable oracle while handing attention the compact block set.
+            # IDs are chronological so the online-softmax consumer has a
+            # deterministic traversal; validity distinguishes the padded
+            # top-k slots on early rows whose complete prefix has < K blocks.
+            block_ids = mx.sort(top_idx.astype(mx.int32), axis=-1)
+            block_valid = mx.take_along_axis(
+                valid,
+                block_ids.astype(mx.int64),
+                axis=-1,
             )
-            selected = selected & valid  # -inf padding rows never select
+            block_ids = mx.where(
+                block_valid,
+                block_ids,
+                mx.array(0, dtype=mx.int32),
+            )
+            return ("flash_prefill", block_ids, block_valid)
+
+        selected = mx.zeros((S, nb_total), dtype=mx.bool_)
+        selected = mx.put_along_axis(
+            selected, top_idx.astype(mx.int64), mx.array(True), axis=-1
+        )
+        selected = selected & valid  # -inf padding rows never select
 
         if S == 1 and _qsa_flash_enabled():
             # Flash-skip lane (MTPLX_QSA_FLASH): hand attention the sorted
@@ -1469,7 +1854,7 @@ class QSAIndexer(nn.Module):
             # dense mask staged, no gathered copies (both measured slower:
             # dense = full-context reads, gather = -5.25% from two
             # materialized copies per layer per token, d6171d2c).
-            blk_idx = mx.sort(top_idx[0].astype(mx.int32))  # [k_eff]
+            blk_idx = mx.sort(top_idx[0].astype(mx.int32))
             tail_start = ((pos_start + 1) // self.ratio) * self.ratio
             return ("flash", blk_idx, tail_start)
 
@@ -1483,7 +1868,7 @@ class QSAIndexer(nn.Module):
             # are < the tail start; the tail runs to the current position),
             # so the gathered SDPA needs no mask — identical math to the
             # masked dense product over the same visible set.
-            blk_idx = mx.sort(top_idx[0].astype(mx.int32))  # [k_eff]
+            blk_idx = mx.sort(top_idx[0].astype(mx.int32))
             tok_from_blocks = (
                 blk_idx[:, None] * self.ratio + mx.arange(self.ratio, dtype=mx.int32)
             ).reshape(-1)
@@ -1491,7 +1876,7 @@ class QSAIndexer(nn.Module):
             # the AR pipeline): for the single decode row qpos == pos_start,
             # so the visible-complete-block count is (pos_start+1) // ratio.
             tail_start = ((pos_start + 1) // self.ratio) * self.ratio
-            tail_ids = mx.arange(tail_start, T, dtype=mx.int32)
+            tail_ids = mx.arange(tail_start, total, dtype=mx.int32)
             return mx.concatenate([tok_from_blocks, tail_ids])
 
         if (
@@ -1499,7 +1884,7 @@ class QSAIndexer(nn.Module):
             and not (0 < tile < S)  # tiled branch produced no top_idx
             and _qsa_gather_enabled()
             and S <= _qsa_gather_max_rows()
-            and T >= _qsa_gather_min_context()
+            and total >= _qsa_gather_min_context()
         ):
             # Rows-gather lane (MTPLX_QSA_GATHER at S>1), adapting the
             # per-query gather + GQA-broadcast attention from community PR
@@ -1530,15 +1915,674 @@ class QSAIndexer(nn.Module):
             return ("gather_rows", token_idx, token_ok)
 
         # Blocks -> tokens, plus the visible tail, intersected with causal.
-        tok_sel = mx.repeat(selected, self.ratio, axis=1)  # [S, nb*ratio]
-        if nb_total * self.ratio < T:
-            pad = mx.zeros((S, T - nb_total * self.ratio), dtype=mx.bool_)
+        tok_sel = mx.repeat(selected, self.ratio, axis=1)
+        if nb_total * self.ratio < total:
+            pad = mx.zeros((S, total - nb_total * self.ratio), dtype=mx.bool_)
             tok_sel = mx.concatenate([tok_sel, pad], axis=1)
-        tpos = mx.arange(T, dtype=mx.int32)
+        tpos = mx.arange(total, dtype=mx.int32)
         tail = tpos[None, :] >= (nb_q[:, None] * self.ratio)
         causal = tpos[None, :] <= qpos[:, None]
-        mask = (tok_sel | tail) & causal  # [S, T]
-        return mask[None, None]  # [1, 1, S, T]
+        mask = (tok_sel | tail) & causal
+        return mask[None, None]
+
+    def _fused_selector_supported(self, q: mx.array, pooled: mx.array) -> bool:
+        """Static fail-closed eligibility; kernel failures remain visible."""
+
+        if not mx.metal.is_available() or mx.default_device() != mx.gpu:
+            return False
+        supported_dtypes = (mx.float16, mx.bfloat16, mx.float32)
+        if q.dtype not in supported_dtypes or pooled.dtype not in supported_dtypes:
+            return False
+        if q.ndim != 4 or pooled.ndim != 3:
+            return False
+        if q.shape[0] != 1 or pooled.shape[0] != 1:
+            return False
+        if q.shape[1] <= 0 or q.shape[2] <= 0 or q.shape[3] <= 0:
+            return False
+        if pooled.shape[1] <= 0 or pooled.shape[2] != q.shape[3]:
+            return False
+        if not (1 <= self.block_topk <= 512) or self.ratio <= 0:
+            return False
+        if q.dtype == mx.float32 or pooled.dtype == mx.float32:
+            from mtplx.kernels.qsa_indexer_select import (
+                qsa_indexer_select_nax_available,
+            )
+
+            if not qsa_indexer_select_nax_available():
+                return False
+        return True
+
+    def _prefill_selector_supported(self, q: mx.array, pooled: mx.array) -> bool:
+        """Fail-closed eligibility for the vectorized large-S selector."""
+
+        if not mx.metal.is_available() or mx.default_device() != mx.gpu:
+            return False
+        supported_dtypes = (mx.float16, mx.bfloat16, mx.float32)
+        if q.dtype not in supported_dtypes or pooled.dtype not in supported_dtypes:
+            return False
+        if q.ndim != 4 or pooled.ndim != 3:
+            return False
+        if int(q.shape[0]) != 1 or int(pooled.shape[0]) != 1:
+            return False
+        if int(q.shape[1]) <= 1 or int(q.shape[2]) <= 0 or int(q.shape[3]) <= 0:
+            return False
+        if int(pooled.shape[1]) <= 0 or int(pooled.shape[2]) != int(q.shape[3]):
+            return False
+        return 1 <= self.block_topk <= 512 and self.ratio > 0
+
+    def _fused_query_chunk_rows(self, rows: int, backing_blocks: int) -> int:
+        scratch_per_row = max(1, int(backing_blocks)) * 4
+        return min(
+            int(rows),
+            max(1, self._fused_score_scratch_bytes // scratch_per_row),
+        )
+
+    def _select_fused(
+        self,
+        q: mx.array,
+        pos_start: int,
+        pooled_backing: mx.array,
+        logical_blocks: int,
+        total: int,
+        mode: str,
+    ):
+        """Dispatch the selector, chunking query rows but never history."""
+
+        from mtplx.kernels.qsa_indexer_select import (
+            qsa_indexer_select_blocks_metal,
+            qsa_indexer_select_dense_mask_metal,
+            qsa_indexer_select_row_tokens_metal,
+        )
+
+        rows = int(q.shape[1])
+        chunk_rows = self._fused_query_chunk_rows(rows, pooled_backing.shape[1])
+        # Keep the custom-kernel output specialization stable while a pooled
+        # cache allocation remains in place. A logical prefix can occupy all
+        # backing blocks and still have up to ratio-1 visible tail tokens, so
+        # one extra ratio-sized block is the smallest safe capacity.
+        dense_output_capacity = (
+            (int(pooled_backing.shape[1]) + 1) * self.ratio
+            if mode == "dense_mask"
+            else None
+        )
+        chunks = []
+        for row_start in range(0, rows, chunk_rows):
+            q_chunk = q[:, row_start : row_start + chunk_rows]
+            kwargs = {
+                "pos_start": pos_start + row_start,
+                "total_tokens": total,
+                "block_topk": self.block_topk,
+                "compress_ratio": self.ratio,
+                "logical_blocks": logical_blocks,
+            }
+            if mode == "blocks":
+                chunk = qsa_indexer_select_blocks_metal(
+                    q_chunk, pooled_backing, **kwargs
+                )
+            elif mode == "row_tokens":
+                chunk = qsa_indexer_select_row_tokens_metal(
+                    q_chunk, pooled_backing, **kwargs
+                )
+            elif mode == "dense_mask":
+                chunk = qsa_indexer_select_dense_mask_metal(
+                    q_chunk,
+                    pooled_backing,
+                    output_total_tokens=dense_output_capacity,
+                    **kwargs,
+                )
+            else:
+                raise ValueError(f"unknown fused QSA selector mode {mode!r}")
+            chunks.append(chunk)
+
+        if mode == "dense_mask":
+            mask = chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=2)
+            return mask[..., :total]
+        if len(chunks) == 1:
+            return chunks[0]
+        return tuple(
+            mx.concatenate([chunk[leaf] for chunk in chunks], axis=0)
+            for leaf in range(len(chunks[0]))
+        )
+
+    def _prepare_queries_eager(self, q: mx.array, pos_start: int) -> mx.array:
+        """Stock query preparation kept as the numeric oracle."""
+
+        q = self.q_layernorm(q)
+        positions = mx.arange(pos_start, pos_start + q.shape[1], dtype=mx.int32)
+        cos, sin = _rope_cos_sin(
+            positions,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
+        return _apply_partial_rope(q, cos, sin)
+
+    def _prepare_queries(self, q: mx.array, pos_start: int) -> mx.array:
+        if not self._prepare_kernel_supported(
+            q,
+            self.q_layernorm.weight,
+            expected_ndim=4,
+        ):
+            return self._prepare_queries_eager(q, pos_start)
+
+        from mtplx.kernels.qsa_indexer_prepare import (
+            qsa_indexer_prepare_queries_metal,
+        )
+
+        return qsa_indexer_prepare_queries_metal(
+            q,
+            self.q_layernorm.weight,
+            self._inv_freq,
+            pos_start=pos_start,
+            eps=self.rms_norm_eps,
+            attention_scaling=self._rope_attention_scaling,
+        )
+
+    def _compiled_mode(
+        self,
+        *,
+        decode: bool,
+        rows: int,
+        total: int,
+        last_nb: int,
+    ) -> str:
+        """Choose one fixed-shape graph/output contract on the host."""
+
+        if last_nb <= self.block_topk:
+            # Cache maintenance still belongs to the captured indexer even
+            # while sparse selection is mathematically the dense causal mask.
+            return "update_only"
+        if decode and _qsa_flash_enabled():
+            return "blocks"
+        if not decode and _qsa_large_prefill_enabled(rows, total):
+            return "prefill_blocks"
+        if (
+            not decode
+            and _qsa_gather_enabled()
+            and rows <= _qsa_gather_max_rows()
+            and total >= _qsa_gather_min_context()
+        ):
+            return "row_tokens"
+        return "dense_mask"
+
+    def _projection_output_matches_dtype(self, dtype: mx.Dtype) -> bool:
+        """Fail closed when a hidden-source projection may promote dtype."""
+
+        projection = getattr(self, "index_qk_proj", None)
+        if projection is None or not callable(projection):
+            return False
+        weight = getattr(projection, "weight", None)
+        if not isinstance(weight, mx.array):
+            return False
+        expected_width = (self.n_heads + self.kv_heads) * self.head_dim
+        if weight.ndim != 2 or int(weight.shape[0]) != expected_width:
+            return False
+
+        # QuantizedLinear's U32 packed weight does not determine the output
+        # dtype; its scales/biases do.  Dense Linear uses weight dtype.
+        scales = getattr(projection, "scales", None)
+        if isinstance(scales, mx.array):
+            if scales.dtype != dtype:
+                return False
+            biases = getattr(projection, "biases", None)
+            return not isinstance(biases, mx.array) or biases.dtype == dtype
+        return weight.dtype == dtype
+
+    def _compiled_route_supported(
+        self,
+        source: mx.array,
+        cache: QSACache,
+        *,
+        pos_start: int,
+        qk_rows_supplied: bool,
+        decode: bool,
+        mode: str,
+    ) -> bool:
+        """Static eligibility check; dispatched graph failures are not hidden."""
+
+        if not (_fused_qsa_indexer_enabled() and _compiled_qsa_indexer_enabled()):
+            return False
+        if not mx.metal.is_available() or mx.default_device() != mx.gpu:
+            return False
+        if source.ndim != 3 or int(source.shape[0]) != 1:
+            return False
+        if int(source.shape[1]) <= 0 or self.kv_heads != 1:
+            return False
+        rows = int(source.shape[1])
+        # Capturing cache maintenance at the dense==sparse boundary created a
+        # fresh graph per layer/capacity bucket without doing any selection.
+        # Keep prefill update-only work eager; decode retains its established
+        # compiled cache lane.
+        if (
+            not decode
+            and mode == "update_only"
+            and current_attention_phase() == "prefill"
+        ):
+            return False
+        # Never send a matrix-shaped prefill through the legacy
+        # one-threadgroup-per-row scorer.  The dedicated mode is captured only
+        # at the canonical chunk width; arbitrary suffix tails use the same
+        # Metal prefill selector outside mx.compile, avoiding a new trace for
+        # every tail shape.
+        if (
+            not decode
+            and rows >= _qsa_prefill_min_rows()
+            and (
+                mode not in ("prefill_blocks", "update_only")
+                or rows != _qsa_prefill_compile_rows()
+            )
+        ):
+            return False
+        if cache.ratio != self.ratio or pos_start != cache.offset:
+            return False
+        supported_dtypes = (mx.float16, mx.bfloat16, mx.float32)
+        if source.dtype not in supported_dtypes:
+            return False
+        if not (0 < self.head_dim <= 128):
+            return False
+        rotary_dim = 2 * int(self._inv_freq.shape[0])
+        if (
+            self._inv_freq.ndim != 1
+            or self._inv_freq.dtype != mx.float32
+            or rotary_dim <= 0
+            or rotary_dim > self.head_dim
+            or rotary_dim % 2
+        ):
+            return False
+        if not (1 <= self.block_topk <= 512) or self.ratio <= 0:
+            return False
+        if self.q_layernorm.weight.dtype != source.dtype:
+            return False
+        if self.k_layernorm.weight.dtype != source.dtype:
+            return False
+        if tuple(self.q_layernorm.weight.shape) != (self.head_dim,):
+            return False
+        if tuple(self.k_layernorm.weight.shape) != (self.head_dim,):
+            return False
+
+        if qk_rows_supplied:
+            expected_width = (self.n_heads + self.kv_heads) * self.head_dim
+            if int(source.shape[2]) != expected_width:
+                return False
+        elif not self._projection_output_matches_dtype(source.dtype):
+            return False
+
+        for backing in (cache.raw_keys, cache.pooled):
+            if backing is None:
+                continue
+            if (
+                backing.ndim != 3
+                or int(backing.shape[0]) != 1
+                or int(backing.shape[2]) != self.head_dim
+                or backing.dtype != source.dtype
+            ):
+                return False
+        if pos_start > 0 and (
+            cache.raw_keys is None or int(cache.raw_keys.shape[1]) < pos_start
+        ):
+            return False
+        if cache.pooled is None:
+            if cache.pooled_len != 0:
+                return False
+        elif not 0 <= cache.pooled_len <= int(cache.pooled.shape[1]):
+            return False
+        logical_blocks = (pos_start + int(source.shape[1])) // self.ratio
+        pooled_frontier = min(cache.pooled_len, logical_blocks)
+        max_new_blocks = (int(source.shape[1]) + self.ratio - 1) // self.ratio
+        if logical_blocks - pooled_frontier > max_new_blocks:
+            return False
+
+        # Preserve the variable-width decode-gather experiment in the eager
+        # oracle.  When flash is also enabled it wins first and its fixed block
+        # output is safe for the compiled path.
+        if (
+            decode
+            and mode != "update_only"
+            and mode != "blocks"
+            and _qsa_gather_decode_enabled()
+        ):
+            return False
+
+        if mode not in ("update_only", "prefill_blocks") and source.dtype == mx.float32:
+            from mtplx.kernels.qsa_indexer_select import (
+                qsa_indexer_select_nax_available,
+            )
+
+            if not qsa_indexer_select_nax_available():
+                return False
+        return True
+
+    def _ensure_compiled_backings(
+        self,
+        cache: QSACache,
+        *,
+        dtype: mx.Dtype,
+        pos_start: int,
+        rows: int,
+    ) -> tuple[mx.array, mx.array]:
+        """Reserve/materialize shape-stable raw and pooled cache leaves."""
+
+        from mtplx.qsa_mtp_precompute import (
+            precompute_qsa_replay_capacity,
+            qsa_indexer_capacity_bucket,
+        )
+
+        raw_existing = 0 if cache.raw_keys is None else int(cache.raw_keys.shape[1])
+        pooled_existing = 0 if cache.pooled is None else int(cache.pooled.shape[1])
+        # Phase-3 staging can reserve a wider pristine cache before dtype/head
+        # width are known.  Include those pending extents rather than
+        # accidentally materializing the smaller immediate-call plan.
+        raw_existing = max(raw_existing, cache._reserved_raw_capacity)
+        pooled_existing = max(pooled_existing, cache._reserved_pooled_capacity)
+        plan = precompute_qsa_replay_capacity(
+            start_offset=pos_start,
+            window_tokens=rows,
+            compress_ratio=self.ratio,
+            allocation_step=cache.step,
+            current_raw_capacity=raw_existing,
+            current_pooled_capacity=pooled_existing,
+        )
+        # The compiled pool stage has one fixed ceil(S/ratio)-block window.
+        # For an unaligned first prefill that can be one row wider than the
+        # logical complete-block frontier (for example S=1025, ratio=4:
+        # logical=256 but staging=257). Bucket the physical requirement itself,
+        # rather than taking max() after bucketing 256, which would stay 256.
+        max_new_blocks = (rows + self.ratio - 1) // self.ratio
+        pooled_capacity = qsa_indexer_capacity_bucket(
+            max(
+                1,
+                plan.complete_blocks,
+                pooled_existing,
+                max_new_blocks,
+            ),
+            minimum=cache.step,
+        )
+        cache.reserve_indexer_capacity(
+            raw_capacity=plan.raw_capacity,
+            pooled_capacity=pooled_capacity,
+        )
+        if cache.raw_keys is None:
+            cache.raw_keys = mx.zeros(
+                (1, cache._reserved_raw_capacity, self.head_dim),
+                dtype=dtype,
+            )
+        if cache.pooled is None:
+            cache.pooled = mx.zeros(
+                (1, cache._reserved_pooled_capacity, self.head_dim),
+                dtype=dtype,
+            )
+        return cache.raw_keys, cache.pooled
+
+    def _compiled_parameter_signature(self) -> tuple[int, ...]:
+        """Identity seal for arrays captured by the lazy graph manager."""
+
+        projection = getattr(self, "index_qk_proj", None)
+        leaves = [
+            self.q_layernorm.weight,
+            self.k_layernorm.weight,
+            self._inv_freq,
+            getattr(projection, "weight", None),
+            getattr(projection, "scales", None),
+            getattr(projection, "biases", None),
+        ]
+        return tuple(id(leaf) for leaf in leaves if isinstance(leaf, mx.array))
+
+    def _get_compiled_indexer_core(self):
+        """Build the graph bank only after final checkpoint weights exist."""
+
+        signature = self._compiled_parameter_signature()
+        core = self._compiled_indexer_core
+        if core is not None and signature == self._compiled_indexer_parameter_signature:
+            return core
+
+        from mtplx.kernels.qsa_indexer_compile import QSACompiledIndexerCore
+
+        projection = getattr(self, "index_qk_proj", None)
+        core = QSACompiledIndexerCore(
+            n_heads=self.n_heads,
+            kv_heads=self.kv_heads,
+            head_dim=self.head_dim,
+            block_topk=self.block_topk,
+            compress_ratio=self.ratio,
+            q_norm_weight=self.q_layernorm.weight,
+            k_norm_weight=self.k_layernorm.weight,
+            inv_freq=self._inv_freq,
+            rms_norm_eps=self.rms_norm_eps,
+            rope_attention_scaling=self._rope_attention_scaling,
+            project_qk=projection if callable(projection) else None,
+            selector_scratch_bytes=self._fused_score_scratch_bytes,
+            prefill_score_workspace_bytes=_qsa_prefill_score_workspace_bytes(),
+        )
+        object.__setattr__(self, "_compiled_indexer_core", core)
+        object.__setattr__(
+            self,
+            "_compiled_indexer_parameter_signature",
+            signature,
+        )
+        return core
+
+    def _call_rows_compiled(
+        self,
+        hidden: mx.array,
+        pos_start: int,
+        cache: QSACache,
+        qk_rows: Optional[mx.array],
+        *,
+        mode: str,
+    ):
+        """Run and commit one pure explicit-state compiled indexer graph."""
+
+        rows = int(hidden.shape[1])
+        total = pos_start + rows
+        logical_blocks = total // self.ratio
+        source = hidden if qk_rows is None else qk_rows
+        raw_keys, pooled = self._ensure_compiled_backings(
+            cache,
+            dtype=source.dtype,
+            pos_start=pos_start,
+            rows=rows,
+        )
+        core = self._get_compiled_indexer_core()
+        kwargs = {
+            "pos_start": pos_start,
+            "total_tokens": total,
+            "logical_blocks": logical_blocks,
+            "pooled_len": min(cache.pooled_len, logical_blocks),
+            "mode": mode,
+        }
+        if qk_rows is None:
+            result = core.select_hidden(hidden, raw_keys, pooled, **kwargs)
+        else:
+            result = core.select_qk_rows(qk_rows, raw_keys, pooled, **kwargs)
+
+        # The graph is pure: updated cache arrays are explicit outputs.  The
+        # host already knows the logical frontier, so committing it needs no
+        # .item() synchronization. Attention advances cache.kv.offset later.
+        cache.raw_keys = result.raw_keys
+        cache.pooled = result.pooled
+        cache.pooled_len = logical_blocks
+        # The compiled graph rebuilt ``pooled`` wholesale, so the eager lane's
+        # fp32-transposed mirror is stale; drop it and let pooled_f32_view
+        # rebuild lazily on the next eager read.
+        cache.pooled_f32_t = None
+
+        if mode == "update_only":
+            return None
+        if mode == "blocks":
+            block_ids, _, _ = result.selection
+            tail_start = ((pos_start + 1) // self.ratio) * self.ratio
+            return ("flash", block_ids[0], tail_start)
+        if mode == "prefill_blocks":
+            block_ids, block_valid, _ = result.selection
+            return ("flash_prefill", block_ids, block_valid)
+        if mode == "row_tokens":
+            token_idx, token_ok = result.selection
+            return ("gather_rows", token_idx, token_ok)
+        if mode == "dense_mask":
+            return result.selection[..., :total]
+        raise ValueError(f"unknown compiled QSA indexer mode {mode!r}")
+
+    def _call_rows(
+        self,
+        hidden: mx.array,
+        pos_start: int,
+        cache: QSACache,
+        qk_rows: Optional[mx.array],
+        *,
+        decode: bool,
+    ) -> Optional[mx.array]:
+        """Shared arithmetic behind the explicit prefill/decode entry points."""
+
+        B, S, _ = hidden.shape
+        if decode != (S == 1):
+            raise ValueError(
+                f"QSA decode route requires S=1 and prefill requires S>1; got S={S}"
+            )
+        T = pos_start + S  # == the KV length after this forward's update
+        last_nb = T // self.ratio
+        compiled_mode = self._compiled_mode(
+            decode=decode,
+            rows=S,
+            total=T,
+            last_nb=last_nb,
+        )
+        compiled_source = hidden if qk_rows is None else qk_rows
+        if self._compiled_route_supported(
+            compiled_source,
+            cache,
+            pos_start=pos_start,
+            qk_rows_supplied=qk_rows is not None,
+            decode=decode,
+            mode=compiled_mode,
+        ):
+            return self._call_rows_compiled(
+                hidden,
+                pos_start,
+                cache,
+                qk_rows,
+                mode=compiled_mode,
+            )
+
+        # qk_rows: the layer's fused shared-input GEMV already produced this
+        # projection (MTPLX_FUSED_QSA_QKV) — same rows bit-exactly.  Keeping
+        # projection outside the Metal preparation kernel is also the vLLM
+        # boundary and preserves packed/quantized Linear dispatches.
+        qk = self.index_qk_proj(hidden) if qk_rows is None else qk_rows
+        q, k = mx.split(qk, [self.n_heads * self.head_dim], axis=-1)
+        q = q.reshape(B, S, self.n_heads, self.head_dim)
+        k = k.reshape(B, S, self.head_dim)
+        q = self._prepare_queries(q, pos_start)
+
+        cache.write_raw(k)
+        pooled = self._extend_pooled(cache, T)
+        nb_total = 0 if pooled is None else pooled.shape[1]
+
+        # Per-query complete-block counts. If every visible prefix fits inside
+        # the budget the selection is the full causal mask — skip the work.
+        if last_nb <= self.block_topk:
+            return None  # dense == sparse in this regime
+
+        pooled_backing = cache.pooled
+        large_prefill = not decode and _qsa_large_prefill_enabled(S, T)
+        if large_prefill and self._prefill_selector_supported(q, pooled):
+            from mtplx.kernels.qsa_indexer_prefill import (
+                qsa_indexer_prefill_blocks_metal,
+            )
+
+            block_ids, block_valid, _ = qsa_indexer_prefill_blocks_metal(
+                q,
+                pooled,
+                pos_start=pos_start,
+                total_tokens=T,
+                block_topk=self.block_topk,
+                compress_ratio=self.ratio,
+                logical_blocks=nb_total,
+                score_workspace_bytes=_qsa_prefill_score_workspace_bytes(),
+            )
+            return ("flash_prefill", block_ids, block_valid)
+
+        # The original custom selector scores a row serially inside one
+        # threadgroup.  Keep it for decode/small verify only; large-S prefill
+        # either takes the tiled scorer above or the stock vectorized oracle.
+        legacy_fused = (
+            _fused_qsa_indexer_enabled()
+            and pooled_backing is not None
+            and (decode or S < _qsa_prefill_min_rows())
+            # Preserve the dormant variable-width decode-gather lane only in
+            # the eager oracle. Flash still wins there when both knobs are on.
+            and not (decode and _qsa_gather_decode_enabled())
+            and self._fused_selector_supported(q, pooled_backing)
+        )
+        if not legacy_fused:
+            return self._select_eager(q, pos_start, cache, pooled, T)
+
+        if decode and _qsa_flash_enabled():
+            block_ids, _, _ = self._select_fused(
+                q,
+                pos_start,
+                pooled_backing,
+                nb_total,
+                T,
+                "blocks",
+            )
+            tail_start = ((pos_start + 1) // self.ratio) * self.ratio
+            return ("flash", block_ids[0], tail_start)
+
+        if (
+            not decode
+            and _qsa_gather_enabled()
+            and S <= _qsa_gather_max_rows()
+            and T >= _qsa_gather_min_context()
+        ):
+            token_idx, token_ok = self._select_fused(
+                q,
+                pos_start,
+                pooled_backing,
+                nb_total,
+                T,
+                "row_tokens",
+            )
+            return ("gather_rows", token_idx, token_ok)
+
+        return self._select_fused(
+            q,
+            pos_start,
+            pooled_backing,
+            nb_total,
+            T,
+            "dense_mask",
+        )
+
+    def _call_decode(
+        self,
+        hidden: mx.array,
+        pos_start: int,
+        cache: QSACache,
+        qk_rows: Optional[mx.array],
+    ) -> Optional[mx.array]:
+        return self._call_rows(hidden, pos_start, cache, qk_rows, decode=True)
+
+    def _call_prefill(
+        self,
+        hidden: mx.array,
+        pos_start: int,
+        cache: QSACache,
+        qk_rows: Optional[mx.array],
+    ) -> Optional[mx.array]:
+        return self._call_rows(hidden, pos_start, cache, qk_rows, decode=False)
+
+    def __call__(
+        self,
+        hidden: mx.array,
+        pos_start: int,
+        cache: QSACache,
+        qk_rows: Optional[mx.array] = None,
+    ) -> Optional[mx.array]:
+        B, S, _ = hidden.shape
+        if B != 1:
+            raise NotImplementedError("qwen4_exp QSA serves single sequences (B=1)")
+        if S == 1:
+            return self._call_decode(hidden, pos_start, cache, qk_rows)
+        return self._call_prefill(hidden, pos_start, cache, qk_rows)
 
 
 def _qsa_rows_gather_attention(
@@ -1591,6 +2635,126 @@ def _qsa_rows_gather_attention(
     return mx.matmul(probs[..., None, :], v_sel).squeeze(-2)
 
 
+def _qsa_prefill_gather_attention(
+    q: mx.array,
+    keys: mx.array,
+    values: mx.array,
+    block_ids: mx.array,
+    block_valid: mx.array,
+    *,
+    pos_start: int,
+    total_tokens: int,
+    compress_ratio: int,
+    scale: float,
+    tile_rows: int,
+) -> mx.array:
+    """Portable bounded attention over the flash_prefill block contract.
+
+    The universal tier between the NAX flash kernel and the dense-mask
+    reconstruction (approach from oMLX PR #3244's portable lane, Apache-2.0,
+    reimplemented on our block/validity contract): each query row attends to
+    its selected complete blocks plus its visible tail — a constant
+    ``topk*ratio + ratio`` token width — instead of the full [S, T] masked
+    context. Row tiles bound the gathered K/V working set; a per-tile eval
+    retires each tile's gathered copies before the next tile is built.
+
+    q is [1, H, S, D]; keys/values are the FULL cache backings
+    [1, H_kv, cap, D] (never sliced-contiguous — gathers index absolute
+    rows, all < total_tokens). Selection semantics match the dense mask
+    exactly: selected blocks are complete (< each row's tail start), the
+    tail runs to the row's own position, and invalid slots score -inf.
+    """
+
+    S = int(q.shape[2])
+    ratio = int(compress_ratio)
+    arange_ratio = mx.arange(ratio, dtype=mx.int32)
+    outputs = []
+    for r0 in range(0, S, tile_rows):
+        r1 = min(r0 + tile_rows, S)
+        qpos = mx.arange(pos_start + r0, pos_start + r1, dtype=mx.int32)
+        nb_q = (qpos + 1) // ratio
+        ids_t = block_ids[r0:r1]
+        ok_t = block_valid[r0:r1]
+        tok_blocks = (
+            ids_t.astype(mx.int32)[:, :, None] * ratio + arange_ratio
+        ).reshape(r1 - r0, -1)
+        blocks_ok = mx.repeat(ok_t, ratio, axis=1)
+        tail_tok = nb_q[:, None] * ratio + arange_ratio
+        tail_ok = tail_tok <= qpos[:, None]
+        token_idx = mx.concatenate([tok_blocks, tail_tok], axis=1)
+        token_ok = mx.concatenate([blocks_ok, tail_ok], axis=1)
+        token_idx = mx.where(token_ok, token_idx, mx.array(0, dtype=mx.int32))
+        out_t = _qsa_rows_gather_attention(
+            q[:, :, r0:r1],
+            keys,
+            values,
+            token_idx,
+            token_ok,
+            scale,
+        )
+        mx.eval(out_t)
+        outputs.append(out_t)
+    return outputs[0] if len(outputs) == 1 else mx.concatenate(outputs, axis=2)
+
+
+def _qsa_blocks_to_dense_mask(
+    block_ids: mx.array,
+    block_valid: mx.array,
+    *,
+    pos_start: int,
+    total_tokens: int,
+    compress_ratio: int,
+) -> mx.array:
+    """Reconstruct the exact dense QSA mask for an unsupported consumer.
+
+    The normal large-prefill route never calls this: its sparse attention
+    kernel consumes block IDs directly.  Keeping the reconstruction here makes
+    unsupported geometry/dtype combinations correctness-preserving without
+    hiding a Metal dispatch failure.  A sentinel column absorbs every invalid
+    top-k slot so no padded entry can accidentally select block zero.
+    """
+
+    rows = int(block_ids.shape[0])
+    ratio = int(compress_ratio)
+    logical_blocks = int(total_tokens) // ratio
+    qpos = mx.arange(pos_start, pos_start + rows, dtype=mx.int32)
+    complete_for_row = (qpos + 1) // ratio
+    in_range = (
+        (block_ids >= 0)
+        & (block_ids < logical_blocks)
+        & (block_ids < complete_for_row[:, None])
+    )
+    valid = block_valid & in_range
+    sentinel = mx.array(logical_blocks, dtype=mx.int32)
+    safe_ids = mx.where(valid, block_ids, sentinel)
+    selected = mx.zeros((rows, logical_blocks + 1), dtype=mx.bool_)
+    selected = mx.put_along_axis(
+        selected,
+        safe_ids.astype(mx.int64),
+        mx.array(True),
+        axis=-1,
+    )[:, :logical_blocks]
+    token_selected = mx.repeat(selected, ratio, axis=-1)
+    complete_token_count = logical_blocks * ratio
+    if complete_token_count < int(total_tokens):
+        token_selected = mx.concatenate(
+            [
+                token_selected,
+                mx.zeros(
+                    (rows, int(total_tokens) - complete_token_count),
+                    dtype=mx.bool_,
+                ),
+            ],
+            axis=-1,
+        )
+
+    tail_start = complete_for_row * ratio
+    tpos = mx.arange(total_tokens, dtype=mx.int32)
+    tail = (tpos[None, :] >= tail_start[:, None]) & (tpos[None, :] <= qpos[:, None])
+    causal = tpos[None, :] <= qpos[:, None]
+    return ((token_selected | tail) & causal)[None, None]
+
+
 class Attention(nn.Module):
     """Gated GQA (qwen3_5 style: double-width q_proj, sigmoid output gate,
     per-head q/k RMSNorm, partial rotary) masked by the QSA indexer."""
@@ -1622,16 +2786,16 @@ class Attention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.indexer = QSAIndexer(args) if args.indexer_n_heads else None
-        rot = args.rotary_dim
-        self._inv_freq = args.rope_theta ** (
-            -mx.arange(0, rot, 2, dtype=mx.float32) / rot
+        self._inv_freq, self._rope_attention_scaling = (
+            _rope_inv_freq_and_scaling(args)
         )
         self._mrope_axes = (
             mx.array(
                 _build_mrope_axes(args.mrope_section, args.mrope_interleaved),
                 dtype=mx.int32,
             )
-            if args.mrope_section and sum(args.mrope_section) == rot // 2
+            if args.mrope_section
+            and sum(args.mrope_section) == int(args.rotary_dim) // 2
             else None
         )
 
@@ -1643,9 +2807,9 @@ class Attention(nn.Module):
         fused = getattr(self, "qkv_fused", None)
         if fused is not None:
             # One shared-input GEMV replaces q/k/v (+ indexer qk when its
-            # pack precision matches — the shipped forge keeps it 8-bit, so
-            # it usually keeps its own dispatch). Row-concat is bit-exact
-            # per row; MTPLX_FUSED_QSA_QKV sanitize fusion.
+            # pack precision matches; the v2.10 artifact's 4-bit group-64
+            # indexer can therefore join this dispatch). Row-concat is
+            # bit-exact per row; MTPLX_FUSED_QSA_QKV sanitize fusion.
             outs = fused(x)
             if len(outs) == 4:
                 q, k, v, idx_rows = outs
@@ -1688,10 +2852,14 @@ class Attention(nn.Module):
                 positions = mx.arange(
                     pos_start + delta, pos_start + delta + S, dtype=mx.int32
                 )
-                cos, sin = _rope_cos_sin(positions, self._inv_freq)
+                cos, sin = _rope_cos_sin(
+                    positions, self._inv_freq, self._rope_attention_scaling
+                )
         else:
             positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
-            cos, sin = _rope_cos_sin(positions, self._inv_freq)
+            cos, sin = _rope_cos_sin(
+                positions, self._inv_freq, self._rope_attention_scaling
+            )
         q = _apply_partial_rope(q, cos, sin)
         k = _apply_partial_rope(k, cos, sin)
 
@@ -1730,6 +2898,71 @@ class Attention(nn.Module):
             )
             out = out.reshape(B, S, -1)
             return self.o_proj(out * mx.sigmoid(gate))
+
+        if isinstance(sel_mask, tuple) and sel_mask and sel_mask[0] == "flash_prefill":
+            # Large-S prefill consumes compact per-row block selections
+            # directly from the full cache backing.  This is the point of the
+            # prefill port: no [S,T] selection expansion and no per-row K/V
+            # gather on the supported production geometry.
+            from mtplx.kernels.qsa_prefill_flash import (
+                qsa_prefill_flash,
+                qsa_prefill_flash_supported,
+            )
+
+            _, block_ids, block_valid = sel_mask
+            if _qsa_prefill_flash_attention_enabled(S, T) and qsa_prefill_flash_supported(
+                q,
+                cache.kv.keys,
+                cache.kv.values,
+                block_ids,
+                block_valid,
+                pos_start=pos_start,
+                total_tokens=T,
+                scale=self.scale,
+            ):
+                out = qsa_prefill_flash(
+                    q,
+                    cache.kv.keys,
+                    cache.kv.values,
+                    block_ids,
+                    block_valid,
+                    pos_start=pos_start,
+                    total_tokens=T,
+                    scale=self.scale,
+                )
+                out = out.transpose(0, 2, 1, 3).reshape(B, S, -1)
+                return self.o_proj(out * mx.sigmoid(gate))
+
+            # Portable tier (MTPLX_QSA_PREFILL_GATHER): same compact block
+            # contract, bounded gathered attention on any Metal device — the
+            # universal lane for machines without Metal 4 TensorOps. Same
+            # visible set as the dense mask; only reduction order differs.
+            if _qsa_prefill_gather_enabled():
+                out = _qsa_prefill_gather_attention(
+                    q,
+                    cache.kv.keys,
+                    cache.kv.values,
+                    block_ids,
+                    block_valid,
+                    pos_start=pos_start,
+                    total_tokens=T,
+                    compress_ratio=self.indexer.ratio,
+                    scale=self.scale,
+                    tile_rows=_qsa_prefill_gather_tile_rows(),
+                )
+                out = out.transpose(0, 2, 1, 3).reshape(B, S, -1)
+                return self.o_proj(out * mx.sigmoid(gate))
+
+            # Static unsupported geometry falls back exactly.  Once the
+            # supported kernel is dispatched, failures propagate instead of
+            # being hidden behind a dense retry.
+            sel_mask = _qsa_blocks_to_dense_mask(
+                block_ids,
+                block_valid,
+                pos_start=pos_start,
+                total_tokens=T,
+                compress_ratio=self.indexer.ratio,
+            )
 
         if isinstance(sel_mask, tuple) and sel_mask and sel_mask[0] == "gather_rows":
             # Rows-gather lane (S>1): each verify/pipeline row reads only
