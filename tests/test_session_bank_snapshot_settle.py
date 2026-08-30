@@ -1,12 +1,12 @@
-"""Idle-lane snapshot settling (MTPLX_SESSION_SNAPSHOT_SETTLE).
+"""Idle-lane snapshot settling (MTPLX_SESSION_SNAPSHOT_SETTLE, opt-in).
 
 The lazy put's snapshot views hold references to live cache buffers; until
-they are evaluated, buffer donation is blocked and the next turn's first
-writes pay full COW divergence copies (measured 10.7 s of prompt_state time
-on a warm 91K OpenCode-shaped turn — decodecliff probe, 2026-08-30). The
-bank now dispatches a settle job to the model-owner idle lane at put time,
-ahead of the coalesced SSD encode that historically did the settling only
-when an idle window happened to arrive.
+owner copies replace them, buffer donation is blocked and the next turn's
+first writes pay full COW divergence copies. The settle dispatches an
+owner-copy job to the model-owner idle lane at put time. DEFAULT OFF:
+the 2026-08-30 phase-3 A/B falsified it as a default (stalls are
+dominated by idle-lane scheduling, and the extra copy job worsened the
+worst case) — these tests pin the opt-in mechanics.
 """
 
 from __future__ import annotations
@@ -15,9 +15,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import mlx.core as mx
+import pytest
 
 from mtplx.cache_state import CacheSnapshot
 from mtplx.session_bank import SessionBank, SessionBankEntry
+
+
+@pytest.fixture(autouse=True)
+def _settle_opt_in(monkeypatch):
+    monkeypatch.setenv("MTPLX_SESSION_SNAPSHOT_SETTLE", "1")
 
 
 def _entry_with_lazy_view() -> SessionBankEntry:
@@ -41,6 +47,7 @@ def test_settle_job_dispatches_with_session_key_and_stamps_entry():
     dispatched: list = []
     bank.cold_enqueue_dispatch = dispatched.append
     entry = _entry_with_lazy_view()
+    view_before = entry.cache_snapshot.states[0][0]
 
     bank._schedule_snapshot_settle(entry)
 
@@ -49,6 +56,12 @@ def test_settle_job_dispatches_with_session_key_and_stamps_entry():
     assert entry.snapshot_settled_at is None
     dispatched[0]()
     assert entry.snapshot_settled_at is not None
+    # The settle must REBIND the snapshot leaves onto owner copies —
+    # evaluating a full-range lazy view merely aliases the live buffer
+    # and leaves the donation-blocking reference alive.
+    leaf_after = entry.cache_snapshot.states[0][0]
+    assert leaf_after is not view_before
+    assert mx.array_equal(leaf_after, view_before).item()
 
 
 def test_put_dispatches_settle_before_cold_encode():
