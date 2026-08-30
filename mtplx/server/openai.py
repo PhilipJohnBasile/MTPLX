@@ -2617,20 +2617,20 @@ class ServerState:
             )
         except (TypeError, ValueError):
             _plan_kv_bytes_per_token = 0
+        _plan_model_path = getattr(self.runtime, "model_path", None)
+        _plan_model_config: dict[str, Any] | None = None
+        if _plan_model_path is not None:
+            try:
+                _plan_model_config = json.loads(
+                    (Path(_plan_model_path) / "config.json").read_text()
+                )
+            except (OSError, ValueError):
+                _plan_model_config = None
         if _plan_kv_bytes_per_token <= 0:
             from mtplx.memory_plan import (
                 dense_kv_bytes_per_token_from_config as _plan_kv_from_config,
             )
 
-            _plan_model_path = getattr(self.runtime, "model_path", None)
-            _plan_model_config: dict[str, Any] | None = None
-            if _plan_model_path is not None:
-                try:
-                    _plan_model_config = json.loads(
-                        (Path(_plan_model_path) / "config.json").read_text()
-                    )
-                except (OSError, ValueError):
-                    _plan_model_config = None
             _plan_kv_bytes_per_token = (
                 _plan_kv_from_config(_plan_model_config) or 65536
             )
@@ -2640,6 +2640,13 @@ class ServerState:
             _cap_value = _caps.get("memory_limit_bytes")
             if isinstance(_cap_value, int) and _cap_value > 0:
                 _plan_metal_limit = _cap_value
+        from mtplx.memory_plan import (
+            qsa_aux_bytes_per_token_from_config as _plan_aux_from_config,
+        )
+        from mtplx.memory_plan import (
+            qsa_prefill_transient_bytes_per_token_from_config as _plan_transient_from_config,
+        )
+
         _plan_inputs: dict[str, Any] = {
             "total_ram_bytes": _plan_detect_total_ram(),
             "model_weights_bytes": _plan_weights_bytes,
@@ -2649,6 +2656,14 @@ class ServerState:
             "model_max_context": int(self.model_context_window_max),
             "memory_budget_bytes": self.memory_budget_bytes,
             "usable_bytes_override": _plan_metal_limit,
+            # Family terms the KV number misses (QSA streams + MTP-head KV,
+            # and the context-linear QSA prefill transient) — issue #393:
+            # without them a 262K window was admitted on 128 GB with 2.4x
+            # phantom headroom and died at 119 GB with no 507.
+            "aux_bytes_per_token": _plan_aux_from_config(_plan_model_config),
+            "prefill_transient_bytes_per_token": _plan_transient_from_config(
+                _plan_model_config
+            ),
         }
         _fit_plan = _plan_memory(**_plan_inputs)
         _machine_fit = (
@@ -16347,6 +16362,60 @@ def _engine_busy_signal(state: "ServerState") -> bool:
     return False
 
 
+# Sustained-critical prefill abort (#393): this many consecutive guard ticks
+# (~30 s at the 10 s interval) at CRITICAL with the engine busy. One tick is
+# routinely survivable — the trim frees bank/retrieval weight and the
+# allocator recovers — but a deep prefill re-grows the footprint faster than
+# anything can be shed, and macOS compresses/swaps for minutes before any
+# Metal allocation error (the only prior 507 trigger) would ever fire.
+# Sustained critical means the shedding already ran and lost.
+_PRESSURE_ABORT_TICKS = 3
+
+
+def _pressure_abort_requested(state: "ServerState") -> bool:
+    """True while the guard loop has armed the sustained-pressure abort."""
+    event = getattr(state, "pressure_abort_event", None)
+    return bool(event is not None and event.is_set())
+
+
+def _note_critical_pressure_tick(
+    state: "ServerState", level: int, busy: bool, streak: int
+) -> int:
+    """One guard-loop tick of the sustained-critical tracker; returns streak.
+
+    Arms ``state.pressure_abort_event`` after ``_PRESSURE_ABORT_TICKS``
+    consecutive CRITICAL ticks with the engine busy — an idle engine cannot
+    be the cause, and aborting nothing frees nothing. Any tick that is
+    sub-critical or idle disarms and resets: the abort must never linger
+    past recovery and kill a healthy later request.
+    """
+    if level >= 4 and busy:
+        streak += 1
+        if streak >= _PRESSURE_ABORT_TICKS and not _pressure_abort_requested(
+            state
+        ):
+            event = getattr(state, "pressure_abort_event", None)
+            if event is None:
+                event = threading.Event()
+                state.pressure_abort_event = event
+            event.set()
+            _record_guard_event(
+                state,
+                {
+                    "action": "pressure_abort_armed",
+                    "level": int(level),
+                    "streak": int(streak),
+                },
+            )
+        return streak
+    if _pressure_abort_requested(state):
+        state.pressure_abort_event.clear()
+        _record_guard_event(
+            state, {"action": "pressure_abort_cleared", "level": int(level)}
+        )
+    return 0
+
+
 class _MemoryPressureGuard:
     """Decision core for :func:`_memory_pressure_loop` (testable sans asyncio).
 
@@ -16472,6 +16541,7 @@ async def _memory_pressure_loop(
     """
 
     guard = _MemoryPressureGuard()
+    abort_streak = 0
     while True:
         try:
             level = await asyncio.to_thread(_memory_pressure_level)
@@ -16542,6 +16612,16 @@ async def _memory_pressure_loop(
             busy = False
             if 2 <= level < 4:
                 busy = await asyncio.to_thread(_engine_busy_signal, state)
+            # The guard's own busy is deliberately not computed at CRITICAL
+            # (CRITICAL trims never defer); the abort tracker needs it there.
+            critical_busy = (
+                await asyncio.to_thread(_engine_busy_signal, state)
+                if level >= 4
+                else False
+            )
+            abort_streak = _note_critical_pressure_tick(
+                state, level, critical_busy, abort_streak
+            )
             deferred_s = guard.deferred_for_s(time.monotonic())
             if guard.decide(level, time.monotonic(), busy):
                 bank = getattr(getattr(state, "sessions", None), "bank", None)
@@ -19692,15 +19772,22 @@ def _schedule_idle_postcommit_snapshot(
     def _postcommit_abort_reason() -> str:
         if _stale_session_revision():
             return "stale_session_revision"
+        if _pressure_abort_requested(state):
+            return "memory_pressure_critical"
         if abort_event.is_set() or _foreground_pressure_past_grace():
             return "foreground_preempted_postcommit"
         return "postcommit_abort_requested"
 
     def _postcommit_abort_check() -> bool:
+        # The pressure arm (#393): a postcommit prefill replays the same
+        # deep forward that wedged the machine, so it must yield too. The
+        # aborted job re-arms on the idle band and retries once pressure
+        # clears.
         return bool(
             abort_event.is_set()
             or _stale_session_revision()
             or _foreground_pressure_past_grace()
+            or _pressure_abort_requested(state)
         )
 
     def _resubmit_after_yield() -> bool:
@@ -19921,30 +20008,67 @@ def _uncapped_response_lease_tokens_from_env() -> int | None:
 
 
 def _reject_prompt_over_context(state: ServerState, prompt_token_count: int) -> None:
-    """400 when the prompt alone fills or overflows the context window.
+    """Refuse prompts the serve cannot hold (400) or honestly fit (507).
 
-    Without this the request would enter generation with remaining_context
-    floored to 1 and produce a single token — a silent degradation a
-    benchmark ladder charts as engine speed. OpenAI parity: error code
-    context_length_exceeded with both numbers in the message. Called early
-    in the chat/completions handlers (a real 400 before any stream starts)
-    and again inside _generation_params as the backstop for every lane.
+    400: the prompt alone fills or overflows the context window. Without
+    this the request would enter generation with remaining_context floored
+    to 1 and produce a single token — a silent degradation a benchmark
+    ladder charts as engine speed. OpenAI parity: error code
+    context_length_exceeded with both numbers in the message.
+
+    507: the served window was explicitly overcommitted past the memory
+    plan's fit (--context-window overrides the plan by design — warn-loudly
+    policy) and THIS prompt's cold cost lands beyond the fit. Admitting it
+    would not fail fast: macOS compresses and swaps for minutes before any
+    Metal allocation error (the only prior 507 trigger) would fire — #393
+    wedged a 128 GB machine at a 119 GB footprint that way. Prompts under
+    the fit still serve, so an oversized window keeps its legitimate use.
+
+    Called early in the chat/completions handlers (a real error before any
+    stream starts) and again inside _generation_params as the backstop for
+    every lane.
     """
     context_window = int(state.context_window)
-    if int(prompt_token_count) < context_window:
-        return
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "message": (
-                f"This model's maximum context length is {context_window} "
-                f"tokens, but the prompt alone has {int(prompt_token_count)} "
-                "tokens, leaving no room to generate. Reduce the prompt or "
-                "serve with a larger --context-window."
-            ),
-            "code": "context_length_exceeded",
-        },
-    )
+    if int(prompt_token_count) >= context_window:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"This model's maximum context length is {context_window} "
+                    f"tokens, but the prompt alone has "
+                    f"{int(prompt_token_count)} tokens, leaving no room to "
+                    "generate. Reduce the prompt or serve with a larger "
+                    "--context-window."
+                ),
+                "code": "context_length_exceeded",
+            },
+        )
+    plan = getattr(state, "memory_plan", None)
+    if (
+        plan is not None
+        and bool(getattr(plan, "context_overcommitted", False))
+        and int(getattr(plan, "context_window_fit", 0) or 0) > 0
+        and int(prompt_token_count) >= int(plan.context_window_fit)
+    ):
+        fit = int(plan.context_window_fit)
+        resolved = int(
+            getattr(plan, "context_window_resolved", context_window)
+            or context_window
+        )
+        raise HTTPException(
+            status_code=507,
+            detail={
+                "message": (
+                    f"--context-window {resolved} exceeds this machine's "
+                    f"memory-plan fit of {fit} tokens, and this prompt "
+                    f"({int(prompt_token_count)} tokens) does not fit in "
+                    "memory. Prompts below the fit still serve; reduce the "
+                    f"prompt, serve at or below --context-window {fit}, or "
+                    "use q8 KV quantization."
+                ),
+                "code": "insufficient_memory",
+            },
+        )
 
 
 def _generation_params(
@@ -21980,9 +22104,14 @@ def _run_generation(
                         session_policy_fingerprint=session_policy_fingerprint,
                         capture_final_state=session_bank is not None,
                         abort_check=(
-                            (lambda: bool(cancel_event.is_set()))
+                            (
+                                lambda: bool(
+                                    cancel_event.is_set()
+                                    or _pressure_abort_requested(state)
+                                )
+                            )
                             if cancel_event is not None
-                            else None
+                            else (lambda: _pressure_abort_requested(state))
                         ),
                     )
                 else:
@@ -21999,9 +22128,14 @@ def _run_generation(
                         constraint=constraint,
                         vision_splice=vision_splice,
                         abort_check=(
-                            (lambda: bool(cancel_event.is_set()))
+                            (
+                                lambda: bool(
+                                    cancel_event.is_set()
+                                    or _pressure_abort_requested(state)
+                                )
+                            )
                             if cancel_event is not None
-                            else None
+                            else (lambda: _pressure_abort_requested(state))
                         ),
                         max_tokens=response_max,
                         sampler=sampler,
@@ -22074,9 +22208,22 @@ def _run_generation(
                         ),
                     )
         except PostcommitAbort:
-            # abort_check tripped inside the prefill: the client disconnected
-            # mid-prompt-processing. Reuse the exact cancellation path client
-            # disconnects already take during decode.
+            # abort_check tripped inside the prefill. Two arms share it: a
+            # client disconnect reuses the exact cancellation path decode
+            # disconnects take, while the guard loop's sustained-critical
+            # pressure abort (#393) is an engine-health refusal the client
+            # must SEE — that one maps to the honest 507 (which also sheds
+            # caches) instead of a silent cancel.
+            if _pressure_abort_requested(state) and not (
+                cancel_event is not None and cancel_event.is_set()
+            ):
+                raise _allocation_failure_http_exception(
+                    state,
+                    RuntimeError(
+                        "sustained critical memory pressure during prefill; "
+                        "aborted before the allocator wall"
+                    ),
+                )
             raise _StreamCancelled("client disconnected during prefill")
         finally:
             from mtplx.generation import set_live_decode_sink

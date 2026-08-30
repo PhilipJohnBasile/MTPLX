@@ -1162,10 +1162,29 @@ class QSACache:
         self.raw_keys: Optional[mx.array] = None  # [1, cap, index_head_dim]
         self.pooled: Optional[mx.array] = None  # [1, cap_blocks, index_head_dim]
         self.pooled_len = 0  # valid pooled blocks
+        # fp32-transposed mirror of ``pooled`` [1, 1, D, cap_blocks], kept in
+        # lockstep by write_pooled. The indexer used to upcast + transpose the
+        # ENTIRE pooled table on every forward of every QSA layer — 33.5 MB
+        # allocated and freed per layer per decoded token at 262K context
+        # (#393 audit). Same values (astype of the same bf16 blocks), so
+        # selection is bit-identical; this is allocation hygiene only.
+        self.pooled_f32_t: Optional[mx.array] = None
 
     @property
     def offset(self) -> int:
         return self.kv.offset
+
+    @staticmethod
+    def _grown_cap(end: int, current: int, step: int) -> int:
+        """Geometric (doubling) growth, step-aligned.
+
+        The previous fixed +``step`` growth full-copied the buffer every 256
+        rows: Θ(N²) memcpy — ~34 GB of pure copy traffic per QSA layer over
+        a 262K decode, times 13 caches (#393 audit). Doubling bounds total
+        copy traffic at O(N) with at most 2x capacity overshoot; ``nbytes``
+        keeps reporting real capacity so memory accounting stays honest."""
+        cap = ((end + step - 1) // step) * step
+        return max(cap, 2 * current)
 
     def write_raw(self, keys: mx.array) -> None:
         """Store this forward's indexer keys at their absolute positions.
@@ -1176,7 +1195,8 @@ class QSACache:
         start = self.kv.offset
         end = start + keys.shape[1]
         if self.raw_keys is None or end > self.raw_keys.shape[1]:
-            cap = ((end + self.step - 1) // self.step) * self.step
+            current = 0 if self.raw_keys is None else self.raw_keys.shape[1]
+            cap = self._grown_cap(end, current, self.step)
             grown = mx.zeros((1, cap, keys.shape[2]), keys.dtype)
             if self.raw_keys is not None:
                 grown[:, : self.raw_keys.shape[1], :] = self.raw_keys
@@ -1185,13 +1205,46 @@ class QSACache:
 
     def write_pooled(self, blocks: mx.array, nb_start: int, nb_total: int) -> None:
         if self.pooled is None or nb_total > self.pooled.shape[1]:
-            cap = ((nb_total + self.step - 1) // self.step) * self.step
+            current = 0 if self.pooled is None else self.pooled.shape[1]
+            cap = self._grown_cap(nb_total, current, self.step)
             grown = mx.zeros((1, cap, blocks.shape[2]), blocks.dtype)
             if self.pooled is not None:
                 grown[:, : self.pooled.shape[1], :] = self.pooled
             self.pooled = grown
         self.pooled[:, nb_start:nb_total, :] = blocks
+        # Keep the fp32-transposed mirror in lockstep (same capacity). When
+        # the mirror is absent (fresh cache, or dropped by a state restore)
+        # it must seed from the pooled buffer's CONTENT — zeros would blank
+        # every previously valid block's scores (caught by the state
+        # round-trip gate).
+        cap_blocks = self.pooled.shape[1]
+        if self.pooled_f32_t is None:
+            self.pooled_f32_t = mx.swapaxes(self.pooled.astype(mx.float32), 1, 2)[
+                :, None
+            ]
+        elif self.pooled_f32_t.shape[3] < cap_blocks:
+            grown_t = mx.zeros((1, 1, blocks.shape[2], cap_blocks), mx.float32)
+            grown_t[..., : self.pooled_f32_t.shape[3]] = self.pooled_f32_t
+            self.pooled_f32_t = grown_t
+            self.pooled_f32_t[..., nb_start:nb_total] = mx.swapaxes(
+                blocks.astype(mx.float32), 1, 2
+            )[:, None]
+        else:
+            self.pooled_f32_t[..., nb_start:nb_total] = mx.swapaxes(
+                blocks.astype(mx.float32), 1, 2
+            )[:, None]
         self.pooled_len = nb_total
+
+    def pooled_f32_view(self, nb: int) -> mx.array:
+        """[1, 1, D, nb] fp32 view of the valid pooled blocks.
+
+        Rebuilds the mirror from ``pooled`` after a state restore (setter
+        drops it); otherwise a zero-copy slice of the maintained buffer."""
+        if self.pooled_f32_t is None or self.pooled_f32_t.shape[3] < nb:
+            self.pooled_f32_t = mx.swapaxes(
+                self.pooled.astype(mx.float32), 1, 2
+            )[:, None]
+        return self.pooled_f32_t[..., :nb]
 
     def is_trimmable(self) -> bool:
         return True
@@ -1234,6 +1287,9 @@ class QSACache:
         self.raw_keys = raw
         self.pooled = pooled
         self.pooled_len = 0 if pooled is None else pooled.shape[1]
+        # Derived mirror: rebuilt lazily on the first pooled_f32_view read.
+        # Restored snapshots stay 4-leaf — the state contract is unchanged.
+        self.pooled_f32_t = None
 
 
 class QSAIndexer(nn.Module):
@@ -1308,7 +1364,11 @@ class QSAIndexer(nn.Module):
         if last_nb <= self.block_topk:
             return None  # dense == sparse in this regime
 
-        pooled_t = mx.swapaxes(pooled.astype(mx.float32), 1, 2)[:, None]  # [1,1,D,nb]
+        # Cached fp32-transposed pooled view: same values as the old
+        # per-call astype+swapaxes of the whole table (astype of the same
+        # bf16 blocks -> bit-identical scores), without re-materializing
+        # 33.5 MB per layer per token at 262K.
+        pooled_t = cache.pooled_f32_view(nb_total)  # [1,1,D,nb]
         scores = mx.matmul(q.astype(mx.float32), pooled_t)  # [1,S,H,nb]
         scores = mx.maximum(scores, 0.0).sum(axis=2) / math.sqrt(self.head_dim)
         scores = scores[0]  # [S, nb]
@@ -2578,13 +2638,20 @@ class TextModel(nn.Module):
         input_embeddings=None,
         return_hidden: bool = False,
         hidden_variant: str | None = None,
+        emit_logits: bool = True,
+        logits_keep: int = 0,
     ):
         # hidden_variant is accepted for the runtime contract's sake but this
         # family has exactly one draft input: the pre-mixer WIDENED stream.
-        # NOTE: keep this signature explicit — a **kwargs catch-all would make
-        # the runtime's capability probe claim emit_logits/logits_keep support
-        # that does not exist here.
+        # emit_logits/logits_keep are the sustained-prefill contract: a
+        # cache-only chunk skips the [1, S, 248320] head matmul entirely
+        # (~1.02 GB per 2048-token chunk that used to be built and thrown
+        # away 128 times per 262K cold prefill — the #393 audit receipt).
         out = self.model(inputs, cache, input_embeddings)
+        if not emit_logits:
+            return (None, self.model._last_widened) if return_hidden else None
+        if logits_keep:
+            out = out[:, -max(1, int(logits_keep)) :]
         if self.args.tie_word_embeddings:
             logits = self.model.embed_tokens.as_linear(out)
         else:
@@ -2752,16 +2819,20 @@ class Model(nn.Module):
         input_embeddings=None,
         return_hidden: bool = False,
         hidden_variant: str | None = None,
+        emit_logits: bool = True,
+        logits_keep: int = 0,
     ):
         # Explicit params only (no **kwargs): the runtime capability probe
-        # reads this signature and would treat a catch-all as emit_logits /
-        # logits_keep support this model does not implement.
+        # reads this signature; emit_logits/logits_keep are now genuinely
+        # implemented (cache-only prefill chunks skip the vocab head).
         return self.language_model(
             inputs,
             cache,
             input_embeddings,
             return_hidden=return_hidden,
             hidden_variant=hidden_variant,
+            emit_logits=emit_logits,
+            logits_keep=logits_keep,
         )
 
     @property
