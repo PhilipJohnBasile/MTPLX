@@ -4229,6 +4229,7 @@ class TextModel(nn.Module):
         self.model = Qwen4ExpTextModel(args)
         if not args.tie_word_embeddings:
             self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+        object.__setattr__(self, "_mtp_draft_head_logits", self._head_logits)
 
     def __call__(
         self,
@@ -4264,6 +4265,18 @@ class TextModel(nn.Module):
             return self.model.embed_tokens.as_linear(h)
         return self.lm_head(h)
 
+    def _mtplx_bind_draft_lm_head(self, head) -> None:
+        """Bind the native MTP proposal head once at construction."""
+
+        object.__setattr__(self, "_mtp_draft_head_logits", head.__call__)
+
+    def _mtplx_native_mtp_draft_head(self):
+        """Return the unmodified head used by the native MTP route."""
+
+        if self.args.tie_word_embeddings:
+            return None
+        return self.lm_head
+
     # ---- runtime draft surface (validate_mtp_support shape) ---------------
 
     def mtp_forward(
@@ -4286,7 +4299,7 @@ class TextModel(nn.Module):
         """
         emb = self.model.embed_tokens(next_token_ids)
         h = self.mtp.fuse_and_run(hidden_states, emb, mtp_cache)
-        logits = self._head_logits(self.mtp.hyper_connection_mixer(h))
+        logits = self._mtp_draft_head_logits(self.mtp.hyper_connection_mixer(h))
         if return_hidden:
             return logits, h
         return logits
