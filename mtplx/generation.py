@@ -8009,6 +8009,7 @@ def generate_mtpk(
         with exact_verify(sampler.temperature <= 0):
             compiled_verify_bank.install_fixed_m4(
                 cache,
+                prompt_ids=prompt_ids,
                 hidden_variant=base_hidden_variant,
             )
     a3b_target_prefix_route = None
@@ -11118,8 +11119,11 @@ def generate_mtpk(
                 and verified_token_count == 4
             ):
                 verify_logits, verify_hidden, captures = (
-                    compiled_verify_bank.forward_ar_capture(
+                    compiled_verify_bank.forward_fixed_m4(
                         verify_input_array,
+                        host_input_ids=verify_input,
+                        completion_tokens=tokens,
+                        committed_count=len(tokens) - 1,
                         cache=cache,
                         return_hidden=True,
                         hidden_variant=base_hidden_variant,

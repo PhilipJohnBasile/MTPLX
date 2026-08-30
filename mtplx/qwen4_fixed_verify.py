@@ -112,23 +112,48 @@ def _prepare_compiled_verify_aux(self: Any, input_ids, cache) -> mx.array:
 class _FixedM4SidecarAux:
     """Construction-bound host row gather for the physical-M4 verifier."""
 
-    __slots__ = ("_entry", "_gather", "_ngram_idx", "_output_dim", "_rows")
+    __slots__ = ("_gather", "_output_dim", "_prompt_tail", "_rows")
 
-    def __init__(self, *, entry, ngram_idx, rows, gather, output_dim):
-        self._entry = entry
-        self._ngram_idx = ngram_idx
+    def __init__(self, *, prompt_tail, rows, gather, output_dim):
+        self._prompt_tail = prompt_tail
         self._rows = rows
         self._gather = gather
         self._output_dim = output_dim
 
-    def __call__(self, input_ids) -> mx.array:
-        ids_np = np.asarray(input_ids, dtype=np.int64)
-        prev_np = np.asarray(self._entry[self._ngram_idx], dtype=np.int64)
+    def __call__(
+        self,
+        _input_ids,
+        host_input_ids,
+        completion_tokens,
+        committed_count,
+    ) -> mx.array:
+        ids_np = np.asarray((host_input_ids,), dtype=np.int64)
+        previous = _fixed_m4_previous_tokens(
+            self._prompt_tail,
+            completion_tokens,
+            committed_count,
+        )
+        prev_np = np.asarray((previous,), dtype=np.int64)
         rows, _new_history = self._rows(ids_np, prev_np)
         return self._gather(rows.reshape(-1)).reshape(1, 4, self._output_dim)
 
 
-def _build_fixed_m4_compiled_verify_aux(self: Any, cache):
+def _fixed_m4_previous_tokens(
+    prompt_tail: tuple[int, int], completion_tokens, committed_count: int
+) -> tuple[int, int]:
+    """Project the last two cache-owned tokens from the host token ledger."""
+
+    if committed_count >= 2:
+        return (
+            int(completion_tokens[committed_count - 2]),
+            int(completion_tokens[committed_count - 1]),
+        )
+    if committed_count == 1:
+        return int(prompt_tail[1]), int(completion_tokens[0])
+    return prompt_tail
+
+
+def _build_fixed_m4_compiled_verify_aux(self: Any, cache, prompt_ids):
     """Validate and bind the production sidecar gather once after prefill."""
 
     inner = _inner(self)
@@ -187,6 +212,18 @@ def _build_fixed_m4_compiled_verify_aux(self: Any, cache):
             raise ValueError(
                 f"qwen4 fixed-M4 sidecar auxiliary storage mismatch: {storage}"
             )
+    prompt_tail = tuple(
+        [int(embedding.eos_id), int(embedding.eos_id)]
+        + [int(token) for token in prompt_ids[-2:]]
+    )[-2:]
+    device_history = tuple(
+        int(token)
+        for token in np.asarray(previous, dtype=np.int64).reshape(-1)
+    )
+    if device_history != prompt_tail:
+        raise ValueError(
+            "qwen4 fixed-M4 prompt history does not match the prefetched cache"
+        )
     rows = partial(
         _ngram_rows_np,
         mult=mult,
@@ -197,8 +234,7 @@ def _build_fixed_m4_compiled_verify_aux(self: Any, cache):
         heads_per_ngram=int(embedding.heads_per_ngram),
     )
     return _FixedM4SidecarAux(
-        entry=entry,
-        ngram_idx=ple.NGRAM_IDX,
+        prompt_tail=prompt_tail,
         rows=rows,
         gather=sidecar.gather_np,
         output_dim=int(inner.args.ple_embed_dim),

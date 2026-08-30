@@ -78,6 +78,10 @@ def _ids(tokens: int, seed: int) -> mx.array:
     return mx.random.randint(0, 128, (1, tokens))
 
 
+def _host_ids(ids: mx.array) -> list[int]:
+    return [int(token) for token in np.asarray(ids).reshape(-1)]
+
+
 PREFILL = 12
 WINDOW = 4
 KEEP = 2
@@ -262,7 +266,8 @@ def test_fixed_m4_sidecar_aux_stages_exact_rows_without_mutating_history(
     runtime = TinyRuntime()
     runtime.model = SimpleNamespace(language_model=tm)
     cache = tm.make_cache()
-    tm(_ids(PREFILL, seed=28), cache=cache)
+    prefill = _ids(PREFILL, seed=28)
+    tm(prefill, cache=cache)
     ple_index = next(
         i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
     )
@@ -273,11 +278,12 @@ def test_fixed_m4_sidecar_aux_stages_exact_rows_without_mutating_history(
     ple.ple_embedding.ngram_embedding._sidecar = sidecar
     install_qwen4_fixed_verify_route(runtime)
 
-    prepare = runtime.build_fixed_m4_compiled_verify_aux(cache)
+    prompt_ids = list(previous) if previous is not None else _host_ids(prefill)
+    prepare = runtime.build_fixed_m4_compiled_verify_aux(cache, prompt_ids)
     ids = mx.array([tokens])
     history_before = cache[ple_index][ple.NGRAM_IDX]
     reference = _prepare_compiled_verify_aux(runtime, ids, cache)
-    candidate = prepare(ids)
+    candidate = prepare(ids, list(tokens), [int(tokens[0])], 0)
     mx.eval(reference, candidate)
 
     assert mx.array_equal(candidate, reference).item()
@@ -290,7 +296,7 @@ def test_fixed_m4_sidecar_aux_stages_exact_rows_without_mutating_history(
     cache[ple_index][ple.NGRAM_IDX] = rebound_history
     second_ids = mx.array([[9, 8, 7, 6]])
     second_reference = _prepare_compiled_verify_aux(runtime, second_ids, cache)
-    second_candidate = prepare(second_ids)
+    second_candidate = prepare(second_ids, [9, 8, 7, 6], [0, 11, 9], 2)
     mx.eval(second_reference, second_candidate)
 
     assert mx.array_equal(second_candidate, second_reference).item()
@@ -351,7 +357,8 @@ def test_installed_fixed_m4_replay_preserves_compiled_gdn_schedule(tm, monkeypat
     monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
 
     cache = tm.make_cache()
-    tm(_ids(PREFILL, seed=23), cache=cache)
+    prefill = _ids(PREFILL, seed=23)
+    tm(prefill, cache=cache)
     tm.model._gdn_compiled_env = True
 
     compiled_gdn_calls = []
@@ -367,7 +374,11 @@ def test_installed_fixed_m4_replay_preserves_compiled_gdn_schedule(tm, monkeypat
         max_verify_len=WINDOW,
         request_max_tokens=16,
     )
-    bank.install_fixed_m4(cache, hidden_variant=None)
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
 
     def repeated_check(*_args, **_kwargs):
         raise AssertionError("installed M4 replay re-entered generic dispatch")
@@ -377,10 +388,18 @@ def test_installed_fixed_m4_replay_preserves_compiled_gdn_schedule(tm, monkeypat
     monkeypatch.setattr(bank, "_ensure_shadow", repeated_check)
     monkeypatch.setattr(bank, "_paged_ineligibility", repeated_check)
 
+    completion_tokens = []
     for seed in (24, 25):
         snap = snapshot_untrimmable_cache_lazy(cache)
-        logits, hidden, captures = bank.forward_ar_capture(
-            _ids(WINDOW, seed=seed), cache=cache
+        ids = _ids(WINDOW, seed=seed)
+        host_ids = _host_ids(ids)
+        completion_tokens.append(host_ids[0])
+        logits, hidden, captures = bank.forward_fixed_m4(
+            ids,
+            host_input_ids=host_ids,
+            completion_tokens=completion_tokens,
+            committed_count=len(completion_tokens) - 1,
+            cache=cache,
         )
         mx.eval(logits, hidden)
         assert captures == {}
@@ -390,6 +409,7 @@ def test_installed_fixed_m4_replay_preserves_compiled_gdn_schedule(tm, monkeypat
             keep_tokens=KEEP,
             verified_tokens=WINDOW,
         )
+        completion_tokens.extend(host_ids[1:KEEP])
 
     assert bank.stats["compiled_calls"] == 2
     assert compiled_gdn_calls
@@ -412,7 +432,8 @@ def test_fixed_m4_staged_aux_requires_pre_schedule(
     monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
     monkeypatch.setenv("MTPLX_COMPILED_VERIFY_BOUNDARY", boundary)
     cache = tm.make_cache()
-    tm(_ids(PREFILL, seed=30), cache=cache)
+    prefill = _ids(PREFILL, seed=30)
+    tm(prefill, cache=cache)
     ple_index = next(
         i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
     )
@@ -425,9 +446,9 @@ def test_fixed_m4_staged_aux_requires_pre_schedule(
     real_build = runtime.build_fixed_m4_compiled_verify_aux
     builds = []
 
-    def build(_cache):
+    def build(_cache, prompt_ids):
         builds.append(True)
-        return real_build(_cache)
+        return real_build(_cache, prompt_ids)
 
     runtime.build_fixed_m4_compiled_verify_aux = build
     bank = graphbank.CompiledVerifyBank(
@@ -435,10 +456,20 @@ def test_fixed_m4_staged_aux_requires_pre_schedule(
         max_verify_len=WINDOW,
         request_max_tokens=16,
     )
-    bank.install_fixed_m4(cache, hidden_variant=None)
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
 
-    logits, hidden, captures = bank.forward_ar_capture(
-        _ids(WINDOW, seed=31), cache=cache
+    ids = _ids(WINDOW, seed=31)
+    host_ids = _host_ids(ids)
+    logits, hidden, captures = bank.forward_fixed_m4(
+        ids,
+        host_input_ids=host_ids,
+        completion_tokens=[host_ids[0]],
+        committed_count=0,
+        cache=cache,
     )
     mx.eval(logits, hidden)
 
@@ -476,20 +507,42 @@ def test_fixed_m4_staged_sidecar_matches_materialized_route_across_windows(
     staged_bank = graphbank.CompiledVerifyBank(
         runtime, max_verify_len=WINDOW, request_max_tokens=16
     )
-    staged_bank.install_fixed_m4(staged_cache, hidden_variant=None)
+    prompt_ids = _host_ids(prefill)
+    staged_bank.install_fixed_m4(
+        staged_cache,
+        prompt_ids=prompt_ids,
+        hidden_variant=None,
+    )
     materialized_bank = graphbank.CompiledVerifyBank(
         runtime, max_verify_len=WINDOW, request_max_tokens=16
     )
     materialized_bank._build_fixed_m4_aux = None
-    materialized_bank.install_fixed_m4(materialized_cache, hidden_variant=None)
+    materialized_bank.install_fixed_m4(
+        materialized_cache,
+        prompt_ids=prompt_ids,
+        hidden_variant=None,
+    )
 
+    completion_tokens = []
     for seed in (33, 34):
         ids = _ids(WINDOW, seed=seed)
-        staged_logits, staged_hidden, staged_captures = staged_bank.forward_ar_capture(
-            ids, cache=staged_cache
+        host_ids = _host_ids(ids)
+        completion_tokens.append(host_ids[0])
+        staged_logits, staged_hidden, staged_captures = staged_bank.forward_fixed_m4(
+            ids,
+            host_input_ids=host_ids,
+            completion_tokens=completion_tokens,
+            committed_count=len(completion_tokens) - 1,
+            cache=staged_cache,
         )
         reference_logits, reference_hidden, reference_captures = (
-            materialized_bank.forward_ar_capture(ids, cache=materialized_cache)
+            materialized_bank.forward_fixed_m4(
+                ids,
+                host_input_ids=host_ids,
+                completion_tokens=completion_tokens,
+                committed_count=len(completion_tokens) - 1,
+                cache=materialized_cache,
+            )
         )
         mx.eval(staged_logits, staged_hidden, reference_logits, reference_hidden)
 
@@ -500,6 +553,7 @@ def test_fixed_m4_staged_sidecar_matches_materialized_route_across_windows(
             materialized_cache[ple_index][ple.NGRAM_IDX],
         ).item()
         assert staged_captures == reference_captures == {}
+        completion_tokens.extend(host_ids[1:])
 
     assert staged_bank.stats["compiled_calls"] == 2
     assert materialized_bank.stats["compiled_calls"] == 2
@@ -519,13 +573,18 @@ def test_installed_fixed_m4_routes_shorter_windows_to_family_capture(tm, monkeyp
     monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
 
     cache = tm.make_cache()
-    tm(_ids(PREFILL, seed=26), cache=cache)
+    prefill = _ids(PREFILL, seed=26)
+    tm(prefill, cache=cache)
     bank = graphbank.CompiledVerifyBank(
         runtime,
         max_verify_len=WINDOW,
         request_max_tokens=16,
     )
-    bank.install_fixed_m4(cache, hidden_variant=None)
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
 
     logits, hidden, captures = bank.forward_ar_capture(_ids(2, seed=27), cache=cache)
     mx.eval(logits, hidden)
