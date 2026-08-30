@@ -29497,6 +29497,24 @@ def create_app(state: ServerState) -> FastAPI:
                 def maybe_repair_tool_fed_reasoning_only_completion(
                     generated: dict[str, Any],
                 ) -> dict[str, Any]:
+                    # The repair is a second-chance enhancement: its own
+                    # failure must never take down a request that already has
+                    # a servable first pass. Cancellation still propagates.
+                    try:
+                        return _repair_reasoning_only_completion_unguarded(
+                            generated
+                        )
+                    except _StreamCancelled:
+                        raise
+                    except Exception as exc:
+                        generated.setdefault("stats", {})[
+                            "reasoning_completion_repair_error"
+                        ] = f"{type(exc).__name__}: {exc}"[:200]
+                        return generated
+
+                def _repair_reasoning_only_completion_unguarded(
+                    generated: dict[str, Any],
+                ) -> dict[str, Any]:
                     # Tools-declared turns are excluded from the F3
                     # reasoning-as-content recovery (planning prose is not an
                     # answer), so a reasoning-only stop here would otherwise
@@ -29525,6 +29543,19 @@ def create_app(state: ServerState) -> FastAPI:
                         )
                     )
                     if not first_text.strip():
+                        return generated
+                    # Tool-control markup — even unclosed — belongs to the
+                    # established tool-parse fallback machinery
+                    # (orphan/unclosed_tool_call), not this repair. The
+                    # thinking splitter classifies markup after a pre-opened
+                    # <think> as reasoning, which would otherwise read here
+                    # as a reasoning-only turn.
+                    if any(
+                        marker in first_text
+                        for marker in (
+                            _ThinkingContentStreamSplitter._TOOL_CONTROL_MARKERS
+                        )
+                    ):
                         return generated
                     raw_reasoning_text, raw_content_text = _tool_extraction_text_parts(
                         state,
