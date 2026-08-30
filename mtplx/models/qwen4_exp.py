@@ -2954,6 +2954,7 @@ def _qsa_prefill_gather_attention(
             token_idx,
             token_ok,
             scale,
+            _qsa_stock_rows_gather_kv,
         )
         mx.eval(out_t)
         outputs.append(out_t)
