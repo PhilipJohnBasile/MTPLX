@@ -80,7 +80,11 @@ def _machine_safety_gate() -> bool:
     """Refuse a GPU gate while a model worker is live."""
 
     processes = _command_output(
-        ["pgrep", "-fl", "mtplx.cli serve|mtplx.server.openai|mlx_lm"]
+        [
+            "pgrep",
+            "-fl",
+            "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm",
+        ]
     )
     pressure = _command_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"])
     print(

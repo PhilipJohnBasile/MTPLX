@@ -40,6 +40,7 @@ turning an A/B into control-versus-control.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, NamedTuple
@@ -214,7 +215,8 @@ class QSACompiledIndexerCore:
     Parameters are structural and immutable for one QSA indexer instance.
     The dedicated preparation kernels perform Q RMSNorm + partial RoPE and
     stage completed mean->norm->RoPE key blocks.  Their norm weights and RoPE
-    frequencies are passed to every compiled graph as explicit array leaves.
+    frequencies are passed to every compiled graph as explicit array leaves;
+    the model-static YaRN attention scale is a structural kernel constant.
 
     ``project_qk`` is optional because attention can supply shared projected
     Q/K rows.  When present, :meth:`select_hidden` traces it inside the graph;
@@ -235,6 +237,7 @@ class QSACompiledIndexerCore:
         k_norm_weight: mx.array,
         inv_freq: mx.array,
         rms_norm_eps: float,
+        rope_attention_scaling: float = 1.0,
         project_qk: ProjectQK | None = None,
         minimum_raw_capacity: int = 256,
         minimum_pooled_capacity: int = 256,
@@ -283,6 +286,15 @@ class QSACompiledIndexerCore:
         self._k_norm_weight = k_norm_weight
         self._inv_freq = inv_freq
         self._rms_norm_eps = float(rms_norm_eps)
+        self._rope_attention_scaling = float(rope_attention_scaling)
+        if (
+            not math.isfinite(self._rope_attention_scaling)
+            or self._rope_attention_scaling <= 0.0
+        ):
+            raise ValueError(
+                "rope_attention_scaling must be finite and positive; "
+                f"got {self._rope_attention_scaling}"
+            )
         self._project_qk = project_qk
         self._minimum_raw_capacity = int(minimum_raw_capacity)
         self._minimum_pooled_capacity = int(minimum_pooled_capacity)
@@ -537,6 +549,7 @@ class QSACompiledIndexerCore:
         rows = key.rows
         ratio = self.compress_ratio
         eps = self._rms_norm_eps
+        rope_attention_scaling = self._rope_attention_scaling
         max_new_blocks = (rows + ratio - 1) // ratio
         raw_block_capacity = key.raw_shape[1] // ratio
         max_pool_start = min(
@@ -587,6 +600,7 @@ class QSACompiledIndexerCore:
                 block_start=block_start,
                 compress_ratio=ratio,
                 eps=eps,
+                attention_scaling=rope_attention_scaling,
             )
             pooled_next = mx.slice_update(
                 pooled,
@@ -609,6 +623,7 @@ class QSACompiledIndexerCore:
                     inv_freq,
                     pos_start=pos_start,
                     eps=eps,
+                    attention_scaling=rope_attention_scaling,
                 )
                 selected = select(
                     q,
@@ -947,4 +962,5 @@ class QSACompiledIndexerCore:
         report["minimum_pooled_capacity"] = self._minimum_pooled_capacity
         report["selector_scratch_bytes"] = self._selector_scratch_bytes
         report["prefill_score_workspace_bytes"] = self._prefill_score_workspace_bytes
+        report["rope_attention_scaling"] = self._rope_attention_scaling
         return report

@@ -152,11 +152,129 @@ class TextArgs(BaseModelArgs):
         return int(eos if eos is not None else 0)
 
 
-def _rope_cos_sin(positions: mx.array, inv_freq: mx.array) -> tuple[mx.array, mx.array]:
-    """Non-interleaved (rotate-half) rope tables for arbitrary integer positions."""
+def _rope_inv_freq_and_scaling(args: TextArgs) -> tuple[mx.array, float]:
+    """Build the exact Transformers RoPE parameters used by Qwen4-Exp.
+
+    The released checkpoint is native at 262,144 tokens.  Qwen's documented
+    one-million-token configuration switches ``rope_type`` to static YaRN.
+    Static matters here: the same corrected frequencies and attention scale
+    apply at every position, including short rows in a long-context run.
+    """
+
+    rotary_dim = int(args.rotary_dim)
+    if rotary_dim <= 0 or rotary_dim % 2:
+        raise ValueError(f"rotary_dim must be a positive even integer, got {rotary_dim}")
+
+    parameters = args.rope_parameters or {}
+    rope_type = str(parameters.get("rope_type") or "default").strip().lower()
+    base = float(parameters.get("rope_theta", args.rope_theta))
+    if not math.isfinite(base) or base <= 1.0:
+        raise ValueError(f"rope_theta must be finite and greater than 1, got {base}")
+
+    positions = mx.arange(0, rotary_dim, 2, dtype=mx.float32)
+    position_frequencies = base ** (positions / rotary_dim)
+    if rope_type == "default":
+        return 1.0 / position_frequencies, 1.0
+    if rope_type != "yarn":
+        raise ValueError(
+            "Qwen4-Exp supports rope_type 'default' and static 'yarn'; "
+            f"got {rope_type!r}"
+        )
+
+    try:
+        factor = float(parameters["factor"])
+        original_max = int(parameters["original_max_position_embeddings"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "static YaRN requires numeric factor and "
+            "original_max_position_embeddings"
+        ) from exc
+    if not math.isfinite(factor) or factor < 1.0:
+        raise ValueError(f"YaRN factor must be finite and >= 1, got {factor}")
+    if original_max <= 0:
+        raise ValueError(
+            "YaRN original_max_position_embeddings must be positive, "
+            f"got {original_max}"
+        )
+
+    def mscale(scale: float, multiplier: float = 1.0) -> float:
+        if scale <= 1.0:
+            return 1.0
+        return 0.1 * multiplier * math.log(scale) + 1.0
+
+    configured_attention_scale = parameters.get("attention_factor")
+    if configured_attention_scale is None:
+        mscale_value = parameters.get("mscale")
+        mscale_all_dim = parameters.get("mscale_all_dim")
+        if mscale_value and mscale_all_dim:
+            attention_scaling = mscale(factor, float(mscale_value)) / mscale(
+                factor,
+                float(mscale_all_dim),
+            )
+        else:
+            attention_scaling = mscale(factor)
+    else:
+        attention_scaling = float(configured_attention_scale)
+    if not math.isfinite(attention_scaling) or attention_scaling <= 0.0:
+        raise ValueError(
+            "YaRN attention_factor must be finite and positive, "
+            f"got {attention_scaling}"
+        )
+
+    beta_fast = float(parameters.get("beta_fast") or 32.0)
+    beta_slow = float(parameters.get("beta_slow") or 1.0)
+    if beta_fast < beta_slow:
+        raise ValueError(
+            f"YaRN beta_fast must be >= beta_slow, got {beta_fast} < {beta_slow}"
+        )
+
+    def correction_dimension(rotations: float) -> float:
+        return (
+            rotary_dim
+            * math.log(original_max / (rotations * 2.0 * math.pi))
+            / (2.0 * math.log(base))
+        )
+
+    low = correction_dimension(beta_fast)
+    high = correction_dimension(beta_slow)
+    if bool(parameters.get("truncate", True)):
+        low = math.floor(low)
+        high = math.ceil(high)
+    low = max(low, 0.0)
+    high = min(high, float(rotary_dim - 1))
+    if low == high:
+        high += 0.001
+
+    ramp = mx.clip(
+        (mx.arange(rotary_dim // 2, dtype=mx.float32) - low) / (high - low),
+        0.0,
+        1.0,
+    )
+    inv_freq_extrapolation = 1.0 / position_frequencies
+    inv_freq_interpolation = inv_freq_extrapolation / factor
+    extrapolation_factor = 1.0 - ramp
+    inv_freq = (
+        inv_freq_interpolation * (1.0 - extrapolation_factor)
+        + inv_freq_extrapolation * extrapolation_factor
+    )
+    return inv_freq.astype(mx.float32), float(attention_scaling)
+
+
+def _rope_cos_sin(
+    positions: mx.array,
+    inv_freq: mx.array,
+    attention_scaling: float = 1.0,
+) -> tuple[mx.array, mx.array]:
+    """Non-interleaved RoPE tables, including static-YaRN amplitude scaling."""
+
     angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
     emb = mx.concatenate([angles, angles], axis=-1)
-    return mx.cos(emb), mx.sin(emb)
+    cosine = mx.cos(emb)
+    sine = mx.sin(emb)
+    if attention_scaling != 1.0:
+        cosine = cosine * float(attention_scaling)
+        sine = sine * float(attention_scaling)
+    return cosine, sine
 
 
 def _apply_partial_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
@@ -1394,9 +1512,8 @@ class QSAIndexer(nn.Module):
         )
         self.q_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
-        rot = args.rotary_dim
-        self._inv_freq = args.rope_theta ** (
-            -mx.arange(0, rot, 2, dtype=mx.float32) / rot
+        self._inv_freq, self._rope_attention_scaling = (
+            _rope_inv_freq_and_scaling(args)
         )
         # Kept outside the nn.Module parameter tree.  The graph bank is built
         # lazily on the first eligible inference call, after checkpoint load
@@ -1416,7 +1533,11 @@ class QSAIndexer(nn.Module):
         pooled = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
         pooled = self.k_layernorm(pooled)
         starts = mx.arange(nb_old, nb_total, dtype=mx.int32) * self.ratio
-        cos, sin = _rope_cos_sin(starts, self._inv_freq)
+        cos, sin = _rope_cos_sin(
+            starts,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
         return _apply_partial_rope(pooled[:, :, None, :], cos, sin)[:, :, 0, :]
 
     def _prepare_kernel_supported(
@@ -1460,6 +1581,7 @@ class QSAIndexer(nn.Module):
                     block_start=nb_old,
                     compress_ratio=self.ratio,
                     eps=self.rms_norm_eps,
+                    attention_scaling=self._rope_attention_scaling,
                 )
             else:
                 pooled = self._pool_keys_eager(fresh, nb_old, nb_total)
@@ -1724,7 +1846,11 @@ class QSAIndexer(nn.Module):
 
         q = self.q_layernorm(q)
         positions = mx.arange(pos_start, pos_start + q.shape[1], dtype=mx.int32)
-        cos, sin = _rope_cos_sin(positions, self._inv_freq)
+        cos, sin = _rope_cos_sin(
+            positions,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
         return _apply_partial_rope(q, cos, sin)
 
     def _prepare_queries(self, q: mx.array, pos_start: int) -> mx.array:
@@ -1745,6 +1871,7 @@ class QSAIndexer(nn.Module):
             self._inv_freq,
             pos_start=pos_start,
             eps=self.rms_norm_eps,
+            attention_scaling=self._rope_attention_scaling,
         )
 
     def _compiled_mode(
@@ -2017,6 +2144,7 @@ class QSAIndexer(nn.Module):
             k_norm_weight=self.k_layernorm.weight,
             inv_freq=self._inv_freq,
             rms_norm_eps=self.rms_norm_eps,
+            rope_attention_scaling=self._rope_attention_scaling,
             project_qk=projection if callable(projection) else None,
             selector_scratch_bytes=self._fused_score_scratch_bytes,
             prefill_score_workspace_bytes=_qsa_prefill_score_workspace_bytes(),
@@ -2389,9 +2517,8 @@ class Attention(nn.Module):
         self.q_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.indexer = QSAIndexer(args) if args.indexer_n_heads else None
-        rot = args.rotary_dim
-        self._inv_freq = args.rope_theta ** (
-            -mx.arange(0, rot, 2, dtype=mx.float32) / rot
+        self._inv_freq, self._rope_attention_scaling = (
+            _rope_inv_freq_and_scaling(args)
         )
 
     def __call__(self, x: mx.array, cache: QSACache) -> mx.array:
@@ -2431,7 +2558,11 @@ class Attention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
         positions = mx.arange(pos_start, pos_start + S, dtype=mx.int32)
-        cos, sin = _rope_cos_sin(positions, self._inv_freq)
+        cos, sin = _rope_cos_sin(
+            positions,
+            self._inv_freq,
+            self._rope_attention_scaling,
+        )
         q = _apply_partial_rope(q, cos, sin)
         k = _apply_partial_rope(k, cos, sin)
 

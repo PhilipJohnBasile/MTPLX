@@ -41,7 +41,11 @@ def _machine_safety_gate() -> bool:
     """Refuse even a tiny model while another model process is live."""
 
     processes = _command_output(
-        ["pgrep", "-fl", "mtplx.cli serve|mtplx.server.openai|mlx_lm"]
+        [
+            "pgrep",
+            "-fl",
+            "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm",
+        ]
     )
     pressure = _command_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"])
     print(

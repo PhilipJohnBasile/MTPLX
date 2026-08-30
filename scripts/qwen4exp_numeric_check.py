@@ -42,7 +42,11 @@ def _machine_safety_gate() -> bool:
     """Refuse model workers while another model process is live."""
 
     processes = _command_output(
-        ["pgrep", "-fl", "mtplx.cli serve|mtplx.server.openai|mlx_lm"]
+        [
+            "pgrep",
+            "-fl",
+            "mtplx(\\.cli)? (serve|bench prefill-ladder)|mtplx.server.openai|mlx_lm",
+        ]
     )
     pressure = _command_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"])
     print(
@@ -59,6 +63,26 @@ def _machine_safety_gate() -> bool:
 
 def tiny_config() -> dict[str, object]:
     """Return a geometry that exercises every Qwen4-Exp text subsystem."""
+    yarn_factor_raw = (os.environ.get("QWEN4EXP_NUMERIC_YARN_FACTOR") or "").strip()
+    yarn_factor = float(yarn_factor_raw) if yarn_factor_raw else None
+    rope_parameters: dict[str, object] = {
+        "rope_type": "default",
+        "rope_theta": 10_000.0,
+        "partial_rotary_factor": 0.5,
+        "mrope_section": [1, 1, 0],
+    }
+    max_position_embeddings = 64
+    if yarn_factor is not None:
+        if yarn_factor < 1.0:
+            raise ValueError("QWEN4EXP_NUMERIC_YARN_FACTOR must be >= 1")
+        rope_parameters.update(
+            {
+                "rope_type": "yarn",
+                "factor": yarn_factor,
+                "original_max_position_embeddings": 64,
+            }
+        )
+        max_position_embeddings = int(64 * yarn_factor)
     return {
         "model_type": "qwen4_exp_text",
         "vocab_size": 32,
@@ -67,13 +91,8 @@ def tiny_config() -> dict[str, object]:
         "num_attention_heads": 2,
         "num_key_value_heads": 1,
         "head_dim": 8,
-        "max_position_embeddings": 64,
-        "rope_parameters": {
-            "rope_type": "default",
-            "rope_theta": 10_000.0,
-            "partial_rotary_factor": 0.5,
-            "mrope_section": [1, 1, 0],
-        },
+        "max_position_embeddings": max_position_embeddings,
+        "rope_parameters": rope_parameters,
         "layer_types": ["linear_attention", "full_attention"],
         "linear_conv_kernel_dim": 2,
         "linear_key_head_dim": 4,
@@ -514,6 +533,10 @@ def compare_outputs(
 def parent(args: argparse.Namespace) -> int:
     script = Path(__file__).resolve()
     selector = args.selector or _selector_from_environment()
+    if args.yarn_factor is not None:
+        if args.yarn_factor < 1.0:
+            raise ValueError("--yarn-factor must be >= 1")
+        os.environ["QWEN4EXP_NUMERIC_YARN_FACTOR"] = str(args.yarn_factor)
     for label, path in (
         ("Torch interpreter", args.torch_python),
         ("MLX interpreter", args.mlx_python),
@@ -558,7 +581,13 @@ def parent(args: argparse.Namespace) -> int:
         )
         mapping = json.loads((workspace / "mapping.json").read_text(encoding="utf-8"))
 
-    print(f"Qwen4-Exp tiny numeric check (threshold={args.threshold:.3e})")
+    rope_label = (
+        "default" if args.yarn_factor is None else f"yarn-{args.yarn_factor:g}x"
+    )
+    print(
+        "Qwen4-Exp tiny numeric check "
+        f"(threshold={args.threshold:.3e}, rope={rope_label})"
+    )
     print(f"mapped parameters: {mapping['mapped_parameters']}")
     print(
         f"indexer route: requested={mapping['indexer_requested']} "
@@ -577,6 +606,7 @@ def parent(args: argparse.Namespace) -> int:
         "schema": "qwen4exp.numeric.v1",
         "seed": SEED,
         "threshold": args.threshold,
+        "rope": rope_label,
         "torch_python": str(args.torch_python),
         "mlx_python": str(args.mlx_python),
         "mlx_impl": str(args.mlx_impl),
@@ -609,6 +639,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--threshold", type=float, default=1e-4)
+    parser.add_argument(
+        "--yarn-factor",
+        type=float,
+        help=(
+            "Gate static YaRN against Transformers using a tiny native window; "
+            "for example --yarn-factor 4"
+        ),
+    )
     parser.add_argument("--json-report", type=Path)
     parser.add_argument(
         "--report-only",
