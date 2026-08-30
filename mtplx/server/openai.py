@@ -2647,6 +2647,24 @@ class ServerState:
             qsa_prefill_transient_bytes_per_token_from_config as _plan_transient_from_config,
         )
 
+        # The context-linear transient prices the DENSE indexer lane's
+        # [S, T] mask/score chain. When the sparse prefill lane will serve
+        # this process (auto on NAX machines, or explicitly armed), those
+        # transients are crossover-bounded and the honest per-token term is
+        # zero — measured: 262K cold prefill peaked at 87.4 GB on a 128 GiB
+        # M5 Max (weights 77.3 + KV 6.4 + aux + flat reserve), against the
+        # dense-priced ~115 GB that #393 observed wedging the machine.
+        _plan_transient_per_token = _plan_transient_from_config(_plan_model_config)
+        if _plan_transient_per_token:
+            try:
+                from mtplx.models.qwen4_exp import (
+                    _qsa_prefill_enabled as _qsa_prefill_lane_resolved,
+                )
+
+                if _qsa_prefill_lane_resolved():
+                    _plan_transient_per_token = 0
+            except Exception:
+                pass
         _plan_inputs: dict[str, Any] = {
             "total_ram_bytes": _plan_detect_total_ram(),
             "model_weights_bytes": _plan_weights_bytes,
@@ -2661,9 +2679,7 @@ class ServerState:
             # without them a 262K window was admitted on 128 GB with 2.4x
             # phantom headroom and died at 119 GB with no 507.
             "aux_bytes_per_token": _plan_aux_from_config(_plan_model_config),
-            "prefill_transient_bytes_per_token": _plan_transient_from_config(
-                _plan_model_config
-            ),
+            "prefill_transient_bytes_per_token": _plan_transient_per_token,
         }
         _fit_plan = _plan_memory(**_plan_inputs)
         _machine_fit = (
@@ -29481,9 +29497,35 @@ def create_app(state: ServerState) -> FastAPI:
                 def maybe_repair_tool_fed_reasoning_only_completion(
                     generated: dict[str, Any],
                 ) -> dict[str, Any]:
+                    # The repair is a second-chance enhancement: its own
+                    # failure must never take down a request that already has
+                    # a servable first pass. Cancellation still propagates.
+                    try:
+                        return _repair_reasoning_only_completion_unguarded(
+                            generated
+                        )
+                    except _StreamCancelled:
+                        raise
+                    except Exception as exc:
+                        generated.setdefault("stats", {})[
+                            "reasoning_completion_repair_error"
+                        ] = f"{type(exc).__name__}: {exc}"[:200]
+                        return generated
+
+                def _repair_reasoning_only_completion_unguarded(
+                    generated: dict[str, Any],
+                ) -> dict[str, Any]:
+                    # Tools-declared turns are excluded from the F3
+                    # reasoning-as-content recovery (planning prose is not an
+                    # answer), so a reasoning-only stop here would otherwise
+                    # return an EMPTY assistant message. That includes the
+                    # FIRST turn of a tools-declared conversation (app chat
+                    # with web search on, agent clients' opening message) —
+                    # not just tool-fed turns — so the continuation repair
+                    # covers both (user reports: "model responds but produces
+                    # no answer", 27B + Flash-Next, chat and API).
                     if (
                         not tools_active
-                        or not tool_result_history_present
                         or not thinking_enabled
                         or request.seed is not None
                         or _reasoning_parser_for_state(state)
@@ -29501,6 +29543,19 @@ def create_app(state: ServerState) -> FastAPI:
                         )
                     )
                     if not first_text.strip():
+                        return generated
+                    # Tool-control markup — even unclosed — belongs to the
+                    # established tool-parse fallback machinery
+                    # (orphan/unclosed_tool_call), not this repair. The
+                    # thinking splitter classifies markup after a pre-opened
+                    # <think> as reasoning, which would otherwise read here
+                    # as a reasoning-only turn.
+                    if any(
+                        marker in first_text
+                        for marker in (
+                            _ThinkingContentStreamSplitter._TOOL_CONTROL_MARKERS
+                        )
+                    ):
                         return generated
                     raw_reasoning_text, raw_content_text = _tool_extraction_text_parts(
                         state,
@@ -29539,6 +29594,8 @@ def create_app(state: ServerState) -> FastAPI:
                             "reasoning_completion_repair_attempted": True,
                             "reasoning_completion_repair_reason": (
                                 "tool_fed_reasoning_only_completion"
+                                if tool_result_history_present
+                                else "tools_declared_reasoning_only_completion"
                             ),
                             "reasoning_completion_repair_first_completion_tokens": int(
                                 generated.get("completion_tokens") or 0

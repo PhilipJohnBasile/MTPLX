@@ -203,6 +203,38 @@ def test_laguna_server_uses_safe_default_but_preserves_explicit_context():
     )
 
 
+def test_prefill_preflight_accepts_qwen_yarn_million_token_window(
+    monkeypatch,
+    tmp_path,
+):
+    model = tmp_path / "qwen-yarn"
+    model.mkdir()
+    (model / "config.json").write_text(
+        '{"text_config":{"max_position_embeddings":1048576}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        openai,
+        "_apply_metal_memory_caps",
+        lambda: {"applied": True, "memory_limit_bytes": 110 * GiB},
+    )
+
+    receipt = openai.apply_memory_caps_preflight(
+        entry="bench.prefill_ladder",
+        model=str(model),
+        contexts=[524_288, 1_048_576],
+    )
+    assert receipt["model_context_window"] == 1_048_576
+    assert receipt["requested_contexts"] == [524_288, 1_048_576]
+
+    with pytest.raises(ValueError, match="1,048,577 tokens exceeds"):
+        openai.apply_memory_caps_preflight(
+            entry="bench.prefill_ladder",
+            model=str(model),
+            contexts=[1_048_577],
+        )
+
+
 def test_apply_metal_memory_caps_falls_back_to_deprecated_metal_apis(monkeypatch):
     mx, calls = _fake_mx(top_level=False)
     monkeypatch.setenv("MTPLX_MEMORY_LIMIT_BYTES", "32G")
