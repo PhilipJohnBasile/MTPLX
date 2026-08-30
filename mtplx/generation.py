@@ -361,10 +361,24 @@ def _generation_rate_fields(
     elapsed_s: float,
     prompt_eval_time_s: float,
     cache_restore_time_s: float = 0.0,
+    non_decode_extra_s: float = 0.0,
 ) -> dict[str, float]:
+    """Split the request span into decode vs everything-before-decode.
+
+    ``non_decode_extra_s`` carries prompt-phase wall time that is neither
+    measured prefill compute nor the restore fetch: session-restore
+    machinery (snapshot-view COW divergence, lease bookkeeping), pre-first-
+    token setup, and the prompt-prefix bank commit. Before it existed, that
+    time was silently charged INTO decode_elapsed_s and understated
+    decode_tok_s by up to 2.5x on warm long-context turns (probe receipt
+    2026-08-30: a 384-token turn at 91K ctx read 21.3 tok/s while its own
+    sliding windows ran 50-62 tok/s across a 10.7 s restore stall).
+    """
     end_to_end_tok_s = generated_tokens / elapsed_s if elapsed_s > 0.0 else 0.0
     non_decode_elapsed_s = min(
-        max(0.0, prompt_eval_time_s) + max(0.0, cache_restore_time_s),
+        max(0.0, prompt_eval_time_s)
+        + max(0.0, cache_restore_time_s)
+        + max(0.0, non_decode_extra_s),
         max(0.0, elapsed_s),
     )
     decode_elapsed_s = max(0.0, elapsed_s - non_decode_elapsed_s)
@@ -5973,6 +5987,7 @@ def generate_ar(
     # mtp_history_policy="cycle" keeps AR requests on the trunk-only path
     # (no MTP history build), including on MTP-enabled runtimes serving
     # --generation-mode ar.
+    _prompt_state_started = time.perf_counter()
     prompt_state = restore_or_prefill_prompt_state(
         rt,
         prompt_ids,
@@ -5988,6 +6003,7 @@ def generate_ar(
         abort_check=abort_check,
         capture_hidden=ar_return_hidden,
     )
+    prompt_state_total_time_s = time.perf_counter() - _prompt_state_started
     cache = prompt_state.trunk_cache
     logits = prompt_state.logits
     prompt_eval_time = prompt_state.prompt_eval_time_s
@@ -6458,6 +6474,21 @@ def generate_ar(
             elapsed_s=elapsed,
             prompt_eval_time_s=prompt_eval_time,
             cache_restore_time_s=prompt_state.cache_restore_time_s,
+            non_decode_extra_s=max(
+                0.0,
+                prompt_state_total_time_s
+                - float(prompt_state.prompt_eval_time_s or 0.0)
+                - float(prompt_state.cache_restore_time_s or 0.0),
+            ),
+        ),
+        prompt_state_total_time_s=float(prompt_state_total_time_s),
+        prompt_state_unattributed_time_s=float(
+            max(
+                0.0,
+                prompt_state_total_time_s
+                - float(prompt_state.prompt_eval_time_s or 0.0)
+                - float(prompt_state.cache_restore_time_s or 0.0),
+            )
         ),
         target_forward_time_s=prompt_eval_time + target_decode_time,
         prompt_eval_time_s=prompt_eval_time,
@@ -12218,6 +12249,16 @@ def generate_mtpk(
             elapsed_s=elapsed,
             prompt_eval_time_s=prompt_eval_time,
             cache_restore_time_s=prompt_state.cache_restore_time_s,
+            non_decode_extra_s=(
+                max(
+                    0.0,
+                    prompt_state_total_time_s
+                    - float(prompt_state.prompt_eval_time_s or 0.0)
+                    - float(prompt_state.cache_restore_time_s or 0.0),
+                )
+                + float(pre_first_token_setup_s)
+                + float(prompt_prefix_bank_commit.get("elapsed_s") or 0.0)
+            ),
         ),
         accepted_drafts=accepted,
         rejected_drafts=rejected,
