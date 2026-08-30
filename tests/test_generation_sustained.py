@@ -528,8 +528,17 @@ def test_generate_ar_does_not_request_hidden_by_default(monkeypatch):
     assert out.stats.prompt_mtp_history_time_s == 0.0
     assert out.stats.prompt_target_prefill_tok_s > 0.0
     assert out.stats.tok_s == out.stats.decode_tok_s
+    # Decode attribution truth (2026-08-30): the prompt-state span's
+    # restore machinery outside measured prefill compute
+    # (prompt_state_unattributed_time_s) is non-decode time too — it used
+    # to be silently charged into decode_elapsed_s.
+    assert out.stats.prompt_state_total_time_s >= out.stats.prompt_eval_time_s
+    assert out.stats.prompt_state_unattributed_time_s >= 0.0
     assert out.stats.decode_elapsed_s == pytest.approx(
-        out.stats.elapsed_s - out.stats.prompt_eval_time_s
+        out.stats.elapsed_s
+        - out.stats.prompt_eval_time_s
+        - out.stats.cache_restore_time_s
+        - out.stats.prompt_state_unattributed_time_s
     )
     assert out.stats.end_to_end_tok_s <= out.stats.decode_tok_s
     assert all(call["return_hidden"] is False for call in model.calls)
