@@ -1828,6 +1828,34 @@ def _set_metal_memory_limit(mx: Any, name: str, value: int) -> str:
     raise AttributeError(f"MLX memory cap API {name} is unavailable")
 
 
+def _metal_system_reserve_bytes(total_ram_bytes: int) -> int:
+    """Unwired headroom macOS keeps outside the allocator caps.
+
+    16 GiB is right on 128 GB+ machines, but as a flat constant it
+    refused the 96 GB class by exactly the release notes' own margin
+    (issue #400: 77.3 GiB weights + 6 GiB floor margin + 16 GiB = 99.3
+    > 96, while the same pack ships healthy there with ~16 GiB left
+    unwired). Scale to RAM/8 below 128 GB, floored at 8 GiB — macOS's
+    own practical working floor — and keep 128 GB+ behavior unchanged.
+    """
+    return int(min(16 * 1024**3, max(8 * 1024**3, total_ram_bytes // 8)))
+
+
+def _resident_floor_margin_bytes(total_ram_bytes: int | None) -> int:
+    """Working margin above the weight files inside the wired floor
+    (allocator transients, KV pages, MTP sidecar churn).
+
+    6 GiB carries the 2026-08-27 128 GB receipt (n-gram eviction
+    collapse fix) and stays untouched at 112 GB+. Smaller machines run
+    proportionally smaller working sets and cannot afford the flat
+    constant: issue #400's 96 GB M2 Max receipt ships healthy at +2
+    GiB, so scale to RAM/32 with a 2 GiB floor below 112 GB.
+    """
+    if not total_ram_bytes or total_ram_bytes >= 112 * 1024**3:
+        return 6 * 1024**3
+    return int(max(2 * 1024**3, total_ram_bytes // 32))
+
+
 def _apply_metal_memory_caps(
     *,
     mx_module: Any | None = None,
@@ -1892,20 +1920,17 @@ def _apply_metal_memory_caps(
             160 * 1024**3,
         )
     resident_floor = max(0, int(minimum_resident_bytes or 0))
-    if (
-        resident_floor
-        and total_ram is not None
-        and total_ram > 0
-        and resident_floor + 16 * 1024**3 > total_ram
-    ):
-        return {
-            "applied": False,
-            "reason": "insufficient_ram",
-            "total_ram_bytes": total_ram,
-            "total_ram_source": total_ram_source,
-            "minimum_resident_bytes": resident_floor,
-            "minimum_system_reserve_bytes": 16 * 1024**3,
-        }
+    if resident_floor and total_ram is not None and total_ram > 0:
+        system_reserve = _metal_system_reserve_bytes(total_ram)
+        if resident_floor + system_reserve > total_ram:
+            return {
+                "applied": False,
+                "reason": "insufficient_ram",
+                "total_ram_bytes": total_ram,
+                "total_ram_source": total_ram_source,
+                "minimum_resident_bytes": resident_floor,
+                "minimum_system_reserve_bytes": system_reserve,
+            }
     mem_limit = _parse_metal_memory_size_bytes(mem_raw, default_mem)
     wired_limit = _parse_metal_memory_size_bytes(wired_raw, default_wired)
     if resident_floor:
@@ -2291,7 +2316,10 @@ class ServerState:
                 if table_f.exists() and ngram_table_resident_policy():
                     floor += table_f.stat().st_size
                 if floor:
-                    minimum_resident_bytes = floor + 6 * 1024**3
+                    ram_bytes, _ = _detect_total_ram_bytes_for_metal_caps()
+                    minimum_resident_bytes = floor + _resident_floor_margin_bytes(
+                        ram_bytes
+                    )
                     resident_floor_label = "Qwen3.8-Flash-Next"
             except OSError:
                 minimum_resident_bytes = None
@@ -2305,10 +2333,17 @@ class ServerState:
             required_gib = (
                 int(self.metal_memory_caps.get("minimum_resident_bytes") or 0) / 1024**3
             )
+            reserve_gib = (
+                int(
+                    self.metal_memory_caps.get("minimum_system_reserve_bytes")
+                    or 16 * 1024**3
+                )
+                / 1024**3
+            )
             raise RuntimeError(
                 f"{resident_floor_label} cannot load inside the available Metal memory "
                 f"budget; at least {required_gib:.1f} GiB resident plus "
-                "16 GiB system headroom is required"
+                f"{reserve_gib:.0f} GiB system headroom is required"
             )
         _validate_backend_context_memory_budget(
             startup_backend,

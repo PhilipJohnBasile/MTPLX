@@ -229,3 +229,32 @@ def fused_hyper_read_v3(x_row, wn, pack):
         output_dtypes=[x_row.dtype],
     )
     return mixed, inject
+
+
+@lru_cache(maxsize=1)
+def device_supports_hyper_v3() -> bool:
+    """Device-capability probe (issue #400): on G14-family GPUs register
+    pressure caps these 1024-thread pipelines below 1024 and the dispatch
+    raises at encode time — serve could not boot with the family env set
+    armed. Dispatch both real kernels once on dummy family-shaped inputs
+    (the limit is per-pipeline, so nothing cheaper proves it) and cache
+    the verdict; unsupported devices keep the eager hyper read."""
+    try:
+        x = mx.zeros((10240,), dtype=mx.bfloat16)
+        wn = mx.ones((10240,), dtype=mx.bfloat16)
+        w1_q, w1_s, w1_b = mx.quantize(
+            mx.zeros((324, 10240), dtype=mx.bfloat16), group_size=64, bits=8
+        )
+        w2_q, w2_s, w2_b = mx.quantize(
+            mx.zeros((10240, 320), dtype=mx.bfloat16), group_size=64, bits=8
+        )
+        pack = (w1_q, w1_s, w1_b, w2_q, w2_s, w2_b)
+        mx.eval(*fused_hyper_read_v3(x, wn, pack))
+        return True
+    except Exception as exc:
+        print(
+            "[mtplx] fused hyper read v3 disabled: this GPU cannot dispatch "
+            f"its 1024-thread pipelines; using the eager chain ({exc})",
+            flush=True,
+        )
+        return False

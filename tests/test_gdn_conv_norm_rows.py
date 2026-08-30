@@ -82,6 +82,11 @@ def test_verify_block_parity_and_capture_rows(gdn, monkeypatch, s_rows):
     real = q4.fused_gdn_conv_norm_rows if hasattr(q4, "fused_gdn_conv_norm_rows") else None
     from mtplx.kernels import gdn_conv_norm as gcn
 
+    # Warm the one-shot G14 device probe (issue #400) before counting:
+    # its single dummy dispatch goes through the module-level symbol this
+    # test is about to wrap.
+    assert gcn.device_supports_gdn_conv_norm_rows()
+
     orig = gcn.fused_gdn_conv_norm_rows
 
     def counting(*a, **k):

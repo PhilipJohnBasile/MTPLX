@@ -580,7 +580,12 @@ class GatedDeltaNet(_Qwen3_5GatedDeltaNet):
             return False
         if getattr(self.conv1d, "bias", None) is not None:
             return False
-        return True
+        from mtplx.kernels.gdn_conv_norm import device_supports_gdn_conv_norm
+
+        # G14-class GPUs cap this 1024-thread pipeline below 1024 and the
+        # dispatch raises — pack contracts arm the env, so the device gate
+        # must sit here (issue #400). Cached one-shot probe.
+        return device_supports_gdn_conv_norm()
 
     def _fused_conv_norm_rows_applies(self, B, S, mask, cache) -> bool:
         # Verify-width conv+silu+l2norm (MTPLX_FUSED_CONVNORM_VERIFY): the
@@ -601,7 +606,12 @@ class GatedDeltaNet(_Qwen3_5GatedDeltaNet):
             return False
         if getattr(self.conv1d, "bias", None) is not None:
             return False
-        return True
+        from mtplx.kernels.gdn_conv_norm import (
+            device_supports_gdn_conv_norm_rows,
+        )
+
+        # Same G14 device gate as the S=1 kernel (issue #400).
+        return device_supports_gdn_conv_norm_rows()
 
     def _fused_step_applies(self, B, S, mask, cache) -> bool:
         # One-dispatch GDN step (MTPLX_FUSED_GDN_STEP): decode rows only,
@@ -701,9 +711,15 @@ class GatedResidual(nn.Module):
             rows *= s
         if rows != 1:
             return False
-        if getattr(self, "_v3_pack", None) is None:
-            from mtplx.kernels.hyper_connection_v3 import prepare_v3_pack
+        from mtplx.kernels.hyper_connection_v3 import (
+            device_supports_hyper_v3,
+            prepare_v3_pack,
+        )
 
+        # G14 device gate before paying for the pack (issue #400).
+        if not device_supports_hyper_v3():
+            return False
+        if getattr(self, "_v3_pack", None) is None:
             self._v3_pack = prepare_v3_pack(self)
         return True
 
