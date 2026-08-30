@@ -29481,9 +29481,17 @@ def create_app(state: ServerState) -> FastAPI:
                 def maybe_repair_tool_fed_reasoning_only_completion(
                     generated: dict[str, Any],
                 ) -> dict[str, Any]:
+                    # Tools-declared turns are excluded from the F3
+                    # reasoning-as-content recovery (planning prose is not an
+                    # answer), so a reasoning-only stop here would otherwise
+                    # return an EMPTY assistant message. That includes the
+                    # FIRST turn of a tools-declared conversation (app chat
+                    # with web search on, agent clients' opening message) —
+                    # not just tool-fed turns — so the continuation repair
+                    # covers both (user reports: "model responds but produces
+                    # no answer", 27B + Flash-Next, chat and API).
                     if (
                         not tools_active
-                        or not tool_result_history_present
                         or not thinking_enabled
                         or request.seed is not None
                         or _reasoning_parser_for_state(state)
@@ -29539,6 +29547,8 @@ def create_app(state: ServerState) -> FastAPI:
                             "reasoning_completion_repair_attempted": True,
                             "reasoning_completion_repair_reason": (
                                 "tool_fed_reasoning_only_completion"
+                                if tool_result_history_present
+                                else "tools_declared_reasoning_only_completion"
                             ),
                             "reasoning_completion_repair_first_completion_tokens": int(
                                 generated.get("completion_tokens") or 0
