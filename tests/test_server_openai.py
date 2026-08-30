@@ -13790,7 +13790,28 @@ def test_tool_prompt_mode_off_forces_native(monkeypatch):
 def _memory_plan_state_harness(monkeypatch):
     """The standard fake-runtime ServerState harness, plus deterministic
     plan inputs: flagship-sized weights and a monkeypatched machine RAM
-    (CI runners have 7-14 GB; the plan must not depend on the host)."""
+    (CI runners have 7-14 GB; the plan must not depend on the host).
+
+    The plan consumes host RAM through TWO detectors: the seat math reads
+    ``mtplx.memory_plan.detect_total_ram_bytes`` (which each test pins),
+    and the Metal allocator caps read
+    ``openai._detect_total_ram_bytes_for_metal_caps`` whose memory limit
+    then rides into the plan as ``usable_bytes_override``. On a 7 GB CI
+    runner the unpinned second detector collapsed that override to ~5 GiB
+    and the "128G machine" test came back machine-bound at 4096 (this
+    exact set was red on the v2.10.0 release commit). Route the caps
+    detector through the same pinned source so the whole harness follows
+    one simulated seat, and clear the operator cap envs for determinism.
+    """
+    from mtplx import memory_plan as _plan_module
+
+    monkeypatch.setattr(
+        openai,
+        "_detect_total_ram_bytes_for_metal_caps",
+        lambda: (_plan_module.detect_total_ram_bytes(), "test-pin"),
+    )
+    monkeypatch.delenv("MTPLX_MEMORY_LIMIT_BYTES", raising=False)
+    monkeypatch.delenv("MTPLX_WIRED_LIMIT_BYTES", raising=False)
     monkeypatch.setattr(openai, "apply_profile_env", lambda _profile, **_kwargs: None)
     monkeypatch.setattr(openai, "profile_env_status", lambda _profile, **_kwargs: {})
     monkeypatch.setattr(openai, "_fast_path_env_status", lambda: {})
