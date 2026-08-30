@@ -309,14 +309,15 @@ def _qwen4_fixed_m4_compiled_verify_requested(
     max_tokens: int,
     cached_tokens: int,
 ) -> bool:
-    """Construction gate for the measured cold-prompt M4 verifier lane."""
+    """Construction gate for the shape-specialized physical-M4 verifier."""
+
+    del cached_tokens
 
     return (
         bool(getattr(rt, "qwen4_fixed_m4_compiled_verify", False))
         and verify_strategy == "batched"
         and compiled_mode != "off"
-        and 0 < int(max_tokens) <= 1024
-        and int(cached_tokens) == 0
+        and int(max_tokens) > 0
     )
 
 

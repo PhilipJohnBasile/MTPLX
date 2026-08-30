@@ -623,6 +623,9 @@ class TensorOffsetQSACache:
         compress_ratio: int,
         rows_gather: bool = False,
         rows_gather_kv_m4: Any,
+        rows_gather_enabled: bool = False,
+        rows_gather_min_context: int = 0,
+        fused_rows_gather_kv_m4: bool = False,
     ) -> None:
         self.kv = kv
         self.raw_keys = raw_keys
@@ -631,6 +634,24 @@ class TensorOffsetQSACache:
         self.step = int(getattr(kv, "step", 256))
         self.fixed_rows_gather = bool(rows_gather)
         self.rows_gather_kv_m4 = rows_gather_kv_m4
+        self.rows_gather_enabled = bool(rows_gather_enabled)
+        self.rows_gather_min_context = max(0, int(rows_gather_min_context))
+        self.fused_rows_gather_kv_m4 = bool(fused_rows_gather_kv_m4)
+
+    @staticmethod
+    def _fixed_bank(value: mx.array, capacity: int, axis: int) -> mx.array:
+        current = int(value.shape[axis])
+        if current == capacity:
+            return value
+        if current > capacity:
+            slices = [slice(None)] * value.ndim
+            slices[axis] = slice(0, capacity)
+            return value[tuple(slices)]
+        shape = list(value.shape)
+        shape[axis] = capacity - current
+        return mx.concatenate(
+            [value, mx.zeros(tuple(shape), dtype=value.dtype)], axis=axis
+        )
 
     @classmethod
     def from_qsa_cache(
@@ -648,41 +669,30 @@ class TensorOffsetQSACache:
         raw_capacity = ((logical_capacity + ratio - 1) // ratio) * ratio
         pooled_capacity = raw_capacity // ratio
 
-        def fixed_bank(value: mx.array, capacity: int, axis: int) -> mx.array:
-            current = int(value.shape[axis])
-            if current == capacity:
-                return value
-            if current > capacity:
-                slices = [slice(None)] * value.ndim
-                slices[axis] = slice(0, capacity)
-                return value[tuple(slices)]
-            shape = list(value.shape)
-            shape[axis] = capacity - current
-            return mx.concatenate(
-                [value, mx.zeros(tuple(shape), dtype=value.dtype)], axis=axis
-            )
-
         kv = TensorOffsetKVCache.from_kv_cache(
             entry.kv, reserve_tokens=reserve_tokens
         )
-        kv.keys = fixed_bank(kv.keys, raw_capacity, 2)
-        kv.values = fixed_bank(kv.values, raw_capacity, 2)
-        raw = fixed_bank(entry.raw_keys, raw_capacity, 1)
-        pooled = fixed_bank(entry.pooled, pooled_capacity, 1)
+        kv.keys = cls._fixed_bank(kv.keys, raw_capacity, 2)
+        kv.values = cls._fixed_bank(kv.values, raw_capacity, 2)
+        raw = cls._fixed_bank(entry.raw_keys, raw_capacity, 1)
+        pooled = cls._fixed_bank(entry.pooled, pooled_capacity, 1)
         from .models.qwen4_exp import (
             _qsa_gather_enabled,
             _qsa_gather_min_context,
         )
 
-        rows_gather = _qsa_gather_enabled() and offset >= _qsa_gather_min_context()
+        rows_gather_enabled = _qsa_gather_enabled()
+        rows_gather_min_context = _qsa_gather_min_context()
+        rows_gather = rows_gather_enabled and offset >= rows_gather_min_context
         rows_gather_kv_m4 = entry.rows_gather_kv_m4
-        if _env_enabled("MTPLX_QSA_M4_FUSED_KV_GATHER"):
+        fused_rows_gather_kv_m4 = _env_enabled("MTPLX_QSA_M4_FUSED_KV_GATHER")
+        if fused_rows_gather_kv_m4:
             expected_shape = (1, 2, raw_capacity, 256)
             if not _env_enabled("MTPLX_QWEN4_FIXED_M4_VERIFY"):
                 raise RuntimeError(
                     "QSA fused K/V gather requires the fixed-M4 verifier"
                 )
-            if not rows_gather or ratio != 4:
+            if not rows_gather_enabled or ratio != 4:
                 raise RuntimeError(
                     "QSA fused K/V gather requires the fixed rows-gather ratio-4 lane"
                 )
@@ -693,15 +703,17 @@ class TensorOffsetQSACache:
                 or kv.values.dtype != mx.bfloat16
             ):
                 raise RuntimeError(
-                    "QSA fused K/V gather requires BF16 [1,2,capacity,256] cache ownership"
+                    "QSA fused K/V gather requires BF16 "
+                    "[1,2,capacity,256] cache ownership"
                 )
-            from .kernels.qwen4_qsa_m4_fused_kv_gather import (
-                bind_qwen4_qsa_m4_fused_kv_gather,
-            )
+            if rows_gather:
+                from .kernels.qwen4_qsa_m4_fused_kv_gather import (
+                    bind_qwen4_qsa_m4_fused_kv_gather,
+                )
 
-            rows_gather_kv_m4 = bind_qwen4_qsa_m4_fused_kv_gather(
-                capacity=raw_capacity
-            )
+                rows_gather_kv_m4 = bind_qwen4_qsa_m4_fused_kv_gather(
+                    capacity=raw_capacity
+                )
 
         return cls(
             kv,
@@ -710,7 +722,59 @@ class TensorOffsetQSACache:
             compress_ratio=ratio,
             rows_gather=rows_gather,
             rows_gather_kv_m4=rows_gather_kv_m4,
+            rows_gather_enabled=rows_gather_enabled,
+            rows_gather_min_context=rows_gather_min_context,
+            fused_rows_gather_kv_m4=fused_rows_gather_kv_m4,
         )
+
+    @property
+    def capacity(self) -> int:
+        return int(self.raw_keys.shape[1])
+
+    def ensure_capacity(self, needed: int) -> bool:
+        """Grow this installed QSA generation without changing its offset."""
+
+        raw_capacity = (
+            (max(1, int(needed)) + self.ratio - 1) // self.ratio
+        ) * self.ratio
+        if raw_capacity <= self.capacity:
+            return False
+        pooled_capacity = raw_capacity // self.ratio
+        self.kv.keys = self._fixed_bank(self.kv.keys, raw_capacity, 2)
+        self.kv.values = self._fixed_bank(self.kv.values, raw_capacity, 2)
+        self.raw_keys = self._fixed_bank(self.raw_keys, raw_capacity, 1)
+        self.pooled = self._fixed_bank(self.pooled, pooled_capacity, 1)
+        self.kv._granted = True
+        self.kv.growth_after_grant = False
+        if self.fixed_rows_gather and self.fused_rows_gather_kv_m4:
+            from .kernels.qwen4_qsa_m4_fused_kv_gather import (
+                bind_qwen4_qsa_m4_fused_kv_gather,
+            )
+
+            self.rows_gather_kv_m4 = bind_qwen4_qsa_m4_fused_kv_gather(
+                capacity=raw_capacity
+            )
+        return True
+
+    def activate_rows_gather(self, logical_end: int) -> bool:
+        """Install the construction-validated sparse route at its threshold."""
+
+        if (
+            self.fixed_rows_gather
+            or not self.rows_gather_enabled
+            or int(logical_end) < self.rows_gather_min_context
+        ):
+            return False
+        self.fixed_rows_gather = True
+        if self.fused_rows_gather_kv_m4:
+            from .kernels.qwen4_qsa_m4_fused_kv_gather import (
+                bind_qwen4_qsa_m4_fused_kv_gather,
+            )
+
+            self.rows_gather_kv_m4 = bind_qwen4_qsa_m4_fused_kv_gather(
+                capacity=self.capacity
+            )
+        return True
 
     @property
     def offset(self):
@@ -1607,26 +1671,20 @@ class CompiledVerifyBank:
         # the request remainder (measured flat vs eager-only). Explicit
         # small budgets still reserve exactly budget + one speculative
         # window; raise MTPLX_COMPILED_VERIFY_GROWTH_RESERVE to widen the
-        # ceiling for known-budget batch runs. The construction-owned Qwen4
-        # fixed-M4 lane cannot demote or fall back after installation, so its
-        # admitted <=1024-token request instead reserves the full request plus
-        # one physical-M4 speculative window up front.
-        if self.strict_no_fallback and self.request_max_tokens is not None:
-            self.growth_reserve_tokens = (
-                self.request_max_tokens + self.speculative_headroom
+        # stable-capacity generation. The construction-owned Qwen4 fixed-M4
+        # lane uses the same bounded grant, but grows and reinstalls its graph
+        # at capacity boundaries instead of demoting to eager.
+        self.growth_reserve_tokens = (
+            min(
+                self.request_max_tokens + self.speculative_headroom,
+                max(
+                    _compiled_verify_growth_reserve(),
+                    self.max_verify_len,
+                ),
             )
-        else:
-            self.growth_reserve_tokens = (
-                min(
-                    self.request_max_tokens + self.speculative_headroom,
-                    max(
-                        _compiled_verify_growth_reserve(),
-                        self.max_verify_len,
-                    ),
-                )
-                if self.request_max_tokens is not None
-                else _compiled_verify_growth_reserve()
-            )
+            if self.request_max_tokens is not None
+            else _compiled_verify_growth_reserve()
+        )
         self.capture_backend = resolve_gdn_capture_backend(capture_backend)
         self.parity = bool(parity)
         self.parity2 = bool(parity2)
@@ -1681,13 +1739,6 @@ class CompiledVerifyBank:
             raise TypeError(
                 "compiled verify auxiliary preparation requires a compiled_aux input"
             )
-        if (
-            bool(getattr(runtime, "qwen4_fixed_m4_compiled_verify", False))
-            and self.request_max_tokens is not None
-            and self.request_max_tokens > 1024
-        ):
-            self.permanent_eager = True
-            self.permanent_eager_reason = "qwen4_fixed_m4_request_above_1024"
         self._compiled: dict[tuple[int, str, int], Any] = {}
         self._spec: list[tuple[int, str, int]] | None = None
         self._shadow: list[Any] | None = None
@@ -1701,12 +1752,9 @@ class CompiledVerifyBank:
         # Parity modes intentionally stay on the generic dispatcher because
         # they need its eager comparison paths.
         self._fixed_m4_dispatch: dict[str, Any] | None = None
-        # Dense leaves that outgrow the capacity granted at first promotion
-        # would retrace the compiled graph on every cache-growth step. A
-        # generation request supplies its known output budget plus one maximum
-        # speculative window; TensorOffsetKVCache.ensure_capacity rounds the
-        # final offset + reserve to each entry's own step geometry. Standalone
-        # callers without a request budget retain the legacy env reserve.
+        # Generic lanes demote when dense leaves outgrow the initial grant.
+        # The fixed-M4 lane instead performs explicit capacity-generation
+        # transitions while keeping its installed direct route.
         self._growth_demoted = False
         # Per-call dispatch receipt.  Aggregate counters answer "how often";
         # these fields answer the more important Route Tape question: which
@@ -1727,6 +1775,7 @@ class CompiledVerifyBank:
                 int(restored_tokens or 0) >= _post_restore_min_tokens()
                 and not parity
                 and not parity2
+                and not self.strict_no_fallback
             )
             else 0
         )
@@ -1749,6 +1798,8 @@ class CompiledVerifyBank:
             "growth_handoff_materializations": 0,
             "growth_handoff_state_leaves": 0,
             "growth_handoff_materialize_time_s": 0.0,
+            "fixed_m4_capacity_transitions": 0,
+            "fixed_m4_route_transitions": 0,
         }
 
     # -- public API ---------------------------------------------------------
@@ -1787,12 +1838,6 @@ class CompiledVerifyBank:
                 f"qwen4 fixed-M4 installation requires dense state; bucket={bucket}"
             )
         self._ensure_shadow(cache)
-        key = (4, str(hidden_variant or ""), 0)
-        fn = self._compiled.get(key)
-        if fn is None:
-            fn = self._shared_or_new_verify_step(key, 4, hidden_variant)
-            self._compiled[key] = fn
-
         state_plan = tuple(
             (kind, cache[idx], n_leaves)
             for idx, kind, n_leaves in self._spec or ()
@@ -1802,6 +1847,22 @@ class CompiledVerifyBank:
             for kind, _entry, _n in state_plan
         ):
             raise RuntimeError("qwen4 fixed-M4 installation found unsupported state")
+        qsa_entries = tuple(
+            entry for kind, entry, _n in state_plan if kind == VERIFY_SPEC_KIND_QSA
+        )
+        if not qsa_entries:
+            raise RuntimeError("qwen4 fixed-M4 installation found no QSA state")
+        route_key = int(all(entry.fixed_rows_gather for entry in qsa_entries))
+        key = (4, str(hidden_variant or ""), route_key)
+        fn = self._compiled.get(key)
+        if fn is None:
+            fn = self._shared_or_new_verify_step(key, 4, hidden_variant)
+            self._compiled[key] = fn
+        pending_route_thresholds = tuple(
+            entry.rows_gather_min_context
+            for entry in qsa_entries
+            if entry.rows_gather_enabled and not entry.fixed_rows_gather
+        )
 
         capture_plan = []
         capture_pos = 0
@@ -1844,6 +1905,16 @@ class CompiledVerifyBank:
             "capture_plan": tuple(capture_plan),
             "capture_leaves": capture_pos,
             "boundary": boundary,
+            "base_offset": len(prompt_ids),
+            "capacity": min(entry.capacity for entry in qsa_entries),
+            "growth_tokens": max(self.max_verify_len, self.growth_reserve_tokens),
+            "hidden_variant": hidden_variant,
+            "qsa_entries": qsa_entries,
+            "route_transition_at": (
+                min(pending_route_thresholds)
+                if pending_route_thresholds
+                else None
+            ),
             "donate": (
                 _compiled_verify_donation_enabled()
                 and boundary in ("both", "post")
@@ -1864,6 +1935,87 @@ class CompiledVerifyBank:
                 flush=True,
             )
 
+    def _transition_fixed_m4_generation(
+        self,
+        cache: Any,
+        *,
+        committed_count: int,
+    ) -> None:
+        """Grow or reroute one installed fixed-M4 capacity generation.
+
+        The decision is host-owned: ``committed_count`` advances with the
+        accepted completion prefix, so this boundary check never evaluates a
+        device offset. Within a generation, replay stays branch-free.
+        """
+
+        dispatch = self._fixed_m4_dispatch
+        assert dispatch is not None
+        required_end = (
+            int(dispatch["base_offset"])
+            + max(0, int(committed_count))
+            + 4
+        )
+        capacity_needed = required_end > int(dispatch["capacity"])
+        route_transition_at = dispatch["route_transition_at"]
+        route_needed = (
+            route_transition_at is not None
+            and required_end >= int(route_transition_at)
+        )
+        if not capacity_needed and not route_needed:
+            return
+
+        qsa_entries = dispatch["qsa_entries"]
+        capacity_changed = False
+        if capacity_needed:
+            next_capacity = max(
+                required_end,
+                int(dispatch["capacity"]) + int(dispatch["growth_tokens"]),
+            )
+            for entry in qsa_entries:
+                capacity_changed = (
+                    entry.ensure_capacity(next_capacity) or capacity_changed
+                )
+        route_changed = False
+        if route_needed:
+            for entry in qsa_entries:
+                route_changed = (
+                    entry.activate_rows_gather(required_end) or route_changed
+                )
+            pending_route_thresholds = tuple(
+                entry.rows_gather_min_context
+                for entry in qsa_entries
+                if entry.rows_gather_enabled and not entry.fixed_rows_gather
+            )
+            dispatch["route_transition_at"] = (
+                min(pending_route_thresholds)
+                if pending_route_thresholds
+                else None
+            )
+        if not capacity_changed and not route_changed:
+            return
+
+        self._clear_shadow_leaf_refs()
+        self._held_state_refs.clear()
+        self._shadow = None
+        self._shadow_signature = None
+        self._ensure_shadow(cache)
+        route_key = int(all(entry.fixed_rows_gather for entry in qsa_entries))
+        key = (4, str(dispatch["hidden_variant"] or ""), route_key)
+        fn = self._compiled.get(key)
+        if fn is None:
+            fn = self._shared_or_new_verify_step(
+                key,
+                4,
+                dispatch["hidden_variant"],
+            )
+            self._compiled[key] = fn
+        dispatch["fn"] = fn
+        dispatch["capacity"] = min(entry.capacity for entry in qsa_entries)
+        if capacity_changed:
+            self.stats["fixed_m4_capacity_transitions"] += 1
+        if route_changed:
+            self.stats["fixed_m4_route_transitions"] += 1
+
     def _forward_installed_fixed_m4(
         self,
         input_ids,
@@ -1874,6 +2026,10 @@ class CompiledVerifyBank:
     ):
         dispatch = self._fixed_m4_dispatch
         assert dispatch is not None
+        self._transition_fixed_m4_generation(
+            cache,
+            committed_count=committed_count,
+        )
         boundary = dispatch["boundary"]
         donate = dispatch["donate"]
         if donate:
@@ -2680,6 +2836,13 @@ class CompiledVerifyBank:
                 "donate": bool(dispatch["donate"]),
                 "state_leaves": int(dispatch["state_leaves"]),
                 "capture_leaves": int(dispatch["capture_leaves"]),
+                # Growth receipts: the installed bank's prompt offset, its
+                # current QSA capacity and the next grant. Read together with
+                # the fixed_m4_capacity_transitions counter they prove that a
+                # request outgrew its first grant and stayed on the lane.
+                "base_offset": int(dispatch["base_offset"]),
+                "capacity": int(dispatch["capacity"]),
+                "growth_tokens": int(dispatch["growth_tokens"]),
             }
         return data
 
@@ -2915,6 +3078,9 @@ class CompiledVerifyBank:
                     compress_ratio=entry.ratio,
                     rows_gather=entry.fixed_rows_gather,
                     rows_gather_kv_m4=entry.rows_gather_kv_m4,
+                    rows_gather_enabled=entry.rows_gather_enabled,
+                    rows_gather_min_context=entry.rows_gather_min_context,
+                    fused_rows_gather_kv_m4=entry.fused_rows_gather_kv_m4,
                 )
             elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):
@@ -3439,6 +3605,9 @@ class CompiledVerifyBank:
                     compress_ratio=entry.ratio,
                     rows_gather=entry.fixed_rows_gather,
                     rows_gather_kv_m4=entry.rows_gather_kv_m4,
+                    rows_gather_enabled=entry.rows_gather_enabled,
+                    rows_gather_min_context=entry.rows_gather_min_context,
+                    fused_rows_gather_kv_m4=entry.fused_rows_gather_kv_m4,
                 )
             elif kind == VERIFY_SPEC_KIND_FULL_ATTN:
                 if isinstance(entry, TensorOffsetKVCache):
