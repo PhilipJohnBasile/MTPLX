@@ -4,6 +4,58 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.10.1] - 2026-08-30
+
+### Added
+
+- **Sparse prefill lane for Flash-Next.** Adapts the fused Metal kernels
+  from PR #397 by @maceip: the model's own block scores drive a
+  block-sparse FlashAttention prefill instead of full attention masks.
+  On an M5 Max against 2.10.0: a 98k-token prompt processes in 114.5 s
+  instead of 175.7 s with peak memory down from 91.4 to 83.0 GB, a
+  131k-token prompt measures 810 tok/s, and a 262,144-token cold prompt
+  completes in 355 s at 87.4 GB peak where 2.10.0 climbed to 119 GB and
+  produced nothing (#393, reported by @blackjose007-stack). Auto-enabled
+  on M4/M5 generation GPUs for prompts past 32k tokens; other machines
+  keep the dense path; `MTPLX_QSA_PREFILL=0` disables. The kernels also
+  handle YaRN rope scaling.
+- **Image input for Flash-Next.** The packs always shipped their vision
+  weights; the runtime now serves them. Native multimodal position
+  encoding (M-RoPE) lands for the family, so images work in app chat,
+  over the API, and in Pi (#328, reported by @nmqanh). Pi model configs
+  written by an older MTPLX upgrade in place and user edits survive.
+
+### Fixed
+
+- **Flash-Next loads on 96 GB Macs.** The preload memory check used
+  reserve constants tuned on 128 GB machines and refused packs that
+  actually fit; the reserve now scales with total RAM (#400, reported by
+  @JordiPosthumus). 128 GB and larger machines are unchanged.
+- **M2/M3 GPU crash at launch.** Three Metal kernels requested
+  1,024-thread threadgroups; M2/M3 generation GPUs cap these kernels at
+  896 threads and refused them. A one-shot startup probe now routes
+  those machines to the standard kernels instead of crashing (#400).
+- **Honest Flash-Next memory admission.** The plan now prices the
+  family's QSA caches and prefill transients, over-window requests
+  answer a structured HTTP 507 instead of wedging the machine under
+  memory pressure, and the QSA cache grows geometrically instead of by
+  quadratic reallocation (#393).
+- **Empty first answers with tools declared.** A first turn that ended
+  entirely inside the reasoning channel returned an empty message when
+  tools were present (agent clients, chat with web search). The server
+  now continues the turn to a visible answer, and a failed continuation
+  returns the first pass instead of an error.
+- **Greedy Turbo exactness on the 27B.** Temperature-0 verification
+  routes to stock kernels, restoring token-exact agreement between
+  Turbo and plain decode.
+- **App runtime self-heal.** The app proves its Python runtime imports
+  before trusting it and rebuilds it from the bundled wheel on failure,
+  ending the crash loop that survived app reinstalls because the broken
+  runtime folder was kept.
+- **Decode speed receipts.** Session-restore time was attributed to
+  decode, understating decode speed on warm long-context turns.
+  Attribution is corrected; generation behavior is unchanged.
+
 ## [2.10.0] - 2026-08-28
 
 ### Added
