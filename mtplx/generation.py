@@ -59,6 +59,7 @@ from .fast_sampling import (
     batched_sparse_distributions_from_mlx_logits,
     sample_token_ids_from_mlx_logits,
     sparse_distribution_from_mlx_logits,
+    sparse_distribution_from_mlx_logits_relaxed_ties,
     sparse_distributions_from_mlx_logits,
 )
 from .gdn_capture import resolve_gdn_capture_backend
@@ -7664,8 +7665,30 @@ def generate_mtpk(
             need_distribution=need_distribution,
         )
 
+    def _relaxed_tie_cycle_draft_reader(
+        draft_logits: mx.array,
+        *,
+        depth_index: int,
+        need_distribution: bool,
+        decision_margins: list[float],
+    ) -> tuple[int, np.ndarray | SparseDistribution | None, bool]:
+        del depth_index, need_distribution, decision_margins
+        distribution = sparse_distribution_from_mlx_logits_relaxed_ties(
+            draft_logits[:, -1, :][0], draft_sampler
+        )
+        if distribution is None:
+            raise RuntimeError("relaxed-tie draft sampler requires temperature and top-k")
+        return sample_from_distribution(distribution, rng), distribution, False
+
     if adaptive_width_policy is None:
-        adaptive_width_cycle_readers = (_default_cycle_draft_reader,) * max(
+        installed_cycle_draft_reader = (
+            _relaxed_tie_cycle_draft_reader
+            if bool(getattr(rt, "qwen4_relaxed_draft_ties", False))
+            and draft_sampler.temperature > 0
+            and int(draft_sampler.top_k) > 0
+            else _default_cycle_draft_reader
+        )
+        adaptive_width_cycle_readers = (installed_cycle_draft_reader,) * max(
             1, int(speculative_depth)
         )
         capture_forward_routes = (rt.forward_ar_capture,) * max(

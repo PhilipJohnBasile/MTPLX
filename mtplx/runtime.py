@@ -97,6 +97,7 @@ class MTPLXRuntime:
     deepseek_v4_attention_island_report: dict[str, Any] | None = None
     a3b_compiled_target_prefix_factory: A3BCompiledTargetPrefixFactory | None = None
     a3b_whole_moe_installed: bool = False
+    qwen4_relaxed_draft_ties: bool = False
     qwen_row_owned_router_report: dict[str, Any] = field(default_factory=dict)
     _a3b_whole_moe_request_preflights: dict[str, dict[str, Any]] = field(
         default_factory=dict,
@@ -971,6 +972,46 @@ def load(
         "qwen4_exp",
         "qwen4_exp_text",
     }:
+        relaxed_draft_ties = (
+            os.environ.get("MTPLX_QWEN4_RELAXED_DRAFT_TIES", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if relaxed_draft_ties:
+            if not mtp_enabled:
+                raise RuntimeError("relaxed Qwen4 draft ties require native MTP")
+            if adapter_path is not None:
+                raise RuntimeError("relaxed Qwen4 draft ties do not accept adapters")
+            runtime.qwen4_relaxed_draft_ties = True
+            # Engagement receipt: the flag only swaps the cycle draft reader
+            # inside generate_mtpk, so the load log is where an A/B proves
+            # the relaxed-tie arm is the one serving.
+            logger.info(
+                "[qwen4-relaxed-draft-ties] installed: cycle draft reader will "
+                "use sparse_distribution_from_mlx_logits_relaxed_ties"
+            )
+        compiled_mtp_prepare = (
+            os.environ.get("MTPLX_QWEN4_COMPILED_MTP_PREPARE", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if compiled_mtp_prepare:
+            if adapter_path is not None:
+                raise RuntimeError(
+                    "compiled Qwen4 MTP preparation requires the native draft head"
+                )
+            text_model = getattr(model, "language_model", model)
+            mtp_module = getattr(text_model, "mtp", None)
+            install_prepare = getattr(mtp_module, "install_compiled_prepare", None)
+            if install_prepare is None:
+                raise RuntimeError(
+                    "compiled Qwen4 MTP preparation is unavailable on this model"
+                )
+            runtime.qwen4_compiled_mtp_prepare_report = install_prepare()
+            logger.info(
+                "[qwen4-compiled-MTP-prepare] %s",
+                runtime.qwen4_compiled_mtp_prepare_report,
+            )
         from .qwen4_fixed_verify import (
             install_qwen4_fixed_verify_route,
             qwen4_fixed_verify_enabled,

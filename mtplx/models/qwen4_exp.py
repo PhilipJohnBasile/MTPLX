@@ -4323,7 +4323,7 @@ class TextModel(nn.Module):
             emb = input_embeddings
         else:
             emb = self.model.embed_tokens(next_token_ids)
-        return self.mtp.fuse_and_run(hidden_states, emb, mtp_cache)
+        return self.mtp.fuse_and_run_history(hidden_states, emb, mtp_cache)
 
     def make_mtp_cache(self):
         return [QSACache(self.model.args.indexer_compress_ratio or 4)]
@@ -4373,17 +4373,65 @@ class Qwen4ExpMTP(nn.Module):
         self.layers = [DecoderLayer(args, fa_idx)]
         self.hyper_connection_mixer = GatedResidual(args, use_combine=False)
         self._hc = args.hc_count
+        object.__setattr__(self, "_mtp_prepare_inputs_impl", self._prepare_inputs_eager)
+
+    def _prepare_inputs_eager(
+        self,
+        widened: mx.array,
+        tok_emb: mx.array,
+    ) -> mx.array:
+        B, S, W = widened.shape
+        hn = self.pre_fc_norm_hidden(widened).reshape(B, S, self._hc, -1)
+        en = self.fc_embedding(self.pre_fc_norm_embedding(tok_emb))
+        return (self.fc_hidden(hn) + en[:, :, None, :]).reshape(B, S, W)
+
+    def install_compiled_prepare(self) -> dict[str, Any]:
+        """Install the exact fixed-B1/S1 stateless draft preparation graph."""
+
+        width = int(self.pre_fc_norm_hidden.weight.shape[0])
+        embedding_width = int(self.pre_fc_norm_embedding.weight.shape[0])
+        dtype = self.pre_fc_norm_hidden.weight.dtype
+        widened = (
+            (mx.arange(width, dtype=mx.float32) % 257) * (1.0 / 257.0)
+        ).reshape(1, 1, width).astype(dtype)
+        tok_emb = (
+            (mx.arange(embedding_width, dtype=mx.float32) % 127) * (1.0 / 127.0)
+        ).reshape(1, 1, embedding_width).astype(dtype)
+
+        expected = self._prepare_inputs_eager(widened, tok_emb)
+        mx.eval(expected)
+        compiled = mx.compile(self._prepare_inputs_eager)
+        actual = compiled(widened, tok_emb)
+        mx.eval(actual)
+        if not bool(mx.array_equal(actual, expected).item()):
+            raise RuntimeError(
+                "compiled Qwen4 MTP preparation failed exact construction parity"
+            )
+        object.__setattr__(self, "_mtp_prepare_inputs_impl", compiled)
+        return {
+            "installed": True,
+            "shape": [1, 1, width],
+            "dtype": str(dtype),
+        }
 
     def fuse_and_run(self, widened: mx.array, tok_emb: mx.array, cache) -> mx.array:
         """Fuse (widened, token embedding) and run the head's layer; returns
         the PRE-mixer widened output — the recursion state for deeper drafts."""
-        B, S, W = widened.shape
-        hn = self.pre_fc_norm_hidden(widened).reshape(B, S, self._hc, -1)
-        en = self.fc_embedding(self.pre_fc_norm_embedding(tok_emb))
-        fused = self.fc_hidden(hn) + en[:, :, None, :]
-        h = fused.reshape(B, S, W)
+        h = self._mtp_prepare_inputs_impl(widened, tok_emb)
         # cache is the make_mtp_cache() list (runtime convention); the single
         # layer consumes its own QSACache entry
+        layer_cache = cache[0] if cache is not None else None
+        return self.layers[0](h, input_ids=None, ssm_mask=None, cache=layer_cache)
+
+    def fuse_and_run_history(
+        self,
+        widened: mx.array,
+        tok_emb: mx.array,
+        cache,
+    ) -> mx.array:
+        """History/prefill phase route; it may carry S>1 and stays eager."""
+
+        h = self._prepare_inputs_eager(widened, tok_emb)
         layer_cache = cache[0] if cache is not None else None
         return self.layers[0](h, input_ids=None, ssm_mask=None, cache=layer_cache)
 
