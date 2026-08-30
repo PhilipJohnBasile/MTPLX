@@ -39,26 +39,71 @@ def _source(node: ast.AST) -> str:
     return value
 
 
-def test_large_prefill_is_phase_gated_and_default_off():
+def test_large_prefill_is_phase_gated_with_device_scoped_auto_default():
     enabled = _source(_top_function("_qsa_prefill_enabled"))
     route = _source(_top_function("_qsa_large_prefill_enabled"))
     selector_floor = _source(_top_function("_qsa_prefill_min_context"))
     flash_floor = _source(_top_function("_qsa_prefill_flash_min_context"))
     flash_route = _source(_top_function("_qsa_prefill_flash_attention_enabled"))
-    assert 'os.environ.get("MTPLX_QSA_PREFILL") or "0"' in enabled
+    # Explicit env wins both ways; unset resolves auto through the flash
+    # kernel's own device gate (NAX machines on, everything else off until
+    # the portable tier carries its own hardware receipts).
+    assert 'raw in {"1", "true", "yes", "on"}' in enabled
+    assert 'raw in {"0", "false", "no", "off"}' in enabled
+    assert "qsa_prefill_lane_auto_supported()" in enabled
     assert 'current_attention_phase() == "prefill"' in route
     assert "int(rows) >= _qsa_prefill_min_rows()" in route
     assert "int(total_tokens) - int(rows) >= _qsa_prefill_min_context()" in route
     assert 'os.environ.get("MTPLX_QSA_PREFILL_MIN_CONTEXT") or 32768' in (
         selector_floor
     )
-    assert 'os.environ.get("MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT") or 65536' in (
+    # 32768 flash crossover: 2026-08-30 ABBA receipts (flat at the 32K rung
+    # both orders, full win beyond) retired the conservative 65536.
+    assert 'os.environ.get("MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT") or 32768' in (
         flash_floor
     )
     assert "_qsa_large_prefill_enabled(rows, total_tokens)" in flash_route
     assert (
         "int(total_tokens) - int(rows) >= _qsa_prefill_flash_min_context()"
         in flash_route
+    )
+
+
+def test_prefill_lane_env_resolution_wins_over_auto(monkeypatch):
+    import mtplx.models.qwen4_exp as qwen4_exp
+
+    for auto in (True, False):
+        monkeypatch.setattr(
+            qwen4_exp, "qsa_prefill_lane_auto_supported", lambda a=auto: a
+        )
+        monkeypatch.setenv("MTPLX_QSA_PREFILL", "1")
+        assert qwen4_exp._qsa_prefill_enabled() is True
+        monkeypatch.setenv("MTPLX_QSA_PREFILL", "0")
+        assert qwen4_exp._qsa_prefill_enabled() is False
+        monkeypatch.delenv("MTPLX_QSA_PREFILL", raising=False)
+        assert qwen4_exp._qsa_prefill_enabled() is auto
+
+
+def test_serve_admission_prices_transients_by_resolved_lane():
+    """The #393 dense transient term must be dropped when the lane serves.
+
+    Measured 2026-08-30: 262K cold prefill peaked at 87.4 GB with the lane
+    (weights + KV + aux + flat reserve), against the dense-priced ~115 GB
+    that originally wedged the machine. Pricing the dense lane while the
+    sparse lane serves would refuse a window the machine demonstrably holds.
+    """
+
+    server_text = (ROOT / "mtplx" / "server" / "openai.py").read_text(
+        encoding="utf-8"
+    )
+    anchor = server_text.index("_plan_transient_per_token = _plan_transient_from_config")
+    window = server_text[anchor : anchor + 700]
+    assert "_qsa_prefill_enabled as _qsa_prefill_lane_resolved" in window
+    assert "_qsa_prefill_lane_resolved()" in window
+    assert "_plan_transient_per_token = 0" in window
+    assert (
+        '"prefill_transient_bytes_per_token": _plan_transient_per_token'
+        in server_text
     )
 
 

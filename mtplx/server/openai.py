@@ -2647,6 +2647,24 @@ class ServerState:
             qsa_prefill_transient_bytes_per_token_from_config as _plan_transient_from_config,
         )
 
+        # The context-linear transient prices the DENSE indexer lane's
+        # [S, T] mask/score chain. When the sparse prefill lane will serve
+        # this process (auto on NAX machines, or explicitly armed), those
+        # transients are crossover-bounded and the honest per-token term is
+        # zero — measured: 262K cold prefill peaked at 87.4 GB on a 128 GiB
+        # M5 Max (weights 77.3 + KV 6.4 + aux + flat reserve), against the
+        # dense-priced ~115 GB that #393 observed wedging the machine.
+        _plan_transient_per_token = _plan_transient_from_config(_plan_model_config)
+        if _plan_transient_per_token:
+            try:
+                from mtplx.models.qwen4_exp import (
+                    _qsa_prefill_enabled as _qsa_prefill_lane_resolved,
+                )
+
+                if _qsa_prefill_lane_resolved():
+                    _plan_transient_per_token = 0
+            except Exception:
+                pass
         _plan_inputs: dict[str, Any] = {
             "total_ram_bytes": _plan_detect_total_ram(),
             "model_weights_bytes": _plan_weights_bytes,
@@ -2661,9 +2679,7 @@ class ServerState:
             # without them a 262K window was admitted on 128 GB with 2.4x
             # phantom headroom and died at 119 GB with no 507.
             "aux_bytes_per_token": _plan_aux_from_config(_plan_model_config),
-            "prefill_transient_bytes_per_token": _plan_transient_from_config(
-                _plan_model_config
-            ),
+            "prefill_transient_bytes_per_token": _plan_transient_per_token,
         }
         _fit_plan = _plan_memory(**_plan_inputs)
         _machine_fit = (

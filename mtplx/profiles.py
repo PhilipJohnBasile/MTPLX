@@ -325,6 +325,8 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # the universal (non-NAX) consumer of the same block selections.
         "MTPLX_QSA_PREFILL_GATHER",
         "MTPLX_QSA_PREFILL_GATHER_TILE",
+        # Engagement-receipt atexit print for lane A/Bs (counters law).
+        "MTPLX_QSA_PREFILL_DEBUG",
         # Capture only one canonical chunk width so arbitrary final/restored
         # suffix sizes cannot grow the mx.compile graph bank without bound.
         "MTPLX_QSA_PREFILL_COMPILE_ROWS",
