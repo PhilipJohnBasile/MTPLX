@@ -75,6 +75,12 @@ from .native_mlp import set_native_mlp_context
 from .loop_guard import LoopGuard, loop_guard_config_from_env
 from .thinking_guard import ThinkingGuard, ThinkingGuardConfig
 from .profiles import resolve_long_context_mtp_depth
+from .qsa_mtp_precompute import (
+    precompute_and_stage_qsa_replay_caches,
+    precompute_mtp_indexer_replay,
+    qsa_mtp_outer_device_core_supported,
+    qsa_mtp_precompute_enabled,
+)
 from .runtime import MTPLXRuntime
 from .sampling import (
     SamplerConfig,
@@ -4876,6 +4882,11 @@ def _make_device_d2_draft_core(
     mtp_hidden_variant: str,
 ) -> dict[str, Any]:
     mtp_cache = rt.make_mtp_cache()
+    if not qsa_mtp_outer_device_core_supported(mtp_cache):
+        raise RuntimeError(
+            "device-d2 outer compilation does not support QSA cache state; "
+            "use the exact host draft path"
+        )
     logits, draft_hidden = rt.draft_mtp(
         hidden,
         token_ids,
@@ -5783,6 +5794,11 @@ def _append_mtp_history(
         raise ValueError("input_embeddings length must match token_ids length")
     _runtime_count(rt, "mtp_history_append_calls")
     started = time.perf_counter()
+    if qsa_mtp_precompute_enabled():
+        precompute_and_stage_qsa_replay_caches(
+            mtp_cache if mtp_cache is not None else (),
+            window_tokens=len(token_ids),
+        )
     with attention_phase(phase):
         hidden = rt.update_mtp_cache(
             hidden_states,
@@ -8355,6 +8371,57 @@ def generate_mtpk(
             mtp_history_tokens_since_materialize = 0
         return elapsed
 
+    def reconcile_mtp_indexer_history(
+        mtp_cache,
+        *,
+        cycle_offset: int,
+        committed_tokens: list[int],
+        primary_hidden: mx.array,
+        authoritative_after_primary: mx.array,
+    ) -> float:
+        """Retain only exact draft cache rows, then append target rows.
+
+        A normal MTP chain's first cache row is already authoritative: it
+        consumes ``primary_hidden`` and the primary token.  Later rows consume
+        recursively predicted hidden and must be overwritten from target
+        verify/repair hidden.  A substitute draft source can skip the MTP
+        head entirely; in that case the observed offset has not advanced and
+        the primary must be appended too.  Precomputing this distinction keeps
+        rollback and the QSA indexer's raw/pooled frontiers in lockstep.
+        """
+
+        if not committed_tokens:
+            raise ValueError("committed MTP history cannot be empty")
+        plan = precompute_mtp_indexer_replay(
+            cycle_offset=cycle_offset,
+            observed_offset=_mtp_cache_offset(mtp_cache),
+        )
+        _rollback_mtp_cache(mtp_cache, plan.rollback_offset)
+        history_tokens = list(plan.reappend_tokens(committed_tokens))
+        rows_needed = plan.authoritative_hidden_rows(len(committed_tokens))
+        if not history_tokens:
+            return 0.0
+        if plan.primary_staged:
+            history_hidden = authoritative_after_primary[:, :rows_needed, :]
+        else:
+            continuation_rows = max(0, rows_needed - 1)
+            if continuation_rows:
+                history_hidden = mx.concatenate(
+                    [
+                        primary_hidden[:, :1, :],
+                        authoritative_after_primary[:, :continuation_rows, :],
+                    ],
+                    axis=1,
+                )
+            else:
+                history_hidden = primary_hidden[:, :1, :]
+        if int(history_hidden.shape[1]) != len(history_tokens):
+            raise RuntimeError(
+                "MTP replay metadata/hidden rows disagree: "
+                f"{len(history_tokens)} tokens vs {history_hidden.shape[1]} rows"
+            )
+        return append_mtp_history(mtp_cache, history_hidden, history_tokens)
+
     def maybe_eval_state_roots(event: dict[str, Any], current_tokens: int) -> None:
         nonlocal state_root_eval_events, state_root_eval_time_s
         nonlocal state_root_eval_arrays
@@ -8937,6 +9004,10 @@ def generate_mtpk(
         and callable(getattr(rt.model, "commit_verified_window", None))
         and callable(getattr(rt.model, "verify_capture_scope", None))
     )
+    # Phase-3 QSA/MTP staging stays explicitly dark until the fused selector
+    # and compiled indexer pass their deferred model/MTP gates.  The disabled
+    # branch below preserves v2.10's original rollback/reappend behavior.
+    qsa_mtp_precompute_active = qsa_mtp_precompute_enabled()
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
             # Top of iteration 2: the cumulative timers now hold exactly
@@ -9154,6 +9225,20 @@ def generate_mtpk(
         trace_current_mtp_cache = (
             mtp_cache if mtp_cache is not None else mtp_history_cache
         )
+        if qsa_mtp_precompute_active and mtp_cache is not None:
+            started_indexer_stage = time.perf_counter()
+            mtp_indexer_plans = precompute_and_stage_qsa_replay_caches(
+                mtp_cache,
+                window_tokens=cycle_depth,
+            )
+            if mtp_indexer_plans:
+                elapsed_indexer_stage = time.perf_counter() - started_indexer_stage
+                draft_time += elapsed_indexer_stage
+                _add_timing(
+                    event,
+                    "mtp_indexer_precompute",
+                    elapsed_indexer_stage,
+                )
         # ---- context-copy as DRAFT SOURCE (target_prefix takeover lane) ----
         # The block-round machinery is NOT AR-exact on this lane: its T+1-row
         # block forward runs M>2 kernel paths (stock gather_qmm fallbacks)
@@ -9294,6 +9379,18 @@ def generate_mtpk(
                     )
             if _cc_block:
                 _cc_T = 1 + len(_cc_block)
+                if qsa_mtp_precompute_active:
+                    started_indexer_stage = time.perf_counter()
+                    target_indexer_plans = precompute_and_stage_qsa_replay_caches(
+                        cache,
+                        window_tokens=_cc_T,
+                    )
+                    if target_indexer_plans:
+                        _add_timing(
+                            event,
+                            "target_indexer_precompute",
+                            time.perf_counter() - started_indexer_stage,
+                        )
                 _cc_before = None
                 if not _env_truthy("MTPLX_SKIP_VERIFY_SNAPSHOT"):
                     started = time.perf_counter()
@@ -9591,6 +9688,18 @@ def generate_mtpk(
                     _cb_block = _cb_block[: constraint.validate_prefix(_cb_block)]
             if _cb_block:
                 _cb_T = 1 + len(_cb_block)
+                if qsa_mtp_precompute_active:
+                    started_indexer_stage = time.perf_counter()
+                    target_indexer_plans = precompute_and_stage_qsa_replay_caches(
+                        cache,
+                        window_tokens=_cb_T,
+                    )
+                    if target_indexer_plans:
+                        _add_timing(
+                            event,
+                            "target_indexer_precompute",
+                            time.perf_counter() - started_indexer_stage,
+                        )
                 # The commit path (family replay or rollback) needs the
                 # pre-verify snapshot regardless of MTPLX_SKIP_VERIFY_SNAPSHOT:
                 # a block round without one cannot repair a partial accept.
@@ -9812,6 +9921,7 @@ def generate_mtpk(
             and mtp_corrector is None
             and not online_hidden_enabled
             and not online_correction_cache
+            and qsa_mtp_outer_device_core_supported(mtp_cache)
         )
         if device_d2_eligible:
             try:
@@ -9953,6 +10063,7 @@ def generate_mtpk(
                 and not online_hidden_enabled
                 and not correction_cache_enabled
                 and not target_prefix_verify
+                and qsa_mtp_outer_device_core_supported(mtp_cache)
                 and (
                     draft_sampler.temperature <= 0
                     or 0 < draft_sampler.top_k <= _DEVICE_CORE_MAX_TOP_K
@@ -10618,6 +10729,22 @@ def generate_mtpk(
             "omitted": bool(omit_speculative_bonus),
             "distribution_row_needed": bool(bonus_distribution_row_needed),
         }
+        if qsa_mtp_precompute_active:
+            started_indexer_stage = time.perf_counter()
+            target_indexer_plans = precompute_and_stage_qsa_replay_caches(
+                cache,
+                # Lazy-bonus verification appends the omitted final draft
+                # through one follow-up target forward on the all-accepted
+                # path. Reserve both writes now so that follow-up remains in
+                # the same bucket.
+                window_tokens=verified_token_count + int(lazy_bonus_verify),
+            )
+            if target_indexer_plans:
+                _add_timing(
+                    event,
+                    "target_indexer_precompute",
+                    time.perf_counter() - started_indexer_stage,
+                )
         set_native_mlp_context(len(tokens))
         started_forward = time.perf_counter()
         captures = None
@@ -11391,12 +11518,23 @@ def generate_mtpk(
             tokens.extend(draft_tokens)
             if _mtp_history_uses_committed_cache(mtp_history_policy):
                 assert mtp_cache is not None and cycle_mtp_offset is not None
-                _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
-                draft_time += append_mtp_history(
-                    mtp_cache,
-                    verify_hidden[:, : max(0, len(committed) - 1), :],
-                    committed[1:],
-                )
+                if qsa_mtp_precompute_active:
+                    draft_time += reconcile_mtp_indexer_history(
+                        mtp_cache,
+                        cycle_offset=cycle_mtp_offset,
+                        committed_tokens=committed,
+                        primary_hidden=hidden,
+                        authoritative_after_primary=verify_hidden[
+                            :, : max(0, len(committed) - 1), :
+                        ],
+                    )
+                else:
+                    _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
+                    draft_time += append_mtp_history(
+                        mtp_cache,
+                        verify_hidden[:, : max(0, len(committed) - 1), :],
+                        committed[1:],
+                    )
             if lazy_bonus_verify:
                 started_bonus_commit_forward = time.perf_counter()
                 with attention_phase("decode_verify"):
@@ -11604,12 +11742,21 @@ def generate_mtpk(
             event["capture_repair"] = "route_pending_correction"
             event["pending_primary"] = int(rejection_correction)
             if _mtp_history_uses_committed_cache(mtp_history_policy):
-                _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
-                draft_time += append_mtp_history(
-                    mtp_cache,
-                    verify_hidden[:, 0:1, :],
-                    [rejection_correction],
-                )
+                if qsa_mtp_precompute_active:
+                    draft_time += reconcile_mtp_indexer_history(
+                        mtp_cache,
+                        cycle_offset=cycle_mtp_offset,
+                        committed_tokens=[primary, rejection_correction],
+                        primary_hidden=hidden,
+                        authoritative_after_primary=verify_hidden[:, 0:1, :],
+                    )
+                else:
+                    _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
+                    draft_time += append_mtp_history(
+                        mtp_cache,
+                        verify_hidden[:, 0:1, :],
+                        [rejection_correction],
+                    )
             cache_committed_token_count = max(0, len(tokens) - 1)
             maybe_detach_dirty_state(cache_committed_token_count)
             logits, hidden = own_live_logits_hidden(
@@ -11837,20 +11984,49 @@ def generate_mtpk(
             _add_timing(event, "repair_forward", elapsed_repair)
         if _mtp_history_uses_committed_cache(mtp_history_policy):
             assert mtp_cache is not None and cycle_mtp_offset is not None
-            _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
-            history_tokens = committed[1:]
-            if committed_from_capture or committed_from_trim:
-                history_hidden = verify_hidden[:, : max(0, len(committed) - 1), :]
+            if qsa_mtp_precompute_active:
+                if committed_from_capture or committed_from_trim:
+                    authoritative_history = verify_hidden[
+                        :, : max(0, len(committed) - 1), :
+                    ]
+                else:
+                    authoritative_history = repair_hidden[
+                        :, : max(0, len(committed) - 1), :
+                    ]
+                history_committed = committed
+                if committed_from_capture and rejection_correction is not None:
+                    history_committed = committed[:-1]
+                    authoritative_history = verify_hidden[
+                        :, : max(0, committed_prefix_len - 1), :
+                    ]
+                draft_time += reconcile_mtp_indexer_history(
+                    mtp_cache,
+                    cycle_offset=cycle_mtp_offset,
+                    committed_tokens=history_committed,
+                    primary_hidden=hidden,
+                    authoritative_after_primary=authoritative_history,
+                )
             else:
-                history_hidden = repair_hidden[:, : max(0, len(committed) - 1), :]
-            if committed_from_capture and rejection_correction is not None:
-                history_tokens = history_tokens[:-1]
-                history_hidden = verify_hidden[:, : max(0, committed_prefix_len - 1), :]
-            draft_time += append_mtp_history(
-                mtp_cache,
-                history_hidden,
-                history_tokens,
-            )
+                _rollback_mtp_cache(mtp_cache, cycle_mtp_offset + 1)
+                history_tokens = committed[1:]
+                if committed_from_capture or committed_from_trim:
+                    history_hidden = verify_hidden[
+                        :, : max(0, len(committed) - 1), :
+                    ]
+                else:
+                    history_hidden = repair_hidden[
+                        :, : max(0, len(committed) - 1), :
+                    ]
+                if committed_from_capture and rejection_correction is not None:
+                    history_tokens = history_tokens[:-1]
+                    history_hidden = verify_hidden[
+                        :, : max(0, committed_prefix_len - 1), :
+                    ]
+                draft_time += append_mtp_history(
+                    mtp_cache,
+                    history_hidden,
+                    history_tokens,
+                )
         maybe_detach_dirty_state(cache_committed_token_count)
         logits, hidden = own_live_logits_hidden(
             repair_logits[:, -1, :],

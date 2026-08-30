@@ -7,8 +7,8 @@ where a desynced projection would change block selection (the crash class
 tests/test_qwen4_exp_qsa_cache.py pins)."""
 
 import mlx.core as mx
-import mlx.nn as nn
 import pytest
+from mlx import nn
 
 from mtplx.models.qwen4_exp import Attention, QSACache, TextArgs, _FusedGDNInProj
 
@@ -93,9 +93,9 @@ def test_fused_qkv_bit_exact_through_indexer_mask(attn):
 
 
 def test_fused_qkv_without_indexer_member_bit_exact(attn):
-    """The shipped forge keeps the indexer projection at 8-bit, so it stays
-    out of the merge — the 3-way fused module plus the indexer's own
-    dispatch must still be bit-exact."""
+    """A checkpoint with incompatible indexer packing keeps it out of the
+    merge; the 3-way fused module plus the indexer's own dispatch must still
+    be bit-exact."""
     mx.random.seed(13)
     chunks = [
         mx.random.normal((1, 12, 64)).astype(mx.float32),
