@@ -311,7 +311,11 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     model = tmp_path / "flash-next"
     model.mkdir()
     (model / "config.json").write_text(json.dumps(_flash_next_fixed_m4_config()))
-    for key in ("MTPLX_COMPILED_VERIFY", "MTPLX_QWEN4_FIXED_M4_VERIFY"):
+    for key in (
+        "MTPLX_COMPILED_VERIFY",
+        "MTPLX_QWEN4_FIXED_M4_VERIFY",
+        "MTPLX_QWEN4_M4_STAGE3",
+    ):
         monkeypatch.delenv(key, raising=False)
     args = argparse.Namespace(
         model=str(model),
@@ -324,6 +328,7 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     overrides = _server_runtime_env_overrides(args, {})
     assert "MTPLX_COMPILED_VERIFY" not in overrides
     assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
 
     # Pack contract opt-in: the gate is carried and the companion is pinned.
     overrides = _server_runtime_env_overrides(
@@ -331,6 +336,28 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     )
     assert overrides["MTPLX_COMPILED_VERIFY"] == "1"
     assert overrides["MTPLX_QWEN4_FIXED_M4_VERIFY"] == "1"
+    assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
+
+    # The combine tail gate (step 5) is consumed at model load: the server
+    # carries a pack-stamped value unchanged and pins nothing else for it ...
+    overrides = _server_runtime_env_overrides(args, {"MTPLX_QWEN4_M4_STAGE3": "1"})
+    assert overrides["MTPLX_QWEN4_M4_STAGE3"] == "1"
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    # ... and an explicit operator export beats the pack for every port gate.
+    monkeypatch.setenv("MTPLX_QWEN4_M4_STAGE3", "0")
+    overrides = _server_runtime_env_overrides(
+        args,
+        {"MTPLX_QWEN4_M4_STAGE3": "1"},
+    )
+    assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
+    monkeypatch.delenv("MTPLX_QWEN4_M4_STAGE3")
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_VERIFY", "0")
+    overrides = _server_runtime_env_overrides(
+        args, {"MTPLX_QWEN4_FIXED_M4_VERIFY": "1"}
+    )
+    assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    assert "MTPLX_COMPILED_VERIFY" not in overrides
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_VERIFY")
 
     # Operator export opt-in: the env already carries the gate, the
     # companion is pinned, and an explicit compiled-verify export wins.
@@ -350,6 +377,7 @@ def test_flash_next_fixed_m4_verifier_is_opt_in_and_geometry_gated(
     overrides = _server_runtime_env_overrides(args, {})
     assert "MTPLX_COMPILED_VERIFY" not in overrides
     assert "MTPLX_QWEN4_FIXED_M4_VERIFY" not in overrides
+    assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
 
 
 # ---------------------------------------------------------------------------

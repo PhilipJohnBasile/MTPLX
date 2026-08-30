@@ -876,6 +876,14 @@ def _server_runtime_env_overrides(
             ):
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
+        # PR #391 ports (davidtai, step 5 semantic): an explicit operator
+        # export beats a pack-stamped value for every ported gate, so a launch
+        # line kill switch can never be stomped by runtime_env_overrides. The
+        # stock-QMM combine tail (MTPLX_QWEN4_M4_STAGE3) is consumed at model
+        # load by its own gate and needs no server pin.
+        for key in _QWEN4_PORT_KEYS:
+            if str(os.environ.get(key) or "").strip():
+                overrides.pop(key, None)
         if os.environ.get("MTPLX_NAX_VERIFY") is None:
             # The turbo profile arms the 27B NAX verify patch
             # (MTPLX_NAX_VERIFY=1); on this family it is unmeasured and
@@ -902,6 +910,12 @@ def _served_model_type_is_qwen4_exp(args: argparse.Namespace) -> bool:
 
 
 _QWEN4_PORT_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Opt-in gates of the PR #391 Flash-Next ports, one per ported step.
+_QWEN4_PORT_KEYS = (
+    "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+    "MTPLX_QWEN4_FIXED_M4_VERIFY",
+    "MTPLX_QWEN4_M4_STAGE3",
+)
 
 
 def _qwen4_port_opt_in(overrides: Mapping[str, str], key: str) -> bool:
