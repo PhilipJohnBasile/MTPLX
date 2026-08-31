@@ -2130,6 +2130,11 @@ class GenerationStats:
     drafted_by_depth: list[int] = field(default_factory=list)
     accept_probability_sum_by_depth: list[float] = field(default_factory=list)
     mean_accept_probability_by_depth: list[float | None] = field(default_factory=list)
+    # Which commit path produced the stop token when finish_reason == "stop"
+    # (#414 telemetry): accepted_draft | residual_correction | bonus |
+    # primary | context_copy | repetition_stop | grammar_terminal | unknown.
+    # None for length/aborted finishes and loops that don't stamp it.
+    finish_stop_origin: str | None = None
     # Acceptance-EMA adaptive draft temperature (MTPLX_ADAPTIVE_DTEMP).
     # {} when the gate is off (quiet envelopes stay byte-stable — the server
     # stamps this into mtplx_stats and the request-log envelope only when
@@ -4444,6 +4449,30 @@ def _strip_terminal_stop(tokens: list[int], stop_token_ids: set[int]) -> list[in
     while stripped and _is_stop(stripped[-1], stop_token_ids):
         stripped.pop()
     return stripped
+
+
+def _stop_origin_for_committed(
+    committed: list[int],
+    stop_token_ids: set[int],
+    *,
+    has_correction: bool,
+) -> str | None:
+    """Name the commit path of the first stop token in a committed block.
+
+    ``committed`` is ``[primary, *accepted_drafts]`` plus, when
+    ``has_correction``, the residual correction at the tail (#414
+    telemetry: an early ``finish_reason=stop`` must be attributable to the
+    exact speculative branch that emitted it).
+    """
+
+    for index, token in enumerate(committed):
+        if _is_stop(token, stop_token_ids):
+            if index == 0:
+                return "primary"
+            if has_correction and index == len(committed) - 1:
+                return "residual_correction"
+            return "accepted_draft"
+    return None
 
 
 def _truncate_after_first_stop(
@@ -7969,6 +7998,7 @@ def generate_mtpk(
     append_event = events.append if record_events else (lambda _event: None)
     accepted = rejected = drafted = 0
     bonus_tokens = correction_tokens = verify_calls = 0
+    stop_origin: str | None = None
     accepted_by_depth = [0 for _ in range(speculative_depth)]
     drafted_by_depth = [0 for _ in range(speculative_depth)]
     accept_probability_sum_by_depth = [0.0 for _ in range(speculative_depth)]
@@ -9216,6 +9246,8 @@ def generate_mtpk(
             event["mtp_topk_reranker"] = mtp_topk_reranker.to_dict()
         step += 1
         if len(tokens) >= max_tokens or _is_stop(primary, stop_token_ids):
+            if stop_origin is None and _is_stop(primary, stop_token_ids):
+                stop_origin = "primary"
             append_event(event)
             emit_trace()
             break
@@ -9614,6 +9646,8 @@ def generate_mtpk(
                     _cc_acc = _cc_acc[:_cc_stop_idx + 1]
                 tokens.extend(_cc_acc)
                 _cc_finished = _cc_stop_idx is not None
+                if _cc_finished:
+                    stop_origin = "context_copy"
                 if constraint is not None and _cc_correction is not None and (
                     constraint.validate_prefix([*_cc_acc, int(_cc_correction)])
                     != len(_cc_acc) + 1
@@ -9633,6 +9667,7 @@ def generate_mtpk(
                     pending_primary = int(_cc_correction)
                     if _is_stop(int(_cc_correction), stop_token_ids):
                         _cc_finished = True
+                        stop_origin = "residual_correction"
                 ccopy_rounds += 1
                 ccopy_drafted += len(_cc_block)
                 ccopy_accepted += _cc_nacc
@@ -9869,6 +9904,8 @@ def generate_mtpk(
                     _cb_acc = _cb_acc[: _cb_stop_idx + 1]
                 tokens.extend(_cb_acc)
                 _cb_finished = _cb_stop_idx is not None
+                if _cb_finished:
+                    stop_origin = "context_copy"
                 if constraint is not None and _cb_correction is not None and (
                     constraint.validate_prefix([*_cb_acc, int(_cb_correction)])
                     != len(_cb_acc) + 1
@@ -9880,6 +9917,7 @@ def generate_mtpk(
                     pending_primary = int(_cb_correction)
                     if _is_stop(int(_cb_correction), stop_token_ids):
                         _cb_finished = True
+                        stop_origin = "residual_correction"
                 ccopy_rounds += 1
                 ccopy_drafted += len(_cb_block)
                 ccopy_accepted += _cb_nacc
@@ -11619,6 +11657,7 @@ def generate_mtpk(
                     verify_hidden[:, -1:, :],
                 )
             if any(_is_stop(token, stop_token_ids) for token in draft_tokens):
+                stop_origin = "accepted_draft"
                 tokens = _truncate_after_first_stop(tokens, stop_token_ids)
                 detach_capture_committed_state(len(tokens))
                 maybe_detach_dirty_state(len(tokens))
@@ -11733,6 +11772,7 @@ def generate_mtpk(
                 event["bonus_token"] = int(bonus)
                 emit_new_tokens()
                 if _is_stop(bonus, stop_token_ids):
+                    stop_origin = "bonus"
                     maybe_eval_state_roots(event, len(tokens))
                     append_event(event)
                     emit_trace()
@@ -11799,6 +11839,9 @@ def generate_mtpk(
             append_event(event)
 
             if any(_is_stop(token, stop_token_ids) for token in committed):
+                stop_origin = _stop_origin_for_committed(
+                    committed, stop_token_ids, has_correction=True
+                )
                 stop_index = next(
                     i
                     for i, token in enumerate(tokens)
@@ -12068,6 +12111,11 @@ def generate_mtpk(
         append_event(event)
 
         if any(_is_stop(token, stop_token_ids) for token in committed):
+            stop_origin = _stop_origin_for_committed(
+                committed,
+                stop_token_ids,
+                has_correction=rejection_correction is not None,
+            )
             stop_index = next(
                 i for i, token in enumerate(tokens) if _is_stop(token, stop_token_ids)
             )
@@ -12201,6 +12249,20 @@ def generate_mtpk(
         or (constraint is not None and constraint.stopped)
         else "length"
     )
+    if finish_reason != "stop":
+        stop_origin = None
+    elif repetition_result is not None:
+        stop_origin = "repetition_stop"
+    elif stop_origin is None:
+        stop_origin = (
+            "grammar_terminal"
+            if (
+                constraint is not None
+                and constraint.stopped
+                and not any(_is_stop(token, stop_token_ids) for token in tokens)
+            )
+            else "unknown"
+        )
     if capture_final_state:
         final_state = GenerationFinalState(
             final_trunk_cache=cache,
@@ -12409,6 +12471,7 @@ def generate_mtpk(
         bonus_tokens=bonus_tokens,
         correction_tokens=correction_tokens,
         verify_calls=verify_calls,
+        finish_stop_origin=stop_origin,
         context_copy_active=bool(ccopy_active),
         context_copy_probes=ccopy_probes,
         context_copy_rounds=ccopy_rounds,

@@ -16366,6 +16366,175 @@ def _allocation_failure_http_exception(
     )
 
 
+def _prefill_admission_shed_enabled() -> bool:
+    return os.environ.get(
+        "MTPLX_PREFILL_ADMISSION_SHED", "1"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
+
+def _prefill_admission_min_miss_tokens() -> int:
+    raw = os.environ.get("MTPLX_PREFILL_ADMISSION_MIN_MISS_TOKENS", "4096")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 4096
+
+
+# Same line as _allocator_pressure_level's WARNING edge: at >=97% of the
+# Metal limit the next growth step swaps.
+_PREFILL_ADMISSION_PRESSURE_FRACTION = 0.97
+
+
+def _prefill_admission_shed(
+    state: "ServerState",
+    *,
+    prompt_ids: list[int],
+    session_bank: Any | None,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Release idle memory BEFORE a tight cache-miss prefill (#415).
+
+    The shipped failure: a Pi agent hit its compaction threshold at 248k,
+    the compaction rewrote the whole prefix, and the replacement prefill —
+    a guaranteed cache miss — started while the superseded 6.09 GiB
+    SessionBank snapshot of the pre-compaction transcript sat resident on
+    a memory plan that admits 262K with zero headroom. The footprint
+    crossed the Metal cap mid-prefill and the sustained-pressure guard
+    killed the request (structured 507) ~30 s later. Shedding first is
+    cheap and reversible; the abort is neither.
+
+    Projects the miss-prefill footprint against the live allocator state
+    and, only when the projection crosses the guard's WARNING line, frees
+    in escalation order: superseded same-session bank entries (the prefix
+    was rewritten, so they can never be restored by this lineage again),
+    then LRU idle entries with every active session protected, then the
+    allocator cache. Never raises; returns the receipt when it acted.
+    """
+
+    if not _prefill_admission_shed_enabled():
+        return None
+    try:
+        prompt_tokens = len(prompt_ids)
+        if prompt_tokens < _prefill_admission_min_miss_tokens():
+            return None
+        caps = getattr(state, "metal_memory_caps", None)
+        limit = 0
+        if isinstance(caps, dict):
+            value = caps.get("memory_limit_bytes")
+            if isinstance(value, int):
+                limit = value
+        if limit <= 0:
+            return None
+        stats = _mlx_memory_stats_live()
+        active = int(stats.get("active_memory_bytes") or 0)
+        cache = int(stats.get("cache_memory_bytes") or 0)
+        if active <= 0:
+            return None
+        plan = getattr(state, "memory_plan", None)
+        per_token = 0
+        transients = 0
+        if plan is not None:
+            per_token = (
+                int(getattr(plan, "kv_bytes_per_token_effective", 0) or 0)
+                + int(getattr(plan, "aux_bytes_per_token", 0) or 0)
+                + int(getattr(plan, "prefill_transient_bytes_per_token", 0) or 0)
+            )
+            try:
+                from mtplx.memory_plan import RUNTIME_TRANSIENTS_BYTES
+
+                transients = int(RUNTIME_TRANSIENTS_BYTES)
+            except Exception:
+                transients = 0
+        threshold = int(limit * _PREFILL_ADMISSION_PRESSURE_FRACTION)
+        # Cheap worst-case gate first (miss == full prompt): skip the bank
+        # probe entirely when even a fully cold prefill projects under the
+        # line — the common, memory-healthy case.
+        if active + cache + prompt_tokens * per_token + transients <= threshold:
+            return None
+        reused_tokens = 0
+        if session_bank is not None:
+            try:
+                entry = session_bank.longest_prefix(prompt_ids)
+            except Exception:
+                entry = None
+            if entry is not None:
+                reused_tokens = len(entry.token_ids)
+        miss_tokens = max(0, prompt_tokens - reused_tokens)
+        if miss_tokens < _prefill_admission_min_miss_tokens():
+            return None
+        projected = active + cache + miss_tokens * per_token + transients
+        if projected <= threshold:
+            return None
+        receipt: dict[str, Any] = {
+            "action": "prefill_admission_shed",
+            "prompt_tokens": int(prompt_tokens),
+            "reusable_prefix_tokens": int(reused_tokens),
+            "miss_tokens": int(miss_tokens),
+            "active_bytes": int(active),
+            "cache_bytes": int(cache),
+            "projected_bytes": int(projected),
+            "threshold_bytes": int(threshold),
+            "limit_bytes": int(limit),
+        }
+        deficit = projected - threshold
+        if session_bank is not None:
+            try:
+                bank_bytes_before = int(session_bank.total_nbytes)
+                receipt["bank_bytes_before"] = bank_bytes_before
+                if session_id and reused_tokens == 0:
+                    # The client rewrote this session's prefix (agent
+                    # compaction): its banked snapshots are superseded and
+                    # can never be restored by this lineage again.
+                    receipt["superseded_session_entries_evicted"] = int(
+                        session_bank.clear(session_id=session_id)
+                    )
+                elif session_id:
+                    # A restorable prefix exists — pin this session so the
+                    # LRU pass below cannot evict the entry the imminent
+                    # restore depends on.
+                    session_bank.touch_sessions([session_id])
+                bank_bytes_now = int(session_bank.total_nbytes)
+                remaining = deficit - max(0, bank_bytes_before - bank_bytes_now)
+                if remaining > 0 and bank_bytes_now > 0:
+                    receipt["lru_entries_evicted"] = int(
+                        session_bank.shrink_to_bytes(
+                            max(0, bank_bytes_now - remaining),
+                            reason="prefill_admission",
+                            protect_active=True,
+                        )
+                    )
+                receipt["bank_bytes_after"] = int(session_bank.total_nbytes)
+            except Exception as exc:
+                receipt["bank_error"] = repr(exc)
+        try:
+            import mlx.core as _mx
+
+            _mx.clear_cache()
+            receipt["cache_cleared"] = True
+        except Exception:
+            receipt["cache_cleared"] = False
+        after = _mlx_memory_stats_live()
+        receipt["active_bytes_after"] = int(after.get("active_memory_bytes") or 0)
+        receipt["cache_bytes_after"] = int(after.get("cache_memory_bytes") or 0)
+        _record_guard_event(state, receipt)
+        try:
+            print("[mtplx] memory guard " + json.dumps(receipt), flush=True)
+        except Exception:
+            pass
+        return receipt
+    except Exception as exc:  # noqa: BLE001 — an admission guard must never
+        # cost a request; generation proceeds and the runtime backstops
+        # (#393 pressure abort, allocation-failure shed) still apply.
+        try:
+            _record_guard_event(
+                state,
+                {"action": "prefill_admission_shed_error", "error": repr(exc)},
+            )
+        except Exception:
+            pass
+        return None
+
+
 def _allocator_pressure_level(state: "ServerState") -> tuple[int, float]:
     """Engine-relative pressure: allocator footprint vs the Metal limit.
 
@@ -18138,6 +18307,108 @@ def _record_stream_cancellation_metric(
         state.dashboard.bus.publish(
             {
                 "kind": "cancelled",
+                "when_s": time.time(),
+                "envelope": dict(envelope),
+            }
+        )
+    except BaseException:
+        pass
+
+
+def _stream_error_kind(error: BaseException) -> tuple[str, int | None]:
+    """Classify a worker-side terminal error for the request receipt.
+
+    ``memory_refusal`` covers the engine-health 507s (#393 pressure abort,
+    allocation-failure shed): the engine refused the request to protect
+    itself. Everything else keeps its HTTP status when it has one.
+    """
+
+    status: int | None = None
+    raw_status = getattr(error, "status_code", None)
+    if isinstance(raw_status, int):
+        status = raw_status
+    if status == 507 or _is_allocation_failure(error):
+        return "memory_refusal", 507
+    if status is not None:
+        return "http_error", status
+    return "engine_error", None
+
+
+def _stream_error_detail(error: BaseException) -> str:
+    detail = getattr(error, "detail", None)
+    text = str(detail) if detail is not None else str(error)
+    return text[:400]
+
+
+def _record_stream_error_metric(
+    state: ServerState,
+    *,
+    response_id: str,
+    session_id: str | None,
+    prompt_tokens: int,
+    streamed_completion_tokens: int,
+    stream_started_s: float,
+    error: BaseException,
+    request_observability: dict[str, Any],
+    client_disconnected: bool = False,
+    token_times: list[float] | None = None,
+    mode: str = "stream",
+) -> None:
+    """Honest receipt for a request the ENGINE failed or refused (#415).
+
+    Before this, a worker-side error unwound through the stream teardown,
+    which sets the cancel event, so the receipt claimed
+    ``request_cancelled=true / cancellation_reason="stream_cancelled"``
+    while the client had actually received a structured 507. A refusal the
+    operator cannot find in the request log is a refusal they cannot act
+    on; this row names it.
+    """
+
+    error_kind, error_status = _stream_error_kind(error)
+    elapsed_s = max(0.0, time.perf_counter() - stream_started_s)
+    streamed_tokens = int(streamed_completion_tokens)
+    partial_tok_s = streamed_tokens / elapsed_s if elapsed_s > 0.0 else 0.0
+    envelope: dict[str, Any] = {
+        "mode": mode,
+        "request_id": response_id,
+        "session_id": session_id,
+        "prompt_tokens": int(prompt_tokens),
+        "completion_tokens": streamed_tokens,
+        "generated_tokens": streamed_tokens,
+        "request_elapsed_s": elapsed_s,
+        "elapsed_s": elapsed_s,
+        "server_elapsed_s": elapsed_s,
+        "decode_elapsed_s": elapsed_s,
+        "request_cancelled": False,
+        "stream_cancelled_by_client": bool(client_disconnected),
+        "stream_error": True,
+        "error_kind": error_kind,
+        "error_status": error_status,
+        "error_detail": _stream_error_detail(error),
+        "memory_refusal": error_kind == "memory_refusal",
+        "streamed_completion_tokens": streamed_tokens,
+        "decode_tok_s": partial_tok_s,
+        "request_tok_s": partial_tok_s,
+        "tok_s": partial_tok_s,
+        "server_tok_s": partial_tok_s,
+        "partial_decode_tok_s": partial_tok_s,
+        "partial_request_tok_s": partial_tok_s,
+        "session_cache_hit": False,
+        "cache_miss_reason": None,
+    }
+    if token_times:
+        envelope.update(_producer_gap_census(token_times))
+    # Allocator truth at failure time — for memory refusals this is the
+    # diagnosis, not decoration.
+    envelope.update(_mlx_allocator_public_stats())
+    envelope.update(request_observability)
+    _record_request_metrics(state, envelope)
+    if not bool(envelope.get("warmup")):
+        state.last_request_at = time.time()
+    try:
+        state.dashboard.bus.publish(
+            {
+                "kind": "request_error",
                 "when_s": time.time(),
                 "envelope": dict(envelope),
             }
@@ -22088,6 +22359,14 @@ def _run_generation(
         try:
             if cancel_event is not None and cancel_event.is_set():
                 raise _StreamCancelled("request cancelled before generation")
+            admission_shed = _prefill_admission_shed(
+                state,
+                prompt_ids=prompt_ids,
+                session_bank=session_bank,
+                session_id=session_id,
+            )
+            if admission_shed is not None and request_observability is not None:
+                request_observability["prefill_admission_shed"] = admission_shed
             dynamic_kv_reservation = _dynamic_paged_kv_reservation(
                 prompt_tokens=len(prompt_ids),
                 max_new_tokens=response_max,
@@ -30911,6 +31190,7 @@ def create_app(state: ServerState) -> FastAPI:
 
                 stream_cancelled_by_client = False
                 cancelled_metric_recorded = False
+                stream_error_item: BaseException | None = None
                 for field, text in splitter.start():
                     if text:
                         for chunk in stream_content_delta_chunks(field, text):
@@ -31964,6 +32244,8 @@ def create_app(state: ServerState) -> FastAPI:
                             decoder = _IncrementalTokenDecoder(state.runtime.tokenizer)
                             continue
                         elif kind == "error":
+                            if isinstance(item, BaseException):
+                                stream_error_item = item
                             yield mark_sse_sent(error_chunk(item))
                             yield mark_sse_sent("data: [DONE]\n\n")
                             return
@@ -32113,7 +32395,26 @@ def create_app(state: ServerState) -> FastAPI:
                     if session is not None and not commit_event.is_set():
                         commit_state["commit"] = False
                         commit_event.set()
-                    if cancel_event.is_set() and generated is None:
+                    if stream_error_item is not None and generated is None:
+                        # The worker FAILED (or the engine refused with a
+                        # structured 507); the teardown above set the cancel
+                        # event, but recording this as a cancellation hid
+                        # every memory refusal from the request log (#415).
+                        if not cancelled_metric_recorded:
+                            _record_stream_error_metric(
+                                state,
+                                response_id=response_id,
+                                session_id=session_id,
+                                prompt_tokens=len(prompt_ids),
+                                streamed_completion_tokens=streamed_progress_tokens,
+                                stream_started_s=stream_started_s,
+                                error=stream_error_item,
+                                request_observability=request_observability,
+                                client_disconnected=stream_cancelled_by_client,
+                                token_times=streamed_token_times,
+                            )
+                            cancelled_metric_recorded = True
+                    elif cancel_event.is_set() and generated is None:
                         state.dashboard.lifetime.record_cancellation()
                         if not cancelled_metric_recorded:
                             _record_stream_cancellation_metric(
@@ -32289,6 +32590,24 @@ def create_app(state: ServerState) -> FastAPI:
                     error_type="request_cancelled",
                 ),
             )
+        except HTTPException as exc:
+            # Non-stream twin of the stream error receipt: a memory refusal
+            # must be findable in the request log, not only in the HTTP
+            # response the client saw (#415).
+            if int(getattr(exc, "status_code", 0) or 0) == 507:
+                _record_stream_error_metric(
+                    state,
+                    response_id=response_id,
+                    session_id=session_id,
+                    prompt_tokens=len(prompt_ids),
+                    streamed_completion_tokens=nonstream_completion_tokens,
+                    stream_started_s=nonstream_started_s,
+                    error=exc,
+                    request_observability=request_observability,
+                    client_disconnected=nonstream_client_disconnected,
+                    mode="nonstream",
+                )
+            raise
         finally:
             disconnect_monitor_task.cancel()
             with suppress(asyncio.CancelledError, TimeoutError):
