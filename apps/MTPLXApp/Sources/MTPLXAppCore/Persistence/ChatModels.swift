@@ -47,8 +47,11 @@ public final class ChatConversation {
     public var modelOverride: String?
     /// Agent mode controls are conversation-scoped so a planning thread can
     /// coexist with ordinary chat without changing global runtime settings.
-    public var planModeEnabled: Bool
-    public var reasoningEffortRaw: String
+    // These defaults live on the stored properties, not only on init.
+    // SwiftData needs schema defaults to backfill conversations created by
+    // older MTPLX releases during lightweight migration.
+    public var planModeEnabled: Bool = false
+    public var reasoningEffortRaw: String = "auto"
     public var goalText: String?
     /// User feedback kept with this conversation. Feedback stays local until
     /// the user explicitly exports or shares the chat.

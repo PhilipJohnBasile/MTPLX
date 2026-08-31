@@ -329,6 +329,16 @@ public final class ChatViewModel: ObservableObject {
         objectWillChange.send()
     }
 
+    public func setGoal(_ goal: String?) {
+        guard let conversation = current else { return }
+        let value = goal ?? ""
+        conversation.goalText = value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : value
+        saveContext()
+        objectWillChange.send()
+    }
+
     public func setReasoningEffort(_ effort: String) {
         guard let conversation = current else { return }
         conversation.reasoningEffortRaw = effort
@@ -518,12 +528,10 @@ public final class ChatViewModel: ObservableObject {
             if argument.isEmpty {
                 commandOutput = conversation.goalText.map { "Goal: \($0)" } ?? "No goal is set for this chat."
             } else if argument.lowercased() == "clear" {
-                conversation.goalText = nil
-                saveContext()
+                setGoal(nil)
                 commandOutput = "Goal cleared."
             } else {
-                conversation.goalText = argument
-                saveContext()
+                setGoal(argument)
                 commandOutput = "Goal set: \(argument)"
             }
         case "workspace":
@@ -660,7 +668,8 @@ public final class ChatViewModel: ObservableObject {
             let model = conversation.modelOverride ?? modelName() ?? "MTPLX runtime"
             let workspace = conversation.workspaceID ?? "none"
             let planState = conversation.planModeEnabled ? "on" : "off"
-            commandOutput = "Model: \(model)\nWorkspace: \(workspace)\nPlan mode: \(planState)\nReasoning: \(conversation.reasoningEffortRaw)"
+            let goal = conversation.goalText ?? "none"
+            commandOutput = "Model: \(model)\nWorkspace: \(workspace)\nPlan mode: \(planState)\nGoal: \(goal)\nReasoning: \(conversation.reasoningEffortRaw)"
         case "usage":
             let latest = visibleMessages.last(where: { $0.role == .assistant })
             commandOutput = latest?.statsJSON ?? "No completed request usage is available yet."
@@ -2464,7 +2473,8 @@ public final class ChatViewModel: ObservableObject {
         if conversation.planModeEnabled {
             lines.append("Plan mode is enabled. Start with a concise numbered plan before proposing changes. Read-only inspection may follow, but ask for approval before any write or terminal action.")
         }
-        if let goal = conversation.goalText, !goal.isEmpty {
+        if let goal = conversation.goalText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !goal.isEmpty {
             lines.append("Active user goal: \(goal)")
         }
         guard lines.count > 2 else { return nil }

@@ -3,6 +3,7 @@ import Darwin
 import AppKit
 import CoreGraphics
 import CoreText
+import SwiftData
 @testable import MTPLXAppCore
 
 private actor FanFallbackProbe {
@@ -8254,6 +8255,67 @@ final class MTPLXAppCoreTests: XCTestCase {
             reloaded.current?.feedbackNotes,
             "Keep the approval timeline visible"
         )
+    }
+
+    @MainActor
+    func testGoalModePersistsAndClearsConversationGoal() throws {
+        let container = try ChatStore.makeInMemoryContainer()
+        let chatClient = MTPLXChatClient(
+            apiClient: MTPLXAPIClient(baseURL: URL(string: "http://127.0.0.1:9")!)
+        )
+        let viewModel = ChatViewModel(
+            container: container,
+            chatClientProvider: { chatClient },
+            modelName: { "mtplx-test-model" }
+        )
+        _ = viewModel.createNewConversation()
+
+        viewModel.setGoal("Ship the native coding-agent workflow")
+        XCTAssertEqual(
+            viewModel.current?.goalText,
+            "Ship the native coding-agent workflow"
+        )
+
+        viewModel.send("/status")
+        XCTAssertTrue(
+            viewModel.commandOutput?.contains(
+                "Goal: Ship the native coding-agent workflow"
+            ) == true
+        )
+
+        let reloaded = ChatViewModel(
+            container: container,
+            chatClientProvider: { chatClient },
+            modelName: { "mtplx-test-model" }
+        )
+        XCTAssertEqual(
+            reloaded.current?.goalText,
+            "Ship the native coding-agent workflow"
+        )
+
+        reloaded.setGoal("   ")
+        XCTAssertNil(reloaded.current?.goalText)
+    }
+
+    func testAgentConversationSchemaCarriesLegacyMigrationDefaults() throws {
+        let schema = Schema([
+            ChatConversation.self,
+            ChatMessage.self,
+            ChatAttachment.self,
+            ToolTraceRecord.self,
+        ])
+        let conversation = try XCTUnwrap(
+            schema.entitiesByName["ChatConversation"]
+        )
+        let planMode = try XCTUnwrap(
+            conversation.attributesByName["planModeEnabled"]
+        )
+        let reasoning = try XCTUnwrap(
+            conversation.attributesByName["reasoningEffortRaw"]
+        )
+
+        XCTAssertEqual(planMode.defaultValue as? Bool, false)
+        XCTAssertEqual(reasoning.defaultValue as? String, "auto")
     }
 
     func testChatStoreSupportsExplicitQAStorePathOverride() throws {

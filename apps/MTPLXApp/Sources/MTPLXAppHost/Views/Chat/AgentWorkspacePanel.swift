@@ -19,6 +19,7 @@ struct AgentWorkspacePanel: View {
                     workspaceSection
                     modelSection
                     modeSection
+                    goalSection
                     runSection
                     graphSection
                     delegationSection
@@ -175,6 +176,45 @@ struct AgentWorkspacePanel: View {
                 Text("High").tag("high")
             }
             .font(.system(size: 11, design: .rounded))
+        }
+    }
+
+    private var goalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("GOAL MODE")
+                Spacer()
+                Text(goalIsActive ? "ACTIVE" : "OFF")
+                    .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(goalIsActive ? Brand.success : Brand.typeTertiary)
+            }
+            TextField(
+                "Set a goal to keep pursuing",
+                text: goalBinding,
+                axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 10, design: .rounded))
+            .lineLimit(2...4)
+            if goalIsActive {
+                HStack(spacing: 8) {
+                    Text("Included in every agent turn.")
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(Brand.typeTertiary)
+                    Spacer()
+                    Button("Clear") {
+                        chatViewModel.setGoal(nil)
+                        chatViewModel.dismissCommandOutput()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Brand.accentChrome)
+                }
+            } else {
+                Text("Set a durable objective for this conversation.")
+                    .font(.system(size: 9, design: .rounded))
+                    .foregroundStyle(Brand.typeTertiary)
+            }
         }
     }
 
@@ -431,6 +471,22 @@ struct AgentWorkspacePanel: View {
                 chatViewModel.dismissCommandOutput()
             }
         )
+    }
+
+    private var goalBinding: Binding<String> {
+        Binding(
+            get: { chatViewModel.current?.goalText ?? "" },
+            set: { value in
+                chatViewModel.setGoal(value)
+                chatViewModel.dismissCommandOutput()
+            }
+        )
+    }
+
+    private var goalIsActive: Bool {
+        !(chatViewModel.current?.goalText ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
     }
 
     private var reasoningBinding: Binding<String> {
