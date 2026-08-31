@@ -365,7 +365,8 @@ _MPP_SCORE_SOURCE = r"""
     auto left = matmul.get_left_input_cooperative_tensor<InT, InT, float>();
     auto right = matmul.get_right_input_cooperative_tensor<InT, InT, float>();
     auto accumulator = matmul.get_destination_cooperative_tensor<
-        decltype(left), decltype(right), float>();
+        metal::remove_addrspace_t<decltype(left)>,
+        metal::remove_addrspace_t<decltype(right)>, float>();
 
     constexpr short ELEMENTS_PER_FRAGMENT = 8;
     constexpr short ELEMENT_COLUMNS = 4;

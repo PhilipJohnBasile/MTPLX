@@ -281,6 +281,7 @@ def test_mpp_score_kernel_is_a_fused_16x32_tensorops_tile():
     assert "threadgroup InT pooled_tile[" in source
     assert "mpp::tensor_ops::matmul2d_descriptor(" in source
     assert "16, 32, 16, false, true, true" in source
+    assert "metal::remove_addrspace_t<" in source
     assert "k_frag < QSA_SCORE_K_FRAGMENTS" in source
     assert "matmul.run(left, right, accumulator);" in source
     assert "simd_shuffle_xor(head0_or_1, ushort(16))" in source

@@ -6,6 +6,7 @@ kernel's own acceptance (bf16 output, fp32 accumulate).
 """
 
 import math
+from pathlib import Path
 
 import mlx.core as mx
 import pytest
@@ -14,6 +15,17 @@ from mtplx.kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
 from mtplx.kernels.sdpa_nax_tile import sdpa_nax_tile
 
 HQ, HKV, D = 24, 4, 256
+
+
+def test_nax_tile_uses_unqualified_cooperative_tensor_types():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "mtplx"
+        / "kernels"
+        / "sdpa_nax_tile.py"
+    ).read_text(encoding="utf-8")
+
+    assert "metal::remove_addrspace_t<" in source
 
 
 def _ref_tail_causal(q, k, v, offset, scale, q_len):

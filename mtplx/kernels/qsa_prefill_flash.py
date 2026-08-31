@@ -133,8 +133,9 @@ _SOURCE = r"""
     mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup> mm;
     auto ct_a = mm.get_left_input_cooperative_tensor<T, T, float>();
     auto ct_b = mm.get_right_input_cooperative_tensor<T, T, float>();
-    auto ct_c =
-        mm.get_destination_cooperative_tensor<decltype(ct_a), decltype(ct_b), float>();
+    auto ct_c = mm.get_destination_cooperative_tensor<
+        metal::remove_addrspace_t<decltype(ct_a)>,
+        metal::remove_addrspace_t<decltype(ct_b)>, float>();
 
     // Exactly 32 * 256 * sizeof(T) == 16 KiB. The allocation first holds K
     // row-major and is then overwritten with V-transpose for the PV multiply.

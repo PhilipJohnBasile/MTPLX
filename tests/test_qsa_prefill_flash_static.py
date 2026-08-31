@@ -81,6 +81,7 @@ def test_kernel_is_one_m16_n32_tensorops_simdgroup_per_row_and_kv_head():
     assert "mpp::tensor_ops::matmul2d_descriptor(" in source
     assert "16, 32, 16, false, true, true" in source
     assert "mpp::tensor_ops::matmul2d<desc, metal::execution_simdgroup>" in source
+    assert "metal::remove_addrspace_t<" in source
     assert source.count("mm.run(ct_a, ct_b, ct_c)") == 2
 
     # Exactly one 32x256 T tile exists. It is K row-major first and then the

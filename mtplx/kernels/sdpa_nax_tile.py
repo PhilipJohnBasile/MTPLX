@@ -97,7 +97,9 @@ _SOURCE = r"""
 
     auto ct_a = mm.get_left_input_cooperative_tensor<InT, InT, float>();
     auto ct_b = mm.get_right_input_cooperative_tensor<InT, InT, float>();
-    auto ct_c = mm.get_destination_cooperative_tensor<decltype(ct_a), decltype(ct_b), float>();
+    auto ct_c = mm.get_destination_cooperative_tensor<
+        metal::remove_addrspace_t<decltype(ct_a)>,
+        metal::remove_addrspace_t<decltype(ct_b)>, float>();
 
     // Per-thread state: each thread carries TWO rows (i=0: sc.y, i=1: sc.y+8)
     // of online-softmax state, replicated across the 4 lanes sharing the row.

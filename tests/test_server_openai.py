@@ -12610,6 +12610,7 @@ def test_chat_stream_stop_sequence_trims_and_cancels_generation(monkeypatch):
     state.args.stream_interval = 1
     client = TestClient(create_app(state))
     cancel_seen: dict[str, bool] = {}
+    cancel_observed = Event()
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         token_callback = kwargs["token_callback"]
@@ -12618,6 +12619,7 @@ def test_chat_stream_stop_sequence_trims_and_cancels_generation(monkeypatch):
         token_callback([ord(char) for char in "STOP\n"])
         assert cancel_event.wait(timeout=10), "stop match must cancel generation"
         cancel_seen["cancelled"] = True
+        cancel_observed.set()
         token_callback([ord(char) for char in "after"])
         raise AssertionError("cancelled token callback must raise")
 
@@ -12651,6 +12653,7 @@ def test_chat_stream_stop_sequence_trims_and_cancels_generation(monkeypatch):
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
     assert final[-1]["mtplx_stats"]["stop_sequence_hit"] is True
     assert final[-1]["mtplx_stats"]["stop_sequence_matched"] == "STOP"
+    assert cancel_observed.wait(timeout=10), "generation did not observe cancellation"
     assert cancel_seen.get("cancelled") is True
     assert "data: [DONE]" in response.text
 
@@ -12888,6 +12891,7 @@ def test_completions_stream_honors_stop_sequence(monkeypatch):
     state = _fake_streaming_session_state()
     client = TestClient(create_app(state))
     cancel_seen: dict[str, bool] = {}
+    cancel_observed = Event()
 
     def fake_run_generation(_state, _prompt_ids, **kwargs):
         token_callback = kwargs["token_callback"]
@@ -12896,6 +12900,7 @@ def test_completions_stream_honors_stop_sequence(monkeypatch):
         token_callback([ord(char) for char in "STOP\n"])
         assert cancel_event.wait(timeout=10), "stop match must cancel generation"
         cancel_seen["cancelled"] = True
+        cancel_observed.set()
         token_callback([ord(char) for char in "after"])
         raise AssertionError("cancelled token callback must raise")
 
@@ -12924,6 +12929,7 @@ def test_completions_stream_honors_stop_sequence(monkeypatch):
     ]
     assert final[-1]["choices"][0]["finish_reason"] == "stop"
     assert final[-1]["mtplx_stats"]["stop_sequence_hit"] is True
+    assert cancel_observed.wait(timeout=10), "generation did not observe cancellation"
     assert cancel_seen.get("cancelled") is True
     assert "data: [DONE]" in response.text
 
