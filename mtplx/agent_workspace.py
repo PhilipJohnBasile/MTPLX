@@ -681,14 +681,18 @@ class WorkspaceStore:
         return self._expire_if_needed(approval)
 
     @staticmethod
-    def _is_expired(approval: ApprovalRequest) -> bool:
-        if approval.status != "pending" or not approval.expires_at:
+    def _deadline_expired(approval: ApprovalRequest) -> bool:
+        if not approval.expires_at:
             return False
         try:
             expires_at = datetime.fromisoformat(approval.expires_at.replace("Z", "+00:00"))
         except ValueError:
             return False
         return expires_at <= datetime.now(timezone.utc)
+
+    @classmethod
+    def _is_expired(cls, approval: ApprovalRequest) -> bool:
+        return approval.status == "pending" and cls._deadline_expired(approval)
 
     def _expire_if_needed(self, approval: ApprovalRequest) -> ApprovalRequest:
         if not self._is_expired(approval):
@@ -781,38 +785,56 @@ class WorkspaceStore:
     ) -> ApprovalRequest:
         """Atomically consume one exact, approved tool authorization."""
         actual_hash = approval_arguments_sha256(arguments)
+        expired: ApprovalRequest | None = None
         with self._exclusive():
             current = self._decode_approval(
                 self._read_json(self._approval_path(approval_id))
             )
-            if self._is_expired(current):
-                raise WorkspaceConflictError(f"approval is expired: {approval_id}")
-            if current.status != "approved":
+            if self._deadline_expired(current):
+                expired = ApprovalRequest(
+                    **{
+                        **current.to_dict(),
+                        "status": "expired",
+                        "resolved_at": utc_now(),
+                        "resolved_by": "system",
+                        "reason": "approval expired before execution",
+                    }
+                )
+                _atomic_write(
+                    self._approval_path(expired.id),
+                    json.dumps(expired.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+            elif current.status != "approved":
                 raise WorkspaceConflictError(
                     f"approval is not executable ({current.status}): {approval_id}"
                 )
-            if current.workspace_id != workspace_id:
+            elif current.workspace_id != workspace_id:
                 raise WorkspaceConflictError("approval belongs to a different workspace")
-            if current.run_id != run_id:
+            elif current.run_id != run_id:
                 raise WorkspaceConflictError("approval belongs to a different run")
-            if current.tool != str(tool):
+            elif current.tool != str(tool):
                 raise WorkspaceConflictError("approval is bound to a different tool")
-            if not current.arguments_sha256:
+            elif not current.arguments_sha256:
                 raise WorkspaceConflictError("approval is not bound to exact arguments")
-            if current.arguments_sha256 != actual_hash:
+            elif current.arguments_sha256 != actual_hash:
                 raise WorkspaceConflictError("approval arguments do not match execution")
-            updated = ApprovalRequest(
-                **{
-                    **current.to_dict(),
-                    "status": "consumed",
-                    "consumed_at": utc_now(),
-                    "consumed_by": str(consumed_by or "tool-executor"),
-                }
-            )
-            _atomic_write(
-                self._approval_path(updated.id),
-                json.dumps(updated.to_dict(), indent=2, sort_keys=True) + "\n",
-            )
+            else:
+                updated = ApprovalRequest(
+                    **{
+                        **current.to_dict(),
+                        "status": "consumed",
+                        "consumed_at": utc_now(),
+                        "consumed_by": str(consumed_by or "tool-executor"),
+                    }
+                )
+                _atomic_write(
+                    self._approval_path(updated.id),
+                    json.dumps(updated.to_dict(), indent=2, sort_keys=True) + "\n",
+                )
+        if expired is not None:
+            if expired.run_id:
+                self.append_event(expired.run_id, "approval_resolved", expired.to_dict())
+            raise WorkspaceConflictError(f"approval is expired: {approval_id}")
         if updated.run_id:
             self.append_event(updated.run_id, "approval_consumed", updated.to_dict())
         return updated

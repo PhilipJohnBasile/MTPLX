@@ -276,6 +276,48 @@ def test_approval_is_bound_to_exact_arguments_and_consumed_once(tmp_path):
     assert [event.kind for event in store.list_events(run.id)][-1] == "approval_consumed"
 
 
+def test_approved_authorization_cannot_be_consumed_after_its_deadline(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    store = WorkspaceStore(tmp_path / "workspaces")
+    workspace = store.create_workspace("MTPLX", str(project))
+    run = store.create_run(workspace.id)
+    arguments = {"path": "result.txt", "content": "verified\n"}
+    approval = store.create_approval(
+        workspace.id,
+        run_id=run.id,
+        tool="write_file",
+        action="Write result.txt",
+        description="Write the verified result",
+        arguments=arguments,
+    )
+    approved = store.resolve_approval(
+        approval.id,
+        "approved",
+        resolved_by="tester",
+    )
+    raw = approved.to_dict()
+    raw["expires_at"] = "2000-01-01T00:00:00Z"
+    store._approval_path(approval.id).write_text(
+        json.dumps(raw), encoding="utf-8"
+    )
+
+    with pytest.raises(WorkspaceConflictError, match="approval is expired"):
+        store.consume_approval(
+            approval.id,
+            workspace_id=workspace.id,
+            run_id=run.id,
+            tool="write_file",
+            arguments=arguments,
+        )
+
+    expired = store.get_approval(approval.id)
+    assert expired.status == "expired"
+    assert expired.resolved_by == "system"
+    assert expired.reason == "approval expired before execution"
+    assert [event.kind for event in store.list_events(run.id)][-1] == "approval_resolved"
+
+
 def test_workspace_http_surface_exposes_local_agent_state(tmp_path):
     from test_server_openai import _fake_state
 

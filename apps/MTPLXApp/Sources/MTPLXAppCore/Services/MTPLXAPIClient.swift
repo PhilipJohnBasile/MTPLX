@@ -321,6 +321,21 @@ public struct MTPLXAPIClient: Sendable {
         )
     }
 
+    public func graphRunApprovals(
+        runID: String,
+        status: String? = "pending",
+        limit: Int = 100
+    ) async throws -> AgentGraphApprovalsPayload {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status))
+        }
+        return try await get(
+            "/v1/mtplx/graph-runs/\(runID.urlPathComponentEscaped)/approvals",
+            queryItems: query
+        )
+    }
+
     public func resolveGraphApproval(
         runID: String,
         approvalID: String,

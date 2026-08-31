@@ -16,10 +16,11 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .agent_workspace import (
@@ -54,6 +55,22 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def utc_after(seconds: float) -> str:
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=max(0.1, float(seconds)))
+    ).isoformat().replace("+00:00", "Z")
+
+
+def deadline_is_live(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        deadline = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return deadline > datetime.now(timezone.utc)
+
+
 @dataclass(frozen=True)
 class AgentDelegation:
     id: str
@@ -73,6 +90,12 @@ class AgentDelegation:
     worktree_path: str | None = None
     worktree_commit: str | None = None
     source_delegation_id: str | None = None
+    tokens_used: int = 0
+    attempts: int = 0
+    owner_id: str | None = None
+    generation: int = 0
+    lease_expires_at: str | None = None
+    active_request_id: str | None = None
     evidence: dict[str, Any] | None = None
     error: str | None = None
 
@@ -95,6 +118,12 @@ class AgentDelegation:
             "worktree_path": self.worktree_path,
             "worktree_commit": self.worktree_commit,
             "source_delegation_id": self.source_delegation_id,
+            "tokens_used": self.tokens_used,
+            "attempts": self.attempts,
+            "owner_id": self.owner_id,
+            "generation": self.generation,
+            "lease_expires_at": self.lease_expires_at,
+            "active_request_id": self.active_request_id,
             "evidence": self.evidence,
             "error": self.error,
         }
@@ -112,6 +141,10 @@ class AgentCompletionEvidenceError(AgentDelegationError):
         self.evidence = dict(evidence)
 
 
+class AgentExecutionLeaseLost(AgentDelegationError):
+    """The durable execution claim moved to another orchestrator."""
+
+
 class AgentOrchestrator:
     """Coordinates durable child agent runs without owning inference."""
 
@@ -123,6 +156,8 @@ class AgentOrchestrator:
         profile_store: AgentProfileStore | None = None,
         tool_service: WorkspaceToolService | None = None,
         max_workers: int = 4,
+        owner_id: str | None = None,
+        lease_seconds: float = 300.0,
     ) -> None:
         self.workspace_store = workspace_store
         self.state = state
@@ -132,6 +167,10 @@ class AgentOrchestrator:
         self.delegations_root = self.root / "delegations"
         self.worktrees_root = self.root / "worktrees"
         self._lock = threading.RLock()
+        self.owner_id = str(owner_id or f"orchestrator_{uuid.uuid4().hex}")
+        self.lease_seconds = max(0.3, float(lease_seconds))
+        self._active_requests: dict[str, str] = {}
+        self._active_cancellations: dict[str, threading.Event] = {}
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(int(max_workers), 16)),
             thread_name_prefix="mtplx-agent",
@@ -193,6 +232,20 @@ class AgentOrchestrator:
                 if value.get("source_delegation_id")
                 else None
             ),
+            tokens_used=max(0, int(value.get("tokens_used") or 0)),
+            attempts=max(0, int(value.get("attempts") or 0)),
+            owner_id=str(value["owner_id"]) if value.get("owner_id") else None,
+            generation=max(0, int(value.get("generation") or 0)),
+            lease_expires_at=(
+                str(value["lease_expires_at"])
+                if value.get("lease_expires_at")
+                else None
+            ),
+            active_request_id=(
+                str(value["active_request_id"])
+                if value.get("active_request_id")
+                else None
+            ),
             evidence=dict(value.get("evidence") or {}),
             error=str(value["error"]) if value.get("error") else None,
         )
@@ -212,10 +265,34 @@ class AgentOrchestrator:
                 delegation = self._read(path.stem)
             except AgentDelegationError:
                 continue
-            if delegation.status not in {"queued", "running", "waiting_approval"}:
+            if delegation.status == "queued":
+                self._executor.submit(self._run, delegation.id)
+                recovered.append(delegation.id)
+                continue
+            if delegation.status not in {"running", "waiting_approval"}:
+                continue
+            if deadline_is_live(delegation.lease_expires_at):
                 continue
             message = "MTPLX restarted before this delegated agent reached a terminal state"
             try:
+                with self.workspace_store._exclusive():
+                    with self._lock:
+                        current = self._read(delegation.id)
+                        if (
+                            current.status not in {"running", "waiting_approval"}
+                            or deadline_is_live(current.lease_expires_at)
+                        ):
+                            continue
+                        updated = self._updated(
+                            current,
+                            status="paused",
+                            error=message,
+                            owner_id=None,
+                            generation=current.generation + 1,
+                            lease_expires_at=None,
+                            active_request_id=None,
+                        )
+                        self._write(updated)
                 child = self.workspace_store.get_run(delegation.child_run_id)
                 if child.status in {"queued", "running"}:
                     self.workspace_store.update_run(
@@ -227,11 +304,6 @@ class AgentOrchestrator:
                     child.id,
                     "agent_paused",
                     {"delegation_id": delegation.id, "reason": message},
-                )
-                updated = self._replace(
-                    delegation,
-                    status="paused",
-                    error=message,
                 )
                 if updated.parent_run_id:
                     self.workspace_store.append_event(
@@ -337,7 +409,9 @@ class AgentOrchestrator:
             worktree_commit=commit,
             source_delegation_id=(source_delegation.id if source_delegation else None),
         )
-        self._write(delegation)
+        with self.workspace_store._exclusive():
+            with self._lock:
+                self._write(delegation)
         if parent_run_id:
             self.workspace_store.append_event(
                 parent_run_id,
@@ -349,6 +423,8 @@ class AgentOrchestrator:
                     "permissions": list(delegation.permissions),
                     "token_budget": delegation.budget,
                     "context_window": delegation.context_window,
+                    "tokens_used": delegation.tokens_used,
+                    "remaining_token_budget": delegation.budget - delegation.tokens_used,
                     "worktree_path": str(worktree_path) if worktree_path else None,
                     "source_delegation_id": delegation.source_delegation_id,
                 },
@@ -358,14 +434,41 @@ class AgentOrchestrator:
         return delegation
 
     def cancel(self, delegation_id: str) -> AgentDelegation:
-        delegation = self.get(delegation_id)
-        if delegation.status in {"completed", "failed", "cancelled"}:
-            return delegation
-        updated = self._replace(delegation, status="cancelled", error="cancelled by user")
+        with self.workspace_store._exclusive():
+            with self._lock:
+                delegation = self._read(delegation_id)
+                if delegation.status in {"completed", "failed", "cancelled"}:
+                    return delegation
+                active_request_id = delegation.active_request_id
+                updated = self._updated(
+                    delegation,
+                    status="cancelled",
+                    error="cancelled by user",
+                    owner_id=None,
+                    generation=delegation.generation + 1,
+                    lease_expires_at=None,
+                    active_request_id=None,
+                )
+                self._write(updated)
+                cancellation_event = self._active_cancellations.get(delegation.id)
+                if cancellation_event is not None:
+                    cancellation_event.set()
         self.workspace_store.update_run(
             delegation.child_run_id,
             status="cancelled",
             error="cancelled by user",
+        )
+        cancellation = self._cancel_active_request(
+            delegation.id,
+            request_id=active_request_id,
+        )
+        self.workspace_store.append_event(
+            delegation.child_run_id,
+            "agent_model_cancel_requested",
+            {
+                "delegation_id": delegation.id,
+                **cancellation,
+            },
         )
         if delegation.parent_run_id:
             self.workspace_store.append_event(
@@ -376,12 +479,31 @@ class AgentOrchestrator:
         return updated
 
     def retry(self, delegation_id: str) -> AgentDelegation:
-        delegation = self.get(delegation_id)
-        if delegation.status not in {"failed", "cancelled", "paused"}:
-            raise AgentDelegationError(
-                "only failed, cancelled, or restart-paused delegations can be retried: "
-                f"{delegation.status}"
-            )
+        with self.workspace_store._exclusive():
+            with self._lock:
+                delegation = self._read(delegation_id)
+                if delegation.status not in {"failed", "cancelled", "paused"}:
+                    raise AgentDelegationError(
+                        "only failed, cancelled, or restart-paused delegations can be retried: "
+                        f"{delegation.status}"
+                    )
+                remaining_tokens = max(0, delegation.budget - delegation.tokens_used)
+                if remaining_tokens < 256:
+                    raise AgentDelegationError(
+                        "delegated agent token budget is exhausted; create a new delegation "
+                        f"to grant a new budget ({delegation.tokens_used}/{delegation.budget} used)"
+                    )
+                updated = self._updated(
+                    delegation,
+                    status="queued",
+                    evidence=None,
+                    error=None,
+                    owner_id=None,
+                    generation=delegation.generation + 1,
+                    lease_expires_at=None,
+                    active_request_id=None,
+                )
+                self._write(updated)
         self.workspace_store.update_run(
             delegation.child_run_id,
             status="queued",
@@ -390,13 +512,13 @@ class AgentOrchestrator:
         self.workspace_store.append_event(
             delegation.child_run_id,
             "agent_retry_requested",
-            {"delegation_id": delegation.id, "role": delegation.role},
-        )
-        updated = self._replace(
-            delegation,
-            status="queued",
-            evidence=None,
-            error=None,
+            {
+                "delegation_id": delegation.id,
+                "role": delegation.role,
+                "tokens_used": delegation.tokens_used,
+                "remaining_token_budget": remaining_tokens,
+                "next_attempt": delegation.attempts + 1,
+            },
         )
         self._executor.submit(self._run, updated.id)
         return updated
@@ -581,15 +703,152 @@ class AgentOrchestrator:
             json.dumps(delegation.to_dict(), indent=2, sort_keys=True) + "\n",
         )
 
-    def _replace(self, delegation: AgentDelegation, **changes: Any) -> AgentDelegation:
+    @staticmethod
+    def _updated(
+        delegation: AgentDelegation,
+        **changes: Any,
+    ) -> AgentDelegation:
         payload = {**delegation.to_dict(), **changes}
         payload["permissions"] = tuple(payload.get("permissions") or ())
-        updated = AgentDelegation(
-            **{**payload, "updated_at": utc_now()}
-        )
-        with self._lock:
-            self._write(updated)
-        return updated
+        return AgentDelegation(**{**payload, "updated_at": utc_now()})
+
+    def _replace(self, delegation: AgentDelegation, **changes: Any) -> AgentDelegation:
+        with self.workspace_store._exclusive():
+            with self._lock:
+                current = self._read(delegation.id)
+                updated = self._updated(current, **changes)
+                self._write(updated)
+                return updated
+
+    def _claim(self, delegation_id: str) -> AgentDelegation | None:
+        """Atomically claim one queued delegation across all MTPLX processes."""
+        with self.workspace_store._exclusive():
+            with self._lock:
+                current = self._read(delegation_id)
+                if current.status != "queued":
+                    return None
+                if (
+                    current.owner_id
+                    and current.owner_id != self.owner_id
+                    and deadline_is_live(current.lease_expires_at)
+                ):
+                    return None
+                updated = self._updated(
+                    current,
+                    status="running",
+                    attempts=current.attempts + 1,
+                    owner_id=self.owner_id,
+                    generation=current.generation + 1,
+                    lease_expires_at=utc_after(self.lease_seconds),
+                    active_request_id=None,
+                )
+                self._write(updated)
+                return updated
+
+    def _renew_claim(
+        self,
+        delegation_id: str,
+        generation: int,
+        **changes: Any,
+    ) -> AgentDelegation:
+        with self.workspace_store._exclusive():
+            with self._lock:
+                current = self._read(delegation_id)
+                if (
+                    current.owner_id != self.owner_id
+                    or current.generation != generation
+                    or current.status in {"completed", "failed", "cancelled", "paused"}
+                ):
+                    raise AgentExecutionLeaseLost(
+                        f"execution lease lost for delegation {delegation_id}"
+                    )
+                updated = self._updated(
+                    current,
+                    lease_expires_at=utc_after(self.lease_seconds),
+                    **changes,
+                )
+                self._write(updated)
+                return updated
+
+    def _finish_claim(
+        self,
+        delegation_id: str,
+        generation: int,
+        *,
+        status: str,
+        evidence: Mapping[str, Any] | None = None,
+        error: str | None = None,
+    ) -> AgentDelegation:
+        with self.workspace_store._exclusive():
+            with self._lock:
+                current = self._read(delegation_id)
+                if (
+                    current.owner_id != self.owner_id
+                    or current.generation != generation
+                    or current.status == "cancelled"
+                ):
+                    raise AgentExecutionLeaseLost(
+                        f"execution lease lost for delegation {delegation_id}"
+                    )
+                updated = self._updated(
+                    current,
+                    status=status,
+                    evidence=dict(evidence) if evidence is not None else None,
+                    error=error,
+                    owner_id=None,
+                    lease_expires_at=None,
+                    active_request_id=None,
+                )
+                self._write(updated)
+                return updated
+
+    def _lease_heartbeat(
+        self,
+        delegation_id: str,
+        generation: int,
+        stop_event: threading.Event,
+        cancellation_event: threading.Event,
+    ) -> None:
+        interval = max(0.1, self.lease_seconds / 3.0)
+        while not stop_event.wait(interval):
+            try:
+                self._renew_claim(delegation_id, generation)
+            except (AgentDelegationError, OSError):
+                cancellation_event.set()
+                self._cancel_active_request(delegation_id)
+                return
+
+    def _record_completion_usage(
+        self,
+        delegation_id: str,
+        completion_tokens: int,
+        *,
+        generation: int | None = None,
+    ) -> AgentDelegation:
+        """Checkpoint cumulative usage without overwriting concurrent status changes."""
+        increment = max(0, int(completion_tokens))
+        with self.workspace_store._exclusive():
+            with self._lock:
+                current = self._read(delegation_id)
+                if generation is not None and (
+                    current.owner_id != self.owner_id
+                    or current.generation != generation
+                    or current.status == "cancelled"
+                ):
+                    raise AgentExecutionLeaseLost(
+                        f"execution lease lost for delegation {delegation_id}"
+                    )
+                updated = self._updated(
+                    current,
+                    tokens_used=current.tokens_used + increment,
+                    lease_expires_at=(
+                        utc_after(self.lease_seconds)
+                        if generation is not None
+                        else current.lease_expires_at
+                    ),
+                )
+                self._write(updated)
+                return updated
 
     def _create_worktree(
         self,
@@ -639,9 +898,26 @@ class AgentOrchestrator:
         )
 
     def _run(self, delegation_id: str) -> None:
-        delegation = self.get(delegation_id)
-        if delegation.status == "cancelled":
+        delegation = self._claim(delegation_id)
+        if delegation is None:
             return
+        generation = delegation.generation
+        cancellation_event = threading.Event()
+        heartbeat_stop = threading.Event()
+        with self._lock:
+            self._active_cancellations[delegation.id] = cancellation_event
+        heartbeat = threading.Thread(
+            target=self._lease_heartbeat,
+            args=(
+                delegation.id,
+                generation,
+                heartbeat_stop,
+                cancellation_event,
+            ),
+            name=f"mtplx-agent-lease-{safe_id(delegation.id)[:24]}",
+            daemon=True,
+        )
+        heartbeat.start()
         child_run = self.workspace_store.get_run(delegation.child_run_id)
         self.workspace_store.update_run(child_run.id, status="running")
         self.workspace_store.append_event(
@@ -651,15 +927,27 @@ class AgentOrchestrator:
                 "delegation_id": delegation.id,
                 "role": delegation.role,
                 "worktree_path": delegation.worktree_path,
+                "attempt": delegation.attempts,
+                "tokens_used": delegation.tokens_used,
+                "remaining_token_budget": max(
+                    0, delegation.budget - delegation.tokens_used
+                ),
             },
         )
-        self._replace(delegation, status="running")
         try:
             workspace = self.workspace_store.get_workspace(delegation.workspace_id)
-            evidence = self._run_model_task(delegation, workspace)
-            current = self.get(delegation.id)
-            if current.status == "cancelled":
-                return
+            evidence = self._run_model_task(
+                delegation,
+                workspace,
+                generation=generation,
+                cancellation_event=cancellation_event,
+            )
+            updated = self._finish_claim(
+                delegation.id,
+                generation,
+                status="completed",
+                evidence=evidence,
+            )
             self.workspace_store.append_event(
                 child_run.id,
                 "agent_completed",
@@ -670,7 +958,6 @@ class AgentOrchestrator:
                 },
             )
             self.workspace_store.update_run(child_run.id, status="completed")
-            updated = self._replace(current, status="completed", evidence=evidence)
             if updated.parent_run_id:
                 self.workspace_store.append_event(
                     updated.parent_run_id,
@@ -683,13 +970,28 @@ class AgentOrchestrator:
                         "evidence": evidence,
                     },
                 )
+        except AgentExecutionLeaseLost:
+            return
         except Exception as exc:
+            current = self.get(delegation.id)
+            if current.status == "cancelled" or cancellation_event.is_set():
+                return
             message = f"{type(exc).__name__}: {exc}"
             failed_evidence = (
                 dict(exc.evidence)
                 if isinstance(exc, AgentCompletionEvidenceError)
                 else None
             )
+            try:
+                updated = self._finish_claim(
+                    delegation.id,
+                    generation,
+                    status="failed",
+                    error=message,
+                    evidence=failed_evidence,
+                )
+            except AgentExecutionLeaseLost:
+                return
             self.workspace_store.append_event(
                 child_run.id,
                 "agent_completed",
@@ -701,13 +1003,6 @@ class AgentOrchestrator:
                 },
             )
             self.workspace_store.update_run(child_run.id, status="failed", error=message)
-            current = self.get(delegation.id)
-            updated = self._replace(
-                current,
-                status="failed",
-                error=message,
-                evidence=failed_evidence,
-            )
             if updated.parent_run_id:
                 self.workspace_store.append_event(
                     updated.parent_run_id,
@@ -721,11 +1016,19 @@ class AgentOrchestrator:
                         "evidence": failed_evidence,
                     },
                 )
+        finally:
+            heartbeat_stop.set()
+            with self._lock:
+                if self._active_cancellations.get(delegation.id) is cancellation_event:
+                    self._active_cancellations.pop(delegation.id, None)
 
     def _run_model_task(
         self,
         delegation: AgentDelegation,
         workspace: Workspace,
+        *,
+        generation: int,
+        cancellation_event: threading.Event,
     ) -> dict[str, Any]:
         root = Path(delegation.worktree_path or workspace.root_path).expanduser().resolve()
         parent_root = Path(workspace.root_path).expanduser().resolve()
@@ -783,14 +1086,23 @@ class AgentOrchestrator:
             {"role": "user", "content": user_prompt},
         ]
         tools = self.tool_service.definitions(delegation.permissions)
-        remaining_tokens = delegation.budget
-        used_tokens = 0
+        used_tokens = max(0, delegation.tokens_used)
+        attempt_start_tokens = used_tokens
+        remaining_tokens = max(0, delegation.budget - used_tokens)
+        if remaining_tokens < 256:
+            raise AgentDelegationError(
+                "delegated agent token budget is exhausted before execution "
+                f"({used_tokens}/{delegation.budget} used)"
+            )
         rounds = 0
         final_summary = ""
         response_model = delegation.model
         while rounds < 12 and remaining_tokens >= 256:
-            if self.get(delegation.id).status == "cancelled":
-                break
+            if cancellation_event.is_set():
+                raise AgentExecutionLeaseLost(
+                    f"execution cancelled for delegation {delegation.id}"
+                )
+            self._renew_claim(delegation.id, generation)
             rounds += 1
             response = self._chat_completion(
                 model=delegation.model,
@@ -799,6 +1111,7 @@ class AgentOrchestrator:
                 agent_id=delegation.id,
                 agent_role=delegation.role,
                 max_tokens=remaining_tokens,
+                generation=generation,
             )
             response_model = str(response.get("model") or response_model or "") or None
             completion_tokens = _completion_tokens(response)
@@ -806,8 +1119,18 @@ class AgentOrchestrator:
             content = _message_content(message)
             tool_calls = _response_tool_calls(message)
             if completion_tokens <= 0:
-                completion_tokens = max(1, len(content) // 4)
-            used_tokens += completion_tokens
+                serialized_calls = json.dumps(
+                    tool_calls,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                completion_tokens = max(1, (len(content) + len(serialized_calls)) // 4)
+            current_usage = self._record_completion_usage(
+                delegation.id,
+                completion_tokens,
+                generation=generation,
+            )
+            used_tokens = current_usage.tokens_used
             remaining_tokens = max(0, delegation.budget - used_tokens)
             self.workspace_store.append_event(
                 delegation.child_run_id,
@@ -820,6 +1143,18 @@ class AgentOrchestrator:
                     "completion_tokens": completion_tokens,
                 },
             )
+            self.workspace_store.append_event(
+                delegation.child_run_id,
+                "agent_budget_updated",
+                {
+                    "delegation_id": delegation.id,
+                    "attempt": delegation.attempts,
+                    "completion_tokens": completion_tokens,
+                    "tokens_used": used_tokens,
+                    "token_budget": delegation.budget,
+                    "remaining_token_budget": remaining_tokens,
+                },
+            )
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": content or None,
@@ -830,10 +1165,17 @@ class AgentOrchestrator:
             if not tool_calls:
                 final_summary = content
                 break
-            for call in tool_calls:
-                if self.get(delegation.id).status == "cancelled":
-                    break
+            for call_index, call in enumerate(tool_calls):
+                if cancellation_event.is_set():
+                    raise AgentExecutionLeaseLost(
+                        f"execution cancelled for delegation {delegation.id}"
+                    )
+                self._renew_claim(delegation.id, generation)
                 call_id, tool_name, arguments, argument_error = _decode_tool_call(call)
+                idempotency_key = (
+                    f"agent:{delegation.id}:attempt:{delegation.attempts}:"
+                    f"round:{rounds}:call:{safe_id(call_id, fallback=str(call_index))}"
+                )
                 if argument_error:
                     tool_result = {
                         "ok": False,
@@ -855,11 +1197,18 @@ class AgentOrchestrator:
                         root_override=root,
                         permissions=delegation.permissions,
                         executor_id=delegation.id,
+                        idempotency_key=idempotency_key,
+                        cancellation_event=cancellation_event,
                     )
                     if tool_result.get("status") == "approval_required":
                         approval = tool_result.get("approval") or {}
                         approval_id = str(approval.get("id") or "")
-                        resolved = self._wait_for_approval(delegation.id, approval_id)
+                        resolved = self._wait_for_approval(
+                            delegation.id,
+                            approval_id,
+                            generation=generation,
+                            cancellation_event=cancellation_event,
+                        )
                         if resolved == "approved":
                             tool_result = self.tool_service.execute(
                                 workspace.id,
@@ -870,6 +1219,8 @@ class AgentOrchestrator:
                                 root_override=root,
                                 permissions=delegation.permissions,
                                 executor_id=delegation.id,
+                                idempotency_key=idempotency_key,
+                                cancellation_event=cancellation_event,
                             )
                         else:
                             tool_result = {
@@ -895,7 +1246,12 @@ class AgentOrchestrator:
                         "content": json.dumps(tool_result, ensure_ascii=False, default=str),
                     }
                 )
-        if self.get(delegation.id).status != "cancelled" and not final_summary.strip():
+        if cancellation_event.is_set():
+            raise AgentExecutionLeaseLost(
+                f"execution cancelled for delegation {delegation.id}"
+            )
+        self._renew_claim(delegation.id, generation)
+        if not final_summary.strip():
             raise AgentDelegationError(
                 "delegated agent exhausted its round or token budget without a final response"
             )
@@ -920,7 +1276,10 @@ class AgentOrchestrator:
             "permissions": list(delegation.permissions),
             "model": response_model,
             "token_budget": delegation.budget,
-            "completion_tokens_used": used_tokens,
+            "completion_tokens_used": used_tokens - attempt_start_tokens,
+            "cumulative_completion_tokens_used": used_tokens,
+            "remaining_token_budget": max(0, delegation.budget - used_tokens),
+            "attempt": delegation.attempts,
             "context_window": delegation.context_window,
             "tool_rounds": rounds,
             "summary": final_summary,
@@ -967,20 +1326,33 @@ class AgentOrchestrator:
             default=str,
         )[-100_000:]
 
-    def _wait_for_approval(self, delegation_id: str, approval_id: str) -> str:
+    def _wait_for_approval(
+        self,
+        delegation_id: str,
+        approval_id: str,
+        *,
+        generation: int,
+        cancellation_event: threading.Event,
+    ) -> str:
         if not approval_id:
             return "invalid"
-        current = self.get(delegation_id)
-        if current.status != "cancelled":
-            self._replace(current, status="waiting_approval")
+        self._renew_claim(
+            delegation_id,
+            generation,
+            status="waiting_approval",
+        )
         while True:
-            current = self.get(delegation_id)
-            if current.status == "cancelled":
-                return "cancelled"
+            if cancellation_event.is_set():
+                raise AgentExecutionLeaseLost(
+                    f"execution cancelled for delegation {delegation_id}"
+                )
             approval = self.workspace_store.get_approval(approval_id)
             if approval.status != "pending":
-                if current.status != "cancelled":
-                    self._replace(current, status="running")
+                self._renew_claim(
+                    delegation_id,
+                    generation,
+                    status="running",
+                )
                 return approval.status
             time.sleep(0.25)
 
@@ -993,6 +1365,7 @@ class AgentOrchestrator:
         agent_id: str,
         agent_role: str = "delegated",
         max_tokens: int = 2400,
+        generation: int | None = None,
     ) -> dict[str, Any]:
         base_url = str(
             os.environ.get("MTPLX_BASE_URL")
@@ -1005,6 +1378,12 @@ class AgentOrchestrator:
             "max_tokens": max(256, min(int(max_tokens), 16384)),
             "metadata": {"agent_id": agent_id, "agent_role": agent_role},
         }
+        request_hint = (
+            f"agent-{safe_id(agent_id, fallback='delegation')[:48]}-"
+            f"{uuid.uuid4().hex[:12]}"
+        )
+        response_id = f"chatcmpl-{request_hint}"
+        request_body["metadata"]["mtplx_request_id"] = request_hint
         if tools:
             request_body["tools"] = tools
             request_body["tool_choice"] = "auto"
@@ -1017,9 +1396,18 @@ class AgentOrchestrator:
                 "Accept": "application/json",
                 **self._auth_header(),
                 "X-MTPLX-Agent-Id": agent_id,
+                "X-MTPLX-Request-Id": request_hint,
             },
             method="POST",
         )
+        if generation is not None:
+            self._renew_claim(
+                agent_id,
+                generation,
+                active_request_id=response_id,
+            )
+        with self._lock:
+            self._active_requests[agent_id] = response_id
         try:
             with urlopen(request, timeout=180) as response:
                 body = json.loads(response.read().decode("utf-8"))
@@ -1028,9 +1416,68 @@ class AgentOrchestrator:
             raise AgentDelegationError(f"MTPLX model request failed ({exc.code}): {detail}") from exc
         except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
             raise AgentDelegationError(f"MTPLX model request unavailable: {exc}") from exc
+        finally:
+            with self._lock:
+                if self._active_requests.get(agent_id) == response_id:
+                    self._active_requests.pop(agent_id, None)
+            if generation is not None:
+                try:
+                    current = self.get(agent_id)
+                    if current.active_request_id == response_id:
+                        self._renew_claim(
+                            agent_id,
+                            generation,
+                            active_request_id=None,
+                        )
+                except AgentDelegationError:
+                    pass
         if not isinstance(body, dict) or body.get("error"):
             raise AgentDelegationError(f"MTPLX model returned an error: {body}")
         return body
+
+    def _cancel_active_request(
+        self,
+        delegation_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            request_id = request_id or self._active_requests.get(delegation_id)
+        if not request_id:
+            return {
+                "request_id": None,
+                "cancel_endpoint_reached": False,
+                "cancelled": False,
+            }
+        base_url = str(
+            os.environ.get("MTPLX_BASE_URL")
+            or f"http://127.0.0.1:{int(getattr(getattr(self.state, 'args', None), 'port', 8000) or 8000)}"
+        ).rstrip("/")
+        request = Request(
+            f"{base_url}/v1/mtplx/cancel/{quote(request_id, safe='')}",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                **self._auth_header(),
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            return {
+                "request_id": request_id,
+                "cancel_endpoint_reached": False,
+                "cancelled": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {
+            "request_id": request_id,
+            "cancel_endpoint_reached": True,
+            "cancelled": bool(body.get("cancelled")) if isinstance(body, dict) else False,
+        }
 
     def _auth_header(self) -> dict[str, str]:
         key = getattr(getattr(self.state, "args", None), "api_key", None)

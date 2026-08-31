@@ -176,6 +176,41 @@ final class AgentGraphModelsTests: XCTestCase {
         XCTAssertEqual(run.resourceMetrics.values["steps_completed"]?.intValue, 2)
     }
 
+    func testDelegationDecodesDurableBudgetUsageAndAttempts() throws {
+        let json = #"""
+        {
+          "id": "delegation-1",
+          "workspace_id": "workspace",
+          "parent_run_id": "parent-run",
+          "child_run_id": "child-run",
+          "role": "reviewer",
+          "permissions": ["read", "search"],
+          "prompt": "Review it",
+          "model": "local-model",
+          "budget": 512,
+          "context_window": 65536,
+          "profile_sha256": "profile-sha",
+          "status": "running",
+          "created_at": "2026-08-29T18:00:00Z",
+          "updated_at": "2026-08-29T18:01:00Z",
+          "worktree_path": "/tmp/worktree",
+          "worktree_commit": "abc123",
+          "source_delegation_id": null,
+          "tokens_used": 300,
+          "attempts": 2,
+          "evidence": null,
+          "error": null
+        }
+        """#
+        let delegation = try MTPLXAPIClient.makeDefaultDecoder().decode(
+            AgentDelegation.self,
+            from: Data(json.utf8)
+        )
+        XCTAssertEqual(delegation.tokensUsed, 300)
+        XCTAssertEqual(delegation.remainingTokenBudget, 212)
+        XCTAssertEqual(delegation.attempts, 2)
+    }
+
     func testGraphApprovalRequestUsesExactAPIFieldNames() throws {
         let request = AgentGraphApprovalRequest(
             approvalID: "approval-1",
@@ -189,6 +224,71 @@ final class AgentGraphModelsTests: XCTestCase {
         XCTAssertEqual(object["approval_id"] as? String, "approval-1")
         XCTAssertEqual(object["resolved_by"] as? String, "desktop")
         XCTAssertEqual(object["resume"] as? Bool, true)
+    }
+
+    func testGraphRunApprovalsUsesRunScopedPendingEndpoint() async throws {
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/mtplx/graph-runs/run-1/approvals")
+            let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)
+            XCTAssertEqual(
+                Dictionary(uniqueKeysWithValues: query?.queryItems?.compactMap { item in
+                    item.value.map { (item.name, $0) }
+                } ?? []),
+                ["status": "pending", "limit": "100"]
+            )
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )
+            )
+            return (
+                response,
+                Data(
+                    #"""
+                    {
+                      "run_id": "run-1",
+                      "approvals": [{
+                        "id": "approval-1",
+                        "workspace_id": "workspace",
+                        "run_id": "run-1",
+                        "tool": "shell",
+                        "action": "execute",
+                        "description": "Run the verification command",
+                        "target": "swift test",
+                        "risk": "medium",
+                        "status": "pending",
+                        "created_at": "2026-08-29T18:00:00Z",
+                        "arguments": {"command": "swift test"},
+                        "arguments_sha256": "abc123",
+                        "expires_at": "2026-08-29T18:10:00Z",
+                        "resolved_at": null,
+                        "resolved_by": null,
+                        "reason": null,
+                        "consumed_at": null,
+                        "consumed_by": null
+                      }]
+                    }
+                    """#.utf8
+                )
+            )
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        let client = MTPLXAPIClient(
+            baseURL: URL(string: "http://127.0.0.1:9")!,
+            session: URLSession(configuration: configuration)
+        )
+
+        let payload = try await client.graphRunApprovals(runID: "run-1")
+
+        XCTAssertEqual(payload.runID, "run-1")
+        XCTAssertEqual(payload.approvals.map(\.id), ["approval-1"])
+        XCTAssertEqual(payload.approvals.first?.target, "swift test")
     }
 
     func testGraphLifecycleRequestsUseExactEndpointsAndBodies() async throws {

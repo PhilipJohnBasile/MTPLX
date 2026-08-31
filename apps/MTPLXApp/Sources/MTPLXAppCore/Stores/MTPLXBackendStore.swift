@@ -214,6 +214,7 @@ public final class MTPLXBackendStore: ObservableObject {
     @Published public private(set) var graphRuns: [AgentGraphRun] = []
     @Published public private(set) var activeGraphRun: AgentGraphRun?
     @Published public private(set) var activeGraphRunEvents: [AgentRunEvent] = []
+    @Published public private(set) var activeGraphRunApprovals: [AgentApproval] = []
     @Published public private(set) var workspaceError: String?
     @Published public var activeWorkspaceID: String?
     @Published public var activeRunID: String?
@@ -1579,6 +1580,7 @@ public final class MTPLXBackendStore: ObservableObject {
         graphRuns = []
         activeGraphRun = nil
         activeGraphRunEvents = []
+        activeGraphRunApprovals = []
         workspaceError = nil
         activeWorkspaceID = nil
         activeGraphRunID = nil
@@ -1672,6 +1674,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 activeGraphRun = nil
                 activeGraphRunID = nil
                 activeGraphRunEvents = []
+                activeGraphRunApprovals = []
             }
             workspaceError = nil
         } catch {
@@ -1704,6 +1707,7 @@ public final class MTPLXBackendStore: ObservableObject {
         activeGraphRun = nil
         activeGraphRunID = nil
         activeGraphRunEvents = []
+        activeGraphRunApprovals = []
         return workspace
     }
 
@@ -1721,6 +1725,7 @@ public final class MTPLXBackendStore: ObservableObject {
             activeGraphRun = nil
             activeGraphRunID = nil
             activeGraphRunEvents = []
+            activeGraphRunApprovals = []
             return
         }
         if let payload = try? await apiClient.runs(workspaceID: workspaceID) {
@@ -1779,6 +1784,7 @@ public final class MTPLXBackendStore: ObservableObject {
             activeGraphRun = nil
             activeGraphRunID = nil
             activeGraphRunEvents = []
+            activeGraphRunApprovals = []
             return
         }
         do {
@@ -1786,6 +1792,7 @@ public final class MTPLXBackendStore: ObservableObject {
             async let runs = apiClient.graphRuns(workspaceID: workspaceID)
             let definitionPayload = try await definitions
             let runPayload = try await runs
+            guard activeWorkspaceID == workspaceID else { return }
             graphDefinitions = definitionPayload.graphs
             graphRuns = runPayload.runs
             let selected = graphRuns.first(where: { $0.id == activeGraphRunID })
@@ -1793,18 +1800,32 @@ public final class MTPLXBackendStore: ObservableObject {
             activeGraphRun = selected
             activeGraphRunID = selected?.id
             if let selected {
-                activeGraphRunEvents = try await apiClient.graphRunEvents(
-                    runID: selected.id
-                ).events
+                async let events = apiClient.graphRunEvents(runID: selected.id)
+                async let approvals = apiClient.graphRunApprovals(runID: selected.id)
+                let eventPayload = try await events
+                let approvalPayload = try await approvals
+                guard activeWorkspaceID == workspaceID,
+                      activeGraphRunID == selected.id else { return }
+                activeGraphRunEvents = eventPayload.events
+                activeGraphRunApprovals = approvalPayload.approvals.filter {
+                    $0.status == "pending"
+                }
             } else {
                 activeGraphRunEvents = []
+                activeGraphRunApprovals = []
+            }
+            if let approvals = try? await apiClient.approvals(workspaceID: workspaceID),
+               activeWorkspaceID == workspaceID {
+                pendingApprovals = approvals.approvals.filter { $0.status == "pending" }
             }
         } catch {
+            guard activeWorkspaceID == workspaceID else { return }
             graphDefinitions = []
             graphRuns = []
             activeGraphRun = nil
             activeGraphRunID = nil
             activeGraphRunEvents = []
+            activeGraphRunApprovals = []
             workspaceError = error.localizedDescription
         }
     }
@@ -1814,11 +1835,23 @@ public final class MTPLXBackendStore: ObservableObject {
         guard let runID else {
             activeGraphRun = nil
             activeGraphRunEvents = []
+            activeGraphRunApprovals = []
             return
         }
         do {
-            activeGraphRun = try await apiClient.graphRun(runID: runID)
-            activeGraphRunEvents = try await apiClient.graphRunEvents(runID: runID).events
+            async let run = apiClient.graphRun(runID: runID)
+            async let events = apiClient.graphRunEvents(runID: runID)
+            async let approvals = apiClient.graphRunApprovals(runID: runID)
+            let selected = try await run
+            let eventPayload = try await events
+            let approvalPayload = try await approvals
+            guard activeGraphRunID == runID,
+                  activeWorkspaceID == selected.workspaceID else { return }
+            activeGraphRun = selected
+            activeGraphRunEvents = eventPayload.events
+            activeGraphRunApprovals = approvalPayload.approvals.filter {
+                $0.status == "pending"
+            }
         } catch {
             workspaceError = error.localizedDescription
         }
@@ -1891,6 +1924,9 @@ public final class MTPLXBackendStore: ObservableObject {
             graphRuns.insert(run, at: 0)
         }
         activeGraphRunEvents = (try? await apiClient.graphRunEvents(runID: run.id).events) ?? []
+        activeGraphRunApprovals = (try? await apiClient.graphRunApprovals(
+            runID: run.id
+        ).approvals.filter { $0.status == "pending" }) ?? []
         pendingApprovals = (try? await apiClient.approvals(
             workspaceID: run.workspaceID
         ).approvals.filter { $0.status == "pending" }) ?? pendingApprovals

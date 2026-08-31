@@ -1,8 +1,11 @@
 import json
 import subprocess
+import threading
 import time
 
-from mtplx.agent_orchestrator import AgentOrchestrator
+import pytest
+
+from mtplx.agent_orchestrator import AgentDelegationError, AgentOrchestrator
 from mtplx.agent_workspace import WorkspaceStore
 from mtplx.workspace_tools import WorkspaceToolService
 
@@ -408,6 +411,14 @@ def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path):
     workspace = store.create_workspace("MTPLX", str(project), model="test-model")
     orchestrator = AgentOrchestrator(store)
     delegation = orchestrator.delegate(workspace.id, role="reviewer", start=False)
+    delegation = orchestrator._replace(
+        delegation,
+        status="running",
+        owner_id="dead-orchestrator",
+        generation=1,
+        lease_expires_at="2000-01-01T00:00:00Z",
+    )
+    store.update_run(delegation.child_run_id, status="running")
     orchestrator.close()
 
     restarted = AgentOrchestrator(store)
@@ -427,6 +438,292 @@ def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path):
         if delegation.worktree_path:
             _git(project, "worktree", "remove", "--force", delegation.worktree_path)
         restarted.close()
+
+
+def test_durable_execution_claim_prevents_duplicate_worker_and_allows_expired_claim(
+    tmp_path,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "README.md").write_text("# MTPLX\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "add", "README.md")
+    _git(
+        project,
+        "-c",
+        "user.name=MTPLX Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "initial",
+    )
+
+    state_root = tmp_path / "state"
+    store_a = WorkspaceStore(state_root)
+    workspace = store_a.create_workspace("MTPLX", str(project), model="test-model")
+    orchestrator_a = AgentOrchestrator(store_a, owner_id="owner-a")
+    orchestrator_b = AgentOrchestrator(
+        WorkspaceStore(state_root),
+        owner_id="owner-b",
+    )
+    delegation = orchestrator_a.delegate(
+        workspace.id,
+        role="reviewer",
+        start=False,
+    )
+    try:
+        claimed = orchestrator_a._claim(delegation.id)
+        assert claimed is not None
+        assert claimed.owner_id == "owner-a"
+        assert claimed.status == "running"
+        assert claimed.generation == 1
+        assert claimed.attempts == 1
+        assert orchestrator_b._claim(delegation.id) is None
+
+        queued = orchestrator_a._replace(
+            claimed,
+            status="queued",
+            owner_id="dead-owner",
+            lease_expires_at="2000-01-01T00:00:00Z",
+        )
+        reclaimed = orchestrator_b._claim(queued.id)
+        assert reclaimed is not None
+        assert reclaimed.owner_id == "owner-b"
+        assert reclaimed.generation == 2
+        assert reclaimed.attempts == 2
+    finally:
+        if delegation.worktree_path:
+            _git(project, "worktree", "remove", "--force", delegation.worktree_path)
+        orchestrator_a.close()
+        orchestrator_b.close()
+
+
+def test_retry_preserves_durable_token_budget_and_attempt_accounting(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "README.md").write_text("# MTPLX\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "add", "README.md")
+    _git(
+        project,
+        "-c",
+        "user.name=MTPLX Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "initial",
+    )
+
+    store = WorkspaceStore(tmp_path / "state")
+    workspace = store.create_workspace("MTPLX", str(project), model="test-model")
+    orchestrator = AgentOrchestrator(
+        store,
+        tool_service=WorkspaceToolService(store, sandbox_mode="off"),
+    )
+    requested_budgets: list[int] = []
+    responses = iter(
+        [
+            {
+                "model": "test-model",
+                "usage": {"completion_tokens": 200},
+                "choices": [
+                    {"message": {"content": "No structured review evidence."}}
+                ],
+            },
+            {
+                "model": "test-model",
+                "usage": {"completion_tokens": 50},
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_inspect_retry",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "inspect_repo",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            },
+            {
+                "model": "test-model",
+                "usage": {"completion_tokens": 100},
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "No blocking findings.\n"
+                                'MTPLX_REVIEW: {"verdict":"approved",'
+                                '"blocking_findings":[],"notes":"verified"}'
+                            )
+                        }
+                    }
+                ],
+            },
+        ]
+    )
+
+    def completion(**kwargs):
+        requested_budgets.append(kwargs["max_tokens"])
+        return next(responses)
+
+    orchestrator._chat_completion = completion
+    try:
+        delegation = orchestrator.delegate(
+            workspace.id,
+            role="reviewer",
+            budget=512,
+            start=True,
+        )
+        for _ in range(100):
+            failed = orchestrator.get(delegation.id)
+            if failed.status == "failed":
+                break
+            time.sleep(0.05)
+
+        failed = orchestrator.get(delegation.id)
+        assert failed.status == "failed"
+        assert failed.tokens_used == 200
+        assert failed.attempts == 1
+
+        orchestrator.retry(failed.id)
+        for _ in range(100):
+            completed = orchestrator.get(delegation.id)
+            if completed.status in {"completed", "failed"}:
+                break
+            time.sleep(0.05)
+
+        completed = orchestrator.get(delegation.id)
+        assert completed.status == "completed", completed.error
+        assert requested_budgets == [512, 312, 262]
+        assert completed.tokens_used == 350
+        assert completed.attempts == 2
+        assert completed.evidence["completion_tokens_used"] == 150
+        assert completed.evidence["cumulative_completion_tokens_used"] == 350
+        assert completed.evidence["remaining_token_budget"] == 162
+        budget_events = [
+            event
+            for event in store.list_events(completed.child_run_id)
+            if event.kind == "agent_budget_updated"
+        ]
+        assert [event.payload["tokens_used"] for event in budget_events] == [
+            200,
+            250,
+            350,
+        ]
+
+        exhausted = orchestrator._replace(
+            completed,
+            status="failed",
+            tokens_used=completed.budget,
+        )
+        with pytest.raises(AgentDelegationError, match="token budget is exhausted"):
+            orchestrator.retry(exhausted.id)
+    finally:
+        if delegation.worktree_path:
+            _git(project, "worktree", "remove", "--force", delegation.worktree_path)
+        orchestrator.close()
+
+
+def test_cancel_interrupts_in_flight_agent_model_request(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "README.md").write_text("# MTPLX\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "add", "README.md")
+    _git(
+        project,
+        "-c",
+        "user.name=MTPLX Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "initial",
+    )
+
+    store = WorkspaceStore(tmp_path / "state")
+    workspace = store.create_workspace("MTPLX", str(project), model="test-model")
+    orchestrator = AgentOrchestrator(store)
+    model_started = threading.Event()
+    model_cancelled = threading.Event()
+    request_hints: list[str] = []
+    cancelled_ids: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(self.body).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        if "/v1/chat/completions" in request.full_url:
+            request_hint = request.get_header("X-mtplx-request-id")
+            request_hints.append(request_hint)
+            model_started.set()
+            assert model_cancelled.wait(timeout=2)
+            return FakeResponse(
+                {
+                    "model": "test-model",
+                    "usage": {"completion_tokens": 16},
+                    "choices": [{"message": {"content": "cancelled"}}],
+                }
+            )
+        assert "/v1/mtplx/cancel/" in request.full_url
+        cancelled_ids.append(request.full_url.rsplit("/", 1)[-1])
+        model_cancelled.set()
+        return FakeResponse({"ok": True, "cancelled": True})
+
+    monkeypatch.setattr("mtplx.agent_orchestrator.urlopen", fake_urlopen)
+    try:
+        delegation = orchestrator.delegate(
+            workspace.id,
+            role="reviewer",
+            budget=512,
+            start=True,
+        )
+        assert model_started.wait(timeout=2)
+        cancelled = orchestrator.cancel(delegation.id)
+        assert cancelled.status == "cancelled"
+        assert model_cancelled.is_set()
+
+        for _ in range(100):
+            current = orchestrator.get(delegation.id)
+            if not orchestrator._active_requests:
+                break
+            time.sleep(0.02)
+        current = orchestrator.get(delegation.id)
+        assert current.status == "cancelled"
+        assert store.get_run(current.child_run_id).status == "cancelled"
+        assert request_hints
+        assert cancelled_ids == [f"chatcmpl-{request_hints[0]}"]
+        cancellation_event = next(
+            event
+            for event in store.list_events(current.child_run_id)
+            if event.kind == "agent_model_cancel_requested"
+        )
+        assert cancellation_event.payload["cancel_endpoint_reached"] is True
+        assert cancellation_event.payload["cancelled"] is True
+        assert cancellation_event.payload["request_id"] == cancelled_ids[0]
+    finally:
+        if delegation.worktree_path:
+            _git(project, "worktree", "remove", "--force", delegation.worktree_path)
+        orchestrator.close()
 
 
 def test_implementer_approval_tool_loop_review_and_guarded_integration(tmp_path):

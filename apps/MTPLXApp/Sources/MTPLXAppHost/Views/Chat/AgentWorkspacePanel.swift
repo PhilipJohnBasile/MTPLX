@@ -284,6 +284,23 @@ struct AgentWorkspacePanel: View {
                         Text("\(delegation.role) · \(delegation.status)")
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(delegation.status == "completed" ? Brand.success : Brand.typeSecondary)
+                        if let tokensUsed = delegation.tokensUsed {
+                            Text(
+                                "Budget \(tokensUsed)/\(delegation.budget) tok · "
+                                    + "\(delegation.remainingTokenBudget) left · "
+                                    + "attempt \(delegation.attempts ?? 0)"
+                            )
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(
+                                delegation.remainingTokenBudget < 256
+                                    ? Brand.warning
+                                    : Brand.typeTertiary
+                            )
+                        } else {
+                            Text("Budget \(delegation.budget) tok")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(Brand.typeTertiary)
+                        }
                         if let error = delegation.error {
                             Text(error)
                                 .font(.system(size: 9, design: .monospaced))
@@ -418,10 +435,16 @@ struct AgentWorkspacePanel: View {
                             .lineLimit(3)
                     }
                     if let approvalID = run.pendingApprovalID {
-                        Text("Approval pending · \(approvalID)")
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(Brand.warning)
-                            .lineLimit(2)
+                        if let approval = backend.activeGraphRunApprovals.first(where: {
+                            $0.id == approvalID
+                        }) {
+                            graphApprovalCard(approval)
+                        } else {
+                            Text("Approval pending · \(approvalID)")
+                                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Brand.warning)
+                                .lineLimit(2)
+                        }
                     }
                     ForEach(graphNodeIDs(run), id: \.self) { nodeID in
                         graphNodeRow(run: run, nodeID: nodeID)
@@ -582,6 +605,43 @@ struct AgentWorkspacePanel: View {
         } catch {
             panelError = "Graph inputs must be one valid JSON object: \(error.localizedDescription)"
         }
+    }
+
+    private func graphApprovalCard(_ approval: AgentApproval) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(approval.action)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Brand.warning)
+            Text(approval.target ?? approval.description)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(Brand.typeSecondary)
+                .lineLimit(3)
+            HStack(spacing: 6) {
+                Text("Risk \(approval.risk)")
+                if let hash = approval.argumentsSHA256 {
+                    Text("args \(hash.prefix(10))")
+                }
+                if let expiry = approval.expiresAt {
+                    Text("expires \(expiry.formatted(date: .omitted, time: .shortened))")
+                }
+            }
+            .font(.system(size: 8, design: .monospaced))
+            .foregroundStyle(Brand.typeTertiary)
+            HStack(spacing: 6) {
+                Button("Allow") {
+                    Task { await backend.resolveApproval(approval, decision: "approved") }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                Button("Deny") {
+                    Task { await backend.resolveApproval(approval, decision: "denied") }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+        .padding(7)
+        .background(Brand.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func graphFailedNodeHasSideEffect(_ run: AgentGraphRun) -> Bool {

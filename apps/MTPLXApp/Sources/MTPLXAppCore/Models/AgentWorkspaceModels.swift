@@ -358,6 +358,16 @@ public struct AgentGraphApprovalResponse: Codable, Equatable, Sendable {
     public let approval: AgentApproval
 }
 
+public struct AgentGraphApprovalsPayload: Codable, Equatable, Sendable {
+    public let runID: String
+    public let approvals: [AgentApproval]
+
+    private enum CodingKeys: String, CodingKey {
+        case runID = "run_id"
+        case approvals
+    }
+}
+
 public struct AgentGraphApprovalRequest: Encodable, Sendable {
     public let approvalID: String
     public let decision: String
@@ -405,8 +415,14 @@ public struct AgentDelegation: Codable, Equatable, Sendable, Identifiable {
     public let worktreePath: String?
     public let worktreeCommit: String?
     public let sourceDelegationID: String?
+    public let tokensUsed: Int?
+    public let attempts: Int?
     public let evidence: DynamicObject?
     public let error: String?
+
+    public var remainingTokenBudget: Int {
+        max(0, budget - (tokensUsed ?? 0))
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -421,6 +437,8 @@ public struct AgentDelegation: Codable, Equatable, Sendable, Identifiable {
         case worktreePath = "worktree_path"
         case worktreeCommit = "worktree_commit"
         case sourceDelegationID = "source_delegation_id"
+        case tokensUsed = "tokens_used"
+        case attempts
         case evidence, error
     }
 }
