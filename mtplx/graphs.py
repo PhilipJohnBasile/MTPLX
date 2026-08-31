@@ -729,8 +729,8 @@ class GraphNode:
     approval: dict[str, Any] = field(default_factory=dict)
     priority: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, schema_version: int = GRAPH_SCHEMA_VERSION) -> dict[str, Any]:
+        value = {
             "id": self.id,
             "type": self.type,
             "name": self.name,
@@ -738,8 +738,10 @@ class GraphNode:
             "timeout_seconds": self.timeout_seconds,
             "retry": dict(self.retry),
             "approval": dict(self.approval),
-            "priority": self.priority,
         }
+        if schema_version >= 2:
+            value["priority"] = self.priority
+        return value
 
 
 @dataclass(frozen=True)
@@ -792,7 +794,9 @@ class GraphDefinition:
             "revision": self.revision,
             "inputs": dict(self.inputs),
             "outputs": dict(self.outputs),
-            "nodes": [node.to_dict() for node in self.nodes],
+            "nodes": [
+                node.to_dict(schema_version=self.schema_version) for node in self.nodes
+            ],
             "edges": [edge.to_dict() for edge in self.edges],
             "limits": dict(self.limits),
             "policies": dict(self.policies),
@@ -800,11 +804,12 @@ class GraphDefinition:
             "retry": dict(self.retry),
             "timeout_seconds": self.timeout_seconds,
             "approval_requirements": dict(self.approval_requirements),
-            "schedule": dict(self.schedule),
-            "layout": dict(self.layout),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        if self.schema_version >= 2:
+            value["schedule"] = dict(self.schedule)
+            value["layout"] = dict(self.layout)
         if include_hash:
             value["content_sha256"] = self.content_sha256
         return value

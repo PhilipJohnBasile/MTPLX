@@ -1,4 +1,5 @@
 import copy
+import json
 
 import pytest
 
@@ -6,6 +7,7 @@ from mtplx.agent_workspace import WorkspaceConflictError, WorkspaceStore
 from mtplx.graphs import (
     GraphStore,
     GraphValidationError,
+    _canonical_sha256,
     validate_graph_payload,
 )
 
@@ -210,6 +212,33 @@ def test_graph_store_pins_revisions_hashes_and_run_checkpoints(tmp_path):
             expected_state_version=run.state_version,
             status="paused",
         )
+
+
+def test_graph_store_loads_legacy_v1_revision_after_v2_serializer_upgrade(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace_store = WorkspaceStore(tmp_path / "state")
+    workspace = workspace_store.create_workspace("Project", str(project))
+    store = GraphStore(workspace_store)
+    created = store.create(_graph_payload(workspace.id))
+
+    legacy = created.to_dict(include_hash=False)
+    legacy.pop("schedule", None)
+    legacy.pop("layout", None)
+    for node in legacy["nodes"]:
+        node.pop("priority", None)
+    legacy["content_sha256"] = _canonical_sha256(legacy)
+    store._revision_path(created.id, created.revision).write_text(
+        json.dumps(legacy, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = store.get(created.id)
+    assert loaded.schema_version == 1
+    assert loaded.content_sha256 == legacy["content_sha256"]
+    assert "schedule" not in loaded.to_dict(include_hash=False)
+    assert "layout" not in loaded.to_dict(include_hash=False)
+    assert "priority" not in loaded.to_dict(include_hash=False)["nodes"][0]
 
 
 def test_graph_contracts_apply_defaults_and_reject_invalid_run_inputs(tmp_path):
