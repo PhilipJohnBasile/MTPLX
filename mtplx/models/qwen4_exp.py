@@ -1468,11 +1468,26 @@ def _qsa_prefill_enabled() -> bool:
     """
 
     raw = (os.environ.get("MTPLX_QSA_PREFILL") or "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
     if raw in {"0", "false", "no", "off"}:
         return False
-    return qsa_prefill_lane_auto_supported()
+    if raw in {"1", "true", "yes", "on"}:
+        # Even an explicit ON must fail closed to dense when the Metal SDK
+        # cannot compile the MPP pipelines (macOS 27, issue #404): honoring
+        # the env verbatim there turns into a guaranteed mid-request 500.
+        # The probe prints its own diagnostic when it says no.
+        return _qsa_prefill_mpp_compile_ok()
+    return qsa_prefill_lane_auto_supported() and _qsa_prefill_mpp_compile_ok()
+
+
+def _qsa_prefill_mpp_compile_ok() -> bool:
+    try:
+        from mtplx.kernels.qsa_prefill_probe import (
+            qsa_prefill_mpp_compile_supported,
+        )
+
+        return bool(qsa_prefill_mpp_compile_supported())
+    except Exception:
+        return False
 
 
 def _qsa_prefill_min_rows() -> int:
