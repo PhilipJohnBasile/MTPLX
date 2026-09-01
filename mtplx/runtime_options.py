@@ -69,9 +69,10 @@ _FABLE_OPDIET = env_bool("MTPLX_FABLE_OPDIET", default=False)
 #:
 #: Removing dispatches is not the same as removing GPU time: a rewrite can
 #: trade contiguous vectorized kernels for broadcast/general ones and lose.
-#: ``MTPLX_FABLE_OPDIET_ITEMS`` exists so a measured regression can be
-#: attributed to ONE item instead of the whole flag (2026-09-01: the four
-#: together measured -2.9% tok/s against control on seed 20260829).
+#: ``MTPLX_FABLE_OPDIET_ITEMS`` exists so a result can be attributed to ONE
+#: item instead of the whole flag -- which is how the first ``bank`` spelling
+#: was caught (2026-09-01: fewest dispatches of three, slowest of three;
+#: scripts/fable/micro_opdiet.py).
 FABLE_OPDIET_ITEMS = ("bank", "rope", "resid", "k20")
 
 

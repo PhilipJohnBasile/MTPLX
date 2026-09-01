@@ -486,22 +486,6 @@ def _rope_inv_freq_and_scaling_for(args: TextArgs) -> tuple[mx.array, float]:
     return _rope_inv_freq_and_scaling(args)
 
 
-#: ``arange(capacity)`` row ids per (capacity, dtype), built and materialized
-#: once so the fixed-bank conditional write carries a graph CONSTANT instead
-#: of re-emitting an Arange every layer of every cycle.
-_BANK_ROW_IDS: dict[tuple[int, Any], mx.array] = {}
-
-
-def _bank_row_ids(capacity: int, dtype) -> mx.array:
-    key = (int(capacity), dtype)
-    rows = _BANK_ROW_IDS.get(key)
-    if rows is None:
-        rows = mx.arange(int(capacity), dtype=dtype).reshape(1, int(capacity))
-        mx.eval(rows)
-        _BANK_ROW_IDS[key] = rows
-    return rows
-
-
 def _hyper_residual_write(
     hyper: mx.array, block_out: mx.array, inject: mx.array
 ) -> mx.array:
@@ -2232,26 +2216,40 @@ class QSAIndexer(nn.Module):
                     candidate[:, :, None, :], cos, sin
                 )[:, :, 0, :]
             if fable_opdiet_enabled("bank"):
-                # One conditional pass over the bank instead of two.
+                # One conditional pass over the bank instead of two, and that
+                # pass stays a CONTIGUOUS copy.
                 #
-                # The stock pair rewrites the WHOLE fixed bank twice to store
+                # The stock pair rewrites the whole fixed bank twice to store
                 # one block row: mx.slice_update copies it (the leaf is held
                 # by the caller, so MLX cannot donate it) and mx.where then
-                # reads both copies to pick one. Selecting on the row id
-                # collapses that to a single read-modify-write with exactly
-                # the same result -- row ``safe_block`` takes ``candidate``
-                # when the block completed, every other row keeps its value.
-                write_row = mx.logical_and(
-                    _bank_row_ids(pooled_capacity, safe_block.dtype) == safe_block,
-                    nb_total > block,
-                )
+                # reads both copies to pick one. Resolving the condition on
+                # the touched ROW instead leaves exactly one full-bank pass --
+                # the slice_update copy -- and makes the conditional work
+                # head_dim wide instead of capacity x head_dim.
+                #
+                # Selecting over the whole bank on a row-id mask also removes
+                # a pass, and measured -20% against stock; but both of its
+                # operands broadcast, so MLX emits a general (strided) select
+                # whose per-element index arithmetic gives most of the win
+                # back. This spelling measured -49%
+                # (scripts/fable/micro_opdiet.py, compiled lane, 2026-09-01:
+                # 0.492 -> 0.392 -> 0.253 ms per 12 QSA layers), which is why
+                # it ships despite issuing MORE dispatches than either.
+                #
                 # mx.slice_update casts the update to the bank dtype; mx.where
                 # would PROMOTE instead. Cast first so the two spellings agree
                 # even when a caller's norm weights widen the candidate (a
                 # no-op, and free, whenever they already match).
-                pooled = mx.where(
-                    write_row[..., None], candidate.astype(pooled.dtype), pooled
+                old_row = mx.slice(
+                    pooled,
+                    safe_block,
+                    axes=(1,),
+                    slice_size=(1, 1, pooled.shape[2]),
                 )
+                merged = mx.where(
+                    nb_total > block, candidate.astype(pooled.dtype), old_row
+                )
+                pooled = mx.slice_update(pooled, merged, safe_block, axes=(1,))
             else:
                 updated = mx.slice_update(pooled, candidate, safe_block, axes=(1,))
                 pooled = mx.where(nb_total > block, updated, pooled)
