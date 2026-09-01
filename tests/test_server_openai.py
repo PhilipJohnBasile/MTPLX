@@ -12025,25 +12025,32 @@ def test_anthropic_messages_stream_forwards_sse_keepalive(monkeypatch):
 
     assert response.status_code == 200
     frames = _sse_frames(response.text)
-    comment_indices = [
-        idx for idx, frame in enumerate(frames) if frame.startswith(":")
-    ]
-    delta_indices = [
-        idx
-        for idx, frame in enumerate(frames)
-        if frame.startswith("event: content_block_delta")
-    ]
-    # The Anthropic translation drops the inner progress frames, so the
-    # forwarded comments are the only pre-first-token bytes (#358).
-    assert comment_indices, response.text
-    assert frames[comment_indices[0]] == ": keep-alive"
-    assert delta_indices, response.text
-    assert comment_indices[-1] < delta_indices[0]
+    # Raw SSE comments must NOT leak through the Anthropic translator:
+    # Claude Code's stream watchdog ignores them (and drops `ping` events),
+    # so the pre-first-token keep-alives (#358) surface as EMPTY
+    # thinking_delta message events instead (2.11.0).
+    assert not any(frame.startswith(":") for frame in frames), response.text
     events = _anthropic_events(response.text)
     event_names = [event for event, _payload in events]
     assert event_names[0] == "message_start"
-    assert "content_block_delta" in event_names
     assert "message_stop" in event_names
+    thinking_keepalive_indices = [
+        idx
+        for idx, (event, payload) in enumerate(events)
+        if event == "content_block_delta"
+        and payload.get("delta", {}).get("type") == "thinking_delta"
+        and payload.get("delta", {}).get("thinking") == ""
+    ]
+    text_delta_indices = [
+        idx
+        for idx, (event, payload) in enumerate(events)
+        if event == "content_block_delta"
+        and payload.get("delta", {}).get("type") == "text_delta"
+    ]
+    # Liveness events flow before the first real token payload.
+    assert thinking_keepalive_indices, response.text
+    assert text_delta_indices, response.text
+    assert thinking_keepalive_indices[0] < text_delta_indices[0]
     text = "".join(
         payload.get("delta", {}).get("text", "")
         for event, payload in events
