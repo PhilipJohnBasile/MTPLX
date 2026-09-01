@@ -45,6 +45,12 @@ All notable user-facing changes to MTPLX. The format is based on
   `finish_stop_origin` distinguishing model EOS, stop sequences, length
   caps, and repetition stops, so early-stop reports are diagnosable from
   request logs.
+- **Source-checkout onboarding leaves the global install alone.** Running
+  the app from a source checkout no longer tries to upgrade or repoint
+  the user's terminal `mtplx` installation, and QA builds prefer their
+  explicitly allowed source wrapper over stale app-managed or Homebrew
+  runtimes (production bundle precedence unchanged). The `--kv-quant`
+  help text now describes the shipped packed-quant q4 kernel.
 
 ### Added
 
