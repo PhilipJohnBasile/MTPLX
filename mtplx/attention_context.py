@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
@@ -52,6 +53,21 @@ _EXACT_VERIFY_REQUIRED: ContextVar[bool] = ContextVar(
     default=False,
 )
 
+# The t<=0 stock-matmul guard is OPT-IN as of 2026-08-31 (founder order:
+# restore turbo at greedy). Receipts (SPEEDWAR-20260831/turbo-guard-27b):
+# on the 27B turbo serve path the guard cost 5-21% greedy decode across a
+# position-matched ABBA quad (guard-off 54.3/52.4 vs guard-on 51.0/49.7
+# tok/s in the clean pair), while the identity it promised held on NEITHER
+# route — 5/6 default-suite prompts diverge from greedy AR at identical
+# token indexes with the guard on or off, because the divergence lives in
+# the cross-M numeric frame (M=1 AR vs M=4..16 verify shapes), which stock
+# kernels share. MTPLX_EXACT_T0_GUARD=1 re-arms the stock frame for
+# operators who want it. Read once at import (hot-path flag pattern).
+_EXACT_T0_GUARD_ARMED = (
+    (os.environ.get("MTPLX_EXACT_T0_GUARD") or "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 # Multi-axis rope state for vision requests: (positions [3, prompt_len] mx
 # array or None, rope_delta int). Families that implement M-RoPE (qwen4_exp)
 # read it inside their attention layers and self-slice by cache offset; every
@@ -80,14 +96,17 @@ def vision_rope(positions: object, delta: int) -> Iterator[None]:
 def exact_verify_required() -> bool:
     """True while the current forward must use stock (bit-exact) matmuls.
 
-    The greedy exactness contract: at temperature <= 0 the product promise is
-    MTP output == AR output token-for-token. The vk/nax verify kernels are
-    argmax- and distribution-validated but NOT bit-exact vs stock (~6e-3
-    dmax, lane-strided fp32 accumulation), and AR decode runs M=1 stock — so
-    a near-tie logit row can flip argmax between the two paths. While this
-    flag is set, the QuantizedLinear verify patch falls through to stock so
-    both paths share one numeric frame.
+    Only meaningful when the operator arms MTPLX_EXACT_T0_GUARD=1: the
+    vk/nax verify kernels are argmax- and distribution-validated but not
+    bit-exact vs stock (~6e-3 dmax, lane-strided fp32 accumulation), and an
+    armed guard makes t<=0 verify forwards fall through to stock so both
+    paths share one numeric frame. The shipping default leaves the guard
+    dark — turbo kernels run at every temperature — because the guard never
+    delivered MTP==AR greedy identity (cross-M frame flips survive stock
+    kernels) and cost 5-21% greedy decode on the 27B turbo profile.
     """
+    if not _EXACT_T0_GUARD_ARMED:
+        return False
     return bool(_EXACT_VERIFY_REQUIRED.get())
 
 
