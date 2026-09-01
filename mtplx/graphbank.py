@@ -1428,6 +1428,14 @@ class CompiledVerifyBank:
         # final offset + reserve to each entry's own step geometry. Standalone
         # callers without a request budget retain the legacy env reserve.
         self._growth_demoted = False
+        # Per-call dispatch receipt.  Aggregate counters answer "how often";
+        # these fields answer the more important Route Tape question: which
+        # path served the most recent call.  Keep this on the bank so callers
+        # never have to infer execution from counter deltas.
+        self.last_dispatch_kind = "not_run"
+        self.last_fallback_reason: str | None = None
+        self.last_fallback_transition = False
+        self._growth_budget_fallback_reported = False
         self._dense_capacity_grant: dict[int, int] | None = None
         # Post-restore warmup: a session-bank restore hands this generation
         # exact-size KV buffers, so the first promotion concatenate-copies the
@@ -1464,6 +1472,14 @@ class CompiledVerifyBank:
         }
 
     # -- public API ---------------------------------------------------------
+
+    def last_dispatch_route(self, compiled_route: str = "compiled_bank") -> str:
+        """Return the actual route taken by the most recent public call."""
+        if self.last_dispatch_kind == "eager":
+            return f"bank_eager:{self.last_fallback_reason or 'unknown'}"
+        if self.last_dispatch_kind == "compiled":
+            return compiled_route
+        return "not_run"
 
     def forward_ar_capture(
         self,
@@ -1550,6 +1566,9 @@ class CompiledVerifyBank:
                     )
                 except Exception:
                     pass
+        self.last_dispatch_kind = "compiled"
+        self.last_fallback_reason = None
+        self.last_fallback_transition = False
         self.stats["calls"] += 1
         reason = self._fallback_reason(
             input_ids, cache, return_hidden, extended_window=extended_window
@@ -2628,10 +2647,23 @@ class CompiledVerifyBank:
         hidden_variant: str | None,
         reason: str,
     ):
-        self.stats["fallback_calls"] += 1
-        self.stats["fallback_reasons"][reason] = (
-            self.stats["fallback_reasons"].get(reason, 0) + 1
+        self.last_dispatch_kind = "eager"
+        self.last_fallback_reason = reason
+        growth_transition = (
+            reason == "growth_budget_exhausted"
+            and not self._growth_budget_fallback_reported
         )
+        self.last_fallback_transition = growth_transition
+        self.stats["fallback_calls"] += 1
+        # Growth exhaustion is a one-way request state, not a fresh failure
+        # on every eager tail round.  Count its transition once while keeping
+        # fallback_calls as the honest per-call total.
+        if reason != "growth_budget_exhausted" or growth_transition:
+            self.stats["fallback_reasons"][reason] = (
+                self.stats["fallback_reasons"].get(reason, 0) + 1
+            )
+        if growth_transition:
+            self._growth_budget_fallback_reported = True
         return self._runtime_forward(
             input_ids,
             cache=cache,

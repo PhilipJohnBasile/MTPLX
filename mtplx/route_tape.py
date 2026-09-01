@@ -34,6 +34,19 @@ VERIFY_ROUTES = frozenset({
     "ccopy_bank", "ccopy_block", "ar", "not_run", "unknown",
 })
 
+
+def is_verify_route(value: object) -> bool:
+    """Whether *value* is a valid concrete verify dispatch receipt.
+
+    Bank fallbacks carry their reason in the route itself because the
+    aggregate fallback delta fires only when a state changes.  This keeps
+    every later eager-tail round independently truthful.
+    """
+    return isinstance(value, str) and (
+        value in VERIFY_ROUTES
+        or (value.startswith("bank_eager:") and len(value) > len("bank_eager:"))
+    )
+
 # gdn_capture.resolve_gdn_capture_backend (gdn_capture.py:1455).
 GDN_CAPTURE_ROUTES = frozenset({
     "stock", "linear_gdn", "linear_gdn_from_conv", "linear_gdn_from_conv_stream",

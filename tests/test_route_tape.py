@@ -20,6 +20,7 @@ from mtplx.route_tape import (  # noqa: E402
     RouteTape,
     boot_id,
     counter_deltas,
+    is_verify_route,
     mono_ns,
     set_route_tape_sink,
     wall_ns,
@@ -80,7 +81,7 @@ class TestRecordShape:
         assert header["name"] == "header" and header["round"] is None
         assert round_rec["name"] == "round" and round_rec["round"] == 3
         attrs = round_rec["attrs"]
-        assert attrs["verify_route"] in VERIFY_ROUTES
+        assert is_verify_route(attrs["verify_route"])
         assert attrs["commit_route"] in COMMIT_ROUTES
         assert attrs["fallback_deltas"]["bank_fallback"]["post_restore_warmup"] == 1
 
@@ -174,6 +175,8 @@ class TestCounterDeltas:
         assert "rollback_reforward" in COMMIT_ROUTES
         assert "post_restore_warmup" in BANK_FALLBACK_REASONS
         assert "capacity_overflow" in BANK_FALLBACK_REASONS
+        assert is_verify_route("bank_eager:growth_budget_exhausted")
+        assert not is_verify_route("bank_eager:")
 
 
 class TestClockDiscipline:

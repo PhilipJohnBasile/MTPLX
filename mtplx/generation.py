@@ -9621,7 +9621,6 @@ def generate_mtpk(
                     _cc_stats_before = (
                         int(compiled_verify_bank.stats["traces"]),
                         int(compiled_verify_bank.stats["fallback_calls"]),
-                        dict(compiled_verify_bank.stats["fallback_reasons"]),
                     )
                 started_forward = time.perf_counter()
                 with attention_phase("decode_verify"):
@@ -9632,7 +9631,6 @@ def generate_mtpk(
                         # back internally (same runtime forward, same capture
                         # backend — byte-identical to the eager branch) when
                         # a gate refuses.
-                        event["verify_route"] = "ccopy_bank"
                         _cc_logits, _cc_hidden, _cc_captures = (
                             compiled_verify_bank.forward_ar_capture(
                                 mx.array([[primary] + _cc_block]),
@@ -9641,6 +9639,9 @@ def generate_mtpk(
                                 hidden_variant=base_hidden_variant,
                                 extended_window=True,
                             )
+                        )
+                        event["verify_route"] = (
+                            compiled_verify_bank.last_dispatch_route("ccopy_bank")
                         )
                     else:
                         event["verify_route"] = "ccopy_block"
@@ -9742,16 +9743,9 @@ def generate_mtpk(
                         ) > 0
                         _cc_fb_reason = "-"
                         if _cc_fell_back:
-                            _cc_after = compiled_verify_bank.stats[
-                                "fallback_reasons"
-                            ]
-                            _cc_fb_reason = ",".join(
-                                sorted(
-                                    reason
-                                    for reason, count in _cc_after.items()
-                                    if count > _cc_stats_before[2].get(reason, 0)
-                                )
-                            ) or "-"
+                            _cc_fb_reason = (
+                                compiled_verify_bank.last_fallback_reason or "-"
+                            )
                         _cc_route = (
                             f"bank_eager:{_cc_fb_reason}"
                             if _cc_fell_back
@@ -10998,7 +10992,6 @@ def generate_mtpk(
         ):
             if verify_strategy in {"capture_commit", "graphbank_capture_commit"}:
                 if compiled_verify_bank is not None:
-                    event["verify_route"] = "compiled_bank"
                     verify_logits, verify_hidden, captures = (
                         compiled_verify_bank.forward_ar_capture(
                             verify_input_array,
@@ -11006,6 +10999,9 @@ def generate_mtpk(
                             return_hidden=True,
                             hidden_variant=base_hidden_variant,
                         )
+                    )
+                    event["verify_route"] = (
+                        compiled_verify_bank.last_dispatch_route("compiled_bank")
                     )
                 elif graphbank is not None:
                     event["verify_route"] = "graphbank"
@@ -11074,7 +11070,6 @@ def generate_mtpk(
                 # Replace only the target forward. target_prefix keeps its
                 # authoritative snapshot/trim, pre-sampling, and correction
                 # forward; captures here must not change its commit semantics.
-                event["verify_route"] = "compiled_bank_tp"
                 verify_logits, verify_hidden, _compiled_captures = (
                     compiled_verify_bank.forward_ar_capture(
                         verify_input_array,
@@ -11082,6 +11077,9 @@ def generate_mtpk(
                         return_hidden=True,
                         hidden_variant=base_hidden_variant,
                     )
+                )
+                event["verify_route"] = (
+                    compiled_verify_bank.last_dispatch_route("compiled_bank_tp")
                 )
             elif graphbank is not None:
                 event["verify_route"] = "graphbank_plain"

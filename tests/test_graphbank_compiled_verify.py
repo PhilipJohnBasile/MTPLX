@@ -1060,12 +1060,22 @@ def test_unbounded_request_budget_clamps_to_env_ceiling_and_demotes(monkeypatch)
     bank = CompiledVerifyBank(rt, request_max_tokens=262_133, parity=True)
     assert bank.growth_reserve_tokens == 512  # env ceiling, not the budget
 
+    routes: list[str] = []
+    growth_delta_calls: list[int] = []
+    previous_growth_count = 0
     for token_index in range(1024):
         bank.forward_ar_capture(
             mx.array([[token_index % rt.V]]),
             cache=cache,
             return_hidden=True,
         )
+        routes.append(bank.last_dispatch_route())
+        growth_count = bank.stats["fallback_reasons"].get(
+            "growth_budget_exhausted", 0
+        )
+        if growth_count != previous_growth_count:
+            growth_delta_calls.append(token_index)
+        previous_growth_count = growth_count
 
     stats = bank.to_dict()
     assert stats["request_max_tokens"] == 262_133
@@ -1074,12 +1084,20 @@ def test_unbounded_request_budget_clamps_to_env_ceiling_and_demotes(monkeypatch)
     assert stats["growth_handoff_materializations"] == 1
     assert stats["growth_handoff_state_leaves"] == 3
     assert stats["growth_handoff_materialize_time_s"] >= 0.0
-    assert stats["fallback_reasons"].get("growth_budget_exhausted", 0) > 0
+    assert stats["fallback_reasons"].get("growth_budget_exhausted", 0) == 1
     assert stats["compiled_calls"] + stats["fallback_calls"] == 1024
     assert stats["parity_failures"] == 0
     # Demoted back to stock entries; the eager path finished the request.
     assert type(cache[0]) is KVCache
     assert cache[0].offset == 1027
+    route_flip = next(
+        index for index, route in enumerate(routes) if route.startswith("bank_eager:")
+    )
+    assert growth_delta_calls == [route_flip]
+    assert set(routes[:route_flip]) == {"compiled_bank"}
+    assert set(routes[route_flip:]) == {
+        "bank_eager:growth_budget_exhausted"
+    }
 
 
 def test_growth_handoff_settles_hybrid_state_and_releases_compiled_refs(monkeypatch):
@@ -1592,6 +1610,50 @@ def test_generation_flag_on_attaches_stats_and_matches_flag_off(monkeypatch):
     )
     # No adapters existed in the empty stub cache, so nothing to demote.
     assert bank_stats["demotions"] == 0
+
+
+def test_generation_route_tape_flips_with_growth_transition(monkeypatch):
+    """The round receipt must change on the same call as bank demotion."""
+    from mtplx.route_tape import set_route_tape_sink
+
+    real_fallback_reason = CompiledVerifyBank._fallback_reason
+
+    def cross_growth_boundary(self, *args, **kwargs):
+        # The direct bank test above exercises real capacity exhaustion over
+        # 1,024 calls.  Force that same state boundary on call two here so the
+        # complete generator -> Route Tape seam stays fast and deterministic.
+        if self.stats["calls"] >= 2:
+            self._growth_demoted = True
+        return real_fallback_reason(self, *args, **kwargs)
+
+    rows = []
+    monkeypatch.setattr(
+        CompiledVerifyBank, "_fallback_reason", cross_growth_boundary
+    )
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY", "1")
+    monkeypatch.setenv("MTPLX_ROUTE_TAPE", "1")
+    monkeypatch.delenv("MTPLX_ROUTE_TAPE_JSONL", raising=False)
+    set_route_tape_sink(rows.append)
+    try:
+        out, _model = _run_tiny_mtpk(max_tokens=12)
+    finally:
+        set_route_tape_sink(None)
+
+    rounds = [row for row in rows if row.get("name") == "round"]
+    routes = [row["attrs"]["verify_route"] for row in rounds]
+    flip = routes.index("bank_eager:growth_budget_exhausted")
+    growth_deltas = [
+        index
+        for index, row in enumerate(rounds)
+        if row["attrs"].get("fallback_deltas", {})
+        .get("bank_fallback", {})
+        .get("growth_budget_exhausted")
+    ]
+
+    assert len(out.tokens) == 12
+    assert routes[:flip] == ["compiled_bank"] * flip
+    assert set(routes[flip:]) == {"bank_eager:growth_budget_exhausted"}
+    assert growth_deltas == [flip]
 
 
 def test_generation_target_prefix_compile_is_separately_default_off(monkeypatch):
