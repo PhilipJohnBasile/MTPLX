@@ -6,16 +6,6 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ## [2.11.0] - 2026-08-31
 
-### Changed
-
-- **Turbo kernels now serve greedy requests.** Since 2.9.x, any request at
-  temperature ≤ 0 silently fell back to stock kernels for bit-exactness,
-  costing greedy users the turbo decode wedge. The guard is now opt-in
-  (`MTPLX_EXACT_T0_GUARD=1`); the default serves the same verify-kernel
-  path at every temperature. Speculative sampling remains mathematically
-  exact — measured +5–9% decode at greedy on the 27B flagship
-  (four-boot serve A/B, position-matched).
-
 ### Fixed
 
 - **Memory refusals are now honest and proactive (#415).** Before a large
