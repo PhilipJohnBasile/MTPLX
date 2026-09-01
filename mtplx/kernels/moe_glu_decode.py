@@ -126,14 +126,24 @@ _SRC_B = """
 
 # ---- M-batched verify variants (M = 2..4, the MTP verify widths) ----------
 #
-# The M=1 pair above removed the dependency-gap serialization from AR decode
-# (8.0 ms of the 21.9 ms step, ablation 2026-08-27). The M=4 verify forward
-# pays the same gaps inside the 23 ms verify_hidden_eval wall (round anatomy
-# 2026-08-31: execution-bound, only a smaller M-forward or overlap reduces
-# it). These variants run the SAME per-(token, expert, row) dot math — same
-# group striding, same fma order, same simd_sum — so each token's rows are
-# bit-identical to the M=1 kernel applied per token; only the grid grows
-# (M*topk*n_inter simdgroups fill the 40-core GPU better than N=640 gathers).
+# FALSIFIED 2026-08-31 (like the M=1 pair before it, g64 pack, -5% AR): the
+# serve ABBA quad on Flash-Next Bare-Speed read fused -16.7%/-6.9%
+# (prose/code, pair 1) and -8.7%/-13.3% (pair 2) vs the stock gather chain
+# at greedy — the scalar nibble-unpack inner loop loses more to MLX's tuned
+# gather_qmm than the removed dispatch gaps recover, even at 4x grid fill.
+# Receipts: SPEEDWAR-20260831/moe-verify-ab/. The lane stays dark
+# (MTPLX_FUSED_MOE_VERIFY) as the wiring platform for a future fast inner
+# loop (vectorized loads / simdgroup tiles / #242-style int8 tiling); do
+# not re-arm without a new inner-loop hypothesis.
+#
+# Original rationale: the M=1 pair above removed the dependency-gap
+# serialization from AR decode (8.0 ms of the 21.9 ms step, ablation
+# 2026-08-27). The M=4 verify forward pays the same gaps inside the 23 ms
+# verify_hidden_eval wall (round anatomy 2026-08-31). These variants run
+# the SAME per-(token, expert, row) dot math — same group striding, same
+# fma order, same simd_sum — so each token's rows are bit-identical to the
+# M=1 kernel applied per token; only the grid grows (M*topk*n_inter
+# simdgroups vs N=640 gathers).
 
 _SRC_A_M = """
     constexpr int K = 2560;
