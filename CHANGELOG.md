@@ -4,6 +4,57 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-08-31
+
+### Changed
+
+- **Turbo kernels now serve greedy requests.** Since 2.9.x, any request at
+  temperature ≤ 0 silently fell back to stock kernels for bit-exactness,
+  costing greedy users the turbo decode wedge. The guard is now opt-in
+  (`MTPLX_EXACT_T0_GUARD=1`); the default serves the same verify-kernel
+  path at every temperature. Speculative sampling remains mathematically
+  exact — measured +5–9% decode at greedy on the 27B flagship
+  (four-boot serve A/B, position-matched).
+
+### Fixed
+
+- **Memory refusals are now honest and proactive (#415).** Before a large
+  prefill is admitted, the server projects its footprint, proactively
+  clears superseded SessionBank entries, and — when the request genuinely
+  cannot fit — answers a structured HTTP 507 upfront instead of letting
+  the stream die mid-flight. Streamed requests that fail now emit an
+  honest error receipt (`stream_error`, `error_kind`) instead of being
+  logged as client cancellations.
+- **Anthropic `/v1/messages` usage no longer double-counts cached
+  prefixes.** `input_tokens` now excludes `cache_read_input_tokens`
+  (Anthropic's fields are disjoint; OpenAI's are cumulative), so Claude
+  Code and Pi context/auto-compaction math sees true totals on session
+  cache hits. Adopted from PR #417 by @amichaelblock-lgtm.
+- **Claude Code no longer times out on long prefills.** Claude Code's
+  stream watchdog resets only on real message events — it ignores SSE
+  comments and protocol pings — so a first turn past its 300 s idle
+  window (large MCP toolsets reach 137k–165k tokens) died with "Stream
+  idle timeout". The Anthropic bridge now emits prefill keep-alives as
+  empty `thinking_delta` events; a measured 165k-token first turn on the
+  27B now survives a multi-minute prefill and completes.
+- **Compile kill-switch precedence (from PR #395 by @maceip).** An
+  explicit `MTPLX_COMPILED_GDN=0` / `MTPLX_QWEN4EXP_COMPILE=0` now wins
+  over profile auto-arming everywhere, including `set_ar_pipeline_mode`
+  re-arming; the two flags are aliases with explicit-off precedence.
+- **Stop-cause telemetry (#414).** Generation stats now record
+  `finish_stop_origin` distinguishing model EOS, stop sequences, length
+  caps, and repetition stops, so early-stop reports are diagnosable from
+  request logs.
+
+### Added
+
+- **Dark lanes for measured techniques** (off by default, receipts in-tree):
+  double-buffered AR decode via `mx.async_eval` (`MTPLX_ASYNC_AR=1`,
+  ported from PR #396 by @maceip; measured flat at product cells) and
+  M-batched fused MoE GLU verify kernels (`MTPLX_FUSED_MOE_VERIFY=1`;
+  bit-identical per token, measured slower at verify widths — kept as
+  wiring platform).
+
 ## [2.10.1] - 2026-08-30
 
 ### Added
