@@ -20,6 +20,7 @@ from .models.qwen4_exp import (
     SparseMoeBlock,
     _FusedGateUpMLP,
     _FusedGateUpSwitchGLU,
+    _hyper_residual_write,
 )
 from .runtime_options import env_bool
 
@@ -418,9 +419,7 @@ def _m4_routed_down_residual_tail_layer_forward(
         block_out = layer.linear_attn(mixed, ssm_mask, cache)
     else:
         block_out = layer.self_attn(mixed, cache)
-    hidden = hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
-        *hyper.shape
-    )
+    hidden = _hyper_residual_write(hyper, block_out, inject)
 
     mixed, hyper, inject = layer.mlp_hyper_connection(hidden)
     return _m4_routed_down_residual_tail_forward(
@@ -448,9 +447,7 @@ def _m4_paired_routed_glu_residual_tail_layer_forward(
         block_out = layer.linear_attn(mixed, ssm_mask, cache)
     else:
         block_out = layer.self_attn(mixed, cache)
-    hidden = hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
-        *hyper.shape
-    )
+    hidden = _hyper_residual_write(hyper, block_out, inject)
 
     mixed, hyper, inject = layer.mlp_hyper_connection(hidden)
     return _m4_paired_routed_glu_residual_tail_forward(

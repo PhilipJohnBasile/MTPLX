@@ -59,6 +59,7 @@ from mlx_lm.models.qwen3_next import (
 )
 
 from mtplx.attention_context import current_attention_phase
+from mtplx.runtime_options import fable_opdiet_enabled
 
 
 @dataclass
@@ -346,6 +347,185 @@ def _apply_partial_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
         x.dtype
     )
     return mx.concatenate([x_rope, x_pass], axis=-1)
+
+
+# ---------------------------------------------------------------------------
+# MTPLX_FABLE_OPDIET — exact-preserving op diet for the compiled verifier.
+#
+# Every helper below is a VALUE-IDENTICAL twin of the expression it replaces:
+# same arithmetic on the same operands in the same order, only the op graph is
+# smaller. Nothing here is reachable with the flag off.
+# ---------------------------------------------------------------------------
+
+
+def _rope_cos_sin_half(
+    positions: mx.array,
+    inv_freq: mx.array,
+    attention_scaling: float = 1.0,
+) -> tuple[mx.array, mx.array]:
+    """``_rope_cos_sin`` without the duplicated half.
+
+    ``_rope_cos_sin`` builds ``emb = concatenate([angles, angles])`` and takes
+    cos/sin of the doubled table. Both halves are therefore bit-identical
+    (elementwise cos of the same numbers), so the second half is pure copy +
+    transcendental work: two concatenate copies and 2x the cos/sin width per
+    call. ``_apply_partial_rope_half`` consumes the [S, rot // 2] table
+    directly.
+    """
+
+    angles = positions.astype(mx.float32)[:, None] * inv_freq[None, :]
+    cosine = mx.cos(angles)
+    sine = mx.sin(angles)
+    if attention_scaling != 1.0:
+        cosine = cosine * float(attention_scaling)
+        sine = sine * float(attention_scaling)
+    return cosine, sine
+
+
+def _apply_partial_rope_half(
+    x: mx.array, cos_h: mx.array, sin_h: mx.array
+) -> mx.array:
+    """``_apply_partial_rope`` on half-width tables, bitwise-identically.
+
+    The stock form materializes ``rotated = concatenate([-x2, x1])`` (a
+    standalone negate plus two copies) so the rotation can be written as one
+    full-width multiply-add. Splitting the multiply-add per half removes both:
+    the negate folds into the fused elementwise kernel and the rotated buffer
+    never exists. Per element the arithmetic is unchanged --
+    ``lo = x1*cos + (-x2)*sin`` and ``hi = x2*cos + x1*sin`` are exactly the
+    two halves the full-width expression computes, and ``cos``/``sin`` repeat
+    across the halves.
+    """
+
+    half = cos_h.shape[-1]
+    rot = 2 * half
+    x_rope = x[..., :rot]
+    x_pass = x[..., rot:]
+    x1 = x_rope[..., :half]
+    x2 = x_rope[..., half:]
+    cos_h = cos_h[:, None, :]
+    sin_h = sin_h[:, None, :]
+    lo = (x1.astype(mx.float32) * cos_h + (-x2).astype(mx.float32) * sin_h).astype(
+        x.dtype
+    )
+    hi = (x2.astype(mx.float32) * cos_h + x1.astype(mx.float32) * sin_h).astype(
+        x.dtype
+    )
+    if x_pass.shape[-1] == 0:
+        return mx.concatenate([lo, hi], axis=-1)
+    return mx.concatenate([lo, hi, x_pass], axis=-1)
+
+
+#: Per-forward RoPE table memo. The tables depend only on (pos_start, S,
+#: inv_freq, scaling); a QSA layer builds the same one twice (indexer queries
+#: and attention q/k) and, whenever ``pos_start`` is a plain int, every QSA
+#: layer of the forward builds the same one again. Keyed on OBJECT IDENTITY of
+#: the two array operands (never on values, which would need a device sync)
+#: and the memo keeps them alive so an id can never be recycled underneath it.
+_ROPE_TABLE_MEMO: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "mtplx_rope_table_memo", default=None
+)
+
+
+@contextlib.contextmanager
+def _rope_table_scope():
+    """Scope one forward's RoPE table memo (trace-time only under compile)."""
+
+    token = _ROPE_TABLE_MEMO.set({})
+    try:
+        yield
+    finally:
+        _ROPE_TABLE_MEMO.reset(token)
+
+
+def _shared_rope_cos_sin_half(
+    pos_start,
+    length: int,
+    inv_freq: mx.array,
+    attention_scaling: float,
+) -> tuple[mx.array, mx.array]:
+    """Half-width RoPE tables for ``pos_start + arange(length)``, memoized."""
+
+    memo = _ROPE_TABLE_MEMO.get()
+    if isinstance(pos_start, mx.array):
+        start_key = ("array", id(pos_start))
+    else:
+        start_key = ("int", int(pos_start))
+    key = (start_key, int(length), id(inv_freq), float(attention_scaling))
+    if memo is not None:
+        hit = memo.get(key)
+        if hit is not None:
+            return hit[0]
+    positions = pos_start + mx.arange(length, dtype=mx.int32)
+    tables = _rope_cos_sin_half(positions, inv_freq, attention_scaling)
+    if memo is not None:
+        # Hold the keyed objects so their ids stay unique for the scope.
+        memo[key] = (tables, pos_start, inv_freq)
+    return tables
+
+
+#: One ``_rope_inv_freq_and_scaling`` result per TextArgs object. Sharing the
+#: array OBJECT across the indexer and the attention of every layer is what
+#: lets the identity-keyed table memo hit; the values were already identical
+#: (same pure function, same args), so nothing numeric changes.
+_INV_FREQ_MEMO: dict[int, tuple[Any, tuple[mx.array, float]]] = {}
+
+
+def _rope_inv_freq_and_scaling_shared(args: TextArgs) -> tuple[mx.array, float]:
+    cached = _INV_FREQ_MEMO.get(id(args))
+    if cached is not None and cached[0] is args:
+        return cached[1]
+    value = _rope_inv_freq_and_scaling(args)
+    _INV_FREQ_MEMO[id(args)] = (args, value)
+    return value
+
+
+def _rope_inv_freq_and_scaling_for(args: TextArgs) -> tuple[mx.array, float]:
+    if fable_opdiet_enabled():
+        return _rope_inv_freq_and_scaling_shared(args)
+    return _rope_inv_freq_and_scaling(args)
+
+
+#: ``arange(capacity)`` row ids per (capacity, dtype), built and materialized
+#: once so the fixed-bank conditional write carries a graph CONSTANT instead
+#: of re-emitting an Arange every layer of every cycle.
+_BANK_ROW_IDS: dict[tuple[int, Any], mx.array] = {}
+
+
+def _bank_row_ids(capacity: int, dtype) -> mx.array:
+    key = (int(capacity), dtype)
+    rows = _BANK_ROW_IDS.get(key)
+    if rows is None:
+        rows = mx.arange(int(capacity), dtype=dtype).reshape(1, int(capacity))
+        mx.eval(rows)
+        _BANK_ROW_IDS[key] = rows
+    return rows
+
+
+def _hyper_residual_write(
+    hyper: mx.array, block_out: mx.array, inject: mx.array
+) -> mx.array:
+    """``hyper + (block_out[..., None, :] * inject[..., :, None])``.
+
+    The stock spelling reshapes the broadcast product back to ``hyper``'s
+    flat [.., hc * hidden] layout before adding, and that reshape sits between
+    two elementwise ops, so mx.compile cannot fuse them: the product is
+    materialized (one kernel) and then added (a second kernel). Adding on the
+    [.., hc, hidden] VIEW of ``hyper`` instead -- a free reshape of a
+    contiguous array on both sides -- lets the multiply and the add fuse into
+    one kernel. Same operands, same order, same result.
+    """
+
+    if not fable_opdiet_enabled():
+        return hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
+            *hyper.shape
+        )
+    grouped = hyper.reshape(
+        *hyper.shape[:-1], inject.shape[-1], block_out.shape[-1]
+    )
+    return (
+        grouped + block_out[..., None, :] * inject[..., :, None]
+    ).reshape(*hyper.shape)
 
 
 class GroupedRMSNorm(nn.Module):
@@ -1925,7 +2105,7 @@ class QSAIndexer(nn.Module):
         self.q_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.k_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self._inv_freq, self._rope_attention_scaling = (
-            _rope_inv_freq_and_scaling(args)
+            _rope_inv_freq_and_scaling_for(args)
         )
         # Kept outside the nn.Module parameter tree.  The graph bank is built
         # lazily on the first eligible inference call, after checkpoint load
@@ -2033,14 +2213,46 @@ class QSAIndexer(nn.Module):
             candidate = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
             candidate = self.k_layernorm(candidate)
             starts = safe_block.reshape(1).astype(mx.int32) * self.ratio
-            cos, sin = _rope_cos_sin(
-                starts, self._inv_freq, self._rope_attention_scaling
-            )
-            candidate = _apply_partial_rope(
-                candidate[:, :, None, :], cos, sin
-            )[:, :, 0, :]
-            updated = mx.slice_update(pooled, candidate, safe_block, axes=(1,))
-            pooled = mx.where(nb_total > block, updated, pooled)
+            if fable_opdiet_enabled():
+                cos, sin = _rope_cos_sin_half(
+                    starts,
+                    self._inv_freq,
+                    self._rope_attention_scaling,
+                )
+                candidate = _apply_partial_rope_half(
+                    candidate[:, :, None, :], cos, sin
+                )[:, :, 0, :]
+                # One conditional pass over the bank instead of two.
+                #
+                # The stock pair rewrites the WHOLE fixed bank twice to store
+                # one block row: mx.slice_update copies it (the leaf is held
+                # by the caller, so MLX cannot donate it) and mx.where then
+                # reads both copies to pick one. Selecting on the row id
+                # collapses that to a single read-modify-write with exactly
+                # the same result -- row ``safe_block`` takes ``candidate``
+                # when the block completed, every other row keeps its value.
+                write_row = mx.logical_and(
+                    _bank_row_ids(pooled_capacity, safe_block.dtype) == safe_block,
+                    nb_total > block,
+                )
+                # mx.slice_update casts the update to the bank dtype; mx.where
+                # would PROMOTE instead. Cast first so the two spellings agree
+                # even when a caller's norm weights widen the candidate (a
+                # no-op, and free, whenever they already match).
+                pooled = mx.where(
+                    write_row[..., None], candidate.astype(pooled.dtype), pooled
+                )
+            else:
+                cos, sin = _rope_cos_sin(
+                    starts,
+                    self._inv_freq,
+                    self._rope_attention_scaling,
+                )
+                candidate = _apply_partial_rope(
+                    candidate[:, :, None, :], cos, sin
+                )[:, :, 0, :]
+                updated = mx.slice_update(pooled, candidate, safe_block, axes=(1,))
+                pooled = mx.where(nb_total > block, updated, pooled)
         cache.pooled = pooled
         return pooled
 
@@ -2386,6 +2598,14 @@ class QSAIndexer(nn.Module):
         """Stock query preparation kept as the numeric oracle."""
 
         q = self.q_layernorm(q)
+        if fable_opdiet_enabled():
+            cos, sin = _shared_rope_cos_sin_half(
+                pos_start,
+                int(q.shape[1]),
+                self._inv_freq,
+                self._rope_attention_scaling,
+            )
+            return _apply_partial_rope_half(q, cos, sin)
         positions = pos_start + mx.arange(q.shape[1], dtype=mx.int32)
         cos, sin = _rope_cos_sin(
             positions,
@@ -3139,7 +3359,7 @@ class Attention(nn.Module):
         self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
         self.indexer = QSAIndexer(args) if args.indexer_n_heads else None
         self._inv_freq, self._rope_attention_scaling = (
-            _rope_inv_freq_and_scaling(args)
+            _rope_inv_freq_and_scaling_for(args)
         )
         self._mrope_axes = (
             mx.array(
@@ -3207,14 +3427,25 @@ class Attention(nn.Module):
                 cos, sin = _rope_cos_sin(
                     positions, self._inv_freq, self._rope_attention_scaling
                 )
+        elif fable_opdiet_enabled():
+            # Text rope: one half-width table per (pos_start, S) instead of a
+            # full-width table per consumer. The indexer above already asked
+            # for this exact table, so this is a memo hit inside the layer.
+            cos, sin = _shared_rope_cos_sin_half(
+                pos_start, int(S), self._inv_freq, self._rope_attention_scaling
+            )
+            q = _apply_partial_rope_half(q, cos, sin)
+            k = _apply_partial_rope_half(k, cos, sin)
+            cos = sin = None
         else:
             # ``pos_start`` may be a graph tensor (fixed compiled verify bank).
             positions = pos_start + mx.arange(S, dtype=mx.int32)
             cos, sin = _rope_cos_sin(
                 positions, self._inv_freq, self._rope_attention_scaling
             )
-        q = _apply_partial_rope(q, cos, sin)
-        k = _apply_partial_rope(k, cos, sin)
+        if cos is not None:
+            q = _apply_partial_rope(q, cos, sin)
+            k = _apply_partial_rope(k, cos, sin)
 
         q = q.transpose(0, 2, 1, 3)
         k = k.transpose(0, 2, 1, 3)
@@ -4070,15 +4301,11 @@ class DecoderLayer(nn.Module):
             block_out = self.linear_attn(mixed, ssm_mask, cache)
         else:
             block_out = self.self_attn(mixed, cache)
-        hidden = hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
-            *hyper.shape
-        )
+        hidden = _hyper_residual_write(hyper, block_out, inject)
 
         mixed, hyper, inject = self.mlp_hyper_connection(hidden)
         block_out = self.mlp(mixed)
-        hidden = hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
-            *hyper.shape
-        )
+        hidden = _hyper_residual_write(hyper, block_out, inject)
         return hidden
 
 
@@ -4127,6 +4354,12 @@ class Qwen4ExpTextModel(nn.Module):
         self._decode_run_fns = {}
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
+        if fable_opdiet_enabled():
+            with _rope_table_scope():
+                return self._forward(inputs, cache, input_embeddings)
+        return self._forward(inputs, cache, input_embeddings)
+
+    def _forward(self, inputs, cache=None, input_embeddings=None):
         h = input_embeddings if input_embeddings is not None else self.embed_tokens(inputs)
         if cache is None:
             cache = [None] * len(self.layers)

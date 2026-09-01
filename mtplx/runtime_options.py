@@ -50,6 +50,23 @@ def env_bool(
     )
 
 
+#: Exact-preserving op diet for the compiled fixed-M4 verify graph.
+#:
+#: Read ONCE at import so the hot path never touches ``os.environ`` and so a
+#: mid-run env change cannot make two traces of the same graph disagree. With
+#: the flag off every gated site executes the pre-diet expression verbatim;
+#: with it on the rewritten sites are value-identical by construction (see
+#: tests/test_fable_opdiet.py, which proves each rewrite against its original
+#: on random inputs).
+_FABLE_OPDIET = env_bool("MTPLX_FABLE_OPDIET", default=False)
+
+
+def fable_opdiet_enabled() -> bool:
+    """True when ``MTPLX_FABLE_OPDIET`` armed this process at import."""
+
+    return _FABLE_OPDIET
+
+
 @dataclass(frozen=True)
 class ResolvedAPIKey:
     value: str | None
