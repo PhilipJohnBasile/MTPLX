@@ -12028,7 +12028,7 @@ def test_anthropic_messages_stream_forwards_sse_keepalive(monkeypatch):
     # Raw SSE comments must NOT leak through the Anthropic translator:
     # Claude Code's stream watchdog ignores them (and drops `ping` events),
     # so the pre-first-token keep-alives (#358) surface as EMPTY
-    # thinking_delta message events instead (2.11.0).
+    # thinking_delta message events instead (2.10.2).
     assert not any(frame.startswith(":") for frame in frames), response.text
     events = _anthropic_events(response.text)
     event_names = [event for event, _payload in events]

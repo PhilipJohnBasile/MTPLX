@@ -723,7 +723,7 @@ wheels = [
 
 [[package]]
 name = "mtplx"
-version = "2.11.0"
+version = "2.10.2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

@@ -146,14 +146,14 @@ final class RuntimeSetupServiceTests: XCTestCase {
         _ = try makeFakeCLI(in: appRuntimeBin, version: "2.10.1")
         let source = try makeFakeSourceCLI(
             in: home.appendingPathComponent("candidate", isDirectory: true),
-            version: "2.11.0"
+            version: "2.10.2"
         )
         let bootstrapper = MTPLXRuntimeBootstrapper(environment: [
             "HOME": home.path,
             "PATH": "/usr/bin:/bin",
             "MTPLX_APP_ALLOW_SOURCE_WRAPPER": "1",
             "MTPLX_APP_SOURCE_WRAPPER_PATH": source.path,
-            "MTPLX_APP_REQUIRED_RUNTIME_VERSION": "2.11.0",
+            "MTPLX_APP_REQUIRED_RUNTIME_VERSION": "2.10.2",
             "MTPLX_APP_HOMEBREW_PATH": "",
         ])
 
@@ -220,14 +220,14 @@ final class RuntimeSetupServiceTests: XCTestCase {
         let home = temporaryDirectory()
         let source = try makeFakeSourceCLI(
             in: home.appendingPathComponent("candidate", isDirectory: true),
-            version: "2.11.0"
+            version: "2.10.2"
         )
         let globalDir = home.appendingPathComponent("global-bin", isDirectory: true)
         _ = try makeFakeCLI(in: globalDir, version: "2.10.1")
         let upgrades = CallCounter()
         let service = RuntimeSetupService(
             processEnvironment: isolatedEnvironment(home: home, pathDir: globalDir),
-            appVersion: "2.11.0",
+            appVersion: "2.10.2",
             engineInstaller: { _ in source },
             fanControlEnsurer: fanControlOK(),
             homebrewUpgrader: {
