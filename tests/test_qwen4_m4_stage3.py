@@ -191,6 +191,7 @@ def test_m4_routed_down_reduce_routes_only_physical_m4(monkeypatch) -> None:
 def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
     from mtplx.qwen4_m4_stage3 import (
         qwen4_m4_routed_down_reduce_enabled,
+        qwen4_m4_routed_down_residual_tail_enabled,
         qwen4_m4_stage3_enabled,
     )
 
@@ -211,6 +212,170 @@ def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
     monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "maybe")
     with pytest.raises(ValueError, match="is not a boolean"):
         qwen4_m4_routed_down_reduce_enabled()
+
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "enabled")
+    assert qwen4_m4_routed_down_residual_tail_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "disabled")
+    assert not qwen4_m4_routed_down_residual_tail_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "maybe")
+    with pytest.raises(ValueError, match="is not a boolean"):
+        qwen4_m4_routed_down_residual_tail_enabled()
+
+
+def test_m4_routed_residual_tail_requires_routed_reduction_at_construction() -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    stage3_module._validate_feature_combination(
+        routed_down_reduce_enabled=True,
+        routed_down_residual_tail_enabled=True,
+    )
+    with pytest.raises(ValueError, match="requires routed-down reduction"):
+        stage3_module._validate_feature_combination(
+            routed_down_reduce_enabled=False,
+            routed_down_residual_tail_enabled=True,
+        )
+
+
+def test_m4_child_flags_require_stage3_at_runtime_construction(monkeypatch) -> None:
+    import inspect
+
+    from mtplx import qwen4_m4_stage3 as stage3_module
+    from mtplx import runtime as runtime_module
+
+    monkeypatch.setenv("MTPLX_QWEN4_M4_STAGE3", "0")
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "1")
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "0")
+    with pytest.raises(ValueError, match="require M4 stage3"):
+        stage3_module.qwen4_m4_stage3_flags()
+
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "1")
+    with pytest.raises(ValueError, match="require M4 stage3"):
+        stage3_module.qwen4_m4_stage3_flags()
+
+    runtime_source = "".join(inspect.getsource(runtime_module.load).split())
+    assert "qwen4_m4_stage3_flags()" in runtime_source
+    assert "routed_down_reduce_enabled=routed_reduce_enabled" in runtime_source
+    assert (
+        "routed_down_residual_tail_enabled="
+        "residual_tail_enabled" in runtime_source
+    )
+
+
+def test_m4_routed_residual_tail_keeps_shared_projection_stock() -> None:
+    import inspect
+
+    from mtplx import qwen4_m4_stage3
+
+    forward_source = inspect.getsource(
+        qwen4_m4_stage3._m4_routed_down_residual_tail_forward
+    )
+    assert "routed.down_proj(" not in forward_source
+    assert "shared.down_proj(" in forward_source
+    assert "mx.sigmoid(block.shared_expert_gate(x))" in forward_source
+    assert "hyper" in forward_source
+    assert "inject" in forward_source
+
+    install_source = inspect.getsource(qwen4_m4_stage3.install_qwen4_m4_stage3)
+    plan_source = inspect.getsource(qwen4_m4_stage3._build_install_plans)
+    assert "_validate_residual_tail_contract" in plan_source
+    assert "_M4RoutedDownResidualTailDecoderLayer" in install_source
+    assert install_source.index("_build_install_plans(") < install_source.index(
+        "stage3 = bind()"
+    )
+
+
+def test_m4_residual_install_requires_exact_decoder_owner(monkeypatch) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    class ExactLayer:
+        pass
+
+    monkeypatch.setattr(stage3_module, "DecoderLayer", ExactLayer)
+    stage3_module._validate_layer_owner(ExactLayer(), index=7)
+    with pytest.raises(ValueError, match="wrong decoder owner"):
+        stage3_module._validate_layer_owner(SimpleNamespace(), index=7)
+
+
+def test_m4_exact_decoder_owner_is_required_only_for_residual_route(monkeypatch) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    layer = SimpleNamespace(mlp=object())
+    monkeypatch.setattr(
+        stage3_module, "_validate_input_contract", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        stage3_module, "_validate_block_contract", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        stage3_module, "_validate_residual_tail_contract", lambda *_a, **_k: None
+    )
+
+    plans = stage3_module._build_install_plans(
+        (layer,),
+        stage3=object(),
+        routed_down_reduce=object(),
+        routed_down_residual_tail_enabled=False,
+    )
+    assert plans[0][0] is layer
+    with pytest.raises(ValueError, match="wrong decoder owner"):
+        stage3_module._build_install_plans(
+            (layer,),
+            stage3=object(),
+            routed_down_reduce=object(),
+            routed_down_residual_tail_enabled=True,
+        )
+
+
+def test_m4_residual_install_validation_cannot_partially_mutate(monkeypatch) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    class ExactLayer:
+        def __init__(self, index):
+            self.index = index
+            self.mlp = object()
+
+    layers = tuple(ExactLayer(index) for index in range(48))
+    original_types = tuple(type(layer) for layer in layers)
+    monkeypatch.setattr(stage3_module, "DecoderLayer", ExactLayer)
+    monkeypatch.setattr(
+        stage3_module, "_validate_input_contract", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        stage3_module,
+        "_validate_block_contract",
+        lambda _block, *, index: (_ for _ in ()).throw(ValueError("late layer"))
+        if index == 47
+        else None,
+    )
+    monkeypatch.setattr(
+        stage3_module, "_validate_residual_tail_contract", lambda *_a, **_k: None
+    )
+
+    with pytest.raises(ValueError, match="late layer"):
+        stage3_module._build_install_plans(
+            layers,
+            stage3=object(),
+            routed_down_reduce=object(),
+            routed_down_residual_tail_enabled=True,
+        )
+
+    assert tuple(type(layer) for layer in layers) == original_types
+
+
+def test_m4_residual_report_records_all_48_exact_layers() -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    report = stage3_module._installation_report(
+        layer_count=48,
+        max_delta=0.0,
+        routed_down_reduce_enabled=True,
+        routed_down_residual_tail_enabled=True,
+    )
+
+    assert report["boundary"] == "routed_q4g32_reduce_shared_add_mlp_residual"
+    assert report["reference_boundary"] == "retained_m4_routed_down_then_stock_residual"
+    assert report["exact_layers"] == 48
+    assert report["combined_residual_tail_layers"] == 48
 
 
 @pytest.mark.parametrize(

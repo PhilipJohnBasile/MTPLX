@@ -16,6 +16,7 @@ OUTPUTS_PER_THREADGROUP = 8
 
 _ROUTED_KERNEL: Any | None = None
 _TAIL_KERNEL: Any | None = None
+_RESIDUAL_TAIL_KERNEL: Any | None = None
 
 
 _HEADER = f"""
@@ -230,6 +231,34 @@ _TAIL_SOURCE = f"""
 """
 
 
+_RESIDUAL_TAIL_SOURCE = f"""
+    using namespace metal;
+    constexpr uint ROWS = {ROWS};
+    constexpr uint HIDDEN = {HIDDEN};
+    constexpr uint HYPER_STREAMS = 4;
+
+    uint index = thread_position_in_grid.x;
+    if (index >= ROWS * HIDDEN) {{
+        return;
+    }}
+    uint row = index / HIDDEN;
+    uint column = index % HIDDEN;
+    bfloat gated_shared = bfloat(
+        float(shared_factor[row]) * float(shared_down[index]));
+    bfloat block_out = bfloat(
+        float(routed_down[index]) + float(gated_shared));
+    for (uint stream = 0; stream < HYPER_STREAMS; ++stream) {{
+        uint hidden_index =
+            row * HYPER_STREAMS * HIDDEN + stream * HIDDEN + column;
+        bfloat inject_value = inject[row * HYPER_STREAMS + stream];
+        bfloat product = bfloat(
+            float(block_out) * float(inject_value));
+        output[hidden_index] = bfloat(
+            float(hyper[hidden_index]) + float(product));
+    }}
+"""
+
+
 def source() -> str:
     """Return the exact fixed-shape q4 QMV plus routed-reduction source."""
 
@@ -240,6 +269,12 @@ def tail_source() -> str:
     """Return the separate exact shared-branch addition tail."""
 
     return _TAIL_SOURCE
+
+
+def residual_tail_source() -> str:
+    """Return the exact shared-add plus hyper-residual tail source."""
+
+    return _RESIDUAL_TAIL_SOURCE
 
 
 def launch_geometry() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -321,4 +356,87 @@ def bind() -> Callable[..., mx.array]:
     return routed_down_reduce
 
 
-__all__ = ["bind", "launch_geometry", "source", "tail_source"]
+def bind_residual_tail() -> Callable[..., mx.array]:
+    """Bind routed reduction plus the combined shared and residual tail."""
+
+    global _ROUTED_KERNEL, _RESIDUAL_TAIL_KERNEL
+    if _ROUTED_KERNEL is None:
+        _ROUTED_KERNEL = mx.fast.metal_kernel(
+            name="mtplx_qwen4_m4_routed_down_reduce",
+            input_names=[
+                "routed_h",
+                "weights",
+                "scales",
+                "biases",
+                "expert_ids",
+                "route_scores",
+            ],
+            output_names=["routed_down"],
+            header=_HEADER,
+            source=_ROUTED_SOURCE,
+            ensure_row_contiguous=True,
+        )
+    if _RESIDUAL_TAIL_KERNEL is None:
+        _RESIDUAL_TAIL_KERNEL = mx.fast.metal_kernel(
+            name="mtplx_qwen4_m4_routed_shared_residual_tail",
+            input_names=[
+                "routed_down",
+                "shared_down",
+                "shared_factor",
+                "hyper",
+                "inject",
+            ],
+            output_names=["output"],
+            source=_RESIDUAL_TAIL_SOURCE,
+            ensure_row_contiguous=True,
+        )
+    routed_kernel = _ROUTED_KERNEL
+    residual_tail_kernel = _RESIDUAL_TAIL_KERNEL
+    grid, threadgroup = launch_geometry()
+
+    def routed_down_residual_tail(
+        routed_h,
+        weights,
+        scales,
+        biases,
+        expert_ids,
+        route_scores,
+        shared_down,
+        shared_factor,
+        hyper,
+        inject,
+    ):
+        (routed_down,) = routed_kernel(
+            inputs=[
+                routed_h,
+                weights,
+                scales,
+                biases,
+                expert_ids,
+                route_scores,
+            ],
+            grid=grid,
+            threadgroup=threadgroup,
+            output_shapes=[(ROWS, HIDDEN)],
+            output_dtypes=[mx.bfloat16],
+        )
+        (output,) = residual_tail_kernel(
+            inputs=[routed_down, shared_down, shared_factor, hyper, inject],
+            grid=(ROWS * HIDDEN, 1, 1),
+            threadgroup=(256, 1, 1),
+            output_shapes=[(ROWS, 4 * HIDDEN)],
+            output_dtypes=[mx.bfloat16],
+        )
+        return output.reshape(*hyper.shape)
+
+    return routed_down_residual_tail
+
+
+__all__ = [
+    "bind",
+    "bind_residual_tail",
+    "launch_geometry",
+    "residual_tail_source",
+    "source",
+    "tail_source",
+]
