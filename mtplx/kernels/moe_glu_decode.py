@@ -124,6 +124,114 @@ _SRC_B = """
 """
 
 
+# ---- M-batched verify variants (M = 2..4, the MTP verify widths) ----------
+#
+# The M=1 pair above removed the dependency-gap serialization from AR decode
+# (8.0 ms of the 21.9 ms step, ablation 2026-08-27). The M=4 verify forward
+# pays the same gaps inside the 23 ms verify_hidden_eval wall (round anatomy
+# 2026-08-31: execution-bound, only a smaller M-forward or overlap reduces
+# it). These variants run the SAME per-(token, expert, row) dot math — same
+# group striding, same fma order, same simd_sum — so each token's rows are
+# bit-identical to the M=1 kernel applied per token; only the grid grows
+# (M*topk*n_inter simdgroups fill the 40-core GPU better than N=640 gathers).
+
+_SRC_A_M = """
+    constexpr int K = 2560;
+    constexpr int GS = GS_GU;                 // quant group size (32/64 forges)
+    constexpr int NGROUPS = K / GS;
+    constexpr int WPG = GS / 8;               // uint32 words per group (8 nibbles/word)
+
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint sg = tid / 32;
+    const uint lane = tid % 32;
+    const uint gsid = threadgroup_position_in_grid.x * 32 + sg;  // global simd id
+    const int n_inter = n_inter_c;
+    const int topk = topk_c;
+    const int m_rows = m_rows_c;
+    if (gsid >= (uint)(m_rows * topk * n_inter)) return;
+    const int m = gsid / (topk * n_inter);
+    const int rem = gsid % (topk * n_inter);
+    const int e_slot = rem / n_inter;
+    const int j = rem % n_inter;
+    const uint e = experts[m * topk + e_slot];
+    const device T* xm = x + (size_t)m * K;
+
+    float acc_g = 0.0f;
+    float acc_u = 0.0f;
+    for (int hh = 0; hh < 2; ++hh) {
+        const int row = hh * n_inter + j;
+        const device uint32_t* wrow = gw + ((size_t)e * 2 * n_inter + row) * (K / 8);
+        const device T* srow = gs + ((size_t)e * 2 * n_inter + row) * NGROUPS;
+        const device T* brow = gb + ((size_t)e * 2 * n_inter + row) * NGROUPS;
+        float acc = 0.0f;
+        for (int g = lane; g < NGROUPS; g += 32) {
+            const float s = (float)srow[g];
+            const float b = (float)brow[g];
+            const device uint32_t* wg = wrow + g * WPG;
+            const device T* xg = xm + g * GS;
+            float qacc = 0.0f;
+            float xsum = 0.0f;
+            for (int wi = 0; wi < WPG; ++wi) {
+                uint32_t word = wg[wi];
+                const device T* xv = xg + wi * 8;
+                for (int nib = 0; nib < 8; ++nib) {
+                    const float xf = (float)xv[nib];
+                    qacc += (float)((word >> (4 * nib)) & 0xF) * xf;
+                    xsum += xf;
+                }
+            }
+            acc += s * qacc + b * xsum;
+        }
+        acc = simd_sum(acc);
+        if (hh == 0) acc_g = acc; else acc_u = acc;
+    }
+    if (lane == 0) {
+        const float gv = (float)((T)acc_g);
+        const float uv = (float)((T)acc_u);
+        const float sw = gv / (1.0f + metal::exp(-gv));   // silu
+        h[((size_t)m * topk + e_slot) * n_inter + j] = (T)((float)((T)sw) * uv);
+    }
+"""
+
+_SRC_B_M = """
+    constexpr int GS = GS_DN;                 // quant group size (32/64 forges)
+
+    const uint tid = thread_position_in_threadgroup.x;
+    const uint sg = tid / 32;
+    const uint lane = tid % 32;
+    const uint gid = threadgroup_position_in_grid.x * 32 + sg;
+    const int dmodel = dmodel_c;
+    const int n_inter = n_inter_c;
+    const int topk = topk_c;
+    const int m_rows = m_rows_c;
+    if (gid >= (uint)(m_rows * dmodel)) return;
+    const int m = gid / dmodel;
+    const uint d = gid % dmodel;
+
+    const int ngroups = n_inter / GS;
+    float acc = 0.0f;
+    for (int e_slot = 0; e_slot < topk; ++e_slot) {
+        const uint e = experts[m * topk + e_slot];
+        const device uint32_t* wrow = dw + ((size_t)e * dmodel + d) * (n_inter / 8);
+        const device T* srow = ds + ((size_t)e * dmodel + d) * ngroups;
+        const device T* brow = db + ((size_t)e * dmodel + d) * ngroups;
+        const device T* he = h + ((size_t)m * topk + e_slot) * n_inter;
+        float dot = 0.0f;
+        for (int k = (int)lane; k < n_inter; k += 32) {
+            const uint32_t word = wrow[k / 8];
+            const float q = (float)((word >> (4 * (k % 8))) & 0xF);
+            const int g = k / GS;
+            dot = metal::fma((float)srow[g] * q + (float)brow[g], (float)he[k], dot);
+        }
+        dot = simd_sum(dot);
+        acc += (float)rw[m * topk + e_slot] * (float)((T)dot);
+    }
+    if (lane == 0) {
+        y[(size_t)m * dmodel + d] = (T)acc;
+    }
+"""
+
+
 @lru_cache(maxsize=2)
 def _kernel_a():
     return mx.fast.metal_kernel(
@@ -132,6 +240,28 @@ def _kernel_a():
         output_names=["h"],
         header=_HEADER,
         source=_SRC_A,
+    )
+
+
+@lru_cache(maxsize=2)
+def _kernel_a_m():
+    return mx.fast.metal_kernel(
+        name="mtplx_moe_glu_h_m",
+        input_names=["x", "gw", "gs", "gb", "experts"],
+        output_names=["h"],
+        header=_HEADER,
+        source=_SRC_A_M,
+    )
+
+
+@lru_cache(maxsize=2)
+def _kernel_b_m():
+    return mx.fast.metal_kernel(
+        name="mtplx_moe_down_y_m",
+        input_names=["h", "dw", "ds", "db", "experts", "rw"],
+        output_names=["y"],
+        header=_HEADER,
+        source=_SRC_B_M,
     )
 
 
@@ -192,5 +322,62 @@ def moe_glu_decode(
         threadgroup=(1024, 1, 1),
         output_shapes=[(dmodel,)],
         output_dtypes=[x.dtype],
+    )
+    return y
+
+
+def moe_glu_verify(
+    x2, gu_w, gu_s, gu_b, dn_w, dn_s, dn_b, experts, route_w,
+    *, gu_group_size=32, dn_group_size=32,
+):
+    """M-batched fused MoE GLU for the verify widths.
+
+    x2 [M, 2560] bf16 (M = 2..4); experts uint32 [M*topk] (token-major);
+    route_w float32 [M*topk]. Returns y [M, 2560]. Each token's rows are
+    computed with the exact per-row math of moe_glu_decode, so a token's
+    output is bit-identical to running the M=1 kernel on its row alone.
+    """
+    m_rows = int(x2.shape[0])
+    n_inter = gu_w.shape[1] // 2
+    topk = experts.shape[0] // m_rows
+    dmodel = dn_w.shape[1]
+    if 2560 % gu_group_size or n_inter % dn_group_size:
+        raise ValueError(
+            f"group sizes must divide the dot lengths (gu {gu_group_size}, "
+            f"dn {dn_group_size} over n_inter {n_inter})"
+        )
+    ka = _kernel_a_m()
+    rows = m_rows * topk * n_inter
+    tgs = (rows + 31) // 32
+    (h,) = ka(
+        inputs=[x2, gu_w, gu_s, gu_b, experts],
+        template=[
+            ("T", x2.dtype),
+            ("n_inter_c", n_inter),
+            ("topk_c", topk),
+            ("m_rows_c", m_rows),
+            ("GS_GU", int(gu_group_size)),
+        ],
+        grid=(tgs * 1024, 1, 1),
+        threadgroup=(1024, 1, 1),
+        output_shapes=[(m_rows, topk, n_inter)],
+        output_dtypes=[x2.dtype],
+    )
+    kb = _kernel_b_m()
+    tgs_b = (m_rows * dmodel + 31) // 32
+    (y,) = kb(
+        inputs=[h, dn_w, dn_s, dn_b, experts, route_w],
+        template=[
+            ("T", x2.dtype),
+            ("dmodel_c", dmodel),
+            ("n_inter_c", n_inter),
+            ("topk_c", topk),
+            ("m_rows_c", m_rows),
+            ("GS_DN", int(dn_group_size)),
+        ],
+        grid=(tgs_b * 1024, 1, 1),
+        threadgroup=(1024, 1, 1),
+        output_shapes=[(m_rows, dmodel)],
+        output_dtypes=[x2.dtype],
     )
     return y

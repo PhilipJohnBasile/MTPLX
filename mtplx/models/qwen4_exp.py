@@ -807,6 +807,47 @@ class SparseMoeBlock(_Qwen3NextSparseMoeBlock):
             ).reshape(x.shape)
             shared = mx.sigmoid(self.shared_expert_gate(x)) * self.shared_expert(x)
             return (y + shared).astype(x.dtype)
+        if (
+            # Fused verify path (MTPLX_FUSED_MOE_VERIFY=1, dark): the M=2..4
+            # MTP verify forward pays the same per-layer dependency-gap
+            # serialization the M=1 pair removed from AR decode, inside the
+            # 23 ms verify_hidden_eval wall (round anatomy 2026-08-31). Same
+            # kernels, M-batched grid: each token's rows are bit-identical
+            # to the M=1 kernel on that row alone.
+            x.ndim >= 2
+            and 2 <= x.shape[-2] <= 4
+            and x.size == x.shape[-2] * x.shape[-1]  # B == 1
+            and _fused_moe_verify_enabled()
+            and isinstance(sw, _FusedGateUpSwitchGLU)
+            and sw.bits == 4
+            and sw.group_size in (32, 64)
+            and getattr(sw.down_proj, "bits", None) == 4
+            and getattr(sw.down_proj, "group_size", None) in (32, 64)
+        ):
+            from mtplx.kernels.moe_glu_decode import moe_glu_verify
+
+            x2 = x.reshape(-1, x.shape[-1])
+            gates = mx.softmax(self.gate(x), axis=-1, precise=True)
+            idx = mx.argpartition(gates, kth=-self.top_k, axis=-1)[..., -self.top_k :]
+            w = mx.take_along_axis(gates, idx, axis=-1)
+            if self.norm_topk_prob:
+                w = w / w.sum(axis=-1, keepdims=True)
+            dn = sw.down_proj
+            y = moe_glu_verify(
+                x2,
+                sw.gu_weight,
+                sw.gu_scales,
+                sw.gu_biases,
+                dn.weight,
+                dn.scales,
+                dn.biases,
+                idx.reshape(-1).astype(mx.uint32),
+                w.reshape(-1).astype(mx.float32),
+                gu_group_size=int(sw.group_size),
+                dn_group_size=int(dn.group_size),
+            ).reshape(x.shape)
+            shared = mx.sigmoid(self.shared_expert_gate(x)) * self.shared_expert(x)
+            return (y + shared).astype(x.dtype)
         return super().__call__(x)
 
 
@@ -1401,6 +1442,11 @@ def _fused_hc_v3_enabled() -> bool:
 
 def _fused_moe_decode_enabled() -> bool:
     raw = (os.environ.get("MTPLX_FUSED_MOE_DECODE") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _fused_moe_verify_enabled() -> bool:
+    raw = (os.environ.get("MTPLX_FUSED_MOE_VERIFY") or "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
