@@ -23,18 +23,18 @@ _HEADER = f"""
     #include <metal_stdlib>
     using namespace metal;
 
-    constexpr uint ROWS = {ROWS};
-    constexpr uint TOP_K = {TOP_K};
-    constexpr uint K = {K};
-    constexpr uint HIDDEN = {HIDDEN};
-    constexpr uint GROUP_SIZE = 32;
-    constexpr uint VALUES_PER_THREAD = 8;
-    constexpr uint BLOCK_SIZE = VALUES_PER_THREAD * 32;
-    constexpr uint OUTPUTS_PER_SIMD = 4;
-    constexpr uint OUTPUTS_PER_THREADGROUP = 8;
-    constexpr uint WEIGHT_BYTES_PER_ROW = K / 2;
-    constexpr uint GROUPS_PER_ROW = K / GROUP_SIZE;
-    constexpr ushort SLOT_ORDER[TOP_K] = {{0, 8, 1, 9, 2, 3, 4, 5, 6, 7}};
+    constant constexpr uint ROWS = {ROWS};
+    constant constexpr uint TOP_K = {TOP_K};
+    constant constexpr uint K = {K};
+    constant constexpr uint HIDDEN = {HIDDEN};
+    constant constexpr uint GROUP_SIZE = 32;
+    constant constexpr uint VALUES_PER_THREAD = 8;
+    constant constexpr uint BLOCK_SIZE = VALUES_PER_THREAD * 32;
+    constant constexpr uint OUTPUTS_PER_SIMD = 4;
+    constant constexpr uint OUTPUTS_PER_THREADGROUP = 8;
+    constant constexpr uint WEIGHT_BYTES_PER_ROW = K / 2;
+    constant constexpr uint GROUPS_PER_ROW = K / GROUP_SIZE;
+    constant constexpr ushort SLOT_ORDER[TOP_K] = {{0, 8, 1, 9, 2, 3, 4, 5, 6, 7}};
 
     inline float load_q4_vector(
         const device bfloat* x,

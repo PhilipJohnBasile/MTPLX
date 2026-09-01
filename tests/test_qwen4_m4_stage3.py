@@ -111,6 +111,8 @@ def test_m4_routed_down_reduce_copies_exact_q4_g32_qmv_and_bf16_epilogue() -> No
     from mtplx.kernels.qwen4_m4_routed_down import source
 
     kernel_source = source()
+    assert "constant constexpr uint K = 640;" in kernel_source
+    assert "constant constexpr ushort SLOT_ORDER[TOP_K]" in kernel_source
     assert "constexpr uint K = 640;" in kernel_source
     assert "constexpr uint GROUP_SIZE = 32;" in kernel_source
     assert "constexpr uint VALUES_PER_THREAD = 8;" in kernel_source
