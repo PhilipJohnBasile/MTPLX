@@ -159,6 +159,12 @@ def test_qwen4_m4_routed_down_residual_tail_is_a_validated_runtime_override() ->
     ) == {"MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL": "1"}
 
 
+def test_qwen4_m4_routed_glu_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_QWEN4_M4_ROUTED_GLU": True}
+    ) == {"MTPLX_QWEN4_M4_ROUTED_GLU": "1"}
+
+
 def test_fused_qsa_indexer_is_a_validated_runtime_override() -> None:
     assert normalize_runtime_env_overrides({"MTPLX_FUSED_QSA_INDEXER": True}) == {
         "MTPLX_FUSED_QSA_INDEXER": "1"

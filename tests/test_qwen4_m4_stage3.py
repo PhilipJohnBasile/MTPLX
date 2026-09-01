@@ -192,6 +192,7 @@ def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
     from mtplx.qwen4_m4_stage3 import (
         qwen4_m4_routed_down_reduce_enabled,
         qwen4_m4_routed_down_residual_tail_enabled,
+        qwen4_m4_routed_glu_enabled,
         qwen4_m4_stage3_enabled,
     )
 
@@ -221,6 +222,14 @@ def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
     with pytest.raises(ValueError, match="is not a boolean"):
         qwen4_m4_routed_down_residual_tail_enabled()
 
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_GLU", "enabled")
+    assert qwen4_m4_routed_glu_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_GLU", "disabled")
+    assert not qwen4_m4_routed_glu_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_GLU", "maybe")
+    with pytest.raises(ValueError, match="is not a boolean"):
+        qwen4_m4_routed_glu_enabled()
+
 
 def test_m4_routed_residual_tail_requires_routed_reduction_at_construction() -> None:
     from mtplx import qwen4_m4_stage3 as stage3_module
@@ -235,6 +244,18 @@ def test_m4_routed_residual_tail_requires_routed_reduction_at_construction() -> 
             routed_down_residual_tail_enabled=True,
         )
 
+    stage3_module._validate_feature_combination(
+        routed_down_reduce_enabled=True,
+        routed_down_residual_tail_enabled=True,
+        routed_glu_enabled=True,
+    )
+    with pytest.raises(ValueError, match="requires routed residual tail"):
+        stage3_module._validate_feature_combination(
+            routed_down_reduce_enabled=True,
+            routed_down_residual_tail_enabled=False,
+            routed_glu_enabled=True,
+        )
+
 
 def test_m4_child_flags_require_stage3_at_runtime_construction(monkeypatch) -> None:
     import inspect
@@ -245,6 +266,7 @@ def test_m4_child_flags_require_stage3_at_runtime_construction(monkeypatch) -> N
     monkeypatch.setenv("MTPLX_QWEN4_M4_STAGE3", "0")
     monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "1")
     monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", "0")
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_GLU", "0")
     with pytest.raises(ValueError, match="require M4 stage3"):
         stage3_module.qwen4_m4_stage3_flags()
 
@@ -259,6 +281,7 @@ def test_m4_child_flags_require_stage3_at_runtime_construction(monkeypatch) -> N
         "routed_down_residual_tail_enabled="
         "residual_tail_enabled" in runtime_source
     )
+    assert "routed_glu_enabled=routed_glu_enabled" in runtime_source
 
 
 def test_m4_routed_residual_tail_keeps_shared_projection_stock() -> None:
@@ -274,6 +297,48 @@ def test_m4_routed_residual_tail_keeps_shared_projection_stock() -> None:
     assert "mx.sigmoid(block.shared_expert_gate(x))" in forward_source
     assert "hyper" in forward_source
     assert "inject" in forward_source
+
+
+def test_m4_paired_routed_gu_clones_q4_g32_qmv_and_bf16_glu_boundary() -> None:
+    from mtplx.kernels.qwen4_m4_routed_glu import launch_geometry, source
+
+    kernel_source = source()
+    assert "constexpr uint ROWS = 4" in kernel_source
+    assert "constexpr uint TOP_K = 10" in kernel_source
+    assert "constexpr uint HIDDEN = 2560" in kernel_source
+    assert "constexpr uint INTERMEDIATE = 640" in kernel_source
+    assert "constexpr uint GROUP_SIZE = 32" in kernel_source
+    assert "constexpr uint VALUES_PER_THREAD = 16" in kernel_source
+    assert "constexpr uint BLOCK_SIZE = VALUES_PER_THREAD * 32" in kernel_source
+    assert "float gate_result[OUTPUTS_PER_SIMD] = {0.0f}" in kernel_source
+    assert "float up_result[OUTPUTS_PER_SIMD] = {0.0f}" in kernel_source
+    assert "gate_result[out] += qdot_q4(" in kernel_source
+    assert "up_result[out] += qdot_q4(" in kernel_source
+    assert "gate_result[out] = simd_sum(gate_result[out])" in kernel_source
+    assert "up_result[out] = simd_sum(up_result[out])" in kernel_source
+    assert "bfloat gate_value = bfloat(gate_result[out])" in kernel_source
+    assert "bfloat up_value = bfloat(up_result[out])" in kernel_source
+    assert "bfloat sigmoid_value" in kernel_source
+    assert "bfloat silu = bfloat(gate_value * sigmoid_value)" in kernel_source
+    assert "bfloat(silu * up_value)" in kernel_source
+    assert launch_geometry() == ((5120, 40, 1), (64, 1, 1))
+
+
+def test_m4_residual_route_uses_paired_gu_producer_without_hot_fallback() -> None:
+    import inspect
+
+    from mtplx import qwen4_m4_stage3
+
+    forward_source = inspect.getsource(
+        qwen4_m4_stage3._m4_paired_routed_glu_residual_tail_forward
+    )
+    assert "routed._gu(" not in forward_source
+    assert "routed_gu_activation(" in forward_source
+    assert "routed.gu_weight" in forward_source
+    assert "routed.gu_scales" in forward_source
+    assert "routed.gu_biases" in forward_source
+    assert "try:" not in forward_source
+    assert "except" not in forward_source
 
     install_source = inspect.getsource(qwen4_m4_stage3.install_qwen4_m4_stage3)
     plan_source = inspect.getsource(qwen4_m4_stage3._build_install_plans)

@@ -12,6 +12,7 @@ from .kernels.qwen4_m4_routed_down import (
     bind as bind_routed_down_reduce,
     bind_residual_tail,
 )
+from .kernels.qwen4_m4_routed_glu import bind as bind_routed_glu
 from .models.qwen4_exp import (
     DecoderLayer,
     SparseMoeBlock,
@@ -33,7 +34,11 @@ def qwen4_m4_routed_down_residual_tail_enabled() -> bool:
     return env_bool("MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL", default=False)
 
 
-def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool]:
+def qwen4_m4_routed_glu_enabled() -> bool:
+    return env_bool("MTPLX_QWEN4_M4_ROUTED_GLU", default=False)
+
+
+def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool, bool]:
     """Capture and validate the complete construction-time feature route."""
 
     stage3_enabled = qwen4_m4_stage3_enabled()
@@ -41,18 +46,23 @@ def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool]:
     routed_down_residual_tail_enabled = (
         qwen4_m4_routed_down_residual_tail_enabled()
     )
+    routed_glu_enabled = qwen4_m4_routed_glu_enabled()
     if not stage3_enabled and (
-        routed_down_reduce_enabled or routed_down_residual_tail_enabled
+        routed_down_reduce_enabled
+        or routed_down_residual_tail_enabled
+        or routed_glu_enabled
     ):
         raise ValueError("qwen4 M4 child routes require M4 stage3")
     _validate_feature_combination(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
+        routed_glu_enabled=routed_glu_enabled,
     )
     return (
         stage3_enabled,
         routed_down_reduce_enabled,
         routed_down_residual_tail_enabled,
+        routed_glu_enabled,
     )
 
 
@@ -60,11 +70,14 @@ def _validate_feature_combination(
     *,
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
+    routed_glu_enabled: bool = False,
 ) -> None:
     if routed_down_residual_tail_enabled and not routed_down_reduce_enabled:
         raise ValueError(
             "qwen4 M4 routed-down residual tail requires routed-down reduction"
         )
+    if routed_glu_enabled and not routed_down_residual_tail_enabled:
+        raise ValueError("qwen4 M4 routed GLU requires routed residual tail")
 
 
 def _text_model(runtime: Any):
@@ -224,6 +237,61 @@ def _m4_routed_down_residual_tail_forward(
     )
 
 
+def _m4_paired_routed_glu_residual_tail_forward(
+    block: SparseMoeBlock,
+    x: mx.array,
+    routed_gu_activation,
+    routed_down_residual_tail,
+    hyper: mx.array,
+    inject: mx.array,
+) -> mx.array:
+    gates = mx.softmax(block.gate(x), axis=-1, precise=True)
+    expert_ids = mx.argpartition(gates, kth=-block.top_k, axis=-1)[
+        ..., -block.top_k :
+    ]
+    route_scores = mx.take_along_axis(gates, expert_ids, axis=-1)
+    if block.norm_topk_prob:
+        route_scores = route_scores / route_scores.sum(axis=-1, keepdims=True)
+
+    routed = block.switch_mlp
+    routed_h = routed_gu_activation(
+        x.reshape(4, 2560),
+        routed.gu_weight,
+        routed.gu_scales,
+        routed.gu_biases,
+        expert_ids.reshape(4, 10),
+    )
+
+    shared = block.shared_expert
+    shared_gu = mx.quantized_matmul(
+        x,
+        shared.gu_weight,
+        shared.gu_scales,
+        shared.gu_biases,
+        transpose=True,
+        group_size=shared.group_size,
+        bits=shared.bits,
+        mode=shared.mode,
+    )
+    shared_gate, shared_up = mx.split(shared_gu, 2, axis=-1)
+    shared_h = nn.silu(shared_gate) * shared_up
+    shared_down = shared.down_proj(shared_h).reshape(4, 2560)
+    shared_factor = mx.sigmoid(block.shared_expert_gate(x)).reshape(4)
+
+    return routed_down_residual_tail(
+        routed_h,
+        routed.down_proj.weight,
+        routed.down_proj.scales,
+        routed.down_proj.biases,
+        expert_ids.reshape(4, 10),
+        route_scores.reshape(4, 10).astype(mx.bfloat16),
+        shared_down,
+        shared_factor.astype(mx.bfloat16),
+        hyper,
+        inject,
+    )
+
+
 def _m4_routed_down_residual_tail_layer_forward(
     layer: DecoderLayer,
     hidden: mx.array,
@@ -248,6 +316,37 @@ def _m4_routed_down_residual_tail_layer_forward(
     return _m4_routed_down_residual_tail_forward(
         layer.mlp,
         mixed,
+        layer._mtplx_m4_routed_down_residual_tail,
+        hyper,
+        inject,
+    )
+
+
+def _m4_paired_routed_glu_residual_tail_layer_forward(
+    layer: DecoderLayer,
+    hidden: mx.array,
+    *,
+    input_ids: mx.array,
+    ssm_mask: mx.array,
+    cache: Any,
+) -> mx.array:
+    if "ple" in layer:
+        hidden = hidden + layer.ple(hidden, input_ids, cache)
+
+    mixed, hyper, inject = layer.attn_hyper_connection(hidden)
+    if layer.is_linear:
+        block_out = layer.linear_attn(mixed, ssm_mask, cache)
+    else:
+        block_out = layer.self_attn(mixed, cache)
+    hidden = hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
+        *hyper.shape
+    )
+
+    mixed, hyper, inject = layer.mlp_hyper_connection(hidden)
+    return _m4_paired_routed_glu_residual_tail_forward(
+        layer.mlp,
+        mixed,
+        layer._mtplx_m4_routed_glu,
         layer._mtplx_m4_routed_down_residual_tail,
         hyper,
         inject,
@@ -279,6 +378,25 @@ class _M4RoutedDownResidualTailDecoderLayer(DecoderLayer):
         rows = int(hidden.size // hidden.shape[-1])
         if rows == 4:
             return _m4_routed_down_residual_tail_layer_forward(
+                self,
+                hidden,
+                input_ids=input_ids,
+                ssm_mask=ssm_mask,
+                cache=cache,
+            )
+        return super().__call__(
+            hidden,
+            input_ids=input_ids,
+            ssm_mask=ssm_mask,
+            cache=cache,
+        )
+
+
+class _M4PairedRoutedGluResidualTailDecoderLayer(DecoderLayer):
+    def __call__(self, hidden, *, input_ids, ssm_mask, cache):
+        rows = int(hidden.size // hidden.shape[-1])
+        if rows == 4:
+            return _m4_paired_routed_glu_residual_tail_layer_forward(
                 self,
                 hidden,
                 input_ids=input_ids,
@@ -493,6 +611,7 @@ def _installation_report(
     max_delta: float,
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
+    routed_glu_enabled: bool = False,
 ) -> dict[str, Any]:
     return {
         "installed": True,
@@ -500,7 +619,9 @@ def _installation_report(
         "rows": 4,
         "max_abs_diff": max_delta,
         "boundary": (
-            "routed_q4g32_reduce_shared_add_mlp_residual"
+            "paired_routed_q4g32_glu_reduce_shared_add_mlp_residual"
+            if routed_glu_enabled
+            else "routed_q4g32_reduce_shared_add_mlp_residual"
             if routed_down_residual_tail_enabled
             else "stock_qmm_combine_tail"
         ),
@@ -513,6 +634,8 @@ def _installation_report(
         "shared": "stock_q8/g64",
         "routed_down_reduce": routed_down_reduce_enabled,
         "routed_down_residual_tail": routed_down_residual_tail_enabled,
+        "paired_routed_glu": routed_glu_enabled,
+        "paired_routed_glu_layers": layer_count if routed_glu_enabled else 0,
         "exact_layers": layer_count,
         "combined_residual_tail_layers": (
             layer_count if routed_down_residual_tail_enabled else 0
@@ -525,12 +648,18 @@ def _install_validated_plans(
     *,
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
+    routed_glu_enabled: bool = False,
+    routed_glu=None,
 ) -> None:
     """Mutate only the complete plan set after validation and exact self-checks."""
 
     for layer, block, stage3, routed_down_reduce in plans:
         block._mtplx_m4_stage3 = stage3
-        if routed_down_residual_tail_enabled:
+        if routed_glu_enabled:
+            layer._mtplx_m4_routed_glu = routed_glu
+            layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
+            layer.__class__ = _M4PairedRoutedGluResidualTailDecoderLayer
+        elif routed_down_residual_tail_enabled:
             layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
             layer.__class__ = _M4RoutedDownResidualTailDecoderLayer
         elif routed_down_reduce_enabled:
@@ -545,6 +674,7 @@ def install_qwen4_m4_stage3(
     *,
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
+    routed_glu_enabled: bool = False,
 ) -> dict[str, Any]:
     """Validate every owner, self-check the kernel, then install M4 directly."""
 
@@ -556,6 +686,7 @@ def install_qwen4_m4_stage3(
     _validate_feature_combination(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
+        routed_glu_enabled=routed_glu_enabled,
     )
     validated_plans = _build_install_plans(
         layers,
@@ -571,6 +702,7 @@ def install_qwen4_m4_stage3(
         if routed_down_reduce_enabled
         else None
     )
+    routed_glu = bind_routed_glu() if routed_glu_enabled else None
     plans = tuple(
         (layer, block, stage3, routed_down_reduce)
         for layer, block, _, _ in validated_plans
@@ -589,12 +721,23 @@ def install_qwen4_m4_stage3(
             inject = mx.cos(
                 mx.arange(4 * 4, dtype=mx.float32) * 0.0625
             ).reshape(1, 4, 4).astype(mx.bfloat16)
-            candidate = _m4_routed_down_residual_tail_forward(
-                block,
-                sample,
-                routed_down_reduce,
-                hyper,
-                inject,
+            candidate = (
+                _m4_paired_routed_glu_residual_tail_forward(
+                    block,
+                    sample,
+                    routed_glu,
+                    routed_down_reduce,
+                    hyper,
+                    inject,
+                )
+                if routed_glu_enabled
+                else _m4_routed_down_residual_tail_forward(
+                    block,
+                    sample,
+                    routed_down_reduce,
+                    hyper,
+                    inject,
+                )
             )
             reference = hyper + (
                 reference[..., None, :] * inject[..., :, None]
@@ -630,12 +773,15 @@ def install_qwen4_m4_stage3(
         plans,
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
+        routed_glu_enabled=routed_glu_enabled,
+        routed_glu=routed_glu,
     )
     report = _installation_report(
         layer_count=len(plans),
         max_delta=max_delta,
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
+        routed_glu_enabled=routed_glu_enabled,
     )
     runtime.qwen4_m4_stage3_report = report
     return report
@@ -645,6 +791,7 @@ __all__ = [
     "install_qwen4_m4_stage3",
     "qwen4_m4_routed_down_reduce_enabled",
     "qwen4_m4_routed_down_residual_tail_enabled",
+    "qwen4_m4_routed_glu_enabled",
     "qwen4_m4_stage3_enabled",
     "qwen4_m4_stage3_flags",
 ]
