@@ -1172,6 +1172,64 @@ def test_anthropic_stream_translates_openai_sse_events():
     assert events[5][1]["mtplx_stats"] == {"tok_s": 12.5}
 
 
+def test_anthropic_stream_keepalive_comments_tick_empty_thinking_deltas():
+    """Inner OpenAI keep-alive comments (pre-first-token prefill liveness,
+    #358) must surface as real message events — an early thinking block
+    ticked with EMPTY thinking_deltas. Claude Code's stream watchdog resets
+    only on yielded message events: its bundled SDK drops both raw SSE
+    comments and protocol `ping` frames (`if(a.event==="ping")continue`), so
+    a >300s prefill died client-side with "Stream idle timeout - no chunks
+    received" (measured live 2026-08-31, 137k–165k-token first turns on the
+    27B, killed at exactly 300.0s under both keep-alive shapes)."""
+
+    async def upstream():
+        yield ": keep-alive\n\n"
+        yield ": keep-alive\n\n"
+        yield (
+            'data: {"choices":[{"delta":{"reasoning_content":"hmm"},'
+            '"finish_reason":null}]}\n\n'
+        )
+        yield (
+            'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":3,"completion_tokens":1}}\n\n'
+        )
+        yield "data: [DONE]\n\n"
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in _anthropic_stream_from_openai_sse(
+                upstream(),
+                model="mtplx",
+            )
+        ]
+
+    chunks = asyncio.run(collect())
+    assert not any(chunk.startswith(":") for chunk in chunks), (
+        "raw SSE comments must not leak through the Anthropic translator"
+    )
+    events = _anthropic_stream_events(chunks)
+    kinds = [event for event, _data in events]
+    assert "ping" not in kinds, "pings are dropped by Claude Code; do not emit them"
+    # Keep-alives open the thinking block early and tick it with empty deltas.
+    assert kinds[:4] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+    ]
+    assert events[1][1]["content_block"]["type"] == "thinking"
+    keepalive_block_index = events[1][1]["index"]
+    assert events[2][1]["delta"] == {"type": "thinking_delta", "thinking": ""}
+    assert events[3][1]["delta"] == {"type": "thinking_delta", "thinking": ""}
+    # Real reasoning continues in the SAME block the keep-alive opened.
+    assert events[4][0] == "content_block_delta"
+    assert events[4][1]["index"] == keepalive_block_index
+    assert events[4][1]["delta"] == {"type": "thinking_delta", "thinking": "hmm"}
+    # Text then closes thinking and opens its own block; stream ends normally.
+    assert kinds[-2:] == ["message_delta", "message_stop"]
+
+
 def test_anthropic_stream_and_nonstream_usage_parity():
     """Streamed and non-streamed /v1/messages must report identical usage for
     the same upstream OpenAI usage payload — including the session-cache

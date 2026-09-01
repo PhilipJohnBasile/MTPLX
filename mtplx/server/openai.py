@@ -4909,12 +4909,43 @@ async def _anthropic_stream_from_openai_sse(body_iterator: Any, *, model: str):
     try:
         async for data in _iter_sse_data(body_iterator):
             if data.startswith(":"):
-                # Keep-alive comment from the inner OpenAI stream (#358):
-                # forward it untranslated. SSE comments are protocol-neutral,
-                # and every other inner frame the translator drops (e.g.
-                # progress chunks) leaves the Anthropic wire silent through
-                # the whole prefill.
-                yield f"{data}\n\n"
+                # Keep-alive comment from the inner OpenAI stream (#358),
+                # which flows only pre-first-token (long prefill). Neither
+                # raw SSE comments nor protocol `ping` events reset Claude
+                # Code's stream watchdog — its bundled SDK loop drops pings
+                # (`if(a.event==="ping")continue`) before the watchdog sees
+                # them, so a prefill longer than the 300s idle window died
+                # client-side with "Stream idle timeout - no chunks
+                # received" (measured live 2026-08-31: 137k–165k-token
+                # MCP-heavy Claude Code first turns on the 27B, killed at
+                # exactly 300.0s under both comment and ping keep-alives).
+                # Only yielded message events reset it, so pre-open the
+                # thinking block and tick it with EMPTY thinking_deltas:
+                # real events on the wire, zero content accumulated, and
+                # the model's own reasoning (which streams first on
+                # thinking-default models) continues seamlessly in the
+                # same block once prefill completes.
+                if active_thinking_index is None and active_text_index is None:
+                    active_thinking_index = next_block_index
+                    next_block_index += 1
+                    opened_any_block = True
+                    yield start_content_block(
+                        active_thinking_index,
+                        {
+                            "type": "thinking",
+                            "thinking": "",
+                            "signature": "mtplx-reasoning",
+                        },
+                    )
+                if active_thinking_index is not None:
+                    yield _anthropic_sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": active_thinking_index,
+                            "delta": {"type": "thinking_delta", "thinking": ""},
+                        },
+                    )
                 continue
             if data == "[DONE]":
                 break
