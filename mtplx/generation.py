@@ -6189,6 +6189,18 @@ def generate_ar(
                         token_callback(released)
         emit_trace()
 
+    # Double-buffered decode (mlx-lm pattern, PR #413-family contribution by
+    # maceip in PR #396): dispatch step t+1's forward without blocking and let
+    # the next sample's materialization be the only block point, so host
+    # bookkeeping overlaps GPU execution. Ported DARK per the house
+    # default-flip discipline: MTPLX_ASYNC_AR=1 arms the double-buffer; the
+    # shipping default keeps the historical blocking eval, and audit runs
+    # (MTPLX_EVAL_AUDIT) always stay synchronous.
+    _ar_sync_eval = not (
+        str(os.environ.get("MTPLX_ASYNC_AR", "")).strip().lower()
+        in ("1", "true", "yes", "on")
+    ) or bool(os.environ.get("MTPLX_EVAL_AUDIT"))
+
     # ---- Pipelined AR lane (MTPLX_AR_PIPELINE) ---------------------------
     # Software pipeline over the decode stream: sampling runs INSIDE the lazy
     # graph (_mx_lazy_sample), so step k+1's graph is built on step k's
@@ -6366,6 +6378,12 @@ def generate_ar(
             # both the greedy and sampled branches draw from the constrained
             # distribution (-inf survives temperature/top-p/penalties).
             logits_row = constraint.mask_logits_row(logits_row)
+        if not _ar_sync_eval and step > _classic_start:
+            sync_started = time.perf_counter()
+            _eval(logits_row)
+            sync_elapsed = time.perf_counter() - sync_started
+            target_eval_time += sync_elapsed
+            target_decode_time += sync_elapsed
         token, _ = _sample_from_logits(
             logits_row,
             sampler,
@@ -6421,10 +6439,17 @@ def generate_ar(
             hidden_next = None
         forward_graph_elapsed = time.perf_counter() - started
         eval_started = time.perf_counter()
-        if hidden_next is None:
-            _eval(logits_next)
+        if _ar_sync_eval:
+            if hidden_next is None:
+                _eval(logits_next)
+            else:
+                _eval(logits_next, hidden_next)
         else:
-            _eval(logits_next, hidden_next)
+            if hidden_next is None:
+                mx.async_eval(logits_next)
+            else:
+                mx.async_eval(logits_next, hidden_next)
+            _owner_progress_tick()
         eval_elapsed = time.perf_counter() - eval_started
         elapsed_decode = time.perf_counter() - started
         target_decode_time += elapsed_decode
