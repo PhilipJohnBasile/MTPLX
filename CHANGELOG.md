@@ -10,8 +10,8 @@ All notable user-facing changes to MTPLX. The format is based on
 
 - **Memory refusals are now honest and proactive (#415).** Before a large
   prefill is admitted, the server projects its footprint, proactively
-  clears superseded SessionBank entries, and — when the request genuinely
-  cannot fit — answers a structured HTTP 507 upfront instead of letting
+  clears superseded SessionBank entries, and, when the request genuinely
+  cannot fit, answers a structured HTTP 507 upfront instead of letting
   the stream die mid-flight. Streamed requests that fail now emit an
   honest error receipt (`stream_error`, `error_kind`) instead of being
   logged as client cancellations.
@@ -21,12 +21,13 @@ All notable user-facing changes to MTPLX. The format is based on
   Code and Pi context/auto-compaction math sees true totals on session
   cache hits. Adopted from PR #417 by @amichaelblock-lgtm.
 - **Claude Code no longer times out on long prefills.** Claude Code's
-  stream watchdog resets only on real message events — it ignores SSE
-  comments and protocol pings — so a first turn past its 300 s idle
-  window (large MCP toolsets reach 137k–165k tokens) died with "Stream
-  idle timeout". The Anthropic bridge now emits prefill keep-alives as
-  empty `thinking_delta` events; a measured 165k-token first turn on the
-  27B now survives a multi-minute prefill and completes.
+  stream watchdog resets only on real message events and ignores SSE
+  comments and protocol pings, so a first turn past its 300 s idle
+  window (large MCP toolsets reach 137k to 165k tokens) died with
+  "Stream idle timeout". The Anthropic bridge now emits prefill
+  keep-alives as empty `thinking_delta` events; a measured 165k-token
+  first turn on the 27B now survives a multi-minute prefill and
+  completes.
 - **Compile kill-switch precedence (from PR #395 by @maceip).** An
   explicit `MTPLX_COMPILED_GDN=0` / `MTPLX_QWEN4EXP_COMPILE=0` now wins
   over profile auto-arming everywhere, including `set_ar_pipeline_mode`
@@ -48,7 +49,7 @@ All notable user-facing changes to MTPLX. The format is based on
   double-buffered AR decode via `mx.async_eval` (`MTPLX_ASYNC_AR=1`,
   ported from PR #396 by @maceip; measured flat at product cells) and
   M-batched fused MoE GLU verify kernels (`MTPLX_FUSED_MOE_VERIFY=1`;
-  bit-identical per token, measured slower at verify widths — kept as
+  bit-identical per token, measured slower at verify widths, kept as
   wiring platform).
 
 ## [2.10.1] - 2026-08-30
