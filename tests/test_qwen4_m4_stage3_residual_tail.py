@@ -391,3 +391,137 @@ def test_routed_residual_route_is_physical_m4_only(monkeypatch) -> None:
             ssm_mask=object(),
             cache=object(),
         ) is stock
+
+
+@pytest.mark.parametrize("is_linear", [True, False])
+def test_routed_residual_layer_preserves_decoder_call_order_and_arguments(
+    monkeypatch, is_linear
+) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    calls = []
+    input_ids = object()
+    ssm_mask = object()
+    cache = object()
+    hidden = np.arange(8, dtype=np.float32).reshape(1, 4, 2)
+    ple_out = np.full_like(hidden, 0.5)
+    attn_mixed = np.full_like(hidden, 2.0)
+    attn_hyper = np.arange(32, dtype=np.float32).reshape(1, 4, 8)
+    attn_inject = np.arange(16, dtype=np.float32).reshape(1, 4, 4) * 0.125
+    block_out = np.full_like(hidden, 3.0)
+    mlp_mixed = np.full_like(hidden, 4.0)
+    mlp_hyper = np.full((1, 4, 8), 5.0, dtype=np.float32)
+    mlp_inject = np.full((1, 4, 4), 0.25, dtype=np.float32)
+    result = object()
+
+    class Layer:
+        def __init__(self):
+            self.is_linear = is_linear
+            self.mlp = object()
+            self._mtplx_m4_routed_down_residual_tail = object()
+
+        def __contains__(self, name):
+            return name == "ple"
+
+        def ple(self, value, observed_ids, observed_cache):
+            calls.append(("ple", value.copy(), observed_ids, observed_cache))
+            return ple_out
+
+        def attn_hyper_connection(self, value):
+            calls.append(("attn_hyper", value.copy()))
+            return attn_mixed, attn_hyper, attn_inject
+
+        def linear_attn(self, mixed, mask, observed_cache):
+            calls.append(("linear", mixed, mask, observed_cache))
+            return block_out
+
+        def self_attn(self, mixed, observed_cache):
+            calls.append(("self", mixed, observed_cache))
+            return block_out
+
+        def mlp_hyper_connection(self, value):
+            calls.append(("mlp_hyper", value.copy()))
+            return mlp_mixed, mlp_hyper, mlp_inject
+
+    layer = Layer()
+
+    def fake_mlp_forward(block, mixed, tail, hyper, inject):
+        calls.append(("mlp", block, mixed, tail, hyper, inject))
+        return result
+
+    monkeypatch.setattr(
+        stage3_module,
+        "_m4_routed_down_residual_tail_forward",
+        fake_mlp_forward,
+    )
+
+    actual = stage3_module._m4_routed_down_residual_tail_layer_forward(
+        layer,
+        hidden,
+        input_ids=input_ids,
+        ssm_mask=ssm_mask,
+        cache=cache,
+    )
+
+    assert actual is result
+    assert [call[0] for call in calls] == [
+        "ple",
+        "attn_hyper",
+        "linear" if is_linear else "self",
+        "mlp_hyper",
+        "mlp",
+    ]
+    np.testing.assert_array_equal(calls[1][1], hidden + ple_out)
+    expected_hidden = attn_hyper + (
+        block_out[..., None, :] * attn_inject[..., :, None]
+    ).reshape(*attn_hyper.shape)
+    np.testing.assert_array_equal(calls[3][1], expected_hidden)
+    if is_linear:
+        assert calls[2][1] is attn_mixed
+        assert calls[2][2] is ssm_mask
+        assert calls[2][3] is cache
+    else:
+        assert calls[2][1] is attn_mixed
+        assert calls[2][2] is cache
+    assert calls[4][1] is layer.mlp
+    assert calls[4][2] is mlp_mixed
+    assert calls[4][3] is layer._mtplx_m4_routed_down_residual_tail
+    assert calls[4][4] is mlp_hyper
+    assert calls[4][5] is mlp_inject
+
+
+def test_successful_combined_install_assigns_all_48_exact_owners(monkeypatch) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    class Layer:
+        pass
+
+    class CombinedLayer(Layer):
+        pass
+
+    class Block:
+        pass
+
+    monkeypatch.setattr(
+        stage3_module, "_M4RoutedDownResidualTailDecoderLayer", CombinedLayer
+    )
+    stage3 = object()
+    combined = object()
+    layers = tuple(Layer() for _ in range(48))
+    blocks = tuple(Block() for _ in range(48))
+    plans = tuple(
+        (layer, block, stage3, combined)
+        for layer, block in zip(layers, blocks, strict=True)
+    )
+
+    stage3_module._install_validated_plans(
+        plans,
+        routed_down_reduce_enabled=True,
+        routed_down_residual_tail_enabled=True,
+    )
+
+    assert all(type(layer) is CombinedLayer for layer in layers)
+    assert all(
+        layer._mtplx_m4_routed_down_residual_tail is combined for layer in layers
+    )
+    assert all(block._mtplx_m4_stage3 is stage3 for block in blocks)

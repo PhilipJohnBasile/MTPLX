@@ -520,6 +520,26 @@ def _installation_report(
     }
 
 
+def _install_validated_plans(
+    plans,
+    *,
+    routed_down_reduce_enabled: bool,
+    routed_down_residual_tail_enabled: bool,
+) -> None:
+    """Mutate only the complete plan set after validation and exact self-checks."""
+
+    for layer, block, stage3, routed_down_reduce in plans:
+        block._mtplx_m4_stage3 = stage3
+        if routed_down_residual_tail_enabled:
+            layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
+            layer.__class__ = _M4RoutedDownResidualTailDecoderLayer
+        elif routed_down_reduce_enabled:
+            block._mtplx_m4_routed_down_reduce = routed_down_reduce
+            block.__class__ = _M4RoutedDownReduceSparseMoeBlock
+        else:
+            block.__class__ = _M4Stage3SparseMoeBlock
+
+
 def install_qwen4_m4_stage3(
     runtime: Any,
     *,
@@ -606,16 +626,11 @@ def install_qwen4_m4_stage3(
             )
         max_delta = max(max_delta, observed)
 
-    for layer, block, stage3, routed_down_reduce in plans:
-        block._mtplx_m4_stage3 = stage3
-        if routed_down_residual_tail_enabled:
-            layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
-            layer.__class__ = _M4RoutedDownResidualTailDecoderLayer
-        elif routed_down_reduce_enabled:
-            block._mtplx_m4_routed_down_reduce = routed_down_reduce
-            block.__class__ = _M4RoutedDownReduceSparseMoeBlock
-        else:
-            block.__class__ = _M4Stage3SparseMoeBlock
+    _install_validated_plans(
+        plans,
+        routed_down_reduce_enabled=routed_down_reduce_enabled,
+        routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
+    )
     report = _installation_report(
         layer_count=len(plans),
         max_delta=max_delta,

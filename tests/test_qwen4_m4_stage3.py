@@ -277,8 +277,10 @@ def test_m4_routed_residual_tail_keeps_shared_projection_stock() -> None:
 
     install_source = inspect.getsource(qwen4_m4_stage3.install_qwen4_m4_stage3)
     plan_source = inspect.getsource(qwen4_m4_stage3._build_install_plans)
+    mutation_source = inspect.getsource(qwen4_m4_stage3._install_validated_plans)
     assert "_validate_residual_tail_contract" in plan_source
-    assert "_M4RoutedDownResidualTailDecoderLayer" in install_source
+    assert "_M4RoutedDownResidualTailDecoderLayer" in mutation_source
+    assert "_install_validated_plans" in install_source
     assert install_source.index("_build_install_plans(") < install_source.index(
         "stage3 = bind()"
     )
