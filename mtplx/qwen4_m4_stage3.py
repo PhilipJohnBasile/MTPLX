@@ -7,7 +7,8 @@ from typing import Any
 import mlx.core as mx
 import mlx.nn as nn
 
-from .kernels.qwen4_m4_stage3 import bind
+from .kernels.qwen4_m4_stage3 import bind, bind_residual_tail
+from .kernels.qwen4_m4_routed_down import bind as bind_routed_down_reduce
 from .models.qwen4_exp import (
     SparseMoeBlock,
     _FusedGateUpMLP,
@@ -18,6 +19,10 @@ from .runtime_options import env_bool
 
 def qwen4_m4_stage3_enabled() -> bool:
     return env_bool("MTPLX_QWEN4_M4_STAGE3", default=False)
+
+
+def qwen4_m4_routed_down_reduce_enabled() -> bool:
+    return env_bool("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", default=False)
 
 
 def _text_model(runtime: Any):
@@ -72,11 +77,74 @@ def _m4_forward(block: SparseMoeBlock, x: mx.array, stage3) -> mx.array:
     return output.reshape(x.shape).astype(x.dtype)
 
 
+def _m4_routed_down_reduce_forward(
+    block: SparseMoeBlock,
+    x: mx.array,
+    routed_down_reduce,
+) -> mx.array:
+    gates = mx.softmax(block.gate(x), axis=-1, precise=True)
+    expert_ids = mx.argpartition(gates, kth=-block.top_k, axis=-1)[
+        ..., -block.top_k :
+    ]
+    route_scores = mx.take_along_axis(gates, expert_ids, axis=-1)
+    if block.norm_topk_prob:
+        route_scores = route_scores / route_scores.sum(axis=-1, keepdims=True)
+
+    routed = block.switch_mlp
+    routed_input = mx.expand_dims(x, (-2, -3))
+    routed_gate, routed_up = routed._gu(
+        routed_input,
+        expert_ids,
+        sorted_indices=False,
+    )
+    routed_h = (nn.silu(routed_gate) * routed_up).reshape(4, 10, 640)
+
+    shared = block.shared_expert
+    shared_gu = mx.quantized_matmul(
+        x,
+        shared.gu_weight,
+        shared.gu_scales,
+        shared.gu_biases,
+        transpose=True,
+        group_size=shared.group_size,
+        bits=shared.bits,
+        mode=shared.mode,
+    )
+    shared_gate, shared_up = mx.split(shared_gu, 2, axis=-1)
+    shared_h = nn.silu(shared_gate) * shared_up
+    shared_down = shared.down_proj(shared_h).reshape(4, 2560)
+    shared_factor = mx.sigmoid(block.shared_expert_gate(x)).reshape(4)
+
+    output = routed_down_reduce(
+        routed_h,
+        routed.down_proj.weight,
+        routed.down_proj.scales,
+        routed.down_proj.biases,
+        expert_ids.reshape(4, 10),
+        route_scores.reshape(4, 10).astype(mx.bfloat16),
+        shared_down,
+        shared_factor.astype(mx.bfloat16),
+    )
+    return output.reshape(x.shape).astype(x.dtype)
+
+
 class _M4Stage3SparseMoeBlock(SparseMoeBlock):
     def __call__(self, x: mx.array) -> mx.array:
         rows = int(x.size // x.shape[-1])
         if rows == 4:
             return _m4_forward(self, x, self._mtplx_m4_stage3)
+        return super().__call__(x)
+
+
+class _M4RoutedDownReduceSparseMoeBlock(SparseMoeBlock):
+    def __call__(self, x: mx.array) -> mx.array:
+        rows = int(x.size // x.shape[-1])
+        if rows == 4:
+            return _m4_routed_down_reduce_forward(
+                self,
+                x,
+                self._mtplx_m4_routed_down_reduce,
+            )
         return super().__call__(x)
 
 
@@ -228,19 +296,36 @@ def install_qwen4_m4_stage3(runtime: Any) -> dict[str, Any]:
         raise ValueError(f"qwen4 M4 stage3 requires 48 layers, got {len(layers)}")
 
     plans = []
+    routed_down_reduce_enabled = qwen4_m4_routed_down_reduce_enabled()
     stage3 = bind()
+    routed_down_reduce = (
+        bind_routed_down_reduce() if routed_down_reduce_enabled else None
+    )
     for index, layer in enumerate(layers):
         block = layer.mlp
         _validate_input_contract(layer, index=index)
         _validate_block_contract(block, index=index)
-        plans.append((block, stage3))
+        plans.append((block, stage3, routed_down_reduce))
 
     sample = mx.sin(mx.arange(4 * 2560, dtype=mx.float32) * 0.0009765625)
     sample = sample.reshape(1, 4, 2560).astype(mx.bfloat16)
     max_delta = 0.0
-    for index, (block, stage3) in enumerate(plans):
+    for index, (block, stage3, routed_down_reduce) in enumerate(plans):
         stock = block(sample)
-        candidate = _m4_forward(block, sample, stage3)
+        candidate = (
+            _m4_routed_down_reduce_forward(block, sample, routed_down_reduce)
+            if routed_down_reduce_enabled
+            else _m4_forward(block, sample, stage3)
+        )
+        if routed_down_reduce_enabled:
+            reference = _m4_forward(block, sample, stage3)
+            exact = mx.array_equal(reference, candidate)
+            mx.eval(exact)
+            if not bool(exact.item()):
+                raise ValueError(
+                    f"qwen4 M4 stage3 layer {index} routed-down "
+                    "reduction self-check failed"
+                )
         delta = mx.max(mx.abs(stock.astype(mx.float32) - candidate.astype(mx.float32)))
         finite = mx.all(mx.isfinite(candidate))
         mx.eval(delta, finite)
@@ -251,9 +336,13 @@ def install_qwen4_m4_stage3(runtime: Any) -> dict[str, Any]:
             )
         max_delta = max(max_delta, observed)
 
-    for block, stage3 in plans:
+    for block, stage3, routed_down_reduce in plans:
         block._mtplx_m4_stage3 = stage3
-        block.__class__ = _M4Stage3SparseMoeBlock
+        if routed_down_reduce_enabled:
+            block._mtplx_m4_routed_down_reduce = routed_down_reduce
+            block.__class__ = _M4RoutedDownReduceSparseMoeBlock
+        else:
+            block.__class__ = _M4Stage3SparseMoeBlock
     report = {
         "installed": True,
         "layers": len(plans),
@@ -262,6 +351,7 @@ def install_qwen4_m4_stage3(runtime: Any) -> dict[str, Any]:
         "boundary": "stock_qmm_combine_tail",
         "routed": "stock_q4/g32",
         "shared": "stock_q8/g64",
+        "routed_down_reduce": routed_down_reduce_enabled,
     }
     runtime.qwen4_m4_stage3_report = report
     return report
@@ -269,5 +359,6 @@ def install_qwen4_m4_stage3(runtime: Any) -> dict[str, Any]:
 
 __all__ = [
     "install_qwen4_m4_stage3",
+    "qwen4_m4_routed_down_reduce_enabled",
     "qwen4_m4_stage3_enabled",
 ]

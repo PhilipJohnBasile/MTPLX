@@ -147,6 +147,12 @@ def test_qwen_mtp_batch_construction_flags_are_validated_runtime_overrides() -> 
     }
 
 
+def test_qwen4_m4_routed_down_reduce_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE": True}
+    ) == {"MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE": "1"}
+
+
 def test_fused_qsa_indexer_is_a_validated_runtime_override() -> None:
     assert normalize_runtime_env_overrides({"MTPLX_FUSED_QSA_INDEXER": True}) == {
         "MTPLX_FUSED_QSA_INDEXER": "1"

@@ -107,8 +107,90 @@ def test_m4_stage3_installer_keeps_both_down_projections_stock() -> None:
     assert "bind()" in install_source
 
 
+def test_m4_routed_down_reduce_copies_exact_q4_g32_qmv_and_bf16_epilogue() -> None:
+    from mtplx.kernels.qwen4_m4_routed_down import source
+
+    kernel_source = source()
+    assert "constexpr uint K = 640;" in kernel_source
+    assert "constexpr uint GROUP_SIZE = 32;" in kernel_source
+    assert "constexpr uint VALUES_PER_THREAD = 8;" in kernel_source
+    assert "x_thread[i + 1] = x[i + 1] / 16.0f;" in kernel_source
+    assert "x_thread[i + 2] = x[i + 2] / 256.0f;" in kernel_source
+    assert "x_thread[i + 3] = x[i + 3] / 4096.0f;" in kernel_source
+    assert "const device ushort* ws = (const device ushort*)w;" in kernel_source
+    assert "return scale * accum + sum * bias;" in kernel_source
+    assert "result[out] = simd_sum(result[out]);" in kernel_source
+    assert "bfloat down_value = bfloat(result[out]);" in kernel_source
+    assert "float(down_value) * float(route_scores" in kernel_source
+    assert "constexpr ushort SLOT_ORDER[TOP_K] = {0, 8, 1, 9, 2, 3, 4, 5, 6, 7};" in kernel_source
+    assert "routed_value[out] = bfloat(float(pending[out]) + float(product));" in kernel_source
+    assert "bfloat second = bfloat(float(pending[out]) + float(product));" in kernel_source
+    assert "routed_value[out] = bfloat(float(second) + float(routed_value[out]));" in kernel_source
+    assert "routed_value[out] = bfloat(float(product) + float(routed_value[out]));" in kernel_source
+
+
+def test_m4_routed_down_reduce_keeps_shared_branch_in_a_separate_exact_tail() -> None:
+    from mtplx.kernels.qwen4_m4_routed_down import tail_source
+
+    kernel_source = tail_source()
+    assert "float(shared_factor[row])" in kernel_source
+    assert "float(shared_down[index])" in kernel_source
+    assert "bfloat gated_shared = bfloat(" in kernel_source
+    assert "bfloat(float(routed_down[index]) + float(gated_shared))" in kernel_source
+
+
+def test_m4_routed_down_reduce_geometry_retains_1280_live_threadgroups() -> None:
+    from mtplx.kernels.qwen4_m4_routed_down import launch_geometry
+
+    assert launch_geometry() == ((320 * 64, 4, 1), (64, 1, 1))
+
+
+def test_m4_routed_down_reduce_bypasses_only_stock_routed_down() -> None:
+    import inspect
+
+    from mtplx import qwen4_m4_stage3
+
+    forward_source = inspect.getsource(qwen4_m4_stage3._m4_routed_down_reduce_forward)
+    assert "routed.down_proj(" not in forward_source
+    assert "routed.down_proj.weight" in forward_source
+    assert "shared.down_proj(" in forward_source
+    assert "mx.sigmoid(block.shared_expert_gate(x))" in forward_source
+    assert "route_scores.reshape(4, 10).astype(mx.bfloat16)" in forward_source
+
+
+def test_m4_routed_down_reduce_routes_only_physical_m4(monkeypatch) -> None:
+    from mtplx import qwen4_m4_stage3 as stage3_module
+
+    candidate = object()
+    stock = object()
+    block = stage3_module._M4RoutedDownReduceSparseMoeBlock.__new__(
+        stage3_module._M4RoutedDownReduceSparseMoeBlock
+    )
+    object.__setattr__(block, "_mtplx_m4_routed_down_reduce", object())
+    monkeypatch.setattr(
+        stage3_module,
+        "_m4_routed_down_reduce_forward",
+        lambda *_args: candidate,
+    )
+    monkeypatch.setattr(
+        stage3_module.SparseMoeBlock,
+        "__call__",
+        lambda *_args: stock,
+    )
+
+    assert block(SimpleNamespace(size=4 * 2560, shape=(1, 4, 2560))) is candidate
+    for rows in (1, 2, 3):
+        assert (
+            block(SimpleNamespace(size=rows * 2560, shape=(1, rows, 2560)))
+            is stock
+        )
+
+
 def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
-    from mtplx.qwen4_m4_stage3 import qwen4_m4_stage3_enabled
+    from mtplx.qwen4_m4_stage3 import (
+        qwen4_m4_routed_down_reduce_enabled,
+        qwen4_m4_stage3_enabled,
+    )
 
     monkeypatch.delenv("MTPLX_QWEN4_M4_STAGE3", raising=False)
     assert not qwen4_m4_stage3_enabled()
@@ -119,6 +201,14 @@ def test_m4_stage3_flag_is_construction_bound(monkeypatch) -> None:
     monkeypatch.setenv("MTPLX_QWEN4_M4_STAGE3", "maybe")
     with pytest.raises(ValueError, match="is not a boolean"):
         qwen4_m4_stage3_enabled()
+
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "enabled")
+    assert qwen4_m4_routed_down_reduce_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "disabled")
+    assert not qwen4_m4_routed_down_reduce_enabled()
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE", "maybe")
+    with pytest.raises(ValueError, match="is not a boolean"):
+        qwen4_m4_routed_down_reduce_enabled()
 
 
 @pytest.mark.parametrize(

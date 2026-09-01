@@ -403,6 +403,7 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
         "MTPLX_QWEN4_FIXED_M4_VERIFY",
         "MTPLX_QWEN4_M4_STAGE3",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
         "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
         "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
         # FR-Spec row-pruned draft head (PR #391 port): the server stamps the
