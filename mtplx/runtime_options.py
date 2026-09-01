@@ -60,11 +60,69 @@ def env_bool(
 #: on random inputs).
 _FABLE_OPDIET = env_bool("MTPLX_FABLE_OPDIET", default=False)
 
+#: The independently selectable rewrites behind the master switch.
+#:
+#: ``bank``  QSA fixed pooled-bank conditional write (_extend_pooled_fixed)
+#: ``rope``  half-width RoPE tables, shared per forward, split-half rotation
+#: ``resid`` hyper-connection residual write fused into one kernel
+#: ``k20``   eager K20 target/draft support (fused deterministic+ordered pair)
+#:
+#: Removing dispatches is not the same as removing GPU time: a rewrite can
+#: trade contiguous vectorized kernels for broadcast/general ones and lose.
+#: ``MTPLX_FABLE_OPDIET_ITEMS`` exists so a measured regression can be
+#: attributed to ONE item instead of the whole flag (2026-09-01: the four
+#: together measured -2.9% tok/s against control on seed 20260829).
+FABLE_OPDIET_ITEMS = ("bank", "rope", "resid", "k20")
 
-def fable_opdiet_enabled() -> bool:
-    """True when ``MTPLX_FABLE_OPDIET`` armed this process at import."""
 
-    return _FABLE_OPDIET
+def parse_opdiet_items(
+    raw: str | None,
+    *,
+    known: tuple[str, ...] = FABLE_OPDIET_ITEMS,
+) -> frozenset[str]:
+    """Parse ``MTPLX_FABLE_OPDIET_ITEMS``; unset/empty selects everything.
+
+    An unknown name raises rather than being dropped: a typo that silently
+    disables the item under test would make the A/B measure the wrong thing.
+    """
+
+    if raw is None:
+        return frozenset(known)
+    tokens = {token.strip().lower() for token in str(raw).split(",")}
+    tokens.discard("")
+    if not tokens:
+        return frozenset(known)
+    if tokens == {"all"}:
+        return frozenset(known)
+    unknown = sorted(tokens - set(known))
+    if unknown:
+        raise ValueError(
+            f"MTPLX_FABLE_OPDIET_ITEMS={raw!r} has unknown item(s) "
+            f"{', '.join(unknown)}; expected a comma list from: "
+            f"{', '.join(known)}"
+        )
+    return frozenset(tokens)
+
+
+_FABLE_OPDIET_SELECTED = parse_opdiet_items(
+    os.environ.get("MTPLX_FABLE_OPDIET_ITEMS")
+)
+
+
+def fable_opdiet_enabled(item: str | None = None) -> bool:
+    """True when the op diet is armed, and this item is selected.
+
+    ``item=None`` answers only the master switch. Every gated call site names
+    its item so ``MTPLX_FABLE_OPDIET_ITEMS`` can isolate one rewrite.
+    """
+
+    if not _FABLE_OPDIET:
+        return False
+    if item is None:
+        return True
+    if item not in FABLE_OPDIET_ITEMS:
+        raise ValueError(f"unknown op-diet item {item!r}")
+    return item in _FABLE_OPDIET_SELECTED
 
 
 @dataclass(frozen=True)

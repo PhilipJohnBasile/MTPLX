@@ -481,7 +481,7 @@ def _rope_inv_freq_and_scaling_shared(args: TextArgs) -> tuple[mx.array, float]:
 
 
 def _rope_inv_freq_and_scaling_for(args: TextArgs) -> tuple[mx.array, float]:
-    if fable_opdiet_enabled():
+    if fable_opdiet_enabled("rope"):
         return _rope_inv_freq_and_scaling_shared(args)
     return _rope_inv_freq_and_scaling(args)
 
@@ -516,7 +516,7 @@ def _hyper_residual_write(
     one kernel. Same operands, same order, same result.
     """
 
-    if not fable_opdiet_enabled():
+    if not fable_opdiet_enabled("resid"):
         return hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
             *hyper.shape
         )
@@ -2213,7 +2213,7 @@ class QSAIndexer(nn.Module):
             candidate = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
             candidate = self.k_layernorm(candidate)
             starts = safe_block.reshape(1).astype(mx.int32) * self.ratio
-            if fable_opdiet_enabled():
+            if fable_opdiet_enabled("rope"):
                 cos, sin = _rope_cos_sin_half(
                     starts,
                     self._inv_freq,
@@ -2222,6 +2222,16 @@ class QSAIndexer(nn.Module):
                 candidate = _apply_partial_rope_half(
                     candidate[:, :, None, :], cos, sin
                 )[:, :, 0, :]
+            else:
+                cos, sin = _rope_cos_sin(
+                    starts,
+                    self._inv_freq,
+                    self._rope_attention_scaling,
+                )
+                candidate = _apply_partial_rope(
+                    candidate[:, :, None, :], cos, sin
+                )[:, :, 0, :]
+            if fable_opdiet_enabled("bank"):
                 # One conditional pass over the bank instead of two.
                 #
                 # The stock pair rewrites the WHOLE fixed bank twice to store
@@ -2243,14 +2253,6 @@ class QSAIndexer(nn.Module):
                     write_row[..., None], candidate.astype(pooled.dtype), pooled
                 )
             else:
-                cos, sin = _rope_cos_sin(
-                    starts,
-                    self._inv_freq,
-                    self._rope_attention_scaling,
-                )
-                candidate = _apply_partial_rope(
-                    candidate[:, :, None, :], cos, sin
-                )[:, :, 0, :]
                 updated = mx.slice_update(pooled, candidate, safe_block, axes=(1,))
                 pooled = mx.where(nb_total > block, updated, pooled)
         cache.pooled = pooled
@@ -2598,7 +2600,7 @@ class QSAIndexer(nn.Module):
         """Stock query preparation kept as the numeric oracle."""
 
         q = self.q_layernorm(q)
-        if fable_opdiet_enabled():
+        if fable_opdiet_enabled("rope"):
             cos, sin = _shared_rope_cos_sin_half(
                 pos_start,
                 int(q.shape[1]),
@@ -3427,7 +3429,7 @@ class Attention(nn.Module):
                 cos, sin = _rope_cos_sin(
                     positions, self._inv_freq, self._rope_attention_scaling
                 )
-        elif fable_opdiet_enabled():
+        elif fable_opdiet_enabled("rope"):
             # Text rope: one half-width table per (pos_start, S) instead of a
             # full-width table per consumer. The indexer above already asked
             # for this exact table, so this is a memo hit inside the layer.
@@ -4354,7 +4356,7 @@ class Qwen4ExpTextModel(nn.Module):
         self._decode_run_fns = {}
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
-        if fable_opdiet_enabled():
+        if fable_opdiet_enabled("rope"):
             with _rope_table_scope():
                 return self._forward(inputs, cache, input_embeddings)
         return self._forward(inputs, cache, input_embeddings)

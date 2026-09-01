@@ -723,7 +723,7 @@ def test_text_trunk_opens_a_rope_scope_only_when_armed():
     import inspect
 
     source = inspect.getsource(qwen4_exp.Qwen4ExpTextModel.__call__)
-    assert "fable_opdiet_enabled()" in source
+    assert 'fable_opdiet_enabled("rope")' in source
     assert "_rope_table_scope()" in source
     assert "return self._forward(inputs, cache, input_embeddings)" in source
 
@@ -765,3 +765,247 @@ def test_extend_pooled_fixed_keeps_the_bank_dtype_when_the_norm_widens(
 
     assert stock.dtype == mx.bfloat16
     assert _identical(stock, diet)
+
+
+# --------------------------------------------------------------------------
+# per-item selection (MTPLX_FABLE_OPDIET_ITEMS)
+# --------------------------------------------------------------------------
+
+
+def test_opdiet_items_default_to_all_four():
+    assert runtime_options.FABLE_OPDIET_ITEMS == ("bank", "rope", "resid", "k20")
+    every = frozenset(runtime_options.FABLE_OPDIET_ITEMS)
+    for raw in (None, "", "   ", "all", ",,"):
+        assert runtime_options.parse_opdiet_items(raw) == every, raw
+
+
+def test_opdiet_items_parse_a_comma_list():
+    assert runtime_options.parse_opdiet_items("bank") == {"bank"}
+    assert runtime_options.parse_opdiet_items(" ROPE , resid ") == {"rope", "resid"}
+    assert runtime_options.parse_opdiet_items("k20,k20") == {"k20"}
+    assert runtime_options.parse_opdiet_items("resid,") == {"resid"}
+
+
+def test_opdiet_items_reject_a_typo_instead_of_dropping_it():
+    """A silently dropped item would make an A/B measure the wrong thing."""
+
+    with pytest.raises(ValueError, match="unknown item"):
+        runtime_options.parse_opdiet_items("bank,rop")
+    with pytest.raises(ValueError, match="unknown item"):
+        runtime_options.parse_opdiet_items("nope")
+
+
+def test_master_switch_gates_every_item(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(
+        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope"})
+    )
+    for item in runtime_options.FABLE_OPDIET_ITEMS:
+        assert runtime_options.fable_opdiet_enabled(item) is False
+    assert runtime_options.fable_opdiet_enabled() is False
+
+
+def test_one_item_can_be_armed_alone(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank"}))
+    assert runtime_options.fable_opdiet_enabled() is True
+    assert runtime_options.fable_opdiet_enabled("bank") is True
+    for item in ("rope", "resid", "k20"):
+        assert runtime_options.fable_opdiet_enabled(item) is False
+    with pytest.raises(ValueError):
+        runtime_options.fable_opdiet_enabled("nope")
+
+
+def test_deselecting_resid_restores_the_stock_residual_graph(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(
+        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope", "k20"})
+    )
+    args = (mx.zeros((1, 2, 24)), mx.zeros((1, 2, 6)), mx.zeros((1, 2, 4)))
+    mx.eval(*args)
+    out = mx.compile(qwen4_exp._hyper_residual_write)(*args)
+    assert _kernel_primitives(out) == ["CompiledBroadcastBroadcastMultiply", "Add"]
+
+
+def test_deselecting_bank_restores_the_stock_bank_write(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(
+        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"rope", "resid", "k20"})
+    )
+    args = _tiny_indexer_args()
+    indexer = qwen4_exp.QSAIndexer(args)
+    monkeypatch.setattr(
+        qwen4_exp,
+        "_bank_row_ids",
+        lambda *_a: pytest.fail("bank rewrite ran while deselected"),
+    )
+    _run_extend_pooled_fixed(indexer, 8, 12, 32, 4, seed=5)
+
+
+def test_deselecting_rope_restores_the_stock_tables(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(
+        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "resid", "k20"})
+    )
+    monkeypatch.setattr(
+        qwen4_exp,
+        "_rope_cos_sin_half",
+        lambda *_a: pytest.fail("rope rewrite ran while deselected"),
+    )
+    args = _tiny_indexer_args()
+    indexer = qwen4_exp.QSAIndexer(args)
+    _run_extend_pooled_fixed(indexer, 8, 12, 32, 4, seed=5)
+    indexer._prepare_queries_eager(mx.zeros((1, 4, 2, 32)), 3)
+
+
+def test_deselecting_k20_restores_the_stock_pair(monkeypatch):
+    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(
+        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope", "resid"})
+    )
+    monkeypatch.setattr(
+        fast_sampling,
+        "_opdiet_ordered_top_k_support",
+        lambda *_a: pytest.fail("k20 rewrite ran while deselected"),
+    )
+    rows = mx.random.normal((2, 32)).astype(mx.float32)
+    mx.eval(rows)
+    fast_sampling.ordered_top_k_support(rows, 4)
+
+
+def test_every_item_is_reachable_from_a_gated_call_site():
+    """No item may be dead: each must name a production gate."""
+
+    import pathlib
+
+    sources = "".join(
+        pathlib.Path(name).read_text()
+        for name in (
+            "mtplx/models/qwen4_exp.py",
+            "mtplx/fast_sampling.py",
+            "mtplx/generation.py",
+        )
+    )
+    for item in runtime_options.FABLE_OPDIET_ITEMS:
+        assert 'fable_opdiet_enabled("' + item + '")' in sources, item
+    assert "fable_opdiet_enabled()" not in sources
+
+
+# --------------------------------------------------------------------------
+# scripts/fable/micro_opdiet.py -- pin the standalone copies to production
+# --------------------------------------------------------------------------
+
+
+def _load_micro_opdiet():
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path("scripts/fable/micro_opdiet.py")
+    spec = importlib.util.spec_from_file_location("micro_opdiet", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module._require_mlx()
+    return module
+
+
+def test_microbench_variants_match_the_production_helpers():
+    """The bench is standalone by convention, so its copies must be pinned.
+
+    A drifted copy would benchmark something that is not what ships. Each
+    variant is checked bitwise against the helper it stands in for.
+    """
+
+    micro = _load_micro_opdiet()
+
+    # --- bank ------------------------------------------------------------
+    capacity, head_dim = 16, 8
+    bank = mx.random.normal((1, capacity, head_dim)).astype(mx.bfloat16)
+    row = mx.random.normal((1, 1, head_dim)).astype(mx.bfloat16)
+    mx.eval(bank, row)
+    row_ids = qwen4_exp._bank_row_ids(capacity, mx.int32)
+    for index in (0, 5, capacity - 1):
+        for flag in (True, False):
+            blk = mx.array(index, dtype=mx.int32)
+            cond = mx.array(flag)
+            mx.eval(blk, cond)
+            reference = micro.bank_stock(bank, row, blk, cond)
+            production = mx.where(
+                mx.logical_and(row_ids == blk, cond)[..., None],
+                row.astype(bank.dtype),
+                bank,
+            )
+            assert _identical(reference, production)
+            assert _identical(
+                micro.bank_select(bank, row, blk, cond, row_ids), production
+            )
+            assert _identical(
+                micro.bank_rowsel(bank, row, blk, cond, row_ids), production
+            )
+
+    # --- rope ------------------------------------------------------------
+    inv_freq = _inv_freq(16)
+    positions = mx.arange(3, 7, dtype=mx.int32)
+    x = mx.random.normal((1, 4, 2, 40)).astype(mx.bfloat16)
+    mx.eval(positions, x)
+
+    cos, sin = qwen4_exp._rope_cos_sin(positions, inv_freq, 1.0)
+    micro_cos, micro_sin = micro.rope_cos_sin(positions, inv_freq, 1.0)
+    assert _identical(cos, micro_cos) and _identical(sin, micro_sin)
+    assert _identical(
+        qwen4_exp._apply_partial_rope(x, cos, sin),
+        micro.apply_partial_rope(x, micro_cos, micro_sin),
+    )
+
+    cos_h, sin_h = qwen4_exp._rope_cos_sin_half(positions, inv_freq, 1.0)
+    micro_cos_h, micro_sin_h = micro.rope_cos_sin_half(positions, inv_freq, 1.0)
+    assert _identical(cos_h, micro_cos_h) and _identical(sin_h, micro_sin_h)
+    assert _identical(
+        qwen4_exp._apply_partial_rope_half(x, cos_h, sin_h),
+        micro.apply_partial_rope_half(x, micro_cos_h, micro_sin_h),
+    )
+
+    # --- resid -----------------------------------------------------------
+    hyper = mx.random.normal((1, 4, 24)).astype(mx.bfloat16)
+    block_out = mx.random.normal((1, 4, 6)).astype(mx.bfloat16)
+    inject = mx.random.normal((1, 4, 4)).astype(mx.bfloat16)
+    mx.eval(hyper, block_out, inject)
+    assert _identical(
+        micro.resid_stock(hyper, block_out, inject),
+        _stock_residual_write(hyper, block_out, inject),
+    )
+    assert _identical(
+        micro.resid_fused(hyper, block_out, inject),
+        micro.resid_stock(hyper, block_out, inject),
+    )
+
+
+def test_microbench_shapes_match_the_model_defaults():
+    """The bench must exercise the production geometry, not a toy."""
+
+    micro = _load_micro_opdiet()
+    args = qwen4_exp.TextArgs()
+
+    assert micro.HIDDEN == args.hidden_size
+    assert micro.HC_COUNT == args.hc_count
+    assert micro.HC_HIDDEN == args.hc_count * args.hidden_size
+    assert micro.N_HEADS == args.num_attention_heads
+    assert micro.N_KV_HEADS == args.num_key_value_heads
+    assert micro.HEAD_DIM == args.head_dim
+    assert micro.ROTARY_DIM == args.rotary_dim
+    assert micro.IDX_HEADS == args.indexer_n_heads
+    assert micro.IDX_HEAD_DIM == args.indexer_head_dim
+    assert micro.COMPRESS_RATIO == args.indexer_compress_ratio
+    # 48 layers, full-attention every 4th; two residual writes per layer.
+    assert micro.QSA_LAYERS == args.num_hidden_layers // args.full_attention_interval
+    assert micro.RESID_SITES == 2 * args.num_hidden_layers
+
+
+def test_microbench_cli_defaults_are_the_reported_run():
+    micro = _load_micro_opdiet()
+    args = micro.build_parser().parse_args([])
+    assert args.reps == 20
+    assert args.warmup == 3
+    assert args.pooled_blocks == 4352
+    assert args.lanes == "eager,compiled"
+    assert args.families == "bank,rope,resid"
+    assert args.donatable_bank is False

@@ -281,7 +281,7 @@ def ordered_top_k_support(
 ) -> tuple[mx.array, mx.array]:
     """One K20 support ordered by (value desc, id asc); op diet aware."""
 
-    if fable_opdiet_enabled():
+    if fable_opdiet_enabled("k20"):
         return _opdiet_ordered_top_k_support(scaled, top_k)
     top_idx, top_vals = _deterministic_mlx_top_k_support(scaled, top_k)
     return _order_bounded_mlx_top_k_support(top_idx, top_vals)
