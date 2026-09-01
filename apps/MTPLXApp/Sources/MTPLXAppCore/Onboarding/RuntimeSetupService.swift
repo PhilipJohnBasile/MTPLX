@@ -232,6 +232,24 @@ public struct RuntimeSetupService: Sendable {
         rows.update(.globalCLI, .running, "Checking for an existing mtplx command")
         publish()
 
+        // Local-wrapper bundles are isolated QA/dev artifacts. Their engine
+        // must exercise the selected checkout, but onboarding must never
+        // repoint or upgrade the user's public terminal installation to that
+        // checkout. Public bundles cannot enter this branch because they do
+        // not allow development wrappers.
+        if MTPLXRuntimeUpdateService.installKind(
+            for: engineExecutable,
+            environment: processEnvironment
+        ) == .sourceCheckout {
+            rows.update(
+                .globalCLI,
+                .done,
+                "Source checkout runtime active. Existing terminal command left unchanged."
+            )
+            publish()
+            return
+        }
+
         // The user's login shell is the only honest oracle for which
         // executable `mtplx` actually runs in their terminal — the app's
         // Finder-launched PATH lacks the shell rc's /opt/homebrew/bin

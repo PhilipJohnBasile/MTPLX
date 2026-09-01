@@ -151,6 +151,17 @@ public struct MTPLXCommandBuilder: Sendable {
                 return URL(fileURLWithPath: explicitPath)
             }
         }
+        // A bundle that explicitly opts into a local wrapper is a QA/dev
+        // artifact whose whole purpose is to exercise those exact source
+        // bytes. Let that deliberate contract outrank app-owned and Homebrew
+        // runtimes left by the public app. Release bundles never set the
+        // allow key, so their app-managed-runtime precedence is unchanged.
+        if sourceWrapperAllowed,
+           let devWrapper = Self.developmentWrapper(environment: environment),
+           FileManager.default.isExecutableFile(atPath: devWrapper.path)
+        {
+            return devWrapper
+        }
         for name in ["mtplx", "MTPLX"] {
             if let path = findOnPath(
                 name,
@@ -159,12 +170,6 @@ public struct MTPLXCommandBuilder: Sendable {
             ) {
                 return URL(fileURLWithPath: path)
             }
-        }
-        if sourceWrapperAllowed,
-           let devWrapper = Self.developmentWrapper(environment: environment),
-           FileManager.default.isExecutableFile(atPath: devWrapper.path)
-        {
-            return devWrapper
         }
         throw MTPLXCommandBuilderError.executableNotFound("mtplx")
     }

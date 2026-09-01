@@ -785,9 +785,9 @@ def _add_paged_kv_quant_args(parser: argparse.ArgumentParser) -> None:
             "threshold (default 1024 tokens) decodes through the inline-"
             "dequant kernel with no bf16 working copy; below it q8 keeps a "
             "context-sized bf16 working mirror, so its memory win starts at "
-            "the threshold. q4 never kernels and keeps no mirror: smallest KV "
-            "bytes at every length, decode re-dequantizes per step (slower "
-            "long-context decode). Prefill runs unquantized (peak prefill "
+            "the threshold. q4 keeps no mirror and, at/past the same threshold, "
+            "decodes through the packed-quant kernel; unsupported shapes use "
+            "bounded chunked dequantization. Prefill runs unquantized (peak prefill "
             "memory unchanged) and compiled-verify/dense-two-pass fast paths "
             "detach while active."
         ),

@@ -6841,6 +6841,19 @@ def test_cli_parses_api_key_file_and_kv_quant_flags():
     assert serve.paged_kv_quantization == "off"
 
 
+def test_quickstart_help_describes_the_shipped_q4_kernel(capsys):
+    parser = build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["quickstart", "--help"])
+
+    assert exc.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "q4 keeps no mirror" in help_text
+    assert "decodes through the packed-quant kernel" in help_text
+    assert "q4 never kernels" not in help_text
+
+
 def test_quickstart_dry_run_json_previews_server_without_side_effects(
     monkeypatch, capsys
 ):
