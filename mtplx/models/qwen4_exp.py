@@ -3795,10 +3795,26 @@ class Qwen4ExpTextModel(nn.Module):
             (i for i, t in enumerate(args.layer_types) if t != "linear_attention"),
             self.ssm_idx,
         )
-        self._gdn_compiled_env = (
-            os.environ.get("MTPLX_COMPILED_GDN", "0").strip().lower()
-            in {"1", "true", "yes", "on"}
+        # Dual-alias env for the compiled GDN decode lane (PR #395 by maceip):
+        # MTPLX_QWEN4EXP_COMPILE is the family-named alias of
+        # MTPLX_COMPILED_GDN. An explicit falsy value on EITHER name is a kill
+        # switch that wins over everything, including set_ar_pipeline_mode
+        # re-arming the lane (upstream bug: the lane ignored an operator's
+        # explicit 0 once the AR pipeline engaged).
+        gdn_env = os.environ.get("MTPLX_COMPILED_GDN")
+        qwen4_env = os.environ.get("MTPLX_QWEN4EXP_COMPILE")
+        truthy_env = {"1", "true", "yes", "on"}
+        gdn_disabled = gdn_env is not None and gdn_env.strip().lower() not in truthy_env
+        qwen4_disabled = (
+            qwen4_env is not None and qwen4_env.strip().lower() not in truthy_env
         )
+        self._gdn_compile_explicit_off = gdn_disabled or qwen4_disabled
+        if self._gdn_compile_explicit_off:
+            self._gdn_compiled_env = False
+        else:
+            self._gdn_compiled_env = (
+                gdn_env is not None and gdn_env.strip().lower() in truthy_env
+            ) or (qwen4_env is not None and qwen4_env.strip().lower() in truthy_env)
         self._gdn_compiled_lane = False
         self._decode_runs = None
         self._decode_run_fns = {}
@@ -3820,6 +3836,7 @@ class Qwen4ExpTextModel(nn.Module):
             # widths. Prefill and masked/padded forwards stay eager.
             1 <= h.shape[1] <= 4
             and ssm_mask is None
+            and not self._gdn_compile_explicit_off
             and (self._gdn_compiled_env or self._gdn_compiled_lane)
             and cache[self.ssm_idx] is not None
         ):
@@ -4412,7 +4429,11 @@ class Model(nn.Module):
             emb._stage_disabled = bool(enabled)
             table.prefer_lazy = bool(enabled)
         if ready:
-            self.language_model.model._gdn_compiled_lane = bool(enabled)
+            model = self.language_model.model
+            if not getattr(model, "_gdn_compile_explicit_off", False):
+                model._gdn_compiled_lane = bool(enabled)
+            else:
+                model._gdn_compiled_lane = False
         return ready
 
     # -- family capture-commit (repair-free verify rollback) ----------------

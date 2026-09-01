@@ -805,9 +805,17 @@ def _server_runtime_env_overrides(
         #   library gated_delta_update dispatch). MTP two boot-triples, both
         #   orders: B/A/B +1.95 t/s (+3.06%, fused arm held the top-5 rows),
         #   A/B/A +1.45 t/s (+2.28%). Best arm mean of the campaign (67.15).
+        truthy_env = {"1", "true", "yes", "on"}
+        gdn_raw = os.environ.get("MTPLX_COMPILED_GDN")
+        qwen4_raw = os.environ.get("MTPLX_QWEN4EXP_COMPILE")
+        compiled_gdn_explicit_off = (
+            gdn_raw is not None and gdn_raw.strip().lower() not in truthy_env
+        )
+        qwen4_compile_explicit_off = (
+            qwen4_raw is not None and qwen4_raw.strip().lower() not in truthy_env
+        )
         for key in (
             "MTPLX_AR_PIPELINE",
-            "MTPLX_COMPILED_GDN",
             "MTPLX_FAMILY_CAPTURE_COMMIT",
             "MTPLX_FUSED_HC_V3",
             "MTPLX_FUSED_GDN_INPROJ",
@@ -829,6 +837,10 @@ def _server_runtime_env_overrides(
         ):
             if os.environ.get(key) is None:
                 overrides.setdefault(key, "1")
+        if not (compiled_gdn_explicit_off or qwen4_compile_explicit_off):
+            for key in ("MTPLX_COMPILED_GDN", "MTPLX_QWEN4EXP_COMPILE"):
+                if os.environ.get(key) is None:
+                    overrides.setdefault(key, "1")
         if os.environ.get("MTPLX_NAX_VERIFY") is None:
             # The turbo profile arms the 27B NAX verify patch
             # (MTPLX_NAX_VERIFY=1); on this family it is unmeasured and
