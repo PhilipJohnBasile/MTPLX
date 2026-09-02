@@ -4681,11 +4681,24 @@ class Qwen4ExpTextModel(nn.Module):
         # Build the shared NumPy hash constants on THIS thread so the worker
         # never races the lazy cache in `_np_consts`.
         embedding._np_consts()
+        sidecar = embedding.ngram_embedding._sidecar
         lookahead = lookahead_mod.PrefillLookahead(
             token_ids,
             spans,
             prepare=lambda start, end: embedding.prefill_lookahead_prepare(
                 lookahead.token_ids, start, end
+            ),
+            # Which spans the worker is designed to serve, stated in the
+            # sidecar's own terms rather than restated in the lane: one span
+            # hashes to `tokens * ngram_heads` rows, and `prepare_rows_np`
+            # declines everything at or below `_HOT_PATH_MAX_ROWS` because
+            # that is the owner-thread-only hot-row LRU. With the LRU off
+            # (`MTPLX_NGRAM_HOT_MB=0`) it declines nothing, so nothing is
+            # exempt. Without this the lane read its own by-design declines
+            # as non-engagement and 500ed every short prompt.
+            rows_per_token=int(embedding.ngram_heads),
+            min_servable_rows=(
+                int(sidecar._HOT_PATH_MAX_ROWS) if sidecar._hot_cap_rows else 0
             ),
         )
         return lookahead

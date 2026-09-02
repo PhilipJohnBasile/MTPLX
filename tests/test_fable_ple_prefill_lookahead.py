@@ -641,6 +641,8 @@ def test_engagement_snapshot_is_per_scope_not_module_global():
         "hits": 1,
         "misses": 0,
         "ineligible": 0,
+        "ineligible_small": 0,
+        "required": 4,
     }
     other, _ids, _c = build()
     assert other.engagement()["hits"] == 0, "counters must not leak across scopes"
@@ -919,7 +921,7 @@ def test_a_multi_span_prefill_is_armed():
     look, _ids, _calls = build(total=64, chunk=16)
     assert look.armed is True
     assert look.inert_reason is None
-    assert look.overlappable_spans() == [1, 2, 3]
+    assert look.required == [0, 1, 2, 3]  # geometry unknown: require all
 
 
 def test_single_span_scope_is_a_no_op_and_records_the_reason():
@@ -937,6 +939,8 @@ def test_single_span_scope_is_a_no_op_and_records_the_reason():
         "armed": False,
         "reason": "single_span",
         "spans": 1,
+        "required": 1,
+        "span_tokens": [16],
     }
     assert look._closed is True
 
@@ -955,6 +959,8 @@ def test_multi_span_scope_records_that_it_armed():
         "armed": True,
         "reason": None,
         "spans": 4,
+        "required": 4,
+        "span_tokens": [16, 16, 16, 16],
     }
     assert "scope_skipped_single_span" not in lookahead_mod.COUNTERS
 
@@ -972,25 +978,31 @@ def test_eight_spans_with_hits_on_every_span_pass_unchanged():
         "hits": 8,
         "misses": 0,
         "ineligible": 0,
+        "ineligible_small": 0,
+        "required": 8,
     }
     assert calls == [(i, i + 16) for i in range(0, 128, 16)]
     assert lookahead_mod.COUNTERS["hit"] == 8
 
 
-def test_eight_spans_pass_when_only_span_zero_missed():
-    """Span 0 has no forward to overlap with; its miss cannot fail the lane."""
+def test_span_zero_is_required_like_any_other_servable_span():
+    """Span 0 is required like any other: the worker does prepare it.
+
+    The scope submits span 0 before the loop starts, so it is served and must
+    hit.  What exempts a span is the sidecar declining it by design, not its
+    position -- see the servable-rows tests below.
+    """
 
     def prepare(start, end):
         if start == 0:
-            return None  # the hot-LRU decline, on the first chunk
+            return None
         return (np.arange(1000 + start, 1000 + end, dtype=np.int64), {})
 
     look, ids, _calls = build(total=128, chunk=16, prepare=prepare)
-    with prefill_lookahead_scope(look):
-        drive(look, ids)
-    assert look.engagement()["hits"] == 7
-    assert look.engagement()["ineligible"] == 1
-    look.verify_full_engagement()
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            drive(look, ids)
+    assert "(0, 'ineligible')" in str(excinfo.value)
 
 
 def test_eight_spans_raise_when_span_three_missed():
@@ -1002,7 +1014,7 @@ def test_eight_spans_raise_when_span_three_missed():
             drive(look, ids, skip_submit_for=(3,))
     message = str(excinfo.value)
     assert "did not engage" in message
-    assert "spans with no worker-prepared rows: [3]" in message
+    assert "(3, 'miss_empty')" in message
 
 
 def test_a_short_trailing_span_the_worker_declined_is_not_a_lane_failure():
@@ -1017,10 +1029,18 @@ def test_a_short_trailing_span_the_worker_declined_is_not_a_lane_failure():
 
     def prepare(start, end):
         if end - start < 16:
-            return None  # below _HOT_PATH_MAX_ROWS: the owner's LRU serves it
+            return None  # at/below _HOT_PATH_MAX_ROWS: the owner's LRU serves it
         return (np.asarray(ids[start:end]), {})
 
-    look = PrefillLookahead(ids, spans, prepare=prepare, submit=immediate_submit)
+    look = PrefillLookahead(
+        ids,
+        spans,
+        prepare=prepare,
+        submit=immediate_submit,
+        rows_per_token=16,
+        min_servable_rows=128,  # 8 tokens * 16 == 128 rows: not servable
+    )
+    assert look.required == [0, 1]
     with prefill_lookahead_scope(look):
         for index, (start, end) in enumerate(spans):
             assert look.span_index_of(ids[start:end]) == index
@@ -1028,6 +1048,7 @@ def test_a_short_trailing_span_the_worker_declined_is_not_a_lane_failure():
             look.submit(look.next_index(index))
     assert look.engagement()["hits"] == 2
     assert look.engagement()["ineligible"] == 1
+    assert look.engagement()["ineligible_small"] == 1
 
 
 def test_a_lane_the_worker_declined_everywhere_still_raises():
@@ -1038,7 +1059,8 @@ def test_a_lane_the_worker_declined_everywhere_still_raises():
         with prefill_lookahead_scope(look):
             drive(look, ids)
     assert "did not engage" in str(excinfo.value)
-    assert "declined by the worker's eligibility rule" in str(excinfo.value)
+    assert "(0, 'ineligible')" in str(excinfo.value)
+    assert "(3, 'ineligible')" in str(excinfo.value)
 
 
 def test_a_wholly_inert_multi_span_lane_still_raises_as_before():
@@ -1058,6 +1080,208 @@ def test_scope_status_resets_with_the_counters():
         "armed": None,
         "reason": None,
         "spans": 0,
+        "required": 0,
+        "span_tokens": [],
     }
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-02, second failure: the GDN tail grid cuts a short prompt into TWO
+# spans (256 + tail), both at or below the sidecar's hot-row threshold, and
+# "every span declined == inert" fired.  Servability is decidable, so the
+# requirement is now stated in the sidecar's own terms.
+# ---------------------------------------------------------------------------
+
+#: Production geometry: (ngram_size - 1) * heads_per_ngram, and
+#: `_SidecarGather._HOT_PATH_MAX_ROWS`.
+NGRAM_HEADS, HOT_PATH_MAX_ROWS = 16, 4096
+
+
+def geometric(ids, spans, prepare, **kwargs):
+    return PrefillLookahead(
+        ids,
+        spans,
+        prepare=prepare,
+        submit=immediate_submit,
+        rows_per_token=NGRAM_HEADS,
+        min_servable_rows=HOT_PATH_MAX_ROWS,
+        **kwargs,
+    )
+
+
+def served(start, end):
+    return (np.arange(start, end, dtype=np.int64), {})
+
+
+def test_the_sidecar_threshold_constant_is_read_from_the_shipped_source():
+    """The lane must not carry its own copy of the sidecar's rule."""
+
+    assert f"_HOT_PATH_MAX_ROWS = {HOT_PATH_MAX_ROWS}" in MODEL_TEXT
+    assert (
+        f"self.ngram_heads = (args.ngram_size - 1) * args.heads_per_ngram"
+        in MODEL_TEXT
+    )
+    builder = MODEL_TEXT.split("def ple_prefill_lookahead", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "rows_per_token=int(embedding.ngram_heads)" in builder
+    assert "int(sidecar._HOT_PATH_MAX_ROWS) if sidecar._hot_cap_rows else 0" in (
+        builder
+    )
+    # No restatement of the constant inside the lane itself.
+    assert "4096" not in (ROOT / "mtplx" / "ple_prefill_lookahead.py").read_text(
+        "utf-8"
+    )
+
+
+def test_a_span_of_exactly_the_threshold_is_not_servable():
+    """256 tokens * 16 == 4,096 rows, and the sidecar declines `uniq <= max`.
+
+    This is the exact width the GDN tail grid cuts, so a `>=` requirement
+    here would re-break the prompt that produced the second 500.
+    """
+
+    ids = np.arange(600, dtype=np.int64)
+    look = geometric(ids, [(0, 256), (256, 600)], lambda s, e: None)
+    assert look.span_rows(0) == HOT_PATH_MAX_ROWS
+    assert look.span_is_servable(0) is False
+    assert look.span_is_servable(1) is True  # 344 * 16 = 5,504 rows
+
+
+def test_two_sub_threshold_spans_do_not_arm_the_lane():
+    """The reported failure: {'spans': 2, 'hits': 0, 'ineligible': 2}."""
+
+    ids = np.arange(400, dtype=np.int64)
+    look = geometric(ids, [(0, 256), (256, 400)], lambda s, e: None)
+    assert look.required == []
+    assert look.armed is False
+    assert look.inert_reason == "no_servable_spans"
+    with prefill_lookahead_scope(look) as active:
+        assert active is None
+    look.verify_full_engagement()  # trivially engaged
+    assert lookahead_mod.COUNTERS["scope_skipped_no_servable_spans"] == 1
+    assert lookahead_mod.last_scope_status() == {
+        "armed": False,
+        "reason": "no_servable_spans",
+        "spans": 2,
+        "required": 0,
+        "span_tokens": [256, 144],
+    }
+
+
+def test_a_4609_token_prompt_at_chunk_4096_requires_both_spans():
+    """4,096 + 513 tokens -> 65,536 + 8,208 rows: both well over threshold."""
+
+    ids = np.arange(4609, dtype=np.int64)
+    spans = [(0, 4096), (4096, 4609)]
+    look = geometric(ids, spans, served)
+    assert [look.span_rows(i) for i in (0, 1)] == [65_536, 8_208]
+    assert look.required == [0, 1]
+    assert look.armed is True
+    with prefill_lookahead_scope(look):
+        for index, (start, end) in enumerate(spans):
+            assert look.take(index) is not None
+            look.submit(look.next_index(index))
+    assert look.engagement()["hits"] == 2
+
+
+def test_a_4609_token_prompt_raises_when_the_513_token_tail_missed():
+    ids = np.arange(4609, dtype=np.int64)
+    look = geometric(ids, [(0, 4096), (4096, 4609)], served)
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            look.take(0)  # span 1 never queued, never taken
+    assert "(1, 'never_taken')" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("missed", [0, 3, 7])
+def test_the_16k_cell_requires_every_one_of_its_eight_spans(missed):
+    """8 x 2048 tokens = 32,768 rows each: nothing is exempt."""
+
+    ids = np.arange(16_384, dtype=np.int64)
+    spans = [(s, s + 2048) for s in range(0, 16_384, 2048)]
+
+    def prepare(start, end):
+        return None if start == missed * 2048 else served(start, end)
+
+    look = geometric(ids, spans, prepare)
+    assert look.required == list(range(8))
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            for index in range(8):
+                look.take(index)
+                look.submit(look.next_index(index))
+    assert f"({missed}, 'ineligible')" in str(excinfo.value)
+
+
+def test_the_16k_cell_passes_and_its_counters_are_unchanged():
+    ids = np.arange(16_384, dtype=np.int64)
+    spans = [(s, s + 2048) for s in range(0, 16_384, 2048)]
+    look = geometric(ids, spans, served)
+    with prefill_lookahead_scope(look):
+        for index in range(8):
+            assert look.take(index) is not None
+            look.submit(look.next_index(index))
+    assert lookahead_mod.snapshot_counters() == {"submitted": 8, "hit": 8}
+    assert look.engagement() == {
+        "spans": 8,
+        "submits": 8,
+        "hits": 8,
+        "misses": 0,
+        "ineligible": 0,
+        "ineligible_small": 0,
+        "required": 8,
+    }
+    assert lookahead_mod.last_scope_status()["armed"] is True
+
+
+def test_a_mixed_prefill_passes_on_a_big_hit_and_a_tiny_decline():
+    """One servable chunk plus a sub-threshold tail: engaged, not inert."""
+
+    ids = np.arange(2148, dtype=np.int64)
+    spans = [(0, 2048), (2048, 2148)]  # 32,768 rows, then 1,600 rows
+
+    def prepare(start, end):
+        return None if start == 2048 else served(start, end)
+
+    look = geometric(ids, spans, prepare)
+    assert look.required == [0]
+    assert look.armed is True
+    with prefill_lookahead_scope(look):
+        for index in range(2):
+            look.take(index)
+            look.submit(look.next_index(index))
+    assert look.engagement()["hits"] == 1
+    assert look.engagement()["ineligible_small"] == 1
+    assert lookahead_mod.COUNTERS["miss_ineligible_small"] == 1
+    assert "miss_ineligible" not in lookahead_mod.COUNTERS
+
+
+def test_a_required_span_that_the_worker_declined_still_raises():
+    """Distinct from the tiny-tail exemption: this one was servable."""
+
+    ids = np.arange(4096, dtype=np.int64)
+    spans = [(0, 2048), (2048, 4096)]
+    look = geometric(ids, spans, lambda s, e: None if s == 2048 else served(s, e))
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            for index in range(2):
+                look.take(index)
+                look.submit(look.next_index(index))
+    assert "(1, 'ineligible')" in str(excinfo.value)
+    assert lookahead_mod.COUNTERS["miss_ineligible"] == 1
+
+
+def test_disabling_the_hot_lru_makes_every_span_required():
+    """MTPLX_NGRAM_HOT_MB=0 -> the sidecar declines nothing -> no exemptions."""
+
+    ids = np.arange(40, dtype=np.int64)
+    look = PrefillLookahead(
+        ids,
+        [(0, 16), (16, 32), (32, 40)],
+        prepare=served,
+        submit=immediate_submit,
+        rows_per_token=NGRAM_HEADS,
+        min_servable_rows=0,
+    )
+    assert look.required == [0, 1, 2]

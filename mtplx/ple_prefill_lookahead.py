@@ -100,7 +100,15 @@ def snapshot_counters() -> dict[str, int]:
 
 def reset_counters() -> None:
     COUNTERS.clear()
-    _LAST_SCOPE.update({"armed": None, "reason": None, "spans": 0})
+    _LAST_SCOPE.update(
+        {
+            "armed": None,
+            "reason": None,
+            "spans": 0,
+            "required": 0,
+            "span_tokens": [],
+        }
+    )
 
 
 #: What the most recent :func:`prefill_lookahead_scope` did with the lane.
@@ -109,7 +117,13 @@ def reset_counters() -> None:
 #: at all, and if not, why.  It never contradicts the driver's
 #: ``prefill_lookahead_armed``, which stays a statement about the environment
 #: flag (the 2026-09-01 blind spot) rather than about one request.
-_LAST_SCOPE: dict[str, Any] = {"armed": None, "reason": None, "spans": 0}
+_LAST_SCOPE: dict[str, Any] = {
+    "armed": None,
+    "reason": None,
+    "spans": 0,
+    "required": 0,
+    "span_tokens": [],
+}
 
 
 def last_scope_status() -> dict[str, Any]:
@@ -174,6 +188,8 @@ class PrefillLookahead:
         prepare: Callable[[int, int], Any],
         *,
         submit: Callable[..., Any] | None = None,
+        rows_per_token: int | None = None,
+        min_servable_rows: int = 0,
     ) -> None:
         import numpy as np
 
@@ -184,6 +200,20 @@ class PrefillLookahead:
         self._spans = [(int(a), int(b)) for a, b in spans]
         self._prepare = prepare
         self._submit = submit
+        # The sidecar's OWN eligibility rule, handed down by the model
+        # builder rather than restated here: ``prepare_rows_np`` declines a
+        # gather whose unique row count is ``<= _SidecarGather.
+        # _HOT_PATH_MAX_ROWS`` (that LRU is owner-thread-only state), and a
+        # span hashes to ``tokens * NGramEmbedding.ngram_heads`` rows.  The
+        # comparison below is strictly-greater for the same reason the
+        # sidecar's is ``<=``: a span of exactly _HOT_PATH_MAX_ROWS rows is
+        # declined, and the GDN tail grid cuts 256-token spans -- 256 * 16 =
+        # 4,096 rows exactly.  ``rows_per_token=None`` means the geometry is
+        # unknown, and then every span is required (the strict contract).
+        self._rows_per_token = (
+            None if rows_per_token is None else max(0, int(rows_per_token))
+        )
+        self._min_servable_rows = max(0, int(min_servable_rows))
         self._pool = None
         if submit is None:
             from concurrent.futures import ThreadPoolExecutor
@@ -201,24 +231,34 @@ class PrefillLookahead:
         self.misses = 0
         self.submits = 0
         self.ineligible = 0
-        #: index -> "hit" | "ineligible" | "miss_empty" | "miss_wrong_span".
-        #: Scalars alone cannot say WHICH span went unserved, and the
-        #: engagement verdict below is a per-span statement.
+        self.ineligible_small = 0
+        #: index -> "hit" | "ineligible" | "ineligible_small" | "miss_empty"
+        #: | "miss_wrong_span".  Scalars alone cannot say WHICH span went
+        #: unserved, and the engagement verdict below is a per-span statement.
         self._outcomes: dict[int, str] = {}
+        #: The spans the worker is DESIGNED to serve.  Everything else is
+        #: exempt by construction, not by tolerance: a span the sidecar
+        #: declines on sight can never be evidence that the lane ran or did
+        #: not.  Two live 500s came from treating a decline as inertness --
+        #: a one-chunk HumanEval prompt, then the GDN tail grid cutting the
+        #: same prompt into 256 + 144 tokens (4,096 + 2,304 rows, both
+        #: declined, reported as {'spans': 2, 'hits': 0, 'ineligible': 2}).
+        self.required = [
+            index
+            for index in range(len(self._spans))
+            if self.span_is_servable(index)
+        ]
         # The lane overlaps chunk k+1's gather with chunk k's forward, so a
-        # prefill of fewer than two chunks has nothing to look ahead FROM.
-        # Arming it there buys no overlap and -- because a sub-4,096-row
-        # gather is exactly what the owner's hot-row LRU serves, which the
-        # worker is forbidden to touch -- reports the resulting decline as a
-        # non-engagement.  That is the 2026-09-02 failure: every short
-        # HumanEval prompt is one chunk, and every one of them 500ed on
-        # {'spans': 1, 'submits': 1, 'hits': 0, 'misses': 1}.
-        self.armed = len(self._spans) > 1
-        self.inert_reason: str | None = (
-            None
-            if self.armed
-            else ("single_span" if len(self._spans) == 1 else "no_spans")
-        )
+        # prefill of one chunk has nothing to look ahead FROM, and a prefill
+        # with no servable span has nothing to look ahead WITH.
+        self.armed = len(self._spans) > 1 and bool(self.required)
+        self.inert_reason: str | None = None
+        if not self._spans:
+            self.inert_reason = "no_spans"
+        elif len(self._spans) == 1:
+            self.inert_reason = "single_span"
+        elif not self.required:
+            self.inert_reason = "no_servable_spans"
 
     # -- span bookkeeping ---------------------------------------------------
 
@@ -229,6 +269,33 @@ class PrefillLookahead:
     @property
     def spans(self) -> list[tuple[int, int]]:
         return list(self._spans)
+
+    @property
+    def span_tokens(self) -> list[int]:
+        return [end - start for start, end in self._spans]
+
+    def span_rows(self, index: int) -> int | None:
+        """Sidecar rows this span hashes to, or None if geometry is unknown."""
+
+        if self._rows_per_token is None:
+            return None
+        start, end = self._spans[index]
+        return (end - start) * self._rows_per_token
+
+    def span_is_servable(self, index: int) -> bool:
+        """Whether the worker is DESIGNED to prepare this span.
+
+        Mirrors ``_SidecarGather.prepare_rows_np`` exactly: it declines when
+        the gather's unique rows are ``<= _HOT_PATH_MAX_ROWS``, so servable
+        is strictly greater.  ``tokens * ngram_heads`` is an upper bound on
+        those unique rows, so this can only ever over-require, never exempt a
+        span the worker would in fact have served.
+        """
+
+        rows = self.span_rows(index)
+        if rows is None:
+            return True
+        return rows > self._min_servable_rows
 
     def span_index_of(self, chunk_ids) -> int | None:
         """Index of the span whose tokens equal ``chunk_ids``, else None.
@@ -307,8 +374,12 @@ class PrefillLookahead:
             # apart from the engagement verdict.
             self.misses += 1
             self.ineligible += 1
-            self._outcomes[int(index)] = "ineligible"
-            count("miss_ineligible")
+            small = not self.span_is_servable(int(index))
+            outcome = "ineligible_small" if small else "ineligible"
+            if small:
+                self.ineligible_small += 1
+            self._outcomes[int(index)] = outcome
+            count(f"miss_{outcome}")
             return None
         self.hits += 1
         self._outcomes[int(index)] = "hit"
@@ -324,22 +395,12 @@ class PrefillLookahead:
             "hits": int(self.hits),
             "misses": int(self.misses),
             "ineligible": int(self.ineligible),
+            "ineligible_small": int(self.ineligible_small),
+            "required": len(self.required),
         }
 
-    def overlappable_spans(self) -> list[int]:
-        """Span indices this lane could actually have run ahead of.
-
-        Span 0 is prepared by the scope itself and consumed by a forward that
-        has not started yet: its submit is worth making (it moves the largest
-        single stall onto the worker) but there is no forward to overlap it
-        WITH, so it cannot be evidence either way.  Spans 1..n-1 are the
-        lane's whole claim.
-        """
-
-        return list(range(1, len(self._spans)))
-
     def verify_full_engagement(self) -> None:
-        """Every overlappable chunk must have reached the worker.
+        """Every span the worker was designed to serve must have hit it.
 
         An armed lane that quietly served zero chunks is the one outcome an
         A/B cannot detect afterwards -- it measures the control while wearing
@@ -347,41 +408,32 @@ class PrefillLookahead:
         (``lookahead_batches`` 0, ``prefill_lookahead`` {}, a 2 s "regression"
         that was arm-position drift). So this raises instead.
 
-        Two outcomes are NOT that failure and must not raise:
-
-        * a lane the scope never armed (fewer than two spans -- nothing to
-          look ahead from), and
-        * a span the worker RAN and declined because its ids belong to the
-          owner-thread hot-row LRU.  The worker is forbidden to touch that
-          LRU by design, so a short trailing chunk declining is the contract
-          working, not the lane sitting inert.
-
-        Everything else still raises, including a lane where every span was
-        declined: that one IS indistinguishable from inert.
+        What is NOT that failure, and must not raise, is a span the sidecar
+        declines by construction: a gather at or below
+        ``_HOT_PATH_MAX_ROWS`` belongs to the owner-thread hot-row LRU, which
+        the worker is forbidden to touch.  Those spans are exempt from the
+        requirement, not tolerated within it -- the difference is that an
+        empty slot, a wrong span, or a REQUIRED span that missed or was
+        declined still raises with the offending indices named, whatever the
+        rest of the prefill did.
         """
 
         if not self.armed:
             return
-        engagement = self.engagement()
-        required = self.overlappable_spans()
         unserved = [
-            index
-            for index in required
-            if self._outcomes.get(index) not in ("hit", "ineligible")
+            index for index in self.required
+            if self._outcomes.get(index) != "hit"
         ]
-        if not unserved and (self.hits or not required):
+        if not unserved:
             return
-        if unserved:
-            detail = f"spans with no worker-prepared rows: {unserved}"
-        else:
-            detail = (
-                "every span was declined by the worker's eligibility rule, "
-                "which is indistinguishable from an inert lane"
-            )
         raise RuntimeError(
             f"{ENV_FLAG}=1 did not engage on every prefill chunk: "
-            f"{engagement}; {detail}. The lane is armed but (partly) inert; "
-            "refusing to report a measurement that did not run the candidate."
+            f"{self.engagement()}; spans the worker was designed to serve "
+            f"but did not: "
+            f"{[(index, self._outcomes.get(index, 'never_taken')) for index in unserved]}"
+            f", span sizes {self.span_tokens}. The lane is armed but (partly) "
+            "inert; refusing to report a measurement that did not run the "
+            "candidate."
         )
 
     def _discard(self, future) -> None:
@@ -412,17 +464,20 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
         yield None
         return
     if not lookahead.armed:
-        # Nothing to look ahead from.  The construction-bound checks in the
-        # model builder already ran (an armed flag on a model that cannot
-        # serve the lane still raises, whatever the prompt length); what is
-        # skipped here is only the worker, which would pay a thread handoff
-        # for zero overlap and then report the hot-LRU decline as a
-        # non-engagement.
+        # Nothing to look ahead from (one chunk), or nothing the worker is
+        # designed to serve (every span at or below the sidecar's hot-row
+        # threshold).  The construction-bound checks in the model builder
+        # already ran -- an armed flag on a model that cannot serve the lane
+        # still raises, whatever the prompt length -- so what is skipped here
+        # is only the worker, which would pay a thread handoff for zero
+        # overlap and then report the hot-LRU decline as a non-engagement.
         _LAST_SCOPE.update(
             {
                 "armed": False,
                 "reason": lookahead.inert_reason,
                 "spans": len(lookahead.spans),
+                "required": len(lookahead.required),
+                "span_tokens": lookahead.span_tokens,
             }
         )
         count(f"scope_skipped_{lookahead.inert_reason}")
@@ -430,7 +485,13 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
         yield None
         return
     _LAST_SCOPE.update(
-        {"armed": True, "reason": None, "spans": len(lookahead.spans)}
+        {
+            "armed": True,
+            "reason": None,
+            "spans": len(lookahead.spans),
+            "required": len(lookahead.required),
+            "span_tokens": lookahead.span_tokens,
+        }
     )
     token = _ACTIVE.set(lookahead)
     # Start the first chunk's preparation before the caller does anything
