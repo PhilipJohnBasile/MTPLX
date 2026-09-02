@@ -910,9 +910,31 @@ public final class ChatViewModel: ObservableObject {
         guard stream.decodeReading == .absent
             || now.timeIntervalSince(stream.lastLiveDecodeUpdateAt) >= Self.liveDecodeUpdateInterval
         else { return }
-        publishTurnState(stream)
+        let next = HeadlineDecodeReading.live(value)
+        // Publish only when the chip's displayed reading changes. The
+        // header latches on its own 0.5 s poll and renders whole tok/s,
+        // so a publish on every 200 ms frame re-evaluated the whole
+        // transcript, sidebar and composer five times a second for a
+        // number nobody could see change.
+        if !Self.sameDisplayedReading(stream.decodeReading, next) {
+            publishTurnState(stream)
+        }
         stream.lastLiveDecodeUpdateAt = now
-        stream.decodeReading = .live(value)
+        stream.decodeReading = next
+    }
+
+    /// Two readings the header chip would render identically: the same
+    /// lifecycle phase and, while live, the same whole tok/s.
+    private static func sameDisplayedReading(
+        _ lhs: HeadlineDecodeReading,
+        _ rhs: HeadlineDecodeReading
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (.live(let a), .live(let b)):
+            return Int(a.rounded()) == Int(b.rounded())
+        default:
+            return lhs == rhs
+        }
     }
 
     // MARK: Live decode window (2026-07-31 founder: "it says 50 but it
