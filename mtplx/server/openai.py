@@ -841,18 +841,72 @@ def _server_runtime_env_overrides(
             for key in ("MTPLX_COMPILED_GDN", "MTPLX_QWEN4EXP_COMPILE"):
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
+        if _served_model_is_qwen4_fixed_m4(args):
+            # Flash-Next speed lane (PR #391 ports by davidtai), default ON
+            # for the one measured fixed-M4 geometry since 2026-09-02
+            # (PR-VERDICTS.md receipts: A/B/A 63.8 tok/s against main's
+            # 54.7 / 59.8; 100k 57.3 vs 48.5). "When unset" only: an
+            # explicit operator export, including =0, wins via the pop loop
+            # below, and a pack contract value is carried unchanged. The
+            # two gates that are consumed at model LOAD and refuse a
+            # mismatched pack loudly (the stage-3 combine tail pins every
+            # MoE layer's group sizes, FR-Spec prunes the native Q8/g64
+            # lm_head) are pack-checked from config.json here, so a catalog
+            # pack outside their contract boots on the rest of the lane
+            # instead of dying at load.
+            lane_defaults = [
+                "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+                "MTPLX_QWEN4_FIXED_M4_VERIFY",
+                "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
+                "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
+            ]
+            if _qwen4_port_opt_in(
+                overrides, "MTPLX_FUSED_GATE_UP"
+            ) and _served_model_pack_is_stage3_geometry(args):
+                # The tail also requires the fused gate+up owners, so the
+                # MTPLX_FUSED_GATE_UP kill switch drops it with them.
+                lane_defaults.append("MTPLX_QWEN4_M4_STAGE3")
+            for key in lane_defaults:
+                if os.environ.get(key) is None:
+                    overrides.setdefault(key, "1")
+            # The fused K/V gather is read at cache promotion and raises
+            # unless BOTH the fixed verifier and the rows-gather lane resolve
+            # on (graphbank.from_qsa_cache; the first port's 249,670-token
+            # refusal was exactly the fused flag armed with rows-gather off),
+            # so it is derived from the resolved pair, never stamped alone.
+            if (
+                _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_FIXED_M4_VERIFY")
+                and _qwen4_port_opt_in(overrides, "MTPLX_QSA_GATHER")
+                and os.environ.get("MTPLX_QSA_M4_FUSED_KV_GATHER") is None
+            ):
+                overrides.setdefault("MTPLX_QSA_M4_FUSED_KV_GATHER", "1")
+            # Rows-gather width 32 (2026-09-02 overnight window: ~3 ms/round
+            # at 100k, 5-10 at 206k over the default 8); inert below the
+            # rows-gather engage floor and under MTPLX_QSA_GATHER=0.
+            if os.environ.get("MTPLX_QSA_GATHER_MAX_ROWS") is None:
+                overrides.setdefault("MTPLX_QSA_GATHER_MAX_ROWS", "32")
+            if _served_model_lm_head_is_q8_g64(args):
+                if os.environ.get("MTPLX_FRSPEC_DRAFT") is None:
+                    overrides.setdefault("MTPLX_FRSPEC_DRAFT", "1")
+                if (
+                    _qwen4_port_opt_in(overrides, "MTPLX_FRSPEC_DRAFT")
+                    and os.environ.get("MTPLX_FRSPEC_VOCAB") is None
+                ):
+                    overrides.setdefault(
+                        "MTPLX_FRSPEC_VOCAB", "builtin:qwen38-code-64k"
+                    )
         if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS"):
             # Fixed-M4 target distributions (PR #391 step 1 by davidtai, his
             # 2026-08-29 production A/B/A/B): batch all four temperature-1 /
             # top-k-20 rows at one materialization boundary instead of
             # synchronizing one row at a time during accept. Lazy mean 53.46
             # tok/s; batched mean 53.89 tok/s (+0.81%), same output digest,
-            # 578/1,282 acceptance, 432 verifier calls, zero repair. Ported
-            # dark: the pair is pinned only when the operator export (or the
-            # pack contract) sets MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS=1,
-            # so turbo's generic lazy defaults stay the family default until
-            # the arm earns a receipt on main. Explicit operator exports of
-            # either key and model-pack overrides still win.
+            # 578/1,282 acceptance, 432 verifier calls, zero repair. The
+            # gate resolves from the lane defaults above (fixed-M4 geometry),
+            # an operator export, or the pack contract; the pair is pinned
+            # only when it resolves on, so every other qwen4_exp layout
+            # keeps turbo's generic lazy defaults. Explicit operator exports
+            # of either key and model-pack overrides still win.
             for key, value in (
                 ("MTPLX_BATCH_TARGET_ARRAYS", "1"),
                 ("MTPLX_LAZY_TARGET_DISTRIBUTIONS", "0"),
@@ -864,12 +918,13 @@ def _server_runtime_env_overrides(
         ) and _served_model_is_qwen4_fixed_m4(args):
             # Construction-bound fixed-M4 verifier (PR #391 step 2 by davidtai,
             # his 2026-08-29 production repeats): one traced replay over the
-            # exact Flash-Next geometry. Ported dark: the operator export (or
-            # the pack contract) MTPLX_QWEN4_FIXED_M4_VERIFY=1 arms it, and the
-            # config predicate keeps the companion pins off every unmeasured
-            # qwen4_exp layout (the runtime installer refuses a mismatched
-            # production geometry loudly). The lane needs the compiled-verify
-            # mode on, so it is pinned here unless an explicit export set it.
+            # exact Flash-Next geometry. Armed by the lane defaults above, an
+            # operator export, or the pack contract
+            # (MTPLX_QWEN4_FIXED_M4_VERIFY=1); the config predicate keeps the
+            # companion pins off every unmeasured qwen4_exp layout (the
+            # runtime installer refuses a mismatched production geometry
+            # loudly). The lane needs the compiled-verify mode on, so it is
+            # pinned here unless an explicit export set it.
             for key in (
                 "MTPLX_COMPILED_VERIFY",
                 "MTPLX_QWEN4_FIXED_M4_VERIFY",
@@ -877,11 +932,12 @@ def _server_runtime_env_overrides(
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
         # PR #391 ports (davidtai, step 5 semantic): an explicit operator
-        # export beats a pack-stamped value for every ported gate, so a launch
-        # line kill switch can never be stomped by runtime_env_overrides. The
-        # stock-QMM combine tail (MTPLX_QWEN4_M4_STAGE3) is consumed at model
-        # load by its own gate and needs no server pin.
-        for key in _QWEN4_PORT_KEYS:
+        # export beats a pack-stamped or server-stamped value for every lane
+        # key, so a launch line kill switch (KEY=0) can never be stomped by
+        # runtime_env_overrides. The stock-QMM combine tail
+        # (MTPLX_QWEN4_M4_STAGE3) is consumed at model load by its own gate
+        # and needs no server pin beyond the default above.
+        for key in _QWEN4_LANE_KEYS:
             if str(os.environ.get(key) or "").strip():
                 overrides.pop(key, None)
         if os.environ.get("MTPLX_NAX_VERIFY") is None:
@@ -910,7 +966,7 @@ def _served_model_type_is_qwen4_exp(args: argparse.Namespace) -> bool:
 
 
 _QWEN4_PORT_TRUTHY = frozenset({"1", "true", "yes", "on"})
-# Opt-in gates of the PR #391 Flash-Next ports, one per ported step.
+# Gates of the PR #391 Flash-Next ports, one per ported step.
 _QWEN4_PORT_KEYS = (
     "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
     "MTPLX_QWEN4_FIXED_M4_VERIFY",
@@ -919,14 +975,22 @@ _QWEN4_PORT_KEYS = (
     "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
     "MTPLX_QSA_M4_FUSED_KV_GATHER",
 )
+# Every key the fixed-M4 lane defaults may stamp; an explicit operator
+# export (any non-empty value) always beats a stamped value for these.
+_QWEN4_LANE_KEYS = _QWEN4_PORT_KEYS + (
+    "MTPLX_FRSPEC_DRAFT",
+    "MTPLX_FRSPEC_VOCAB",
+    "MTPLX_QSA_GATHER_MAX_ROWS",
+)
 
 
 def _qwen4_port_opt_in(overrides: Mapping[str, str], key: str) -> bool:
-    """Opt-in gate for the PR #391 Flash-Next ports (dark by default).
+    """Resolved state of a Flash-Next lane gate.
 
-    An explicit operator export wins; otherwise the pack contract's
-    runtime_env_overrides may stamp the key. Unset means the port stays off
-    and the family keeps main's shipped defaults.
+    An explicit operator export wins; otherwise the overrides carry the key,
+    stamped by the fixed-M4 lane defaults or by the pack contract's
+    runtime_env_overrides. Unset means the port stays off and the family
+    keeps main's shipped defaults.
     """
     raw = os.environ.get(key)
     if raw is None:
@@ -943,6 +1007,96 @@ def _served_model_is_qwen4_fixed_m4(args: argparse.Namespace) -> bool:
     from mtplx.qwen4_fixed_verify import is_qwen4_fixed_verify_config
 
     return is_qwen4_fixed_verify_config(config)
+
+
+def _served_model_config(args: argparse.Namespace) -> dict[str, Any] | None:
+    try:
+        with open(Path(str(args.model)) / "config.json", "rb") as fh:
+            config = json.load(fh)
+    except Exception:
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _served_module_quantization(
+    config: Mapping[str, Any], module: str
+) -> tuple[int, int, str] | None:
+    """(bits, group_size, mode) the loader applies to ``module``.
+
+    A per-module entry replaces the pack-wide values, ``False`` leaves the
+    module unquantized, anything else resolves to the pack-wide values.
+    None when the pack says nothing usable.
+    """
+    quantization = config.get("quantization")
+    if not isinstance(quantization, Mapping):
+        return None
+    entry = quantization.get(module)
+    if entry is False:
+        return None
+    if not isinstance(entry, Mapping):
+        entry = quantization
+    try:
+        bits = int(entry.get("bits"))
+        group_size = int(entry.get("group_size"))
+    except (TypeError, ValueError):
+        return None
+    return bits, group_size, str(entry.get("mode") or "affine")
+
+
+def _served_model_lm_head_is_q8_g64(args: argparse.Namespace) -> bool:
+    """FR-Spec pack predicate.
+
+    The builtin ranked table prunes the native Q8/g64 affine lm_head
+    (frspec_draft.install_frspec_draft_head) and any other head layout
+    fails the model LOAD (draft_lm_head raises), so the default only stamps
+    the lever on packs carrying that head. Catalog receipt 2026-09-02:
+    Optimized-Speed ships lm_head Q8/g64, Bare-Speed ships Q4/g64.
+    """
+    config = _served_model_config(args)
+    if config is None:
+        return False
+    text = config.get("text_config")
+    if isinstance(text, Mapping) and text.get("tie_word_embeddings"):
+        return False
+    return _served_module_quantization(config, "language_model.lm_head") == (
+        8,
+        64,
+        "affine",
+    )
+
+
+# Per-module quantization the M=4 stage-3 combine tail pins for every MoE
+# layer (qwen4_m4_stage3 contracts: router and shared expert Q8/g64, routed
+# experts Q4/g32); the installer raises on any other geometry at model load.
+_QWEN4_STAGE3_MODULE_CONTRACT = (
+    ("mlp.gate", (8, 64, "affine")),
+    ("mlp.shared_expert_gate", (8, 64, "affine")),
+    ("mlp.shared_expert.gate_proj", (8, 64, "affine")),
+    ("mlp.shared_expert.up_proj", (8, 64, "affine")),
+    ("mlp.shared_expert.down_proj", (8, 64, "affine")),
+    ("mlp.switch_mlp.gate_proj", (4, 32, "affine")),
+    ("mlp.switch_mlp.up_proj", (4, 32, "affine")),
+    ("mlp.switch_mlp.down_proj", (4, 32, "affine")),
+)
+
+
+def _served_model_pack_is_stage3_geometry(args: argparse.Namespace) -> bool:
+    """Stage-3 pack predicate over config.json's per-module quantization."""
+    config = _served_model_config(args)
+    if config is None:
+        return False
+    text = config.get("text_config")
+    layers = text.get("num_hidden_layers") if isinstance(text, Mapping) else None
+    if not isinstance(layers, int) or layers <= 0:
+        return False
+    return all(
+        _served_module_quantization(
+            config, f"language_model.model.layers.{index}.{module}"
+        )
+        == expected
+        for index in range(layers)
+        for module, expected in _QWEN4_STAGE3_MODULE_CONTRACT
+    )
 
 
 def _assert_fast_path_env() -> dict[str, dict[str, Any]]:

@@ -902,8 +902,9 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
     overrides = openai._server_runtime_env_overrides(args, {})
     for key in _QWEN4_EXP_FAMILY_ENV_DEFAULTS:
         assert overrides.get(key) == "1", key
-    # PR #391 step 1 (davidtai) is ported dark: without its opt-in gate the
-    # family keeps turbo's lazy target-distribution defaults untouched.
+    # The PR #391 lane (davidtai) is geometry-gated: a bare qwen4_exp config
+    # keeps turbo's lazy target-distribution defaults untouched, the one
+    # measured fixed-M4 geometry pins the batched pair by default (below).
     assert "MTPLX_BATCH_TARGET_ARRAYS" not in overrides
     assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in overrides
     assert overrides.get("MTPLX_NAX_VERIFY") == "0"
@@ -970,6 +971,61 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
         "MTPLX_NAX_VERIFY",
     ):
         assert key not in other, key
+
+    # The measured fixed-M4 geometry (Flash-Next) pins the batched pair by
+    # default (2026-09-02 lane flip); an explicit =0 export still wins.
+    monkeypatch.delenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", raising=False)
+    flash_next = tmp_path / "flash-next"
+    flash_next.mkdir()
+    (flash_next / "config.json").write_text(
+        json.dumps(_flash_next_fixed_m4_config()), encoding="utf-8"
+    )
+    geometry_args = SimpleNamespace(
+        generation_mode="mtp",
+        verify_strategy="batched",
+        model=str(flash_next),
+    )
+    lane = openai._server_runtime_env_overrides(geometry_args, {})
+    assert lane.get("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS") == "1"
+    assert lane.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert lane.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert lane.get("MTPLX_NAX_VERIFY") == "0"
+    assert normalize_runtime_env_overrides(lane) == lane
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "0")
+    dark = openai._server_runtime_env_overrides(geometry_args, {})
+    assert "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS" not in dark
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in dark
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in dark
+
+
+def _flash_next_fixed_m4_config() -> dict:
+    """The one measured Flash-Next geometry (qwen4_fixed_verify predicate)."""
+
+    return {
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "hidden_size": 2560,
+            "num_hidden_layers": 48,
+            "hc_count": 4,
+            "hc_lowrank": 320,
+            "indexer_compress_ratio": 4,
+            "linear_num_key_heads": 16,
+            "linear_num_value_heads": 48,
+            "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128,
+            "ple_layer_ids": [2],
+            "ngram_size": 3,
+            "ngram_vocab_size_base": 20_000_000,
+            "heads_per_ngram": 8,
+            "ple_embed_dim": 2560,
+            "ngram_sidecar": True,
+            "num_experts": 512,
+            "num_experts_per_tok": 10,
+            "moe_intermediate_size": 640,
+            "vocab_size": 248_320,
+        },
+    }
 
 
 def test_server_parser_accepts_tool_prompt_and_template_profile():

@@ -391,15 +391,22 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_COMPILED_VERIFY",
         "MTPLX_COMPILED_VERIFY_MAX_LEN",
         "MTPLX_COMPILED_TARGET_PREFIX",
-        # PR #391 Flash-Next ports (davidtai), every one dark by default: each
-        # key is the opt-in gate for one ported step, registered so operator
-        # A/B launches and pack contracts pass the boot-time runtime-env
+        # PR #391 Flash-Next ports (davidtai): each key is the gate for one
+        # ported step, default ON for the measured fixed-M4 geometry since
+        # 2026-09-02 (server family block) and registered so operator A/B
+        # launches and pack contracts pass the boot-time runtime-env
         # validator (the MTPLX_FUSED_GDN_STEP boot-trap lesson).
         "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
         "MTPLX_QWEN4_FIXED_M4_VERIFY",
         "MTPLX_QWEN4_M4_STAGE3",
         "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
         "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
+        # FR-Spec row-pruned draft head (PR #391 port): the server stamps the
+        # pair on fixed-M4 packs whose native lm_head is Q8/g64 affine (the
+        # layout the builtin ranked table was cut for); any other head fails
+        # the model load, so the pack predicate owns the default.
+        "MTPLX_FRSPEC_DRAFT",
+        "MTPLX_FRSPEC_VOCAB",
         "MTPLX_FUSE_GDN_POST_CONV",
         "MTPLX_A3B_GDN_POSTCONV_IMPL",
         "MTPLX_LINEAR_GDN_FROM_CONV_TGY",
