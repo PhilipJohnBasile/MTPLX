@@ -10027,6 +10027,7 @@ def generate_mtpk(
                 # it carries the block width so the census reads the copy lane's rounds.
                 event["verify_route"] = "ccopy_block"
                 event["verify_width"] = int(_cb_T)
+                _add_timing(event, "verify_forward", elapsed_verify)
                 verify_forward_time += elapsed_verify
                 verify_time += elapsed_verify
                 target_time += elapsed_verify
