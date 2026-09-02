@@ -59,6 +59,10 @@ from .fable_draft_k20_prescatter import (
     read_draft as _fable_draft_k20_prescatter_read,
     release_draft_route as _fable_draft_k20_prescatter_release,
 )
+from .fable_block_verify import (
+    build_verifier as _fable_build_block_verifier,
+    is_enabled as _fable_block_verify_enabled,
+)
 from .forkev_telemetry import ForkEVRecorder
 from .fast_sampling import (
     MAX_DEVICE_TOP_K_ORDER,
@@ -317,6 +321,20 @@ def _env_falsey(name: str) -> bool:
 # the same `(ids, probs)` support because the ranked id table is strictly
 # ascending.  See that module's docstring for the exactness argument.
 _FABLE_DRAFT_K20_PRESCATTER = _fable_draft_k20_prescatter_enabled()
+
+# MTPLX_FABLE_BLOCK_VERIFY -- read ONCE at import (in
+# ``mtplx.fable_block_verify``), default OFF.  When off this constant is False,
+# no verifier is built, and the stock accept loop evaluates exactly the
+# expressions it evaluated before -- same acceptance probability, same
+# residual, same uniforms, same order.  When on, the loop runs block
+# verification (Sun et al. 2024, arXiv:2403.10444) instead of the per-token
+# Leviathan-Chen law: it clips the RUNNING reach product at 1 rather than
+# clipping each factor, water-fills the resulting budget across the depth d+1
+# draft support, and corrects from the SCALED residual (c*p - q)+.  Both laws
+# are exact samplers of the same target distribution; BV accepts deeper more
+# often (+1.85% tokens/window measured offline on 381 real windows) and draws
+# exactly the same number of uniforms.  See ``mtplx/fable_block_verify.py``.
+_FABLE_BLOCK_VERIFY = _fable_block_verify_enabled()
 
 def _family_capture_commit_enabled() -> bool:
     """qwen4_exp layer-owned capture-commit (``MTPLX_FAMILY_CAPTURE_COMMIT``).
@@ -9477,100 +9495,6 @@ def generate_mtpk(
         )
         if _draft_k20_prescatter_plan is not None:
             _draft_k20_prescatter_receipt = _draft_k20_prescatter_plan.to_dict()
-    # MTPLX_FABLE_DEVICE_DRAFT_CHAIN (default off).  Claimed ONCE, here, after
-    # every request-invariant term it refuses on already exists -- including
-    # the prescatter plan, which owns the same FR-Spec stash.  The compiled
-    # body is bound lazily to the MTP cache container the loop actually drafts
-    # into (see `DeviceDraftChainPlan.ensure_bound`): that container is chosen
-    # per cycle and can be replaced mid-request by the committed-history live
-    # reset or a prefix rebase.
-    _device_draft_chain_plan = None
-    _device_draft_chain_receipt: dict[str, object] = {"installed": False}
-    if _FABLE_DEVICE_DRAFT_CHAIN:
-        _device_draft_chain_plan = _fable_device_draft_chain_claim(
-            receipt=_device_draft_chain_receipt,
-            rt=rt,
-            state_tree_fn=_device_core_state_tree,
-            promote_fn=promote_kv_cache_offsets,
-            mtp_hidden_variant=mtp_hidden_variant,
-            sampler=sampler,
-            draft_sampler=draft_sampler,
-            speculative_depth=speculative_depth,
-            request_max_tokens=max_tokens,
-            rng=rng,
-            draft_core=draft_core,
-            mtp_cache_policy=mtp_cache_policy,
-            mtp_history_policy=mtp_history_policy,
-            mtp_position_mode=mtp_position_mode,
-            target_prefix_verify=target_prefix_verify,
-            lazy_target_distributions=lazy_target_distributions,
-            lazy_bonus_verify_requested=_lazy_bonus_verify_enabled(),
-            batch_target_arrays=_batch_target_arrays_enabled(),
-            steer_active=bool(loop_guard) or thinking_guard is not None,
-            penalties_active=_penalties_active,
-            relaxed_draft_ties=bool(getattr(rt, "qwen4_relaxed_draft_ties", False)),
-            qsa_mtp_precompute_active=qsa_mtp_precompute_active,
-            constraint=constraint,
-            adaptive_policy=adaptive_policy,
-            adaptive_width_policy=adaptive_width_policy,
-            mtp_corrector=mtp_corrector,
-            mtp_topk_reranker=mtp_topk_reranker,
-            draft_margin_threshold=draft_margin_threshold,
-            wants_policy_metrics=wants_policy_metrics,
-            draft_confidence_needed=_draft_conf_needed,
-            online_hidden_corrector_alpha=online_hidden_corrector_alpha,
-            online_correction_cache=online_correction_cache,
-            prompt_correction_cache=prompt_correction_cache,
-            adapter_ensemble_q=adapter_ensemble_q,
-            combine_greedy_draft_read=combine_greedy_draft_read,
-            greedy_chain_enabled=_greedy_chain_eligible,
-            adaptive_dtemp_active=_dtemp_controller is not None,
-            frspec_legacy_ids=_frspec_legacy_ids,
-            late_depth_switch_after=late_depth_switch_after,
-            a3b_target_prefix_route=a3b_target_prefix_route,
-            pr391_route=None,
-            device_k20_route=None,
-            draft_k20_prescatter_route=_draft_k20_prescatter_plan,
-            depth4_probe_active=_FABLE_DEPTH4_PROBE,
-            k20_log_active=bool(_fable_k20_log_enabled())
-            or bool(getattr(k20_log, "enabled", False)),
-            ple_candidate_submit=_ple_candidate_submit,
-        )
-        if _device_draft_chain_plan is not None:
-            # Promote the MTP cache, build the compiled body and trace it ONCE,
-            # here, outside the loop -- the same reason
-            # `_pr391_prewarm_float32_d3_core` exists.  `mtp_history_cache` is
-            # the container the committed-history lane drafts into; if a live
-            # reset or a prefix rebase replaces it mid-request, `run_cycle`
-            # rebinds (and says so on stderr).
-            _ddc_prewarm_started = time.perf_counter()
-            _fable_device_draft_chain_prewarm(
-                _device_draft_chain_plan,
-                hidden,
-                mtp_cache=mtp_history_cache,
-                rollback=_rollback_mtp_cache,
-                cache_offset=_mtp_cache_offset,
-            )
-            _ddc_prewarm_s = time.perf_counter() - _ddc_prewarm_started
-            # CHARGE IT TO SETUP, NOT TO DECODE.  `pre_first_token_setup_s`
-            # closed above, before this claim's inputs existed, so a prewarm
-            # placed here lands inside `decode_elapsed_s` -- which is what
-            # window 1788400641 measured: `first_primary_sample_time_s`
-            # (`perf_counter() - decode_loop_entered_s`) went 0.003 -> 0.024 s
-            # steady state, and 1.159 s on arm 1, the FIRST process ever to
-            # compile this body's Metal kernels.  1.132 s / 387 windows =
-            # 2.93 ms/M4win, and arm 1 measured exactly +2.90 ms/M4win against
-            # its own twin arm 2.  The cache promotion, the `mx.compile` trace
-            # and the shader compilation are construction, so they belong in
-            # the bucket the comment at the top of this span describes --
-            # `non_decode_extra_s` subtracts it from `decode_elapsed_s` and
-            # `ttft_s` adds it, which is where a reader should find it.
-            pre_first_token_setup_s += _ddc_prewarm_s
-            decode_loop_entered_s += _ddc_prewarm_s
-            _device_draft_chain_plan.receipt_extra["prewarm_s"] = float(
-                _ddc_prewarm_s
-            )
-            _device_draft_chain_receipt = _device_draft_chain_plan.to_dict()
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
             # Top of iteration 2: the cumulative timers now hold exactly
@@ -11741,6 +11665,36 @@ def generate_mtpk(
             # pre-sample above already carried the overlay (and its lane has
             # no draft distributions to fall back on).
             target_distribution_batch = None
+        # MTPLX_FABLE_BLOCK_VERIFY (default off): build the window's block
+        # ladder BEFORE the accept loop. It is a deterministic function of the
+        # rows and the drafted tokens -- it consults no uniform and draws
+        # nothing -- and the M4 verify has already produced every target row,
+        # so the whole ladder is available up front and the loop only reads it.
+        # `build_verifier` returns None (keep the shipped law for this window)
+        # unless all D draft rows and all D target rows are already on the
+        # host, so arming the flag never forces the lazy path to materialise a
+        # row it meant to skip. Greedy and target-prefix windows have no
+        # distributions at all and are excluded here.
+        _host_accept_drafts = draft_tokens
+        _bv = None
+        if (
+            _FABLE_BLOCK_VERIFY
+            and _host_accept_drafts
+            and sampler.temperature > 0
+            and target_prefix_tokens is None
+        ):
+            _bv = _fable_build_block_verifier(
+                draft_tokens=draft_tokens,
+                draft_probs=draft_probs,
+                target_batch=target_distribution_batch,
+                target_list=(
+                    target_distributions
+                    if target_distributions is not None
+                    and not _penalties_active
+                    and not _steer_active
+                    else None
+                ),
+            )
         # Grammar clamp (#186 phase 3): drafts are proposed unmasked, so the
         # committed window must stop at the grammar's legal prefix. One
         # stateless validate call per cycle; the matcher itself only advances
@@ -11778,7 +11732,7 @@ def generate_mtpk(
             _batched_target_tokens = mx.argmax(
                 verify_logits[0, : len(draft_tokens), :], axis=-1
             ).tolist()
-        for depth_index, draft_token in enumerate(draft_tokens):
+        for depth_index, draft_token in enumerate(_host_accept_drafts):
             target_logits_for_draft = verify_logits[:, depth_index, :]
             if _steer_active:
                 _row_guard_overlay = _steer_overlay(
@@ -11829,6 +11783,11 @@ def generate_mtpk(
                 accept_prob = (
                     1.0 if q <= 0 and p > 0 else (0.0 if q <= 0 else min(1.0, p / q))
                 )
+                if _bv is not None:
+                    # Block verification: the CONDITIONAL accept probability
+                    # a_d = w_d / w_{d-1}, precomputed from the same rows.
+                    # Reduces to min(1, p/q) whenever the ladder is still at 1.
+                    accept_prob = _bv.accept_probability[depth_index]
                 accepted_now = float(rng.random()) <= accept_prob
                 target_p_for_cache = (
                     target_distribution_batch.to_distribution(depth_index)
@@ -11836,10 +11795,16 @@ def generate_mtpk(
                     and depth_index + 1 >= online_correction_cache_min_depth
                     else None
                 )
-                correction = (
-                    draft_token
-                    if accepted_now
-                    else sample_from_distribution(
+                if accepted_now:
+                    correction = draft_token
+                elif _bv is not None:
+                    # The block law's SCALED residual (c_{d-1}*p - q)+, one
+                    # rng.choice exactly as the shipped residual takes.
+                    correction = sample_from_distribution(
+                        _bv.scaled_residual(depth_index), rng
+                    )
+                else:
+                    correction = sample_from_distribution(
                         residual_distribution(
                             target_p_for_cache
                             if target_p_for_cache is not None
@@ -11848,7 +11813,6 @@ def generate_mtpk(
                         ),
                         rng,
                     )
-                )
             else:
                 target_p = (
                     target_distributions[depth_index]
@@ -11885,15 +11849,24 @@ def generate_mtpk(
                 accept_prob = compute_acceptance_probability(
                     target_p, draft_q, draft_token
                 )
+                if _bv is not None:
+                    # Block verification: see the batched branch above. `_bv`
+                    # is only ever built when every target row was already
+                    # materialised, so it is None on the lazy path that just
+                    # built `target_p` here.
+                    accept_prob = _bv.accept_probability[depth_index]
                 accepted_now = float(rng.random()) <= accept_prob
                 target_p_for_cache = target_p
-                correction = (
-                    draft_token
-                    if accepted_now
-                    else sample_from_distribution(
+                if accepted_now:
+                    correction = draft_token
+                elif _bv is not None:
+                    correction = sample_from_distribution(
+                        _bv.scaled_residual(depth_index), rng
+                    )
+                else:
+                    correction = sample_from_distribution(
                         residual_distribution(target_p, draft_q), rng
                     )
-                )
                 if not accepted_now and _env_truthy("MTPLX_DELTA_TELEMETRY"):
                     # Tree Stage-0 pricing (2026-08-25): would a sibling branch
                     # have caught this rejection? Record the rank of the
@@ -11940,6 +11913,14 @@ def generate_mtpk(
             event["drafts"][depth_index]["accepted"] = accepted_now
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
+            # Under MTPLX_FABLE_BLOCK_VERIFY this sum (and the per-draft
+            # `accept_probability` above) carries a_d = w_d / w_{d-1}, the
+            # CONDITIONAL probability that depth's coin accepts given the
+            # window reached it -- the same operational meaning min(1, p/q)
+            # has, and it still equals min(1, p/q) whenever the reach ladder
+            # is at 1. What it stops being is an estimator of the TV overlap
+            # beta_d: E[alpha] = beta is a property of min(1, rho) and does
+            # not survive the water-fill.
             accept_probability_sum_by_depth[depth_index] += float(accept_prob)
             if _draft_conf_trace:
                 # After the constraint clamp: attribute to the COMMITTED
