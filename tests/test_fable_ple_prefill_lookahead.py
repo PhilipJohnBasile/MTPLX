@@ -640,6 +640,7 @@ def test_engagement_snapshot_is_per_scope_not_module_global():
         "submits": 1,
         "hits": 1,
         "misses": 0,
+        "ineligible": 0,
     }
     other, _ids, _c = build()
     assert other.engagement()["hits"] == 0, "counters must not leak across scopes"
@@ -823,7 +824,6 @@ def test_reject_unwired_prefill_loop_raises_when_armed(monkeypatch):
         lookahead_mod.enabled.cache_clear()
 
 
-
 UNWIRED_LOOPS = (
     "_prefill",
     "_prefill_with_hidden_sequence",
@@ -885,3 +885,179 @@ def test_every_chunked_prefill_loop_is_either_wired_or_tripwired():
             continue
         unhandled.append(node.name)
     assert not unhandled, f"chunked prefill loops with no lookahead policy: {unhandled}"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-02 regression: every SHORT prompt 500ed on {'spans': 1, 'hits': 0}
+#
+# One prefill chunk has nothing to look ahead FROM, and its sub-4,096-row
+# gather is exactly what the owner's hot-row LRU serves -- which the worker
+# is forbidden to touch, so it declined and the scope called that inert.
+# ---------------------------------------------------------------------------
+
+
+def drive(look, ids, chunk=16, *, skip_submit_for=()):
+    """Run the shipped prefill order over a lookahead: take, then submit next."""
+
+    total = len(ids)
+    for start in range(0, total, chunk):
+        index = look.span_index_of(ids[start : start + chunk])
+        look.take(index)
+        nxt = look.next_index(index)
+        if nxt not in skip_submit_for:
+            look.submit(nxt)
+
+
+def test_a_single_span_prefill_does_not_arm_the_lane():
+    look, _ids, _calls = build(total=16, chunk=16)
+    assert look.spans == [(0, 16)]
+    assert look.armed is False
+    assert look.inert_reason == "single_span"
+
+
+def test_a_multi_span_prefill_is_armed():
+    look, _ids, _calls = build(total=64, chunk=16)
+    assert look.armed is True
+    assert look.inert_reason is None
+    assert look.overlappable_spans() == [1, 2, 3]
+
+
+def test_single_span_scope_is_a_no_op_and_records_the_reason():
+    """The exact production failure: one chunk must not 500."""
+
+    look, _ids, calls = build(total=16, chunk=16)
+    with prefill_lookahead_scope(look) as active:
+        # No worker, no contextvar: `_take_prefill_lookahead` sees no active
+        # lane and the owner takes the ordinary (hot-LRU) gather.
+        assert active is None
+        assert lookahead_mod.active_lookahead() is None
+        assert calls == []
+    assert lookahead_mod.COUNTERS["scope_skipped_single_span"] == 1
+    assert lookahead_mod.last_scope_status() == {
+        "armed": False,
+        "reason": "single_span",
+        "spans": 1,
+    }
+    assert look._closed is True
+
+
+def test_single_span_verify_is_trivially_satisfied():
+    look, _ids, _calls = build(total=16, chunk=16)
+    look.verify_full_engagement()  # nothing to look ahead from
+
+
+def test_multi_span_scope_records_that_it_armed():
+    look, ids, _calls = build(total=64, chunk=16)
+    with prefill_lookahead_scope(look) as active:
+        assert active is look
+        drive(look, ids)
+    assert lookahead_mod.last_scope_status() == {
+        "armed": True,
+        "reason": None,
+        "spans": 4,
+    }
+    assert "scope_skipped_single_span" not in lookahead_mod.COUNTERS
+
+
+def test_eight_spans_with_hits_on_every_span_pass_unchanged():
+    """The 16K cell: 8 spans, 8 submits, 8 hits, receipts untouched."""
+
+    look, ids, calls = build(total=128, chunk=16)
+    assert len(look.spans) == 8
+    with prefill_lookahead_scope(look):
+        drive(look, ids)
+    assert look.engagement() == {
+        "spans": 8,
+        "submits": 8,
+        "hits": 8,
+        "misses": 0,
+        "ineligible": 0,
+    }
+    assert calls == [(i, i + 16) for i in range(0, 128, 16)]
+    assert lookahead_mod.COUNTERS["hit"] == 8
+
+
+def test_eight_spans_pass_when_only_span_zero_missed():
+    """Span 0 has no forward to overlap with; its miss cannot fail the lane."""
+
+    def prepare(start, end):
+        if start == 0:
+            return None  # the hot-LRU decline, on the first chunk
+        return (np.arange(1000 + start, 1000 + end, dtype=np.int64), {})
+
+    look, ids, _calls = build(total=128, chunk=16, prepare=prepare)
+    with prefill_lookahead_scope(look):
+        drive(look, ids)
+    assert look.engagement()["hits"] == 7
+    assert look.engagement()["ineligible"] == 1
+    look.verify_full_engagement()
+
+
+def test_eight_spans_raise_when_span_three_missed():
+    look, ids, _calls = build(total=128, chunk=16)
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            # Span 3's rows were never queued: the slot is empty when the
+            # forward asks for them. A real inert step, still a hard failure.
+            drive(look, ids, skip_submit_for=(3,))
+    message = str(excinfo.value)
+    assert "did not engage" in message
+    assert "spans with no worker-prepared rows: [3]" in message
+
+
+def test_a_short_trailing_span_the_worker_declined_is_not_a_lane_failure():
+    """2049 tokens -> a 1-token tail chunk -> a hot-LRU-sized gather.
+
+    The worker declines those by design (the LRU is owner-thread-only), so
+    the tail must not be read as the lane sitting inert.
+    """
+
+    ids = np.arange(1000, 1000 + 40, dtype=np.int64)
+    spans = [(0, 16), (16, 32), (32, 40)]
+
+    def prepare(start, end):
+        if end - start < 16:
+            return None  # below _HOT_PATH_MAX_ROWS: the owner's LRU serves it
+        return (np.asarray(ids[start:end]), {})
+
+    look = PrefillLookahead(ids, spans, prepare=prepare, submit=immediate_submit)
+    with prefill_lookahead_scope(look):
+        for index, (start, end) in enumerate(spans):
+            assert look.span_index_of(ids[start:end]) == index
+            look.take(index)
+            look.submit(look.next_index(index))
+    assert look.engagement()["hits"] == 2
+    assert look.engagement()["ineligible"] == 1
+
+
+def test_a_lane_the_worker_declined_everywhere_still_raises():
+    """Indistinguishable from inert, so it keeps failing closed."""
+
+    look, ids, _calls = build(total=64, chunk=16, prepare=lambda s, e: None)
+    with pytest.raises(RuntimeError) as excinfo:
+        with prefill_lookahead_scope(look):
+            drive(look, ids)
+    assert "did not engage" in str(excinfo.value)
+    assert "declined by the worker's eligibility rule" in str(excinfo.value)
+
+
+def test_a_wholly_inert_multi_span_lane_still_raises_as_before():
+    look, _ids, _calls = build(total=128, chunk=16)
+    with pytest.raises(RuntimeError, match="did not engage"):
+        with prefill_lookahead_scope(look):
+            pass
+
+
+def test_scope_status_resets_with_the_counters():
+    look, _ids, _calls = build(total=16, chunk=16)
+    with prefill_lookahead_scope(look):
+        pass
+    assert lookahead_mod.last_scope_status()["reason"] == "single_span"
+    lookahead_mod.reset_counters()
+    assert lookahead_mod.last_scope_status() == {
+        "armed": None,
+        "reason": None,
+        "spans": 0,
+    }
+
+
