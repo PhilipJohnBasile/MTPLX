@@ -51,6 +51,11 @@ def _full_vocab_head(head: Any, ids: Any, vocab_rows: int) -> Any:
             self.head = head
             object.__setattr__(self, "_ids", ids)
             object.__setattr__(self, "_vocab_rows", int(vocab_rows))
+            # MTPLX_FABLE_DRAFT_K20_PRESCATTER (default off).  Disarmed, the
+            # branch below is one attribute read per draft step and the call
+            # returns exactly what it returned before; nothing is retained.
+            object.__setattr__(self, "_prescatter_capture", False)
+            object.__setattr__(self, "_prescatter_last", None)
 
         def __call__(self, x: Any) -> Any:
             subset = self.head(x)
@@ -65,7 +70,36 @@ def _full_vocab_head(head: Any, ids: Any, vocab_rows: int) -> Any:
                 ),
                 subset.shape,
             )
-            return mx.put_along_axis(output, index, subset, axis=-1)
+            dense = mx.put_along_axis(output, index, subset, axis=-1)
+            if self._prescatter_capture:
+                # MLX is lazy: `dense` is a graph node, not a buffer.  Stashing
+                # the compact row lets the draft reader build its K20 support
+                # from `subset` and never evaluate `dense`, so the scatter is
+                # built and dropped rather than executed.  Keyed by the
+                # returned array's identity so a consumer can prove the row
+                # belongs to THIS call.
+                object.__setattr__(self, "_prescatter_last", (dense, subset))
+            return dense
+
+        def arm_prescatter_capture(self, enabled: bool) -> None:
+            """Arm/disarm the pre-scatter row stash (construction-bound)."""
+
+            object.__setattr__(self, "_prescatter_capture", bool(enabled))
+            object.__setattr__(self, "_prescatter_last", None)
+
+        def take_prescatter_row(self, dense: Any) -> Any:
+            """Consume the compact row stashed for ``dense``; None on a miss.
+
+            Consuming clears the stash, so nothing keeps an unevaluated
+            scatter graph alive past the step that produced it, and a second
+            read of the same step cannot silently succeed.
+            """
+
+            stashed = self._prescatter_last
+            if stashed is None or stashed[0] is not dense:
+                return None
+            object.__setattr__(self, "_prescatter_last", None)
+            return stashed[1]
 
     return _FullVocabDraftHead()
 
