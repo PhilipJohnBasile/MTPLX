@@ -278,7 +278,9 @@ def _bail(reason: str):
 
 def _default_dsplit_blocks(capacity: int) -> int:
     # 2026-09-01 W2 walk sweep (ms/layer): 16k b128 0.257 / b256 0.267;
-    # 72.7k b256 0.898 / b512 0.917 / b1024 1.011.
+    # 72.7k b256 0.898 / b512 0.917 / b1024 1.011; 128k b512 1.504 / b1024 1.552.
+    if capacity >= 98304:
+        return 512
     if capacity >= 65536:
         return 256
     if capacity >= 16384:
