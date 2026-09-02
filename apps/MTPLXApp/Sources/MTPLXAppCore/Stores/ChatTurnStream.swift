@@ -134,14 +134,18 @@ struct StreamTypewriterPacer {
     private(set) var arrivedCharsTotal = 0
     private var arrivalSamples: [(uptime: Double, chars: Int)] = []
     private(set) var lastArrivalUptime: Double = 0
+    private var arrivals = 0
     /// Smoothed seconds between content chunks; 0 until two arrivals.
     private(set) var expectedGapSeconds: Double = 0
-    private var lastTickUptime: Double = 0
+    /// Uptime of the previous tick; nil before the first one. An uptime
+    /// clock may legitimately read 0, so presence is tracked, not the
+    /// value.
+    private var lastTickUptime: Double?
 
     mutating func recordArrival(chars: Int, now: Double) {
         guard chars > 0 else { return }
         arrivedCharsTotal += chars
-        if lastArrivalUptime > 0 {
+        if arrivals > 0 {
             let gap = min(Self.maxPlannedGapSeconds, max(0.005, now - lastArrivalUptime))
             expectedGapSeconds = expectedGapSeconds <= 0
                 ? gap
@@ -149,6 +153,7 @@ struct StreamTypewriterPacer {
                     + gap * Self.interArrivalSmoothing
         }
         lastArrivalUptime = now
+        arrivals += 1
         arrivalSamples.append((uptime: now, chars: arrivedCharsTotal))
     }
 
@@ -167,7 +172,7 @@ struct StreamTypewriterPacer {
         // giant budget. A same-instant second call (the mid-event
         // backstop right after a tick) gets no budget and leaves the
         // caller's floor to keep typing.
-        let elapsed = lastTickUptime > 0 ? now - lastTickUptime : 1.0 / 60.0
+        let elapsed = lastTickUptime.map { now - $0 } ?? 1.0 / 60.0
         lastTickUptime = now
         guard backlog > 0, elapsed > 0 else { return 0 }
         let dt = min(elapsed, 0.1)
