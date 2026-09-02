@@ -397,14 +397,27 @@ def _install_split_attention_hook(attn: Any) -> bool:
             # fall through to the scalar routes unchanged.
             if _env_enabled("MTPLX_NAX_FLASH_ROUTE") and int(queries.shape[2]) >= 2:
                 from .kernels.sdpa_nax_flash import sdpa_nax_flash
+                from .kernels.sdpa_nax_flash_dsplit import sdpa_nax_flash_dsplit
 
-                output = sdpa_nax_flash(
+                # Variant B (head-dim split, 64 accumulators/thread, no spills) owns the
+                # M<=32 windows (QL<=5 at GQA 6): 0.917 vs 1.015 ms/layer at 72.7k, 0.257 vs
+                # 0.306 at 16k. Variant A covers the wider windows (QL 6-10). Both bail to
+                # the scalar routes on any contract miss.
+                output = sdpa_nax_flash_dsplit(
                     queries=queries,
                     keys=cache.keys,
                     values=cache.values,
                     offset=cache.offset,
                     scale=self.scale,
                 )
+                if output is None:
+                    output = sdpa_nax_flash(
+                        queries=queries,
+                        keys=cache.keys,
+                        values=cache.values,
+                        offset=cache.offset,
+                        scale=self.scale,
+                    )
                 if output is not None:
                     self._mtplx_nax_flash_calls = (
                         int(getattr(self, "_mtplx_nax_flash_calls", 0)) + 1

@@ -13,6 +13,7 @@ import pytest
 
 from mtplx.kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
 from mtplx.kernels.sdpa_nax_flash import _nax_flash_kernel, sdpa_nax_flash
+from mtplx.kernels.sdpa_nax_flash_dsplit import sdpa_nax_flash_dsplit
 
 HQ, HKV, D = 24, 4, 256
 
@@ -137,3 +138,36 @@ def test_nax_flash_empty_and_bail_paths():
                               scale=0.0625) is None  # kill switch
     finally:
         os.environ.pop("MTPLX_NAX_FLASH", None)
+
+
+@pytest.mark.parametrize("ctx,q_len", [
+    (512, 4), (2048, 4), (4096, 4), (2048, 2), (2048, 5), (1023, 4), (1000, 3),
+    (2048, 6),   # M=36 > 32: must bail
+])
+@pytest.mark.parametrize("blocks", [32, 64, 128])
+def test_nax_flash_dsplit_matches_reference(ctx, q_len, blocks):
+    mx.random.seed(11)
+    cap = ctx + 192
+    q = (mx.random.normal((1, HQ, q_len, D)) * 0.5).astype(mx.bfloat16)
+    k = (mx.random.normal((1, HKV, cap, D)) * 0.5).astype(mx.bfloat16)
+    v = (mx.random.normal((1, HKV, cap, D)) * 0.5).astype(mx.bfloat16)
+    mx.eval(q, k, v)
+    scale = 1.0 / math.sqrt(D)
+    os.environ["MTPLX_NAX_FLASH_DSPLIT_BLOCKS"] = str(blocks)
+    try:
+        out = sdpa_nax_flash_dsplit(queries=q, keys=k, values=v, offset=ctx, scale=scale)
+    finally:
+        os.environ.pop("MTPLX_NAX_FLASH_DSPLIT_BLOCKS", None)
+    if HQ // HKV * q_len > 32:
+        assert out is None, "M>32 must bail to the wide kernel"
+        return
+    assert out is not None, "dsplit kernel bailed on a supported shape"
+    mx.eval(out)
+    ref = _ref_tail_causal(q, k, v, ctx, scale, q_len)
+    err = mx.abs(out.astype(mx.float32) - ref).max().item()
+    packed = sdpa_gqa_packed_tail(queries=q, keys=k, values=v, offset=ctx, scale=scale)
+    if packed is not None:
+        mx.eval(packed)
+        perr = mx.abs(packed.astype(mx.float32) - ref).max().item()
+        assert err <= max(2.5 * perr, 0.02), (err, perr)
+    assert err < 0.05, err
