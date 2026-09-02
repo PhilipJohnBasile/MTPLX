@@ -3911,14 +3911,37 @@ class _SidecarGather:
     _HOT_PATH_MAX_ROWS = 4096
 
     def __init__(self, path: Path, entries, bits: int, group_size: int):
-        import mmap as _mmap
         import numpy as np
         from collections import OrderedDict
+
+        from mtplx.ple_row_gather import (
+            madvise_choice,
+            prewarm_at_load_enabled,
+            prewarm_file,
+        )
 
         self.bits = bits
         self.group_size = group_size
         self._maps = {}
         self._row_meta = []
+        self.vectorized_gathers = 0
+        self.pread_gathers = 0
+        # MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD: production serves at whatever the
+        # page cache happens to hold, and the ~30 GiB table's residency is the
+        # single largest source of first-chunk variance (1.9 s vs 4.4 s, w22).
+        # A benchmark harness can read the table itself; the daemon cannot, so
+        # this is the same read, construction-bound, off by default.
+        self.prewarm_at_load = None
+        if prewarm_at_load_enabled():
+            self.prewarm_at_load = prewarm_file(path)
+            print(
+                "[qwen4_exp] n-gram table prewarmed at load: "
+                f"{self.prewarm_at_load['bytes'] / 1024**3:.2f} GiB in "
+                f"{self.prewarm_at_load['seconds']:.2f} s "
+                f"({self.prewarm_at_load['gib_per_s']:.2f} GiB/s)",
+                flush=True,
+            )
+        self.madvise_applied, _advice_value = madvise_choice()
         self._fd = os.open(str(path), os.O_RDONLY)
         for name, (info, data_start) in entries.items():
             dtype = {"U32": np.uint32, "BF16": np.uint16, "F16": np.uint16}[info["dtype"]]
@@ -3926,11 +3949,17 @@ class _SidecarGather:
             offset = data_start + info["data_offsets"][0]
             mm = np.memmap(path, mode="r", dtype=dtype, offset=offset, shape=shape)
             try:
-                # Row ids are hash-scattered: sequential readahead on these
-                # maps is pure wasted IO (the pread pool is the prefetch).
-                mm._mmap.madvise(_mmap.MADV_RANDOM)
+                # Default (flag off): MADV_RANDOM -- row ids are
+                # hash-scattered, so readahead around a mapping fault is
+                # wasted IO.  Under MTPLX_FABLE_PLE_FIRST_GATHER_EARLY the
+                # mapping faults are the ascending pre-touch and the
+                # vectorised gather's residual misses instead, which readahead
+                # helps, so `madvise_choice` flips it; MTPLX_FABLE_NGRAM_MADVISE
+                # overrides either way.  (pread(2) never consulted this advice
+                # at all, so the pread pool's behaviour is unchanged.)
+                mm._mmap.madvise(_advice_value)
             except (AttributeError, OSError, ValueError):
-                pass
+                self.madvise_applied = "unavailable"
             self._maps[name] = (mm, info["dtype"])
             itemsize = 4 if info["dtype"] == "U32" else 2
             self._row_meta.append((offset, int(shape[1]) * itemsize))
@@ -4001,7 +4030,14 @@ class _SidecarGather:
             self.lookahead_batches += 1
         return futures
 
-    def prepare_rows_np(self, flat, names=("weight", "scales", "biases")):
+    def prepare_rows_np(
+        self,
+        flat,
+        names=("weight", "scales", "biases"),
+        *,
+        vectorized: bool | None = None,
+        record=None,
+    ):
         """Worker-thread half of the big-gather branch of `_rows_matrices`.
 
         Returns ``(unique_count, matrices)`` -- exactly what `_rows_matrices`
@@ -4019,18 +4055,38 @@ class _SidecarGather:
 
         import numpy as np
 
+        from mtplx.ple_row_gather import gather_matrices, warm_decision
+
         uniq, inverse = np.unique(flat, return_inverse=True)
         if 0 < len(uniq) <= self._HOT_PATH_MAX_ROWS and self._hot_cap_rows:
             return None
-        if self._pool is not None and len(uniq):
-            self._warm(uniq, counted=False)
-        return (
-            int(len(uniq)),
-            {
-                name: np.ascontiguousarray(self._maps[name][0][uniq])[inverse]
-                for name in names
-            },
-        )
+        maps = {name: self._maps[name][0] for name in names}
+        path = "pread"
+        fraction = None
+        if vectorized is None:
+            from mtplx.ple_row_gather import enabled as _vectorized_enabled
+
+            vectorized = _vectorized_enabled()
+        if vectorized and len(uniq) > self._HOT_PATH_MAX_ROWS:
+            # MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: the warm pass is ~165 ms of
+            # GIL-contended pread per 32,768 rows and the fancy index behind
+            # it is 0.44 ms, so on a page-warm table the warm pass IS the
+            # gather.  Skip it only when mincore says the rows this gather
+            # will read are already in core -- a demand-faulted mmap is flat
+            # at 1.40 GiB/s against pooled pread's 12.9, so guessing warm on a
+            # cold table would stall the generation thread with the GIL held.
+            path, fraction = warm_decision(list(maps.values()), uniq)
+        if path == "vectorized":
+            self.vectorized_gathers += 1
+        else:
+            self.pread_gathers += 1
+            if self._pool is not None and len(uniq):
+                self._warm(uniq, counted=False)
+        if record is not None:
+            record["path"] = path
+            record["rows"] = int(len(uniq))
+            record["resident_fraction"] = fraction
+        return (int(len(uniq)), gather_matrices(maps, uniq, inverse, names))
 
     def _rows_matrices(self, flat, names):
         """Raw row matrices (one per map, flat order) — through the hot-row
@@ -4041,12 +4097,34 @@ class _SidecarGather:
 
         uniq, inverse = np.unique(flat, return_inverse=True)
         if not (0 < len(uniq) <= self._HOT_PATH_MAX_ROWS and self._hot_cap_rows):
-            if self._pool is not None and len(uniq):
-                self._warm(uniq)
-            return {
-                name: np.ascontiguousarray(self._maps[name][0][uniq])[inverse]
-                for name in names
-            }
+            from mtplx.ple_row_gather import (
+                enabled as _vectorized_enabled,
+                gather_matrices,
+                warm_decision,
+            )
+
+            maps = {name: self._maps[name][0] for name in names}
+            path = "pread"
+            # The probe costs ~0.5 ms; the warm pass it decides costs ~165 ms
+            # per 32,768 rows.  Below the sidecar's own hot-row threshold the
+            # ratio inverts (with MTPLX_NGRAM_HOT_MB=0 every decode gather
+            # lands here), so small gathers keep the shipped path outright.
+            if (
+                _vectorized_enabled()
+                and len(uniq) > self._HOT_PATH_MAX_ROWS
+            ):
+                # The same measured choice the worker makes.  This branch is
+                # the OWNER thread -- a lookahead miss, an inert lane, or a
+                # verify-width gather -- so the ~165 ms per 32,768 rows the
+                # warm pass costs lands directly on the generation loop here.
+                path, _fraction = warm_decision(list(maps.values()), uniq)
+            if path == "vectorized":
+                self.vectorized_gathers += 1
+            else:
+                self.pread_gathers += 1
+                if self._pool is not None and len(uniq):
+                    self._warm(uniq)
+            return gather_matrices(maps, uniq, inverse, names)
         hot = self._hot
         miss = [int(r) for r in uniq if int(r) not in hot]
         if miss:
@@ -4313,7 +4391,12 @@ class NGramEmbedding(nn.Module):
 
         lookahead = lookahead_mod.active_lookahead()
         if lookahead is None:
-            return None
+            # No lookahead to consume: either the flag is off, or the prefill
+            # is one chunk and the lane is inert by construction (nothing to
+            # look ahead FROM).  The first-gather-early lane exists exactly
+            # for that second case -- it is the whole win on a short prompt --
+            # so it is consumed here rather than through the lookahead.
+            return self._take_first_gather_early(ids_np, flat)
         index = lookahead.span_index_of(ids_np)
         if index is None:
             # Not a chunk of the planned prompt (an MTP verify width, a
@@ -4337,19 +4420,40 @@ class NGramEmbedding(nn.Module):
         lookahead_mod.count("consumed_rows", int(flat.shape[0]))
         return matrices
 
-    def prefill_lookahead_prepare(self, plan_ids, start: int, end: int):
-        """Hash one PLANNED prompt span and gather its rows -- worker thread.
+    def _take_first_gather_early(self, ids_np, flat):
+        """Worker-prepared rows for a chunk the lookahead never armed for."""
 
-        Pure NumPy/os: no MLX array is created or touched here.  The history
-        is reconstructed from the plan (EOS-padded at the prompt head) exactly
-        as `stage` reconstructs it from the PLE state cache.
+        import numpy as np
+
+        from mtplx import ple_prefill_lookahead as lookahead_mod
+
+        early = lookahead_mod.active_early_first_gather()
+        if early is None:
+            return None
+        payload = early.take(ids_np)
+        if payload is None:
+            return None
+        worker_flat, matrices = payload
+        if not np.array_equal(worker_flat, flat):
+            # Same proof the lookahead takes per chunk: the worker derived the
+            # history from the plan, the owner from the live cache.  A restore
+            # that shifts the history lands here and pays the ordinary gather,
+            # exactly.
+            lookahead_mod.count("early_row_mismatch")
+            return None
+        lookahead_mod.count("early_consumed_rows", int(flat.shape[0]))
+        return matrices
+
+    def _prefill_span_rows(self, plan_ids, start: int, end: int):
+        """Sidecar row ids for one PLANNED prompt span -- worker thread.
+
+        Pure NumPy: no MLX array is created or touched here.  The history is
+        reconstructed from the plan (EOS-padded at the prompt head) exactly as
+        `stage` reconstructs it from the PLE state cache.
         """
 
         import numpy as np
 
-        sidecar = self.ngram_embedding._sidecar
-        if sidecar is None:
-            return None
         ids = np.ascontiguousarray(plan_ids[start:end]).reshape(1, -1)
         context = self.context_len
         head = plan_ids[max(0, start - context) : start]
@@ -4362,17 +4466,104 @@ class NGramEmbedding(nn.Module):
             )
         prev = np.ascontiguousarray(head).reshape(1, -1)
         rows, _ = self._rows_np(ids, prev)
-        flat = np.ascontiguousarray(rows.reshape(-1))
-        names = ("weight",) if sidecar.bits == 0 else (
+        return np.ascontiguousarray(rows.reshape(-1))
+
+    def _sidecar_map_names(self, sidecar):
+        return ("weight",) if sidecar.bits == 0 else (
             "weight",
             "scales",
             "biases",
         )
-        prepared = sidecar.prepare_rows_np(flat, names)
+
+    def prefill_lookahead_prepare(
+        self,
+        plan_ids,
+        start: int,
+        end: int,
+        *,
+        vectorized: bool | None = None,
+        record=None,
+    ):
+        """Hash one PLANNED prompt span and gather its rows -- worker thread."""
+
+        sidecar = self.ngram_embedding._sidecar
+        if sidecar is None:
+            return None
+        flat = self._prefill_span_rows(plan_ids, start, end)
+        prepared = sidecar.prepare_rows_np(
+            flat,
+            self._sidecar_map_names(sidecar),
+            vectorized=vectorized,
+            record=record,
+        )
         if prepared is None:
             return None
         _unique, matrices = prepared
         return (flat, matrices)
+
+    def first_gather_early_prepare(self, plan_ids, start: int, end: int, record):
+        """The first chunk's gather, started at request arrival.
+
+        Same expression, same maps, same ids as `prefill_lookahead_prepare`;
+        it exists only to match the early lane's submit signature and to carry
+        the receipt dict the worker fills in.
+        """
+
+        return self.prefill_lookahead_prepare(
+            plan_ids, start, end, vectorized=True, record=record
+        )
+
+    def first_gather_prefetch_rest(self, plan_ids, start: int, record):
+        """Page-warm the REST of the prompt's rows -- worker thread, no wait.
+
+        Chained off the first chunk's future rather than merely submitted
+        after it, so it can never delay the take whatever the pool's worker
+        count.  It is the madvise(WILLNEED)
+        equivalent for a hash-scattered row set: the rows are hashed span by
+        span (bounded memory), unioned, and then either read in ascending order
+        straight off the memmaps when they are already in core, or handed to
+        the sidecar's own 16-thread pread pool when they are not -- the same
+        pool, and the same GIL-releasing reads, that each chunk's gather would
+        otherwise issue for itself one chunk at a time.
+        """
+
+        import numpy as np
+
+        from mtplx.ple_row_gather import touch_rows, warm_decision
+
+        sidecar = self.ngram_embedding._sidecar
+        if sidecar is None:
+            return 0
+        total = int(np.asarray(plan_ids).reshape(-1).shape[0])
+        width = max(1, int(start))
+        pieces = []
+        for begin in range(int(start), total, width):
+            pieces.append(
+                np.unique(
+                    self._prefill_span_rows(plan_ids, begin, min(total, begin + width))
+                )
+            )
+        if not pieces:
+            return 0
+        rows = np.unique(np.concatenate(pieces))
+        names = self._sidecar_map_names(sidecar)
+        maps = [sidecar._maps[name][0] for name in names]
+        path, _fraction = warm_decision(maps, rows)
+        if path == "vectorized":
+            touched = touch_rows(maps, rows)
+        elif sidecar._pool is not None:
+            sidecar._submit_warm(rows, counted=False)
+            touched = int(rows.shape[0])
+        else:
+            # Cold rows and MTPLX_NGRAM_PREFETCH=0: reading them here would be
+            # serial demand faults with the GIL held, which is the generation
+            # thread's problem, not this task's.  Leave them to the chunk that
+            # needs them.
+            path, touched = "skipped", 0
+        if record is not None:
+            record["prefetch_rest_rows"] = touched
+            record["prefetch_rest_path"] = path
+        return touched
 
     def stage(self, input_ids: mx.array, cache: Optional[ArraysCache], state_idx: int):
         """Precompute this step's rows before any graph is built."""
@@ -4682,11 +4873,12 @@ class Qwen4ExpTextModel(nn.Module):
         # never races the lazy cache in `_np_consts`.
         embedding._np_consts()
         sidecar = embedding.ngram_embedding._sidecar
+        vectorized = lookahead_mod.early_enabled()
         lookahead = lookahead_mod.PrefillLookahead(
             token_ids,
             spans,
             prepare=lambda start, end: embedding.prefill_lookahead_prepare(
-                lookahead.token_ids, start, end
+                lookahead.token_ids, start, end, vectorized=vectorized
             ),
             # Which spans the worker is designed to serve, stated in the
             # sidecar's own terms rather than restated in the lane: one span
@@ -4702,6 +4894,67 @@ class Qwen4ExpTextModel(nn.Module):
             ),
         )
         return lookahead
+
+    def ple_first_gather_early(self, token_ids, span):
+        """Start the FIRST prefill chunk's PLE gather now -- request arrival.
+
+        Returns an ``EarlyFirstGather`` when MTPLX_FABLE_PLE_FIRST_GATHER_EARLY
+        is armed and this model can serve it, otherwise None.  The eligibility
+        rules are the lookahead's, for the same reasons: an armed flag on a
+        model whose sidecar never attached, or with staging routed in-graph,
+        would quietly measure the control while wearing the candidate's label.
+
+        ``span`` is the caller's prediction of the prefill's first chunk.  It
+        is never trusted: the payload is accepted only after its span's token
+        ids compare equal to the ids `stage` was actually called with.
+        """
+
+        from mtplx import ple_prefill_lookahead as lookahead_mod
+
+        if not lookahead_mod.early_enabled():
+            return None
+        if self._ple_stage_idx is None:
+            lookahead_mod.count("early_no_ple_stage")
+            return None
+        embedding = self.layers[self._ple_stage_idx].ple.ple_embedding
+        sidecar = embedding.ngram_embedding._sidecar
+        if sidecar is None:
+            raise RuntimeError(
+                f"{lookahead_mod.EARLY_ENV_FLAG}=1 needs the SSD-resident "
+                "n-gram sidecar, which never attached for this model"
+            )
+        if os.environ.get("MTPLX_NGRAM_STAGE", "1") == "0":
+            raise RuntimeError(
+                f"{lookahead_mod.EARLY_ENV_FLAG}=1 prepares rows for the "
+                "STAGED gather, but MTPLX_NGRAM_STAGE=0 routes them in-graph"
+            )
+        if getattr(embedding, "_stage_disabled", False):
+            raise RuntimeError(
+                f"{lookahead_mod.EARLY_ENV_FLAG}=1 is incompatible with the "
+                "pipelined AR lane, whose input ids are lazy"
+            )
+        start, end = int(span[0]), int(span[1])
+        # The sidecar's own servability rule (aa20bf11), restated nowhere: a
+        # span at or below the hot-row threshold belongs to the owner-thread
+        # LRU, which the worker is forbidden to touch, so starting a worker
+        # for it would buy a decline.
+        min_rows = int(sidecar._HOT_PATH_MAX_ROWS) if sidecar._hot_cap_rows else 0
+        if (end - start) * int(embedding.ngram_heads) <= min_rows:
+            lookahead_mod.count("early_span_not_servable")
+            return None
+        # Build the shared NumPy hash constants on THIS thread so the worker
+        # never races the lazy cache in `_np_consts`.
+        embedding._np_consts()
+        return lookahead_mod.EarlyFirstGather(
+            token_ids,
+            (start, end),
+            prepare=lambda ids, a, b, record: embedding.first_gather_early_prepare(
+                ids, a, b, record
+            ),
+            prefetch_rest=lambda ids, a, record: embedding.first_gather_prefetch_rest(
+                ids, a, record
+            ),
+        )
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
         if fable_opdiet_enabled("rope"):

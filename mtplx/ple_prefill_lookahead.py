@@ -63,16 +63,23 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import time
 from functools import lru_cache
 from typing import Any, Callable, Sequence
 
 __all__ = [
     "COUNTERS",
+    "EARLY_ENV_FLAG",
     "ENV_FLAG",
+    "EarlyFirstGather",
     "PrefillLookahead",
+    "active_early_first_gather",
     "active_lookahead",
     "count",
+    "early_enabled",
     "enabled",
+    "first_gather_early_scope",
+    "last_early_status",
     "last_scope_status",
     "prefill_lookahead_scope",
     "reject_unwired_prefill_loop",
@@ -81,6 +88,17 @@ __all__ = [
 ]
 
 ENV_FLAG = "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD"
+
+#: The first chunk's gather is the one the lookahead cannot hide: it has no
+#: previous chunk to run behind, so `prefill_lookahead_scope` submits it and
+#: `stage()` blocks on it microseconds later (measured on the 16K prefill-stack cell:
+#: chunk 1 `ple_gather_s` 0.627 s against 0.0006 s for chunks 2-4).  This flag
+#: starts it at REQUEST ARRIVAL instead -- as soon as the prompt ids exist,
+#: before the session-bank lookup and the prefill graph setup -- so the host
+#: work between tokenisation and the first forward pays for it.  It lives in
+#: `mtplx.ple_row_gather` because the vectorised gather it also turns on has
+#: to be importable without this module.
+EARLY_ENV_FLAG = "MTPLX_FABLE_PLE_FIRST_GATHER_EARLY"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -100,6 +118,7 @@ def snapshot_counters() -> dict[str, int]:
 
 def reset_counters() -> None:
     COUNTERS.clear()
+    _LAST_EARLY.update(_EARLY_RECEIPT_ZERO)
     _LAST_SCOPE.update(
         {
             "armed": None,
@@ -128,6 +147,42 @@ _LAST_SCOPE: dict[str, Any] = {
 
 def last_scope_status() -> dict[str, Any]:
     return dict(_LAST_SCOPE)
+
+
+#: The first-gather-early receipt.  ``started_at_ms_before_layer2`` is the head
+#: start the lane actually bought: milliseconds between the worker submit at
+#: request arrival and the moment the owner thread first NEEDS the rows.  On
+#: this architecture that moment is `NGramEmbedding.stage`, called at the top
+#: of `Model._forward` -- staging deliberately hoists the gather OUT of the PLE
+#: layer (index 2) so no mid-forward GPU sync is needed, so the row tensor is
+#: first needed *before* layer 0, not at layer 2.  The name is kept because it
+#: is what the number means: how far ahead of the consuming forward the gather
+#: started.
+_EARLY_RECEIPT_ZERO: dict[str, Any] = {
+    "armed": None,
+    "reason": None,
+    "started_at_ms_before_layer2": None,
+    "rows": 0,
+    "path": None,
+    "resident_fraction": None,
+    "span": None,
+    "outcome": None,
+    "prefetch_rest_rows": 0,
+}
+_LAST_EARLY: dict[str, Any] = dict(_EARLY_RECEIPT_ZERO)
+
+
+def last_early_status() -> dict[str, Any]:
+    return dict(_LAST_EARLY)
+
+
+@lru_cache(maxsize=1)
+def early_enabled() -> bool:
+    """Resolve :data:`EARLY_ENV_FLAG` once.  Unparseable values raise."""
+
+    from mtplx.ple_row_gather import enabled as _row_gather_enabled
+
+    return _row_gather_enabled()
 
 
 @lru_cache(maxsize=1)
@@ -171,6 +226,229 @@ _ACTIVE: contextvars.ContextVar["PrefillLookahead | None"] = (
 
 def active_lookahead() -> "PrefillLookahead | None":
     return _ACTIVE.get()
+
+
+_EARLY_ACTIVE: contextvars.ContextVar["EarlyFirstGather | None"] = (
+    contextvars.ContextVar("mtplx_ple_first_gather_early", default=None)
+)
+
+#: A process-wide pool, not one per request.  The whole point of the lane is
+#: that the submit happens on the request's critical path, and creating a
+#: thread there costs more than the first layers it is trying to overlap.  It
+#: is the SAME mechanism the lookahead uses (an executor whose tasks produce
+#: raw NumPy rows only); the lookahead cannot simply be built earlier because
+#: its spans come from the prefill loop, which does not exist yet at request
+#: arrival.
+#:
+#: Two workers, not one: the pre-touch task (c) can run for as long as the
+#: prompt is large, and on a single worker the NEXT request's first chunk
+#: would queue behind it -- head-of-line blocking that would show up as
+#: exactly the TTFT this lane exists to remove.  Ordering within a request
+#: does not depend on the worker count: the pre-touch is chained off the
+#: first chunk's future, never merely submitted after it.
+_EARLY_POOL = None
+
+
+def _early_pool():
+    global _EARLY_POOL
+    if _EARLY_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _EARLY_POOL = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="ple-first-gather"
+        )
+    return _EARLY_POOL
+
+
+def active_early_first_gather() -> "EarlyFirstGather | None":
+    return _EARLY_ACTIVE.get()
+
+
+class EarlyFirstGather:
+    """The first prefill chunk's PLE rows, started at request arrival.
+
+    Two consumers, never both: the ordinary chunked prefill builds a
+    :class:`PrefillLookahead` and ADOPTS this future as its slot 0 (so the
+    hit/miss/engagement bookkeeping is unchanged, and nothing is prepared
+    twice), while a single-chunk prefill -- where the lookahead is inert by
+    construction, the 1K cell -- consumes it directly through :meth:`take`.
+
+    Exactness is the lookahead's, unchanged: the worker runs the same
+    expression over the same read-only memmaps with the same ids, and the
+    payload is accepted only after its span's token ids compare equal to the
+    ids `stage` was actually called with.
+    """
+
+    def __init__(
+        self,
+        token_ids,
+        span: tuple[int, int],
+        prepare: Callable[..., Any],
+        *,
+        submit: Callable[..., Any] | None = None,
+        prefetch_rest: Callable[..., Any] | None = None,
+    ) -> None:
+        import numpy as np
+
+        self._ids = np.ascontiguousarray(
+            np.asarray(token_ids, dtype=np.int64).reshape(-1)
+        )
+        self._ids.setflags(write=False)
+        self.span = (int(span[0]), int(span[1]))
+        self.record: dict[str, Any] = {"path": None, "rows": 0}
+        self._submit = submit if submit is not None else _early_pool().submit
+        self._closed = False
+        self.adopted = False
+        self.outcome: str | None = None
+        self.needed_at_ms: float | None = None
+        self._started = time.perf_counter()
+        self._future = self._submit(
+            prepare, self._ids, self.span[0], self.span[1], self.record
+        )
+        count("early_submitted")
+        # (c) The rest of the prompt, page-warmed BEHIND the first chunk:
+        # chained off its future rather than merely submitted after it, so it
+        # cannot delay the take whatever the pool's worker count.  It leaves
+        # chunks 2..n page-warm for the vectorised gather instead of making
+        # each of them re-pread its own rows.
+        self._rest_future = None
+        self._prefetch_rest = prefetch_rest
+        if prefetch_rest is not None and self.span[1] < int(self._ids.shape[0]):
+            self._future.add_done_callback(self._submit_prefetch_rest)
+
+    def _submit_prefetch_rest(self, _future) -> None:
+        if self._closed or self._prefetch_rest is None:
+            return
+        self._rest_future = self._submit(
+            self._prefetch_rest, self._ids, self.span[1], self.record
+        )
+        count("early_prefetch_rest_submitted")
+
+    # -- identity -----------------------------------------------------------
+
+    @property
+    def token_ids(self):
+        return self._ids
+
+    def matches_plan(self, plan_ids) -> bool:
+        """Whether ``plan_ids`` is the prompt this gather was started for."""
+
+        import numpy as np
+
+        other = np.asarray(plan_ids, dtype=np.int64).reshape(-1)
+        return bool(
+            other.shape == self._ids.shape and np.array_equal(other, self._ids)
+        )
+
+    def matches_chunk(self, chunk_ids) -> bool:
+        """Whether ``chunk_ids`` are exactly this gather's span's tokens."""
+
+        import numpy as np
+
+        ids = np.asarray(chunk_ids, dtype=np.int64).reshape(-1)
+        start, end = self.span
+        return bool(
+            ids.shape[0] == end - start
+            and np.array_equal(self._ids[start:end], ids)
+        )
+
+    # -- consumption --------------------------------------------------------
+
+    def note_needed(self) -> None:
+        """Stamp the head start at the moment the owner first needs the rows."""
+
+        if self.needed_at_ms is None:
+            self.needed_at_ms = (time.perf_counter() - self._started) * 1000.0
+            _LAST_EARLY["started_at_ms_before_layer2"] = self.needed_at_ms
+
+    def note_outcome(self, outcome: str) -> None:
+        self.outcome = outcome
+        _LAST_EARLY["outcome"] = outcome
+
+    def _publish(self) -> None:
+        _LAST_EARLY["rows"] = int(self.record.get("rows") or 0)
+        _LAST_EARLY["path"] = self.record.get("path")
+        _LAST_EARLY["resident_fraction"] = self.record.get("resident_fraction")
+        _LAST_EARLY["prefetch_rest_rows"] = int(
+            self.record.get("prefetch_rest_rows") or 0
+        )
+
+    def adopt(self):
+        """Hand the in-flight future to the lookahead's slot 0."""
+
+        self.adopted = True
+        return self._future
+
+    def take(self, chunk_ids):
+        """Payload for a chunk that IS this gather's span, else None."""
+
+        if self._closed or self.adopted:
+            return None
+        self.note_needed()
+        if not self.matches_chunk(chunk_ids):
+            count("early_miss_wrong_span")
+            self.note_outcome("miss_wrong_span")
+            return None
+        try:
+            prepared = self._future.result()
+        except BaseException:
+            count("early_worker_error")
+            raise
+        self._publish()
+        if prepared is None:
+            # The sidecar declined these ids to the owner-thread hot-row LRU
+            # (the aa20bf11 servability rule); the owner pays the ordinary
+            # gather, exactly, and that is not an inert lane.
+            count("early_miss_ineligible")
+            self.note_outcome("miss_ineligible")
+            return None
+        count("early_hit")
+        self.note_outcome("hit")
+        return prepared
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._publish()
+        if self.outcome is None:
+            # Armed, prepared, and never consumed: a bank restore served the
+            # whole prompt, or the prefill took a loop this lane is not wired
+            # to.  Named in the receipt rather than left to be read as a hit.
+            self.note_outcome(
+                "never_needed" if self.needed_at_ms is None else "unused"
+            )
+        if not self.adopted:
+            self._future.cancel()
+            try:
+                self._future.result()
+            except Exception:
+                pass
+        if self._rest_future is not None:
+            # Never waited on: it exists to leave pages warm, and a prefill
+            # that finished without it is simply a prefill that did not need
+            # it.  Cancelling only bites while it is still queued.
+            self._rest_future.cancel()
+
+
+@contextlib.contextmanager
+def first_gather_early_scope(early: "EarlyFirstGather | None", reason: str | None = None):
+    """Make ``early`` the request-scoped first-chunk gather."""
+
+    _LAST_EARLY.update(_EARLY_RECEIPT_ZERO)
+    if early is None:
+        _LAST_EARLY["armed"] = False
+        _LAST_EARLY["reason"] = reason
+        yield None
+        return
+    _LAST_EARLY["armed"] = True
+    _LAST_EARLY["span"] = list(early.span)
+    token = _EARLY_ACTIVE.set(early)
+    try:
+        yield early
+    finally:
+        _EARLY_ACTIVE.reset(token)
+        early.close()
 
 
 class PrefillLookahead:
@@ -223,6 +501,7 @@ class PrefillLookahead:
             )
             self._submit = self._pool.submit
         self._pending: tuple[int, Any] | None = None
+        self._early: "EarlyFirstGather | None" = None
         self._hint: int | None = 0
         self._closed = False
         # Per-scope engagement, kept off the module-global COUNTERS so one
@@ -330,6 +609,38 @@ class PrefillLookahead:
 
     # -- one-slot lifecycle -------------------------------------------------
 
+    def adopt_early(self, early: "EarlyFirstGather | None") -> bool:
+        """Take the request-arrival first-chunk gather as this lane's slot 0.
+
+        The early lane and the lookahead prepare the SAME span 0, so without
+        this they would prepare it twice: the early payload would be dropped,
+        the duplicate would occupy the worker, and the receipt would show a
+        hit that the head start did not produce.  Adoption instead installs
+        the in-flight future as the pending slot, so `take(0)` -- and with it
+        every hit/miss/ineligible/engagement statement below -- is unchanged.
+
+        Refused, counted, and harmless whenever the plan the prefill actually
+        chose is not the plan the early lane guessed at request arrival (a
+        session-bank restore that prefills a suffix, a mandatory stable-prefix
+        edge, a different chunk width): the lane then submits span 0 itself.
+        """
+
+        if self._closed or early is None or self._pending is not None:
+            return False
+        if not self._spans:
+            return False
+        if tuple(self._spans[0]) != tuple(early.span):
+            count("early_span_mismatch")
+            return False
+        if not early.matches_plan(self._ids):
+            count("early_plan_mismatch")
+            return False
+        self._pending = (0, early.adopt())
+        self._early = early
+        self.submits += 1
+        count("early_adopted")
+        return True
+
     def submit(self, index: int) -> None:
         """Prepare span ``index`` on the worker unless a slot is already held."""
 
@@ -347,6 +658,8 @@ class PrefillLookahead:
     def take(self, index: int):
         """Result prepared for ``index``, or None; the slot is always released."""
 
+        if int(index) == 0 and self._early is not None:
+            self._early.note_needed()
         pending = self._pending
         if pending is None:
             self.misses += 1
@@ -366,6 +679,11 @@ class PrefillLookahead:
         except BaseException:
             count("worker_error")
             raise
+        if self._early is not None and pending_index == 0:
+            self._early._publish()
+            self._early.note_outcome(
+                "adopted_hit" if prepared is not None else "adopted_ineligible"
+            )
         if prepared is None:
             # The worker ran and declined: these ids belong to the owner's
             # hot-row LRU, which is owner-thread-only state.  That is a
@@ -497,8 +815,13 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
     # Start the first chunk's preparation before the caller does anything
     # else: chunk 0 is the one with the largest measured stall (450 ms vs
     # 157-346 ms, first-touch on top of the gather) and nothing else has
-    # claimed the worker yet.
-    lookahead.submit(0)
+    # claimed the worker yet.  Submitting it HERE still leaves it exposed --
+    # `stage()` blocks on it microseconds later (0.627 s on chunk 1 against
+    # 0.0006 s on chunks 2-4, the 16K prefill-stack receipt) -- so when
+    # MTPLX_FABLE_PLE_FIRST_GATHER_EARLY armed the same span at request
+    # arrival, adopt that in-flight future instead of preparing it twice.
+    if not lookahead.adopt_early(active_early_first_gather()):
+        lookahead.submit(0)
     clean = False
     try:
         yield lookahead

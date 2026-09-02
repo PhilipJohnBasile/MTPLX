@@ -295,7 +295,7 @@ class FakeSidecar:
     """`_SidecarGather.prepare_rows_np` transplanted onto real memmaps.
 
     The method under test only touches ``_maps``, ``_row_meta``, ``_pool``,
-    ``_hot_cap_rows``, ``_HOT_PATH_MAX_ROWS`` and the two batch counters, so
+    ``_hot_cap_rows``, ``_HOT_PATH_MAX_ROWS`` and the batch/path counters, so
     binding the real implementation to this stand-in exercises the shipped
     code without importing MLX.
     """
@@ -326,6 +326,8 @@ class FakeSidecar:
         self._hot_cap_rows = hot_cap_rows
         self.prefetch_batches = 0
         self.lookahead_batches = 0
+        self.vectorized_gathers = 0
+        self.pread_gathers = 0
 
     def close(self):
         self._pool.shutdown(wait=True)
@@ -447,7 +449,11 @@ def test_worker_entry_creates_no_mlx_array():
         "\n    def ", 1
     )[0]
     assert "mx." not in body
-    assert "sidecar.prepare_rows_np(flat, names)" in body
+    assert "flat = self._prefill_span_rows(plan_ids, start, end)" in body
+    assert "sidecar.prepare_rows_np(" in body
+    # The row hashing it delegates to is worker-thread code as well.
+    rows = MODEL_TEXT.split("def _prefill_span_rows", 1)[1].split("\n    def ", 1)[0]
+    assert "mx." not in rows
 
 
 def test_lookahead_module_never_imports_mlx():
@@ -558,13 +564,22 @@ class _EchoSidecar:
 
     bits = 4
 
-    def prepare_rows_np(self, flat, names):
+    def prepare_rows_np(self, flat, names, *, vectorized=False, record=None):
         return (int(len(np.unique(flat))), {name: flat for name in names})
 
 
 def _embedding_with(sidecar):
     embedding = _FakeEmbedding()
     embedding.ngram_embedding = type("_T", (), {"_sidecar": sidecar})()
+    # `prefill_lookahead_prepare` delegates the row hashing and the map-name
+    # choice; bind those from the shipped source too, or the test would be
+    # exercising a method that cannot run.
+    for name in ("_prefill_span_rows", "_sidecar_map_names"):
+        setattr(
+            embedding,
+            name,
+            _bind_method("NGramEmbedding", name).__get__(embedding),
+        )
     return embedding
 
 
@@ -623,7 +638,7 @@ def test_worker_returns_none_when_the_sidecar_never_attached():
 
 def test_worker_returns_none_when_the_gather_would_take_the_hot_lru():
     class _LruSidecar(_EchoSidecar):
-        def prepare_rows_np(self, flat, names):
+        def prepare_rows_np(self, flat, names, *, vectorized=False, record=None):
             return None
 
     prepare = _bind_method("NGramEmbedding", "prefill_lookahead_prepare")
@@ -878,6 +893,10 @@ def test_every_chunked_prefill_loop_is_either_wired_or_tripwired():
         if not iterates or node.name in {
             "_iter_prefill_chunk_spans",
             "_prefill_spans_with_tail_grid",
+            # Asks the two helpers above WHICH spans the loop will choose, at
+            # request arrival, so the first-gather-early lane can start chunk
+            # 1; it iterates nothing and forwards no chunk to a model.
+            "_predicted_first_prefill_span",
         }:
             continue
         if (
@@ -1285,3 +1304,87 @@ def test_disabling_the_hot_lru_makes_every_span_required():
         min_servable_rows=0,
     )
     assert look.required == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
+# MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: the same prepare, measured warm/cold
+# ---------------------------------------------------------------------------
+
+
+
+def _wire_warm(sidecar):
+    """Bind the shipped warm pass onto a stand-in, as the other tests do."""
+
+    warm = _bind("_warm")
+    submit = _bind("_submit_warm")
+    sidecar._warm = lambda rows, counted=True: warm(
+        sidecar, rows, counted=counted
+    )
+    sidecar._submit_warm = lambda rows, counted: submit(
+        sidecar, rows, counted=counted
+    )
+    return sidecar
+
+def test_the_vectorized_path_is_chosen_only_where_it_can_pay(tmp_path, monkeypatch):
+    """Big warm gather -> no pread pass; sub-threshold gather -> shipped path.
+
+    The probe costs ~0.5 ms and the warm pass it decides costs ~165 ms per
+    32,768 rows, so below the sidecar's own hot-row threshold -- where
+    MTPLX_NGRAM_HOT_MB=0 sends every decode gather -- probing would be the
+    more expensive half.
+    """
+
+    from mtplx import ple_row_gather
+
+    monkeypatch.setenv(ple_row_gather.ENV_FLAG, "1")
+    ple_row_gather.enabled.cache_clear()
+    sidecar = _wire_warm(FakeSidecar(tmp_path, rows=8192, hot_cap_rows=0))
+    names = ("weight", "scales", "biases")
+    try:
+        prepare = _bind("prepare_rows_np")
+
+        small: dict = {}
+        prepare(sidecar, np.arange(64, dtype=np.int64), names, record=small)
+        assert small["path"] == "pread"
+
+        big: dict = {}
+        prepare(sidecar, np.arange(8192, dtype=np.int64), names, record=big)
+        assert big["path"] == "vectorized"
+        assert big["rows"] == 8192
+        assert sidecar.vectorized_gathers == 1
+        assert sidecar.pread_gathers == 1
+        # The vectorised gather issued no warm batch at all.
+        assert sidecar.lookahead_batches == 1
+    finally:
+        sidecar.close()
+        ple_row_gather.enabled.cache_clear()
+
+
+def test_the_two_paths_return_the_same_bytes(tmp_path, monkeypatch):
+    """Exactness of the candidate against the control, on the shipped method."""
+
+    from mtplx import ple_row_gather
+
+    sidecar = _wire_warm(FakeSidecar(tmp_path, rows=8192, hot_cap_rows=0))
+    flat = np.random.default_rng(5).integers(0, 8192, size=20_000, dtype=np.int64)
+    names = ("weight", "scales", "biases")
+    try:
+        prepare = _bind("prepare_rows_np")
+
+        monkeypatch.setenv(ple_row_gather.ENV_FLAG, "0")
+        ple_row_gather.enabled.cache_clear()
+        control_record: dict = {}
+        _n, control = prepare(sidecar, flat, names, record=control_record)
+
+        monkeypatch.setenv(ple_row_gather.ENV_FLAG, "1")
+        ple_row_gather.enabled.cache_clear()
+        candidate_record: dict = {}
+        _n, candidate = prepare(sidecar, flat, names, record=candidate_record)
+
+        assert control_record["path"] == "pread"
+        assert candidate_record["path"] == "vectorized"
+        for name in names:
+            assert candidate[name].tobytes() == control[name].tobytes(), name
+    finally:
+        sidecar.close()
+        ple_row_gather.enabled.cache_clear()
