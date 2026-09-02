@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import mlx.core as mx
@@ -13,6 +14,7 @@ from .kernels.qwen4_m4_routed_down import (
     bind_residual_tail,
 )
 from .kernels.qwen4_m4_routed_glu import bind as bind_routed_glu
+from .kernels import qwen4_m4_route as _route_kernel
 from .models.qwen4_exp import (
     DecoderLayer,
     SparseMoeBlock,
@@ -24,6 +26,72 @@ from .runtime_options import env_bool
 
 def qwen4_m4_stage3_enabled() -> bool:
     return env_bool("MTPLX_QWEN4_M4_STAGE3", default=False)
+
+
+#: Replace the ten-dispatch routing head (router q8 GEMV, precise softmax,
+#: argpartition top-10, take_along_axis, bf16 renormalise, shared-gate GEMV and
+#: its sigmoid) with the two kernels in ``kernels/qwen4_m4_route``.  Off by
+#: default.  Bit-exactness is not asserted by argument: every layer's whole
+#: ``(expert_ids, route_scores, shared_factor)`` tuple is compared against the
+#: stock scaffold with ``mx.array_equal`` at install, and a mismatch raises.
+#: A flipped near-tie changes WHICH experts run, so there is no tolerance to
+#: fall back on and no silent fallback path.
+FABLE_ROUTE_KERNEL_ENV = "MTPLX_FABLE_ROUTE_KERNEL"
+
+#: Threads per output row in the router GEMV: ``1`` reproduces MLX's own
+#: ``qmv_wide`` thread layout (4,160 threads), ``4`` gives each verifier vector
+#: its own lane octet (16,640 threads).  Both run the identical per-vector
+#: accumulation, so this is a scheduling knob only.
+FABLE_ROUTE_KERNEL_VEC_LANES_ENV = "MTPLX_FABLE_ROUTE_KERNEL_VEC_LANES"
+
+_ROUTE_KERNEL_CACHE: bool | None = None
+_ROUTE_KERNEL_VEC_LANES_CACHE: int | None = None
+
+
+def fable_route_kernel_enabled() -> bool:
+    """Return the ``MTPLX_FABLE_ROUTE_KERNEL`` gate; read once, default off."""
+
+    global _ROUTE_KERNEL_CACHE
+    if _ROUTE_KERNEL_CACHE is None:
+        _ROUTE_KERNEL_CACHE = env_bool(FABLE_ROUTE_KERNEL_ENV, default=False)
+    return _ROUTE_KERNEL_CACHE
+
+
+def fable_route_kernel_vec_lanes() -> int:
+    """Return the route GEMV's vector-lane count; read once, default 4.
+
+    Raises on anything the kernel is not built for rather than clamping: a
+    typo'd sweep value must not silently measure the default arm.
+    """
+
+    global _ROUTE_KERNEL_VEC_LANES_CACHE
+    if _ROUTE_KERNEL_VEC_LANES_CACHE is None:
+        raw = os.environ.get(FABLE_ROUTE_KERNEL_VEC_LANES_ENV)
+        if raw is None or raw.strip() == "":
+            value = _route_kernel.DEFAULT_VEC_LANES
+        else:
+            try:
+                value = int(raw.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"{FABLE_ROUTE_KERNEL_VEC_LANES_ENV}={raw!r} is not an "
+                    "integer"
+                ) from exc
+            if value not in _route_kernel.VEC_LANES_CHOICES:
+                raise ValueError(
+                    f"{FABLE_ROUTE_KERNEL_VEC_LANES_ENV}={value} is not one of "
+                    f"{_route_kernel.VEC_LANES_CHOICES}"
+                )
+        _ROUTE_KERNEL_VEC_LANES_CACHE = value
+    return _ROUTE_KERNEL_VEC_LANES_CACHE
+
+
+def reset_fable_route_kernel_cache() -> None:
+    """Drop the memoized route-kernel gates.  Test-support only."""
+
+    global _ROUTE_KERNEL_CACHE, _ROUTE_KERNEL_VEC_LANES_CACHE
+    _ROUTE_KERNEL_CACHE = None
+    _ROUTE_KERNEL_VEC_LANES_CACHE = None
 
 
 def qwen4_m4_routed_down_reduce_enabled() -> bool:
@@ -47,17 +115,24 @@ def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool, bool]:
         qwen4_m4_routed_down_residual_tail_enabled()
     )
     routed_glu_enabled = qwen4_m4_routed_glu_enabled()
+    route_kernel_enabled = fable_route_kernel_enabled()
     if not stage3_enabled and (
         routed_down_reduce_enabled
         or routed_down_residual_tail_enabled
         or routed_glu_enabled
+        or route_kernel_enabled
     ):
         raise ValueError("qwen4 M4 child routes require M4 stage3")
     _validate_feature_combination(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
         routed_glu_enabled=routed_glu_enabled,
+        route_kernel_enabled=route_kernel_enabled,
     )
+    if route_kernel_enabled:
+        # Read now so a typo'd sweep value fails at flag capture, before any
+        # weight is touched.
+        fable_route_kernel_vec_lanes()
     return (
         stage3_enabled,
         routed_down_reduce_enabled,
@@ -71,6 +146,7 @@ def _validate_feature_combination(
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
     routed_glu_enabled: bool = False,
+    route_kernel_enabled: bool = False,
 ) -> None:
     if routed_down_residual_tail_enabled and not routed_down_reduce_enabled:
         raise ValueError(
@@ -78,6 +154,11 @@ def _validate_feature_combination(
         )
     if routed_glu_enabled and not routed_down_residual_tail_enabled:
         raise ValueError("qwen4 M4 routed GLU requires routed residual tail")
+    if route_kernel_enabled and not routed_glu_enabled:
+        raise ValueError(
+            f"{FABLE_ROUTE_KERNEL_ENV} replaces the routing head of the paired "
+            "routed-GLU lane and requires MTPLX_QWEN4_M4_ROUTED_GLU"
+        )
 
 
 def _text_model(runtime: Any):
@@ -244,22 +325,52 @@ def _m4_paired_routed_glu_residual_tail_forward(
     routed_down_residual_tail,
     hyper: mx.array,
     inject: mx.array,
+    route=None,
 ) -> mx.array:
-    gates = mx.softmax(block.gate(x), axis=-1, precise=True)
-    expert_ids = mx.argpartition(gates, kth=-block.top_k, axis=-1)[
-        ..., -block.top_k :
-    ]
-    route_scores = mx.take_along_axis(gates, expert_ids, axis=-1)
-    if block.norm_topk_prob:
-        route_scores = route_scores / route_scores.sum(axis=-1, keepdims=True)
+    """Paired routed GLU producer plus the fused residual tail.
+
+    Both routed gathers on this lane happen inside Metal kernels (the paired
+    GLU kernel resolves ``expert = expert_ids[selected]`` and walks the fused
+    pack itself; the routed-down kernel does the same over its fixed
+    ``SLOT_ORDER`` reduction tree), so the expert ids handed to them must keep
+    the order the kernels were validated against.
+    """
+
+    # One metadata-only view, shared by the route head and the routed GLU.
+    rows = x.reshape(4, 2560)
+    if route is None:
+        gates = mx.softmax(block.gate(x), axis=-1, precise=True)
+        expert_ids = mx.argpartition(gates, kth=-block.top_k, axis=-1)[
+            ..., -block.top_k :
+        ]
+        route_scores = mx.take_along_axis(gates, expert_ids, axis=-1)
+        if block.norm_topk_prob:
+            route_scores = route_scores / route_scores.sum(
+                axis=-1, keepdims=True
+            )
+        expert_ids = expert_ids.reshape(4, 10)
+        route_scores = route_scores.reshape(4, 10)
+        shared_factor = mx.sigmoid(block.shared_expert_gate(x)).reshape(4)
+    else:
+        # MTPLX_FABLE_ROUTE_KERNEL: the same ten dispatches in two, emitting
+        # the tuple below directly. Validated bit-exact per layer at install.
+        expert_ids, route_scores, shared_factor = route(
+            rows,
+            block.gate.weight,
+            block.gate.scales,
+            block.gate.biases,
+            block.shared_expert_gate.weight,
+            block.shared_expert_gate.scales,
+            block.shared_expert_gate.biases,
+        )
 
     routed = block.switch_mlp
     routed_h = routed_gu_activation(
-        x.reshape(4, 2560),
+        rows,
         routed.gu_weight,
         routed.gu_scales,
         routed.gu_biases,
-        expert_ids.reshape(4, 10),
+        expert_ids,
     )
 
     shared = block.shared_expert
@@ -276,15 +387,14 @@ def _m4_paired_routed_glu_residual_tail_forward(
     shared_gate, shared_up = mx.split(shared_gu, 2, axis=-1)
     shared_h = nn.silu(shared_gate) * shared_up
     shared_down = shared.down_proj(shared_h).reshape(4, 2560)
-    shared_factor = mx.sigmoid(block.shared_expert_gate(x)).reshape(4)
 
     return routed_down_residual_tail(
         routed_h,
         routed.down_proj.weight,
         routed.down_proj.scales,
         routed.down_proj.biases,
-        expert_ids.reshape(4, 10),
-        route_scores.reshape(4, 10).astype(mx.bfloat16),
+        expert_ids,
+        route_scores.astype(mx.bfloat16),
         shared_down,
         shared_factor.astype(mx.bfloat16),
         hyper,
@@ -350,6 +460,7 @@ def _m4_paired_routed_glu_residual_tail_layer_forward(
         layer._mtplx_m4_routed_down_residual_tail,
         hyper,
         inject,
+        route=getattr(layer, "_mtplx_m4_route", None),
     )
 
 
@@ -612,6 +723,8 @@ def _installation_report(
     routed_down_reduce_enabled: bool,
     routed_down_residual_tail_enabled: bool,
     routed_glu_enabled: bool = False,
+    route_kernel_enabled: bool = False,
+    route_kernel_vec_lanes: int | None = None,
 ) -> dict[str, Any]:
     return {
         "installed": True,
@@ -636,6 +749,16 @@ def _installation_report(
         "routed_down_residual_tail": routed_down_residual_tail_enabled,
         "paired_routed_glu": routed_glu_enabled,
         "paired_routed_glu_layers": layer_count if routed_glu_enabled else 0,
+        "route_kernel": {
+            "installed": bool(route_kernel_enabled),
+            "layers": layer_count if route_kernel_enabled else 0,
+            "vec_lanes": route_kernel_vec_lanes,
+            "dispatches_per_layer": (
+                _route_kernel.FUSED_DISPATCHES_PER_LAYER
+                if route_kernel_enabled
+                else _route_kernel.EAGER_DISPATCHES_PER_LAYER
+            ),
+        },
         "exact_layers": layer_count,
         "combined_residual_tail_layers": (
             layer_count if routed_down_residual_tail_enabled else 0
@@ -650,6 +773,7 @@ def _install_validated_plans(
     routed_down_residual_tail_enabled: bool,
     routed_glu_enabled: bool = False,
     routed_glu=None,
+    route=None,
 ) -> None:
     """Mutate only the complete plan set after validation and exact self-checks."""
 
@@ -658,6 +782,10 @@ def _install_validated_plans(
         if routed_glu_enabled:
             layer._mtplx_m4_routed_glu = routed_glu
             layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
+            # Plain callable or None; Module.__setattr__ keeps it off the
+            # parameter dict, and the forward reads it with getattr so an
+            # un-armed layer never pays a branch on a missing attribute.
+            layer._mtplx_m4_route = route
             layer.__class__ = _M4PairedRoutedGluResidualTailDecoderLayer
         elif routed_down_residual_tail_enabled:
             layer._mtplx_m4_routed_down_residual_tail = routed_down_reduce
@@ -683,10 +811,15 @@ def install_qwen4_m4_stage3(
     if len(layers) != 48:
         raise ValueError(f"qwen4 M4 stage3 requires 48 layers, got {len(layers)}")
 
+    route_kernel_enabled = fable_route_kernel_enabled()
+    route_kernel_vec_lanes = (
+        fable_route_kernel_vec_lanes() if route_kernel_enabled else None
+    )
     _validate_feature_combination(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
         routed_glu_enabled=routed_glu_enabled,
+        route_kernel_enabled=route_kernel_enabled,
     )
     validated_plans = _build_install_plans(
         layers,
@@ -694,6 +827,12 @@ def install_qwen4_m4_stage3(
         routed_down_reduce=None,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
     )
+    if route_kernel_enabled:
+        # Construction-bound: every pack the two kernels hardcode is checked
+        # before anything is bound, with the offending field named. Runs after
+        # _build_install_plans so an owner-type problem reports as one.
+        for index, (_, block, _, _) in enumerate(validated_plans):
+            _route_kernel.check_contract(block, index=index)
     stage3 = bind()
     routed_down_reduce = (
         bind_residual_tail()
@@ -703,6 +842,11 @@ def install_qwen4_m4_stage3(
         else None
     )
     routed_glu = bind_routed_glu() if routed_glu_enabled else None
+    route = (
+        _route_kernel.bind(vec_lanes=route_kernel_vec_lanes)
+        if route_kernel_enabled
+        else None
+    )
     plans = tuple(
         (layer, block, stage3, routed_down_reduce)
         for layer, block, _, _ in validated_plans
@@ -712,6 +856,33 @@ def install_qwen4_m4_stage3(
     sample = sample.reshape(1, 4, 2560).astype(mx.bfloat16)
     max_delta = 0.0
     for index, (layer, block, stage3, routed_down_reduce) in enumerate(plans):
+        if route is not None:
+            # The route head decides WHICH experts run. A near-tie that flips
+            # is not a rounding-class difference, so this gate is array_equal
+            # on all three emitted tensors, no tolerance, no fallback.
+            _route_kernel.check_input(sample.reshape(4, 2560))
+            reference_route = _route_kernel.stock_route(block, sample)
+            candidate_route = route(
+                sample.reshape(4, 2560),
+                block.gate.weight,
+                block.gate.scales,
+                block.gate.biases,
+                block.shared_expert_gate.weight,
+                block.shared_expert_gate.scales,
+                block.shared_expert_gate.biases,
+            )
+            names = ("expert_ids", "route_scores", "shared_factor")
+            checks = tuple(
+                mx.array_equal(want, got)
+                for want, got in zip(reference_route, candidate_route)
+            )
+            mx.eval(checks)
+            for name, ok in zip(names, checks):
+                if not bool(ok.item()):
+                    raise ValueError(
+                        f"{FABLE_ROUTE_KERNEL_ENV} layer {index}: {name} is "
+                        "not bit-exact with the stock routing scaffold"
+                    )
         stock = None if routed_down_residual_tail_enabled else block(sample)
         reference = _m4_forward(block, sample, stage3)
         if routed_down_residual_tail_enabled:
@@ -729,6 +900,7 @@ def install_qwen4_m4_stage3(
                     routed_down_reduce,
                     hyper,
                     inject,
+                    route=route,
                 )
                 if routed_glu_enabled
                 else _m4_routed_down_residual_tail_forward(
@@ -775,6 +947,7 @@ def install_qwen4_m4_stage3(
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
         routed_glu_enabled=routed_glu_enabled,
         routed_glu=routed_glu,
+        route=route,
     )
     report = _installation_report(
         layer_count=len(plans),
@@ -782,16 +955,23 @@ def install_qwen4_m4_stage3(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
         routed_down_residual_tail_enabled=routed_down_residual_tail_enabled,
         routed_glu_enabled=routed_glu_enabled,
+        route_kernel_enabled=route_kernel_enabled,
+        route_kernel_vec_lanes=route_kernel_vec_lanes,
     )
     runtime.qwen4_m4_stage3_report = report
     return report
 
 
 __all__ = [
+    "FABLE_ROUTE_KERNEL_ENV",
+    "FABLE_ROUTE_KERNEL_VEC_LANES_ENV",
+    "fable_route_kernel_enabled",
+    "fable_route_kernel_vec_lanes",
     "install_qwen4_m4_stage3",
     "qwen4_m4_routed_down_reduce_enabled",
     "qwen4_m4_routed_down_residual_tail_enabled",
     "qwen4_m4_routed_glu_enabled",
     "qwen4_m4_stage3_enabled",
     "qwen4_m4_stage3_flags",
+    "reset_fable_route_kernel_cache",
 ]
