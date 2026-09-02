@@ -54,6 +54,7 @@ from .cache_state import (
 from .fable_draft_k20_prescatter import (
     DraftK20PrescatterIneligible,
     claim_draft_route as _fable_draft_k20_prescatter_claim,
+    greedy_chain_step as _fable_draft_k20_prescatter_greedy_step,
     is_enabled as _fable_draft_k20_prescatter_enabled,
     read_draft as _fable_draft_k20_prescatter_read,
     release_draft_route as _fable_draft_k20_prescatter_release,
@@ -9449,6 +9450,8 @@ def generate_mtpk(
     if _FABLE_DRAFT_K20_PRESCATTER:
         _draft_k20_prescatter_plan = _fable_draft_k20_prescatter_claim(
             rt,
+            greedy_chain_enabled=_greedy_chain_eligible,
+            receipt=_draft_k20_prescatter_receipt,
             draft_sampler=draft_sampler,
             draft_core=draft_core,
             target_prefix_verify=target_prefix_verify,
@@ -9473,13 +9476,101 @@ def generate_mtpk(
             steer_active=bool(loop_guard) or thinking_guard is not None,
         )
         if _draft_k20_prescatter_plan is not None:
-            if _greedy_chain_eligible:
-                _fable_draft_k20_prescatter_release(_draft_k20_prescatter_plan)
-                raise DraftK20PrescatterIneligible(
-                    "MTPLX_FABLE_DRAFT_K20_PRESCATTER: the greedy device chain "
-                    "owns the draft read"
-                )
             _draft_k20_prescatter_receipt = _draft_k20_prescatter_plan.to_dict()
+    # MTPLX_FABLE_DEVICE_DRAFT_CHAIN (default off).  Claimed ONCE, here, after
+    # every request-invariant term it refuses on already exists -- including
+    # the prescatter plan, which owns the same FR-Spec stash.  The compiled
+    # body is bound lazily to the MTP cache container the loop actually drafts
+    # into (see `DeviceDraftChainPlan.ensure_bound`): that container is chosen
+    # per cycle and can be replaced mid-request by the committed-history live
+    # reset or a prefix rebase.
+    _device_draft_chain_plan = None
+    _device_draft_chain_receipt: dict[str, object] = {"installed": False}
+    if _FABLE_DEVICE_DRAFT_CHAIN:
+        _device_draft_chain_plan = _fable_device_draft_chain_claim(
+            receipt=_device_draft_chain_receipt,
+            rt=rt,
+            state_tree_fn=_device_core_state_tree,
+            promote_fn=promote_kv_cache_offsets,
+            mtp_hidden_variant=mtp_hidden_variant,
+            sampler=sampler,
+            draft_sampler=draft_sampler,
+            speculative_depth=speculative_depth,
+            request_max_tokens=max_tokens,
+            rng=rng,
+            draft_core=draft_core,
+            mtp_cache_policy=mtp_cache_policy,
+            mtp_history_policy=mtp_history_policy,
+            mtp_position_mode=mtp_position_mode,
+            target_prefix_verify=target_prefix_verify,
+            lazy_target_distributions=lazy_target_distributions,
+            lazy_bonus_verify_requested=_lazy_bonus_verify_enabled(),
+            batch_target_arrays=_batch_target_arrays_enabled(),
+            steer_active=bool(loop_guard) or thinking_guard is not None,
+            penalties_active=_penalties_active,
+            relaxed_draft_ties=bool(getattr(rt, "qwen4_relaxed_draft_ties", False)),
+            qsa_mtp_precompute_active=qsa_mtp_precompute_active,
+            constraint=constraint,
+            adaptive_policy=adaptive_policy,
+            adaptive_width_policy=adaptive_width_policy,
+            mtp_corrector=mtp_corrector,
+            mtp_topk_reranker=mtp_topk_reranker,
+            draft_margin_threshold=draft_margin_threshold,
+            wants_policy_metrics=wants_policy_metrics,
+            draft_confidence_needed=_draft_conf_needed,
+            online_hidden_corrector_alpha=online_hidden_corrector_alpha,
+            online_correction_cache=online_correction_cache,
+            prompt_correction_cache=prompt_correction_cache,
+            adapter_ensemble_q=adapter_ensemble_q,
+            combine_greedy_draft_read=combine_greedy_draft_read,
+            greedy_chain_enabled=_greedy_chain_eligible,
+            adaptive_dtemp_active=_dtemp_controller is not None,
+            frspec_legacy_ids=_frspec_legacy_ids,
+            late_depth_switch_after=late_depth_switch_after,
+            a3b_target_prefix_route=a3b_target_prefix_route,
+            pr391_route=None,
+            device_k20_route=None,
+            draft_k20_prescatter_route=_draft_k20_prescatter_plan,
+            depth4_probe_active=_FABLE_DEPTH4_PROBE,
+            k20_log_active=bool(_fable_k20_log_enabled())
+            or bool(getattr(k20_log, "enabled", False)),
+            ple_candidate_submit=_ple_candidate_submit,
+        )
+        if _device_draft_chain_plan is not None:
+            # Promote the MTP cache, build the compiled body and trace it ONCE,
+            # here, outside the loop -- the same reason
+            # `_pr391_prewarm_float32_d3_core` exists.  `mtp_history_cache` is
+            # the container the committed-history lane drafts into; if a live
+            # reset or a prefix rebase replaces it mid-request, `run_cycle`
+            # rebinds (and says so on stderr).
+            _ddc_prewarm_started = time.perf_counter()
+            _fable_device_draft_chain_prewarm(
+                _device_draft_chain_plan,
+                hidden,
+                mtp_cache=mtp_history_cache,
+                rollback=_rollback_mtp_cache,
+                cache_offset=_mtp_cache_offset,
+            )
+            _ddc_prewarm_s = time.perf_counter() - _ddc_prewarm_started
+            # CHARGE IT TO SETUP, NOT TO DECODE.  `pre_first_token_setup_s`
+            # closed above, before this claim's inputs existed, so a prewarm
+            # placed here lands inside `decode_elapsed_s` -- which is what
+            # window 1788400641 measured: `first_primary_sample_time_s`
+            # (`perf_counter() - decode_loop_entered_s`) went 0.003 -> 0.024 s
+            # steady state, and 1.159 s on arm 1, the FIRST process ever to
+            # compile this body's Metal kernels.  1.132 s / 387 windows =
+            # 2.93 ms/M4win, and arm 1 measured exactly +2.90 ms/M4win against
+            # its own twin arm 2.  The cache promotion, the `mx.compile` trace
+            # and the shader compilation are construction, so they belong in
+            # the bucket the comment at the top of this span describes --
+            # `non_decode_extra_s` subtracts it from `decode_elapsed_s` and
+            # `ttft_s` adds it, which is where a reader should find it.
+            pre_first_token_setup_s += _ddc_prewarm_s
+            decode_loop_entered_s += _ddc_prewarm_s
+            _device_draft_chain_plan.receipt_extra["prewarm_s"] = float(
+                _ddc_prewarm_s
+            )
+            _device_draft_chain_receipt = _device_draft_chain_plan.to_dict()
     while len(tokens) < max_tokens:
         if first_round_snapshot is None and step >= 1:
             # Top of iteration 2: the cumulative timers now hold exactly
@@ -10685,15 +10776,38 @@ def generate_mtpk(
                     mtp_depth=_chain_depth + 1,
                     position_offset=_chain_offset,
                 )
-                _chain_row = _chain_logits[:, -1, :][0]
-                _chain_arg = mx.argmax(_chain_row, axis=-1)
-                _chain_pending.append(_chain_arg)
-                if _draft_conf_trace:
-                    # Greedy: max(row) IS the drafted token's logit, so this
-                    # is p(drafted) without a gather. Lazy — rides the eval.
-                    _chain_conf_pending.append(
-                        mx.exp(mx.max(_chain_row) - mx.logsumexp(_chain_row))
+                if _draft_k20_prescatter_plan is not None:
+                    # MTPLX_FABLE_DRAFT_K20_PRESCATTER on the greedy chain:
+                    # the same argmax (and the same traced confidence) taken
+                    # over the FR-Spec head's 65,536-row PRE-scatter output,
+                    # with the winning local row mapped to its real token id
+                    # by one device `mx.take` through the strictly ascending
+                    # ranked table. Same token, same tie-break — the proof is
+                    # in `fable_draft_k20_prescatter.greedy_chain_step`. Both
+                    # arrays stay unevaluated, so this still costs the one
+                    # `_eval` below and the 248,320-lane scatter behind
+                    # `_chain_logits` is built and dropped, never run.
+                    _chain_arg, _chain_conf = (
+                        _fable_draft_k20_prescatter_greedy_step(
+                            _draft_k20_prescatter_plan,
+                            _chain_logits,
+                            want_confidence=_draft_conf_trace,
+                        )
                     )
+                    _chain_pending.append(_chain_arg)
+                    if _chain_conf is not None:
+                        _chain_conf_pending.append(_chain_conf)
+                else:
+                    _chain_row = _chain_logits[:, -1, :][0]
+                    _chain_arg = mx.argmax(_chain_row, axis=-1)
+                    _chain_pending.append(_chain_arg)
+                    if _draft_conf_trace:
+                        # Greedy: max(row) IS the drafted token's logit, so
+                        # this is p(drafted) without a gather. Lazy — rides
+                        # the eval.
+                        _chain_conf_pending.append(
+                            mx.exp(mx.max(_chain_row) - mx.logsumexp(_chain_row))
+                        )
                 _chain_tok = _chain_arg.reshape(1, 1).astype(mx.int32)
                 _chain_hidden = _chain_hidden_next[:, -1:, :]
                 draft_hidden_for_update.append(_chain_hidden)

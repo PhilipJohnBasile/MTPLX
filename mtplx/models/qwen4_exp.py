@@ -927,6 +927,21 @@ class GatedResidual(nn.Module):
         return mixed_input, hyper_input, inject
 
 
+
+def _named_gated_residuals(owner: Any):
+    """``(attribute name, module)`` for every GatedResidual ``owner`` holds."""
+
+    for name in dir(owner):
+        if name.startswith("__"):
+            continue
+        try:
+            value = getattr(owner, name)
+        except Exception:  # pragma: no cover - defensive: properties may raise
+            continue
+        if isinstance(value, GatedResidual):
+            yield name, value
+
+
 class SparseMoeBlock(_Qwen3NextSparseMoeBlock):
     def __call__(self, x: mx.array) -> mx.array:
         # Fused decode path (MTPLX_FUSED_MOE_DECODE=1 + sanitize-fused gu

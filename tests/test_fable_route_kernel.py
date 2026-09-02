@@ -651,3 +651,32 @@ def test_paired_forward_defaults_to_the_stock_head():
         stage3._m4_paired_routed_glu_residual_tail_forward
     )
     assert sig.parameters["route"].default is None
+
+
+def test_the_forward_gate_is_install_bound_not_request_bound():
+    """MTPLX_FABLE_ROUTE_KERNEL is decided once, when the layer is installed.
+
+    `install_qwen4_m4_stage3` validates the kernel bit-exact per layer and
+    binds it; the forward then branches on whether a `route` callable exists,
+    never on anything about the request. So greedy and temperature-1 requests
+    take the identical path, and there is no per-request check that could
+    raise. A pack the kernel cannot serve fails at install, which is where a
+    deployment error belongs.
+    """
+
+    import ast
+    import inspect
+
+    from mtplx import qwen4_m4_stage3
+
+    source = inspect.getsource(qwen4_m4_stage3)
+    tree = ast.parse(source)
+    gates = [
+        ast.unparse(node.test)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "route is None"
+    ]
+    assert gates, "the route-kernel forward gate moved"
+    forward = inspect.getsource(qwen4_m4_stage3)
+    for request_term in ("sampler", "temperature", "draft_sampler"):
+        assert f"if {request_term}" not in forward
