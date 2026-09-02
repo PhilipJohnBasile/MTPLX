@@ -42,6 +42,10 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # able to force it off/on per launch for A/B work.
         "MTPLX_GQA_PACKED_SDPA",
         "MTPLX_GQA_PACKED_SDPA_THRESHOLD",
+        # K2 flash-decoding verify route inside the packed-GQA lane
+        # (2026-09-02 default): same per-launch A/B requirement, and
+        # MTPLX_NAX_FLASH_ROUTE=0 must be an honest kill switch.
+        "MTPLX_NAX_FLASH_ROUTE",
         # Dense-decode context ceiling (2026-08-26): past it the auto layout
         # repages decode and the packed lane is structurally excluded — the
         # 147.4k decode cliff. Operators must be able to sweep it per launch.
@@ -795,6 +799,18 @@ TURBO_PROFILE = RuntimeProfile(
             # any contract miss.
             "MTPLX_GQA_PACKED_SDPA": "1",
             "MTPLX_GQA_PACKED_SDPA_THRESHOLD": "8192",
+            # K2 TensorOps flash-decoding verify walk (hyper window
+            # 2026-09-01, default 2026-09-02): inside every packed-eligible
+            # window the dim-split kernel serves M<=32 and the key-split
+            # kernel the wider rows, both with no V staging. Kernel walk at
+            # 72.7k QL4: 0.917 (dsplit) / 1.015 (flash) vs packed 1.421
+            # ms/layer at half the power; live band-to-band +15-20% at 88k,
+            # +7-10% at 16k, nothing below the packed threshold. Contract
+            # gates (batch 1, head_dim 256, bf16/fp16, M<=64, q_len<=10)
+            # bail to the scalar routes unchanged; kill switches
+            # MTPLX_NAX_FLASH_ROUTE=0 (whole route), MTPLX_NAX_FLASH=0 and
+            # MTPLX_NAX_FLASH_DSPLIT=0 (one kernel each).
+            "MTPLX_NAX_FLASH_ROUTE": "1",
             # Background warmup ladder (F6, 2026-08-16; retrenched 2026-08-17
             # field regression fix). F6 shipped the full pow2 walk up to the
             # 32768 router fence in the PRODUCT profile so benchmark rows
