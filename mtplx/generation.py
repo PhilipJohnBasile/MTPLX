@@ -615,6 +615,30 @@ def _resolve_mtp_history_policy(requested_policy: str, prompt_tokens: int) -> st
     return "last_window" if int(prompt_tokens) >= threshold else "committed"
 
 
+@contextlib.contextmanager
+def _ple_prefill_lookahead_scope(rt, body, spans):
+    """Arm the model's PLE prefill lookahead for this chunked prefill.
+
+    Duck-typed on purpose: a model that does not offer the hook, or a build
+    where MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD is unset, yields a no-op scope and
+    the prefill loop below is byte-identical to before.  The scope owns the
+    worker thread and always closes it, including on an aborted prefill.
+    """
+
+    model = getattr(rt, "model", None)
+    # Same resolution the runtime uses for the text tower (runtime.py:221):
+    # multimodal builds wrap it, and the PLE stage lives on the inner model.
+    model = getattr(model, "language_model", model)
+    hook = getattr(model, "ple_prefill_lookahead", None)
+    if hook is None or not body:
+        yield None
+        return
+    from mtplx.ple_prefill_lookahead import prefill_lookahead_scope
+
+    with prefill_lookahead_scope(hook(body, list(spans))) as lookahead:
+        yield lookahead
+
+
 def _runtime_count(rt: MTPLXRuntime, key: str, amount: int = 1) -> None:
     counters = getattr(rt, "diagnostic_counters", None)
     if counters is None:
@@ -5665,147 +5689,153 @@ def _prefill_committed_mtp_history_streaming(
             len(body), chunk_size=prefill_chunk_size
         )
     )
-    for start, end in mtp_streaming_spans:
-        _check_postcommit_abort(abort_check)
-        chunk_array = body_array[:, start:end]
-        chunk_len = end - start
-        token_start_index = cursor + 1
-        token_end_index = token_start_index + chunk_len
-        needs_history_hidden = (
-            history_window_tokens is None or token_end_index > history_start_token_index
-        )
-        chunk_embeddings = None
-        if vision_splice is not None:
-            from mtplx.vision.splice import spliced_chunk_embeddings
-
-            chunk_embeddings = spliced_chunk_embeddings(
-                rt.embed_tokens, chunk_array, vision_splice
+    # PLE n-gram prefill lookahead (MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD, off
+    # by default). Every prompt token is known here, so a worker thread can
+    # hash and page-warm chunk k+1's 32,768 sidecar rows while chunk k's
+    # forward owns the GPU. The census measures those gathers as 8 host-late
+    # stalls totalling 2,313 ms with the GPU fully idle.
+    with _ple_prefill_lookahead_scope(rt, body, mtp_streaming_spans):
+        for start, end in mtp_streaming_spans:
+            _check_postcommit_abort(abort_check)
+            chunk_array = body_array[:, start:end]
+            chunk_len = end - start
+            token_start_index = cursor + 1
+            token_end_index = token_start_index + chunk_len
+            needs_history_hidden = (
+                history_window_tokens is None or token_end_index > history_start_token_index
             )
-        started = time.perf_counter()
-        with attention_phase("prefill"):
-            if needs_history_hidden:
-                logits_chunk, hidden_chunk = rt.forward_ar(
-                    chunk_array,
-                    cache=cache,
-                    return_hidden=True,
-                    hidden_variant=base_hidden_variant,
-                    emit_logits=not final_logits_only,
-                    input_embeddings=chunk_embeddings,
-                )
-            else:
-                hidden_chunk = None
-                logits_chunk = _prefill_cache_only_forward(
-                    rt, chunk_array, cache, input_embeddings=chunk_embeddings
-                )
-        if hidden_chunk is None:
-            if logits_chunk is None:
-                _eval_cache_roots(cache)
-            else:
-                _eval(logits_chunk)
-        elif logits_chunk is None:
-            _eval(hidden_chunk)
-        else:
-            _eval(logits_chunk, hidden_chunk)
-        target_forward_time += time.perf_counter() - started
-        _runtime_count(rt, "prefill_chunks")
-        if chunk_callback is not None:
-            try:
-                now = time.perf_counter()
-                phase_start = chunk_started_s if chunk_started_s is not None else started
-                chunk_elapsed = max(0.0, now - started)
-                elapsed = max(0.0, now - phase_start)
-                tokens_done = int(cursor + chunk_len)
-                chunk_tok_s = (
-                    float(chunk_len) / chunk_elapsed
-                    if chunk_elapsed > 0.0
-                    else None
-                )
-                cumulative_tok_s = (
-                    float(tokens_done) / elapsed
-                    if elapsed > 0.0 and tokens_done > 0
-                    else None
-                )
-                chunk_callback(
-                    {
-                        "phase": "chunk",
-                        "tokens_done": tokens_done,
-                        "tokens_total": int(len(prompt_ids)),
-                        "cached_tokens": int(cached_tokens),
-                        "elapsed_s": elapsed,
-                        "prefill_tok_s": cumulative_tok_s,
-                        "cumulative_prefill_tok_s": cumulative_tok_s,
-                        "prefill_wall_tok_s": cumulative_tok_s,
-                        "live_prefill_tok_s": (
-                            chunk_tok_s if chunk_tok_s is not None else cumulative_tok_s
-                        ),
-                        "chunk_size": int(chunk_len),
-                        "chunk_elapsed_s": chunk_elapsed,
-                        "chunk_prefill_tok_s": chunk_tok_s,
-                    }
-                )
-            except Exception:
-                pass
-        _check_postcommit_abort(abort_check)
+            chunk_embeddings = None
+            if vision_splice is not None:
+                from mtplx.vision.splice import spliced_chunk_embeddings
 
-        if hidden_chunk is not None:
-            token_ids = prompt_ids[token_start_index : token_start_index + chunk_len]
-            slice_start = max(0, history_start_token_index - token_start_index)
-            if slice_start < len(token_ids):
-                sliced_token_ids = token_ids[slice_start:]
-                sliced_hidden = hidden_chunk[
-                    :,
-                    slice_start : slice_start + len(sliced_token_ids),
-                    :,
-                ]
-                history_embeddings = None
-                if vision_splice is not None and pad_prefix_counts is not None:
-                    window_start = token_start_index + slice_start
-                    window_end = window_start + len(sliced_token_ids)
-                    if (
-                        pad_prefix_counts[window_end]
-                        > pad_prefix_counts[window_start]
-                    ):
-                        from mtplx.vision.splice import (
-                            spliced_embeddings_for_window,
-                        )
-
-                        history_embeddings = spliced_embeddings_for_window(
-                            rt.embed_tokens,
-                            prompt_array[:, window_start:window_end],
-                            vision_splice,
-                            rows_before=pad_prefix_counts[window_start],
-                        )
-                prompt_history_time += _append_mtp_history(
-                    rt,
-                    mtp_history_cache,
-                    sliced_hidden,
-                    sliced_token_ids,
-                    phase="prefill",
-                    mtp_hidden_variant=mtp_hidden_variant,
-                    position_offset=(
-                        token_start_index + slice_start
-                        if use_absolute_positions
-                        else token_start_index + slice_start - 1
-                        if history_window_tokens is not None
+                chunk_embeddings = spliced_chunk_embeddings(
+                    rt.embed_tokens, chunk_array, vision_splice
+                )
+            started = time.perf_counter()
+            with attention_phase("prefill"):
+                if needs_history_hidden:
+                    logits_chunk, hidden_chunk = rt.forward_ar(
+                        chunk_array,
+                        cache=cache,
+                        return_hidden=True,
+                        hidden_variant=base_hidden_variant,
+                        emit_logits=not final_logits_only,
+                        input_embeddings=chunk_embeddings,
+                    )
+                else:
+                    hidden_chunk = None
+                    logits_chunk = _prefill_cache_only_forward(
+                        rt, chunk_array, cache, input_embeddings=chunk_embeddings
+                    )
+            if hidden_chunk is None:
+                if logits_chunk is None:
+                    _eval_cache_roots(cache)
+                else:
+                    _eval(logits_chunk)
+            elif logits_chunk is None:
+                _eval(hidden_chunk)
+            else:
+                _eval(logits_chunk, hidden_chunk)
+            target_forward_time += time.perf_counter() - started
+            _runtime_count(rt, "prefill_chunks")
+            if chunk_callback is not None:
+                try:
+                    now = time.perf_counter()
+                    phase_start = chunk_started_s if chunk_started_s is not None else started
+                    chunk_elapsed = max(0.0, now - started)
+                    elapsed = max(0.0, now - phase_start)
+                    tokens_done = int(cursor + chunk_len)
+                    chunk_tok_s = (
+                        float(chunk_len) / chunk_elapsed
+                        if chunk_elapsed > 0.0
                         else None
-                    ),
-                    force_eval=True,
-                    input_embeddings=history_embeddings,
-                )
-                _check_postcommit_abort(abort_check)
-        cursor += chunk_len
-        boundary_hidden = (
-            hidden_chunk[:, -1:, :] if hidden_chunk is not None else None
-        )
-        del hidden_chunk
-        del logits_chunk
-        target_forward_time += _prefill_chunk_cache_cleanup(rt)
-        if capture_boundaries:
-            _capture_gdn_boundary(
-                gdn_boundary_sink, cursor, cache, hidden_last=boundary_hidden
+                    )
+                    cumulative_tok_s = (
+                        float(tokens_done) / elapsed
+                        if elapsed > 0.0 and tokens_done > 0
+                        else None
+                    )
+                    chunk_callback(
+                        {
+                            "phase": "chunk",
+                            "tokens_done": tokens_done,
+                            "tokens_total": int(len(prompt_ids)),
+                            "cached_tokens": int(cached_tokens),
+                            "elapsed_s": elapsed,
+                            "prefill_tok_s": cumulative_tok_s,
+                            "cumulative_prefill_tok_s": cumulative_tok_s,
+                            "prefill_wall_tok_s": cumulative_tok_s,
+                            "live_prefill_tok_s": (
+                                chunk_tok_s if chunk_tok_s is not None else cumulative_tok_s
+                            ),
+                            "chunk_size": int(chunk_len),
+                            "chunk_elapsed_s": chunk_elapsed,
+                            "chunk_prefill_tok_s": chunk_tok_s,
+                        }
+                    )
+                except Exception:
+                    pass
+            _check_postcommit_abort(abort_check)
+
+            if hidden_chunk is not None:
+                token_ids = prompt_ids[token_start_index : token_start_index + chunk_len]
+                slice_start = max(0, history_start_token_index - token_start_index)
+                if slice_start < len(token_ids):
+                    sliced_token_ids = token_ids[slice_start:]
+                    sliced_hidden = hidden_chunk[
+                        :,
+                        slice_start : slice_start + len(sliced_token_ids),
+                        :,
+                    ]
+                    history_embeddings = None
+                    if vision_splice is not None and pad_prefix_counts is not None:
+                        window_start = token_start_index + slice_start
+                        window_end = window_start + len(sliced_token_ids)
+                        if (
+                            pad_prefix_counts[window_end]
+                            > pad_prefix_counts[window_start]
+                        ):
+                            from mtplx.vision.splice import (
+                                spliced_embeddings_for_window,
+                            )
+
+                            history_embeddings = spliced_embeddings_for_window(
+                                rt.embed_tokens,
+                                prompt_array[:, window_start:window_end],
+                                vision_splice,
+                                rows_before=pad_prefix_counts[window_start],
+                            )
+                    prompt_history_time += _append_mtp_history(
+                        rt,
+                        mtp_history_cache,
+                        sliced_hidden,
+                        sliced_token_ids,
+                        phase="prefill",
+                        mtp_hidden_variant=mtp_hidden_variant,
+                        position_offset=(
+                            token_start_index + slice_start
+                            if use_absolute_positions
+                            else token_start_index + slice_start - 1
+                            if history_window_tokens is not None
+                            else None
+                        ),
+                        force_eval=True,
+                        input_embeddings=history_embeddings,
+                    )
+                    _check_postcommit_abort(abort_check)
+            cursor += chunk_len
+            boundary_hidden = (
+                hidden_chunk[:, -1:, :] if hidden_chunk is not None else None
             )
-        del boundary_hidden
-        _check_postcommit_abort(abort_check)
+            del hidden_chunk
+            del logits_chunk
+            target_forward_time += _prefill_chunk_cache_cleanup(rt)
+            if capture_boundaries:
+                _capture_gdn_boundary(
+                    gdn_boundary_sink, cursor, cache, hidden_last=boundary_hidden
+                )
+            del boundary_hidden
+            _check_postcommit_abort(abort_check)
 
     started = time.perf_counter()
     _check_postcommit_abort(abort_check)

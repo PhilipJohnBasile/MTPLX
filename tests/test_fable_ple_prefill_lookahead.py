@@ -1,0 +1,628 @@
+"""MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD: one-slot lifecycle and exactness.
+
+Pure Python + NumPy.  ``mtplx.ple_prefill_lookahead`` imports no MLX, and the
+sidecar half is exercised against a real on-disk memmap built in tmp_path at
+the production row geometry -- no GPU, no MLX array, no model load.
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from mtplx import ple_prefill_lookahead as lookahead_mod
+from mtplx.ple_prefill_lookahead import PrefillLookahead, prefill_lookahead_scope
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_TEXT = (ROOT / "mtplx" / "models" / "qwen4_exp.py").read_text("utf-8")
+GENERATION_TEXT = (ROOT / "mtplx" / "generation.py").read_text("utf-8")
+PROFILES_TEXT = (ROOT / "mtplx" / "profiles.py").read_text("utf-8")
+
+
+class _Immediate:
+    """A future whose work already ran -- keeps the tests single-threaded."""
+
+    def __init__(self, fn, *args):
+        self._exc = None
+        try:
+            self._value = fn(*args)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in result()
+            self._value, self._exc = None, exc
+
+    def result(self):
+        if self._exc is not None:
+            raise self._exc
+        return self._value
+
+    def cancel(self):
+        return False
+
+
+def immediate_submit(fn, *args):
+    return _Immediate(fn, *args)
+
+
+@pytest.fixture(autouse=True)
+def _clean_counters():
+    lookahead_mod.reset_counters()
+    yield
+    lookahead_mod.reset_counters()
+
+
+def spans_for(total: int, chunk: int) -> list[tuple[int, int]]:
+    return [
+        (start, min(total, start + chunk)) for start in range(0, total, chunk)
+    ]
+
+
+def build(total=64, chunk=16, prepare=None, submit=immediate_submit):
+    ids = np.arange(1000, 1000 + total, dtype=np.int64)
+    calls: list[tuple[int, int]] = []
+
+    def default_prepare(start, end):
+        calls.append((start, end))
+        return (np.asarray(ids[start:end]), {"weight": ids[start:end] * 2})
+
+    return (
+        PrefillLookahead(
+            ids,
+            spans_for(total, chunk),
+            prepare=prepare or default_prepare,
+            submit=submit,
+        ),
+        ids,
+        calls,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Env resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["1", "true", "ON"])
+def test_flag_true_spellings(monkeypatch, value):
+    monkeypatch.setenv(lookahead_mod.ENV_FLAG, value)
+    lookahead_mod.enabled.cache_clear()
+    try:
+        assert lookahead_mod.enabled() is True
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+@pytest.mark.parametrize("value", ["", "0", "off", "NO"])
+def test_flag_false_spellings(monkeypatch, value):
+    monkeypatch.setenv(lookahead_mod.ENV_FLAG, value)
+    lookahead_mod.enabled.cache_clear()
+    try:
+        assert lookahead_mod.enabled() is False
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+def test_flag_default_is_off(monkeypatch):
+    monkeypatch.delenv(lookahead_mod.ENV_FLAG, raising=False)
+    lookahead_mod.enabled.cache_clear()
+    try:
+        assert lookahead_mod.enabled() is False
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+def test_unparseable_flag_raises(monkeypatch):
+    monkeypatch.setenv(lookahead_mod.ENV_FLAG, "sometimes")
+    lookahead_mod.enabled.cache_clear()
+    try:
+        with pytest.raises(ValueError):
+            lookahead_mod.enabled()
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+def test_flag_is_read_once(monkeypatch):
+    monkeypatch.setenv(lookahead_mod.ENV_FLAG, "1")
+    lookahead_mod.enabled.cache_clear()
+    try:
+        assert lookahead_mod.enabled() is True
+        monkeypatch.setenv(lookahead_mod.ENV_FLAG, "0")
+        assert lookahead_mod.enabled() is True
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# One-slot lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_span_index_of_matches_by_content_and_advances_the_hint():
+    look, ids, _ = build()
+    assert look.span_index_of(ids[16:32]) == 1
+    assert look.span_index_of(ids[32:48]) == 2
+    assert look.span_index_of(ids[0:16]) == 0  # wraps, still correct
+
+
+def test_span_index_of_rejects_tokens_that_are_not_in_the_plan():
+    look, ids, _ = build()
+    assert look.span_index_of(np.zeros(16, dtype=np.int64)) is None
+    assert look.span_index_of(ids[:8]) is None  # wrong width
+
+
+def test_take_returns_the_prepared_payload_for_the_matching_span():
+    look, ids, calls = build()
+    look.submit(0)
+    flat, mats = look.take(0)
+    assert calls == [(0, 16)]
+    np.testing.assert_array_equal(flat, ids[0:16])
+    np.testing.assert_array_equal(mats["weight"], ids[0:16] * 2)
+    assert lookahead_mod.COUNTERS["hit"] == 1
+
+
+def test_only_one_slot_is_ever_held():
+    look, _ids, calls = build()
+    look.submit(0)
+    look.submit(1)  # ignored: the slot is taken
+    assert calls == [(0, 16)]
+    assert lookahead_mod.COUNTERS["submitted"] == 1
+
+
+def test_take_of_a_different_span_discards_and_counts_the_miss():
+    look, _ids, _calls = build()
+    look.submit(0)
+    assert look.take(2) is None
+    assert lookahead_mod.COUNTERS["miss_wrong_span"] == 1
+    assert look.take(0) is None  # the slot was released, not re-served
+    assert lookahead_mod.COUNTERS["miss_empty"] == 1
+
+
+def test_take_on_an_empty_slot_counts_a_miss():
+    look, _ids, _calls = build()
+    assert look.take(0) is None
+    assert lookahead_mod.COUNTERS["miss_empty"] == 1
+
+
+def test_ineligible_preparation_is_a_counted_miss_not_a_crash():
+    look, _ids, _calls = build(prepare=lambda start, end: None)
+    look.submit(0)
+    assert look.take(0) is None
+    assert lookahead_mod.COUNTERS["miss_ineligible"] == 1
+
+
+def test_worker_exception_surfaces_and_is_counted():
+    def boom(start, end):
+        raise RuntimeError("sidecar read failed")
+
+    look, _ids, _calls = build(prepare=boom)
+    look.submit(0)
+    with pytest.raises(RuntimeError, match="sidecar read failed"):
+        look.take(0)
+    assert lookahead_mod.COUNTERS["worker_error"] == 1
+
+
+def test_next_index_stops_at_the_last_span():
+    look, _ids, _calls = build(total=64, chunk=16)
+    assert look.next_index(0) == 1
+    assert look.next_index(3) is None
+    look.submit(None)  # a None index is a no-op, not a crash
+    assert "submitted" not in lookahead_mod.COUNTERS
+
+
+def test_close_discards_a_pending_slot_and_is_idempotent():
+    look, _ids, _calls = build()
+    look.submit(0)
+    look.close()
+    assert lookahead_mod.COUNTERS["discarded_on_close"] == 1
+    look.close()
+    assert lookahead_mod.COUNTERS["discarded_on_close"] == 1
+
+
+def test_submit_after_close_is_inert():
+    look, _ids, calls = build()
+    look.close()
+    look.submit(0)
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Scope
+# ---------------------------------------------------------------------------
+
+
+def test_scope_publishes_the_lookahead_and_primes_chunk_zero():
+    look, _ids, calls = build()
+    assert lookahead_mod.active_lookahead() is None
+    with prefill_lookahead_scope(look) as active:
+        assert active is look
+        assert lookahead_mod.active_lookahead() is look
+        assert calls == [(0, 16)]
+    assert lookahead_mod.active_lookahead() is None
+
+
+def test_scope_closes_the_lookahead_even_when_the_prefill_raises():
+    look, _ids, _calls = build()
+    with pytest.raises(ValueError):
+        with prefill_lookahead_scope(look):
+            raise ValueError("aborted prefill")
+    assert lookahead_mod.active_lookahead() is None
+    assert look._closed is True
+
+
+def test_none_scope_is_a_no_op():
+    with prefill_lookahead_scope(None) as active:
+        assert active is None
+        assert lookahead_mod.active_lookahead() is None
+
+
+def test_real_worker_thread_completes_and_shuts_down():
+    ids = np.arange(64, dtype=np.int64)
+    seen: list[str] = []
+
+    def prepare(start, end):
+        seen.append(os.environ.get("__unused__", "") or "ran")
+        return (ids[start:end], {"weight": ids[start:end]})
+
+    look = PrefillLookahead(ids, spans_for(64, 16), prepare=prepare)
+    try:
+        look.submit(0)
+        flat, _mats = look.take(0)
+        np.testing.assert_array_equal(flat, ids[:16])
+        assert seen == ["ran"]
+    finally:
+        look.close()
+    assert look._pool is None
+
+
+# ---------------------------------------------------------------------------
+# Sidecar: the worker half must return exactly the owner's bytes
+# ---------------------------------------------------------------------------
+
+# Production geometry: 16 ngram heads/token, head_dim 160, q4/g32.
+ROW_U32, ROW_SCALES, ROW_BIASES = 20, 5, 5
+
+
+class FakeSidecar:
+    """`_SidecarGather.prepare_rows_np` transplanted onto real memmaps.
+
+    The method under test only touches ``_maps``, ``_row_meta``, ``_pool``,
+    ``_hot_cap_rows``, ``_HOT_PATH_MAX_ROWS`` and the two batch counters, so
+    binding the real implementation to this stand-in exercises the shipped
+    code without importing MLX.
+    """
+
+    _HOT_PATH_MAX_ROWS = 4096
+
+    def __init__(self, tmp_path: Path, rows: int, *, hot_cap_rows: int = 1000):
+        self.bits = 4
+        self.group_size = 32
+        self._maps = {}
+        self._row_meta = []
+        rng = np.random.default_rng(20260901)
+        for name, width, dtype, tag in (
+            ("weight", ROW_U32, np.uint32, "U32"),
+            ("scales", ROW_SCALES, np.uint16, "BF16"),
+            ("biases", ROW_BIASES, np.uint16, "BF16"),
+        ):
+            path = tmp_path / f"{name}.bin"
+            data = rng.integers(
+                0, np.iinfo(dtype).max, size=(rows, width), dtype=dtype
+            )
+            path.write_bytes(data.tobytes())
+            mm = np.memmap(path, mode="r", dtype=dtype, shape=(rows, width))
+            self._maps[name] = (mm, tag)
+            self._row_meta.append((0, width * dtype().itemsize))
+        self._fd = os.open(str(tmp_path / "weight.bin"), os.O_RDONLY)
+        self._pool = ThreadPoolExecutor(max_workers=4)
+        self._hot_cap_rows = hot_cap_rows
+        self.prefetch_batches = 0
+        self.lookahead_batches = 0
+
+    def close(self):
+        self._pool.shutdown(wait=True)
+        os.close(self._fd)
+
+
+def _bind(method_name: str):
+    """One `_SidecarGather` method, compiled from the SHIPPED source.
+
+    Calling it with a FakeSidecar as ``self`` runs the real implementation, so
+    these tests cannot pass against a stale copy of it.
+    """
+
+    return _bind_method("_SidecarGather", method_name)
+
+
+@pytest.fixture
+def sidecar(tmp_path):
+    sc = FakeSidecar(tmp_path, rows=200_000)
+    try:
+        yield sc
+    finally:
+        sc.close()
+
+
+def owner_matrices(sidecar, flat, names=("weight", "scales", "biases")):
+    """What `_rows_matrices`'s big-gather branch produces on the owner thread."""
+
+    uniq, inverse = np.unique(flat, return_inverse=True)
+    return {
+        name: np.ascontiguousarray(sidecar._maps[name][0][uniq])[inverse]
+        for name in names
+    }
+
+
+def test_prepared_rows_are_bit_identical_to_the_owner_path(sidecar):
+    prepare = _bind("prepare_rows_np")
+    warm = _bind("_warm")
+    submit = _bind("_submit_warm")
+    sidecar._warm = lambda rows, counted=True: warm(
+        sidecar, rows, counted=counted
+    )
+    sidecar._submit_warm = lambda rows, counted: submit(
+        sidecar, rows, counted=counted
+    )
+
+    rng = np.random.default_rng(3)
+    flat = rng.integers(0, 200_000, size=32_768, dtype=np.int64)
+    unique, mats = prepare(sidecar, flat)
+    expected = owner_matrices(sidecar, flat)
+    assert unique == len(np.unique(flat))
+    for name, rows in expected.items():
+        assert mats[name].dtype == rows.dtype
+        assert mats[name].shape == rows.shape
+        np.testing.assert_array_equal(mats[name], rows)
+
+
+def test_worker_batches_are_counted_apart_from_prefetch_batches(sidecar):
+    prepare = _bind("prepare_rows_np")
+    warm = _bind("_warm")
+    submit = _bind("_submit_warm")
+    sidecar._warm = lambda rows, counted=True: warm(
+        sidecar, rows, counted=counted
+    )
+    sidecar._submit_warm = lambda rows, counted: submit(
+        sidecar, rows, counted=counted
+    )
+    prepare(sidecar, np.arange(20_000, dtype=np.int64))
+    assert sidecar.lookahead_batches == 1
+    assert sidecar.prefetch_batches == 0
+
+
+def test_hot_lru_sized_gathers_are_refused_by_the_worker(sidecar):
+    """The LRU is owner-thread-only state; the worker must not reach it."""
+
+    prepare = _bind("prepare_rows_np")
+    small = np.arange(sidecar._HOT_PATH_MAX_ROWS, dtype=np.int64)
+    assert prepare(sidecar, small) is None
+
+
+def test_worker_serves_a_big_gather_when_the_lru_is_disabled(sidecar):
+    prepare = _bind("prepare_rows_np")
+    warm = _bind("_warm")
+    submit = _bind("_submit_warm")
+    sidecar._warm = lambda rows, counted=True: warm(
+        sidecar, rows, counted=counted
+    )
+    sidecar._submit_warm = lambda rows, counted: submit(
+        sidecar, rows, counted=counted
+    )
+    sidecar._hot_cap_rows = 0
+    small = np.arange(64, dtype=np.int64)
+    unique, mats = prepare(sidecar, small)
+    assert unique == 64
+    np.testing.assert_array_equal(
+        mats["weight"], owner_matrices(sidecar, small)["weight"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wiring
+# ---------------------------------------------------------------------------
+
+
+def test_stage_consumes_the_lookahead_before_it_queues_the_next_chunk():
+    helper = MODEL_TEXT.split("def _take_prefill_lookahead", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    take = helper.index("lookahead.take(index)")
+    submit = helper.index("lookahead.submit(lookahead.next_index(index))")
+    assert take < submit, "take must free the slot before submit fills it"
+    assert "np.array_equal(worker_flat, flat)" in helper
+    assert 'count("miss_row_mismatch")' in helper
+    assert 'count("miss_unknown_span")' in helper
+
+
+def test_worker_entry_creates_no_mlx_array():
+    body = MODEL_TEXT.split("def prefill_lookahead_prepare", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "mx." not in body
+    assert "sidecar.prepare_rows_np(flat, names)" in body
+
+
+def test_lookahead_module_never_imports_mlx():
+    text = (ROOT / "mtplx" / "ple_prefill_lookahead.py").read_text("utf-8")
+    assert "mlx" not in text
+    assert "import mx" not in text
+
+
+def test_generation_wraps_the_chunk_loop_and_the_scope_owns_the_worker():
+    assert "_ple_prefill_lookahead_scope(rt, body, mtp_streaming_spans)" in (
+        GENERATION_TEXT
+    )
+    helper = GENERATION_TEXT.split("def _ple_prefill_lookahead_scope", 1)[
+        1
+    ].split("\ndef ", 1)[0]
+    assert 'getattr(model, "ple_prefill_lookahead", None)' in helper
+    assert "prefill_lookahead_scope(hook(body, list(spans)))" in helper
+
+
+def test_model_builder_refuses_to_run_without_the_staged_sidecar():
+    builder = MODEL_TEXT.split("def ple_prefill_lookahead", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "if not lookahead_mod.enabled():" in builder
+    assert builder.count("raise RuntimeError") == 3
+    assert "embedding._np_consts()" in builder
+
+
+def test_flag_is_registered_for_validated_operator_overrides():
+    assert f'"{lookahead_mod.ENV_FLAG}"' in PROFILES_TEXT
+
+
+# ---------------------------------------------------------------------------
+# The exactness claim: the worker rebuilds the SAME rows the owner would
+# ---------------------------------------------------------------------------
+
+
+def _compile_from_source(node) -> dict:
+    module = ast.Module(body=[node], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace: dict = {"np": np, "os": os}
+    exec(compile(module, "<qwen4_exp>", "exec"), namespace)
+    return namespace
+
+
+def _bind_top_level(name: str):
+    """Compile one module-level function out of the real qwen4_exp source."""
+
+    node = next(
+        n
+        for n in ast.parse(MODEL_TEXT).body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    return _compile_from_source(node)[name]
+
+
+def _bind_method(class_name: str, method_name: str):
+    """Compile one class method out of the real qwen4_exp source, unbound."""
+
+    cls = next(
+        n
+        for n in ast.walk(ast.parse(MODEL_TEXT))
+        if isinstance(n, ast.ClassDef) and n.name == class_name
+    )
+    node = next(
+        n
+        for n in cls.body
+        if isinstance(n, ast.FunctionDef) and n.name == method_name
+    )
+    return _compile_from_source(node)[method_name]
+
+
+class _FakeEmbedding:
+    """Just enough of NGramEmbedding to run the shipped row arithmetic.
+
+    Production geometry for Qwen3.8 Flash-Next: ngram_size 3, 8 heads per
+    ngram -> 16 rows per token; EOS 248044 from the model's config.json.
+    """
+
+    ngram_size = 3
+    heads_per_ngram = 8
+    context_len = ngram_size - 1
+    eos_id = 248_044
+
+    def __init__(self, ngram_heads=16, vocab=200_000):
+        self._mult = np.array([2_654_435_761, 40_503, 1_337], dtype=np.int64)
+        self._sizes = np.full(ngram_heads, vocab // ngram_heads, dtype=np.int64)
+        self._offs = (
+            np.arange(ngram_heads, dtype=np.int64) * (vocab // ngram_heads)
+        )
+        self._ngram_rows_np = _bind_top_level("_ngram_rows_np")
+
+    def _rows_np(self, ids_np, prev_np):
+        return self._ngram_rows_np(
+            ids_np,
+            prev_np,
+            mult=self._mult,
+            sizes=self._sizes,
+            offs=self._offs,
+            eos=self.eos_id,
+            ngram_size=self.ngram_size,
+            heads_per_ngram=self.heads_per_ngram,
+        )
+
+
+class _EchoSidecar:
+    """Returns the ids themselves, so the test compares row ids, not bytes."""
+
+    bits = 4
+
+    def prepare_rows_np(self, flat, names):
+        return (int(len(np.unique(flat))), {name: flat for name in names})
+
+
+def _embedding_with(sidecar):
+    embedding = _FakeEmbedding()
+    embedding.ngram_embedding = type("_T", (), {"_sidecar": sidecar})()
+    return embedding
+
+
+def test_worker_history_matches_the_owner_cache_history_chunk_for_chunk():
+    """The claim the whole lane rests on, at the production chunk geometry.
+
+    The owner derives each chunk's PLE history from the live state cache; the
+    worker derives it from the plan.  If they ever disagreed, the mismatch
+    guard in `_take_prefill_lookahead` would silently kill every hit -- so
+    prove they agree rather than relying on the guard to hide it.
+    """
+
+    prepare = _bind_method("NGramEmbedding", "prefill_lookahead_prepare")
+    embedding = _embedding_with(_EchoSidecar())
+
+    rng = np.random.default_rng(11)
+    total, chunk = 16_383, 2_048
+    plan = rng.integers(0, 150_000, size=total, dtype=np.int64)
+    # EOS tokens mid-prompt: `_ngram_rows_np` restarts its segment scan there,
+    # which is exactly where a history reconstruction can go wrong.
+    plan[3_000] = embedding.eos_id
+    plan[9_001] = embedding.eos_id
+
+    history = np.full((1, embedding.context_len), embedding.eos_id, np.int64)
+    chunks = 0
+    for start in range(0, total, chunk):
+        end = min(total, start + chunk)
+        # Owner: exactly what stage() does with the live PLE state cache.
+        owner_rows, history = embedding._rows_np(
+            plan[start:end].reshape(1, -1), history
+        )
+        worker_flat, _mats = prepare(embedding, plan, start, end)
+        np.testing.assert_array_equal(worker_flat, owner_rows.reshape(-1))
+        chunks += 1
+    assert chunks == 8
+    assert owner_rows.size == 2047 * 16
+
+
+def test_worker_pads_the_prompt_head_with_eos_like_the_empty_state_cache():
+    prepare = _bind_method("NGramEmbedding", "prefill_lookahead_prepare")
+    embedding = _embedding_with(_EchoSidecar())
+    plan = np.arange(100, 116, dtype=np.int64)
+    expected, _ = embedding._rows_np(
+        plan[:8].reshape(1, -1),
+        np.full((1, embedding.context_len), embedding.eos_id, np.int64),
+    )
+    worker_flat, _mats = prepare(embedding, plan, 0, 8)
+    np.testing.assert_array_equal(worker_flat, expected.reshape(-1))
+
+
+def test_worker_returns_none_when_the_sidecar_never_attached():
+    prepare = _bind_method("NGramEmbedding", "prefill_lookahead_prepare")
+    embedding = _embedding_with(None)
+    assert prepare(embedding, np.arange(64, dtype=np.int64), 0, 16) is None
+
+
+def test_worker_returns_none_when_the_gather_would_take_the_hot_lru():
+    class _LruSidecar(_EchoSidecar):
+        def prepare_rows_np(self, flat, names):
+            return None
+
+    prepare = _bind_method("NGramEmbedding", "prefill_lookahead_prepare")
+    embedding = _embedding_with(_LruSidecar())
+    assert prepare(embedding, np.arange(64, dtype=np.int64), 0, 16) is None
+
+

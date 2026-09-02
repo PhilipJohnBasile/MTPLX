@@ -346,6 +346,10 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QSA_PREFILL_GATHER_TILE",
         # Engagement-receipt atexit print for lane A/Bs (counters law).
         "MTPLX_QSA_PREFILL_DEBUG",
+        # Worker-thread preparation of the NEXT prefill chunk's PLE n-gram
+        # rows during this chunk's forward.  Default off; the gathers it
+        # overlaps are 8 host-late stalls totalling 2,313 ms in the census.
+        "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD",
         # Capture only one canonical chunk width so arbitrary final/restored
         # suffix sizes cannot grow the mx.compile graph bank without bound.
         "MTPLX_QSA_PREFILL_COMPILE_ROWS",

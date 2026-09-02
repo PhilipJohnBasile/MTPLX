@@ -3936,6 +3936,7 @@ class _SidecarGather:
             self._row_meta.append((offset, int(shape[1]) * itemsize))
         self._pool = None
         self.prefetch_batches = 0
+        self.lookahead_batches = 0
         if os.environ.get("MTPLX_NGRAM_PREFETCH", "1") != "0":
             from concurrent.futures import ThreadPoolExecutor
 
@@ -3961,7 +3962,28 @@ class _SidecarGather:
         self.hot_hits = 0
         self.hot_misses = 0
 
-    def _warm(self, rows) -> None:
+    def clear_hot_cache(self) -> int:
+        """Drop every RAM-held row between independent benchmark runs."""
+
+        cleared = len(self._hot)
+        self._hot.clear()
+        self.hot_hits = 0
+        self.hot_misses = 0
+        return cleared
+
+    def _warm(self, rows, *, counted: bool = True) -> None:
+        for future in self._submit_warm(rows, counted=counted):
+            future.result()
+
+    def submit_warm(self, rows):
+        """Submit page-warming reads without waiting for their completion."""
+        return self._submit_warm(rows, counted=True)
+
+    def _submit_warm(self, rows, *, counted: bool):
+        """The warm pass.  ``counted`` keeps the lookahead worker's batches out
+        of ``prefetch_batches``: that counter is the decode-lane engagement
+        receipt, and a worker thread incrementing it would both race the owner
+        thread and change what the existing receipts mean."""
         fd = self._fd
         metas = self._row_meta
 
@@ -3972,8 +3994,43 @@ class _SidecarGather:
 
         step = max(1, min(64, (len(rows) + 31) // 32))
         chunks = [rows[i : i + step] for i in range(0, len(rows), step)]
-        list(self._pool.map(touch, chunks))
-        self.prefetch_batches += 1
+        futures = tuple(self._pool.submit(touch, chunk) for chunk in chunks)
+        if counted:
+            self.prefetch_batches += 1
+        else:
+            self.lookahead_batches += 1
+        return futures
+
+    def prepare_rows_np(self, flat, names=("weight", "scales", "biases")):
+        """Worker-thread half of the big-gather branch of `_rows_matrices`.
+
+        Returns ``(unique_count, matrices)`` -- exactly what `_rows_matrices`
+        would return for these ids -- or ``None`` when the ids would take the
+        hot-row LRU instead.  That LRU is owner-thread-only state (`stage()` /
+        `forward`), so the worker must never reach it; every real 2,048-token
+        prefill chunk is far above `_HOT_PATH_MAX_ROWS`, but this checks it
+        rather than assuming it.
+
+        Safe off the owner thread: the memmaps are read-only, `flat` is the
+        caller's private array, and the only shared mutation is the separate
+        `lookahead_batches` counter.  Bit-identical by construction -- it is
+        the same expression over the same maps and the same ids.
+        """
+
+        import numpy as np
+
+        uniq, inverse = np.unique(flat, return_inverse=True)
+        if 0 < len(uniq) <= self._HOT_PATH_MAX_ROWS and self._hot_cap_rows:
+            return None
+        if self._pool is not None and len(uniq):
+            self._warm(uniq, counted=False)
+        return (
+            int(len(uniq)),
+            {
+                name: np.ascontiguousarray(self._maps[name][0][uniq])[inverse]
+                for name in names
+            },
+        )
 
     def _rows_matrices(self, flat, names):
         """Raw row matrices (one per map, flat order) — through the hot-row
@@ -4016,17 +4073,44 @@ class _SidecarGather:
             for j, name in enumerate(names)
         }
 
-    def gather_np(self, flat) -> mx.array:
+    def gather_raw_np(self, flat) -> tuple[mx.array, mx.array, mx.array]:
+        """Gather the exact packed q4 row payload without dequantizing it."""
+
+        names = ("weight", "scales", "biases")
+        mats = self._rows_matrices(flat, names)
+        parts = []
+        for name in names:
+            dt = self._maps[name][1]
+            rows = mx.array(mats[name])
+            if dt == "BF16":
+                rows = rows.view(mx.bfloat16)
+            elif dt == "F16":
+                rows = rows.view(mx.float16)
+            parts.append(rows)
+        return tuple(parts)
+
+    def gather_np(self, flat, prepared=None) -> mx.array:
         """Gather+dequantize rows for MATERIALIZED numpy int64 ids — the
         staged fast path: no graph tensor is evaluated here, so calling
-        this before the step's graph is built costs no GPU sync."""
+        this before the step's graph is built costs no GPU sync.
+
+        ``prepared`` is a row-matrix dict produced earlier by
+        :meth:`prepare_rows_np` for these exact ids (the prefill lookahead).
+        Only the MLX array construction below then runs on this thread; the
+        bytes are the same either way."""
         if self.bits == 0:  # raw bf16 rows, no dequantize
-            mats = self._rows_matrices(flat, ("weight",))
+            mats = (
+                self._rows_matrices(flat, ("weight",))
+                if prepared is None
+                else prepared
+            )
             dt = self._maps["weight"][1]
             rows = mx.array(mats["weight"])
             return rows.view(mx.bfloat16 if dt == "BF16" else mx.float16)
         names = ("weight", "scales", "biases")
-        mats = self._rows_matrices(flat, names)
+        mats = (
+            self._rows_matrices(flat, names) if prepared is None else prepared
+        )
         parts = []
         for name in names:
             dt = self._maps[name][1]
@@ -4191,6 +4275,83 @@ class NGramEmbedding(nn.Module):
             heads_per_ngram=self.heads_per_ngram,
         )
 
+    def _take_prefill_lookahead(self, ids_np, flat):
+        """Worker-prepared rows for this prefill chunk, then queue the next.
+
+        Returns the raw row matrices a worker thread already gathered for
+        exactly these ids, or None (every miss is counted, none is silent).
+        The order matters: `take` frees the one slot BEFORE `submit` fills it
+        with the following chunk, so the worker runs during this chunk's
+        forward instead of after it.
+        """
+
+        import numpy as np
+
+        from mtplx import ple_prefill_lookahead as lookahead_mod
+
+        lookahead = lookahead_mod.active_lookahead()
+        if lookahead is None:
+            return None
+        index = lookahead.span_index_of(ids_np)
+        if index is None:
+            # Not a chunk of the planned prompt (an MTP verify width, a
+            # restored suffix, a spliced prompt): take the ordinary path and
+            # leave the pending slot alone.
+            lookahead_mod.count("miss_unknown_span")
+            return None
+        payload = lookahead.take(index)
+        lookahead.submit(lookahead.next_index(index))
+        if payload is None:
+            return None
+        worker_flat, matrices = payload
+        if not np.array_equal(worker_flat, flat):
+            # The worker derives the chunk's PLE history from the plan; the
+            # owner derives it from the live cache. They agree on a plain
+            # chunked prefill and this proves it per chunk rather than
+            # assuming it -- a prefix-cache restore that shifts the history
+            # lands here and pays the ordinary gather, exactly.
+            lookahead_mod.count("miss_row_mismatch")
+            return None
+        lookahead_mod.count("consumed_rows", int(flat.shape[0]))
+        return matrices
+
+    def prefill_lookahead_prepare(self, plan_ids, start: int, end: int):
+        """Hash one PLANNED prompt span and gather its rows -- worker thread.
+
+        Pure NumPy/os: no MLX array is created or touched here.  The history
+        is reconstructed from the plan (EOS-padded at the prompt head) exactly
+        as `stage` reconstructs it from the PLE state cache.
+        """
+
+        import numpy as np
+
+        sidecar = self.ngram_embedding._sidecar
+        if sidecar is None:
+            return None
+        ids = np.ascontiguousarray(plan_ids[start:end]).reshape(1, -1)
+        context = self.context_len
+        head = plan_ids[max(0, start - context) : start]
+        if len(head) < context:
+            head = np.concatenate(
+                [
+                    np.full(context - len(head), self.eos_id, dtype=np.int64),
+                    head,
+                ]
+            )
+        prev = np.ascontiguousarray(head).reshape(1, -1)
+        rows, _ = self._rows_np(ids, prev)
+        flat = np.ascontiguousarray(rows.reshape(-1))
+        names = ("weight",) if sidecar.bits == 0 else (
+            "weight",
+            "scales",
+            "biases",
+        )
+        prepared = sidecar.prepare_rows_np(flat, names)
+        if prepared is None:
+            return None
+        _unique, matrices = prepared
+        return (flat, matrices)
+
     def stage(self, input_ids: mx.array, cache: Optional[ArraysCache], state_idx: int):
         """Precompute this step's rows before any graph is built."""
         import numpy as np
@@ -4211,7 +4372,10 @@ class NGramEmbedding(nn.Module):
             else:
                 prev_np = np.full((B, self.context_len), self.eos_id, dtype=np.int64)
             rows, new_hist = self._rows_np(ids_np, prev_np)
-            emb = sidecar.gather_np(rows.reshape(-1))
+            flat = rows.reshape(-1)
+            emb = sidecar.gather_np(
+                flat, prepared=self._take_prefill_lookahead(ids_np, flat)
+            )
             emb = emb.reshape(B, S, -1)
             self._staged = (B, S, emb, mx.array(new_hist), mx.array(prev_np))
         except Exception as exc:  # exact graph fallback stays available
@@ -4448,6 +4612,53 @@ class Qwen4ExpTextModel(nn.Module):
         self._gdn_compiled_lane = False
         self._decode_runs = None
         self._decode_run_fns = {}
+
+    def ple_prefill_lookahead(self, token_ids, spans):
+        """Request-scoped PLE n-gram lookahead for a chunked prefill.
+
+        Returns a ``PrefillLookahead`` when MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD
+        is armed and this model can serve it, otherwise None.  Construction
+        time is the only eligibility decision; the flag is read once.
+
+        Arming it on a model whose PLE table never attached, or with staging
+        turned off, raises: those are the two ways the lane would quietly
+        become the control while wearing the candidate's label.
+        """
+
+        from mtplx import ple_prefill_lookahead as lookahead_mod
+
+        if not lookahead_mod.enabled():
+            return None
+        if self._ple_stage_idx is None:
+            lookahead_mod.count("no_ple_stage")
+            return None
+        embedding = self.layers[self._ple_stage_idx].ple.ple_embedding
+        if embedding.ngram_embedding._sidecar is None:
+            raise RuntimeError(
+                f"{lookahead_mod.ENV_FLAG}=1 needs the SSD-resident n-gram "
+                "sidecar, which never attached for this model"
+            )
+        if os.environ.get("MTPLX_NGRAM_STAGE", "1") == "0":
+            raise RuntimeError(
+                f"{lookahead_mod.ENV_FLAG}=1 prepares rows for the STAGED "
+                "gather, but MTPLX_NGRAM_STAGE=0 routes them in-graph"
+            )
+        if getattr(embedding, "_stage_disabled", False):
+            raise RuntimeError(
+                f"{lookahead_mod.ENV_FLAG}=1 is incompatible with the "
+                "pipelined AR lane, whose input ids are lazy"
+            )
+        # Build the shared NumPy hash constants on THIS thread so the worker
+        # never races the lazy cache in `_np_consts`.
+        embedding._np_consts()
+        lookahead = lookahead_mod.PrefillLookahead(
+            token_ids,
+            spans,
+            prepare=lambda start, end: embedding.prefill_lookahead_prepare(
+                lookahead.token_ids, start, end
+            ),
+        )
+        return lookahead
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
         if fable_opdiet_enabled("rope"):
