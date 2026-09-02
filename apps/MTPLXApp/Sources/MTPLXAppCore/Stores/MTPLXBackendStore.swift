@@ -2063,18 +2063,54 @@ public final class MTPLXBackendStore: ObservableObject {
         self.sessions = try await apiClient.sessions()
     }
 
-    public func startMetricsStream() {
+    /// Snapshot cadence floor while a chat turn streams. Every snapshot
+    /// is built inside the serving process and fanned out to each
+    /// dashboard observer on the main actor, while the chat surface reads
+    /// its own progress frames; the README's native 500 ms is plenty
+    /// under a live turn.
+    private static let chatStreamingSnapshotIntervalMs = 500
+    private var chatTurnStreaming = false
+
+    private var metricsSnapshotIntervalMs: Int {
+        if configuration.performanceLock { return 1000 }
+        let configured = configuration.streamSnapshotIntervalMs
+        return chatTurnStreaming
+            ? max(configured, Self.chatStreamingSnapshotIntervalMs)
+            : configured
+    }
+
+    /// Chat turn lifecycle hook. Reopens the metrics stream at the
+    /// slower cadence while a turn streams and at the configured cadence
+    /// once it settles; only an open stream is reopened, and it keeps
+    /// `.open` throughout so the status dot never blinks for it.
+    public func setChatTurnStreaming(_ streaming: Bool) {
+        guard chatTurnStreaming != streaming else { return }
+        let previousInterval = metricsSnapshotIntervalMs
+        chatTurnStreaming = streaming
+        guard streamTask != nil,
+              connectionState == .open,
+              metricsSnapshotIntervalMs != previousInterval
+        else { return }
+        startMetricsStream(retainingOpenState: true)
+    }
+
+    public func startMetricsStream(retainingOpenState: Bool = false) {
         streamTask?.cancel()
         daemonTransportGeneration &+= 1
         let transportGeneration = daemonTransportGeneration
         let client = MetricsStreamClient(apiClient: apiClient)
-        let interval = configuration.performanceLock ? 1000 : configuration.streamSnapshotIntervalMs
+        let interval = metricsSnapshotIntervalMs
+        // A cadence-only reopen of a healthy stream must not report
+        // `.connecting`: the chrome would flip to "Connecting" and pulse
+        // for a reconnect the user never saw fail.
+        let keepOpen = retainingOpenState && connectionState == .open
         streamTask = Task { [weak self] in
             await client.connect(
                 snapshotIntervalMs: interval,
                 onState: { state in
                     await MainActor.run {
                         guard self?.daemonTransportGeneration == transportGeneration else { return }
+                        if keepOpen, state == .connecting { return }
                         self?.connectionState = state
                     }
                 },

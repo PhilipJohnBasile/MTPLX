@@ -241,7 +241,9 @@ struct AssistantBubbleView: View {
         }
     }
 
-    private struct MetricItem {
+    /// Equatable so SwiftUI can skip a settled bubble's body when the
+    /// parent re-evaluates for an unrelated reason.
+    private struct MetricItem: Equatable {
         let label: String
         let value: String
     }

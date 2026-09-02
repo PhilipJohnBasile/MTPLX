@@ -90,11 +90,9 @@ final class ChatTurnStream {
     var decodeWindowSamples: [(t: Double, tokens: Double)] = []
     var lastLiveDecodeUpdateAt: Date = .distantPast
 
-    // Typewriter pacing (rate-based reveal) state.
-    var contentArrivedCharsTotal = 0
-    var lastArrivedCharsTotal = 0
-    var revealRateCharsPerSecond: Double = 0
-    var lastRevealTickUptime: Double = 0
+    // Typewriter pacing state, per turn so concurrent turns pace
+    // independently.
+    var typewriterPacer = StreamTypewriterPacer()
 
     init(conversation: ChatConversation, phase: StreamingPhase) {
         self.conversation = conversation
@@ -108,4 +106,88 @@ final class ChatTurnStream {
     /// Full accumulated answer (document + unflushed buffer).
     /// O(answer) per access — turn-boundary use only.
     var contentText: String { contentDocument.rawText + contentBuffer }
+}
+
+// MARK: - StreamTypewriterPacer
+//
+// Per-tick reveal budget for the answer typewriter. The engine hands the
+// app one content delta per committed verify round, and a context-copy
+// round commits a whole block (about 110 characters every 110-250 ms).
+// The previous estimator sampled the arrival rate only on ticks that
+// received bytes and divided the burst by one frame, so a copy block
+// measured as thousands of characters per second and was pasted whole in
+// the next frame, then nothing showed until the next round. This one
+// measures the rate over a wall-clock window that includes the idle
+// frames, tracks the gap between chunks, and sizes each tick so the
+// backlog is gone right when the next chunk is expected: a burst is
+// typed across the gap instead of pasted, and a steady token-by-token
+// stream still reveals every tick with no added lag. The caller owns
+// the clock, so the schedule can be replayed tick by tick in a test.
+struct StreamTypewriterPacer {
+    /// Wall-clock span the arrival-rate window looks back over.
+    static let rateWindowSeconds = 1.2
+    /// Longest gap a drain is planned around; a longer stall drains the
+    /// next burst over this span rather than crawling for seconds.
+    static let maxPlannedGapSeconds = 1.0
+    static let interArrivalSmoothing = 0.3
+
+    private(set) var arrivedCharsTotal = 0
+    private var arrivalSamples: [(uptime: Double, chars: Int)] = []
+    private(set) var lastArrivalUptime: Double = 0
+    /// Smoothed seconds between content chunks; 0 until two arrivals.
+    private(set) var expectedGapSeconds: Double = 0
+    private var lastTickUptime: Double = 0
+
+    mutating func recordArrival(chars: Int, now: Double) {
+        guard chars > 0 else { return }
+        arrivedCharsTotal += chars
+        if lastArrivalUptime > 0 {
+            let gap = min(Self.maxPlannedGapSeconds, max(0.005, now - lastArrivalUptime))
+            expectedGapSeconds = expectedGapSeconds <= 0
+                ? gap
+                : expectedGapSeconds * (1 - Self.interArrivalSmoothing)
+                    + gap * Self.interArrivalSmoothing
+        }
+        lastArrivalUptime = now
+        arrivalSamples.append((uptime: now, chars: arrivedCharsTotal))
+    }
+
+    /// A display tick with nothing to reveal. Keeps the tick clock
+    /// current so the first frame after a pause is budgeted as one
+    /// frame, not as the whole pause.
+    mutating func noteIdleTick(now: Double) {
+        lastTickUptime = now
+    }
+
+    /// Characters to reveal on this tick given `backlog` unrevealed
+    /// characters. Unclamped: the caller applies the per-tick floor and
+    /// ceiling.
+    mutating func tickBudget(backlog: Int, now: Double) -> Int {
+        // Clamp the tick span so a main-thread stall does not grant one
+        // giant budget. A same-instant second call (the mid-event
+        // backstop right after a tick) gets no budget and leaves the
+        // caller's floor to keep typing.
+        let elapsed = lastTickUptime > 0 ? now - lastTickUptime : 1.0 / 60.0
+        lastTickUptime = now
+        guard backlog > 0, elapsed > 0 else { return 0 }
+        let dt = min(elapsed, 0.1)
+        while arrivalSamples.count > 2,
+              let first = arrivalSamples.first,
+              now - first.uptime > Self.rateWindowSeconds {
+            arrivalSamples.removeFirst()
+        }
+        var rateBudget = 0.0
+        if let first = arrivalSamples.first,
+           let last = arrivalSamples.last,
+           last.uptime > first.uptime {
+            let rate = Double(last.chars - first.chars) / max(last.uptime - first.uptime, 0.1)
+            rateBudget = rate * dt
+        }
+        var deadlineBudget = 0.0
+        if expectedGapSeconds > 0 {
+            let timeLeft = max(dt, lastArrivalUptime + expectedGapSeconds - now)
+            deadlineBudget = Double(backlog) * dt / timeLeft
+        }
+        return Int(max(rateBudget, deadlineBudget).rounded(.up))
+    }
 }

@@ -184,6 +184,9 @@ public final class ChatViewModel: ObservableObject {
     private let modelName: () -> String?
     private let reasoningEnabledProvider: @MainActor () -> Bool?
     private let onDaemonUnreachable: @MainActor () -> Void
+    /// Fires with `true` when the first turn goes live and `false` when
+    /// the last one settles, whichever conversation owns it.
+    private let onLiveTurnActivityChanged: @MainActor (Bool) -> Void
     private let maxToolRounds: Int
 
     private var context: ModelContext { container.mainContext }
@@ -239,6 +242,7 @@ public final class ChatViewModel: ObservableObject {
         modelName: @escaping () -> String? = { nil },
         reasoningEnabledProvider: @escaping @MainActor () -> Bool? = { nil },
         onDaemonUnreachable: @escaping @MainActor () -> Void = {},
+        onLiveTurnActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
         maxToolRounds: Int = 1
     ) {
         self.container = container
@@ -247,6 +251,7 @@ public final class ChatViewModel: ObservableObject {
         self.modelName = modelName
         self.reasoningEnabledProvider = reasoningEnabledProvider
         self.onDaemonUnreachable = onDaemonUnreachable
+        self.onLiveTurnActivityChanged = onLiveTurnActivityChanged
         self.maxToolRounds = maxToolRounds
         refreshConversations()
         if let first = conversations.first {
@@ -876,7 +881,10 @@ public final class ChatViewModel: ObservableObject {
         guard !fragment.isEmpty else { return }
         let wasEmpty = !stream.hasContent
         stream.contentBuffer.append(fragment)
-        stream.contentArrivedCharsTotal += fragment.count
+        stream.typewriterPacer.recordArrival(
+            chars: fragment.count,
+            now: ProcessInfo.processInfo.systemUptime
+        )
         if !wasEmpty, stream.contentBuffer.count > Self.streamBufferFlushBackstop {
             flushStreamingBuffers(of: stream, drainCompletely: false)
         }
@@ -893,7 +901,10 @@ public final class ChatViewModel: ObservableObject {
             stream.phase = .answering
         }
         if wasEmpty {
-            flushStreamingBuffers(of: stream)
+            // Paced, not a whole drain: a context-copy round can open
+            // the answer with a two-line block, and pasting it would be
+            // the very burst the typewriter exists to smooth.
+            flushStreamingBuffers(of: stream, drainCompletely: false)
         }
     }
 
@@ -904,9 +915,31 @@ public final class ChatViewModel: ObservableObject {
         guard stream.decodeReading == .absent
             || now.timeIntervalSince(stream.lastLiveDecodeUpdateAt) >= Self.liveDecodeUpdateInterval
         else { return }
-        publishTurnState(stream)
+        let next = HeadlineDecodeReading.live(value)
+        // Publish only when the chip's displayed reading changes. The
+        // header latches on its own 0.5 s poll and renders whole tok/s,
+        // so a publish on every 200 ms frame re-evaluated the whole
+        // transcript, sidebar and composer five times a second for a
+        // number nobody could see change.
+        if !Self.sameDisplayedReading(stream.decodeReading, next) {
+            publishTurnState(stream)
+        }
         stream.lastLiveDecodeUpdateAt = now
-        stream.decodeReading = .live(value)
+        stream.decodeReading = next
+    }
+
+    /// Two readings the header chip would render identically: the same
+    /// lifecycle phase and, while live, the same whole tok/s.
+    private static func sameDisplayedReading(
+        _ lhs: HeadlineDecodeReading,
+        _ rhs: HeadlineDecodeReading
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (.live(let a), .live(let b)):
+            return Int(a.rounded()) == Int(b.rounded())
+        default:
+            return lhs == rhs
+        }
     }
 
     // MARK: Live decode window (2026-07-31 founder: "it says 50 but it
@@ -1064,6 +1097,7 @@ public final class ChatViewModel: ObservableObject {
     /// turn, stopped when the last one settles.
     private func ensureStreamFlushLoop() {
         guard streamDisplayLink == nil, streamFlushTask == nil else { return }
+        onLiveTurnActivityChanged(true)
         // Reveal on the DISPLAY clock, not a dispatch timer. The 32 ms
         // Task.sleep loop this replaces was measured slipping 4-9 frame
         // multiples under decode load (flush-gap p95 140 ms / max 315 ms
@@ -1106,11 +1140,13 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func stopStreamFlushLoop() {
+        let wasLive = streamDisplayLink != nil || streamFlushTask != nil
         streamDisplayLink?.invalidate()
         streamDisplayLink = nil
         streamDisplayLinkTarget.onTick = {}
         streamFlushTask?.cancel()
         streamFlushTask = nil
+        if wasLive { onLiveTurnActivityChanged(false) }
     }
 
     private func stopStreamFlushLoopIfIdle() {
@@ -1155,36 +1191,17 @@ public final class ChatViewModel: ObservableObject {
     /// steady-state streams reveal only a few characters per tick.
     private static let typewriterMaxRevealCharacters = 256
 
-    // Rate-based reveal (streamwar 2026-08-19): the reveal budget tracks
-    // the ARRIVAL rate, not the backlog size. The old quarter-of-backlog
-    // cut made catch-up speed proportional to how far behind the UI was —
-    // after any stall the first ticks pasted up to 256 chars while the
-    // last ticks crawled, which reads as burst-then-crawl rather than
-    // typing. An EMA of arrival chars/s sets the per-tick budget; a
-    // bounded 2x ramp engages only while a real backlog exists, so
-    // recovery looks like the same typing, just briefly faster.
-    // (Counters live on each ChatTurnStream so concurrent turns pace
-    // independently.)
-    private func typewriterTickBudget(of stream: ChatTurnStream) -> Int {
-        let now = ProcessInfo.processInfo.systemUptime
-        let dt = stream.lastRevealTickUptime > 0
-            ? now - stream.lastRevealTickUptime
-            : 0.032
-        stream.lastRevealTickUptime = now
-        let arrived = stream.contentArrivedCharsTotal - stream.lastArrivedCharsTotal
-        stream.lastArrivedCharsTotal = stream.contentArrivedCharsTotal
-        if arrived > 0, dt > 0 {
-            let instantaneous = Double(arrived) / dt
-            stream.revealRateCharsPerSecond = stream.revealRateCharsPerSecond <= 0
-                ? instantaneous
-                : stream.revealRateCharsPerSecond * 0.8 + instantaneous * 0.2
-        }
-        // Clamp the tick span so a main-thread stall doesn't grant one
-        // giant budget; the backlog ramp below does the catching up.
-        let perTick = stream.revealRateCharsPerSecond * min(dt, 0.1)
-        let backlog = Double(stream.contentBuffer.count)
-        let catchUp = backlog > perTick * 4 ? 2.0 : 1.0
-        return Int((perTick * catchUp).rounded(.up))
+    // Rate-based reveal (streamwar 2026-08-19, re-estimated 2026-09-02):
+    // the budget tracks the ARRIVAL rate, not the backlog size, so
+    // recovery from a stall looks like the same typing, just briefly
+    // faster. The estimate itself lives in `StreamTypewriterPacer`: it is
+    // taken over wall-clock time including idle frames and paired with a
+    // drain-to-next-arrival deadline, because sampling only on frames
+    // that received bytes read a context-copy block (about 110
+    // characters in one frame) as thousands of characters per second
+    // and pasted it whole: "two lines, freeze, two lines".
+    private func typewriterTickBudget(of stream: ChatTurnStream, now: Double) -> Int {
+        stream.typewriterPacer.tickBudget(backlog: stream.contentBuffer.count, now: now)
     }
 
     // Internal (not private) so the regression test can pin the reveal
@@ -1227,7 +1244,10 @@ public final class ChatViewModel: ObservableObject {
             if paced {
                 let cut = Self.pacedCut(
                     stream.contentBuffer,
-                    budget: typewriterTickBudget(of: stream)
+                    budget: typewriterTickBudget(
+                        of: stream,
+                        now: ProcessInfo.processInfo.systemUptime
+                    )
                 )
                 delta = cut.reveal
                 stream.contentBuffer = cut.rest
@@ -1237,6 +1257,8 @@ public final class ChatViewModel: ObservableObject {
             }
             drainedBytes += delta.utf8.count
             stream.contentDocument.append(delta)
+        } else if paced {
+            stream.typewriterPacer.noteIdleTick(now: ProcessInfo.processInfo.systemUptime)
         }
         if probeEnabled, drainedBytes > 0 {
             let applyMs = (ProcessInfo.processInfo.systemUptime - applyStarted) * 1000
