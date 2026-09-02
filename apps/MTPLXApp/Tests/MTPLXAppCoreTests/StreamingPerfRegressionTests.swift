@@ -160,6 +160,144 @@ final class StreamingPerfRegressionTests: XCTestCase {
         XCTAssertEqual(rest, "")
     }
 
+    // MARK: typewriter pacer (a copy-lane burst types across the gap)
+
+    private struct PacerTick {
+        let tick: Int
+        /// Unrevealed characters when the tick began.
+        let pending: Int
+        let revealed: Int
+        let backlogAfter: Int
+        /// The pacer had seen two arrivals (an inter-arrival estimate).
+        let estimatorWarm: Bool
+    }
+
+    private struct PacerRun {
+        var ticks: [PacerTick] = []
+        /// Unrevealed characters just before each arrival after the first.
+        var backlogBeforeArrival: [Int] = []
+        var fed = ""
+        var revealed = ""
+    }
+
+    /// Replays the display tick exactly as `flushStreamingBuffers` does
+    /// (pacer budget, then `pacedCut`) on a simulated uptime clock:
+    /// `chunk` characters land every `gap` seconds and the reveal ticks
+    /// at 60 Hz. The stream end drains whatever is left, as finalize,
+    /// cancel and the stream return do.
+    @MainActor
+    private func replayPacer(chunk: Int, gap: Double, chunks: Int) -> PacerRun {
+        var pacer = StreamTypewriterPacer()
+        var run = PacerRun()
+        var buffer = ""
+        let tickSeconds = 1.0 / 60.0
+        let totalTicks = Int((Double(chunks) * gap / tickSeconds).rounded(.up))
+        var delivered = 0
+        for tick in 0..<totalTicks {
+            let now = Double(tick) * tickSeconds
+            // Deliver every chunk due by this tick; the SSE task lands
+            // ahead of the frame that reveals it.
+            while delivered < chunks, Double(delivered) * gap <= now + 1e-9 {
+                if delivered > 0 { run.backlogBeforeArrival.append(buffer.count) }
+                let letter = Character(UnicodeScalar(UInt8(97 + delivered % 26)))
+                let text = String(repeating: letter, count: chunk)
+                buffer += text
+                run.fed += text
+                pacer.recordArrival(chars: chunk, now: Double(delivered) * gap)
+                delivered += 1
+            }
+            guard delivered > 0 else { continue }
+            let pending = buffer.count
+            var revealedNow = 0
+            if buffer.isEmpty {
+                pacer.noteIdleTick(now: now)
+            } else {
+                let budget = pacer.tickBudget(backlog: pending, now: now)
+                let cut = ChatViewModel.pacedCut(buffer, budget: budget)
+                run.revealed += cut.reveal
+                buffer = cut.rest
+                revealedNow = cut.reveal.count
+            }
+            run.ticks.append(PacerTick(
+                tick: tick,
+                pending: pending,
+                revealed: revealedNow,
+                backlogAfter: buffer.count,
+                estimatorWarm: pacer.expectedGapSeconds > 0
+            ))
+        }
+        run.revealed += buffer
+        return run
+    }
+
+    @MainActor
+    func testPacerSpreadsCopyLaneBurstAcrossTheRoundGap() {
+        // Context-copy lane: one ~110-character block per engine round,
+        // every 250 ms. The old estimator pasted each block in one frame.
+        let chunk = 110
+        let run = replayPacer(chunk: chunk, gap: 0.25, chunks: 8)
+        let warm = run.ticks.filter(\.estimatorWarm)
+        XCTAssertFalse(warm.isEmpty)
+        // (a) No frame pastes more than about a quarter of a block once
+        //     the estimator has two samples.
+        for sample in warm {
+            XCTAssertLessThanOrEqual(sample.revealed, chunk / 4,
+                "tick \(sample.tick) revealed \(sample.revealed) characters: a paste, not typing")
+        }
+        // The block is typed across the whole gap: nearly every frame
+        // between two rounds reveals something.
+        let steady = run.ticks.filter { $0.estimatorWarm && $0.tick >= 30 }
+        let flowing = steady.filter { $0.revealed > 0 }.count
+        XCTAssertGreaterThanOrEqual(flowing, steady.count * 9 / 10,
+            "the reveal must flow through the gap rather than idle after a paste")
+        // (b) The backlog is gone by the time the next block lands
+        //     (within one frame's reveal).
+        let maxTickReveal = warm.map(\.revealed).max() ?? 0
+        XCTAssertGreaterThanOrEqual(run.backlogBeforeArrival.count, 7)
+        for backlog in run.backlogBeforeArrival.dropFirst() {
+            XCTAssertLessThanOrEqual(backlog, maxTickReveal,
+                "a block must finish typing as the next one arrives, not pile up")
+        }
+        // (d) The end-of-stream drain reveals everything, in order.
+        XCTAssertEqual(run.revealed, run.fed)
+    }
+
+    @MainActor
+    func testPacerKeepsTokenStreamRevealingEveryTickWithoutLag() {
+        // (c) Plain token-by-token arrival: ~5 characters every 42 ms.
+        let chunk = 5
+        let run = replayPacer(chunk: chunk, gap: 0.042, chunks: 60)
+        XCTAssertFalse(run.ticks.isEmpty)
+        XCTAssertGreaterThan(run.ticks.filter { $0.pending > 0 }.count, 60)
+        for sample in run.ticks {
+            if sample.pending > 0 {
+                XCTAssertGreaterThan(sample.revealed, 0,
+                    "tick \(sample.tick) had text pending and revealed nothing")
+            }
+            XCTAssertLessThanOrEqual(sample.backlogAfter, chunk,
+                "tick \(sample.tick) let the backlog grow past one chunk")
+        }
+        for backlog in run.backlogBeforeArrival {
+            XCTAssertLessThanOrEqual(backlog, chunk,
+                "steady arrival must not accumulate lag")
+        }
+        XCTAssertEqual(run.revealed, run.fed)
+    }
+
+    @MainActor
+    func testPacerBudgetIsZeroWithoutBacklogAndColdEstimatorFloorsAtThree() {
+        var pacer = StreamTypewriterPacer()
+        XCTAssertEqual(pacer.tickBudget(backlog: 0, now: 1.0), 0)
+        pacer.recordArrival(chars: 110, now: 1.0)
+        // One sample: no rate, no gap estimate; the caller's floor of
+        // three characters keeps the first block typing.
+        let budget = pacer.tickBudget(backlog: 110, now: 1.0 + 1.0 / 60.0)
+        XCTAssertEqual(budget, 0)
+        let (reveal, rest) = ChatViewModel.pacedCut(String(repeating: "z", count: 110), budget: budget)
+        XCTAssertEqual(reveal.count, 3)
+        XCTAssertEqual(rest.count, 107)
+    }
+
     // MARK: SSE line accumulator framing
 
     private func messages(from payload: String) -> [SSEMessage] {
