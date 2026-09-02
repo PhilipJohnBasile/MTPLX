@@ -130,6 +130,11 @@ struct StreamTypewriterPacer {
     /// next burst over this span rather than crawling for seconds.
     static let maxPlannedGapSeconds = 1.0
     static let interArrivalSmoothing = 0.3
+    /// Drain horizon as a multiple of the expected gap. Slightly past the
+    /// next expected arrival, so a block's tail overlaps the next block
+    /// instead of leaving idle frames when a round runs a little long;
+    /// the carried remainder is a few characters, never a paste.
+    static let drainHorizon = 1.25
 
     private(set) var arrivedCharsTotal = 0
     private var arrivalSamples: [(uptime: Double, chars: Int)] = []
@@ -190,7 +195,9 @@ struct StreamTypewriterPacer {
         }
         var deadlineBudget = 0.0
         if expectedGapSeconds > 0 {
-            let timeLeft = max(dt, lastArrivalUptime + expectedGapSeconds - now)
+            let timeLeft = max(
+                dt, lastArrivalUptime + expectedGapSeconds * Self.drainHorizon - now
+            )
             deadlineBudget = Double(backlog) * dt / timeLeft
         }
         return Int(max(rateBudget, deadlineBudget).rounded(.up))

@@ -252,11 +252,18 @@ final class StreamingPerfRegressionTests: XCTestCase {
             "the reveal must flow through the gap rather than idle after a paste")
         // (b) The backlog is gone by the time the next block lands
         //     (within one frame's reveal).
-        let maxTickReveal = warm.map(\.revealed).max() ?? 0
+        // The drain horizon deliberately reaches a little past the next
+        // expected arrival, so a small remainder (well under a third of
+        // a block) may still be typing when the next block lands; it
+        // must never grow round over round.
         XCTAssertGreaterThanOrEqual(run.backlogBeforeArrival.count, 7)
         for backlog in run.backlogBeforeArrival.dropFirst() {
-            XCTAssertLessThanOrEqual(backlog, maxTickReveal,
-                "a block must finish typing as the next one arrives, not pile up")
+            XCTAssertLessThanOrEqual(backlog, chunk / 3,
+                "a block must be nearly typed out as the next one arrives, not pile up")
+        }
+        if let first = run.backlogBeforeArrival.dropFirst().first,
+           let last = run.backlogBeforeArrival.last {
+            XCTAssertLessThanOrEqual(last, first + 3, "the carried remainder must not grow")
         }
         // (d) The end-of-stream drain reveals everything, in order.
         XCTAssertEqual(run.revealed, run.fed)
