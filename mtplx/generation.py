@@ -9909,6 +9909,7 @@ def generate_mtpk(
                     ccopy_backoff = min(ccopy_backoff * 2, 4096)
                     ccopy_ema, ccopy_seen = 0.5, 0
                     ccopy_suspensions += 1
+                event["accepted_depths"] = int(_cc_nacc)
                 event["context_copy"] = {
                     "block": len(_cc_block),
                     "accepted": _cc_nacc,
@@ -10022,6 +10023,10 @@ def generate_mtpk(
                 else:
                     mx.eval(_cb_logits)
                 elapsed_verify = time.perf_counter() - started_forward
+                # Route Tape: the batched-lane copy block is a verify round like any other;
+                # it carries the block width so the census reads the copy lane's rounds.
+                event["verify_route"] = "ccopy_block"
+                event["verify_width"] = int(_cb_T)
                 verify_forward_time += elapsed_verify
                 verify_time += elapsed_verify
                 target_time += elapsed_verify
@@ -10112,10 +10117,11 @@ def generate_mtpk(
                     ccopy_active = False
                     ccopy_disabled_reason = "no_per_position_commit"
                     event["context_copy"] = {"disabled": "no_per_position_commit"}
-                    append_event(event)
+                    emit_round(event)
                     continue
                 _cb_round_pos = len(tokens)
                 _cb_acc = _cb_block[:_cb_nacc]
+                event["accepted_depths"] = int(_cb_nacc)
                 _cb_stop_idx = next(
                     (
                         i
@@ -10177,7 +10183,7 @@ def generate_mtpk(
                     )
                 logits = _cb_logits[:, _cb_m - 1, :]
                 hidden = _cb_hidden[:, _cb_m - 1 : _cb_m, :]
-                append_event(event)
+                emit_round(event)
                 emit_new_tokens()
                 if _cb_finished:
                     break
