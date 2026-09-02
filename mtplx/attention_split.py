@@ -409,6 +409,19 @@ def _install_split_attention_hook(attn: Any) -> bool:
                     self._mtplx_nax_flash_calls = (
                         int(getattr(self, "_mtplx_nax_flash_calls", 0)) + 1
                     )
+                    if _env_enabled("MTPLX_GQA_PACKED_SDPA_TRACE") and (
+                        self._mtplx_nax_flash_calls <= 2
+                    ):
+                        import sys as _sys
+
+                        print(
+                            "mtplx_nax_flash_route engaged "
+                            f"layer={getattr(self, '_mtplx_full_attention_index', -1)} "
+                            f"q_len={int(queries.shape[2])} "
+                            f"capacity={int(cache.keys.shape[2])}",
+                            file=_sys.stderr,
+                            flush=True,
+                        )
             if output is not None:
                 pass
             # MTPLX_NAX_TILE_ROUTE (2026-08-26 hyper): TensorOps wide-M tile
