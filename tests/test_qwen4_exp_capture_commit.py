@@ -594,16 +594,40 @@ def test_installed_fixed_m4_routes_shorter_windows_to_family_capture(tm, monkeyp
     assert bank.stats["fallback_calls"] == 0
 
 
-def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size():
+def _flash_next_fake_runtime(*, limit_bytes: int) -> SimpleNamespace:
+    """The production geometry's promotion inputs on a fake runtime."""
+
+    args = SimpleNamespace(
+        layer_types=["linear_attention"] * 3 + ["full_attention"],
+        num_key_value_heads=2,
+        head_dim=256,
+        indexer_head_dim=128,
+        indexer_compress_ratio=4,
+    )
+    args.layer_types = args.layer_types * 12
+    return SimpleNamespace(
+        qwen4_fixed_m4_compiled_verify=True,
+        model=SimpleNamespace(language_model=SimpleNamespace(args=args)),
+        metal_memory_limit_bytes=limit_bytes,
+    )
+
+
+def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size(
+    monkeypatch,
+):
+    import mtplx.generation as generation
     from mtplx.generation import _qwen4_fixed_m4_compiled_verify_requested
 
-    runtime = SimpleNamespace(qwen4_fixed_m4_compiled_verify=True)
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", raising=False)
+    monkeypatch.setattr(generation, "_mlx_live_memory_bytes", lambda: 0)
+    runtime = _flash_next_fake_runtime(limit_bytes=96 * 1024**3)
     assert _qwen4_fixed_m4_compiled_verify_requested(
         runtime,
         verify_strategy="batched",
         compiled_mode="on",
         max_tokens=1024,
         cached_tokens=0,
+        prompt_tokens=64,
     )
     assert not _qwen4_fixed_m4_compiled_verify_requested(
         runtime,
@@ -611,6 +635,7 @@ def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size():
         compiled_mode="on",
         max_tokens=1024,
         cached_tokens=0,
+        prompt_tokens=64,
     )
     assert _qwen4_fixed_m4_compiled_verify_requested(
         runtime,
@@ -618,6 +643,7 @@ def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size():
         compiled_mode="on",
         max_tokens=16384,
         cached_tokens=0,
+        prompt_tokens=64,
     )
     assert _qwen4_fixed_m4_compiled_verify_requested(
         runtime,
@@ -625,6 +651,80 @@ def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size():
         compiled_mode="on",
         max_tokens=1024,
         cached_tokens=512,
+        prompt_tokens=64,
+    )
+
+
+def test_fixed_m4_lane_memory_gate_skips_requests_that_do_not_fit(monkeypatch):
+    """Per-request gate (2026-09-02 receipt: 250k on a 128 GB seat, the
+    lane's 7.1 GB promotion adder 507'd the turn while plain main ran): the
+    lane engages only when live allocator bytes plus the promotion adder
+    stay under 0.97 x the pinned Metal limit, and never past the operator
+    belt. A skipped request answers False at the construction gate, so no
+    bank and no promotion is ever built."""
+
+    import mtplx.generation as generation
+    from mtplx.generation import (
+        _qwen4_fixed_m4_compiled_verify_requested,
+        _qwen4_fixed_m4_lane_fits,
+        _qwen4_fixed_m4_promotion_bytes_per_token,
+    )
+
+    gib = 1024**3
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", raising=False)
+    # The 128 GB seat's default cap (75% of RAM).
+    runtime = _flash_next_fake_runtime(limit_bytes=96 * gib)
+    assert _qwen4_fixed_m4_promotion_bytes_per_token(runtime) == 28_416
+    live = {"bytes": 80 * gib}
+    monkeypatch.setattr(generation, "_mlx_live_memory_bytes", lambda: live["bytes"])
+
+    # 100k at 80 GiB live: the 2.9 GB adder lands under the line.
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=100_000)
+    # 250k at 91 GiB live (the receipt's shape): the 7.1 GB adder crosses it.
+    live["bytes"] = 91 * gib
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    # Exact law: live + (prompt + 1024 reserve) x 28,416 <= int(0.97 x limit).
+    line = int(96 * gib * 0.97)
+    need = (250_000 + 1024) * 28_416
+    live["bytes"] = line - need
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    live["bytes"] = line - need + 1
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+
+    # Operator belt: over it the lane is skipped whatever memory says; 0
+    # hands the verdict back to the live gate.
+    live["bytes"] = 1 * gib
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", "212992")
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=212_992)
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", "0")
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT")
+
+    # The construction gate carries the verdict (at 91 GiB live even 100k
+    # crosses the line; at 80 GiB it fits).
+    live["bytes"] = 91 * gib
+    assert not _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=250_000,
+    )
+    live["bytes"] = 80 * gib
+    assert _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=100_000,
+    )
+    # A runtime that cannot price the promotion never installs the strict lane.
+    assert not _qwen4_fixed_m4_lane_fits(
+        SimpleNamespace(qwen4_fixed_m4_compiled_verify=True), prompt_tokens=64
     )
 
 

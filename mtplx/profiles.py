@@ -407,6 +407,10 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # the model load, so the pack predicate owns the default.
         "MTPLX_FRSPEC_DRAFT",
         "MTPLX_FRSPEC_VOCAB",
+        # Fixed-M4 lane operator belt (2026-09-02): prompt-token ceiling for
+        # the per-request memory gate in generation; 0 or unset leaves the
+        # live allocator gate alone in charge.
+        "MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT",
         "MTPLX_FUSE_GDN_POST_CONV",
         "MTPLX_A3B_GDN_POSTCONV_IMPL",
         "MTPLX_LINEAR_GDN_FROM_CONV_TGY",

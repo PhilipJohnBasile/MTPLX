@@ -66,6 +66,7 @@ from .gdn_capture import resolve_gdn_capture_backend
 from .graphbank import (
     CompiledVerifyBank,
     SpecDecodeGraphBank,
+    _fixed_m4_initial_growth_reserve,
     cache_array_tree,
     compiled_verify_mode,
     paged_offsets_context_ok as _paged_offsets_context_ok,
@@ -308,17 +309,129 @@ def _qwen4_fixed_m4_compiled_verify_requested(
     compiled_mode: str,
     max_tokens: int,
     cached_tokens: int,
+    prompt_tokens: int,
 ) -> bool:
     """Construction gate for the shape-specialized physical-M4 verifier."""
 
     del cached_tokens
 
-    return (
+    if not (
         bool(getattr(rt, "qwen4_fixed_m4_compiled_verify", False))
         and verify_strategy == "batched"
         and compiled_mode != "off"
         and int(max_tokens) > 0
+    ):
+        return False
+    return _qwen4_fixed_m4_lane_fits(rt, prompt_tokens=int(prompt_tokens))
+
+
+# The prefill admission line (server _PREFILL_ADMISSION_PRESSURE_FRACTION).
+_QWEN4_FIXED_M4_PRESSURE_FRACTION = 0.97
+
+
+def _qwen4_fixed_m4_promotion_bytes_per_token(rt: Any) -> int:
+    """Bytes the fixed-M4 promotion re-materializes per context token.
+
+    graphbank.from_qsa_cache pads every QSA layer's keys, values, raw
+    indexer keys and pooled keys into fixed banks: per layer
+    2 x kv_heads x head_dim x bf16 + idx_dim x bf16 + idx_dim x bf16 / ratio
+    (28,416 on the Flash-Next geometry: 12 x (2,048 + 256 + 64)). 0 when
+    the served model does not expose that geometry.
+    """
+
+    model = getattr(rt, "model", None)
+    text = getattr(model, "language_model", model)
+    args = getattr(text, "args", None)
+    if args is None:
+        args = getattr(getattr(text, "model", None), "args", None)
+    layer_types = list(getattr(args, "layer_types", None) or ())
+    n_qsa = sum(1 for kind in layer_types if kind != "linear_attention")
+    kv_heads = int(getattr(args, "num_key_value_heads", 0) or 0)
+    head_dim = int(getattr(args, "head_dim", 0) or 0)
+    idx_dim = int(getattr(args, "indexer_head_dim", 0) or 128)
+    ratio = max(1, int(getattr(args, "indexer_compress_ratio", 0) or 4))
+    if n_qsa <= 0 or kv_heads <= 0 or head_dim <= 0:
+        return 0
+    return n_qsa * (2 * kv_heads * head_dim * 2 + idx_dim * 2 + (idx_dim * 2) // ratio)
+
+
+def _mlx_live_memory_bytes() -> int:
+    """Active plus cached allocator bytes, the admission shed's live term."""
+
+    return int(mx.get_active_memory()) + int(mx.get_cache_memory())
+
+
+def _metal_memory_limit_bytes(rt: Any) -> int:
+    """The allocator ceiling the serve path pinned at startup.
+
+    The server stamps its applied Metal memory limit on the runtime
+    (state.metal_memory_caps["memory_limit_bytes"], the number the prefill
+    admission shed measures against); entry points that pinned no caps fall
+    back to the memory plan's mirror of that default. 0 when unknown.
+    """
+
+    stamped = getattr(rt, "metal_memory_limit_bytes", None)
+    if isinstance(stamped, int) and stamped > 0:
+        return int(stamped)
+    from .memory_plan import detect_total_ram_bytes, usable_engine_bytes
+
+    total = detect_total_ram_bytes()
+    return usable_engine_bytes(total) if total else 0
+
+
+def _announce_qwen4_fixed_m4_skip(reason: str) -> None:
+    try:
+        print(
+            "[qwen4-fixed-M4] lane skipped for this request, plain eager "
+            f"batched verify: {reason}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
+def _qwen4_fixed_m4_lane_fits(rt: Any, *, prompt_tokens: int) -> bool:
+    """Per-request memory gate for the strict fixed-M4 lane.
+
+    The promotion copies every QSA layer's state into padded banks (about
+    28,416 bytes per context token, again at each growth boundary), an
+    adder plain main never pays. Receipt 2026-09-02, 250k on a 128 GB
+    machine: the lane's 7.1 GB promotion adder pushed the request into a
+    507 while plain main ran. A skipped request constructs no bank and is
+    byte-for-byte the plain eager batched path.
+
+    MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT is an operator belt in prompt tokens;
+    0 or unset leaves the live gate alone in charge: live allocator bytes
+    plus the promotion adder (prompt plus the initial growth reserve, at the
+    geometry's bytes per token) must stay under 0.97 of the Metal limit.
+    """
+
+    prompt_tokens = max(0, int(prompt_tokens))
+    ceiling = _env_int("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", 0)
+    if ceiling > 0 and prompt_tokens > ceiling:
+        _announce_qwen4_fixed_m4_skip(
+            f"prompt {prompt_tokens} tokens over "
+            f"MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT={ceiling}"
+        )
+        return False
+    per_token = _qwen4_fixed_m4_promotion_bytes_per_token(rt)
+    if per_token <= 0:
+        _announce_qwen4_fixed_m4_skip("promotion geometry unavailable on this runtime")
+        return False
+    limit = _metal_memory_limit_bytes(rt)
+    if limit <= 0:
+        return True
+    need = (prompt_tokens + _fixed_m4_initial_growth_reserve()) * per_token
+    live = _mlx_live_memory_bytes()
+    line = int(limit * _QWEN4_FIXED_M4_PRESSURE_FRACTION)
+    if live + need <= line:
+        return True
+    _announce_qwen4_fixed_m4_skip(
+        f"prompt {prompt_tokens} tokens: live {live / 1e9:.1f} GB + promotion "
+        f"{need / 1e9:.1f} GB over the {line / 1e9:.1f} GB line"
     )
+    return False
 
 
 def _defer_repair_eval() -> bool:
@@ -7998,6 +8111,7 @@ def generate_mtpk(
             compiled_mode=_compiled_verify_mode,
             max_tokens=max_tokens,
             cached_tokens=int(getattr(prompt_state, "cached_tokens", 0) or 0),
+            prompt_tokens=len(prompt_ids),
         )
     )
     compiled_verify_bank = (

@@ -2693,6 +2693,12 @@ class ServerState:
             load_heartbeat.set()
         self.load_time_s = time.perf_counter() - started
         _startup_line(f"[5/6] Model loaded in {self.load_time_s:.1f}s")
+        # The fixed-M4 lane's per-request memory gate measures against the
+        # same allocator ceiling the prefill admission shed uses
+        # (generation._metal_memory_limit_bytes).
+        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")
+        if isinstance(pinned_limit, int) and pinned_limit > 0:
+            self.runtime.metal_memory_limit_bytes = int(pinned_limit)
         self.backend_descriptor = descriptor_from_runtime(self.runtime, args)
         args.backend_id = self.backend_descriptor.backend_id
         if self.backend_descriptor.uses_draft_lm_head:
