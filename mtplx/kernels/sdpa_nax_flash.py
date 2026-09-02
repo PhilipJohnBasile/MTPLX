@@ -18,7 +18,7 @@ kernel), same NAXFrag register layout (cider / mlx steel convention). What chang
   instead of re-read from device per tile.
 
 Gated: returns None on any contract miss; env kill-switch MTPLX_NAX_FLASH=0.
-Tunables (cells only): MTPLX_NAX_FLASH_KS (default 4), MTPLX_NAX_FLASH_BLOCKS,
+Tunables (cells only): MTPLX_NAX_FLASH_KS (default 1), MTPLX_NAX_FLASH_BLOCKS,
 MTPLX_NAX_FLASH_QTG.
 """
 
@@ -346,11 +346,13 @@ def _bail(reason: str):
 
 
 def _default_blocks(capacity: int) -> int:
+    # 2026-09-01 walk bench, 72.7k QL4: KS=1/512 blocks 1.015 ms/layer beat KS=4/128 (1.080),
+    # KS=2/256 (1.069), KS=4/64 (1.055), KS=8/64 (1.195). Shorter contexts: 16k/128k sweep pins.
     if capacity >= 65536:
-        return 128
+        return 512
     if capacity >= 16384:
-        return 64
-    return 32
+        return 256
+    return 128
 
 
 def sdpa_nax_flash(
@@ -398,7 +400,7 @@ def sdpa_nax_flash(
             return _bail("offset_range")
         offset_arr = mx.array([offset_int], dtype=mx.int32)
 
-    ks = int(os.environ.get("MTPLX_NAX_FLASH_KS", "4") or 4)
+    ks = int(os.environ.get("MTPLX_NAX_FLASH_KS", "1") or 1)
     ks = max(1, min(8, ks))
     qtg = 1 if os.environ.get("MTPLX_NAX_FLASH_QTG", "0") == "1" else 0
     blocks = int(os.environ.get("MTPLX_NAX_FLASH_BLOCKS", "0") or 0) or _default_blocks(capacity)
