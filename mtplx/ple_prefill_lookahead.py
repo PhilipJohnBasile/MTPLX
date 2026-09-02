@@ -74,6 +74,7 @@ __all__ = [
     "count",
     "enabled",
     "prefill_lookahead_scope",
+    "reject_unwired_prefill_loop",
     "reset_counters",
     "snapshot_counters",
 ]
@@ -112,6 +113,25 @@ def enabled() -> bool:
     accepted = sorted((_TRUE | _FALSE) - {""})
     raise ValueError(
         f"{ENV_FLAG} must be one of {accepted}, got {os.environ.get(ENV_FLAG)!r}"
+    )
+
+
+def reject_unwired_prefill_loop(loop: str) -> None:
+    """Refuse to run an armed lane through a prefill loop it is not wired to.
+
+    The lane only overlaps gathers issued from the loop that opened a
+    :func:`prefill_lookahead_scope`.  Any other chunked prefill loop would run
+    the ordinary synchronous gather while the arm still called itself the
+    candidate -- the 2026-09-01 failure, in a different disguise.  Every such
+    loop calls this first, so "armed but inert" cannot be reached at all.
+    """
+
+    if not enabled():
+        return
+    raise RuntimeError(
+        f"{ENV_FLAG}=1 but this request takes the {loop!r} prefill loop, "
+        "which the lookahead is not wired to; it would measure the control "
+        "under the candidate's label. Wire that loop or clear the flag."
     )
 
 
@@ -160,6 +180,11 @@ class PrefillLookahead:
         self._pending: tuple[int, Any] | None = None
         self._hint: int | None = 0
         self._closed = False
+        # Per-scope engagement, kept off the module-global COUNTERS so one
+        # request's invariant cannot be satisfied by an earlier request's work.
+        self.hits = 0
+        self.misses = 0
+        self.submits = 0
 
     # -- span bookkeeping ---------------------------------------------------
 
@@ -215,6 +240,7 @@ class PrefillLookahead:
             return
         start, end = self._spans[index]
         self._pending = (index, self._submit(self._prepare, start, end))
+        self.submits += 1
         count("submitted")
 
     def take(self, index: int):
@@ -222,12 +248,14 @@ class PrefillLookahead:
 
         pending = self._pending
         if pending is None:
+            self.misses += 1
             count("miss_empty")
             return None
         self._pending = None
         pending_index, future = pending
         if pending_index != index:
             self._discard(future)
+            self.misses += 1
             count("miss_wrong_span")
             return None
         try:
@@ -236,10 +264,40 @@ class PrefillLookahead:
             count("worker_error")
             raise
         if prepared is None:
+            self.misses += 1
             count("miss_ineligible")
             return None
+        self.hits += 1
         count("hit")
         return prepared
+
+    def engagement(self) -> dict[str, int]:
+        """Per-scope receipt: what this prefill's lookahead actually did."""
+
+        return {
+            "spans": len(self._spans),
+            "submits": int(self.submits),
+            "hits": int(self.hits),
+            "misses": int(self.misses),
+        }
+
+    def verify_full_engagement(self) -> None:
+        """Every planned chunk must have consumed worker-prepared rows.
+
+        An armed lane that quietly served zero chunks is the one outcome an
+        A/B cannot detect afterwards -- it measures the control while wearing
+        the candidate's label, which is exactly what happened on 2026-09-01
+        (``lookahead_batches`` 0, ``prefill_lookahead`` {}, a 2 s "regression"
+        that was arm-position drift). So this raises instead.
+        """
+
+        engagement = self.engagement()
+        if engagement["hits"] != engagement["spans"]:
+            raise RuntimeError(
+                f"{ENV_FLAG}=1 did not engage on every prefill chunk: "
+                f"{engagement}. The lane is armed but (partly) inert; refusing "
+                "to report a measurement that did not run the candidate."
+            )
 
     def _discard(self, future) -> None:
         future.cancel()
@@ -274,8 +332,15 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
     # 157-346 ms, first-touch on top of the gather) and nothing else has
     # claimed the worker yet.
     lookahead.submit(0)
+    clean = False
     try:
         yield lookahead
+        clean = True
     finally:
         _ACTIVE.reset(token)
         lookahead.close()
+        # Only on the clean path: an aborted prefill legitimately consumed
+        # fewer chunks than it planned, and masking its exception with an
+        # engagement complaint would hide the real failure.
+        if clean:
+            lookahead.verify_full_engagement()

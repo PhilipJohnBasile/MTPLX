@@ -4149,6 +4149,28 @@ def _ngram_resident_policy() -> bool:
     return ngram_table_resident_policy()
 
 
+#: Cumulative host seconds and call count inside `NGramEmbedding.stage` --
+#: the per-chunk PLE gather the census measures as 8 host-late stalls totalling
+#: 2,313 ms.  One float and one int, bumped once per stage call; the prefill
+#: loop snapshots them per chunk so the receipt can show WHERE the run-to-run
+#: prefill variance lives.  Cumulative on purpose: deltas compose, a reset
+#: shared between the generation loop and the model would not.
+_PLE_STAGE_SECONDS = [0.0]
+_PLE_STAGE_CALLS = [0]
+
+
+def ple_stage_seconds() -> float:
+    """Cumulative host seconds spent in the PLE n-gram stage gather."""
+
+    return float(_PLE_STAGE_SECONDS[0])
+
+
+def ple_stage_calls() -> int:
+    """Number of PLE n-gram stage gathers so far."""
+
+    return int(_PLE_STAGE_CALLS[0])
+
+
 def _ngram_rows_np(
     ids_np,
     prev_np,
@@ -4354,6 +4376,14 @@ class NGramEmbedding(nn.Module):
 
     def stage(self, input_ids: mx.array, cache: Optional[ArraysCache], state_idx: int):
         """Precompute this step's rows before any graph is built."""
+        started = time.perf_counter()
+        try:
+            self._stage_body(input_ids, cache, state_idx)
+        finally:
+            _PLE_STAGE_SECONDS[0] += time.perf_counter() - started
+            _PLE_STAGE_CALLS[0] += 1
+
+    def _stage_body(self, input_ids, cache, state_idx):
         import numpy as np
 
         sidecar = self.ngram_embedding._sidecar

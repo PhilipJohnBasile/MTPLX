@@ -235,12 +235,17 @@ def test_submit_after_close_is_inert():
 
 
 def test_scope_publishes_the_lookahead_and_primes_chunk_zero():
-    look, _ids, calls = build()
+    look, ids, calls = build()
     assert lookahead_mod.active_lookahead() is None
     with prefill_lookahead_scope(look) as active:
         assert active is look
         assert lookahead_mod.active_lookahead() is look
+        # Chunk 0 is prepared before the caller does anything else.
         assert calls == [(0, 16)]
+        for start in range(0, 64, 16):
+            index = look.span_index_of(ids[start : start + 16])
+            look.take(index)
+            look.submit(look.next_index(index))
     assert lookahead_mod.active_lookahead() is None
 
 
@@ -458,7 +463,7 @@ def test_generation_wraps_the_chunk_loop_and_the_scope_owns_the_worker():
     helper = GENERATION_TEXT.split("def _ple_prefill_lookahead_scope", 1)[
         1
     ].split("\ndef ", 1)[0]
-    assert 'getattr(model, "ple_prefill_lookahead", None)' in helper
+    assert "_resolve_ple_lookahead_hook(rt)" in helper
     assert "prefill_lookahead_scope(hook(body, list(spans)))" in helper
 
 
@@ -626,3 +631,257 @@ def test_worker_returns_none_when_the_gather_would_take_the_hot_lru():
     assert prepare(embedding, np.arange(64, dtype=np.int64), 0, 16) is None
 
 
+def test_engagement_snapshot_is_per_scope_not_module_global():
+    look, ids, _calls = build()
+    look.submit(0)
+    look.take(0)
+    assert look.engagement() == {
+        "spans": 4,
+        "submits": 1,
+        "hits": 1,
+        "misses": 0,
+    }
+    other, _ids, _c = build()
+    assert other.engagement()["hits"] == 0, "counters must not leak across scopes"
+
+
+def test_verify_full_engagement_raises_when_the_lane_served_nothing():
+    look, _ids, _calls = build()
+    with pytest.raises(RuntimeError, match="did not engage"):
+        look.verify_full_engagement()
+
+
+def test_verify_full_engagement_raises_on_partial_engagement():
+    look, ids, _calls = build()
+    look.submit(0)
+    look.take(0)
+    with pytest.raises(RuntimeError) as excinfo:
+        look.verify_full_engagement()
+    assert "'hits': 1" in str(excinfo.value)
+    assert "'spans': 4" in str(excinfo.value)
+
+
+def test_verify_full_engagement_passes_when_every_chunk_hit():
+    look, ids, _calls = build(total=64, chunk=16)
+    for index in range(4):
+        look.submit(index)
+        assert look.take(index) is not None
+    look.verify_full_engagement()
+
+
+def test_scope_raises_on_a_clean_prefill_that_never_engaged():
+    """The exact 2026-09-01 outcome must now be impossible to report."""
+
+    look, _ids, _calls = build()
+    with pytest.raises(RuntimeError, match="did not engage"):
+        with prefill_lookahead_scope(look):
+            pass  # a "prefill" that never consumed a chunk
+    assert lookahead_mod.active_lookahead() is None
+
+
+def test_scope_does_not_mask_the_real_failure_of_an_aborted_prefill():
+    look, _ids, _calls = build()
+    with pytest.raises(ValueError, match="aborted prefill"):
+        with prefill_lookahead_scope(look):
+            raise ValueError("aborted prefill")
+
+
+def test_scope_accepts_a_prefill_that_engaged_every_chunk():
+    look, ids, _calls = build(total=64, chunk=16)
+    with prefill_lookahead_scope(look):
+        for start in range(0, 64, 16):
+            index = look.span_index_of(ids[start : start + 16])
+            look.take(index)
+            look.submit(look.next_index(index))
+    assert look.engagement()["hits"] == 4
+
+
+# ---------------------------------------------------------------------------
+# The model-resolution walk that made the lane inert
+# ---------------------------------------------------------------------------
+
+
+def _generation_function(name: str):
+    """Compile one generation.py function from source (generation imports MLX)."""
+
+    node = next(
+        n
+        for n in ast.parse(GENERATION_TEXT).body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    module = ast.Module(body=[node], type_ignores=[])
+    ast.fix_missing_locations(module)
+    namespace: dict = {}
+    exec(compile(module, "<generation>", "exec"), namespace)
+    return namespace[name]
+
+
+class _Node:
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+def test_hook_is_found_two_wrappers_below_the_runtime():
+    """rt.model -> language_model -> model is the production house shape.
+
+    Walking one level finds TextModel, which has no hook -- the 2026-09-01
+    non-engagement, exactly.
+    """
+
+    resolve = _generation_function("_resolve_ple_lookahead_hook")
+    inner = _Node(ple_prefill_lookahead=lambda ids, spans: "built")
+    runtime = _Node(model=_Node(language_model=_Node(model=inner)))
+    assert resolve(runtime)(None, None) == "built"
+
+
+def test_hook_is_found_on_a_text_only_shape_without_language_model():
+    resolve = _generation_function("_resolve_ple_lookahead_hook")
+    inner = _Node(ple_prefill_lookahead=lambda ids, spans: "built")
+    assert resolve(_Node(model=_Node(model=inner)))(None, None) == "built"
+
+
+def test_hook_is_found_directly_on_the_runtime_model():
+    resolve = _generation_function("_resolve_ple_lookahead_hook")
+    inner = _Node(ple_prefill_lookahead=lambda ids, spans: "built")
+    assert resolve(_Node(model=inner))(None, None) == "built"
+
+
+def test_hook_resolution_returns_none_for_an_architecture_without_it():
+    resolve = _generation_function("_resolve_ple_lookahead_hook")
+    assert resolve(_Node(model=_Node(language_model=_Node(model=_Node())))) is None
+    assert resolve(_Node()) is None
+
+
+def test_hook_resolution_terminates_on_a_self_referential_wrapper():
+    resolve = _generation_function("_resolve_ple_lookahead_hook")
+    node = _Node()
+    node.model = node
+    assert resolve(_Node(model=node)) is None
+
+
+def test_scope_raises_rather_than_running_an_armed_lane_it_cannot_serve():
+    scope_source = GENERATION_TEXT.split(
+        "def _ple_prefill_lookahead_scope", 1
+    )[1].split("\ndef ", 1)[0]
+    assert "_resolve_ple_lookahead_hook(rt)" in scope_source
+    assert "raise RuntimeError" in scope_source
+    assert "_lookahead_enabled()" in scope_source
+    assert "_PREFILL_CHUNK_RECORDS.clear()" in scope_source
+
+
+# ---------------------------------------------------------------------------
+# Per-chunk timings, on both arms
+# ---------------------------------------------------------------------------
+
+
+def test_prefill_loop_records_chunk_wall_and_gather_time():
+    assert "gather_before = _ple_stage_seconds()" in GENERATION_TEXT
+    assert "_record_prefill_chunk(" in GENERATION_TEXT
+    assert "ple_gather_s=_ple_stage_seconds() - gather_before" in GENERATION_TEXT
+    assert "wall_s=chunk_wall_s" in GENERATION_TEXT
+
+
+def test_chunk_record_buffer_is_bounded_and_reset_per_prefill():
+    record = _generation_function("_record_prefill_chunk")
+    assert "_PREFILL_CHUNK_RECORD_CAP" in GENERATION_TEXT
+    # The cap guards a long-lived server process; the clear() guards A/B rows.
+    assert "_PREFILL_CHUNK_RECORDS.clear()" in GENERATION_TEXT
+    assert record is not None
+
+
+def test_stage_timing_wraps_the_whole_gather_and_survives_early_returns():
+    stage = MODEL_TEXT.split("def stage(self, input_ids: mx.array", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "started = time.perf_counter()" in stage
+    assert "self._stage_body(input_ids, cache, state_idx)" in stage
+    assert "finally:" in stage
+    assert "_PLE_STAGE_SECONDS[0] +=" in stage
+    assert "_PLE_STAGE_CALLS[0] +=" in stage
+
+
+def test_reject_unwired_prefill_loop_is_silent_when_the_flag_is_off(monkeypatch):
+    monkeypatch.delenv(lookahead_mod.ENV_FLAG, raising=False)
+    lookahead_mod.enabled.cache_clear()
+    try:
+        assert lookahead_mod.reject_unwired_prefill_loop("_prefill") is None
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+def test_reject_unwired_prefill_loop_raises_when_armed(monkeypatch):
+    monkeypatch.setenv(lookahead_mod.ENV_FLAG, "1")
+    lookahead_mod.enabled.cache_clear()
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            lookahead_mod.reject_unwired_prefill_loop("_prefill")
+        message = str(excinfo.value)
+        assert "'_prefill'" in message
+        assert "control under the candidate" in message
+    finally:
+        lookahead_mod.enabled.cache_clear()
+
+
+
+UNWIRED_LOOPS = (
+    "_prefill",
+    "_prefill_with_hidden_sequence",
+    "_prefill_restored_prompt_suffix",
+)
+
+@pytest.mark.parametrize("loop", UNWIRED_LOOPS)
+def test_every_unwired_chunked_prefill_loop_carries_the_tripwire(loop):
+    """No chunked prefill loop may quietly serve an armed lane's request."""
+
+    node = next(
+        n
+        for n in ast.parse(GENERATION_TEXT).body
+        if isinstance(n, ast.FunctionDef) and n.name == loop
+    )
+    body = ast.unparse(node)
+    assert f'_reject_unwired_ple_lookahead({loop!r})' in body
+
+
+def test_the_wired_loop_opens_the_scope_instead_of_the_tripwire():
+    node = next(
+        n
+        for n in ast.parse(GENERATION_TEXT).body
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_prefill_committed_mtp_history_streaming"
+    )
+    body = ast.unparse(node)
+    assert "_ple_prefill_lookahead_scope(rt, body, mtp_streaming_spans)" in body
+    assert "_reject_unwired_ple_lookahead" not in body
+
+
+def test_every_chunked_prefill_loop_is_either_wired_or_tripwired():
+    """The invariant that makes 'armed but inert' unreachable.
+
+    Any function that iterates prefill chunk spans either opens the lookahead
+    scope or refuses an armed lane. A new loop added without either lands
+    here, not in a wasted GPU window.
+    """
+
+    tree = ast.parse(GENERATION_TEXT)
+    unhandled = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.unparse(node)
+        iterates = (
+            "_iter_prefill_chunk_spans(" in body
+            or "_prefill_spans_with_tail_grid(" in body
+        )
+        if not iterates or node.name in {
+            "_iter_prefill_chunk_spans",
+            "_prefill_spans_with_tail_grid",
+        }:
+            continue
+        if (
+            "_ple_prefill_lookahead_scope(" in body
+            or "_reject_unwired_ple_lookahead(" in body
+        ):
+            continue
+        unhandled.append(node.name)
+    assert not unhandled, f"chunked prefill loops with no lookahead policy: {unhandled}"

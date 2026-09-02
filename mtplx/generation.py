@@ -615,22 +615,94 @@ def _resolve_mtp_history_policy(requested_policy: str, prompt_tokens: int) -> st
     return "last_window" if int(prompt_tokens) >= threshold else "committed"
 
 
+#: Per-chunk prefill timings for the most recent chunked prompt prefill.
+#: Written on BOTH A/B arms (the scope below is entered unconditionally) and
+#: read by scripts/fable/abba_driver.py.  Bounded and replaced wholesale at
+#: each scope entry, so it can never grow across a session.
+_PREFILL_CHUNK_RECORDS: list[dict[str, float]] = []
+_PREFILL_CHUNK_RECORD_CAP = 512
+
+
+def prefill_chunk_records() -> list[dict[str, float]]:
+    """Per-chunk wall and PLE-gather time for the last chunked prefill."""
+
+    return [dict(record) for record in _PREFILL_CHUNK_RECORDS]
+
+
+def _record_prefill_chunk(**fields: float) -> None:
+    if len(_PREFILL_CHUNK_RECORDS) < _PREFILL_CHUNK_RECORD_CAP:
+        _PREFILL_CHUNK_RECORDS.append(fields)
+
+
+def _ple_stage_seconds() -> float:
+    """Cumulative host time inside the PLE n-gram stage gather, or 0.0."""
+
+    try:
+        from mtplx.models.qwen4_exp import ple_stage_seconds
+
+        return float(ple_stage_seconds())
+    except Exception:
+        return 0.0
+
+
+def _resolve_ple_lookahead_hook(rt):
+    """Find the object that owns ``ple_prefill_lookahead``.
+
+    The PLE stage lives on the INNER text model, two wrappers below the
+    runtime: ``rt.model`` -> ``language_model`` (the house shape) -> ``model``.
+    Walking only the first level is what made the 2026-09-01 candidate arm
+    inert: ``TextModel`` has no such attribute, the scope yielded None, and the
+    arm measured the control while wearing the candidate's label.  Search the
+    chain instead of hard-coding one depth, and let the caller decide what a
+    miss means.
+    """
+
+    seen = []
+    node = getattr(rt, "model", None)
+    for _ in range(4):
+        if node is None or any(node is other for other in seen):
+            break
+        seen.append(node)
+        hook = getattr(node, "ple_prefill_lookahead", None)
+        if callable(hook):
+            return hook
+        node = getattr(node, "language_model", None) or getattr(
+            node, "model", None
+        )
+    return None
+
+
+def _reject_unwired_ple_lookahead(loop: str) -> None:
+    """Fail fast when an armed PLE lookahead meets an unwired prefill loop."""
+
+    from mtplx.ple_prefill_lookahead import reject_unwired_prefill_loop
+
+    reject_unwired_prefill_loop(loop)
+
+
 @contextlib.contextmanager
 def _ple_prefill_lookahead_scope(rt, body, spans):
     """Arm the model's PLE prefill lookahead for this chunked prefill.
 
-    Duck-typed on purpose: a model that does not offer the hook, or a build
-    where MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD is unset, yields a no-op scope and
-    the prefill loop below is byte-identical to before.  The scope owns the
-    worker thread and always closes it, including on an aborted prefill.
+    Entered on BOTH arms, so it also owns the per-chunk timing records.  With
+    MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD unset this yields a no-op scope and the
+    prefill loop below behaves exactly as before.
+
+    When the flag IS armed, an unresolvable hook raises HERE rather than
+    fourteen seconds later with an empty receipt.
     """
 
-    model = getattr(rt, "model", None)
-    # Same resolution the runtime uses for the text tower (runtime.py:221):
-    # multimodal builds wrap it, and the PLE stage lives on the inner model.
-    model = getattr(model, "language_model", model)
-    hook = getattr(model, "ple_prefill_lookahead", None)
+    _PREFILL_CHUNK_RECORDS.clear()
+    hook = _resolve_ple_lookahead_hook(rt)
     if hook is None or not body:
+        from mtplx.ple_prefill_lookahead import enabled as _lookahead_enabled
+
+        if hook is None and body and _lookahead_enabled():
+            raise RuntimeError(
+                "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD=1 but nothing under "
+                f"{type(getattr(rt, 'model', None)).__name__} exposes "
+                "ple_prefill_lookahead; this architecture cannot serve the lane"
+            )
         yield None
         return
     from mtplx.ple_prefill_lookahead import prefill_lookahead_scope
@@ -2776,6 +2848,7 @@ def _prefill_restored_prompt_suffix(
     the body, then a single final-token logits/hidden pass for decode startup.
     """
 
+    _reject_unwired_ple_lookahead("_prefill_restored_prompt_suffix")
     if not suffix:
         raise ValueError("suffix must not be empty")
     _check_postcommit_abort(abort_check)
@@ -5529,6 +5602,7 @@ def _prefill(
     gdn_boundary_sink: list[tuple[int, Any]] | None = None,
     stable_prefix_len: int | None = None,
 ):
+    _reject_unwired_ple_lookahead("_prefill")
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
 
@@ -5712,6 +5786,7 @@ def _prefill_committed_mtp_history_streaming(
                     rt.embed_tokens, chunk_array, vision_splice
                 )
             started = time.perf_counter()
+            gather_before = _ple_stage_seconds()
             with attention_phase("prefill"):
                 if needs_history_hidden:
                     logits_chunk, hidden_chunk = rt.forward_ar(
@@ -5736,7 +5811,17 @@ def _prefill_committed_mtp_history_streaming(
                 _eval(hidden_chunk)
             else:
                 _eval(logits_chunk, hidden_chunk)
-            target_forward_time += time.perf_counter() - started
+            chunk_wall_s = time.perf_counter() - started
+            target_forward_time += chunk_wall_s
+            # Cheap: two perf_counter reads and one dict per chunk.  The PLE
+            # gather is a host stall INSIDE the chunk's wall, so recording both
+            # separates "the GPU was slow" from "the host was late".
+            _record_prefill_chunk(
+                start=float(start),
+                end=float(end),
+                wall_s=chunk_wall_s,
+                ple_gather_s=_ple_stage_seconds() - gather_before,
+            )
             _runtime_count(rt, "prefill_chunks")
             if chunk_callback is not None:
                 try:
@@ -5870,6 +5955,7 @@ def _prefill_with_hidden_sequence(
     hidden_variant: str,
     vision_splice: Any | None = None,
 ):
+    _reject_unwired_ple_lookahead("_prefill_with_hidden_sequence")
     if not prompt_ids:
         raise ValueError("prompt_ids must not be empty")
 
