@@ -28,6 +28,8 @@ final class ChatConversationScrollState {
     var deferredScrollTask: Task<Void, Never>?
     var finishScrollRepairTask: Task<Void, Never>?
     var lastAutoScrollAt: ContinuousClock.Instant?
+    /// When the frame-change pin last glued the bottom.
+    var lastSynchronousPinAt: ContinuousClock.Instant?
 
     func cancelTasks() {
         autoScrollTask?.cancel()
@@ -208,9 +210,15 @@ struct ChatConversationView: View {
         guard viewModel.isStreaming,
               scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
         if scrollDriver.scrollToBottom(animated: false) {
+            scroll.lastSynchronousPinAt = ContinuousClock.now
             viewModel.uiPerfProbe.scrollPinned()
         }
     }
+
+    /// A synchronous pin younger than this (the previous frame, at 30 Hz
+    /// or 60 Hz) proves the layout-pass pin is live, so the cadenced
+    /// safety net below would only wake up to find the bottom glued.
+    private static let synchronousPinFreshness: Duration = .milliseconds(40)
 
     private func scrollToBottom(force: Bool = false) {
         guard force || scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
@@ -222,6 +230,11 @@ struct ChatConversationView: View {
         }
 
         guard scroll.autoScrollTask == nil else { return }
+        if viewModel.isStreaming,
+           let pinnedAt = scroll.lastSynchronousPinAt,
+           ContinuousClock.now - pinnedAt < Self.synchronousPinFreshness {
+            return
+        }
 
         let minimumCadence: Duration
         if viewModel.isStreaming {
