@@ -4306,6 +4306,23 @@ class Qwen4ExpTextModel(nn.Module):
         trim_n = verified_tokens - keep_tokens
         if keep_tokens < 1 or trim_n < 0 or len(cache) != len(self.layers):
             return False
+        if trim_n == 0:
+            # Full accept: the verify forward already left every entry in
+            # the post-window state (the normal round relies on exactly this
+            # and never commits a full accept). Replaying the 36 GDN
+            # recurrences and the PLE layer over the same rows would only
+            # recompute what is there and land in the next round's eval,
+            # which is the freeze after every fully accepted copy block
+            # (2026-09-02 receipt: 138 of 181 blocks fully accepted on a
+            # 3.5k re-emission turn). Drop the stashed rows and return.
+            for entry in cache:
+                if entry is None:
+                    continue
+                if getattr(entry, "_mtplx_verify_rows", None) is not None:
+                    entry._mtplx_verify_rows = None
+                if getattr(entry, "_mtplx_verify_ple", None) is not None:
+                    entry._mtplx_verify_ple = None
+            return True
 
         plan = []
         for i, (layer, entry) in enumerate(zip(self.layers, cache)):
