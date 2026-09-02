@@ -3914,13 +3914,7 @@ class _SidecarGather:
         import numpy as np
         from collections import OrderedDict
 
-        from mtplx.ple_row_gather import (
-            madvise_choice,
-            prewarm_file,
-            prewarm_skipped,
-            prewarm_source,
-            record_prewarm,
-        )
+        from mtplx.ple_row_gather import madvise_choice
 
         self.bits = bits
         self.group_size = group_size
@@ -3928,38 +3922,6 @@ class _SidecarGather:
         self._row_meta = []
         self.vectorized_gathers = 0
         self.pread_gathers = 0
-        # MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD (ON by default, =0 opts out):
-        # production serves at whatever the page cache happens to hold, and
-        # the ~30 GiB table's residency is the single largest source of
-        # first-chunk variance (1.9 s vs 4.4 s, w22, concordant with the
-        # prewarm read's own throughput).  A benchmark harness reads the table
-        # itself (--prewarm-ngram-table); the daemon had no equivalent, so
-        # this is the same sequential read, construction-bound.
-        prewarm_enabled, prewarm_from = prewarm_source()
-        if not prewarm_enabled:
-            receipt = prewarm_skipped("disabled")
-        else:
-            try:
-                receipt = prewarm_file(path)
-            except OSError as error:
-                # A pre-read is an optimisation; it must never be the reason a
-                # model fails to load.  Named in the receipt, not swallowed.
-                receipt = prewarm_skipped(repr(error))
-                print(
-                    f"[mtplx] n-gram table pre-read skipped: {error}",
-                    flush=True,
-                )
-            else:
-                print(
-                    "[mtplx] n-gram table pre-read "
-                    f"{receipt['bytes'] / 1024**3:.1f} GiB in "
-                    f"{receipt['seconds']:.1f} s "
-                    f"({receipt['gib_per_s']:.1f} GiB/s)",
-                    flush=True,
-                )
-        self.prewarm_at_load = record_prewarm(
-            receipt, enabled=prewarm_enabled, source=prewarm_from
-        )
         self.madvise_applied, _advice_value = madvise_choice()
         self._fd = os.open(str(path), os.O_RDONLY)
         for name, (info, data_start) in entries.items():
@@ -4009,6 +3971,53 @@ class _SidecarGather:
         self._hot_cap_rows = (max(0, hot_mb) * 2**20) // self._hot_row_bytes
         self.hot_hits = 0
         self.hot_misses = 0
+        self.prewarm_at_load = self._prewarm_table(path)
+
+    def _prewarm_table(self, path: Path) -> dict:
+        """Pre-read as much of the table as the budget allows (MTPLX_NGRAM_PREWARM).
+
+        Last in construction on purpose: the budget is measured against FREE
+        memory at this instant, which is only meaningful once the weights are
+        mapped, and the hotness order needs the row geometry and the pread
+        pool that the lines above build.
+
+        On by default in ``auto`` mode.  Production serves at whatever the
+        page cache happens to hold, and the ~30 GiB table's residency is the
+        single largest source of first-chunk variance (1.9 s vs 4.4 s, w22,
+        concordant with the pre-read's own throughput) as well as 56 vs 68.8
+        tok/s on decode.  A benchmark harness reads the table itself
+        (--prewarm-ngram-table); the daemon had no equivalent.
+
+        Never raises: a pre-read is an optimisation, and it must not be the
+        reason a model fails to load.
+        """
+
+        from mtplx.ple_row_gather import (
+            format_prewarm_plan,
+            format_prewarm_result,
+            record_prewarm,
+            run_prewarm,
+        )
+
+        receipt = run_prewarm(
+            table_path=path,
+            row_meta=tuple(self._row_meta),
+            fd=self._fd,
+            submit=None if self._pool is None else self._pool.submit,
+        )
+        # Two lines on the server's startup log: what was decided, and what it
+        # cost.  Guarded -- a closed stdout (app-launched daemon, redirected
+        # child) must not fail a load.
+        try:
+            print(format_prewarm_plan(receipt), flush=True)
+            print(format_prewarm_result(receipt), flush=True)
+        except (OSError, ValueError):
+            pass
+        return record_prewarm(
+            receipt,
+            enabled=bool(receipt.get("budget_bytes")),
+            source=str(receipt.get("source", "default")),
+        )
 
     def clear_hot_cache(self) -> int:
         """Drop every RAM-held row between independent benchmark runs."""

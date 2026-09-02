@@ -1657,6 +1657,91 @@ def _startup_line(text: str = "") -> None:
     _safe_stdout_print(text)
 
 
+def _apply_ngram_prewarm_choice(args: Any) -> str:
+    """Resolve --ngram-prewarm / MTPLX_NGRAM_PREWARM; return what decided.
+
+    ``None`` (the flag was not given) leaves the environment alone, so a
+    shell-set value or the on-by-default still decides.  Never fatal: a model
+    without a streamed n-gram sidecar simply never reads the key.
+    """
+
+    try:
+        from mtplx.ple_row_gather import apply_prewarm_choice
+
+        order = getattr(args, "ngram_prewarm_order", None)
+        if order:
+            os.environ["MTPLX_NGRAM_PREWARM_ORDER"] = str(order)
+        return apply_prewarm_choice(getattr(args, "ngram_prewarm", None))
+    except Exception as error:  # a startup knob must not break startup
+        return f"unavailable: {error!r}"
+
+
+def _publish_ngram_prewarm_reservation(args: Any) -> dict[str, Any]:
+    """Tell the pre-read how much memory the KV cache is about to want.
+
+    The server's own MemoryPlan is the authority, but it is built ~350 lines
+    after the model load and the pre-read happens INSIDE that load, so the
+    number cannot be read from it.  What is available here is every input the
+    plan derives it from -- `mtplx.memory_plan` is runtime-free and reads
+    bytes/token straight out of config.json -- so this is the same arithmetic
+    on the same inputs, published before the load rather than a second policy.
+
+    Unknown inputs publish zero and say so; the pre-read then leans on its
+    documented margin instead of an invented number.
+    """
+
+    try:
+        from mtplx.ple_row_gather import (
+            estimate_kv_reservation_bytes,
+            set_prewarm_reservation,
+        )
+
+        tokens = int(getattr(args, "context_window", 0) or 0)
+        if tokens <= 0:
+            from mtplx.generation import _dense_decode_max_context
+
+            tokens = int(_dense_decode_max_context() or 0)
+        reserved, source = estimate_kv_reservation_bytes(
+            getattr(args, "model", None), tokens
+        )
+        set_prewarm_reservation(reserved, source)
+        return {"bytes": int(reserved), "source": source, "tokens": tokens}
+    except Exception as error:  # a startup knob must not break startup
+        return {"bytes": 0, "source": f"unavailable: {error!r}", "tokens": 0}
+
+
+def _ngram_prewarm_health_payload() -> dict[str, Any]:
+    """What the n-gram table pre-read actually did, for ``/health``.
+
+    Read from the module-level receipt `mtplx.ple_row_gather` publishes, not
+    by walking the runtime down to the sidecar: that walk is family-specific
+    and five getattrs deep, and it is exactly the shape of walk that made the
+    PLE prefill lookahead silently inert on 2026-09-01.
+    """
+
+    try:
+        from mtplx.ple_row_gather import last_prewarm
+
+        receipt = last_prewarm()
+    except Exception as error:
+        return {"enabled": None, "reason": repr(error)}
+    return {
+        "enabled": receipt.get("enabled"),
+        "mode": receipt.get("mode"),
+        "order": receipt.get("order"),
+        "table_bytes": receipt.get("table_bytes"),
+        "budget_bytes": receipt.get("budget_bytes"),
+        "warmed_bytes": receipt.get("warmed_bytes", receipt.get("bytes")),
+        "seconds": receipt.get("seconds"),
+        "gib_per_s": receipt.get("gib_per_s"),
+        "free_bytes": receipt.get("free_bytes"),
+        "reserved_bytes": receipt.get("reserved_bytes"),
+        "margin_bytes": receipt.get("margin_bytes"),
+        "source": receipt.get("source"),
+        "skipped_reason": receipt.get("skipped_reason"),
+    }
+
+
 def _laguna_fused_startup_line(runtime: Any) -> str | None:
     """Engagement receipt for the env-gated fused stack (grep: [laguna-fused])."""
 
@@ -2673,6 +2758,13 @@ class ServerState:
             # CLI flag is the public surface, the env is the plumbing.
             os.environ["MTPLX_MEMORY_BUDGET"] = str(int(self.memory_budget_bytes))
         self.mlx_cache_limit_status = _configure_mlx_cache_limit(args)
+        # The n-gram table pre-read: the CLI flag is the public surface, the
+        # env is the plumbing (same contract as MTPLX_MEMORY_BUDGET above).
+        # Stamped AFTER apply_profile_env so an explicit --ngram-prewarm /
+        # --no-ngram-prewarm also wins over a model contract's override, and
+        # BEFORE the load below, which is what performs the read.
+        self.ngram_prewarm_source = _apply_ngram_prewarm_choice(args)
+        self.ngram_prewarm_reservation = _publish_ngram_prewarm_reservation(args)
         _startup_line("[4/6] Runtime checks complete")
         started = time.perf_counter()
         _startup_line(f"[5/6] Loading model weights: {args.model}")
@@ -27831,6 +27923,11 @@ def create_app(state: ServerState) -> FastAPI:
             ),
             "mlx_cache_limit": state.mlx_cache_limit_status,
             "mlx_runtime": state.mlx_runtime_status,
+            # Page-cache residency of the streamed n-gram table decides 56 vs
+            # 68.8 tok/s on decode, so it belongs in the same truth block as
+            # the other clamps: a warm-looking box that skipped the pre-read
+            # is a slow box with no other symptom.
+            "ngram_prewarm": _ngram_prewarm_health_payload(),
             # Hardware fields surfaced for the dashboard's HardwareBanner
             # and MemoryStackedBar. Cached after the first lookup.
             **_machine_info(),
@@ -34742,6 +34839,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Load and inject the native MTP sidecar. Disable only for stock AR diagnostics.",
+    )
+    parser.add_argument(
+        "--ngram-prewarm",
+        metavar="auto|all|off|GiB",
+        # Not a boolean, and default=None rather than "auto": the flag has an
+        # environment counterpart (MTPLX_NGRAM_PREWARM), and a default would
+        # be indistinguishable from the user typing it -- so the CLI would
+        # silently overrule every shell-set value.  None means "not given".
+        default=None,
+        help=(
+            "How much of the streamed n-gram table to read into the page "
+            "cache at model load. auto (default) warms min(table, free - KV "
+            "reservation - 6 GiB margin); all reads the whole table (~2.5 s "
+            "at ~12 GiB/s for 30 GiB); a bare number is a budget in GiB; off "
+            "serves at the as-found page-cache rate. Cold sidecar rows are "
+            "demand faults at ~1.4 GiB/s and cost 56 vs 68.8 tok/s on decode. "
+            "Environment: MTPLX_NGRAM_PREWARM, which this flag overrides."
+        ),
+    )
+    parser.add_argument(
+        "--no-ngram-prewarm",
+        dest="ngram_prewarm",
+        action="store_const",
+        const="off",
+        help="Alias for --ngram-prewarm off.",
+    )
+    parser.add_argument(
+        "--ngram-prewarm-order",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Row-hotness file (.npy of int64 row ids, most-gathered first) "
+            "deciding WHICH rows a partial pre-read warms. Defaults to "
+            "<model>/ngram-hotness.npy when present, else the file prefix is "
+            "read sequentially."
+        ),
     )
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument(

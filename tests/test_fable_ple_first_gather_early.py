@@ -539,7 +539,7 @@ def test_prewarm_is_on_by_default_and_independent_of_the_lane(monkeypatch):
     monkeypatch.setenv(row_gather.ENV_FLAG, "0")
     row_gather.enabled.cache_clear()
     assert row_gather.prewarm_source() == (True, "default")
-    monkeypatch.setenv(row_gather.PREWARM_ENV, "0")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "off")
     assert row_gather.prewarm_source() == (False, "env")
     monkeypatch.setenv(row_gather.PREWARM_ENV, "maybe")
     with pytest.raises(ValueError):
@@ -552,19 +552,19 @@ def test_the_deprecated_alias_still_works_and_the_official_key_beats_it(monkeypa
     monkeypatch.setenv(row_gather.PREWARM_AT_LOAD_ENV, "0")
     monkeypatch.setattr(row_gather, "_DEPRECATION_WARNED", False)
     assert row_gather.prewarm_source() == (False, "deprecated_env")
-    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "all")
     assert row_gather.prewarm_source() == (True, "env")
 
 
 def test_the_cli_choice_beats_a_shell_set_value(monkeypatch):
-    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
-    assert row_gather.apply_prewarm_choice(False) == "cli"
-    assert os.environ[row_gather.PREWARM_ENV] == "0"
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "all")
+    assert row_gather.apply_prewarm_choice("off") == "cli"
+    assert os.environ[row_gather.PREWARM_ENV] == "off"
     assert row_gather.prewarm_source() == (False, "env")
     # An unset flag leaves the environment alone and names what decided.
-    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "all")
     assert row_gather.apply_prewarm_choice(None) == "env"
-    assert os.environ[row_gather.PREWARM_ENV] == "1"
+    assert os.environ[row_gather.PREWARM_ENV] == "all"
     monkeypatch.delenv(row_gather.PREWARM_ENV, raising=False)
     monkeypatch.delenv(row_gather.PREWARM_AT_LOAD_ENV, raising=False)
     assert row_gather.apply_prewarm_choice(None) == "default"
@@ -664,9 +664,10 @@ def test_the_sidecar_decides_its_advice_instead_of_hard_coding_it():
     assert "madvise(mmap." not in init
     assert "self.madvise_applied, _advice_value = madvise_choice()" in init
     assert "mm._mmap.madvise(_advice_value)" in init
-    assert "prewarm_enabled, prewarm_from = prewarm_source()" in init
-    assert "receipt = prewarm_file(path)" in init
-    assert "record_prewarm(" in init
-    assert "n-gram table pre-read " in init
+    assert "self.prewarm_at_load = self._prewarm_table(path)" in init
+    prewarm = MODEL_TEXT.split("def _prewarm_table", 1)[1].split("\n    def ", 1)[0]
+    assert "run_prewarm(" in prewarm
+    assert "record_prewarm(" in prewarm
+    assert "format_prewarm_plan(receipt)" in prewarm
 
 
