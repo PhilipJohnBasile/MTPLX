@@ -3916,8 +3916,10 @@ class _SidecarGather:
 
         from mtplx.ple_row_gather import (
             madvise_choice,
-            prewarm_at_load_enabled,
             prewarm_file,
+            prewarm_skipped,
+            prewarm_source,
+            record_prewarm,
         )
 
         self.bits = bits
@@ -3926,21 +3928,38 @@ class _SidecarGather:
         self._row_meta = []
         self.vectorized_gathers = 0
         self.pread_gathers = 0
-        # MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD: production serves at whatever the
-        # page cache happens to hold, and the ~30 GiB table's residency is the
-        # single largest source of first-chunk variance (1.9 s vs 4.4 s, w22).
-        # A benchmark harness can read the table itself; the daemon cannot, so
-        # this is the same read, construction-bound, off by default.
-        self.prewarm_at_load = None
-        if prewarm_at_load_enabled():
-            self.prewarm_at_load = prewarm_file(path)
-            print(
-                "[qwen4_exp] n-gram table prewarmed at load: "
-                f"{self.prewarm_at_load['bytes'] / 1024**3:.2f} GiB in "
-                f"{self.prewarm_at_load['seconds']:.2f} s "
-                f"({self.prewarm_at_load['gib_per_s']:.2f} GiB/s)",
-                flush=True,
-            )
+        # MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD (ON by default, =0 opts out):
+        # production serves at whatever the page cache happens to hold, and
+        # the ~30 GiB table's residency is the single largest source of
+        # first-chunk variance (1.9 s vs 4.4 s, w22, concordant with the
+        # prewarm read's own throughput).  A benchmark harness reads the table
+        # itself (--prewarm-ngram-table); the daemon had no equivalent, so
+        # this is the same sequential read, construction-bound.
+        prewarm_enabled, prewarm_from = prewarm_source()
+        if not prewarm_enabled:
+            receipt = prewarm_skipped("disabled")
+        else:
+            try:
+                receipt = prewarm_file(path)
+            except OSError as error:
+                # A pre-read is an optimisation; it must never be the reason a
+                # model fails to load.  Named in the receipt, not swallowed.
+                receipt = prewarm_skipped(repr(error))
+                print(
+                    f"[mtplx] n-gram table pre-read skipped: {error}",
+                    flush=True,
+                )
+            else:
+                print(
+                    "[mtplx] n-gram table pre-read "
+                    f"{receipt['bytes'] / 1024**3:.1f} GiB in "
+                    f"{receipt['seconds']:.1f} s "
+                    f"({receipt['gib_per_s']:.1f} GiB/s)",
+                    flush=True,
+                )
+        self.prewarm_at_load = record_prewarm(
+            receipt, enabled=prewarm_enabled, source=prewarm_from
+        )
         self.madvise_applied, _advice_value = madvise_choice()
         self._fd = os.open(str(path), os.O_RDONLY)
         for name, (info, data_start) in entries.items():

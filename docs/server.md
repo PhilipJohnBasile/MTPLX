@@ -21,6 +21,45 @@ Endpoints:
 - `GET /admin/sessions`
 - `POST /admin/cache/clear`
 
+## n-gram table pre-read (`--ngram-prewarm`, on by default)
+
+Models with a streamed n-gram sidecar (the Qwen 3.8 Flash-Next family) keep a
+~30 GiB PLE table on SSD and gather rows from it through a memmap. Those rows
+are hash-scattered, so a cold table means demand faults during decode —
+serial, and flat at ~1.4 GiB/s however many threads touch them — while reading
+the file sequentially runs at ~12 GiB/s. So the server reads the whole table
+once at model load:
+
+```
+[mtplx] n-gram table pre-read 29.8 GiB in 2.5 s (12.1 GiB/s)
+```
+
+That ~2.5 s is bought back immediately: cold sidecar rows measured 56 tok/s
+against 68.8 tok/s warm, and the first prefill chunk stops being bimodal
+(1.9 s vs 4.4 s on the same build, tracking nothing but table residency).
+
+Opt out when you want the old as-found behaviour — a machine where the load
+time matters more than the first replies, or an A/B of this exact effect:
+
+```bash
+mtplx serve --no-ngram-prewarm
+mtplx start --no-ngram-prewarm
+```
+
+The equivalent environment variable is `MTPLX_NGRAM_PREWARM` (`1`/`0`), and
+the CLI flag wins over it. `GET /health` reports what actually happened:
+
+```json
+"ngram_prewarm": {"enabled": true, "bytes": 32000000000, "seconds": 2.5, "gib_per_s": 12.1}
+```
+
+**Caveat.** This warms the page cache; it does not pin it. On a 128 GB Mac
+running ~85 GB of wired weights next to a 32 GB table, memory pressure can
+evict those pages again, and the pre-read has no way to notice. The hot-row
+LRU (`MTPLX_NGRAM_HOT_MB`, default 1024) holds the popular rows in RAM and is
+unaffected. A periodic re-warm, or growing the hot-row cache to cover the
+working set, is the follow-up — deliberately not part of this change.
+
 ## Sharing on your network (other devices, Parallels/VM guests)
 
 The default bind is `127.0.0.1`: only this Mac can connect. To reach MTPLX

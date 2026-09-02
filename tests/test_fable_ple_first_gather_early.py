@@ -533,17 +533,94 @@ def test_madvise_override_wins_either_way(monkeypatch):
     row_gather.enabled.cache_clear()
 
 
-def test_prewarm_at_load_is_off_by_default_and_independent_of_the_lane(monkeypatch):
+def test_prewarm_is_on_by_default_and_independent_of_the_lane(monkeypatch):
+    monkeypatch.delenv(row_gather.PREWARM_ENV, raising=False)
     monkeypatch.delenv(row_gather.PREWARM_AT_LOAD_ENV, raising=False)
-    monkeypatch.setenv(row_gather.ENV_FLAG, "1")
+    monkeypatch.setenv(row_gather.ENV_FLAG, "0")
     row_gather.enabled.cache_clear()
-    assert row_gather.prewarm_at_load_enabled() is False
-    monkeypatch.setenv(row_gather.PREWARM_AT_LOAD_ENV, "1")
-    assert row_gather.prewarm_at_load_enabled() is True
-    monkeypatch.setenv(row_gather.PREWARM_AT_LOAD_ENV, "maybe")
+    assert row_gather.prewarm_source() == (True, "default")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "0")
+    assert row_gather.prewarm_source() == (False, "env")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "maybe")
     with pytest.raises(ValueError):
         row_gather.prewarm_at_load_enabled()
     row_gather.enabled.cache_clear()
+
+
+def test_the_deprecated_alias_still_works_and_the_official_key_beats_it(monkeypatch):
+    monkeypatch.delenv(row_gather.PREWARM_ENV, raising=False)
+    monkeypatch.setenv(row_gather.PREWARM_AT_LOAD_ENV, "0")
+    monkeypatch.setattr(row_gather, "_DEPRECATION_WARNED", False)
+    assert row_gather.prewarm_source() == (False, "deprecated_env")
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
+    assert row_gather.prewarm_source() == (True, "env")
+
+
+def test_the_cli_choice_beats_a_shell_set_value(monkeypatch):
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
+    assert row_gather.apply_prewarm_choice(False) == "cli"
+    assert os.environ[row_gather.PREWARM_ENV] == "0"
+    assert row_gather.prewarm_source() == (False, "env")
+    # An unset flag leaves the environment alone and names what decided.
+    monkeypatch.setenv(row_gather.PREWARM_ENV, "1")
+    assert row_gather.apply_prewarm_choice(None) == "env"
+    assert os.environ[row_gather.PREWARM_ENV] == "1"
+    monkeypatch.delenv(row_gather.PREWARM_ENV, raising=False)
+    monkeypatch.delenv(row_gather.PREWARM_AT_LOAD_ENV, raising=False)
+    assert row_gather.apply_prewarm_choice(None) == "default"
+
+
+def test_the_published_prewarm_receipt_has_one_shape(monkeypatch, tmp_path):
+    monkeypatch.delenv(row_gather.PREWARM_ENV, raising=False)
+    monkeypatch.delenv(row_gather.PREWARM_AT_LOAD_ENV, raising=False)
+    row_gather._LAST_PREWARM.clear()
+    keys = {
+        "path",
+        "bytes",
+        "file_bytes",
+        "complete",
+        "seconds",
+        "chunk_bytes",
+        "gib_per_s",
+        "skipped_reason",
+        "enabled",
+        "source",
+    }
+    # Before any model load: same keys, named reason, no invented numbers.
+    before = row_gather.last_prewarm()
+    assert set(before) == keys
+    assert before == {**before, "enabled": True, "source": "default"}
+    assert before["skipped_reason"] == "no_model_loaded"
+    assert before["bytes"] == 0
+
+    path = tmp_path / "table.bin"
+    path.write_bytes(os.urandom(256 * 1024))
+    published = row_gather.record_prewarm(
+        row_gather.prewarm_file(path, chunk_bytes=64 * 1024),
+        enabled=True,
+        source="cli",
+    )
+    assert set(published) == keys
+    assert row_gather.last_prewarm() == published
+    assert published["skipped_reason"] is None
+    assert published["bytes"] == path.stat().st_size
+
+    skipped = row_gather.record_prewarm(
+        row_gather.prewarm_skipped("disabled"), enabled=False, source="env"
+    )
+    assert set(skipped) == keys
+    assert skipped["skipped_reason"] == "disabled"
+    row_gather._LAST_PREWARM.clear()
+
+
+def test_the_official_key_is_registered_with_the_other_runtime_keys():
+    """A key the CLI stamps must be one packs and profiles may stamp too."""
+
+    profiles = (ROOT / "mtplx" / "profiles.py").read_text("utf-8")
+    keys = profiles.split("MODEL_RUNTIME_ENV_OVERRIDE_KEYS", 1)[1]
+    keys = keys.split("\n)\n", 1)[0]
+    assert '"MTPLX_NGRAM_PREWARM",' in keys
+    assert '"MTPLX_NGRAM_HOT_MB",' in keys
 
 
 def test_prewarm_file_reads_the_whole_file_and_reports_its_rate(tmp_path):
@@ -587,7 +664,9 @@ def test_the_sidecar_decides_its_advice_instead_of_hard_coding_it():
     assert "madvise(mmap." not in init
     assert "self.madvise_applied, _advice_value = madvise_choice()" in init
     assert "mm._mmap.madvise(_advice_value)" in init
-    assert "if prewarm_at_load_enabled():" in init
-    assert "self.prewarm_at_load = prewarm_file(path)" in init
+    assert "prewarm_enabled, prewarm_from = prewarm_source()" in init
+    assert "receipt = prewarm_file(path)" in init
+    assert "record_prewarm(" in init
+    assert "n-gram table pre-read " in init
 
 

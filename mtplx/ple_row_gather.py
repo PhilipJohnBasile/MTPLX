@@ -46,6 +46,7 @@ __all__ = [
     "ENV_FLAG",
     "MADVISE_ENV",
     "PREWARM_AT_LOAD_ENV",
+    "PREWARM_ENV",
     "PREWARM_CHUNK_BYTES",
     "MINCORE_INCORE",
     "PAGE_SIZE",
@@ -53,9 +54,14 @@ __all__ = [
     "SAMPLE_ROWS",
     "enabled",
     "gather_matrices",
+    "last_prewarm",
     "madvise_choice",
+    "apply_prewarm_choice",
     "prewarm_at_load_enabled",
     "prewarm_file",
+    "prewarm_skipped",
+    "prewarm_source",
+    "record_prewarm",
     "resident_fraction",
     "touch_rows",
     "warm_decision",
@@ -248,6 +254,16 @@ def touch_rows(memmaps, rows, *, block: int = 1 << 18) -> int:
 # ---------------------------------------------------------------------------
 
 MADVISE_ENV = "MTPLX_FABLE_NGRAM_MADVISE"
+
+#: The official knob.  The n-gram pre-read is not an experiment any more: it
+#: is on by default and it is what `mtplx serve --ngram-prewarm /
+#: --no-ngram-prewarm` sets, so it lives in the MTPLX_* namespace with the
+#: other runtime keys (mtplx/profiles.py MODEL_RUNTIME_ENV_OVERRIDE_KEYS)
+#: rather than in the fable benchmark namespace.
+PREWARM_ENV = "MTPLX_NGRAM_PREWARM"
+
+#: Deprecated alias, honoured with a one-line warning so branches and scripts
+#: that already set it keep working.
 PREWARM_AT_LOAD_ENV = "MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD"
 
 #: 64 MiB, the same unit the fable driver's ``--prewarm-ngram-table`` uses, so
@@ -293,25 +309,78 @@ def madvise_choice() -> tuple[str, int]:
     return name, _ADVICE[name]
 
 
-def prewarm_at_load_enabled() -> bool:
-    """Whether to read the n-gram table sequentially at model load.
+def _parse_bool_env(key: str):
+    """``True``/``False`` for a set key, ``None`` for an unset one; else raise."""
 
-    Independent of :func:`enabled` on purpose: the as-found page-cache state
-    is what production actually serves at, and a benchmark harness that reads
-    the table itself (the fable driver's ``--prewarm-ngram-table``) hides that
-    from every receipt it writes.  Off by default -- it costs the read.
-    """
-
-    raw = (os.environ.get(PREWARM_AT_LOAD_ENV) or "").strip().lower()
-    if raw in _FALSE:
+    raw = os.environ.get(key)
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text == "":
+        return None
+    if text in _FALSE:
         return False
-    if raw in _TRUE:
+    if text in _TRUE:
         return True
     accepted = sorted((_TRUE | _FALSE) - {""})
-    raise ValueError(
-        f"{PREWARM_AT_LOAD_ENV} must be one of {accepted}, "
-        f"got {os.environ.get(PREWARM_AT_LOAD_ENV)!r}"
-    )
+    raise ValueError(f"{key} must be one of {accepted}, got {raw!r}")
+
+
+_DEPRECATION_WARNED = False
+
+
+def prewarm_source() -> tuple[bool, str]:
+    """``(enabled, source)`` for the n-gram pre-read, and where it came from.
+
+    Precedence: :data:`PREWARM_ENV` (which is what the CLI stamps, so
+    ``--ngram-prewarm`` / ``--no-ngram-prewarm`` wins over a shell-set value)
+    then the deprecated fable alias, then the default.
+
+    Default ON.  The as-found page-cache state is what production actually
+    serves at, and a benchmark harness reads the table itself (the fable
+    driver's ``--prewarm-ngram-table``) so its receipts never showed the
+    difference -- while the daemon, which had no equivalent, did: the w22
+    window measured a 1.9 s vs 4.4 s first prefill chunk, perfectly
+    concordant with the prewarm read's own throughput, and cold sidecar rows
+    cost 56 vs 68.8 tok/s on decode.
+    """
+
+    global _DEPRECATION_WARNED
+
+    official = _parse_bool_env(PREWARM_ENV)
+    if official is not None:
+        return official, "env"
+    legacy = _parse_bool_env(PREWARM_AT_LOAD_ENV)
+    if legacy is not None:
+        if not _DEPRECATION_WARNED:
+            _DEPRECATION_WARNED = True
+            print(
+                f"[mtplx] {PREWARM_AT_LOAD_ENV} is deprecated; "
+                f"use {PREWARM_ENV} (or mtplx serve --no-ngram-prewarm)",
+                flush=True,
+            )
+        return legacy, "deprecated_env"
+    return True, "default"
+
+
+def prewarm_at_load_enabled() -> bool:
+    """Whether to read the n-gram table sequentially at model load."""
+
+    return prewarm_source()[0]
+
+
+def apply_prewarm_choice(cli_value) -> str:
+    """Stamp an explicit CLI choice into :data:`PREWARM_ENV`; return the source.
+
+    ``None`` means the flag was not given, so the environment (or the default)
+    decides.  Stamping is what makes "CLI wins over env" true for the whole
+    process, including the model load that happens later and any subprocess.
+    """
+
+    if cli_value is None:
+        return prewarm_source()[1]
+    os.environ[PREWARM_ENV] = "1" if cli_value else "0"
+    return "cli"
 
 
 def prewarm_file(path, *, chunk_bytes: int = PREWARM_CHUNK_BYTES) -> dict:
@@ -344,4 +413,56 @@ def prewarm_file(path, *, chunk_bytes: int = PREWARM_CHUNK_BYTES) -> dict:
         "seconds": float(elapsed),
         "chunk_bytes": int(chunk_bytes),
         "gib_per_s": (total / 1024**3) / elapsed if elapsed > 0 else None,
+        "skipped_reason": None,
     }
+
+
+def prewarm_skipped(reason: str) -> dict:
+    """The same receipt shape for a prewarm that did not run.
+
+    One shape either way: a reader that has to tell ``None`` (the field was
+    never written) from "it ran and read nothing" is a reader that will get it
+    wrong.
+    """
+
+    return {
+        "path": None,
+        "bytes": 0,
+        "file_bytes": None,
+        "complete": False,
+        "seconds": 0.0,
+        "chunk_bytes": None,
+        "gib_per_s": None,
+        "skipped_reason": str(reason),
+    }
+
+
+#: The last n-gram pre-read this process performed, published by
+#: ``_SidecarGather.__init__`` and read by ``/health``.  A module-level fact
+#: rather than a walk from the server down to the sidecar: the server would
+#: have to know the model's internal shape to find it, and that walk is
+#: exactly what made the PLE lookahead inert on 2026-09-01.
+_LAST_PREWARM: dict = {}
+
+
+def record_prewarm(receipt: dict, *, enabled: bool, source: str) -> dict:
+    """Publish one pre-read receipt for ``/health`` and return it."""
+
+    published = dict(receipt)
+    published["enabled"] = bool(enabled)
+    published["source"] = str(source)
+    _LAST_PREWARM.clear()
+    _LAST_PREWARM.update(published)
+    return published
+
+
+def last_prewarm() -> dict:
+    """The published pre-read receipt, or an unknown-shaped one before load."""
+
+    if _LAST_PREWARM:
+        return dict(_LAST_PREWARM)
+    enabled, source = prewarm_source()
+    unknown = prewarm_skipped("no_model_loaded")
+    unknown["enabled"] = bool(enabled)
+    unknown["source"] = str(source)
+    return unknown
