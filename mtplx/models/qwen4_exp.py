@@ -59,7 +59,7 @@ from mlx_lm.models.qwen3_next import (
 )
 
 from mtplx.attention_context import current_attention_phase
-from mtplx.runtime_options import fable_opdiet_enabled
+from mtplx.runtime_options import fable_opdiet_enabled, fable_verify_glue_enabled
 
 
 @dataclass
@@ -2609,6 +2609,49 @@ class QSAIndexer(nn.Module):
             for leaf in range(len(chunks[0]))
         )
 
+    def _verify_glue_rope_idx(self) -> bool:
+        """True when ``MTPLX_FABLE_VERIFY_GLUE``'s ``qsa_rope_idx`` serves.
+
+        Host-only, and read from the verdict the install probe recorded at
+        model build outside any trace, so two traces of the same compiled
+        verify graph cannot disagree about which preparation they contain.
+        A False here is routing (the item is not armed, or its probe
+        disabled it); a contract miss raised at install and never gets here.
+        """
+
+        if not fable_verify_glue_enabled("qsa_rope_idx"):
+            return False
+        from mtplx import fable_verify_glue as _glue
+
+        if not _glue.qsa_rope_idx_installed():
+            return False
+        _glue.note_prep_call()
+        return True
+
+    def _prepare_queries_m4(self, q: mx.array, pos_start) -> mx.array:
+        """RMSNorm + partial RoPE in one dispatch, instead of twelve.
+
+        This is the SHIPPED ``qsa_indexer_prepare_queries_metal``, whose
+        bit-exactness against ``_prepare_queries_eager`` is pinned for
+        bf16/f16 in tests/test_qsa_indexer_prepare_metal.py.  The fixed lane
+        skipped it only because ``_prepare_queries`` gates on
+        MTPLX_QSA_FUSED_INDEXER; the kernel itself already accepts a tensor
+        ``pos_start``, which is exactly what a tensor-offset cache needs.
+        """
+
+        from mtplx.kernels.qsa_indexer_prepare import (
+            qsa_indexer_prepare_queries_metal,
+        )
+
+        return qsa_indexer_prepare_queries_metal(
+            q,
+            self.q_layernorm.weight,
+            self._inv_freq,
+            pos_start=pos_start,
+            eps=self.rms_norm_eps,
+            attention_scaling=self._rope_attention_scaling,
+        )
+
     def _prepare_queries_eager(self, q: mx.array, pos_start: int) -> mx.array:
         """Stock query preparation kept as the numeric oracle."""
 
@@ -3051,7 +3094,12 @@ class QSAIndexer(nn.Module):
         q = q.reshape(B, S, self.n_heads, self.head_dim)
         k = k.reshape(B, S, self.head_dim)
         if fixed_capacity:
-            q = self._prepare_queries_eager(q, pos_start)
+            if self._verify_glue_rope_idx():
+                # MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx': RMSNorm and
+                # partial RoPE through the shipped fused preparation kernel.
+                q = self._prepare_queries_m4(q, pos_start)
+            else:
+                q = self._prepare_queries_eager(q, pos_start)
             cache.write_raw(k)
             cache._last_write_rows = int(S)
             pooled = self._extend_pooled(cache, T)
@@ -3386,6 +3434,23 @@ class Attention(nn.Module):
             else None
         )
 
+    def _verify_glue_rope(self, rows: int) -> bool:
+        """True when ``MTPLX_FABLE_VERIFY_GLUE``'s ``qsa_rope`` serves this call.
+
+        Host-only, from the verdict the install probe recorded at model build
+        outside any trace.  Width is a NARROWING, not a failure: the kernel is
+        a latency play on the 1..8-row decode/verify window and prefill is a
+        regime nothing here has measured, so prefill keeps the stock chain.
+        """
+
+        if not fable_verify_glue_enabled("qsa_rope"):
+            return False
+        from mtplx import fable_verify_glue as _glue
+
+        if not _glue.serves_rows(rows):
+            return False
+        return _glue.qsa_rope_installed()
+
     def __call__(self, x: mx.array, cache: QSACache) -> mx.array:
         B, S, _ = x.shape
         pos_start = cache.offset
@@ -3442,6 +3507,22 @@ class Attention(nn.Module):
                 cos, sin = _rope_cos_sin(
                     positions, self._inv_freq, self._rope_attention_scaling
                 )
+        elif vrope is None and self._verify_glue_rope(int(S)):
+            # MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope': the table build and
+            # both rotations as ONE dispatch. Same arithmetic, same order --
+            # the install probe proved it bit-exact against whichever stock
+            # spelling this process armed.
+            from mtplx.kernels.qwen4_m4_rope import rope_qk
+
+            rotated_q, k = rope_qk(
+                q,
+                k,
+                self._inv_freq,
+                pos_start=pos_start,
+                attention_scaling=self._rope_attention_scaling,
+            )
+            q = rotated_q
+            cos = sin = None
         elif fable_opdiet_enabled("rope"):
             # Text rope: one half-width table per (pos_start, S) instead of a
             # full-width table per consumer. The indexer above already asked

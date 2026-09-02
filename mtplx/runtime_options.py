@@ -126,6 +126,103 @@ def fable_opdiet_enabled(item: str | None = None) -> bool:
     return item in _FABLE_OPDIET_SELECTED
 
 
+#: W70 -- fused glue inside the compiled fixed-M4 verify body.
+#:
+#: One flag, per-item selection, same shape as ``MTPLX_FABLE_OPDIET``: a
+#: result must be attributable to ONE rewrite, because "fewer dispatches" and
+#: "faster" are different claims (the op diet's first ``bank`` spelling issued
+#: the fewest dispatches of three and was the slowest of three).
+#:
+#: ``qsa_rope``      the attention query/key rotation of a QSA layer -- the
+#:                   RoPE table build plus two 5-dispatch rotations -- as ONE
+#:                   ``mtplx/kernels/qwen4_m4_rope`` dispatch per layer.
+#: ``qsa_rope_idx``  the indexer's query preparation (RMSNorm + partial RoPE)
+#:                   through the SHIPPED ``qsa_indexer_prepare_queries_metal``,
+#:                   which the fixed-M4 lane never called because
+#:                   ``_prepare_queries`` gates on MTPLX_QSA_FUSED_INDEXER.
+#:
+#: Read ONCE at import, same reasoning as the flags above: the hot path must
+#: not touch ``os.environ``, and two traces of the same compiled verify graph
+#: must not disagree about which chain they contain.  Off by default.
+#:
+#: NOT AN ITEM, and the reason is structural rather than a matter of effort:
+#: ``hc_triple`` (W69 §4, 194 nodes).  ``hc_norm -> hc_down -> hc_up`` cannot
+#: become one dispatch.  ``hc_down`` produces ``mixv[R, 320]`` across 81
+#: cooperating threadgroups and every one of ``hc_up``'s 320 threadgroups
+#: reads the WHOLE vector; ``hc_norm``'s ``normed[R, 10240]`` is likewise read
+#: in full by every ``hc_down`` threadgroup.  Those are grid-wide
+#: read-after-write edges, and Metal has no grid-wide barrier inside a
+#: dispatch.  The single-threadgroup spelling that would avoid them is the one
+#: ``kernels/qwen4_m4_hyper_read`` already measured at 13.2 tok/s against 67.8.
+FABLE_VERIFY_GLUE_ITEMS = ("qsa_rope", "qsa_rope_idx")
+
+_FABLE_VERIFY_GLUE = env_bool("MTPLX_FABLE_VERIFY_GLUE", default=False)
+
+
+def parse_verify_glue_items(
+    raw: str | None,
+    *,
+    known: tuple[str, ...] = FABLE_VERIFY_GLUE_ITEMS,
+) -> frozenset[str]:
+    """Parse ``MTPLX_FABLE_VERIFY_GLUE_ITEMS``; unset/empty selects everything.
+
+    An unknown name raises rather than being dropped: a typo that silently
+    disabled the item under test would make the arm measure the control twice.
+    """
+
+    if raw is None:
+        return frozenset(known)
+    tokens = {token.strip().lower() for token in str(raw).split(",")}
+    tokens.discard("")
+    if not tokens:
+        return frozenset(known)
+    if tokens == {"all"}:
+        return frozenset(known)
+    unknown = sorted(tokens - set(known))
+    if unknown:
+        raise ValueError(
+            f"MTPLX_FABLE_VERIFY_GLUE_ITEMS={raw!r} has unknown item(s) "
+            f"{', '.join(unknown)}; expected a comma list from: "
+            f"{', '.join(known)}"
+        )
+    return frozenset(tokens)
+
+
+_FABLE_VERIFY_GLUE_SELECTED = parse_verify_glue_items(
+    os.environ.get("MTPLX_FABLE_VERIFY_GLUE_ITEMS")
+)
+
+
+def fable_verify_glue_enabled(item: str | None = None) -> bool:
+    """True when the verify-glue flag is armed, and this item is selected."""
+
+    if not _FABLE_VERIFY_GLUE:
+        return False
+    if item is None:
+        return True
+    if item not in FABLE_VERIFY_GLUE_ITEMS:
+        raise ValueError(f"unknown verify-glue item {item!r}")
+    return item in _FABLE_VERIFY_GLUE_SELECTED
+
+
+def reset_fable_verify_glue_cache(env: Mapping[str, str] | None = None) -> None:
+    """Re-read the verify-glue gates from the environment.  Tests only.
+
+    The hot path reads these once at import on purpose; this exists so a test
+    can arm one item without a subprocess, and it is never called by the
+    runtime.
+    """
+
+    global _FABLE_VERIFY_GLUE, _FABLE_VERIFY_GLUE_SELECTED
+    source = os.environ if env is None else env
+    _FABLE_VERIFY_GLUE = env_bool(
+        "MTPLX_FABLE_VERIFY_GLUE", default=False, env=source
+    )
+    _FABLE_VERIFY_GLUE_SELECTED = parse_verify_glue_items(
+        source.get("MTPLX_FABLE_VERIFY_GLUE_ITEMS")
+    )
+
+
 @dataclass(frozen=True)
 class ResolvedAPIKey:
     value: str | None
