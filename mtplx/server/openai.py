@@ -15056,6 +15056,10 @@ def _metrics_envelope(
             stats.get("repetition_stop_trimmed_tokens") or 0
         ),
         "repetition_stop_raw_tokens": int(stats.get("repetition_stop_raw_tokens") or 0),
+        # #414: which speculative branch emitted the stop token. Null on
+        # length/aborted finishes — stamped unconditionally here because
+        # the JSONL is the forensics surface the release note names.
+        "finish_stop_origin": stats.get("finish_stop_origin"),
         "loop_guard": dict(stats.get("loop_guard") or {}),
         "thinking_guard": dict(stats.get("thinking_guard") or {}),
         "lock_wait_time_s": lock_wait_time_s,
@@ -18651,6 +18655,13 @@ def _public_mtplx_stats(generated: dict[str, Any]) -> dict[str, Any]:
         reason = stats.get("repetition_stop_reason")
         if reason is not None:
             public["repetition_stop_reason"] = str(reason)
+    # #414 telemetry: same quiet-envelope rule. finish_stop_origin is None
+    # on every length/aborted finish, so it joins the envelope only when a
+    # stop actually named its commit path — without this the origin exists
+    # on GenerationStats but never reaches the SSE payload.
+    stop_origin = stats.get("finish_stop_origin")
+    if stop_origin is not None:
+        public["finish_stop_origin"] = str(stop_origin)
     # Draft-sampler truth keys (same quiet-envelope idiom): stamped only
     # when the resolution ran, so AR responses — which carry no draft
     # telemetry at all — and legacy envelopes stay byte-stable.
@@ -20748,10 +20759,23 @@ def _schedule_idle_postcommit_snapshot(
     # times out the next request just falls through to a cold prefill.
     if session is not None:
         try:
+            # Seed the size from the session's committed frontier (#432).
+            # The exact history length only lands via update_token_count
+            # once the job has rendered the conversation, which for a 200k
+            # session is many seconds in - long after the interleaved
+            # foreign request that decides whether this commit survives.
+            # The committed prefix is a sound lower bound available now, so
+            # size-keyed policy (marathon protection) stops reading 0 for
+            # exactly the commits it exists to protect.
+            try:
+                seed_tokens = len(getattr(session, "committed_token_ids", ()) or ())
+            except BaseException:
+                seed_tokens = 0
             record = session.set_pending_postcommit(
                 future,
                 abort_event=abort_event,
                 reason=unsafe_reason,
+                token_count=seed_tokens,
             )
             pending_record_holder["record"] = record
         except BaseException:

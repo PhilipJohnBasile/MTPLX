@@ -544,6 +544,11 @@ def _marathon_postcommit_protect_tokens() -> int:
     whose token_count meets the threshold is granted the marathon wait
     below instead of the standard window. Off by default: the tradeoff
     (next-turn TTFB vs the re-prefill wall) is a product decision.
+
+    Since #432 the same threshold also guards the CROSS-session admission
+    sweep (EngineSessionManager.abort_cross_session_postcommits), where the
+    reported cost of ignoring it was worse: a 130-token vision request from
+    a second session killed a 200k commit and bought a 316s re-prefill.
     """
     raw = os.environ.get("MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS")
     if raw is None or not str(raw).strip():
@@ -561,6 +566,11 @@ def _marathon_postcommit_wait_s() -> float:
     Bounded on purpose — a wedged commit must still lose to the foreground
     eventually; 30s covers the measured marathon commit times with margin
     while staying far below the re-prefill wall it prevents.
+
+    #432 reuses this as the cross-session grace as well, so operators tune
+    one bound rather than two. The cross-session window is spent once per
+    landed commit, not once per arrival or per retry record; see
+    EngineSession.cross_session_postcommit_protection.
     """
     raw = os.environ.get("MTPLX_POSTCOMMIT_MARATHON_WAIT_S")
     if raw is None or not str(raw).strip():
@@ -743,6 +753,12 @@ class EngineSession:
         # Last wait outcome, exposed via to_admin_dict for the metrics endpoint.
         self.last_postcommit_wait: dict[str, Any] | None = None
         self.last_postcommit_outcome: dict[str, Any] | None = None
+        # Monotonic deadline for cross-session marathon protection (#432).
+        # Armed on the first protected admission sweep and cleared only when
+        # a postcommit actually lands, so the whole abort/re-arm chain shares
+        # one bounded grace instead of one per record. See
+        # `cross_session_postcommit_protection`.
+        self._cross_session_protect_deadline_s: float | None = None
 
     @property
     def pending_postcommit(self) -> Any:
@@ -812,6 +828,65 @@ class EngineSession:
                 return None
             return record.to_admin_dict()
 
+    def cross_session_postcommit_protection(
+        self,
+        *,
+        protect_tokens: int,
+        grace_s: float,
+    ) -> dict[str, Any] | None:
+        """Should this session's pending postcommit survive a foreign request?
+
+        Returns None when the caller must abort exactly as before (no
+        pending record, protection disabled, commit below the threshold, or
+        the grace already spent). Returns a grant dict when the commit is
+        marathon-sized and still inside its grace window.
+
+        Issue #432: `MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS` guarded only
+        the same-session arrival path, so a 130-token vision request from
+        another session killed a 200k-token commit at admission and the deep
+        session then paid a 316s full re-prefill. The docstring rationale for
+        the unconditional abort prices the arriving request's TTFT but not
+        the destroyed checkpoint.
+
+        THE BOUND: the deadline is armed once, on the first protected sweep,
+        and is NOT refreshed by later arrivals. It is cleared only by a
+        postcommit that actually lands (`finish_pending_postcommit` with a
+        stored outcome). An aborted commit re-arms with a fresh record up to
+        16 times, so a per-record deadline would multiply the grace by the
+        retry chain; keying it to the session caps total cross-session
+        protection at one `grace_s` window (default 30s, the same
+        `MTPLX_POSTCOMMIT_MARATHON_WAIT_S` bound the same-session path uses)
+        per landed commit. Past the deadline the foreground wins every time,
+        so a wedged commit cannot starve other sessions.
+        """
+        if protect_tokens <= 0 or grace_s <= 0.0:
+            return None
+        with self._postcommit_lock:
+            record = self._pending_postcommit
+            if record is None:
+                return None
+            try:
+                token_count = int(getattr(record, "token_count", 0) or 0)
+            except (TypeError, ValueError):
+                token_count = 0
+            if token_count < protect_tokens:
+                return None
+            now = time.monotonic()
+            deadline = self._cross_session_protect_deadline_s
+            if deadline is None:
+                deadline = now + float(grace_s)
+                self._cross_session_protect_deadline_s = deadline
+            if now >= deadline:
+                return None
+            remaining_s = deadline - now
+        return {
+            "session_id": self.session_id,
+            "token_count": token_count,
+            "protect_tokens": int(protect_tokens),
+            "grace_s": float(grace_s),
+            "grace_remaining_s": round(remaining_s, 3),
+        }
+
     def abort_pending_postcommit(self, reason: str) -> dict[str, Any]:
         with self._postcommit_lock:
             record = self._pending_postcommit
@@ -834,9 +909,16 @@ class EngineSession:
         record.mark_finished(outcome)
         if outcome is not None:
             self.last_postcommit_outcome = outcome
+        landed = bool((outcome or {}).get("stored"))
         with self._postcommit_lock:
             if self._pending_postcommit is record:
                 self._pending_postcommit = None
+            if landed:
+                # A landed commit re-arms the cross-session marathon grace
+                # (#432). Aborted/abandoned outcomes deliberately do NOT:
+                # the re-armed retry inherits the spent deadline so the
+                # whole chain shares one bounded window.
+                self._cross_session_protect_deadline_s = None
 
     def wait_for_pending_postcommit(
         self,
@@ -1591,8 +1673,21 @@ class EngineSessionManager:
         its decode ~30-50% at <2s cadence). Called at request admission,
         off the scheduler-owner thread. Best-effort: a job past its last
         abort check still completes; that window is a few hundred ms.
+
+        Marathon exception (#432, reporter nomishbhardwaj): that trade
+        inverts once the foreign commit is huge. A 130-token vision request
+        interleaved into a 200k-token agent session killed the session's
+        pending commit at admission every time, and the deep session then
+        paid a 316s full re-prefill (measured: cached=0 at 207k, cached=18432
+        of 114655 at 115k) to save the vision request a few seconds. When
+        MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS is set, a commit at or above
+        that size keeps a bounded grace instead of dying here; see
+        EngineSession.cross_session_postcommit_protection for the bound.
         """
         aborted: list[str] = []
+        protected: list[dict[str, Any]] = []
+        protect_tokens = _marathon_postcommit_protect_tokens()
+        grace_s = _marathon_postcommit_wait_s()
         for other in self._sessions_snapshot():
             session_id = getattr(other, "session_id", None)
             if except_session_id is not None and session_id == except_session_id:
@@ -1600,18 +1695,30 @@ class EngineSessionManager:
             try:
                 if not other.has_pending_postcommit():
                     continue
+                if protect_tokens > 0:
+                    grant = other.cross_session_postcommit_protection(
+                        protect_tokens=protect_tokens,
+                        grace_s=grace_s,
+                    )
+                    if grant is not None:
+                        protected.append(grant)
+                        continue
                 outcome = other.abort_pending_postcommit(reason)
                 if outcome.get("aborted"):
                     aborted.append(str(session_id))
             except BaseException:
                 continue
-        if not aborted:
+        if not aborted and not protected:
             return None
-        return {
+        result: dict[str, Any] = {
             "count": len(aborted),
             "sessions": aborted[:8],
             "reason": reason,
         }
+        if protected:
+            result["marathon_protected"] = protected[:8]
+            result["marathon_protected_count"] = len(protected)
+        return result
 
     @contextmanager
     def generation_slot(
