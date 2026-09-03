@@ -169,7 +169,11 @@ nothing beyond 2.10.2.
   Face transfer counted as downloaded: the panel read 47.38 GB of
   18.52 GB at 100 percent while still downloading. The daemon's progress
   events, the resume decision and the disk headroom check now use the
-  repo's manifest, and the app never prints past the repo size.
+  repo's manifest, and the app never prints past the repo size. The
+  leftovers are reported instead (`stale_bytes`, `stale_files` on the
+  events and in `mtplx pull`), and a stray `*.incomplete` next to landed
+  weights no longer keeps a byte-complete folder "partial" through every
+  Retry: only a needed file's partial with no final copy is a transfer.
 
 ## [2.10.2] - 2026-09-01
 

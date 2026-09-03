@@ -430,18 +430,28 @@ public struct ModelDownloader: Sendable {
             .appendingPathComponent("models", isDirectory: true)
     }
 
-    /// Recursive sum of all regular file sizes under `url`. Returns 0
-    /// if the directory doesn't exist yet (first poll, before HF
-    /// writes anything).
+    /// Recursive sum of the regular file sizes under `url`, used only as
+    /// the display fallback when the CLI emits no structured progress.
+    /// Returns 0 if the directory doesn't exist yet (first poll, before
+    /// anything is written). The hub cache's `.cache` staging tree is
+    /// skipped: older pulls left multi-GB `*.incomplete` partials there
+    /// that no download consumes. The structured path counts the
+    /// download manifest instead.
     public static func recursiveSize(of url: URL) -> Int64 {
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey],
             options: []
         ) else { return 0 }
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            let values = try? fileURL.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey]
+            )
+            if values?.isDirectory == true, fileURL.lastPathComponent == ".cache" {
+                enumerator.skipDescendants()
+                continue
+            }
             if values?.isRegularFile == true {
                 total += Int64(values?.fileSize ?? 0)
             }

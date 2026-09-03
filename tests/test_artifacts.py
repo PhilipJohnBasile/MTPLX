@@ -2947,3 +2947,199 @@ def test_public_model_id_alias_tables_agree():
         "mtplx-flash-next-bare-speed",
         "mtplx-flash-next-optimized-speed",
     } <= checked
+
+
+# ---------------------------------------------------------------------------
+# download accounting: leftovers are reported, never counted, never "partial"
+
+
+def _write_bytes(path, count: int, fill: bytes = b"x") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(fill * count)
+
+
+def test_manifest_bytes_ignore_leftovers_and_stale_bytes_report_them(tmp_path):
+    from mtplx import hf_loader
+
+    dest = tmp_path / "model"
+    _write_bytes(dest / "config.json", 100)
+    _write_bytes(dest / "model-00001-of-00002.safetensors.incomplete", 40)
+    _write_bytes(dest / "model-00002-of-00002.safetensors.incomplete", 999)
+    _write_bytes(dest / ".cache" / "huggingface" / "download" / "abc.incomplete", 5000)
+    _write_bytes(dest / "model-00007-of-00039.safetensors.incomplete", 700)
+    manifest = [
+        hf_loader.RepoFile("config.json", 100),
+        hf_loader.RepoFile("model-00001-of-00002.safetensors", 60),
+        hf_loader.RepoFile("model-00002-of-00002.safetensors", 60),
+    ]
+
+    assert hf_loader.manifest_bytes_on_disk(dest, manifest) == 100 + 40 + 60
+    assert hf_loader.stale_transient_bytes(dest, manifest) == (5700, 2)
+    assert hf_loader.directory_size_bytes(dest) == 100 + 40 + 999 + 5000 + 700
+    assert hf_loader.stale_transient_bytes(tmp_path / "missing", manifest) == (0, 0)
+    assert hf_loader._model_bytes_without_transients(dest) == 100
+
+
+def test_cached_model_complete_ignores_stale_partials(tmp_path):
+    # Only a partial whose final file has not landed, of a file the weight
+    # index needs, is an interrupted transfer. Stray markers made a
+    # byte-complete folder "partial" forever: Retry re-fetched nothing and
+    # reached the same verdict.
+    import json as _json
+
+    from mtplx import hf_loader
+
+    model = tmp_path / "model"
+    _write_bytes(model / "config.json", 10)
+    (model / "model.safetensors.index.json").write_text(
+        _json.dumps(
+            {
+                "weight_map": {
+                    "a": "model-00001-of-00002.safetensors",
+                    "b": "model-00002-of-00002.safetensors",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_bytes(model / "model-00001-of-00002.safetensors", 5)
+    _write_bytes(model / "model-00002-of-00002.safetensors", 5)
+    _write_bytes(model / "model-00002-of-00002.safetensors.incomplete", 3)
+    _write_bytes(model / "model-00001-of-00039.safetensors.incomplete", 3)
+    _write_bytes(model / ".cache" / "huggingface" / "download" / "x.incomplete", 3)
+    assert hf_loader.cached_model_is_complete(model)
+
+    (model / "model-00002-of-00002.safetensors").unlink()
+    assert not hf_loader.cached_model_is_complete(model)
+
+    single = tmp_path / "single"
+    _write_bytes(single / "config.json", 10)
+    _write_bytes(single / "model.safetensors", 50)
+    _write_bytes(single / "model-00001-of-00039.safetensors.incomplete", 3)
+    assert hf_loader.cached_model_is_complete(single)
+    (single / "model.safetensors").rename(single / "model.safetensors.incomplete")
+    assert not hf_loader.cached_model_is_complete(single)
+
+
+class _FakeSibling:
+    def __init__(self, rfilename: str, size: int):
+        self.rfilename = rfilename
+        self.size = size
+        self.blob_id = f"blob-{rfilename}"
+
+
+class _FakeModelInfo:
+    def __init__(self, siblings, sha: str = "abc123"):
+        self.siblings = siblings
+        self.sha = sha
+
+
+def _install_fake_hub(monkeypatch, files: dict[str, bytes]) -> None:
+    from mtplx import hf_loader
+
+    class _FakeApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def model_info(self, repo_id, revision=None, files_metadata=True, token=None):
+            return _FakeModelInfo([_FakeSibling(name, len(content)) for name, content in files.items()])
+
+    def fake_runtime():
+        return (
+            _FakeApi,
+            lambda repo_id, filename, revision=None: f"https://example.invalid/{filename}",
+            lambda: None,
+            lambda token=None: {},
+            lambda response: None,
+        )
+
+    def fake_stream(session, url, headers):
+        return _FakeHubResponse(headers, files[url.rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(hf_loader, "_hub_runtime", fake_runtime)
+    monkeypatch.setattr(hf_loader, "_open_hub_stream", fake_stream)
+    monkeypatch.setattr(
+        hf_loader,
+        "_query_repo_snapshot",
+        lambda repo_id, revision=None: (
+            "abc123",
+            {name: {"size": len(content), "blob_id": f"blob-{name}"} for name, content in files.items()},
+        ),
+    )
+    monkeypatch.setattr(hf_loader, "hf_token_for_download", lambda: False)
+
+
+_TINY_REPO_FILES = {
+    "config.json": b'{"model_type": "toy"}',
+    "tokenizer.json": b"{}",
+    "model.safetensors": b"w" * 3000,
+}
+
+
+def test_pull_reports_leftovers_and_finishes_complete_despite_them(monkeypatch, tmp_path):
+    from mtplx import hf_loader
+
+    _install_fake_hub(monkeypatch, _TINY_REPO_FILES)
+    cache = tmp_path / "cache"
+    dest = cache / "org--tiny"
+    _write_bytes(dest / ".cache" / "huggingface" / "download" / "old.incomplete", 20_000)
+    _write_bytes(dest / "model-00001-of-00039.safetensors.incomplete", 8_000)
+    events: list[dict] = []
+
+    result = hf_loader.pull_model(
+        "org/tiny", cache_dir=cache, progress_callback=events.append, progress_interval_s=0.0
+    )
+
+    total = sum(len(content) for content in _TINY_REPO_FILES.values())
+    assert events[0]["event"] == "start"
+    assert events[0]["size_bytes"] == 0
+    assert events[0]["total_bytes"] == total
+    assert events[0]["stale_bytes"] == 28_000
+    assert events[0]["stale_files"] == 2
+    assert events[0]["disk_bytes"] == 28_000
+    progress = [event for event in events if event["event"] == "progress"]
+    assert progress
+    assert all(0 <= event["size_bytes"] <= total == event["total_bytes"] for event in progress)
+    complete = events[-1]
+    assert complete["event"] == "complete"
+    assert complete["size_bytes"] == total == complete["total_bytes"]
+    assert complete["stale_bytes"] == 28_000
+    assert complete["stale_files"] == 2
+    assert complete["disk_bytes"] > total
+    assert result["size_bytes"] == total
+    assert result["stale_bytes"] == 28_000
+    assert result["resumed_existing"] is False
+    assert result["reused_existing"] is False
+    assert (dest / "model.safetensors").read_bytes() == _TINY_REPO_FILES["model.safetensors"]
+    # The stray partial next to the weights does not make the model "partial".
+    assert hf_loader.cached_model_is_complete(dest)
+
+
+def test_pull_reuse_reports_the_models_bytes_not_the_folders(monkeypatch, tmp_path):
+    from mtplx import hf_loader
+
+    _install_fake_hub(monkeypatch, _TINY_REPO_FILES)
+    cache = tmp_path / "cache"
+    dest = cache / "org--tiny"
+    for name, content in _TINY_REPO_FILES.items():
+        _write_bytes(dest / name, len(content))
+    hf_loader._write_source_marker(
+        dest,
+        repo_id="org/tiny",
+        revision=None,
+        resolved_sha="abc123",
+        files={name: {"size": len(content), "blob_id": f"blob-{name}"} for name, content in _TINY_REPO_FILES.items()},
+    )
+    _write_bytes(dest / ".cache" / "huggingface" / "download" / "old.incomplete", 20_000)
+    events: list[dict] = []
+
+    result = hf_loader.pull_model("org/tiny", cache_dir=cache, progress_callback=events.append)
+
+    total = sum(len(content) for content in _TINY_REPO_FILES.values())
+    assert result["reused_existing"] is True
+    assert [event["event"] for event in events] == ["complete"]
+    assert events[0]["size_bytes"] == total == events[0]["total_bytes"]
+    assert events[0]["stale_bytes"] == 20_000
+    assert events[0]["disk_bytes"] >= total + 20_000
+    assert result["size_bytes"] == total
+    assert result["stale_bytes"] == 20_000

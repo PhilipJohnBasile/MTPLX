@@ -10661,6 +10661,27 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(snapshot.map(\.message), ["two", "three"])
     }
 
+    func testModelDownloaderFallbackSizeSkipsHubCacheStagingTree() throws {
+        // Leftover `.cache/huggingface/download/*.incomplete` partials from
+        // an earlier pull are not download progress; the fallback poll
+        // must not report them.
+        let root = temporaryDirectory()
+        let model = root.appendingPathComponent("model", isDirectory: true)
+        let staging = model
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("huggingface", isDirectory: true)
+            .appendingPathComponent("download", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 100).write(to: model.appendingPathComponent("config.json"))
+        try Data(repeating: 2, count: 4_000).write(to: model.appendingPathComponent("model.safetensors"))
+        try Data(repeating: 3, count: 9_000).write(
+            to: staging.appendingPathComponent("abc.incomplete")
+        )
+
+        XCTAssertEqual(ModelDownloader.recursiveSize(of: model), 4_100)
+        XCTAssertEqual(ModelDownloader.recursiveSize(of: root.appendingPathComponent("missing")), 0)
+    }
+
     func testModelDownloaderIgnoresBriefStructuredStallEvents() async throws {
         let root = temporaryDirectory()
         let cacheLog = root.appendingPathComponent("pycache-prefix.log")

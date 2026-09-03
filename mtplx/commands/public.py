@@ -5747,6 +5747,13 @@ def cmd_pull_public(args: Any) -> int:
         print(f"model: {result.get('repo_id')}")
         print(f"path: {result.get('path')}")
         print(f"size: {_format_bytes(result.get('size_bytes'))}")
+        stale_bytes = result.get("stale_bytes")
+        if isinstance(stale_bytes, int) and stale_bytes > 0:
+            print(
+                f"leftovers: {_format_bytes(stale_bytes)} in "
+                f"{result.get('stale_files')} partial file(s) from earlier downloads "
+                "(under .cache or *.incomplete); not part of the model, safe to remove"
+            )
         print(
             f"runtime contract: {str(bool(result.get('has_runtime_contract'))).lower()}"
         )
