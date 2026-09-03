@@ -123,7 +123,7 @@ def test_stats_origin_reaches_public_surfaces():
     from mtplx.server.openai import _metrics_envelope, _public_mtplx_stats
 
     stats = {"finish_stop_origin": "residual_correction"}
-    # SSE mtplx_stats: quiet-envelope rule — present when a stop named its
+    # SSE mtplx_stats: quiet-envelope rule; present when a stop named its
     # commit path, absent on length finishes (None in to_dict()).
     assert (
         _public_mtplx_stats({"stats": stats})["finish_stop_origin"]

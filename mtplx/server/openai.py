@@ -15232,7 +15232,7 @@ def _metrics_envelope(
         ),
         "repetition_stop_raw_tokens": int(stats.get("repetition_stop_raw_tokens") or 0),
         # #414: which speculative branch emitted the stop token. Null on
-        # length/aborted finishes — stamped unconditionally here because
+        # length/aborted finishes; stamped unconditionally here because
         # the JSONL is the forensics surface the release note names.
         "finish_stop_origin": stats.get("finish_stop_origin"),
         "loop_guard": dict(stats.get("loop_guard") or {}),
@@ -18896,7 +18896,7 @@ def _public_mtplx_stats(generated: dict[str, Any]) -> dict[str, Any]:
             public["repetition_stop_reason"] = str(reason)
     # #414 telemetry: same quiet-envelope rule. finish_stop_origin is None
     # on every length/aborted finish, so it joins the envelope only when a
-    # stop actually named its commit path — without this the origin exists
+    # stop actually named its commit path; without this the origin exists
     # on GenerationStats but never reaches the SSE payload.
     stop_origin = stats.get("finish_stop_origin")
     if stop_origin is not None:
