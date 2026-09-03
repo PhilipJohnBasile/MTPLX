@@ -55,7 +55,7 @@ if str(ROOT) not in sys.path:
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.datastructures import MutableHeaders
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -1870,9 +1870,66 @@ def _startup_chat_url(args: argparse.Namespace) -> str:
 
 
 _BROWSER_AUTH_PATH = "/mtplx/browser-auth"
+_BROWSER_AUTH_TICKET_PATH = "/mtplx/browser-auth/ticket"
 _BROWSER_AUTH_QUERY_PARAM = "mtplx_api_key"
+_BROWSER_AUTH_TICKET_QUERY_PARAM = "ticket"
 _BROWSER_AUTH_COOKIE = "mtplx_browser_api_key"
 _BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS = 12 * 60 * 60
+_BROWSER_AUTH_TICKET_TTL_SECONDS = 60
+
+
+class _BrowserAuthTickets:
+    """Single-use, short-lived sign-in tickets held in process memory.
+
+    A client that already holds the API key (the native app, a terminal
+    user) mints a ticket over an authenticated call and opens
+    ``/mtplx/browser-auth?ticket=...`` in the browser, so the key itself
+    never travels in a URL that lands in browser history or proxy logs.
+    """
+
+    def __init__(self, *, ttl_s: float = _BROWSER_AUTH_TICKET_TTL_SECONDS) -> None:
+        self._ttl_s = float(ttl_s)
+        self._lock = Lock()
+        self._expiry_by_ticket: dict[str, float] = {}
+
+    def mint(self, *, now: float | None = None) -> str:
+        now = time.monotonic() if now is None else now
+        ticket = secrets.token_urlsafe(32)
+        with self._lock:
+            self._sweep(now)
+            self._expiry_by_ticket[ticket] = now + self._ttl_s
+        return ticket
+
+    def consume(self, ticket: str | None, *, now: float | None = None) -> bool:
+        """Redeem ``ticket`` exactly once; unknown, used, or expired is False."""
+
+        if not ticket:
+            return False
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            return self._expiry_by_ticket.pop(ticket, None) is not None
+
+    def _sweep(self, now: float) -> None:
+        expired = [t for t, deadline in self._expiry_by_ticket.items() if deadline <= now]
+        for ticket in expired:
+            del self._expiry_by_ticket[ticket]
+
+
+def _set_browser_auth_cookie(response: Response, request: Request, api_key: str) -> None:
+    # `secure` follows the scheme the browser actually used: an https
+    # deployment never sends the key back over plain http, while the
+    # default http://127.0.0.1 install still works (a Secure cookie set
+    # over plain http is dropped by browsers).
+    response.set_cookie(
+        _BROWSER_AUTH_COOKIE,
+        api_key,
+        max_age=_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        path="/",
+    )
 
 
 def _safe_browser_auth_next_path(value: Any) -> str:
@@ -4508,6 +4565,94 @@ def _request_is_browser_auth_bootstrap(
         return False
     candidate = _request_browser_auth_query_key(request)
     return bool(candidate and secrets.compare_digest(candidate, configured_api_key))
+
+
+def _request_is_dashboard_bundle(method: str, path: str) -> bool:
+    """The dashboard SPA bundle: ``/dashboard``, its index, and ``assets/``.
+
+    Public static content with no secrets in it. It is served without a
+    key (and without a rate-limit charge) so the page can load and render
+    its own sign-in when the API answers 401. Every JSON route, including
+    everything under ``/mtplx``, ``/v1``, and ``/admin``, keeps the gate.
+    """
+
+    return method in {"GET", "HEAD"} and (path == "/dashboard" or path.startswith("/dashboard/"))
+
+
+# Cross-origin browser pages never reach these, not even from an origin the
+# operator allowlisted with --cors-origin: they change or expose server
+# state that only the operator's own pages (and non-browser clients) own.
+_SAME_ORIGIN_ONLY_ROOTS = ("/admin", _BROWSER_AUTH_PATH)
+
+
+def _path_is_same_origin_only(path: str) -> bool:
+    return any(path == root or path.startswith(root + "/") for root in _SAME_ORIGIN_ONLY_ROOTS)
+
+
+def _normalize_origin(value: str) -> tuple[str, str, int]:
+    """Return (scheme, host, port) for an origin string, or raise ValueError."""
+
+    text = str(value or "").strip().rstrip("/")
+    parts = urllib.parse.urlsplit(text)
+    scheme = (parts.scheme or "").lower()
+    if scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError(f"not an origin (expected scheme://host[:port]): {value!r}")
+    if parts.path or parts.query or parts.fragment or parts.username or parts.password:
+        raise ValueError(f"an origin has no path, query, or credentials: {value!r}")
+    port = parts.port if parts.port is not None else (443 if scheme == "https" else 80)
+    return scheme, parts.hostname.lower(), int(port)
+
+
+def _parse_cors_origins(values: Iterable[str] | None, env_value: str | None = None) -> tuple[str, ...]:
+    """Merge --cors-origin flags and MTPLX_CORS_ORIGINS into normalized origins."""
+
+    raw: list[str] = [str(v) for v in (values or [])]
+    for item in str(env_value or "").split(","):
+        if item.strip():
+            raw.append(item)
+    normalized: list[str] = []
+    for item in raw:
+        for piece in str(item).split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            scheme, host, port = _normalize_origin(piece)
+            default_port = 443 if scheme == "https" else 80
+            hostname = f"[{host}]" if ":" in host else host
+            origin = f"{scheme}://{hostname}" + ("" if port == default_port else f":{port}")
+            if origin not in normalized:
+                normalized.append(origin)
+    return tuple(normalized)
+
+
+def _request_origin_is_own(origin: str, *, scheme: str, host_header: str | None) -> bool:
+    """True when ``Origin`` names the very origin the client used to reach us.
+
+    The comparison is against the request's own Host and scheme rather
+    than a fixed list, so localhost, 127.0.0.1, [::1], a LAN bind, and a
+    TLS proxy that preserves Host all count as same-origin.
+    """
+
+    if not host_header:
+        return False
+    try:
+        return _normalize_origin(origin) == _normalize_origin(f"{scheme}://{host_header.strip()}")
+    except ValueError:
+        return False
+
+
+def _origin_is_allowlisted(origin: str, allowlist: Iterable[str]) -> bool:
+    try:
+        wanted = _normalize_origin(origin)
+    except ValueError:
+        return False
+    for allowed in allowlist:
+        try:
+            if _normalize_origin(allowed) == wanted:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -22430,10 +22575,16 @@ class _AuthRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
         request = Request(scope)
+        path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "GET").upper()
+        if _request_is_dashboard_bundle(method, path):
+            await self.app(scope, receive, send)
+            return
         api_key = self.state.args.api_key
-        if not _request_is_authorized(
-            request, api_key
-        ) and not _request_is_browser_auth_bootstrap(request, api_key):
+        # The browser sign-in route checks its own credential (query key,
+        # ticket, or posted key) and answers 401 itself; it still pays the
+        # rate limit below, so key guessing stays throttled.
+        if path != _BROWSER_AUTH_PATH and not _request_is_authorized(request, api_key):
             response = JSONResponse(
                 status_code=401,
                 content={
@@ -22461,6 +22612,101 @@ class _AuthRateLimitMiddleware:
             await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
+
+
+class _OriginPolicyMiddleware:
+    """Same-origin-by-default browser gate, with CORS answered in one place.
+
+    Replaces the former ``CORSMiddleware(allow_origins=["*"],
+    allow_credentials=True)``, which let any web page the user visited drive
+    the local model (and, on a keyless localhost bind, read the answers and
+    clear sessions). Policy, per request carrying an ``Origin`` header:
+
+    - ``Origin`` equal to the origin the client used to reach us (scheme +
+      Host) is same-origin: allowed, credentials included.
+    - An origin listed in ``--cors-origin`` / ``MTPLX_CORS_ORIGINS`` is
+      allowed for the API, but never for the same-origin-only routes
+      (``/admin/*`` and the browser sign-in endpoints).
+    - Any other ``Origin`` (including ``null``) gets a 403 and no
+      ``Access-Control-Allow-*`` headers. Browsers attach ``Origin`` to
+      every cross-origin request, including "simple" POSTs whose response
+      they would not let the page read, so this also stops the
+      keep-the-GPU-busy variant.
+
+    Requests without ``Origin`` (the native app, OpenCode, Pi, Claude Code,
+    curl) pass through untouched: no wrapper, no per-chunk cost. Preflights
+    from allowed origins are answered here, including the private-network
+    grant Chromium asks for before a public page may call a loopback host.
+    Pure ASGI like the auth gate above, for the same streaming reason.
+    """
+
+    def __init__(self, app: Any, state: Any) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        origin = request.headers.get("origin")
+        if origin is None:
+            await self.app(scope, receive, send)
+            return
+        path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "GET").upper()
+        same_origin = _request_origin_is_own(
+            origin, scheme=request.url.scheme, host_header=request.headers.get("host")
+        )
+        allowlisted = not same_origin and _origin_is_allowlisted(
+            origin, getattr(self.state.args, "cors_origins", None) or ()
+        )
+        allowed = same_origin or (allowlisted and not _path_is_same_origin_only(path))
+        if not allowed:
+            response = JSONResponse(
+                status_code=403,
+                content={
+                    "error": {
+                        "message": "cross-origin request refused",
+                        "type": "origin_error",
+                    }
+                },
+            )
+            await response(scope, receive, send)
+            return
+        preflight = method == "OPTIONS" and "access-control-request-method" in request.headers
+        if preflight:
+            headers = {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": request.headers.get(
+                    "access-control-request-method", "GET"
+                ),
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+            }
+            requested_headers = request.headers.get("access-control-request-headers")
+            if requested_headers:
+                headers["Access-Control-Allow-Headers"] = requested_headers
+            if request.headers.get("access-control-request-private-network", "").lower() == "true":
+                headers["Access-Control-Allow-Private-Network"] = "true"
+            response = Response(status_code=200, headers=headers)
+            await response(scope, receive, send)
+            return
+        if same_origin:
+            # Browsers do not apply CORS to same-origin requests; nothing to add.
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_cors_headers(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.append("Access-Control-Allow-Origin", origin)
+                headers.append("Access-Control-Allow-Credentials", "true")
+                headers.add_vary_header("Origin")
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors_headers)
 
 
 async def _prompt_scoring_response(
@@ -27699,54 +27945,103 @@ def create_app(state: ServerState) -> FastAPI:
     # (the most recently added Starlette middleware runs first): fans only
     # ramp for requests that passed the API-key and rate-limit gates.
     app.add_middleware(_SmartFanArrivalMiddleware, state=state)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
-    # Registered LAST so it stays the OUTERMOST middleware, exactly where
-    # the previous @app.middleware("http") decorator put it. Pure ASGI on
-    # purpose (2026-08-18): the decorator form is Starlette
-    # BaseHTTPMiddleware, which relays every response chunk through a
-    # zero-buffer anyio memory channel across a task-group boundary —
-    # several extra event-loop turns per SSE frame at 60-120 frames/s,
-    # clumping stream delivery whenever the loop is busy. This gate only
-    # inspects the request head and otherwise passes the raw ASGI stream
-    # through untouched — zero per-chunk cost.
+    # Pure ASGI on purpose (2026-08-18): the @app.middleware("http")
+    # decorator form is Starlette BaseHTTPMiddleware, which relays every
+    # response chunk through a zero-buffer anyio memory channel across a
+    # task-group boundary — several extra event-loop turns per SSE frame at
+    # 60-120 frames/s, clumping stream delivery whenever the loop is busy.
+    # Both gates below only inspect the request head and otherwise pass the
+    # raw ASGI stream through untouched — zero per-chunk cost.
     app.add_middleware(_AuthRateLimitMiddleware, state=state)
+    # Registered LAST so it is OUTERMOST: a foreign browser origin is refused
+    # before it can spend a key check or a rate-limit slot, and CORS
+    # preflights (which never carry credentials) are answered before the
+    # key gate would 401 them.
+    app.add_middleware(_OriginPolicyMiddleware, state=state)
+
+    browser_auth_tickets = _BrowserAuthTickets()
+
+    def _browser_auth_rejection() -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "message": "missing or invalid API key",
+                    "type": "authentication_error",
+                }
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.get(_BROWSER_AUTH_PATH)
     def browser_auth(request: Request) -> Response:
+        # Two bootstrap forms: `?mtplx_api_key=<key>` (the URL the CLI prints
+        # at startup for terminal users) and `?ticket=<t>` (a single-use,
+        # 60 s ticket minted by POST /mtplx/browser-auth/ticket, so an app
+        # that already holds the key never puts it in a URL).
         configured_api_key = getattr(state.args, "api_key", None)
-        if configured_api_key and not _request_is_browser_auth_bootstrap(
-            request, configured_api_key
-        ):
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "error": {
-                        "message": "missing or invalid API key",
-                        "type": "authentication_error",
-                    }
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        if configured_api_key:
+            ticket = request.query_params.get(_BROWSER_AUTH_TICKET_QUERY_PARAM)
+            if ticket is not None:
+                if not browser_auth_tickets.consume(ticket):
+                    return _browser_auth_rejection()
+            elif not _request_is_browser_auth_bootstrap(request, configured_api_key):
+                return _browser_auth_rejection()
         next_path = _safe_browser_auth_next_path(request.query_params.get("next"))
         response = RedirectResponse(url=next_path, status_code=303)
         if configured_api_key:
-            response.set_cookie(
-                _BROWSER_AUTH_COOKIE,
-                configured_api_key,
-                max_age=_BROWSER_AUTH_COOKIE_MAX_AGE_SECONDS,
-                httponly=True,
-                samesite="lax",
-                secure=False,
-                path="/",
-            )
+            _set_browser_auth_cookie(response, request, configured_api_key)
         return response
+
+    @app.post(_BROWSER_AUTH_PATH)
+    def browser_auth_sign_in(request: Request, payload: dict[str, Any] = Body(default={})) -> Response:
+        # The page's own sign-in form: the key travels once, in a same-origin
+        # POST body, and comes back as the HttpOnly cookie.
+        configured_api_key = getattr(state.args, "api_key", None)
+        next_path = _safe_browser_auth_next_path(
+            payload.get("next") if isinstance(payload, dict) else None
+        )
+        if configured_api_key:
+            candidate = payload.get("api_key") if isinstance(payload, dict) else None
+            if not (
+                isinstance(candidate, str)
+                and candidate
+                and secrets.compare_digest(candidate, configured_api_key)
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": {"message": "missing or invalid API key", "type": "auth"}},
+                )
+        response = JSONResponse(status_code=200, content={"ok": True, "next": next_path})
+        if configured_api_key:
+            _set_browser_auth_cookie(response, request, configured_api_key)
+        return response
+
+    @app.post(_BROWSER_AUTH_TICKET_PATH)
+    def browser_auth_ticket(request: Request, payload: dict[str, Any] = Body(default={})) -> Response:
+        # Reached only with a valid key (the auth gate above); mints the
+        # single-use ticket URL a client opens in the browser.
+        configured_api_key = getattr(state.args, "api_key", None)
+        next_path = _safe_browser_auth_next_path(
+            payload.get("next") if isinstance(payload, dict) else None
+        )
+        server_url = str(request.base_url).rstrip("/")
+        if not configured_api_key:
+            return JSONResponse(
+                status_code=200, content={"url": server_url + next_path, "expires_in": None}
+            )
+        ticket = browser_auth_tickets.mint()
+        query = urllib.parse.urlencode(
+            {_BROWSER_AUTH_TICKET_QUERY_PARAM: ticket, "next": next_path}
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "url": f"{server_url}{_BROWSER_AUTH_PATH}?{query}",
+                "expires_in": _BROWSER_AUTH_TICKET_TTL_SECONDS,
+            },
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def root(request: Request) -> HTMLResponse:
@@ -34945,6 +35240,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--cors-origin",
+        dest="cors_origins",
+        action="append",
+        metavar="ORIGIN",
+        default=None,
+        help=(
+            "Let browser pages served from this origin (for example "
+            "http://localhost:5173) call the API with credentials. Repeatable; "
+            "MTPLX_CORS_ORIGINS takes a comma-separated list. Pages MTPLX serves "
+            "itself are always allowed, every other origin is refused, and "
+            "/admin routes stay same-origin only."
+        ),
+    )
+    parser.add_argument(
         "--rate-limit",
         type=int,
         default=_env_int("MTPLX_RATE_LIMIT_PER_MINUTE", 0),
@@ -35563,6 +35872,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         # so this can only widen access on loopback.
         args.api_key = None
         args.api_key_source = "disabled_by_no_auth_flag"
+    try:
+        args.cors_origins = _parse_cors_origins(
+            getattr(args, "cors_origins", None), os.environ.get("MTPLX_CORS_ORIGINS")
+        )
+    except ValueError as exc:
+        parser.error(f"--cors-origin: {exc}")
     try:
         args.paged_kv_quantization = normalize_paged_kv_quantization(
             getattr(args, "paged_kv_quantization", "off")
