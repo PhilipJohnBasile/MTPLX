@@ -148,10 +148,15 @@ struct SettingsTab: View {
                 }
                 .buttonStyle(MTPLXGhostButton())
                 .popover(isPresented: $languagePopoverPresented, arrowEdge: .bottom) {
+                    // The popover is its own window on macOS, so it applies the
+                    // appearance preference itself; without this it follows the
+                    // macOS setting and renders dark inside a light app.
                     LanguagePickerList(onPick: { _ in languagePopoverPresented = false })
                         .frame(width: 320, height: 400)
                         .padding(12)
                         .environmentObject(languageStore)
+                        .environmentObject(themeStore)
+                        .appliesAppearance()
                 }
             }
         }

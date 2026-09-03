@@ -98,6 +98,8 @@ struct BenchmarkOverlay: View {
             BenchQuestionDetail(result: result, total: orchestrator.total) {
                 selectedResult = nil
             }
+            .environmentObject(themeStore)
+            .appliesAppearance()
         }
     }
 
