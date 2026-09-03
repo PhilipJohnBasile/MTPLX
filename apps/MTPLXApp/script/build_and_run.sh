@@ -285,6 +285,26 @@ if [[ -d "$ROOT/Sources/MTPLXAppCore/Resources/StepAdapters" ]]; then
     "$ROOT/Sources/MTPLXAppCore/Resources/StepAdapters" \
     "$BUNDLE_DIR/Contents/Resources/StepAdapters"
 fi
+# Localized string tables. Each <code>.lproj is copied to the standard
+# Contents/Resources/<code>.lproj location so Bundle.main resolves it at
+# runtime (L10n opens each lproj as its own bundle). The list mirrors
+# AppLanguage.allCases (a unit test keeps them in sync); a missing or
+# unparsable table fails the build so a broken language never ships.
+LOCALIZATION_SOURCE="$ROOT/Sources/MTPLXAppCore/Resources/Localization"
+LOCALIZATION_CODES=(en zh-Hans es hi ar pt-BR fr ru ja de ko id)
+for code in "${LOCALIZATION_CODES[@]}"; do
+  table="$LOCALIZATION_SOURCE/$code.lproj/Localizable.strings"
+  if [[ ! -f "$table" ]]; then
+    echo "error: localization table missing for $code at $table" >&2
+    exit 1
+  fi
+  if ! /usr/bin/plutil -lint "$table" >/dev/null 2>&1; then
+    echo "error: localization table for $code does not parse: $table" >&2
+    exit 1
+  fi
+  mkdir -p "$BUNDLE_DIR/Contents/Resources/$code.lproj"
+  /usr/bin/ditto --norsrc "$table" "$BUNDLE_DIR/Contents/Resources/$code.lproj/Localizable.strings"
+done
 if [[ -f "$THERMALFORGE_SOURCE" ]]; then
   mkdir -p "$BUNDLE_DIR/Contents/Resources/ThermalForge"
   /usr/bin/ditto --norsrc \
@@ -346,6 +366,8 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
@@ -354,6 +376,10 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_IDENTIFIER</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+$(for code in "${LOCALIZATION_CODES[@]}"; do printf '    <string>%s</string>\n' "$code"; done)
+  </array>
   <key>CFBundleName</key>
   <string>$BUNDLE_DISPLAY_NAME</string>
   <key>CFBundlePackageType</key>
