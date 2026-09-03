@@ -5118,8 +5118,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     from .config import apply_user_config
 
-    apply_user_config(args)
-    return int(args.func(args))
+    try:
+        apply_user_config(args)
+        return int(args.func(args))
+    except (KeyboardInterrupt, EOFError):
+        # Ctrl-C at a confirmation prompt, a poll loop, or a closed stdin is
+        # the user leaving, not a crash: every command's own `finally` (fan
+        # restore, download finalize) has already run by the time this is
+        # reached. End the line the cursor sits on so the shell prompt lands
+        # cleanly, and exit with the conventional 128 + SIGINT code.
+        print(file=sys.stderr)
+        return 130
 
 
 def main_tune(argv: list[str] | None = None) -> int:

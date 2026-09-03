@@ -9105,3 +9105,26 @@ def test_publish_check_blocks_local_paths_and_scrubs_on_request(tmp_path, capsys
     rewritten = _json.loads((staging / "mtplx_runtime.json").read_text(encoding="utf-8"))
     assert rewritten == {"base_trunk": "<redacted>/Owner--Trunk"}
     assert (staging / "config.json").read_text(encoding="utf-8") == '{"model_type": "qwen3"}'
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, EOFError])
+def test_interrupt_during_a_command_exits_130_without_a_traceback(monkeypatch, capsys, interrupt):
+    # Ctrl-C at "Delete this cached model? [y/N]", at the model picker, at the
+    # "download now?" prompt, or while `metrics watch` polls used to escape
+    # main() as a ten-line traceback ending in KeyboardInterrupt, with the
+    # shell prompt landing mid-line. The dispatch must treat it as the user
+    # leaving: one newline on stderr, exit 130, nothing else printed.
+    import mtplx.cli as cli
+
+    def interrupted_at_the_prompt(_args):
+        raise interrupt
+
+    monkeypatch.setattr(cli, "cmd_remove_public", interrupted_at_the_prompt)
+    monkeypatch.setenv("MTPLX_CONFIG", "/nonexistent/mtplx-config.toml")
+
+    code = cli.main(["remove", "--cache-dir", "/nonexistent/cache", "Org/Model"])
+
+    captured = capsys.readouterr()
+    assert code == 130
+    assert captured.out == ""
+    assert captured.err == "\n"
