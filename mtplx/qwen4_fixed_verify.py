@@ -349,6 +349,22 @@ def install_qwen4_fixed_verify_route(runtime: Any) -> dict[str, Any]:
     runtime._mtplx_capture_layout = ()
     runtime._mtplx_capture_extra_layout = tuple(extra)
     runtime.qwen4_fixed_m4_compiled_verify = True
+
+    # W70 MTPLX_QWEN4_VERIFY_GLUE: contract-check and bit-exactness-probe the
+    # armed glue items here -- model build, outside any mx.compile trace, the
+    # same place every other fixed-M4 lane validates itself.  Contract misses
+    # raise; exactness misses disable the item and log.  A no-op when the flag
+    # is off (the import itself is cheap and has no MLX side effects).
+    from mtplx.runtime_options import qwen4_verify_glue_enabled
+
+    if qwen4_verify_glue_enabled():
+        from mtplx import qwen4_verify_glue as _glue
+
+        runtime._mtplx_qwen4_verify_glue = _glue.install(
+            tuple((index, layers[index].self_attn) for index in qsa),
+            rows=4,
+        )
+
     return {"installed": True, "linear_layers": len(linear), "rows": 4}
 
 

@@ -346,6 +346,10 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QSA_PREFILL_GATHER_TILE",
         # Engagement-receipt atexit print for lane A/Bs (counters law).
         "MTPLX_QSA_PREFILL_DEBUG",
+        # Worker-thread preparation of the NEXT prefill chunk's PLE n-gram
+        # rows during this chunk's forward.  Default off; the gathers it
+        # overlaps are 8 host-late stalls totalling 2,313 ms in the census.
+        "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
         # Capture only one canonical chunk width so arbitrary final/restored
         # suffix sizes cannot grow the mx.compile graph bank without bound.
         "MTPLX_QSA_PREFILL_COMPILE_ROWS",
@@ -380,6 +384,13 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # (2026-08-28, default 1024; 0 disables) — registered ahead per the
         # boot-trap law so packs/profiles may stamp it.
         "MTPLX_NGRAM_HOT_MB",
+        # Sequential pre-read of the streamed n-gram table at model load
+        # (default ON; 0 opts out). `mtplx serve --ngram-prewarm /
+        # --no-ngram-prewarm` stamps this key, so the CLI wins over a
+        # shell-set value. Cold sidecar rows are demand faults at 1.40 GiB/s
+        # against 12.9 for the read itself: ~2.5 s at load buys 56 -> 68.8
+        # tok/s decode and removes the 1.9 s vs 4.4 s first-chunk bimodality.
+        "MTPLX_NGRAM_PREWARM",
         # Family-scoped NAX neutralize (2026-08-27): qwen4_exp holds the 27B
         # NAX verify patch OFF under turbo until it earns a family receipt.
         "MTPLX_NAX_VERIFY",
@@ -403,6 +414,9 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
         "MTPLX_QWEN4_FIXED_M4_VERIFY",
         "MTPLX_QWEN4_M4_STAGE3",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+        "MTPLX_QWEN4_M4_ROUTED_GLU",
         "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
         "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
         # FR-Spec row-pruned draft head (PR #391 port): the server stamps the
