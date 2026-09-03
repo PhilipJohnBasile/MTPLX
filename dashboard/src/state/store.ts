@@ -62,6 +62,9 @@ export type DashboardStore = {
   // ---- actions ----
   applySnapshot: (snapshot: DashboardSnapshot) => void;
   applyEvent: (event: BusEvent) => void;
+  // Adopt the mutable settings a settings write returned, ahead of the next
+  // snapshot, so the controls reflect the server's post-write values at once.
+  mergeSettings: (patch: Partial<MutableSettings>) => void;
   setConnection: (state: ConnectionState) => void;
   setSessionFilter: (sessionId: string | null) => void;
   setTheme: (theme: ThemeName) => void;
@@ -251,6 +254,9 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         break;
     }
   },
+
+  mergeSettings: (patch) =>
+    set((state) => (state.settings ? { settings: { ...state.settings, ...patch } } : {})),
 
   setConnection: (state) => {
     set((prev) => ({
