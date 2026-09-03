@@ -341,6 +341,8 @@ public final class MTPLXBackendStore: ObservableObject {
     private let settingsStore: MTPLXSettingsStore
     private let commandBuilder: MTPLXCommandBuilder
     private let supervisor: DaemonSupervisor
+    /// See `init(browserAuthSession:)`; nil in production.
+    private let browserAuthSession: URLSession?
     private let openCodeIntegration: OpenCodeIntegration
     private let piIntegration: PiIntegration
     private let hermesIntegration: HermesIntegration
@@ -410,10 +412,14 @@ public final class MTPLXBackendStore: ObservableObject {
         beforeThermalStatusRefresh: (@Sendable () async -> Void)? = nil,
         beforeClientHandoffLaunch: (@Sendable (LaunchTarget) async -> Void)? = nil,
         openCodeDesktopCanceller: ((MTPLXDesktopHandoffIdentity) -> Bool)? = nil,
-        modelUpdateChecker: (@Sendable () async throws -> [ModelUpdateInfo])? = nil
+        modelUpdateChecker: (@Sendable () async throws -> [ModelUpdateInfo])? = nil,
+        // Test seam for the browser sign-in ticket request. Production
+        // uses a fresh short-timeout session per hand-off.
+        browserAuthSession: URLSession? = nil
     ) {
         self.configuration = configuration
         self.settingsStore = settingsStore
+        self.browserAuthSession = browserAuthSession
         self.commandBuilder = commandBuilder
         self.supervisor = supervisor
         self.openCodeIntegration = openCodeIntegration
@@ -1233,6 +1239,9 @@ public final class MTPLXBackendStore: ObservableObject {
         )
     }
 
+    /// The key-in-query sign-in URL. This is the fallback only: it lands
+    /// the API key in browser history, so the open path below asks the
+    /// daemon for a one-time ticket first and uses this when it cannot.
     private func authenticatedBrowserURL(nextPath: String, fallback: URL) -> URL {
         guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
             return fallback
@@ -1250,19 +1259,57 @@ public final class MTPLXBackendStore: ObservableObject {
         return components.url ?? fallback
     }
 
+    /// The URL to hand the browser for `nextPath`. With no key configured
+    /// the plain page URL; with a key, a one-time ticket URL minted by the
+    /// daemon (`POST /mtplx/browser-auth/ticket`, bounded to a few seconds,
+    /// off the main actor) so the key never appears in a URL. If the
+    /// ticket cannot be minted for any reason — an older daemon answering
+    /// 404, a network failure, a timeout — the key-in-query URL is used so
+    /// the button never goes dead.
+    func browserURL(nextPath: String, plain: URL) async -> URL {
+        let fallback = authenticatedBrowserURL(nextPath: nextPath, fallback: plain)
+        guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
+            return plain
+        }
+        let client = browserAuthSession.map { MTPLXAPIClient(baseURL: baseURL, apiKey: apiKey, session: $0) }
+            ?? MTPLXAPIClient.browserAuthClient(baseURL: baseURL, apiKey: apiKey)
+        do {
+            return try await client.browserAuthTicket(next: nextPath).url
+        } catch {
+            await supervisor.logs.append(
+                "browser sign-in ticket unavailable (\(error)); opening with the key in the URL instead",
+                stream: .system
+            )
+            return fallback
+        }
+    }
+
     /// Open the old browser chat surface in the user's default browser.
     public func openWebChat() {
-        #if canImport(AppKit)
-        AppKit.NSWorkspace.shared.open(webChatURL)
-        #endif
+        Task { [weak self] in
+            guard let self else { return }
+            let url = await self.browserURL(nextPath: "/", plain: self.baseURL)
+            Self.openInBrowser(url)
+        }
     }
 
     /// Open the React live dashboard in the user's default browser.
     /// Exposed for users who explicitly ask for the browser dashboard
     /// (menu bar / About sheet) — no longer wired to a LaunchTarget.
     public func openBrowserDashboard() {
+        Task { [weak self] in
+            guard let self else { return }
+            let url = await self.browserURL(
+                nextPath: "/dashboard/",
+                plain: self.baseURL.appendingPathComponent("dashboard")
+            )
+            Self.openInBrowser(url)
+        }
+    }
+
+    private static func openInBrowser(_ url: URL) {
         #if canImport(AppKit)
-        AppKit.NSWorkspace.shared.open(browserDashboardURL)
+        AppKit.NSWorkspace.shared.open(url)
         #endif
     }
 
