@@ -1054,3 +1054,26 @@ def test_the_call_site_declines_instead_of_raising_on_a_greedy_request():
     # DeviceK20Ineligible left in the loop is the mid-decode guard, which is
     # a different class of failure (see the module's report).
     assert "device K20 requires the stock draft route selector" not in source
+
+
+def test_the_claim_reads_the_effective_relaxed_reader_condition():
+    """Greedy requests under MTPLX_QWEN4_RELAXED_DRAFT_TIES=1 take the compact-row read.
+
+    The relaxed-tie cycle reader is installed only for sampled drafts
+    (temperature > 0 with a top-k); a greedy request runs the stock reader,
+    so the claim must decline on the INSTALLED condition, not on the runtime
+    flag alone (2026-09-03 W1: the flag alone declined every request).
+    """
+
+    import pathlib
+
+    source = pathlib.Path("mtplx/generation.py").read_text()
+    start = source.index("_draft_k20_prescatter_plan = _qwen4_draft_k20_prescatter_claim(")
+    block = source[start : source.index("if _draft_k20_prescatter_plan is not None:", start)]
+    assert 'getattr(rt, "qwen4_relaxed_draft_ties", False)' in block
+    assert "and draft_sampler.temperature > 0" in block
+    assert "and int(draft_sampler.top_k) > 0" in block
+    reader = source[source.index("installed_cycle_draft_reader = (") :][:400]
+    assert "_relaxed_tie_cycle_draft_reader" in reader
+    assert "draft_sampler.temperature > 0" in reader
+    assert "int(draft_sampler.top_k) > 0" in reader

@@ -9814,9 +9814,17 @@ def generate_mtpk(
             ),
             adapter_ensemble_q=adapter_ensemble_q,
             mtp_topk_reranker=mtp_topk_reranker,
+            # The relaxed-tie draft reader is installed only for sampled
+            # drafts (temperature > 0 with a top-k), the same condition the
+            # cycle reader above resolves on; a greedy request under the
+            # family default MTPLX_QWEN4_RELAXED_DRAFT_TIES=1 runs the stock
+            # reader and can take the compact-row read (2026-09-03 W1: the
+            # runtime flag alone declined every request).
             relaxed_draft_ties=bool(
                 getattr(rt, "qwen4_relaxed_draft_ties", False)
-            ),
+            )
+            and draft_sampler.temperature > 0
+            and int(draft_sampler.top_k) > 0,
             penalties_active=_penalties_active,
             steer_active=bool(loop_guard) or thinking_guard is not None,
         )
