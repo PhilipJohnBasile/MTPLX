@@ -16,8 +16,8 @@ struct SystemTab: View {
             if backend.daemonState.kind == .stopped {
                 EmptyStateView(
                     symbol: "cpu",
-                    title: "Nothing to show yet",
-                    message: "Start a model to see memory and thermal data."
+                    title: tr("Nothing to show yet"),
+                    message: tr("Start a model to see memory and thermal data.")
                 ) {
                     Task { await backend.startDaemon() }
                 }
@@ -46,7 +46,7 @@ struct SystemTab: View {
         let model = machine?.machineModel ?? health?.machineModel
         let unified = machine?.unifiedMemoryBytes ?? health?.unifiedMemoryBytes
 
-        Card("Hardware") {
+        Card(tr("Hardware")) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 24) {
                     hardwareTiles(
@@ -86,8 +86,8 @@ struct SystemTab: View {
         includeDividers: Bool
     ) -> some View {
         StatTile(
-            label: chip == nil ? "Mac model" : "Chip",
-            value: chip ?? model ?? "Apple Silicon",
+            label: chip == nil ? tr("Mac model") : tr("Chip"),
+            value: chip ?? model ?? tr("Apple Silicon"),
             systemImage: "cpu",
             caption: chip == nil ? nil : model
         )
@@ -95,7 +95,7 @@ struct SystemTab: View {
             Divider().frame(height: 36).background(Brand.separator)
         }
         StatTile(
-            label: "Unified Memory",
+            label: tr("Unified Memory"),
             value: Format.gigabytes(unified),
             systemImage: "memorychip",
             tint: Brand.accent
@@ -105,7 +105,7 @@ struct SystemTab: View {
                 Divider().frame(height: 36).background(Brand.separator)
             }
             StatTile(
-                label: "Context window",
+                label: tr("Context window"),
                 value: Format.integer(health.contextWindow),
                 unit: "tok",
                 systemImage: "text.line.first.and.arrowtriangle.forward"
@@ -114,7 +114,7 @@ struct SystemTab: View {
                 Divider().frame(height: 36).background(Brand.separator)
             }
             StatTile(
-                label: "Generation",
+                label: tr("Generation"),
                 value: health.generationMode.uppercased(),
                 systemImage: "arrow.triangle.branch",
                 tint: health.mtpEnabled ? Brand.success : Brand.textHighlight
@@ -131,8 +131,8 @@ struct SystemTab: View {
         let mem = backend.mem
         let unified = snapshot?.machine.unifiedMemoryBytes ?? health?.unifiedMemoryBytes
 
-        Card("Memory",
-             subtitle: "What the engine is actually holding vs your Mac's total.") {
+        Card(tr("Memory"),
+             subtitle: tr("What the engine is actually holding vs your Mac's total.")) {
             if let mem, mem.ok, let total = unified, total > 0 {
                 let active = max(0, Double(mem.activeMemoryBytes ?? 0))
                 let cache = max(0, Double(mem.cacheMemoryBytes ?? 0))
@@ -150,50 +150,50 @@ struct SystemTab: View {
                     if hasAttribution {
                         StackedBar(
                             segments: [
-                                StackedBarSegment(label: "Model", value: min(weights, active), tint: Brand.accent),
-                                StackedBarSegment(label: "Sessions", value: bank, tint: Brand.coolChrome),
-                                StackedBarSegment(label: "Working", value: working, tint: Brand.warning.opacity(0.75)),
-                                StackedBarSegment(label: "Reusable", value: cache, tint: Brand.textHighlight.opacity(0.5)),
-                                StackedBarSegment(label: "Headroom", value: headroom, tint: Brand.textHighlight.opacity(0.35)),
+                                StackedBarSegment(label: tr("Model"), value: min(weights, active), tint: Brand.accent),
+                                StackedBarSegment(label: tr("Sessions"), value: bank, tint: Brand.coolChrome),
+                                StackedBarSegment(label: tr("Working"), value: working, tint: Brand.warning.opacity(0.75)),
+                                StackedBarSegment(label: tr("Reusable"), value: cache, tint: Brand.textHighlight.opacity(0.5)),
+                                StackedBarSegment(label: tr("Headroom"), value: headroom, tint: Brand.textHighlight.opacity(0.35)),
                             ],
                             total: Double(total),
                             height: 22
                         )
                         HStack(spacing: 14) {
-                            memoryTag(color: Brand.accent, label: "Model", value: Format.gigabytes(Int(min(weights, active))))
-                            memoryTag(color: Brand.coolChrome, label: "Sessions", value: Format.gigabytes(Int(bank)))
-                            memoryTag(color: Brand.warning.opacity(0.75), label: "Working", value: Format.gigabytes(Int(working)))
-                            memoryTag(color: Brand.textHighlight.opacity(0.6), label: "Reusable", value: Format.gigabytes(Int(cache)))
+                            memoryTag(color: Brand.accent, label: tr("Model"), value: Format.gigabytes(Int(min(weights, active))))
+                            memoryTag(color: Brand.coolChrome, label: tr("Sessions"), value: Format.gigabytes(Int(bank)))
+                            memoryTag(color: Brand.warning.opacity(0.75), label: tr("Working"), value: Format.gigabytes(Int(working)))
+                            memoryTag(color: Brand.textHighlight.opacity(0.6), label: tr("Reusable"), value: Format.gigabytes(Int(cache)))
                             if peak > 0 {
-                                memoryTag(color: Brand.danger, label: "Peak", value: Format.gigabytes(Int(peak)))
+                                memoryTag(color: Brand.danger, label: tr("Peak"), value: Format.gigabytes(Int(peak)))
                             }
                         }
                     } else {
                         StackedBar(
                             segments: [
-                                StackedBarSegment(label: "Active", value: active, tint: Brand.accent),
-                                StackedBarSegment(label: "Cache", value: cache, tint: Brand.coolChrome),
-                                StackedBarSegment(label: "Headroom", value: headroom, tint: Brand.textHighlight.opacity(0.35)),
+                                StackedBarSegment(label: tr("Active"), value: active, tint: Brand.accent),
+                                StackedBarSegment(label: tr("Cache"), value: cache, tint: Brand.coolChrome),
+                                StackedBarSegment(label: tr("Headroom"), value: headroom, tint: Brand.textHighlight.opacity(0.35)),
                             ],
                             total: Double(total),
                             height: 22
                         )
                         HStack(spacing: 18) {
-                            memoryTag(color: Brand.accent, label: "Active", value: Format.gigabytes(Int(active)))
-                            memoryTag(color: Brand.coolChrome, label: "Cache", value: Format.gigabytes(Int(cache)))
-                            memoryTag(color: Brand.textHighlight.opacity(0.7), label: "Headroom", value: Format.gigabytes(Int(headroom)))
+                            memoryTag(color: Brand.accent, label: tr("Active"), value: Format.gigabytes(Int(active)))
+                            memoryTag(color: Brand.coolChrome, label: tr("Cache"), value: Format.gigabytes(Int(cache)))
+                            memoryTag(color: Brand.textHighlight.opacity(0.7), label: tr("Headroom"), value: Format.gigabytes(Int(headroom)))
                             if peak > 0 {
-                                memoryTag(color: Brand.warning, label: "Peak", value: Format.gigabytes(Int(peak)))
+                                memoryTag(color: Brand.warning, label: tr("Peak"), value: Format.gigabytes(Int(peak)))
                             }
                         }
                     }
                 }
             } else if let mem, !mem.ok {
-                Text(mem.error ?? "Memory snapshot unavailable.")
+                Text(mem.error ?? tr("Memory snapshot unavailable."))
                     .font(.callout)
                     .foregroundStyle(Brand.textHighlight.opacity(0.7))
             } else {
-                Text("Memory stats appear once the model loads.")
+                Text(tr("Memory stats appear once the model loads."))
                     .font(.callout)
                     .foregroundStyle(Brand.textHighlight.opacity(0.7))
             }
@@ -222,12 +222,12 @@ struct SystemTab: View {
         let mem = backend.mem
         let unified = snapshot?.machine.unifiedMemoryBytes ?? health?.unifiedMemoryBytes
 
-        Card("Memory Detail") {
+        Card(tr("Memory Detail")) {
             VStack(spacing: 6) {
                 if let weights = mem?.modelWeightsBytes, weights > 0 {
-                    MetricRow(label: "Model weights", value: Format.bytes(weights))
-                    MetricRow(label: "Session cache (RAM)", value: Format.bytes(mem?.sessionBankBytes ?? 0))
-                    MetricRow(label: "Generation working set", value: Format.bytes(mem?.generationWorkingBytes ?? 0))
+                    MetricRow(label: tr("Model weights"), value: Format.bytes(weights))
+                    MetricRow(label: tr("Session cache (RAM)"), value: Format.bytes(mem?.sessionBankBytes ?? 0))
+                    MetricRow(label: tr("Generation working set"), value: Format.bytes(mem?.generationWorkingBytes ?? 0))
                 }
                 // Flash-Next n-gram table in streamed mode: ~30 GB of the
                 // pack that reads from SSD as reclaimable file-backed pages
@@ -237,7 +237,7 @@ struct SystemTab: View {
                    table > 0
                 {
                     MetricRow(
-                        label: "N-gram table (streamed from SSD)",
+                        label: tr("N-gram table (streamed from SSD)"),
                         value: Format.bytes(table)
                     )
                 }
@@ -245,23 +245,23 @@ struct SystemTab: View {
                 // total, so without this row several GB would be unattributed.
                 if let retrieval = snapshot?.retrieval, retrieval.enabled {
                     MetricRow(
-                        label: "Retrieval models",
+                        label: tr("Retrieval models"),
                         value: retrieval.residentBytes > 0
                             ? Format.bytes(retrieval.residentBytes)
-                            : "none loaded"
+                            : tr("none loaded")
                     )
                 }
-                MetricRow(label: "Active (total in use)", value: Format.bytes(mem?.activeMemoryBytes))
-                MetricRow(label: "Reusable buffer pool", value: Format.bytes(mem?.cacheMemoryBytes))
+                MetricRow(label: tr("Active (total in use)"), value: Format.bytes(mem?.activeMemoryBytes))
+                MetricRow(label: tr("Reusable buffer pool"), value: Format.bytes(mem?.cacheMemoryBytes))
                 MetricRow(
-                    label: "Peak",
+                    label: tr("Peak"),
                     value: Format.bytes(mem?.peakMemoryBytes),
                     valueTint: (mem?.peakMemoryBytes ?? 0) > Int(Double(unified ?? 0) * 0.85)
                         ? Brand.warning : Brand.accent
                 )
-                MetricRow(label: "Unified total", value: Format.bytes(unified))
+                MetricRow(label: tr("Unified total"), value: Format.bytes(unified))
                 if let mem, !mem.ok {
-                    MetricRow(label: "Error", value: mem.error ?? "unknown", valueTint: Brand.danger)
+                    MetricRow(label: tr("Error"), value: mem.error ?? "unknown", valueTint: Brand.danger)
                 }
             }
         }
@@ -273,19 +273,19 @@ struct SystemTab: View {
     private var ruleCard: some View {
         let pollingEnabled = backend.configuration.enableThermalPolling
 
-        Card("Cooling", padding: 16) {
+        Card(tr("Cooling"), padding: 16) {
             PillBadge(
-                text: pollingEnabled ? "Monitoring fans" : "Fans not monitored",
+                text: pollingEnabled ? tr("Monitoring fans") : tr("Fans not monitored"),
                 systemImage: pollingEnabled ? "checkmark.seal.fill" : "exclamationmark.triangle",
                 tint: pollingEnabled ? Brand.success : Brand.warning,
                 emphasized: !pollingEnabled
             )
         } content: {
             VStack(alignment: .leading, spacing: 8) {
-                Text("For accurate benchmarks, your fans need to be at max. Thermal throttling makes numbers meaningless.")
+                Text(tr("For accurate benchmarks, your fans need to be at max. Thermal throttling makes numbers meaningless."))
                     .font(.callout)
                     .foregroundStyle(Brand.textHighlight)
-                Text("Turn on Thermal Polling in Settings to confirm. Performance Lock also calms the UI so it doesn't compete with the model.")
+                Text(tr("Turn on Thermal Polling in Settings to confirm. Performance Lock also calms the UI so it doesn't compete with the model."))
                     .font(.caption)
                     .foregroundStyle(Brand.textHighlight.opacity(0.65))
             }
@@ -297,12 +297,12 @@ struct SystemTab: View {
         let thermal = backend.thermal
         let pollingEnabled = backend.configuration.enableThermalPolling
 
-        Card("Fans") {
+        Card(tr("Fans")) {
             if pollingEnabled, let thermal, thermal.ok, !thermal.fans.isEmpty {
                 HStack(alignment: .top, spacing: 24) {
                     ForEach(Array(thermal.fans.enumerated()), id: \.offset) { idx, fan in
                         FanRing(
-                            label: "Fan \(idx + 1)",
+                            label: tr("Fan %lld", idx + 1),
                             actualRpm: fan.actualRpm,
                             targetRpm: fan.targetRpm,
                             minRpm: thermal.minRpm,
@@ -313,20 +313,20 @@ struct SystemTab: View {
                     Spacer()
                 }
             } else if pollingEnabled, let thermal, !thermal.ok {
-                Text("Can't read fan data. The helper might be missing or doesn't have permission.")
+                Text(tr("Can't read fan data. The helper might be missing or doesn't have permission."))
                     .font(.callout)
                     .foregroundStyle(Brand.textHighlight.opacity(0.7))
             } else if !pollingEnabled {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Fan monitoring is off by default so things stay quiet.")
+                    Text(tr("Fan monitoring is off by default so things stay quiet."))
                         .font(.callout)
                         .foregroundStyle(Brand.textHighlight)
-                    Text("Turn it on in Settings → Thermal to see live fan speeds.")
+                    Text(tr("Turn it on in Settings → Thermal to see live fan speeds."))
                         .font(.caption)
                         .foregroundStyle(Brand.textHighlight.opacity(0.65))
                 }
             } else {
-                Text("Waiting for fan data…")
+                Text(tr("Waiting for fan data…"))
                     .font(.callout)
                     .foregroundStyle(Brand.textHighlight.opacity(0.7))
             }
@@ -439,12 +439,12 @@ struct FanRing: View {
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Brand.textHighlight)
                 if let target = targetRpm {
-                    Text("target \(Format.integer(target)) rpm")
+                    Text(tr("target %@ rpm", Format.integer(target)))
                         .font(.caption2)
                         .foregroundStyle(Brand.textHighlight.opacity(0.5))
                 }
                 if let minR = minRpm, let maxR = maxRpm {
-                    Text("range \(minR)–\(maxR)")
+                    Text(tr("range %lld–%lld", minR, maxR))
                         .font(.caption2)
                         .foregroundStyle(Brand.textHighlight.opacity(0.4))
                 }

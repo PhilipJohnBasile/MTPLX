@@ -16,8 +16,8 @@ struct CacheTab: View {
             if backend.daemonState.kind == .stopped {
                 EmptyStateView(
                     symbol: "tray.full",
-                    title: "Cache is empty",
-                    message: "Start a model to see what's been cached."
+                    title: tr("Cache is empty"),
+                    message: tr("Start a model to see what's been cached.")
                 ) {
                     Task { await backend.startDaemon() }
                 }
@@ -32,51 +32,51 @@ struct CacheTab: View {
                 }
             }
         }
-        .navigationTitle("Cache")
+        .navigationTitle(tr("Cache"))
         .confirmationDialog(
-            "Clear all cache entries?",
+            tr("Clear all cache entries?"),
             isPresented: $pendingClearAll
         ) {
-            Button("Clear All", role: .destructive) {
+            Button(tr("Clear All"), role: .destructive) {
                 clearingAll = true
                 Task {
                     defer { Task { @MainActor in clearingAll = false } }
                     try? await backend.clearCache()
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(tr("Cancel"), role: .cancel) {}
         } message: {
-            Text("Clears every saved prompt cache. Anything mid-flight keeps running. Next chats will start from scratch.")
+            Text(tr("Clears every saved prompt cache. Anything mid-flight keeps running. Next chats will start from scratch."))
         }
     }
 
     @ViewBuilder
     private func summaryCard(sessions: SessionsPayload?, sessionBank: SessionBank?) -> some View {
-        Card("Cache Summary") {
+        Card(tr("Cache Summary")) {
             HStack(spacing: 24) {
                 StatTile(
-                    label: "Sessions",
+                    label: tr("Sessions"),
                     value: Format.integer(sessions?.count ?? sessions?.sessions.count),
                     systemImage: "person.2.fill",
                     tint: .accentColor
                 )
                 Divider().frame(height: 36)
                 StatTile(
-                    label: "Bank size",
+                    label: tr("Bank size"),
                     value: Format.bytes(sessionBank?.totalNbytes),
                     systemImage: "tray.full",
                     tint: .secondary
                 )
                 Divider().frame(height: 36)
                 StatTile(
-                    label: "Bank capacity",
+                    label: tr("Bank capacity"),
                     value: Format.integer(sessionBank?.maxEntries),
                     systemImage: "square.stack.3d.up",
                     tint: .secondary
                 )
                 Divider().frame(height: 36)
                 StatTile(
-                    label: "Last miss",
+                    label: tr("Last miss"),
                     value: sessionBank?.lastMissReason ?? "—",
                     systemImage: "questionmark.circle",
                     tint: (sessionBank?.lastMissReason).flatMap { $0.isEmpty ? nil : $0 } == nil
@@ -88,12 +88,12 @@ struct CacheTab: View {
 
     @ViewBuilder
     private func bankCard(sessionBank: SessionBank?) -> some View {
-        Card("SessionBank", subtitle: "Block-prefix reuse across requests and restarts.") {
+        Card(tr("SessionBank"), subtitle: tr("Block-prefix reuse across requests and restarts.")) {
             if backend.capabilities?.features["cache_clear"] != false {
                 Button {
                     pendingClearAll = true
                 } label: {
-                    Label("Clear All", systemImage: "trash")
+                    Label(tr("Clear All"), systemImage: "trash")
                         .font(.caption.weight(.medium))
                 }
                 .buttonStyle(.bordered)
@@ -113,14 +113,14 @@ struct CacheTab: View {
                     }
                 }
             } else {
-                Text("Cached chats will show up here as you use the app.")
+                Text(tr("Cached chats will show up here as you use the app."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 100)
             }
             if let evictions = sessionBank?.evictionLog, !evictions.isEmpty {
                 Divider().padding(.vertical, 4)
-                MicroHeader("Recent evictions", systemImage: "tray.and.arrow.up")
+                MicroHeader(tr("Recent evictions"), systemImage: "tray.and.arrow.up")
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(evictions.prefix(6).enumerated()), id: \.offset) { _, eviction in
                         HStack(spacing: 8) {
@@ -167,7 +167,7 @@ struct CacheTab: View {
                     .foregroundStyle(.tertiary)
             }
             HStack(spacing: 10) {
-                Label("\(Format.integer(prefix.prefixLen)) tok", systemImage: "text.alignleft")
+                Label(tr("%@ tok", Format.integer(prefix.prefixLen)), systemImage: "text.alignleft")
                     .labelStyle(.titleAndIcon)
                     .font(.caption2)
                 Label(Format.bytes(prefix.nbytes), systemImage: "internaldrive")
@@ -181,7 +181,7 @@ struct CacheTab: View {
                 } else {
                     PillBadge(text: "cached", systemImage: "checkmark", tint: .secondary)
                 }
-                Text("\(prefix.hits) hits")
+                Text(tr("%lld hits", prefix.hits))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -203,7 +203,7 @@ struct CacheTab: View {
 
     @ViewBuilder
     private func sessionsListCard(sessions: SessionsPayload?) -> some View {
-        Card("Engine Sessions") {
+        Card(tr("Engine Sessions")) {
             if let sessions, !sessions.sessions.isEmpty {
                 VStack(spacing: 4) {
                     ForEach(sessions.sessions) { session in
@@ -212,7 +212,7 @@ struct CacheTab: View {
                     }
                 }
             } else {
-                Text("No active sessions.")
+                Text(tr("No active sessions."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80)
@@ -231,7 +231,7 @@ struct CacheTab: View {
                 .font(.system(.callout, design: .monospaced))
                 .lineLimit(1)
             Spacer()
-            Label("\(Format.integer(session.prefixLen)) tok",
+            Label(tr("%@ tok", Format.integer(session.prefixLen)),
                   systemImage: "text.alignleft")
                 .labelStyle(.titleAndIcon)
                 .font(.caption)
@@ -260,8 +260,8 @@ struct CacheTab: View {
                     }
                 }
                 .buttonStyle(.borderless)
-                .help("Drop this session's cached prefix")
-                .accessibilityLabel("Clear session cache")
+                .help(tr("Drop this session's cached prefix"))
+                .accessibilityLabel(tr("Clear session cache"))
             }
         }
         .padding(.vertical, 4)

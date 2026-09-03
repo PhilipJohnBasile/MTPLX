@@ -14,8 +14,8 @@ struct RequestsTab: View {
             if backend.daemonState.kind == .stopped {
                 EmptyStateView(
                     symbol: "tray.2",
-                    title: "Request log offline",
-                    message: "Start the daemon to see in-flight and recent requests."
+                    title: tr("Request log offline"),
+                    message: tr("Start the daemon to see in-flight and recent requests.")
                 ) {
                     Task { await backend.startDaemon() }
                 }
@@ -29,18 +29,18 @@ struct RequestsTab: View {
                 }
             }
         }
-        .navigationTitle("Requests")
+        .navigationTitle(tr("Requests"))
     }
 
     @ViewBuilder
     private func inFlightCard(requests: [InFlightRequest]) -> some View {
-        Card("In Flight", subtitle: requests.isEmpty ? "No active requests." : "\(requests.count) active") {
+        Card(tr("In Flight"), subtitle: requests.isEmpty ? tr("No active requests.") : tr("%lld active", requests.count)) {
             if requests.isEmpty {
                 PillBadge(text: "idle", systemImage: "moon.stars", tint: .secondary)
             }
         } content: {
             if requests.isEmpty {
-                Text("In-flight requests appear here in real time. Each row carries a Cancel button that flips the worker's cancel_event on a best-effort basis.")
+                Text(tr("In-flight requests appear here in real time. Each row carries a Cancel button that flips the worker's cancel_event on a best-effort basis."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
@@ -63,16 +63,16 @@ struct RequestsTab: View {
                     .font(.caption2)
                 Text(request.shortId)
                     .font(.system(.callout, design: .monospaced).weight(.semibold))
-                Text("· \(Format.duration(request.ageS)) ago")
+                Text(tr("· %@ ago", Format.duration(request.ageS)))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 if let session = request.sessionId {
-                    PillBadge(text: "session " + String(session.prefix(8)),
+                    PillBadge(text: tr("session %@", String(session.prefix(8))),
                               systemImage: "person.crop.circle",
                               tint: .accentColor)
                 }
                 if let prefill = request.prefillState, prefill.isActive {
-                    PillBadge(text: "PREFILL " + Format.percent(prefill.progress, fractionDigits: 0),
+                    PillBadge(text: tr("PREFILL %@", Format.percent(prefill.progress, fractionDigits: 0)),
                               systemImage: "gauge.with.dots.needle.bottom.50percent",
                               tint: .mtplxWarning,
                               emphasized: true)
@@ -89,7 +89,7 @@ struct RequestsTab: View {
                         if cancellingId == request.requestId {
                             ProgressView().controlSize(.mini)
                         } else {
-                            Label("Cancel", systemImage: "xmark.circle")
+                            Label(tr("Cancel"), systemImage: "xmark.circle")
                         }
                     }
                     .buttonStyle(.bordered)
@@ -102,7 +102,7 @@ struct RequestsTab: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             HStack(spacing: 14) {
-                Label("\(Format.integer(request.promptTokens)) prompt tok",
+                Label(tr("%@ prompt tok", Format.integer(request.promptTokens)),
                       systemImage: "text.alignleft")
                     .labelStyle(.titleAndIcon)
                     .font(.caption2)
@@ -130,15 +130,15 @@ struct RequestsTab: View {
 
     @ViewBuilder
     private func recentRequestsCard(recent: [MetricsLatest]) -> some View {
-        Card("Recent", subtitle: recent.isEmpty ? "Nothing recorded yet." : "\(recent.count) requests") {
+        Card(tr("Recent"), subtitle: recent.isEmpty ? tr("Nothing recorded yet.") : tr("%lld requests", recent.count)) {
             if recent.isEmpty {
                 EmptyView()
             } else {
-                PillBadge(text: "live updates", systemImage: "antenna.radiowaves.left.and.right", tint: .mtplxSuccess)
+                PillBadge(text: tr("live updates"), systemImage: "antenna.radiowaves.left.and.right", tint: .mtplxSuccess)
             }
         } content: {
             if recent.isEmpty {
-                Text("Completed requests will appear here as the daemon serves traffic.")
+                Text(tr("Completed requests will appear here as the daemon serves traffic."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
@@ -157,12 +157,12 @@ struct RequestsTab: View {
 
     private var headerRow: some View {
         HStack {
-            Text("Session").frame(width: 120, alignment: .leading)
-            Text("Decode").frame(width: 80, alignment: .trailing)
-            Text("Prefill").frame(width: 80, alignment: .trailing)
-            Text("TTFT").frame(width: 70, alignment: .trailing)
-            Text("Tokens").frame(width: 70, alignment: .trailing)
-            Text("Cache").frame(width: 60, alignment: .trailing)
+            Text(tr("Session")).frame(width: 120, alignment: .leading)
+            Text(tr("Decode")).frame(width: 80, alignment: .trailing)
+            Text(tr("Prefill")).frame(width: 80, alignment: .trailing)
+            Text(tr("TTFT")).frame(width: 70, alignment: .trailing)
+            Text(tr("Tokens")).frame(width: 70, alignment: .trailing)
+            Text(tr("Cache")).frame(width: 60, alignment: .trailing)
             Spacer()
         }
         .font(.system(size: 10, weight: .semibold))

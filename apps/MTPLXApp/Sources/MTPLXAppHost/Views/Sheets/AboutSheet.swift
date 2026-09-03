@@ -49,12 +49,12 @@ struct AboutSheet: View {
         HStack(alignment: .top, spacing: 24) {
             WordmarkView(height: 40)
             Spacer()
-            Button("Close") { dismiss() }
+            Button(tr("Close")) { dismiss() }
                 .buttonStyle(.bordered)
                 .keyboardShortcut(.cancelAction)
         }
         WordmarkSubtitle(dividerWidth: 280)
-        Text("Fast local AI for Apple Silicon.")
+        Text(tr("Fast local AI for Apple Silicon."))
             .font(.system(.callout, design: .monospaced))
             .foregroundStyle(Brand.textHighlight)
             .padding(.top, 4)
@@ -62,43 +62,43 @@ struct AboutSheet: View {
 
     @ViewBuilder
     private var appSection: some View {
-        sectionHeader("APP")
+        sectionHeader(tr("APP"))
         VStack(alignment: .leading, spacing: 6) {
-            row("Version", value: appVersion)
-            row("Build", value: appBuild)
-            row("Bundle ID", value: bundleIdentifier)
-            row("Bundle path", value: Bundle.main.bundleURL.path)
+            row(tr("Version"), value: appVersion)
+            row(tr("Build"), value: appBuild)
+            row(tr("Bundle ID"), value: bundleIdentifier)
+            row(tr("Bundle path"), value: Bundle.main.bundleURL.path)
         }
     }
 
     @ViewBuilder
     private var runtimeSection: some View {
         let health = backend.health
-        sectionHeader("RUNTIME")
+        sectionHeader(tr("RUNTIME"))
         VStack(alignment: .leading, spacing: 6) {
-            row("Model", value: health?.model ?? "—")
-            row("Generation", value: (health?.generationMode ?? "—").uppercased())
-            row("MTP depth", value: health.map { "D\($0.depth)" } ?? "—")
-            row("Context window", value: Format.integer(health?.contextWindow))
+            row(tr("Model"), value: health?.model ?? "—")
+            row(tr("Generation"), value: (health?.generationMode ?? "—").uppercased())
+            row(tr("MTP depth"), value: health.map { tr("D%lld", $0.depth) } ?? "—")
+            row(tr("Context window"), value: Format.integer(health?.contextWindow))
         }
     }
 
     @ViewBuilder
     private var updateSection: some View {
-        sectionHeader("UPDATES")
+        sectionHeader(tr("UPDATES"))
         VStack(alignment: .leading, spacing: 6) {
             if let snapshot = backend.runtimeUpdateSnapshot {
-                row("Latest app", value: snapshot.latestAppVersion ?? "—")
-                row("CLI version", value: snapshot.cliVersion ?? "—")
-                row("CLI path", value: snapshot.cliPath ?? "—")
-                row("CLI install", value: snapshot.cliInstallKind.displayName)
-                row("CLI latest", value: snapshot.recommendedCLIVersion ?? "—")
+                row(tr("Latest app"), value: snapshot.latestAppVersion ?? "—")
+                row(tr("CLI version"), value: snapshot.cliVersion ?? "—")
+                row(tr("CLI path"), value: snapshot.cliPath ?? "—")
+                row(tr("CLI install"), value: snapshot.cliInstallKind.displayName)
+                row(tr("CLI latest"), value: snapshot.recommendedCLIVersion ?? "—")
                 row(snapshot.title, value: snapshot.detail)
                 HStack(spacing: 10) {
                     Button {
                         Task { await backend.refreshRuntimeUpdateStatus() }
                     } label: {
-                        Label("Check", systemImage: "arrow.clockwise")
+                        Label(tr("Check"), systemImage: "arrow.clockwise")
                             .font(.system(size: 11, weight: .medium))
                     }
                     .buttonStyle(.bordered)
@@ -108,7 +108,7 @@ struct AboutSheet: View {
                         Button {
                             Task { await backend.updateRuntimeWithHomebrew() }
                         } label: {
-                            Label("Update Runtime", systemImage: "arrow.down.circle")
+                            Label(tr("Update Runtime"), systemImage: "arrow.down.circle")
                                 .font(.system(size: 11, weight: .medium))
                         }
                         .buttonStyle(.borderedProminent)
@@ -123,7 +123,7 @@ struct AboutSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                row("Status", value: "Checking...")
+                row(tr("Status"), value: "Checking...")
             }
         }
     }
@@ -131,7 +131,7 @@ struct AboutSheet: View {
     @ViewBuilder
     private var modelsSection: some View {
         if let models = backend.models, !models.data.isEmpty {
-            sectionHeader("MODELS")
+            sectionHeader(tr("MODELS"))
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(models.data) { model in
                     row(model.id, value: model.ownedBy ?? "—")
@@ -142,17 +142,17 @@ struct AboutSheet: View {
 
     @ViewBuilder
     private func capabilitiesSection(_ caps: AppCapabilities) -> some View {
-        sectionHeader("CAPABILITIES")
+        sectionHeader(tr("CAPABILITIES"))
         VStack(alignment: .leading, spacing: 6) {
-            row("API version", value: String(caps.apiVersion))
-            row("Endpoint name", value: caps.name)
+            row(tr("API version"), value: String(caps.apiVersion))
+            row(tr("Endpoint name"), value: caps.name)
             row(
-                "Snapshot interval",
-                value: "\(caps.snapshotInterval.minMs)–\(caps.snapshotInterval.maxMs) ms (default \(caps.snapshotInterval.defaultMs))"
+                tr("Snapshot interval"),
+                value: tr("%lld–%lld ms (default %lld)", caps.snapshotInterval.minMs, caps.snapshotInterval.maxMs, caps.snapshotInterval.defaultMs)
             )
             row(
-                "Performance Lock cadence",
-                value: "\(caps.snapshotInterval.performanceLockMs) ms"
+                tr("Performance Lock cadence"),
+                value: tr("%lld ms", caps.snapshotInterval.performanceLockMs)
             )
         }
     }
@@ -160,7 +160,7 @@ struct AboutSheet: View {
     @ViewBuilder
     private func endpointsSection(_ caps: AppCapabilities) -> some View {
         if !caps.endpoints.isEmpty {
-            sectionHeader("ENDPOINTS")
+            sectionHeader(tr("ENDPOINTS"))
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(caps.endpoints.sorted(by: { $0.key < $1.key }), id: \.key) { entry in
                     row(entry.key, value: entry.value)
@@ -172,7 +172,7 @@ struct AboutSheet: View {
     @ViewBuilder
     private func featuresSection(_ caps: AppCapabilities) -> some View {
         if !caps.features.isEmpty {
-            sectionHeader("FEATURE FLAGS")
+            sectionHeader(tr("FEATURE FLAGS"))
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(caps.features.sorted(by: { $0.key < $1.key }), id: \.key) { entry in
                     HStack {
@@ -192,13 +192,13 @@ struct AboutSheet: View {
     @ViewBuilder
     private func mutableSettingsSection(_ caps: AppCapabilities) -> some View {
         if !caps.mutableSettings.isEmpty || !caps.restartRequiredSettings.isEmpty {
-            sectionHeader("SETTINGS POLICY")
+            sectionHeader(tr("SETTINGS POLICY"))
             VStack(alignment: .leading, spacing: 6) {
                 if !caps.mutableSettings.isEmpty {
-                    row("Live mutable", value: caps.mutableSettings.joined(separator: ", "))
+                    row(tr("Live mutable"), value: caps.mutableSettings.joined(separator: ", "))
                 }
                 if !caps.restartRequiredSettings.isEmpty {
-                    row("Restart required", value: caps.restartRequiredSettings.joined(separator: ", "))
+                    row(tr("Restart required"), value: caps.restartRequiredSettings.joined(separator: ", "))
                 }
             }
         }
@@ -206,24 +206,24 @@ struct AboutSheet: View {
 
     @ViewBuilder
     private var connectionSection: some View {
-        sectionHeader("CONNECTION")
+        sectionHeader(tr("CONNECTION"))
         VStack(alignment: .leading, spacing: 6) {
-            row("Endpoint", value: "\(backend.configuration.host):\(backend.configuration.port)")
-            row("Stream cadence", value: cadenceText)
+            row(tr("Endpoint"), value: "\(backend.configuration.host):\(backend.configuration.port)")
+            row(tr("Stream cadence"), value: cadenceText)
         }
     }
 
     @ViewBuilder
     private var settingsLocationSection: some View {
-        sectionHeader("APP SETTINGS")
+        sectionHeader(tr("APP SETTINGS"))
         VStack(alignment: .leading, spacing: 6) {
-            row("Settings file", value: settingsPath)
+            row(tr("Settings file"), value: settingsPath)
             HStack {
                 Spacer()
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: settingsPath)])
                 } label: {
-                    Label("Reveal in Finder", systemImage: "folder")
+                    Label(tr("Reveal in Finder"), systemImage: "folder")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.bordered)
@@ -251,9 +251,9 @@ struct AboutSheet: View {
     private var cadenceText: String {
         let config = backend.configuration
         if config.performanceLock {
-            return "1000 ms (Performance Lock)"
+            return tr("1000 ms (Performance Lock)")
         }
-        return "\(config.streamSnapshotIntervalMs) ms"
+        return tr("%lld ms", config.streamSnapshotIntervalMs)
     }
 
     // MARK: - Helpers
@@ -261,7 +261,7 @@ struct AboutSheet: View {
     @ToolbarContentBuilder
     private var dismissButton: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button("Close") { dismiss() }
+            Button(tr("Close")) { dismiss() }
                 .keyboardShortcut(.cancelAction)
         }
     }
