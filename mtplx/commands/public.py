@@ -6744,7 +6744,9 @@ def _bench_suite_model(args: Any) -> str:
     model = getattr(args, "model", None) or DEFAULT_CHAMPION
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     if "model" not in cli_flags and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        # Same refusal as `mtplx start`: a Mac with no runnable default
+        # (Intel, or too little memory) gets the sentence, not a traceback.
+        selection = _select_default_model_or_exit()
         to_dict = getattr(selection, "to_dict", None)
         args._mtplx_default_model_selection = (
             to_dict() if callable(to_dict) else dict(vars(selection))

@@ -205,22 +205,35 @@ def test_invalid_default_model_variant_env_falls_back_to_auto(monkeypatch):
 
 
 def _fits(selection, memory_gib: float) -> bool:
-    from mtplx.memory_plan import GIB, plan_memory
+    """The app's own rule for offering a pack: its measured peak fits."""
     from mtplx.model_catalog import catalog_model_matching
 
     entry = catalog_model_matching(selection.hf_model)
     assert entry is not None, selection.hf_model
-    plan = plan_memory(
-        total_ram_bytes=int(memory_gib * GIB), model_weights_bytes=entry.size_bytes
-    )
-    return plan.available and plan.model_fits
+    return memory_gib >= entry.peak_memory_gib
+
+
+def _app_picker_first_small_pack(memory_gib: float, chip_tier: str) -> str:
+    """What the app's model picker lists first among the small speed packs."""
+    from mtplx.model_catalog import recommended_models
+
+    small = {
+        "qwen35-4b-optimized-speed",
+        "qwen35-9b-optimized-speed",
+        "qwen35-9b-optimized-speed-fp16",
+    }
+    for pack in recommended_models(memory_gib=memory_gib, chip_tier=chip_tier):
+        if pack.id in small:
+            return pack.hf_model_id
+    raise AssertionError(f"the picker offers no small pack at {memory_gib} GiB")
 
 
 @pytest.mark.parametrize(
     ("memory_gib", "expected"),
     [
         (8.0, "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"),
-        (16.0, "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"),
+        (12.0, "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"),
+        (16.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"),
         (18.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"),
         (24.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"),
         (32.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
@@ -231,9 +244,12 @@ def _fits(selection, memory_gib: float) -> bool:
     ],
 )
 def test_modern_ram_ladder_picks_the_largest_pack_that_fits(monkeypatch, memory_gib, expected):
-    """8 and 16 GiB used to get the 9B (8.1 GiB of weights against an 8 or
-    12 GiB engine budget; memory_plan says it does not fit). Every pick on
-    the ladder must fit by the same solve the server runs at load."""
+    """Every Mac under 32 GiB used to get the 9B, 8 GB ones included (its
+    measured peak is 10 GiB). Under 32 GiB the default is now the small
+    speed pack the app's picker lists first for that much memory, so the
+    CLI and first-run onboarding in the app never name different packs."""
+    from mtplx.model_catalog import MODERN_TIER
+
     monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
     monkeypatch.setenv(SPEED_MODEL_ENV, "off")
     monkeypatch.setenv(QWEN38_OPTIMIZED_SPEED_MODEL_ENV, "off")
@@ -249,6 +265,7 @@ def test_modern_ram_ladder_picks_the_largest_pack_that_fits(monkeypatch, memory_
     assert _fits(selection, memory_gib)
     if memory_gib < 32:
         assert f"for {memory_gib:.0f} GiB unified memory" in selection.reason
+        assert selection.hf_model == _app_picker_first_small_pack(memory_gib, MODERN_TIER)
     if "4B" in expected:
         assert selection.display_name == "Qwen3.5 4B Optimized Speed"
         assert selection.precision == "Compact 4-bit model for the smallest Macs"
@@ -277,11 +294,16 @@ def test_legacy_ram_ladder_keeps_fp16_siblings(monkeypatch, memory_gib, expected
     assert selection.hf_model == expected
     assert selection.variant == "fp16"
     assert _fits(selection, memory_gib)
+    if memory_gib < 32:
+        from mtplx.model_catalog import LEGACY_TIER
+
+        assert selection.hf_model == _app_picker_first_small_pack(memory_gib, LEGACY_TIER)
 
 
 def test_legacy_mac_below_the_smallest_pack_is_refused_with_the_minimum():
-    """There is no FP16 4B build, so an 8 GB M1/M2 Mac has no pack that fits.
-    The refusal states the minimum in one plain sentence."""
+    """There is no FP16 4B build, so an 8 GB M1/M2 Mac has no pack that fits
+    (the FP16 9B peaks at 10.5 GiB). The refusal states the minimum in one
+    plain sentence."""
     from mtplx.default_models import DefaultModelUnavailable
 
     with pytest.raises(DefaultModelUnavailable) as excinfo:
@@ -290,22 +312,22 @@ def test_legacy_mac_below_the_smallest_pack_is_refused_with_the_minimum():
         )
 
     assert excinfo.value.message == (
-        "MTPLX needs at least 16 GB of memory to run its smallest model "
+        "MTPLX needs at least 11 GB of memory to run its smallest model "
         "(Qwen 3.5 9B Optimized Speed FP16) on this Mac, which has 8 GB."
     )
     assert excinfo.value.memory_gib == 8.0
     assert excinfo.value.chip_generation == "m1"
 
 
-def test_minimum_memory_matches_plan_memory_boundary():
+def test_minimum_memory_matches_the_app_pickers_peak_rule():
     from mtplx.default_models import minimum_memory_gib_for_pack, pack_fits_memory
     from mtplx.model_catalog import catalog_model_with_id
 
     for catalog_id, expected in (
-        ("qwen35-4b-optimized-speed", 7),
-        ("qwen35-9b-optimized-speed", 17),
-        ("qwen35-9b-optimized-speed-fp16", 16),
-        ("qwen38-27b-optimized-speed", 32),
+        ("qwen35-4b-optimized-speed", 3),
+        ("qwen35-9b-optimized-speed", 10),
+        ("qwen35-9b-optimized-speed-fp16", 11),
+        ("qwen38-27b-optimized-speed", 25),
     ):
         pack = catalog_model_with_id(catalog_id)
         assert pack is not None

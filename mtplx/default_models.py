@@ -12,17 +12,13 @@ from typing import Any, Mapping
 
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.hardware import classify_apple_silicon_generation, detect_apple_silicon
-from mtplx.memory_plan import (
-    BANK_FLOOR_BYTES,
-    CONTEXT_FLOOR_TOKENS,
-    DEFAULT_DENSE_KV_BYTES_PER_TOKEN,
-    ENGINE_RAM_FLOOR_BYTES,
-    ENGINE_RAM_FRACTION,
-    GIB,
-    RUNTIME_TRANSIENTS_BYTES,
-    plan_memory,
+from mtplx.model_catalog import (
+    LEGACY_TIER,
+    MODERN_TIER,
+    CatalogModel,
+    catalog_model_with_id,
+    recommended_models,
 )
-from mtplx.model_catalog import CatalogModel, catalog_model_with_id
 from mtplx.profiles import (
     DEFAULT_FP16_PUBLIC_MODEL_ID,
     DEFAULT_FP16_HF_MODEL_ID,
@@ -78,12 +74,13 @@ DEFAULT_MODEL_VARIANTS = frozenset({"auto", "speed", "q4", "bf16", "fp16"})
 _LEGACY_APPLE_FP16_GENERATIONS = frozenset({"m1", "m2"})
 _NEWER_APPLE_SPEED_GENERATIONS = frozenset({"m3", "m4", "m5"})
 # Below this much unified memory the 27B default cannot load safely, so the
-# default routes to the largest smaller pack that fits (9B, then 4B). Mirrors
-# the app's <32 GiB recommendation tier (model_catalog.recommended_catalog_ids).
+# default routes to the smaller pack the app's picker lists first (the 9B
+# from 16 GiB, the 4B below that; model_catalog.recommended_catalog_ids).
 SMALL_DEFAULT_MEMORY_FLOOR_GIB = 32.0
-# The smaller packs, largest first. Under the 27B floor the default is the
-# first one memory_plan says fits this machine; with unreadable memory it is
-# the last one. There is no FP16 4B build, so M1/M2 Macs stop at the 9B.
+# The smaller speed packs, largest first. Under the 27B floor the default is
+# the first of these the app's tiers offer this machine; with unreadable
+# memory it is the last one. There is no FP16 4B build, so M1/M2 Macs stop
+# at the 9B.
 _SMALL_SPEED_CATALOG_IDS = ("qwen35-9b-optimized-speed", "qwen35-4b-optimized-speed")
 _SMALL_FP16_CATALOG_IDS = ("qwen35-9b-optimized-speed-fp16",)
 INTEL_REFUSAL_MESSAGE = (
@@ -773,33 +770,19 @@ def _hardware_memory_gib(hardware: Mapping[str, Any]) -> float | None:
 
 
 def pack_fits_memory(pack: CatalogModel, memory_gib: float) -> bool:
-    """Whether ``memory_plan`` says this pack's weights fit a machine with
-    ``memory_gib`` of unified memory (the same solve the server runs at
-    load, with the download size standing in for the weights on disk)."""
+    """Whether the app offers this pack on a Mac with ``memory_gib`` of
+    unified memory: its measured peak fits. This is the picker's own rule
+    (``shouldShowOfficialOption`` / ``recommended_models``), so the CLI
+    default and the app's recommendation can never name different packs
+    for the same machine."""
 
-    plan = plan_memory(
-        total_ram_bytes=int(memory_gib * GIB),
-        model_weights_bytes=int(pack.size_bytes),
-    )
-    return plan.available and plan.model_fits
+    return memory_gib >= float(pack.peak_memory_gib)
 
 
 def minimum_memory_gib_for_pack(pack: CatalogModel) -> int:
-    """Smallest whole number of GiB at which ``pack_fits_memory`` holds.
+    """Smallest whole number of GiB at which ``pack_fits_memory`` holds."""
 
-    Inverts memory_plan's fit: weights plus the runtime floor (transients,
-    bank floor, one context block of KV) must fit the engine envelope, which
-    is the whole machine up to 8 GiB and 75 percent of it beyond.
-    """
-
-    need = (
-        int(pack.size_bytes)
-        + RUNTIME_TRANSIENTS_BYTES
-        + BANK_FLOOR_BYTES
-        + CONTEXT_FLOOR_TOKENS * DEFAULT_DENSE_KV_BYTES_PER_TOKEN
-    )
-    ram = need if need <= ENGINE_RAM_FLOOR_BYTES else need / ENGINE_RAM_FRACTION
-    return int(math.ceil(ram / GIB))
+    return int(math.ceil(float(pack.peak_memory_gib)))
 
 
 def _small_pack_ladder(variant: str) -> tuple[CatalogModel, ...]:
@@ -808,6 +791,23 @@ def _small_pack_ladder(variant: str) -> tuple[CatalogModel, ...]:
     if any(pack is None for pack in ladder):
         raise RuntimeError("the small-model ladder names a pack missing from the catalog")
     return ladder  # type: ignore[return-value]
+
+
+def _small_pack_offered_first(variant: str, memory_gib: float) -> CatalogModel | None:
+    """The first small speed pack the app's picker would list for this Mac.
+
+    ``recommended_models`` is the catalog's RAM-tiered order with the
+    peak-memory filter applied (the 4B pair leads below 16 GiB, the 9B
+    leads 16-31 GiB; M1/M2 have only the FP16 9B), restricted here to the
+    speed ladder so the default is never a quality build.
+    """
+
+    ladder_ids = {pack.id for pack in _small_pack_ladder(variant)}
+    tier = LEGACY_TIER if variant == "fp16" else MODERN_TIER
+    for pack in recommended_models(memory_gib=memory_gib, chip_tier=tier):
+        if pack.id in ladder_ids:
+            return pack
+    return None
 
 
 def _small_pack_precision(pack: CatalogModel, variant: str) -> str:
@@ -826,8 +826,9 @@ def select_default_model(
     Auto policy is intentionally simple and visible: M1/M2 -> FP16, modern
     Macs with at least 32 GiB -> Qwen 3.8 Optimized Speed (the complete local
     build when installed, otherwise the published Hub repo), under 32 GiB ->
-    the largest smaller pack memory_plan says fits (9B, then 4B), and memory
-    that could not be read -> the smallest pack. An explicit legacy
+    the smaller pack the app's picker lists first for that much memory (the
+    9B from 16 GiB, the 4B below), and memory that could not be read -> the
+    smallest pack. An explicit legacy
     MTPLX_OPTIMIZED_SPEED_MODEL override keeps the 3.6 Optimized Speed V2
     lane it was written for.
 
@@ -889,12 +890,11 @@ def select_default_model(
             "could not be read (pass --model to choose another)"
         )
     elif memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB:
-        ladder = _small_pack_ladder(variant)
-        small_pack = next(
-            (pack for pack in ladder if pack_fits_memory(pack, memory_gib)), None
-        )
+        # The same tiers and peak-memory filter the app's picker uses, so
+        # `mtplx start` and first-run onboarding in the app name one pack.
+        small_pack = _small_pack_offered_first(variant, memory_gib)
         if small_pack is None:
-            smallest = ladder[-1]
+            smallest = _small_pack_ladder(variant)[-1]
             raise DefaultModelUnavailable(
                 f"MTPLX needs at least {minimum_memory_gib_for_pack(smallest)} GB of "
                 f"memory to run its smallest model ({smallest.display_name}) on this "
