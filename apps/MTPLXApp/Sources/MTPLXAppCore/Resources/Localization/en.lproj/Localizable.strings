@@ -177,6 +177,7 @@
 "All" = "All";
 "ALL-TIME MAX %@ TPS" = "ALL-TIME MAX %@ TPS";
 "Allocation policy" = "Allocation policy";
+"Allow swap" = "Allow swap";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding.";
 "Already on your Mac" = "Already on your Mac";
 "Always reasons before answering. Best quality, more tokens." = "Always reasons before answering. Best quality, more tokens.";
@@ -219,7 +220,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap.";
 "Auto-approve on, tap to require approval" = "Auto-approve on, tap to require approval";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "Elapsed %@, %lld of %lld resolved, %@ %@";
 "Embedding and reranking served by this daemon." = "Embedding and reranking served by this daemon.";
 "Embedding models" = "Embedding models";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom.";
 "Enable thermal polling" = "Enable thermal polling";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only.";
 "Enable web search for this conversation" = "Enable web search for this conversation";
 "Endpoint" = "Endpoint";
 "Endpoint name" = "Endpoint name";
 "ENDPOINTS" = "ENDPOINTS";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "Engine plan: %@ usable of %@ memory, context window %lld tokens.";
+"Engine plan: %@ usable of %@ memory." = "Engine plan: %@ usable of %@ memory.";
 "Engine Sessions" = "Engine Sessions";
 "Engine, fan control, and your command line — a one-time setup." = "Engine, fan control, and your command line — a one-time setup.";
 "Enter a Hugging Face repo id like org/name." = "Enter a Hugging Face repo id like org/name.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "Gateway connected";
 "Gateway service loaded" = "Gateway service loaded";
 "Gateway service not loaded" = "Gateway service not loaded";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Gemma assistant MTP";
 "Gemma sampler defaults" = "Gemma sampler defaults";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal.";
 "Host / Port" = "Host / Port";
 "How long the scheduler waits for peers before firing." = "How long the scheduler waits for peers before firing.";
+"How much of this Mac the engine may plan with. Restart required." = "How much of this Mac the engine may plan with. Restart required.";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar.";
@@ -747,6 +753,7 @@
 "Memory" = "Memory";
 "Memory Cache (RAM)" = "Memory Cache (RAM)";
 "Memory Detail" = "Memory Detail";
+"Memory limit" = "Memory limit";
 "Memory pressure — engine shedding caches" = "Memory pressure — engine shedding caches";
 "Memory running high" = "Memory running high";
 "Memory snapshot unavailable." = "Memory snapshot unavailable.";
@@ -1161,6 +1168,7 @@
 "Running" = "Running";
 "running" = "running";
 "Running and ready." = "Running and ready.";
+"Running now: %@ (%@ / %@)." = "Running now: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Running the first warmup tokens before chat opens.";
 "Running tool…" = "Running tool…";
 "Running your new model on this Mac to see how fast it actually is." = "Running your new model on this Mac to see how fast it actually is.";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "Searching: %@";
 "Send" = "Send";
 "Send message" = "Send message";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only.";
 "server %@" = "server %@";
 "server cap" = "server cap";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "Start MTPLX when the app opens";
 "Start serving" = "Start serving";
 "Start the daemon to see in-flight and recent requests." = "Start the daemon to see in-flight and recent requests.";
+"Start the model to see the plan the engine computes for this Mac." = "Start the model to see the plan the engine computes for this Mac.";
 "Start tuning" = "Start tuning";
 "Starting" = "Starting";
 "STARTING" = "STARTING";

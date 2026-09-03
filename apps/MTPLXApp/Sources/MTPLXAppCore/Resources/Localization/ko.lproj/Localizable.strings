@@ -177,6 +177,7 @@
 "All" = "전체";
 "ALL-TIME MAX %@ TPS" = "역대 최고 %@ TPS";
 "Allocation policy" = "할당 정책";
+"Allow swap" = "스왑 허용";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "이미 MTPLX 브랜드가 적용됨 — 심도 %lld 검증됨. 다시 빌드하는 대신 설치하십시오.";
 "Already on your Mac" = "이미 Mac에 있음";
 "Always reasons before answering. Best quality, more tokens." = "응답하기 전에 항상 추론합니다. 최고 품질, 더 많은 토큰.";
@@ -219,7 +220,7 @@
 "auto bf16" = "자동 bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "자동 모드는 모델이 로드된 후 남은 RAM의 절반을 할당합니다. 상한을 초과하면 오래된 프롬프트가 축출됩니다.";
 "auto fp16" = "자동 fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "자동 모드는 사용 중인 환경에 가장 적합한 모드를 선택합니다. 모든 곳에 동일하게 사용하려면 아래에서 모드를 선택하세요. 벤치마크 실행은 자체 단일 스트림 구성을 유지합니다.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "자동은 사용 중인 작업에 가장 알맞은 모드를 고릅니다. 어디서나 쓸 모드는 아래에서 선택하세요. 선택하는 즉시 저장됩니다. 벤치마크 실행은 자체 단일 스트림 설정을 유지합니다.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "자동 모드는 선택된 모델에 권장되는 프로필을 선택합니다 — 27B 및 Flash-Next 모델의 경우 Turbo입니다.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "자동 모드는 Mac의 RAM 사양(16 GB ~ 100 GB)에 맞춰 확장됩니다. 상한을 유지하기 위해 오래된 항목이 축출됩니다.";
 "Auto-approve on, tap to require approval" = "자동 승인 켜짐, 탭하여 승인 요구로 전환";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "경과 시간 %@, 해결됨 %lld/%lld, %@ %@";
 "Embedding and reranking served by this daemon." = "이 데몬에서 임베딩 및 리랭킹을 제공합니다.";
 "Embedding models" = "임베딩 모델";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "비워 두면 엔진 자체 계획, 즉 이 Mac 메모리의 약 4분의 3을 사용합니다. 여유가 있는 Mac에서 더 긴 컨텍스트를 서비스하려면 값을 높이세요.";
 "Enable thermal polling" = "발열 폴링 활성화";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "벤치마크 전에 팬 가속을 검증하려면 설정에서 발열 폴링을 활성화하십시오. 검증된 팬 속도 없이 측정된 대표 수치는 진단용일 뿐입니다.";
 "Enable web search for this conversation" = "이 대화에서 웹 검색 활성화";
 "Endpoint" = "엔드포인트";
 "Endpoint name" = "엔드포인트 이름";
 "ENDPOINTS" = "엔드포인트";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "엔진 계획: 메모리 %2$@ 중 %1$@ 사용 가능, 컨텍스트 윈도우 %3$lld 토큰.";
+"Engine plan: %@ usable of %@ memory." = "엔진 계획: 메모리 %2$@ 중 %1$@ 사용 가능.";
 "Engine Sessions" = "엔진 세션";
 "Engine, fan control, and your command line — a one-time setup." = "엔진, 팬 제어 및 명령줄 환경 — 최초 1회만 설정하면 됩니다.";
 "Enter a Hugging Face repo id like org/name." = "org/name 형식으로 Hugging Face 저장소 ID를 입력하십시오.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "게이트웨이 연결됨";
 "Gateway service loaded" = "게이트웨이 서비스 로드됨";
 "Gateway service not loaded" = "게이트웨이 서비스 로드되지 않음";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Gemma 어시스턴트 MTP";
 "Gemma sampler defaults" = "Gemma 샘플러 기본값";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew를 찾을 수 없어 터미널에서 이제 앱 내 CLI(%@, 이전 %@)를 사용합니다. 새 터미널을 여십시오.";
 "Host / Port" = "호스트 / 포트";
 "How long the scheduler waits for peers before firing." = "스케줄러가 작업을 시작하기 전 피어를 기다리는 시간입니다.";
+"How much of this Mac the engine may plan with. Restart required." = "엔진이 이 Mac에서 계획에 쓸 수 있는 양입니다. 재시작이 필요합니다.";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "모델 다운로드를 위한 Hugging Face 엔드포인트입니다. HF 토큰은 미러로 전송되지 않습니다.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Face 소스입니다. Forge가 MLX로 변환하고 MTP 사이드카를 패키징합니다.";
@@ -747,6 +753,7 @@
 "Memory" = "메모리";
 "Memory Cache (RAM)" = "메모리 캐시 (RAM)";
 "Memory Detail" = "메모리 세부 정보";
+"Memory limit" = "메모리 한도";
 "Memory pressure — engine shedding caches" = "메모리 압박 — 엔진이 캐시를 정리하는 중입니다";
 "Memory running high" = "메모리 사용량 높음";
 "Memory snapshot unavailable." = "메모리 스냅샷을 사용할 수 없습니다.";
@@ -1161,6 +1168,7 @@
 "Running" = "실행 중";
 "running" = "실행 중";
 "Running and ready." = "실행 중이며 준비되었습니다.";
+"Running now: %@ (%@ / %@)." = "현재 실행 중: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "대화가 열리기 전 첫 번째 워밍업 토큰을 실행하는 중입니다.";
 "Running tool…" = "도구 실행 중…";
 "Running your new model on this Mac to see how fast it actually is." = "새 모델이 실제로 얼마나 빠른지 확인하기 위해 이 Mac에서 실행하는 중입니다.";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "검색 중: %@";
 "Send" = "보내기";
 "Send message" = "메시지 보내기";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "메모리에 담기는 크기를 넘는 컨텍스트도 처리합니다. macOS가 SSD로 페이징하므로 속도는 크게 떨어지지만, 긴 세션이 더 이상 거부되지 않습니다.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "이 데몬에서 임베딩 및 리랭킹을 제공합니다. MTPLX를 채팅 전용으로 유지하려면 비워 두십시오.";
 "server %@" = "서버 %@";
 "server cap" = "서버 상한";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "앱이 열릴 때 MTPLX 시작";
 "Start serving" = "서빙 시작";
 "Start the daemon to see in-flight and recent requests." = "처리 중인 요청 및 최근 요청을 보려면 데몬을 시작하십시오.";
+"Start the model to see the plan the engine computes for this Mac." = "엔진이 이 Mac에 대해 계산한 계획을 보려면 모델을 시작하세요.";
 "Start tuning" = "튜닝 시작";
 "Starting" = "시작 중";
 "STARTING" = "시작 중";

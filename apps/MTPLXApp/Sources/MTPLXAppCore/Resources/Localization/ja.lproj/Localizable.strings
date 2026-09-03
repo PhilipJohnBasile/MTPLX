@@ -177,6 +177,7 @@
 "All" = "すべて";
 "ALL-TIME MAX %@ TPS" = "歴代最高 %@ TPS";
 "Allocation policy" = "割り当てポリシー";
+"Allow swap" = "スワップを許可";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "すでにMTPLXブランド済み — 深さ%lldを検証済み。再ビルドせずにインストールしてください。";
 "Already on your Mac" = "このMacにあります";
 "Always reasons before answering. Best quality, more tokens." = "回答前に必ず推論します。最高品質ですが、トークン消費が増えます。";
@@ -219,7 +220,7 @@
 "auto bf16" = "自動 bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "自動では、モデル読み込み後に残るRAMの半分を割り当てます。上限を超えると古いプロンプトから退避されます。";
 "auto fp16" = "自動 fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "自動では用途に最適なモードを選択します。下のモードを選ぶと、すべての場面でそのモードが使われます。ベンチマーク実行は独自のシングルストリーム設定を維持します。";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "自動は、使用中の用途に最適なモードを選びます。どこでも使うモードは下から選んでください。選んだ時点で保存されます。ベンチマーク実行は独自のシングルストリーム設定を維持します。";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "自動では選択したモデルにおすすめのプロファイルを選びます。27BおよびFlash-NextモデルではTurboです。";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "自動ではMacのRAM容量（16 GB〜100 GB）に応じて調整します。上限内に収めるため、古いエントリから退避されます。";
 "Auto-approve on, tap to require approval" = "自動承認オン。タップすると承認必須に切り替わります";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "経過%@、%lld/%lld解決済み、%@ %@";
 "Embedding and reranking served by this daemon." = "このデーモンが提供する埋め込みとリランキング。";
 "Embedding models" = "埋め込みモデル";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "空欄ならエンジン自身の計画、つまりこの Mac のメモリの約 4 分の 3 を使います。余裕のある Mac でより長いコンテキストを扱うには引き上げてください。";
 "Enable thermal polling" = "温度ポーリングを有効にする";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "ベンチマーク前にファンの立ち上がりを検証するには、設定で温度ポーリングを有効にしてください。ファンが検証されていない場合の主要な数値は診断用のみです。";
 "Enable web search for this conversation" = "この会話でWeb検索を有効にする";
 "Endpoint" = "エンドポイント";
 "Endpoint name" = "エンドポイント名";
 "ENDPOINTS" = "エンドポイント";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "エンジンの計画: メモリ %2$@ のうち %1$@ が利用可能、コンテキストウインドウ %3$lld トークン。";
+"Engine plan: %@ usable of %@ memory." = "エンジンの計画: メモリ %2$@ のうち %1$@ が利用可能。";
 "Engine Sessions" = "エンジンセッション";
 "Engine, fan control, and your command line — a one-time setup." = "エンジン、ファン制御、コマンドライン — 一度だけのセットアップです。";
 "Enter a Hugging Face repo id like org/name." = "org/nameのような形式でHugging FaceリポジトリIDを入力してください。";
@@ -588,6 +592,7 @@
 "Gateway connected" = "ゲートウェイ接続済み";
 "Gateway service loaded" = "ゲートウェイサービス読み込み済み";
 "Gateway service not loaded" = "ゲートウェイサービス未読み込み";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "GemmaアシスタントMTP";
 "Gemma sampler defaults" = "Gemmaサンプラーのデフォルト";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrewが見つからなかったため、ターミナルではアプリのCLI（%@、旧: %@）が使用されます。新しいターミナルを開いてください。";
 "Host / Port" = "ホスト / ポート";
 "How long the scheduler waits for peers before firing." = "スケジューラが起動前にピアを待機する時間。";
+"How much of this Mac the engine may plan with. Restart required." = "エンジンがこの Mac のどれだけを見込んでよいか。再起動が必要です。";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "モデルダウンロード用のHugging Faceエンドポイント。HFトークンがミラーに送信されることはありません。";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Faceソース。ForgeがMLXに変換し、MTPサイドカーをパックします。";
@@ -747,6 +753,7 @@
 "Memory" = "メモリ";
 "Memory Cache (RAM)" = "メモリキャッシュ（RAM）";
 "Memory Detail" = "メモリ詳細";
+"Memory limit" = "メモリ上限";
 "Memory pressure — engine shedding caches" = "メモリ負荷 — エンジンがキャッシュを解放中";
 "Memory running high" = "メモリ使用量が高くなっています";
 "Memory snapshot unavailable." = "メモリスナップショットを利用できません。";
@@ -1161,6 +1168,7 @@
 "Running" = "実行中";
 "running" = "実行中";
 "Running and ready." = "実行中、準備完了。";
+"Running now: %@ (%@ / %@)." = "現在の実行: %@ (%@ / %@)。";
 "Running the first warmup tokens before chat opens." = "チャットが開く前に最初のウォームアップトークンを実行中。";
 "Running tool…" = "ツールを実行中…";
 "Running your new model on this Mac to see how fast it actually is." = "実際の速度を確認するため、このMacで新しいモデルを実行しています。";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "検索中: %@";
 "Send" = "送信";
 "Send message" = "メッセージを送信";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "メモリに収まらない大きさのコンテキストも処理します。macOS が SSD にページングするため速度は大きく落ちますが、長いセッションが拒否されなくなります。";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "このデーモンから埋め込みとリランキングを提供します。MTPLXをチャット専用のままにするには空のままにしてください。";
 "server %@" = "サーバー %@";
 "server cap" = "サーバー上限";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "アプリ起動時にMTPLXを開始";
 "Start serving" = "配信を開始";
 "Start the daemon to see in-flight and recent requests." = "デーモンを開始すると、処理中および最近のリクエストが表示されます。";
+"Start the model to see the plan the engine computes for this Mac." = "エンジンがこの Mac 向けに計算する計画を見るには、モデルを起動してください。";
 "Start tuning" = "チューニングを開始";
 "Starting" = "開始中";
 "STARTING" = "開始中";

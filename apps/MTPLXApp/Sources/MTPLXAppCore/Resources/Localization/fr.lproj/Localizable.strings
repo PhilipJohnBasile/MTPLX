@@ -177,6 +177,7 @@
 "All" = "Tout";
 "ALL-TIME MAX %@ TPS" = "MAX HISTORIQUE %@ TPS";
 "Allocation policy" = "Stratégie d'allocation";
+"Allow swap" = "Autoriser le swap";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "Déjà estampillé MTPLX — profondeur %lld vérifiée. Installez au lieu de reconstruire.";
 "Already on your Mac" = "Déjà sur votre Mac";
 "Always reasons before answering. Best quality, more tokens." = "Raisonnement systématique avant de répondre. Meilleure qualité, plus de tokens.";
@@ -219,7 +220,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Auto alloue la moitié de la RAM restante après le chargement du modèle. Les anciennes invites sont expulsées au-delà de la limite.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Auto choisit le meilleur mode selon votre usage. Choisissez un mode ci-dessous pour l'appliquer partout. Les sessions de benchmark conservent leur configuration à flux unique.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Auto choisit le meilleur mode pour ce que vous utilisez. Choisissez un mode ci-dessous pour l'utiliser partout. Enregistré dès que vous le choisissez. Les tests de performance gardent leur propre configuration à flux unique.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Auto choisit le profil recommandé pour le modèle sélectionné — Turbo pour les modèles 27B et Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Auto s'ajuste selon la quantité de RAM de votre Mac (de 16 GB à 100 GB). Les anciennes entrées sont expulsées pour ne pas dépasser la limite.";
 "Auto-approve on, tap to require approval" = "Approbation auto activée, touchez pour exiger l'approbation";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "Écoulé %@, %lld sur %lld résolus, %@ %@";
 "Embedding and reranking served by this daemon." = "Plongements et réordonnancement servis par ce démon.";
 "Embedding models" = "Modèles de plongement";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "Vide utilise le plan du moteur, environ les trois quarts de la mémoire de ce Mac. Augmentez-le pour servir des contextes plus longs sur un Mac qui a de la marge.";
 "Enable thermal polling" = "Activer le sondage thermique";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "Activez le sondage thermique dans les Réglages pour vérifier l'accélération des ventilateurs avant le benchmark. Les chiffres annoncés sans ventilateurs vérifiés sont uniquement diagnostiques.";
 "Enable web search for this conversation" = "Activer la recherche Web pour cette discussion";
 "Endpoint" = "Point de terminaison";
 "Endpoint name" = "Nom du point de terminaison";
 "ENDPOINTS" = "POINTS DE TERMINAISON";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "Plan du moteur: %@ utilisables sur %@ de mémoire, fenêtre de contexte %lld jetons.";
+"Engine plan: %@ usable of %@ memory." = "Plan du moteur: %@ utilisables sur %@ de mémoire.";
 "Engine Sessions" = "Sessions du moteur";
 "Engine, fan control, and your command line — a one-time setup." = "Moteur, contrôle des ventilateurs et ligne de commande — configuration unique.";
 "Enter a Hugging Face repo id like org/name." = "Saisissez un identifiant de dépôt Hugging Face tel que org/nom.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "Passerelle connectée";
 "Gateway service loaded" = "Service de passerelle chargé";
 "Gateway service not loaded" = "Service de passerelle non chargé";
+"GB" = "Go";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "MTP assistant Gemma";
 "Gemma sampler defaults" = "Échantillonneur Gemma par défaut";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew est introuvable, votre terminal utilise donc la CLI de l'application (%@, au lieu de %@). Ouvrez un nouveau terminal.";
 "Host / Port" = "Hôte / Port";
 "How long the scheduler waits for peers before firing." = "Durée pendant laquelle l'ordonnanceur attend les pairs avant de se déclencher.";
+"How much of this Mac the engine may plan with. Restart required." = "Quelle part de ce Mac le moteur peut planifier. Redémarrage requis.";
 "HTTP %@: %@" = "HTTP %@ : %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "Point de terminaison Hugging Face pour les téléchargements de modèles. Votre jeton HF n'est jamais envoyé à un miroir.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Source Hugging Face. Forge convertira en MLX et empaquettera le conteneur MTP.";
@@ -747,6 +753,7 @@
 "Memory" = "Mémoire";
 "Memory Cache (RAM)" = "Cache mémoire (RAM)";
 "Memory Detail" = "Détail de la mémoire";
+"Memory limit" = "Limite de mémoire";
 "Memory pressure — engine shedding caches" = "Pression mémoire — le moteur décharge les caches";
 "Memory running high" = "Mémoire presque saturée";
 "Memory snapshot unavailable." = "Instantané de mémoire indisponible.";
@@ -1161,6 +1168,7 @@
 "Running" = "En cours d'exécution";
 "running" = "en cours";
 "Running and ready." = "En cours d'exécution et prêt.";
+"Running now: %@ (%@ / %@)." = "En cours: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Exécution des premiers tokens d'échauffement avant l'ouverture de la discussion.";
 "Running tool…" = "Exécution de l'outil…";
 "Running your new model on this Mac to see how fast it actually is." = "Exécution de votre nouveau modèle sur ce Mac pour mesurer sa vitesse réelle.";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "Recherche : %@";
 "Send" = "Envoyer";
 "Send message" = "Envoyer le message";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "Servez des contextes plus grands que ce qui tient en mémoire. macOS pagine vers le SSD, la vitesse chute fortement, mais les longues sessions ne sont plus refusées.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "Sert les plongements et le réordonnancement depuis ce démon. Laissez vide pour conserver MTPLX en mode discussion uniquement.";
 "server %@" = "serveur %@";
 "server cap" = "limite du serveur";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "Démarrer MTPLX à l'ouverture de l'application";
 "Start serving" = "Démarrer le service";
 "Start the daemon to see in-flight and recent requests." = "Démarrez le démon pour afficher les requêtes en cours et récentes.";
+"Start the model to see the plan the engine computes for this Mac." = "Démarrez le modèle pour voir le plan que le moteur calcule pour ce Mac.";
 "Start tuning" = "Démarrer l'optimisation";
 "Starting" = "Démarrage";
 "STARTING" = "DÉMARRAGE";

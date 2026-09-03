@@ -392,6 +392,19 @@ SSE_KEEPALIVE_MIN_INTERVAL_S = 1.0
 STREAM_STALL_DEADLINE_S = float(
     os.environ.get("MTPLX_STREAM_STALL_DEADLINE_S") or 300.0
 )
+# Absolute bound on the post-generation commit wait of a streamed response
+# (issue #425, 66duke66). Once decode has finished the client already holds
+# every token; only the terminal frame and [DONE] are missing. The session
+# postcommit that the terminal frame waits for runs as foreground scheduler
+# work, so behind a queued foreground prefill from ANOTHER request the wait is
+# long but alive: the owner heartbeat keeps ticking on that other request and
+# the stall probe above can never fire. Past this many seconds the stream
+# emits its terminal frame with the snapshot marked deferred and the
+# postcommit keeps running in the background; the next same-session request
+# waits for it through the pending-postcommit path as usual. 0 disables.
+STREAM_COMMIT_WAIT_MAX_S = float(
+    os.environ.get("MTPLX_STREAM_COMMIT_WAIT_MAX_S") or 30.0
+)
 # Runaway-hidden-generation backstop. Native-tool agent workloads stream
 # multi-thousand-token arguments (whole files) as legitimate hidden text, so
 # the ceilings are env-tunable; the defaults keep the original chat-UX guard.
@@ -864,6 +877,20 @@ def _server_runtime_env_overrides(
                 "MTPLX_QWEN4_FIXED_M4_VERIFY",
                 "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
                 "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
+                # 2026-09-03 ports from PR #391 by davidtai, measured on the
+                # same geometry (outputs/hyper-review-20260903): the exact op
+                # diet in the compiled verifier, block verification in the
+                # accept loop, and the two prefill overlaps (PLE n-gram rows
+                # for chunk k+1 gathered under chunk k, the first chunk's
+                # rows gathered at request arrival). The session-bank pair
+                # keeps a re-rendered agent turn on its boundary snapshots
+                # instead of a cold re-prefill.
+                "MTPLX_QWEN4_OPDIET",
+                "MTPLX_QWEN4_BLOCK_VERIFY",
+                "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+                "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+                "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+                "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
             ]
             if _qwen4_port_opt_in(
                 overrides, "MTPLX_FUSED_GATE_UP"
@@ -874,6 +901,39 @@ def _server_runtime_env_overrides(
             for key in lane_defaults:
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
+            # Value-carrying companions of the keys above; an explicit export
+            # of the companion wins on its own, and the master switch's =0
+            # leaves them inert.
+            if os.environ.get("MTPLX_NGRAM_PREWARM") is None:
+                overrides.setdefault("MTPLX_NGRAM_PREWARM", "auto")
+            # The stage-3 child routes are consumed at model load and raise
+            # unless stage 3 itself resolves on, so they are derived from the
+            # resolved parent, never stamped alone: the routed-down reduction,
+            # its residual-tail store, the paired routed GLU, and the two-kernel
+            # routing head (which additionally needs the paired GLU).
+            if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_M4_STAGE3"):
+                for key in (
+                    "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+                    "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+                    "MTPLX_QWEN4_M4_ROUTED_GLU",
+                ):
+                    if os.environ.get(key) is None:
+                        overrides.setdefault(key, "1")
+                if (
+                    _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_M4_ROUTED_GLU")
+                    and os.environ.get("MTPLX_QWEN4_ROUTE_KERNEL") is None
+                ):
+                    overrides.setdefault("MTPLX_QWEN4_ROUTE_KERNEL", "1")
+            # The fused QSA rope glue installs inside the fixed-M4 compiled
+            # verify body and is probed bit-exact there, so it follows that
+            # verifier's resolved state.
+            if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_FIXED_M4_VERIFY"):
+                if os.environ.get("MTPLX_QWEN4_VERIFY_GLUE") is None:
+                    overrides.setdefault("MTPLX_QWEN4_VERIFY_GLUE", "1")
+                if os.environ.get("MTPLX_QWEN4_VERIFY_GLUE_ITEMS") is None:
+                    overrides.setdefault(
+                        "MTPLX_QWEN4_VERIFY_GLUE_ITEMS", "qsa_rope,qsa_rope_idx"
+                    )
             # The fused K/V gather is read at cache promotion and raises
             # unless BOTH the fixed verifier and the rows-gather lane resolve
             # on (graphbank.from_qsa_cache; the first port's 249,670-token
@@ -900,6 +960,14 @@ def _server_runtime_env_overrides(
                     overrides.setdefault(
                         "MTPLX_FRSPEC_VOCAB", "builtin:qwen38-code-64k"
                     )
+                # The pre-scatter draft read serves K20 from the FR-Spec
+                # head's compact row and raises at install without that
+                # head, so it follows the resolved FR-Spec draft.
+                if (
+                    _qwen4_port_opt_in(overrides, "MTPLX_FRSPEC_DRAFT")
+                    and os.environ.get("MTPLX_QWEN4_DRAFT_K20_PRESCATTER") is None
+                ):
+                    overrides.setdefault("MTPLX_QWEN4_DRAFT_K20_PRESCATTER", "1")
         if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS"):
             # Fixed-M4 target distributions (PR #391 step 1 by davidtai, his
             # 2026-08-29 production A/B/A/B): batch all four temperature-1 /
@@ -979,6 +1047,21 @@ _QWEN4_PORT_KEYS = (
     "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
     "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
     "MTPLX_QSA_M4_FUSED_KV_GATHER",
+    # 2026-09-03 ports from PR #391 by davidtai (see the lane defaults).
+    "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+    "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+    "MTPLX_QWEN4_M4_ROUTED_GLU",
+    "MTPLX_QWEN4_ROUTE_KERNEL",
+    "MTPLX_QWEN4_OPDIET",
+    "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+    "MTPLX_QWEN4_BLOCK_VERIFY",
+    "MTPLX_QWEN4_VERIFY_GLUE",
+    "MTPLX_QWEN4_VERIFY_GLUE_ITEMS",
+    "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+    "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+    "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+    "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+    "MTPLX_NGRAM_PREWARM",
 )
 # Every key the fixed-M4 lane defaults may stamp; an explicit operator
 # export (any non-empty value) always beats a stamped value for these.
@@ -1655,6 +1738,100 @@ class AnthropicMessagesRequest(BaseModel):
 
 def _startup_line(text: str = "") -> None:
     _safe_stdout_print(text)
+
+
+def _apply_ngram_prewarm_choice(args: Any) -> str:
+    """Resolve --ngram-prewarm / MTPLX_NGRAM_PREWARM; return what decided.
+
+    ``None`` (the flag was not given) leaves the environment alone, so a
+    shell-set value or the on-by-default still decides.  Never fatal: a model
+    without a streamed n-gram sidecar simply never reads the key.
+    """
+
+    try:
+        from mtplx.ple_row_gather import apply_prewarm_choice
+
+        order = getattr(args, "ngram_prewarm_order", None)
+        if order:
+            os.environ["MTPLX_NGRAM_PREWARM_ORDER"] = str(order)
+        return apply_prewarm_choice(getattr(args, "ngram_prewarm", None))
+    except Exception as error:  # a startup knob must not break startup
+        return f"unavailable: {error!r}"
+
+
+def _publish_ngram_prewarm_reservation(args: Any) -> dict[str, Any]:
+    """Tell the pre-read how much memory the KV cache is about to want.
+
+    The server's own MemoryPlan is the authority, but it is built ~350 lines
+    after the model load and the pre-read happens INSIDE that load, so the
+    number cannot be read from it.  What is available here is every input the
+    plan derives it from -- `mtplx.memory_plan` is runtime-free and reads
+    bytes/token straight out of config.json -- so this is the same arithmetic
+    on the same inputs, published before the load rather than a second policy.
+
+    Unknown inputs publish zero and say so; the pre-read then leans on its
+    documented margin instead of an invented number.
+    """
+
+    try:
+        from mtplx.ple_row_gather import (
+            estimate_engine_growth_bytes,
+            estimate_kv_reservation_bytes,
+            set_prewarm_reservation,
+        )
+
+        tokens = int(getattr(args, "context_window", 0) or 0)
+        if tokens <= 0:
+            from mtplx.generation import _dense_decode_max_context
+
+            tokens = int(_dense_decode_max_context() or 0)
+        reserved, source = estimate_kv_reservation_bytes(
+            getattr(args, "model", None), tokens
+        )
+        # The KV estimate undercounts what the engine takes on a long prompt
+        # (bank, indexer promotion, prefill scratch): reserve its whole growth
+        # to the budget when that is larger (2026-09-03 crash receipt).
+        growth, growth_source = estimate_engine_growth_bytes(
+            getattr(args, "model", None)
+        )
+        if int(growth) > int(reserved):
+            reserved, source = int(growth), growth_source
+        set_prewarm_reservation(reserved, source)
+        return {"bytes": int(reserved), "source": source, "tokens": tokens}
+    except Exception as error:  # a startup knob must not break startup
+        return {"bytes": 0, "source": f"unavailable: {error!r}", "tokens": 0}
+
+
+def _ngram_prewarm_health_payload() -> dict[str, Any]:
+    """What the n-gram table pre-read actually did, for ``/health``.
+
+    Read from the module-level receipt `mtplx.ple_row_gather` publishes, not
+    by walking the runtime down to the sidecar: that walk is family-specific
+    and five getattrs deep, and it is exactly the shape of walk that made the
+    PLE prefill lookahead silently inert on 2026-09-01.
+    """
+
+    try:
+        from mtplx.ple_row_gather import last_prewarm
+
+        receipt = last_prewarm()
+    except Exception as error:
+        return {"enabled": None, "reason": repr(error)}
+    return {
+        "enabled": receipt.get("enabled"),
+        "mode": receipt.get("mode"),
+        "order": receipt.get("order"),
+        "table_bytes": receipt.get("table_bytes"),
+        "budget_bytes": receipt.get("budget_bytes"),
+        "warmed_bytes": receipt.get("warmed_bytes", receipt.get("bytes")),
+        "seconds": receipt.get("seconds"),
+        "gib_per_s": receipt.get("gib_per_s"),
+        "free_bytes": receipt.get("free_bytes"),
+        "reserved_bytes": receipt.get("reserved_bytes"),
+        "margin_bytes": receipt.get("margin_bytes"),
+        "source": receipt.get("source"),
+        "skipped_reason": receipt.get("skipped_reason"),
+    }
 
 
 def _laguna_fused_startup_line(runtime: Any) -> str | None:
@@ -2673,6 +2850,13 @@ class ServerState:
             # CLI flag is the public surface, the env is the plumbing.
             os.environ["MTPLX_MEMORY_BUDGET"] = str(int(self.memory_budget_bytes))
         self.mlx_cache_limit_status = _configure_mlx_cache_limit(args)
+        # The n-gram table pre-read: the CLI flag is the public surface, the
+        # env is the plumbing (same contract as MTPLX_MEMORY_BUDGET above).
+        # Stamped AFTER apply_profile_env so an explicit --ngram-prewarm /
+        # --no-ngram-prewarm also wins over a model contract's override, and
+        # BEFORE the load below, which is what performs the read.
+        self.ngram_prewarm_source = _apply_ngram_prewarm_choice(args)
+        self.ngram_prewarm_reservation = _publish_ngram_prewarm_reservation(args)
         _startup_line("[4/6] Runtime checks complete")
         started = time.perf_counter()
         _startup_line(f"[5/6] Loading model weights: {args.model}")
@@ -15056,6 +15240,10 @@ def _metrics_envelope(
             stats.get("repetition_stop_trimmed_tokens") or 0
         ),
         "repetition_stop_raw_tokens": int(stats.get("repetition_stop_raw_tokens") or 0),
+        # #414: which speculative branch emitted the stop token. Null on
+        # length/aborted finishes; stamped unconditionally here because
+        # the JSONL is the forensics surface the release note names.
+        "finish_stop_origin": stats.get("finish_stop_origin"),
         "loop_guard": dict(stats.get("loop_guard") or {}),
         "thinking_guard": dict(stats.get("thinking_guard") or {}),
         "lock_wait_time_s": lock_wait_time_s,
@@ -17678,6 +17866,70 @@ class _OwnerStallProbe:
         return None
 
 
+def _qwen4_install_reports(state: Any) -> dict[str, Any]:
+    """Load-time install receipts of the Flash-Next lanes, for /health.
+
+    The engagement proof of a stamped default must be readable without the
+    serve log: the stage-3 kernel report (with its two-kernel routing head
+    block), the fused rope glue's per-item verdicts, and the n-gram table
+    pre-read plan. Absent lanes read as null; nothing here touches the GPU.
+    """
+
+    runtime = getattr(state, "runtime", None)
+    if runtime is None:
+        return {}
+    out: dict[str, Any] = {}
+    stage3 = getattr(runtime, "qwen4_m4_stage3_report", None)
+    if isinstance(stage3, dict):
+        out["m4_stage3"] = stage3
+    glue = getattr(runtime, "_mtplx_qwen4_verify_glue", None)
+    if isinstance(glue, dict):
+        out["verify_glue"] = glue
+    try:
+        model = getattr(runtime, "model", None)
+        text = getattr(model, "language_model", model)
+        prewarm = None
+        for _name, module in getattr(text, "named_modules", lambda: [])():
+            sidecar = getattr(module, "_sidecar", None)
+            receipt = getattr(sidecar, "prewarm_at_load", None)
+            if isinstance(receipt, dict):
+                prewarm = receipt
+                break
+        if prewarm is not None:
+            out["ngram_prewarm"] = prewarm
+    except Exception:
+        pass
+    return out
+
+
+def _log_stream_commit_wait_deferred(
+    state: Any,
+    *,
+    response_id: str | None,
+    session_id: str | None,
+    waited_s: float,
+    streamed_tokens: int,
+) -> None:
+    """One structured line when a stream closes ahead of its postcommit (#425)."""
+
+    try:
+        print(
+            json.dumps(
+                {
+                    "event": "mtplx_stream_commit_wait_deferred",
+                    "response_id": response_id,
+                    "session_id": session_id,
+                    "waited_s": round(float(waited_s), 3),
+                    "completion_tokens": int(streamed_tokens),
+                    "deadline_s": STREAM_COMMIT_WAIT_MAX_S,
+                }
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 def _log_stream_stall_break(
     state: Any,
     *,
@@ -18651,6 +18903,13 @@ def _public_mtplx_stats(generated: dict[str, Any]) -> dict[str, Any]:
         reason = stats.get("repetition_stop_reason")
         if reason is not None:
             public["repetition_stop_reason"] = str(reason)
+    # #414 telemetry: same quiet-envelope rule. finish_stop_origin is None
+    # on every length/aborted finish, so it joins the envelope only when a
+    # stop actually named its commit path; without this the origin exists
+    # on GenerationStats but never reaches the SSE payload.
+    stop_origin = stats.get("finish_stop_origin")
+    if stop_origin is not None:
+        public["finish_stop_origin"] = str(stop_origin)
     # Draft-sampler truth keys (same quiet-envelope idiom): stamped only
     # when the resolution ran, so AR responses — which carry no draft
     # telemetry at all — and legacy envelopes stay byte-stable.
@@ -20748,10 +21007,23 @@ def _schedule_idle_postcommit_snapshot(
     # times out the next request just falls through to a cold prefill.
     if session is not None:
         try:
+            # Seed the size from the session's committed frontier (#432).
+            # The exact history length only lands via update_token_count
+            # once the job has rendered the conversation, which for a 200k
+            # session is many seconds in - long after the interleaved
+            # foreign request that decides whether this commit survives.
+            # The committed prefix is a sound lower bound available now, so
+            # size-keyed policy (marathon protection) stops reading 0 for
+            # exactly the commits it exists to protect.
+            try:
+                seed_tokens = len(getattr(session, "committed_token_ids", ()) or ())
+            except BaseException:
+                seed_tokens = 0
             record = session.set_pending_postcommit(
                 future,
                 abort_event=abort_event,
                 reason=unsafe_reason,
+                token_count=seed_tokens,
             )
             pending_record_holder["record"] = record
         except BaseException:
@@ -27667,6 +27939,7 @@ def create_app(state: ServerState) -> FastAPI:
             "draft_head_identity": state.draft_head_identity,
             "tokenizer_template_hash": state.template_hash,
             "fast_path_env": state.fast_path_env_status,
+            "qwen4_install_reports": _qwen4_install_reports(state),
             "profile_env": state.profile_env_status,
             "diagnostic_env_ablation": bool(state.args.diagnostic_env_ablation),
             "mtp_history_materialize_every": (
@@ -27831,6 +28104,11 @@ def create_app(state: ServerState) -> FastAPI:
             ),
             "mlx_cache_limit": state.mlx_cache_limit_status,
             "mlx_runtime": state.mlx_runtime_status,
+            # Page-cache residency of the streamed n-gram table decides 56 vs
+            # 68.8 tok/s on decode, so it belongs in the same truth block as
+            # the other clamps: a warm-looking box that skipped the pre-read
+            # is a slow box with no other symptom.
+            "ngram_prewarm": _ngram_prewarm_health_payload(),
             # Hardware fields surfaced for the dashboard's HardwareBanner
             # and MemoryStackedBar. Cached after the first lookup.
             **_machine_info(),
@@ -32565,6 +32843,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 commit_wait_probe = _OwnerStallProbe(
                                     deadline_s=STREAM_STALL_DEADLINE_S
                                 )
+                                commit_wait_started_s = time.perf_counter()
                                 while True:
                                     try:
                                         commit_kind, commit_item = await queue.get(
@@ -32572,6 +32851,39 @@ def create_app(state: ServerState) -> FastAPI:
                                         )
                                     except Empty:
                                         now_s = time.perf_counter()
+                                        if (
+                                            STREAM_COMMIT_WAIT_MAX_S > 0
+                                            and now_s - commit_wait_started_s
+                                            >= STREAM_COMMIT_WAIT_MAX_S
+                                        ):
+                                            # #425: the owner is alive but busy
+                                            # with someone else's prefill and
+                                            # our postcommit is queued behind
+                                            # it. Close the stream now; the
+                                            # snapshot lands when the owner
+                                            # reaches it.
+                                            waited_s = now_s - commit_wait_started_s
+                                            _log_stream_commit_wait_deferred(
+                                                state,
+                                                response_id=response_id,
+                                                session_id=session_id,
+                                                waited_s=waited_s,
+                                                streamed_tokens=(
+                                                    streamed_progress_tokens
+                                                ),
+                                            )
+                                            commit_kind = "released"
+                                            commit_item = {
+                                                "generated": generated,
+                                                "postcommit": {
+                                                    "stored": False,
+                                                    "deferred": (
+                                                        "stream_commit_wait_deadline"
+                                                    ),
+                                                    "waited_s": round(waited_s, 3),
+                                                },
+                                            }
+                                            break
                                         frozen_for_s = commit_wait_probe.observe(
                                             now_s
                                         )
@@ -34742,6 +35054,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Load and inject the native MTP sidecar. Disable only for stock AR diagnostics.",
+    )
+    parser.add_argument(
+        "--ngram-prewarm",
+        metavar="auto|all|off|GiB",
+        # Not a boolean, and default=None rather than "auto": the flag has an
+        # environment counterpart (MTPLX_NGRAM_PREWARM), and a default would
+        # be indistinguishable from the user typing it -- so the CLI would
+        # silently overrule every shell-set value.  None means "not given".
+        default=None,
+        help=(
+            "How much of the streamed n-gram table to read into the page "
+            "cache at model load. auto (default) warms min(table, free - KV "
+            "reservation - 6 GiB margin); all reads the whole table (~2.5 s "
+            "at ~12 GiB/s for 30 GiB); a bare number is a budget in GiB; off "
+            "serves at the as-found page-cache rate. Cold sidecar rows are "
+            "demand faults at ~1.4 GiB/s and cost 56 vs 68.8 tok/s on decode. "
+            "Environment: MTPLX_NGRAM_PREWARM, which this flag overrides."
+        ),
+    )
+    parser.add_argument(
+        "--no-ngram-prewarm",
+        dest="ngram_prewarm",
+        action="store_const",
+        const="off",
+        help="Alias for --ngram-prewarm off.",
+    )
+    parser.add_argument(
+        "--ngram-prewarm-order",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Row-hotness file (.npy of int64 row ids, most-gathered first) "
+            "deciding WHICH rows a partial pre-read warms. Defaults to "
+            "<model>/ngram-hotness.npy when present, else the file prefix is "
+            "read sequentially."
+        ),
     )
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument(

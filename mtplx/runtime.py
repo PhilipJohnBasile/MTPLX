@@ -1023,11 +1023,22 @@ def load(
             logger.info("[qwen4-fixed-M4-verify] %s", qwen4_verify_report)
         from .qwen4_m4_stage3 import (
             install_qwen4_m4_stage3,
-            qwen4_m4_stage3_enabled,
+            qwen4_m4_stage3_flags,
         )
 
-        if qwen4_m4_stage3_enabled():
-            qwen4_m4_stage3_report = install_qwen4_m4_stage3(runtime)
+        (
+            m4_stage3_enabled,
+            routed_reduce_enabled,
+            residual_tail_enabled,
+            routed_glu_enabled,
+        ) = qwen4_m4_stage3_flags()
+        if m4_stage3_enabled:
+            qwen4_m4_stage3_report = install_qwen4_m4_stage3(
+                runtime,
+                routed_down_reduce_enabled=routed_reduce_enabled,
+                routed_down_residual_tail_enabled=residual_tail_enabled,
+                routed_glu_enabled=routed_glu_enabled,
+            )
             logger.info("[qwen4-M4-stage3] %s", qwen4_m4_stage3_report)
     if whole_moe_plan is not None:
         if compiled_target_factory is None:

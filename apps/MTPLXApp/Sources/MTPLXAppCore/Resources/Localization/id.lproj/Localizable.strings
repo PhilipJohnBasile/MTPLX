@@ -177,6 +177,7 @@
 "All" = "Semua";
 "ALL-TIME MAX %@ TPS" = "MAKS SEPANJANG MASA %@ TPS";
 "Allocation policy" = "Kebijakan alokasi";
+"Allow swap" = "Izinkan swap";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "Sudah bermerek MTPLX — kedalaman %lld terverifikasi. Pasang saja, tidak perlu membangun ulang.";
 "Already on your Mac" = "Sudah ada di Mac Anda";
 "Always reasons before answering. Best quality, more tokens." = "Selalu bernalar sebelum menjawab. Kualitas terbaik, token lebih banyak.";
@@ -219,7 +220,7 @@
 "auto bf16" = "otomatis bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Otomatis menganggarkan setengah RAM yang tersisa setelah model dimuat. Prompt lama dikeluarkan jika melewati batas.";
 "auto fp16" = "otomatis fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Otomatis memilih mode terbaik untuk yang sedang Anda gunakan. Pilih mode di bawah untuk memakainya di mana saja. Proses Benchmark tetap memakai pengaturan aliran tunggalnya sendiri.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Otomatis memilih mode terbaik untuk yang sedang Anda pakai. Pilih mode di bawah untuk memakainya di mana saja. Disimpan begitu Anda memilihnya. Uji tolok ukur tetap memakai pengaturan aliran tunggalnya sendiri.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Otomatis memilih profil yang direkomendasikan untuk model terpilih — Turbo untuk model 27B dan Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Otomatis menyesuaikan dengan tingkat RAM Mac Anda (16 GB hingga 100 GB). Entri lama dikeluarkan agar tetap di bawah batas.";
 "Auto-approve on, tap to require approval" = "Setujui otomatis aktif, ketuk untuk mewajibkan persetujuan";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "Berlalu %@, %lld dari %lld diselesaikan, %@ %@";
 "Embedding and reranking served by this daemon." = "Embedding dan perankingan ulang dilayani oleh daemon ini.";
 "Embedding models" = "Model embedding";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "Kosong berarti memakai rencana mesin sendiri, sekitar tiga perempat memori Mac ini. Naikkan untuk melayani konteks lebih panjang di Mac yang punya sisa ruang.";
 "Enable thermal polling" = "Aktifkan poling termal";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "Aktifkan poling termal di Pengaturan untuk memverifikasi peningkatan kipas sebelum benchmarking. Angka utama tanpa kipas terverifikasi hanya untuk diagnostik.";
 "Enable web search for this conversation" = "Aktifkan pencarian web untuk percakapan ini";
 "Endpoint" = "Endpoint";
 "Endpoint name" = "Nama endpoint";
 "ENDPOINTS" = "ENDPOINT";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "Rencana mesin: %@ dapat dipakai dari %@ memori, jendela konteks %lld token.";
+"Engine plan: %@ usable of %@ memory." = "Rencana mesin: %@ dapat dipakai dari %@ memori.";
 "Engine Sessions" = "Sesi Engine";
 "Engine, fan control, and your command line — a one-time setup." = "Engine, kontrol kipas, dan baris perintah Anda — penyiapan satu kali.";
 "Enter a Hugging Face repo id like org/name." = "Masukkan id repo Hugging Face seperti org/name.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "Gateway terhubung";
 "Gateway service loaded" = "Layanan gateway dimuat";
 "Gateway service not loaded" = "Layanan gateway tidak dimuat";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "MTP asisten Gemma";
 "Gemma sampler defaults" = "Default sampler Gemma";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew tidak ditemukan, sehingga terminal Anda sekarang menggunakan CLI aplikasi (%@, sebelumnya %@). Buka terminal baru.";
 "Host / Port" = "Host / Port";
 "How long the scheduler waits for peers before firing." = "Berapa lama penjadwal menunggu rekan sebelum memproses.";
+"How much of this Mac the engine may plan with. Restart required." = "Berapa banyak dari Mac ini yang boleh direncanakan mesin. Perlu mulai ulang.";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "Endpoint Hugging Face untuk unduhan model. Token HF Anda tidak pernah dikirim ke mirror.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Sumber Hugging Face. Forge akan mengonversi ke MLX dan mengemas sidecar MTP.";
@@ -747,6 +753,7 @@
 "Memory" = "Memori";
 "Memory Cache (RAM)" = "Cache Memori (RAM)";
 "Memory Detail" = "Detail Memori";
+"Memory limit" = "Batas memori";
 "Memory pressure — engine shedding caches" = "Tekanan memori — engine membuang cache";
 "Memory running high" = "Memori hampir habis";
 "Memory snapshot unavailable." = "Snapshot memori tidak tersedia.";
@@ -1161,6 +1168,7 @@
 "Running" = "Berjalan";
 "running" = "berjalan";
 "Running and ready." = "Berjalan dan siap.";
+"Running now: %@ (%@ / %@)." = "Sedang berjalan: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Menjalankan token pemanasan pertama sebelum obrolan dibuka.";
 "Running tool…" = "Menjalankan alat…";
 "Running your new model on this Mac to see how fast it actually is." = "Menjalankan model baru Anda di Mac ini untuk melihat seberapa cepat performa sebenarnya.";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "Mencari: %@";
 "Send" = "Kirim";
 "Send message" = "Kirim pesan";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "Layani konteks yang lebih besar daripada yang muat di memori. macOS memindahkan halaman ke SSD, jadi kecepatan turun tajam, tetapi sesi panjang tidak lagi ditolak.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "Layani embedding dan perankingan ulang dari daemon ini. Biarkan kosong agar MTPLX hanya untuk obrolan.";
 "server %@" = "server %@";
 "server cap" = "batas server";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "Mulai MTPLX saat aplikasi dibuka";
 "Start serving" = "Mulai melayani";
 "Start the daemon to see in-flight and recent requests." = "Mulai daemon untuk melihat permintaan yang sedang berjalan dan terbaru.";
+"Start the model to see the plan the engine computes for this Mac." = "Jalankan model untuk melihat rencana yang dihitung mesin untuk Mac ini.";
 "Start tuning" = "Mulai penyetelan";
 "Starting" = "Memulai";
 "STARTING" = "MEMULAI";

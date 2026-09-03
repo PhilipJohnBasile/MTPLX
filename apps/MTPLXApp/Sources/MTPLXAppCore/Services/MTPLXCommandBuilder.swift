@@ -397,11 +397,33 @@ public struct MTPLXCommandBuilder: Sendable {
         if let mirror = MTPLXAppConfiguration.hfMirrorEnvironment(configuration.hfEndpoint) {
             environment.merge(mirror) { _, new in new }
         }
+        // Settings memory card (#431 asks for a higher cap on a 128 GB Mac,
+        // #427 for an "I know what I'm doing" swap opt-in). Both are engine
+        // env-only knobs, and the user's explicit number outranks whatever
+        // the surrounding app process happened to inherit.
+        environment.merge(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: configuration.memoryLimitGB,
+                allowSwap: configuration.allowSwap
+            )
+        ) { _, new in new }
         return DaemonCommand(
             executableURL: executableURL,
             arguments: arguments,
             environment: environment
         )
+    }
+
+    /// Value that follows `flag` in a built argv, or nil when the flag was
+    /// not emitted. Reading the launch record back out of the arguments the
+    /// daemon actually received is what makes the launch diagnostic honest:
+    /// it reports what ran, not what the resolver intended to run (#398).
+    public static func flagValue(_ flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag) else { return nil }
+        let next = arguments.index(after: index)
+        guard arguments.indices.contains(next) else { return nil }
+        let value = arguments[next]
+        return value.hasPrefix("--") ? nil : value
     }
 
     private func resolveExecutable(_ explicitPath: String?) throws -> URL {

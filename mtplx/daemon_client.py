@@ -217,6 +217,55 @@ def classify_port_occupant(
     return PortOccupant(kind=PORT_MTPLX_SERVER, daemon=daemon)
 
 
+def app_configured_port() -> int | None:
+    """The port the macOS app has persisted, or None when there is no app
+    setting. Public alias so caller lanes can ask "did the user configure
+    this port?" without reaching into a private helper."""
+
+    return _app_persisted_port()
+
+
+# A stopping MTPLX server keeps its listener while it drains, but its
+# /health stops answering first, so classify_port_occupant reads it as
+# PORT_FOREIGN for those few seconds. Issue #409: every stop/start cycle
+# then tripped the "in use by another app" fallback and silently moved a
+# configured 1234 to 1235. Long enough to cover a normal drain, short
+# enough that a genuinely foreign listener does not stall a launch.
+PORT_SETTLE_TIMEOUT_S = 5.0
+PORT_SETTLE_POLL_S = 0.25
+
+
+def wait_for_port_settle(
+    host: str,
+    port: int,
+    *,
+    timeout_s: float = PORT_SETTLE_TIMEOUT_S,
+    poll_s: float = PORT_SETTLE_POLL_S,
+    api_key: str | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> PortOccupant:
+    """Re-classify a foreign-looking port until it settles, or time out.
+
+    Returns the last classification. Anything other than PORT_FOREIGN is
+    terminal and returns immediately.
+
+    This does NOT claim to identify the owning process; it separates a
+    TRANSIENT occupant that clears on its own (our own draining server,
+    a socket in the tail of TIME_WAIT, a listener mid-restart) from a
+    STEADY foreign listener that is still there after the window. That is
+    the distinction the caller's decision actually needs, and it needs no
+    lsof, no psutil, and no new dependency.
+    """
+
+    deadline = clock() + max(0.0, float(timeout_s))
+    occupant = classify_port_occupant(host, port, api_key=api_key)
+    while occupant.kind == PORT_FOREIGN and clock() < deadline:
+        sleep(max(0.0, float(poll_s)))
+        occupant = classify_port_occupant(host, port, api_key=api_key)
+    return occupant
+
+
 def port_busy_advice(occupant: PortOccupant, *, port: int) -> list[str]:
     """Actionable, occupant-aware copy for a busy port."""
 

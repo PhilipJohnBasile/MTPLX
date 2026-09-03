@@ -31,6 +31,7 @@ struct SettingsTab: View {
                 performanceCard
                 ramCacheCard
                 kvQuantCard
+                memoryCard
                 ssdCacheCard
                 retrievalCard
                 restartRequiredCard
@@ -182,14 +183,14 @@ struct SettingsTab: View {
         let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
         Card(tr("Performance"),
              subtitle: tr("Speed and batching. Needs a restart to apply.")) {
-            if dirty && running {
+            if (dirty || schedulingRestartPending) && running {
                 PillBadge(text: tr("restart to apply"), systemImage: "arrow.clockwise.circle.fill", tint: .mtplxWarning, emphasized: true)
             }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
                     label: tr("Mode"),
-                    caption: tr("Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup.")
+                    caption: tr("Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup.")
                 ) {
                     Picker(tr("Mode"), selection: schedulerPresetBinding) {
                         Text(tr("Auto")).tag("target-default")
@@ -200,6 +201,21 @@ struct SettingsTab: View {
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .frame(maxWidth: 280, alignment: .leading)
+                }
+
+                // The picker says what the next launch will use; this says
+                // what the daemon in front of you actually launched with.
+                // Issue #398 could not tell those two apart at all.
+                if running, let launched = backend.lastLaunchScheduling {
+                    Text(tr(
+                        "Running now: %@ (%@ / %@).",
+                        schedulingPresetLabel(launched.selectedPreset),
+                        launched.schedulerMode,
+                        launched.batchingPreset
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(Brand.typeSecondary)
+                    .textSelection(.enabled)
                 }
 
                 Divider().overlay(Brand.separator)
@@ -276,32 +292,58 @@ struct SettingsTab: View {
         }
     }
 
+    /// Mode saves the moment it is picked (issue #398). Every other control
+    /// on this card is a draft the Save button commits, but this tab's
+    /// `@State` is destroyed the instant the user leaves Settings, so a
+    /// draft-only Mode was silently discarded by the very navigation the
+    /// user needs to make to restart the model, and the picker came back
+    /// on Auto with no notice. Appearance and Language already commit on
+    /// selection; Mode now behaves the same way.
     private var schedulerPresetBinding: Binding<String> {
         Binding(
             get: {
                 normalizedSchedulingPreset(draftConfig.schedulingPreset)
             },
             set: { preset in
-                draftConfig.applySchedulingPreset(normalizedSchedulingPreset(preset))
+                commitSchedulingPreset(normalizedSchedulingPreset(preset))
             }
         )
     }
 
-    private func normalizedSchedulingPreset(_ raw: String) -> String {
-        switch raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        {
-        case "latency", "serial-latency":
-            return "latency"
-        case "throughput", "ar-batch-throughput":
-            return "throughput"
-        case "agent", "ar-batch-agent":
-            return "agent"
-        default:
-            return "target-default"
+    private func commitSchedulingPreset(_ preset: String) {
+        draftConfig.applySchedulingPreset(preset)
+        lastSyncedConfig.applySchedulingPreset(preset)
+        do {
+            try backend.applySchedulingPresetSelection(preset)
+            lastSaveError = nil
+        } catch {
+            lastSaveError = tr("Apply failed: %@", String(describing: error))
         }
+    }
+
+    private func normalizedSchedulingPreset(_ raw: String) -> String {
+        MTPLXAppConfiguration.schedulingPresetSelection(raw)
+    }
+
+    private func schedulingPresetLabel(_ raw: String) -> String {
+        switch normalizedSchedulingPreset(raw) {
+        case "latency":
+            return tr("Fastest response")
+        case "throughput":
+            return tr("Handle multiple at once")
+        case "agent":
+            return tr("Long agent tasks")
+        default:
+            return tr("Auto")
+        }
+    }
+
+    /// True when the running daemon launched under a different Mode than
+    /// the one now saved. This is what makes "restart to apply" honest for
+    /// a control that no longer goes through the draft/dirty path.
+    private var schedulingRestartPending: Bool {
+        guard let launched = backend.lastLaunchScheduling else { return false }
+        return launched.selectedPreset != normalizedSchedulingPreset(draftConfig.schedulingPreset)
     }
 
     private var defaultMaxActiveRequests: Int {
@@ -606,6 +648,97 @@ struct SettingsTab: View {
                 }
             }
         }
+    }
+
+    // MARK: - Memory (limit + swap)
+    //
+    // Issue #431: a 128 GB Mac hit "reached memory limit" long before its
+    // real ceiling, because the engine plans against 75% of RAM and the app
+    // exposed no way past it. The reporter had to launch the bundle by hand
+    // with MTPLX_MEMORY_LIMIT_BYTES to get their model served. Issue #427:
+    // a 32 GB Mac that used to run 60-70k contexts under 2.9.x was clamped
+    // to 40960 by the same fit calculation, and asked for an "I know what
+    // I'm doing" escape hatch. Both are engine env-only knobs, so the card
+    // writes them into the daemon's launch environment.
+
+    @ViewBuilder
+    private var memoryCard: some View {
+        let memoryDirty = draftConfig.memoryLimitGB != backend.configuration.memoryLimitGB
+            || draftConfig.allowSwap != backend.configuration.allowSwap
+        Card(tr("Memory"),
+             subtitle: tr("How much of this Mac the engine may plan with. Restart required.")) {
+            if memoryDirty {
+                PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+            }
+        } content: {
+            VStack(alignment: .leading, spacing: 6) {
+                FormRow(
+                    label: tr("Memory limit"),
+                    caption: tr("Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom.")
+                ) {
+                    HStack(spacing: 6) {
+                        TextField("", text: memoryLimitBinding)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                            .frame(maxWidth: 90)
+                        Text(tr("GB"))
+                            .font(.callout)
+                            .foregroundStyle(Brand.typeSecondary)
+                    }
+                }
+
+                Divider().overlay(Brand.separator)
+
+                FormToggleRow(
+                    label: tr("Allow swap"),
+                    caption: tr("Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused."),
+                    isOn: $draftConfig.allowSwap
+                )
+
+                Divider().overlay(Brand.separator)
+
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "memorychip")
+                        .foregroundStyle(Brand.typeSecondary)
+                    Text(memoryPlanCaption)
+                        .font(.caption)
+                        .foregroundStyle(Brand.typeSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private var memoryLimitBinding: Binding<String> {
+        Binding(
+            get: { draftConfig.memoryLimitGB.map(String.init) ?? "" },
+            set: { raw in
+                let digits = raw.filter(\.isNumber)
+                draftConfig.memoryLimitGB = MTPLXAppConfiguration.normalizedMemoryLimitGB(
+                    Int(digits)
+                )
+            }
+        )
+    }
+
+    /// What the running engine actually planned, so the number in the field
+    /// can be compared against a measured effect instead of a guess.
+    private var memoryPlanCaption: String {
+        guard let plan = backend.memoryPlan, plan.available else {
+            return tr("Start the model to see the plan the engine computes for this Mac.")
+        }
+        let ram = Format.bytes(plan.totalRamBytes)
+        let usable = Format.bytes(plan.usableBytes)
+        guard let window = plan.contextWindowResolved, window > 0 else {
+            return tr("Engine plan: %@ usable of %@ memory.", usable, ram)
+        }
+        return tr(
+            "Engine plan: %@ usable of %@ memory, context window %lld tokens.",
+            usable,
+            ram,
+            window
+        )
     }
 
     private var kvQuantCaption: String {
