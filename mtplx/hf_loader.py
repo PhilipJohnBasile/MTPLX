@@ -135,11 +135,8 @@ def _query_repo_snapshot(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        info, _token = _model_info_with_anonymous_fallback(
+            HfApi(), repo_id=repo_id, revision=revision
         )
     except Exception:
         return None, None
@@ -233,11 +230,8 @@ def _query_repo_files(repo_id: str, *, revision: str | None = None) -> list[Repo
     except Exception:
         return []
     try:
-        info = api.model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        info, _token = _model_info_with_anonymous_fallback(
+            api, repo_id=repo_id, revision=revision
         )
     except Exception:
         return []
@@ -314,9 +308,81 @@ def cached_model_path(repo_id: str, *, cache_dir: str | Path | None = None) -> P
 
 
 def hf_token_for_download() -> str | bool:
-    """Use explicit env auth only; public pulls should never need HF login."""
+    """The Hugging Face token every MTPLX Hub call sends; ``False`` is anonymous.
 
-    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or False
+    One policy for pull, update checks, and inspect, and it is the library's
+    own: ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` first, then the token
+    stored by ``hf auth login``. ``mtplx doctor`` reports the same resolution
+    through :func:`hf_token_source`, so what it says is what pull does.
+    Public repos never need a token, and a stored token the Hub rejects is
+    retried anonymously (see :func:`_call_hub_with_anonymous_fallback`), so a
+    stale login can never break a public pull.
+    """
+
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        from huggingface_hub import get_token
+    except Exception:
+        return False
+    try:
+        return get_token() or False
+    except Exception:
+        return False
+
+
+def hf_token_source() -> str | None:
+    """Where :func:`hf_token_for_download` found its token: ``"environment"``,
+    ``"login"`` (``hf auth login``), or ``None`` when pulls are anonymous."""
+
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+        return "environment"
+    return "login" if hf_token_for_download() else None
+
+
+def _hub_status_code(exc: BaseException) -> int | None:
+    # huggingface_hub errors carry a requests response; urllib's HTTPError
+    # carries the status as ``code``.
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _call_hub_with_anonymous_fallback(
+    call: Callable[[str | bool], Any], token: str | bool
+) -> tuple[Any, str | bool]:
+    """Run ``call(token)``; if the Hub refuses a stored token, try anonymously.
+
+    A revoked or expired login token makes the Hub answer 401 even for public
+    repos, which must not turn a public pull into "access denied". Returns the
+    result with the token that actually worked, so every later request of the
+    same operation sends the same credential. When the anonymous attempt fails
+    too the repo really is gated or private and the original refusal is what
+    the user needs to see.
+    """
+
+    try:
+        return call(token), token
+    except Exception as exc:
+        if not (token and _hub_status_code(exc) in {401, 403}):
+            raise
+        try:
+            return call(False), False
+        except Exception:
+            raise exc from None
+
+
+def _model_info_with_anonymous_fallback(
+    api: Any, *, repo_id: str, revision: str | None
+) -> tuple[Any, str | bool]:
+    return _call_hub_with_anonymous_fallback(
+        lambda token: api.model_info(
+            repo_id=repo_id, revision=revision, files_metadata=True, token=token
+        ),
+        hf_token_for_download(),
+    )
 
 
 def _complete_indexed_weights(path: Path, index_name: str) -> bool:
@@ -947,7 +1013,10 @@ def _download_repo_file(
     last_emit_at: float,
     last_emit_size: int,
     measure: Callable[[], int] | None = None,
+    token: str | bool | None = None,
 ) -> tuple[float, int]:
+    if token is None:
+        token = hf_token_for_download()
     target = _safe_destination_for_repo_file(destination, repo_file)
     target.parent.mkdir(parents=True, exist_ok=True)
     expected_size = repo_file.size_bytes
@@ -986,7 +1055,7 @@ def _download_repo_file(
             )
         landed.replace(target)
 
-    headers = build_hf_headers(token=hf_token_for_download())
+    headers = build_hf_headers(token=token)
     if existing > 0:
         headers["Range"] = f"bytes={existing}-"
     url = hf_hub_url(repo_id=repo_id, filename=repo_file.path, revision=revision)
@@ -1062,11 +1131,11 @@ def _download_snapshot_with_structured_progress(
 ) -> tuple[Path, int | None]:
     HfApi, hf_hub_url, get_session, build_hf_headers, hf_raise_for_status = _hub_runtime()
     try:
-        info = HfApi().model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        # The metadata call settles which credential this pull uses (the
+        # resolved token, or anonymous after a rejected stored token); every
+        # file below sends the same one.
+        info, token = _model_info_with_anonymous_fallback(
+            HfApi(), repo_id=repo_id, revision=revision
         )
     except Exception as exc:
         raise RuntimeError(_classify_pull_error(exc, repo_id)) from exc
@@ -1115,6 +1184,7 @@ def _download_snapshot_with_structured_progress(
                 hf_hub_url=hf_hub_url,
                 build_hf_headers=build_hf_headers,
                 hf_raise_for_status=hf_raise_for_status,
+                token=token,
                 callback=progress_callback,
                 total_bytes=total_bytes,
                 started_at=started_at,
@@ -1202,10 +1272,14 @@ def _local_matches_remote_index(
     try:
         from huggingface_hub import hf_hub_download
 
-        remote = hf_hub_download(
-            repo_id,
-            "model.safetensors.index.json",
-            revision=revision,
+        remote, _token = _call_hub_with_anonymous_fallback(
+            lambda token: hf_hub_download(
+                repo_id,
+                "model.safetensors.index.json",
+                revision=revision,
+                token=token,
+            ),
+            hf_token_for_download(),
         )
         return Path(remote).read_bytes() == local_index.read_bytes()
     except Exception:
@@ -1385,12 +1459,15 @@ def pull_model(
                     raise RuntimeError(
                         f"huggingface_hub is required for mtplx pull: {exc}"
                     ) from exc
-                path = snapshot_download(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    revision=download_revision,
-                    local_dir=str(destination),
-                    token=hf_token_for_download(),
+                path, _token = _call_hub_with_anonymous_fallback(
+                    lambda token: snapshot_download(
+                        repo_id=repo_id,
+                        repo_type="model",
+                        revision=download_revision,
+                        local_dir=str(destination),
+                        token=token,
+                    ),
+                    hf_token_for_download(),
                 )
                 resolved = Path(path)
         _emit_download_progress(
@@ -1504,16 +1581,10 @@ def remove_cached_model(model_ref: str, *, cache_dir: str | Path | None = None) 
 
 def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
     root = model_cache_dir(cache_dir)
-    token_present = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
-    token_source = "environment" if token_present else None
-    if not token_present:
-        try:
-            from huggingface_hub import get_token
-
-            token_present = bool(get_token())
-            token_source = "huggingface_hub" if token_present else None
-        except Exception:
-            token_present = False
+    # The same resolver pull uses, so doctor can never report a token that
+    # pull then ignores (or the other way round).
+    token_source = hf_token_source()
+    token_present = token_source is not None
     try:
         usage = shutil.disk_usage(root if root.exists() else root.parent)
         free_bytes: int | None = usage.free
@@ -1528,4 +1599,9 @@ def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
         "cached_models": len(list_cached_models(cache_dir=root)),
         "token_present": token_present,
         "token_source": token_source,
+        "token_used_by_pull": token_present,
+        "token_policy": (
+            "mtplx pull sends the HF_TOKEN / HUGGING_FACE_HUB_TOKEN token, else the "
+            "`hf auth login` token, else nothing; public models never need one"
+        ),
     }

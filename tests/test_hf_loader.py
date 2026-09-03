@@ -11,10 +11,12 @@ import pytest
 
 from mtplx.hf_loader import (
     RepoFile,
+    _call_hub_with_anonymous_fallback,
     cached_model_is_complete,
     cached_model_path,
     directory_size_bytes,
     hf_token_for_download,
+    hf_token_source,
     hf_cache_report,
     list_cached_models,
     manifest_bytes_on_disk,
@@ -593,14 +595,200 @@ def test_pull_model_progress_never_exceeds_repo_size_with_stale_files(
     assert events[-1]["total_bytes"] == total
 
 
-def test_hf_token_for_download_uses_explicit_env_only(monkeypatch):
+def _stub_login_token(monkeypatch, token: str | None) -> None:
+    """Pin the `hf auth login` token the real huggingface_hub would read from
+    disk, so these tests never depend on this machine's login state."""
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: token)
+
+
+def test_hf_token_resolution_is_env_then_login_then_anonymous(monkeypatch):
+    # Three token policies used to coexist: pull sent only HF_TOKEN, doctor
+    # reported the login token as present, inspect sent the login token. One
+    # resolver now serves them all, and it is the library's own order.
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
 
+    _stub_login_token(monkeypatch, None)
     assert hf_token_for_download() is False
+    assert hf_token_source() is None
+
+    _stub_login_token(monkeypatch, "hf_login")
+    assert hf_token_for_download() == "hf_login"
+    assert hf_token_source() == "login"
 
     monkeypatch.setenv("HF_TOKEN", "hf_explicit")
     assert hf_token_for_download() == "hf_explicit"
+    assert hf_token_source() == "environment"
+
+    monkeypatch.delenv("HF_TOKEN")
+    monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", "hf_legacy_env")
+    assert hf_token_for_download() == "hf_legacy_env"
+    assert hf_token_source() == "environment"
+
+
+class _Refused(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = SimpleNamespace(status_code=status_code)
+
+
+def test_rejected_stored_token_is_retried_anonymously_for_public_repos():
+    calls: list[str | bool] = []
+
+    def hub_call(token):
+        calls.append(token)
+        if token:
+            raise _Refused(401)
+        return "public-metadata"
+
+    result, token_used = _call_hub_with_anonymous_fallback(hub_call, "hf_stale")
+
+    assert result == "public-metadata"
+    assert token_used is False
+    assert calls == ["hf_stale", False]
+
+
+def test_gated_repo_reports_the_original_refusal_after_the_anonymous_retry():
+    def hub_call(token):
+        raise _Refused(403 if token else 401)
+
+    with pytest.raises(_Refused) as excinfo:
+        _call_hub_with_anonymous_fallback(hub_call, "hf_valid_but_not_approved")
+
+    assert excinfo.value.response.status_code == 403
+
+
+def test_anonymous_fallback_never_retries_without_a_token_or_on_other_errors():
+    calls: list[str | bool] = []
+
+    def refused(token):
+        calls.append(token)
+        raise _Refused(401)
+
+    with pytest.raises(_Refused):
+        _call_hub_with_anonymous_fallback(refused, False)
+    assert calls == [False]
+
+    calls.clear()
+
+    def offline(token):
+        calls.append(token)
+        raise OSError("offline")
+
+    with pytest.raises(OSError):
+        _call_hub_with_anonymous_fallback(offline, "hf_token")
+    assert calls == ["hf_token"]
+
+
+def test_pull_model_sends_the_login_token_when_one_is_stored(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    captured: dict[str, object] = {}
+    _install_fake_hub(
+        monkeypatch,
+        {
+            "config.json": b"{}\n",
+            "model.safetensors.index.json": b'{"weight_map": {"lm_head.weight": "model-00001-of-00001.safetensors"}}\n',
+            "model-00001-of-00001.safetensors": b"weights",
+        },
+        captured=captured,
+    )
+    sys.modules["huggingface_hub"].get_token = lambda: "hf_login"
+
+    pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=lambda _e: None, progress_interval_s=0)
+
+    assert captured["model_info_token"] == "hf_login"
+    assert captured["headers_token"] == "hf_login"
+
+
+def test_pull_model_falls_back_to_anonymous_when_the_stored_token_is_rejected(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    captured: dict[str, object] = {}
+    _install_fake_hub(
+        monkeypatch,
+        {
+            "config.json": b"{}\n",
+            "model.safetensors.index.json": b'{"weight_map": {"lm_head.weight": "model-00001-of-00001.safetensors"}}\n',
+            "model-00001-of-00001.safetensors": b"weights",
+        },
+        captured=captured,
+    )
+    hub = sys.modules["huggingface_hub"]
+    hub.get_token = lambda: "hf_revoked"
+    original_model_info = hub.HfApi.model_info
+    tokens_seen: list[str | bool] = []
+
+    def refusing_model_info(self, **kwargs):
+        tokens_seen.append(kwargs.get("token"))
+        if kwargs.get("token"):
+            raise _Refused(401)
+        return original_model_info(self, **kwargs)
+
+    hub.HfApi.model_info = refusing_model_info
+
+    result = pull_model(
+        "mtplx/example", cache_dir=tmp_path, progress_callback=lambda _e: None, progress_interval_s=0
+    )
+
+    assert result["path"] == str(tmp_path / "mtplx--example")
+    # Each metadata call (freshness marker, then the download) tried the
+    # stored token once and fell back to anonymous.
+    assert len(tokens_seen) >= 2
+    assert tokens_seen[::2] == ["hf_revoked"] * (len(tokens_seen) // 2)
+    assert tokens_seen[1::2] == [False] * (len(tokens_seen) // 2)
+    # Every file fetch sends the credential that actually worked.
+    assert captured["headers_token"] is False
+
+
+def test_hf_cache_report_tells_the_truth_about_the_token(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+
+    _stub_login_token(monkeypatch, None)
+    anonymous = hf_cache_report(cache_dir=tmp_path)
+    assert anonymous["token_present"] is False
+    assert anonymous["token_source"] is None
+    assert anonymous["token_used_by_pull"] is False
+
+    _stub_login_token(monkeypatch, "hf_login")
+    login = hf_cache_report(cache_dir=tmp_path)
+    assert login["token_present"] is True
+    assert login["token_source"] == "login"
+    assert login["token_used_by_pull"] is True
+    assert "hf auth login" in login["token_policy"]
+
+    monkeypatch.setenv("HF_TOKEN", "hf_explicit")
+    env = hf_cache_report(cache_dir=tmp_path)
+    assert env["token_source"] == "environment"
+    assert env["token_used_by_pull"] is True
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("environment", "hugging face token: from HF_TOKEN (used by mtplx pull)"),
+        ("login", "hugging face token: from `hf auth login` (used by mtplx pull)"),
+        (None, "hugging face token: none (public models need none"),
+    ],
+)
+def test_doctor_human_output_states_the_token_policy(capsys, source, expected):
+    from mtplx.commands.public import _render_doctor_report
+
+    report = {
+        "environment": {},
+        "huggingface": {"token_source": source, "token_present": source is not None},
+        "thermal_control": {},
+        "tools": {},
+    }
+
+    assert _render_doctor_report(SimpleNamespace(summary=False, deep=False), report) == 0
+    assert expected in capsys.readouterr().out
 
 
 def test_pull_model_downloads_public_models_anonymously_by_default(

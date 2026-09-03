@@ -2535,6 +2535,16 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
         print(f"project: {env_info.get('project_root') or os.getcwd()}")
         print(f"model cache: {hf.get('cache_dir') or 'default'}")
         print(f"cached models: {hf.get('cached_models', 'unknown')}")
+        token_source = hf.get("token_source")
+        if token_source == "environment":
+            print("hugging face token: from HF_TOKEN (used by mtplx pull)")
+        elif token_source == "login":
+            print("hugging face token: from `hf auth login` (used by mtplx pull)")
+        else:
+            print(
+                "hugging face token: none (public models need none; for gated "
+                "models run `hf auth login` or export HF_TOKEN)"
+            )
         print(
             "thermal: "
             f"{'available' if thermal.get('available') else 'not configured'}"
