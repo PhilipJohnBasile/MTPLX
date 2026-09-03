@@ -1396,10 +1396,17 @@ public final class MTPLXBackendStore: ObservableObject {
         modelPackUpdatingRepoID = update.repoID
         modelPackUpdateStatus = tr("Preparing…")
         let downloader = modelDownloader
-        let startedBytes = update.path.map {
-            Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
-        }
-        modelPackUpdateTask = Task { @MainActor [weak self] in
+        // Detached, like every other consumer of `stream`: the baseline
+        // walk stats every file in the pack, and building the stream
+        // resolves the runtime (version probe, wheel fingerprint, a
+        // possible reinstall) and spawns the CLI synchronously inside
+        // AsyncStream's build closure. On the main actor that froze the
+        // window for the Python cold start, or for minutes when the
+        // app-owned venv needed its post-update reinstall.
+        modelPackUpdateTask = Task.detached(priority: .userInitiated) { [weak self, downloader, update] in
+            let startedBytes = update.path.map {
+                Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
+            }
             let stream = downloader.stream(
                 repo: update.repoID,
                 totalBytes: nil,
@@ -1408,52 +1415,79 @@ public final class MTPLXBackendStore: ObservableObject {
             )
             var completed = false
             for await event in stream {
-                guard let self, self.modelPackUpdatingRepoID == update.repoID else { return }
-                switch event {
-                case .started, .status:
+                guard let self else { return }
+                switch await self.handleModelPackUpdateEvent(event, update: update, startedBytes: startedBytes) {
+                case .proceed:
                     break
-                case .progress(let bytesOnDisk, _, let speed, _):
-                    var line = speed > 1024
-                        ? "\(Self.formatUpdateBytes(Int64(speed)))/s"
-                        : "Syncing…"
-                    if let startedBytes, let total = update.updateBytes, total > 0 {
-                        let done = max(0, bytesOnDisk - startedBytes)
-                        let pct = min(100, Int((Double(done) / Double(total)) * 100))
-                        line = tr("%lld%% · %@", pct, line)
-                    }
-                    self.modelPackUpdateStatus = line
-                case .stalled(let seconds):
-                    self.modelPackUpdateStatus = tr("Stalled for %llds — still trying", Int(seconds))
-                case .complete:
+                case .completed:
                     completed = true
-                case .failed(_, let stderrTail):
-                    let tail = stderrTail.split(separator: "\n").last.map(String.init)
-                    self.modelPackUpdateStatus = tail ?? tr("Update failed")
-                case .cancelled:
-                    self.modelPackUpdateStatus = nil
+                case .abandoned:
+                    return
                 }
             }
-            guard let self else { return }
-            self.modelPackUpdatingRepoID = nil
-            if completed {
-                self.modelPackUpdateStatus = nil
-                // The running daemon has the old tensors mapped; flag the
-                // restart affordance when the updated pack is the one it
-                // serves (matched on the served model path).
-                let daemonIsLive: Bool
-                switch self.daemonState {
-                case .running, .warming: daemonIsLive = true
-                default: daemonIsLive = false
-                }
-                if daemonIsLive,
-                   let servedPath = self.health?.modelPath,
-                   let updatedPath = update.path,
-                   servedPath == updatedPath || servedPath.hasPrefix(updatedPath + "/") {
-                    self.modelPackUpdateNeedsRestart = update
-                }
-                await self.refreshModelUpdates(force: true)
-            }
+            await self?.finishModelPackUpdate(update, completed: completed)
         }
+    }
+
+    private enum ModelPackUpdateEventOutcome {
+        case proceed
+        case completed
+        /// The update was cancelled or replaced while the stream was live;
+        /// its state is no longer this task's to touch.
+        case abandoned
+    }
+
+    private func handleModelPackUpdateEvent(
+        _ event: DownloadEvent,
+        update: ModelUpdateInfo,
+        startedBytes: Int64?
+    ) -> ModelPackUpdateEventOutcome {
+        guard modelPackUpdatingRepoID == update.repoID else { return .abandoned }
+        switch event {
+        case .started, .status:
+            break
+        case .progress(let bytesOnDisk, _, let speed, _):
+            var line = speed > 1024
+                ? "\(Self.formatUpdateBytes(Int64(speed)))/s"
+                : "Syncing…"
+            if let startedBytes, let total = update.updateBytes, total > 0 {
+                let done = max(0, bytesOnDisk - startedBytes)
+                let pct = min(100, Int((Double(done) / Double(total)) * 100))
+                line = tr("%lld%% · %@", pct, line)
+            }
+            modelPackUpdateStatus = line
+        case .stalled(let seconds):
+            modelPackUpdateStatus = tr("Stalled for %llds — still trying", Int(seconds))
+        case .complete:
+            return .completed
+        case .failed(_, let stderrTail):
+            let tail = stderrTail.split(separator: "\n").last.map(String.init)
+            modelPackUpdateStatus = tail ?? tr("Update failed")
+        case .cancelled:
+            modelPackUpdateStatus = nil
+        }
+        return .proceed
+    }
+
+    private func finishModelPackUpdate(_ update: ModelUpdateInfo, completed: Bool) async {
+        modelPackUpdatingRepoID = nil
+        guard completed else { return }
+        modelPackUpdateStatus = nil
+        // The running daemon has the old tensors mapped; flag the
+        // restart affordance when the updated pack is the one it
+        // serves (matched on the served model path).
+        let daemonIsLive: Bool
+        switch daemonState {
+        case .running, .warming: daemonIsLive = true
+        default: daemonIsLive = false
+        }
+        if daemonIsLive,
+           let servedPath = health?.modelPath,
+           let updatedPath = update.path,
+           servedPath == updatedPath || servedPath.hasPrefix(updatedPath + "/") {
+            modelPackUpdateNeedsRestart = update
+        }
+        await refreshModelUpdates(force: true)
     }
 
     /// Restart the running daemon so an updated pack's tensors are loaded.
@@ -1468,7 +1502,10 @@ public final class MTPLXBackendStore: ObservableObject {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private static func directorySizeForUpdateProgress(_ url: URL) -> Int64 {
+    /// Baseline byte count for the pack-update progress line. Walks every
+    /// file in the pack, so it is `nonisolated` and only ever called from
+    /// the detached update task.
+    nonisolated private static func directorySizeForUpdateProgress(_ url: URL) -> Int64 {
         (try? FileManager.default.subpathsOfDirectory(atPath: url.path))
             .map { subpaths in
                 subpaths.reduce(Int64(0)) { sum, subpath in

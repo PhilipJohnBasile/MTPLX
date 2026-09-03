@@ -66,6 +66,12 @@ public struct ModelDownloader: Sendable {
     private let pollInterval: TimeInterval
     private let stalledThreshold: TimeInterval
     private let executableOverride: URL?
+    /// Test seam invoked at the top of `stream`'s build closure, on the
+    /// thread that builds the stream. The closure runs synchronously and
+    /// does blocking work (runtime resolution, directory walks, spawning
+    /// the CLI), so callers must build the stream off the main actor;
+    /// this lets a test prove they do. Production leaves it nil.
+    var streamBuildObserver: (@Sendable () -> Void)?
 
     // MARK: Public surface
 
@@ -99,6 +105,7 @@ public struct ModelDownloader: Sendable {
         sizeProbePath: String? = nil
     ) -> AsyncStream<DownloadEvent> {
         AsyncStream { continuation in
+            self.streamBuildObserver?()
             let destination = sizeProbePath.map { URL(fileURLWithPath: $0) }
                 ?? self.cachedModelPath(for: repo)
             // Make the destination dir up-front so the first poll returns 0
