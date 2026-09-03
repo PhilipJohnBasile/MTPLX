@@ -76,10 +76,10 @@ _SOURCE = r"""
 
     auto ct_qa = mm_qk.get_left_input_cooperative_tensor<InT, InT, float>();
     auto ct_kb = mm_qk.get_right_input_cooperative_tensor<InT, InT, float>();
-    auto ct_s = mm_qk.get_destination_cooperative_tensor<decltype(ct_qa), decltype(ct_kb), float>();
+    auto ct_s = mm_qk.get_destination_cooperative_tensor<metal::remove_addrspace_t<decltype(ct_qa)>, metal::remove_addrspace_t<decltype(ct_kb)>, float>();
     auto ct_pa = mm_pv.get_left_input_cooperative_tensor<InT, InT, float>();
     auto ct_vb = mm_pv.get_right_input_cooperative_tensor<InT, InT, float>();
-    auto ct_o = mm_pv.get_destination_cooperative_tensor<decltype(ct_pa), decltype(ct_vb), float>();
+    auto ct_o = mm_pv.get_destination_cooperative_tensor<metal::remove_addrspace_t<decltype(ct_pa)>, metal::remove_addrspace_t<decltype(ct_vb)>, float>();
 
     float row_m[2] = {-1e38f, -1e38f};
     float row_l[2] = {0.0f, 0.0f};
