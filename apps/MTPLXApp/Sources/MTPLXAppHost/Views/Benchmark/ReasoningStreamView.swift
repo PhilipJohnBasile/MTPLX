@@ -40,7 +40,7 @@ struct ReasoningStreamView: View {
         GeometryReader { geometry in
             ZStack(alignment: .bottomLeading) {
                 if blocks.isEmpty {
-                    Text("Awaiting reasoning...")
+                    Text(tr("Awaiting reasoning..."))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Brand.typeTertiary)
                         .lineSpacing(2)
@@ -126,7 +126,7 @@ struct ReasoningStreamView: View {
         ScrollView(.vertical, showsIndicators: false) {
             Group {
                 if blocks.isEmpty {
-                    Text("Awaiting reasoning...")
+                    Text(tr("Awaiting reasoning..."))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Brand.typeTertiary)
                         .lineSpacing(2)
