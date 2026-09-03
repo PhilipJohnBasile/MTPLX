@@ -14,18 +14,37 @@ struct SettingsTab: View {
     // Working copy of the persisted configuration. Saved on demand.
     // Live-mutable sampling/depth/reasoning knobs live in the
     // chrome-strip Inference popover — they aren't duplicated here.
-    @State private var draftConfig: MTPLXAppConfiguration = MTPLXAppConfiguration()
-    @State private var lastSyncedConfig: MTPLXAppConfiguration = MTPLXAppConfiguration()
-    @State private var isApplying = false
-    @State private var lastSaveError: String? = nil
+    // The draft is owned above this tab (`SettingsDraftStore`, injected
+    // at the app root): the dashboard rebuilds the tab on every
+    // selection, so a draft kept in `@State` here died — with every
+    // pending edit — the moment the user looked at another tab.
+    @EnvironmentObject private var drafts: SettingsDraftStore
     @State private var pendingClearAll = false
     @State private var clearingCache = false
 
     @EnvironmentObject private var router: AppRouter
 
+    private var draftConfig: MTPLXAppConfiguration {
+        get { drafts.draft }
+        nonmutating set { drafts.draft = newValue }
+    }
+
+    private var isApplying: Bool {
+        get { drafts.isApplying }
+        nonmutating set { drafts.isApplying = newValue }
+    }
+
+    private var lastSaveError: String? {
+        get { drafts.lastSaveError }
+        nonmutating set { drafts.lastSaveError = newValue }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if settingsDirty {
+                    unsavedChangesRow
+                }
                 appearanceCard
                 languageCard
                 performanceCard
@@ -50,11 +69,13 @@ struct SettingsTab: View {
             .padding(20)
         }
         .onAppear {
-            syncDrafts()
+            // Pending edits survive a tab switch; only an unedited draft
+            // follows the persisted configuration.
+            drafts.adoptIfUnedited(backend.configuration)
             Task { await hermes.prepare(configuration: backend.configuration) }
         }
         .onChange(of: backend.configuration) { _, newConfiguration in
-            syncDraftsIfUnedited(newConfiguration)
+            drafts.adoptIfUnedited(newConfiguration)
         }
         .confirmationDialog(
             tr("Clear all SessionBank entries?"),
@@ -73,18 +94,51 @@ struct SettingsTab: View {
         }
     }
 
-    private func syncDrafts() {
-        draftConfig = backend.configuration
-        lastSyncedConfig = backend.configuration
+    /// Shown at the top of the tab while the draft differs from what is
+    /// saved, so a user coming back from another tab can see that the
+    /// values on screen are pending edits, and act on them without
+    /// scrolling to the restart-required card.
+    private var unsavedChangesRow: some View {
+        let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
+        return HStack(spacing: 10) {
+            PillBadge(text: tr("Unsaved changes"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+            Text(tr("Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values."))
+                .font(.caption)
+                .foregroundStyle(Brand.typeSecondary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button {
+                saveAndMaybeRestart(restart: running)
+            } label: {
+                if isApplying {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Label(running ? tr("Apply + Restart") : tr("Save"),
+                          systemImage: running ? "arrow.clockwise" : "checkmark.circle")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isApplying)
+            Button(tr("Revert")) { revertDraft() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isApplying)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.mtplxWarning.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.mtplxWarning.opacity(0.28), lineWidth: Brand.hairline)
+                )
+        )
     }
 
-    private func syncDraftsIfUnedited(_ newConfiguration: MTPLXAppConfiguration) {
-        if draftConfig == newConfiguration {
-            lastSyncedConfig = newConfiguration
-        } else if draftConfig == lastSyncedConfig {
-            draftConfig = newConfiguration
-            lastSyncedConfig = newConfiguration
-        }
+    private func revertDraft() {
+        drafts.reset(to: backend.configuration)
     }
 
     // MARK: - Appearance
@@ -225,7 +279,7 @@ struct SettingsTab: View {
                     caption: tr("Max parallel completions in flight.")
                 ) {
                     optionalIntStepper(
-                        value: $draftConfig.maxActiveRequests,
+                        value: $drafts.draft.maxActiveRequests,
                         defaultValue: defaultMaxActiveRequests,
                         range: 1...16
                     )
@@ -236,7 +290,7 @@ struct SettingsTab: View {
                 FormToggleRow(
                     label: tr("Experimental MTP cohorts"),
                     caption: tr("Batch MTP verify steps across requests. Off = solo MTP (exactness preserved), on = experimental cohort batching."),
-                    isOn: $draftConfig.experimentalMTPCohorts
+                    isOn: $drafts.draft.experimentalMTPCohorts
                 )
 
                 DisclosureGroup(isExpanded: $performanceAdvancedExpanded) {
@@ -247,7 +301,7 @@ struct SettingsTab: View {
                             caption: tr("Requests in a single decode step.")
                         ) {
                             optionalIntStepper(
-                                value: $draftConfig.decodeBatchMax,
+                                value: $drafts.draft.decodeBatchMax,
                                 defaultValue: defaultDecodeBatchMax,
                                 range: 1...16
                             )
@@ -258,7 +312,7 @@ struct SettingsTab: View {
                             caption: tr("How long the scheduler waits for peers before firing.")
                         ) {
                             optionalDoubleStepper(
-                                value: $draftConfig.batchWaitMs,
+                                value: $drafts.draft.batchWaitMs,
                                 defaultValue: defaultBatchWaitMs,
                                 range: 0...500,
                                 step: 10,
@@ -292,13 +346,13 @@ struct SettingsTab: View {
         }
     }
 
-    /// Mode saves the moment it is picked (issue #398). Every other control
-    /// on this card is a draft the Save button commits, but this tab's
-    /// `@State` is destroyed the instant the user leaves Settings, so a
+    /// Mode saves the moment it is picked (issue #398). It was first made
+    /// to do so because the tab's draft died on every tab switch and a
     /// draft-only Mode was silently discarded by the very navigation the
-    /// user needs to make to restart the model, and the picker came back
-    /// on Auto with no notice. Appearance and Language already commit on
-    /// selection; Mode now behaves the same way.
+    /// user needs to make to restart the model. The draft now survives tab
+    /// switches (`SettingsDraftStore`), but Mode stays save-on-pick on
+    /// purpose: it is one discrete global, like Appearance and Language,
+    /// which also commit on selection, and the card's caption promises it.
     private var schedulerPresetBinding: Binding<String> {
         Binding(
             get: {
@@ -311,8 +365,10 @@ struct SettingsTab: View {
     }
 
     private func commitSchedulingPreset(_ preset: String) {
-        draftConfig.applySchedulingPreset(preset)
-        lastSyncedConfig.applySchedulingPreset(preset)
+        // Applied to both halves of the draft store so the pick never
+        // reads as an unsaved edit: it is persisted right below.
+        drafts.draft.applySchedulingPreset(preset)
+        drafts.lastSynced.applySchedulingPreset(preset)
         do {
             try backend.applySchedulingPresetSelection(preset)
             lastSaveError = nil
@@ -525,7 +581,7 @@ struct SettingsTab: View {
                     label: tr("Allocation policy"),
                     caption: tr("Target default budgets half the RAM left after the model loads; bounded uses the limits below.")
                 ) {
-                    Picker(tr("Allocation policy"), selection: $draftConfig.ramSessionCachePolicy) {
+                    Picker(tr("Allocation policy"), selection: $drafts.draft.ramSessionCachePolicy) {
                         Text(tr("Target default")).tag("target-default")
                         Text(tr("Bounded")).tag("bounded")
                         Text(tr("Minimal")).tag("minimal")
@@ -552,7 +608,7 @@ struct SettingsTab: View {
                         FormToggleRow(
                             label: tr("Block-prefix restore"),
                             caption: tr("Restore a shared prompt prefix and prefill only the changed suffix."),
-                            isOn: $draftConfig.ramSessionBlockPrefixRestore
+                            isOn: $drafts.draft.ramSessionBlockPrefixRestore
                         )
 
                         Divider().overlay(Brand.separator)
@@ -561,7 +617,7 @@ struct SettingsTab: View {
                             caption: tr("Number of warm prefixes allowed to stay in RAM.")
                         ) {
                             Stepper(
-                                value: $draftConfig.ramSessionCacheMaxEntries,
+                                value: $drafts.draft.ramSessionCacheMaxEntries,
                                 in: 1...64
                             ) {
                                 Text("\(draftConfig.ramSessionCacheMaxEntries)")
@@ -577,7 +633,7 @@ struct SettingsTab: View {
                             caption: tr("Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap.")
                         ) {
                             cacheSizePicker(
-                                selection: $draftConfig.ramSessionCacheMaxSize,
+                                selection: $drafts.draft.ramSessionCacheMaxSize,
                                 values: ["auto", "1G", "2G", "4G", "8G", "16G", "24G", "32G", "48G"]
                             )
                         }
@@ -588,7 +644,7 @@ struct SettingsTab: View {
                             caption: tr("Maximum RAM cache held by one conversation. Auto keeps it at 2/3 of the total cap.")
                         ) {
                             cacheSizePicker(
-                                selection: $draftConfig.ramSessionCachePerSessionMaxSize,
+                                selection: $drafts.draft.ramSessionCachePerSessionMaxSize,
                                 values: ["auto", "1G", "2G", "4G", "8G", "16G", "24G", "32G"]
                             )
                         }
@@ -692,7 +748,7 @@ struct SettingsTab: View {
                 FormToggleRow(
                     label: tr("Allow swap"),
                     caption: tr("Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused."),
-                    isOn: $draftConfig.allowSwap
+                    isOn: $drafts.draft.allowSwap
                 )
 
                 Divider().overlay(Brand.separator)
@@ -825,7 +881,7 @@ struct SettingsTab: View {
                     label: tr("Policy"),
                     caption: ssdPolicyCaption
                 ) {
-                    Picker(tr("Policy"), selection: $draftConfig.ssdSessionCache) {
+                    Picker(tr("Policy"), selection: $drafts.draft.ssdSessionCache) {
                         Text(tr("Target default")).tag("target-default")
                         Text(tr("Off")).tag("off")
                         Text(tr("Read + write")).tag("on")
@@ -892,7 +948,7 @@ struct SettingsTab: View {
                         label: tr("Max size"),
                         caption: tr("Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap.")
                     ) {
-                        Picker(tr("Max size"), selection: $draftConfig.ssdSessionCacheMaxSize) {
+                        Picker(tr("Max size"), selection: $drafts.draft.ssdSessionCacheMaxSize) {
                             Text(tr("Auto")).tag("auto")
                             Text(tr("10 GB")).tag("10GB")
                             Text(tr("50 GB")).tag("50GB")
@@ -912,7 +968,7 @@ struct SettingsTab: View {
                         caption: tr("Shorter prompts aren't worth the write churn.")
                     ) {
                         Stepper(
-                            value: $draftConfig.ssdSessionCacheMinPrefixTokens,
+                            value: $drafts.draft.ssdSessionCacheMinPrefixTokens,
                             in: 128...8192,
                             step: 128
                         ) {
@@ -1136,7 +1192,7 @@ struct SettingsTab: View {
                     caption: tr("Retrieval models load on first request. Beyond this count the least recently used one is unloaded.")
                 ) {
                     Stepper(
-                        value: $draftConfig.retrievalMaxResident,
+                        value: $drafts.draft.retrievalMaxResident,
                         in: 1...8
                     ) {
                         Text("\(draftConfig.retrievalMaxResident)")
@@ -1172,7 +1228,7 @@ struct SettingsTab: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!dirty || isApplying)
-                Button(tr("Revert")) { draftConfig = backend.configuration }
+                Button(tr("Revert")) { revertDraft() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(!dirty)
@@ -1188,7 +1244,7 @@ struct SettingsTab: View {
             // column is the same 200pt across every card in the tab.
             VStack(alignment: .leading, spacing: 4) {
                 FormRow(label: tr("Model")) {
-                    TextField("", text: $draftConfig.model)
+                    TextField("", text: $drafts.draft.model)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
                 }
@@ -1202,7 +1258,7 @@ struct SettingsTab: View {
                     // argparse ("auto" is resolved to a concrete engine
                     // profile before launch). Max fans is the Fan mode
                     // row, not a profile.
-                    Picker(tr("Profile"), selection: $draftConfig.profile) {
+                    Picker(tr("Profile"), selection: $drafts.draft.profile) {
                         Text(tr("Auto (recommended)")).tag("auto")
                         Text(tr("Turbo")).tag("turbo")
                         Text(tr("Sustained")).tag("sustained")
@@ -1231,14 +1287,14 @@ struct SettingsTab: View {
                 FormRow(label: tr("Host / Port")) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            TextField("127.0.0.1", text: $draftConfig.host)
+                            TextField("127.0.0.1", text: $drafts.draft.host)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 160)
                             Text(":")
                                 .foregroundStyle(Brand.typeTertiary)
                             TextField(
                                 "8000",
-                                value: $draftConfig.port,
+                                value: $drafts.draft.port,
                                 format: .number.grouping(.never)
                             )
                             .textFieldStyle(.roundedBorder)
@@ -1261,7 +1317,7 @@ struct SettingsTab: View {
                 }
 
                 FormRow(label: tr("Generation mode")) {
-                    Picker(tr("Mode"), selection: $draftConfig.generationMode) {
+                    Picker(tr("Mode"), selection: $drafts.draft.generationMode) {
                         Text(tr("MTP")).tag("mtp")
                         Text(tr("Baseline")).tag("ar")
                     }
@@ -1307,7 +1363,7 @@ struct SettingsTab: View {
                     HStack(spacing: 8) {
                         TextField(
                             MTPLXAppConfiguration.defaultHermesWorkspacePath(),
-                            text: $draftConfig.hermesWorkspacePath
+                            text: $drafts.draft.hermesWorkspacePath
                         )
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
@@ -1331,25 +1387,25 @@ struct SettingsTab: View {
                 FormToggleRow(
                     label: tr("Load MTP head"),
                     caption: tr("Disable to fall back to baseline (no speculation)."),
-                    isOn: $draftConfig.loadMTP
+                    isOn: $drafts.draft.loadMTP
                 )
 
                 FormToggleRow(
                     label: tr("Enable thermal polling"),
                     caption: tr("Required to verify fan ramp before benchmarks."),
-                    isOn: $draftConfig.enableThermalPolling
+                    isOn: $drafts.draft.enableThermalPolling
                 )
 
                 FormToggleRow(
                     label: tr("Start MTPLX when the app opens"),
                     caption: tr("Otherwise you start MTPLX from the toolbar manually."),
-                    isOn: $draftConfig.launchDaemonOnOpen
+                    isOn: $drafts.draft.launchDaemonOnOpen
                 )
 
                 FormToggleRow(
                     label: tr("Restart this session's MTPLX after a crash"),
                     caption: tr("Applies to daemons launched after enabling this setting. Retries up to three times with backoff; Stop cancels pending retries."),
-                    isOn: $draftConfig.automaticDaemonRestart
+                    isOn: $drafts.draft.automaticDaemonRestart
                 )
                 if let restartStatusText {
                     Text(restartStatusText)
@@ -1424,7 +1480,7 @@ struct SettingsTab: View {
             caption: tr("Performance Lock overrides this to %lld ms.", perfLockMs)
         ) {
             Stepper(
-                value: $draftConfig.streamSnapshotIntervalMs,
+                value: $drafts.draft.streamSnapshotIntervalMs,
                 in: minMs...maxMs,
                 step: 50
             ) {
@@ -1440,17 +1496,17 @@ struct SettingsTab: View {
         isApplying = true
         lastSaveError = nil
         let config = normalizedDraftConfigurationForSave()
+        // The draft store outlives this view, so a save that finishes
+        // after the user has moved to another tab still lands.
+        let drafts = self.drafts
         Task {
             do {
                 try await backend.applyConfiguration(config, restartIfRunning: restart)
-                await MainActor.run {
-                    draftConfig = config
-                    lastSyncedConfig = config
-                }
+                drafts.reset(to: config)
             } catch {
-                lastSaveError = tr("Apply failed: %@", String(describing: error))
+                drafts.lastSaveError = tr("Apply failed: %@", String(describing: error))
             }
-            await MainActor.run { isApplying = false }
+            drafts.isApplying = false
         }
     }
 

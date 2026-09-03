@@ -1519,3 +1519,5 @@
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Pengaturan tidak dapat dibaca, jadi MTPLX menggunakan pengaturan bawaan. %@ tidak dapat disisihkan dan akan diganti saat penyimpanan berikutnya.";
 "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "Obrolan Anda sebelumnya tidak dapat dibuka. Obrolan tersebut disimpan sebagai %@ dan riwayat obrolan baru telah dimulai.";
 "Chats cannot be saved right now, so this session's chats will not be kept." = "Obrolan tidak dapat disimpan saat ini, jadi obrolan sesi ini tidak akan disimpan.";
+"Unsaved changes" = "Perubahan belum disimpan";
+"Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values." = "Perubahan Anda tetap tersimpan saat Anda menggunakan tab lain. Simpan untuk menerapkannya, atau kembalikan ke nilai yang tersimpan.";

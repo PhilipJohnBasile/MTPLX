@@ -1519,3 +1519,5 @@
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Não foi possível ler as configurações, então o MTPLX está usando os padrões. Não foi possível reservar %@, e ele será substituído no próximo salvamento.";
 "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "Não foi possível abrir suas conversas anteriores. Elas foram mantidas como %@ e um novo histórico de conversas foi iniciado.";
 "Chats cannot be saved right now, so this session's chats will not be kept." = "As conversas não podem ser salvas no momento, então as conversas desta sessão não serão mantidas.";
+"Unsaved changes" = "Alterações não salvas";
+"Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values." = "Suas edições são mantidas enquanto você usa outras abas. Salve para aplicá-las ou reverta para os valores salvos.";

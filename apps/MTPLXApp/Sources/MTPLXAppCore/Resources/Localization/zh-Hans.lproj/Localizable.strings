@@ -1519,3 +1519,5 @@
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "无法读取设置，MTPLX 正在使用默认设置。无法将 %@ 移至一旁，下次保存时将被替换。";
 "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "无法打开您之前的聊天。它们已保留为 %@，并已开始新的聊天记录。";
 "Chats cannot be saved right now, so this session's chats will not be kept." = "目前无法保存聊天，因此本次会话的聊天不会被保留。";
+"Unsaved changes" = "未保存的更改";
+"Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values." = "在您使用其他标签页时，您的编辑会被保留。保存以应用，或还原为已保存的值。";

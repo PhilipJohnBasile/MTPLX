@@ -1519,3 +1519,5 @@
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "تعذّر قراءة الإعدادات، لذا يستخدم MTPLX الإعدادات الافتراضية. تعذّر وضع %@ جانبًا وسيتم استبداله عند الحفظ التالي.";
 "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "تعذّر فتح محادثاتك السابقة. تم الاحتفاظ بها باسم %@ وبدأ سجل محادثات جديد.";
 "Chats cannot be saved right now, so this session's chats will not be kept." = "لا يمكن حفظ المحادثات حاليًا، لذا لن يتم الاحتفاظ بمحادثات هذه الجلسة.";
+"Unsaved changes" = "تغييرات غير محفوظة";
+"Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values." = "يتم الاحتفاظ بتعديلاتك أثناء استخدامك لعلامات التبويب الأخرى. احفظها لتطبيقها، أو تراجع إلى القيم المحفوظة.";

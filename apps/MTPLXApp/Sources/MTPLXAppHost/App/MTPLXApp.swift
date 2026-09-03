@@ -67,6 +67,10 @@ struct MTPLXApp: App {
     /// persisted language before the first body evaluation.
     @StateObject private var languageStore: LanguageStore
     @StateObject private var router = AppRouter()
+    /// Settings tab editing session. Owned here, like the router, so the
+    /// draft a user is editing survives the dashboard rebuilding the tab
+    /// on every selection change.
+    @StateObject private var settingsDrafts = SettingsDraftStore()
     @StateObject private var chatViewModel: ChatViewModel
     @StateObject private var hermesAgentStore: HermesAgentStore
     @StateObject private var stopCoordinator: AppStopCoordinator
@@ -188,6 +192,7 @@ struct MTPLXApp: App {
                 .environment(\.locale, languageStore.language.locale)
                 .environment(\.layoutDirection, languageStore.language.isRightToLeft ? .rightToLeft : .leftToRight)
                 .environmentObject(router)
+                .environmentObject(settingsDrafts)
                 .environmentObject(chatViewModel)
                 .environmentObject(hermesAgentStore)
                 .environmentObject(stopCoordinator)
