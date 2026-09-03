@@ -340,6 +340,7 @@ def decode_payload_prefix(
     read_tensor: Callable[[str], bytes],
     *,
     cache_prefix_len: int,
+    mtp_history_prefix_len: int | None = None,
     boundary_prefix_len: int | None = None,
 ) -> DecodedPayload:
     """Decode only the SSD payload needed for a sub-prefix restore.
@@ -354,6 +355,11 @@ def decode_payload_prefix(
     """
 
     cache_prefix_len = max(0, int(cache_prefix_len))
+    mtp_prefix_len = (
+        None
+        if mtp_history_prefix_len is None
+        else max(0, int(mtp_history_prefix_len))
+    )
     selected_boundary = _gdn_boundary_spec_at_or_below(
         spec, boundary_prefix_len
     )
@@ -377,15 +383,22 @@ def decode_payload_prefix(
     mtp_spec = spec.get("mtp_history_snapshot")
     mtp_history_snapshot = None
     if mtp_spec is not None:
-        # MTP history is shifted relative to the target cache (it is built
-        # from prompt_ids[1:]) and can also be a trailing-window cache.  Its
-        # physical rows therefore cannot be addressed by the target-prefix
-        # token number.  Keep the complete snapshot and let SessionBank apply
-        # its existing delta trim after restore.
-        mtp_history_snapshot = CacheSnapshot(
-            states=tuple(decode_tree(mtp_spec["states"], read_tensor)),
-            meta_states=tuple(decode_tree(mtp_spec["meta_states"], read_tensor)),
-        )
+        if mtp_prefix_len is None:
+            mtp_history_snapshot = CacheSnapshot(
+                states=tuple(decode_tree(mtp_spec["states"], read_tensor)),
+                meta_states=tuple(
+                    decode_tree(mtp_spec["meta_states"], read_tensor)
+                ),
+            )
+        else:
+            mtp_history_snapshot = CacheSnapshot(
+                states=_decode_tree_prefix(
+                    mtp_spec["states"],
+                    read_tensor,
+                    prefix_len=mtp_prefix_len,
+                ),
+                meta_states=_none_tree_like(mtp_spec["meta_states"]),
+            )
     boundaries = ()
     if selected_boundary is not None:
         boundaries = (
@@ -418,7 +431,7 @@ def decode_payload_prefix(
         gdn_boundaries=boundaries,
         has_recurrent=bool(spec.get("has_recurrent", False)),
         cache_snapshot_prefix_len=cache_prefix_len,
-        mtp_history_snapshot_prefix_len=None,
+        mtp_history_snapshot_prefix_len=mtp_prefix_len,
     )
     _eval_decoded_arrays(decoded)
     return decoded
@@ -505,6 +518,10 @@ def _gdn_boundary_spec_at_or_below(
 
 
 def payload_supports_prefix_decode(spec: dict[str, Any]) -> bool:
+    return snapshot_supports_prefix_decode(spec.get("cache_snapshot"))
+
+
+def snapshot_supports_prefix_decode(snapshot_spec: Any) -> bool:
     """Whether the target-cache representation can be safely block-sliced.
 
     Most attention caches derive their offset from the restored K/V tensors.
@@ -515,7 +532,7 @@ def payload_supports_prefix_decode(spec: dict[str, Any]) -> bool:
     """
 
     try:
-        meta_items = _spec_items(spec["cache_snapshot"]["meta_states"])
+        meta_items = _spec_items(snapshot_spec["meta_states"])
     except (KeyError, ValueError, TypeError):
         return False
     for meta_spec in meta_items:

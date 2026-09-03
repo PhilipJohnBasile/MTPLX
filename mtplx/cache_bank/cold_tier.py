@@ -28,6 +28,7 @@ from .codec import (
     decode_payload_prefix,
     encode_payload,
     payload_supports_prefix_decode,
+    snapshot_supports_prefix_decode,
 )
 
 
@@ -2024,10 +2025,26 @@ class SessionBankColdTier:
                     if boundary_prefix is not None
                     else restore_point - 1
                 )
+                mtp_history_prefix_len = None
+                mtp_spec = payload_spec.get("mtp_history_snapshot")
+                # A committed MTP cache holds prompt_ids[1:], so its useful
+                # prefix is exactly one token shorter than the target-cache
+                # boundary.  This is the 0.28 GiB tail of the user's observed
+                # restore: leave windowed or coupled layouts on the legacy
+                # full-decode-and-trim path, but never hydrate a long
+                # committed-history snapshot merely to trim it immediately.
+                if (
+                    mtp_spec is not None
+                    and str(metadata.get("mtp_history_policy") or "").lower()
+                    == "committed"
+                    and snapshot_supports_prefix_decode(mtp_spec)
+                ):
+                    mtp_history_prefix_len = max(0, restore_point - 1)
                 decoded = decode_payload_prefix(
                     payload_spec,
                     read_tensor,
                     cache_prefix_len=max(0, cache_prefix_len),
+                    mtp_history_prefix_len=mtp_history_prefix_len,
                     boundary_prefix_len=boundary_prefix,
                 )
         else:

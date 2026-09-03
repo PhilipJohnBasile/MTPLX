@@ -170,8 +170,8 @@ def test_cache_bank_codec_prefix_decode_reads_only_needed_kv_blocks():
     assert not later_blocks.intersection(reads)
 
 
-def test_cache_bank_codec_prefix_decode_keeps_full_mtp_history_for_trim():
-    """MTP history is shifted, so it must use the existing delta-trim path."""
+def test_cache_bank_codec_prefix_decode_reads_only_needed_mtp_history():
+    """Committed MTP history is shifted by one target token."""
 
     snapshot = CacheSnapshot(
         states=(mx.zeros((1, 1, 1024, 2), dtype=mx.float16),),
@@ -193,12 +193,13 @@ def test_cache_bank_codec_prefix_decode_keeps_full_mtp_history_for_trim():
         encoded.spec,
         encoded.tensors.__getitem__,
         cache_prefix_len=256,
+        mtp_history_prefix_len=255,
     )
 
     assert decoded.cache_snapshot.states[0].shape == (1, 1, 256, 2)
-    assert decoded.mtp_history_snapshot_prefix_len is None
+    assert decoded.mtp_history_snapshot_prefix_len == 255
     assert decoded.mtp_history_snapshot is not None
-    assert decoded.mtp_history_snapshot.states[0].shape == (1, 1, 1024, 2)
+    assert decoded.mtp_history_snapshot.states[0].shape == (1, 1, 255, 2)
 
 
 def test_cache_bank_codec_rejects_prefix_decode_for_coupled_cache_metadata():
@@ -1043,7 +1044,12 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
             hidden=None,
             session_id="hybrid-session",
             template_hash="template-a",
+            mtp_history_policy="committed",
             policy_fingerprint="policy-a",
+            mtp_history_snapshot=CacheSnapshot(
+                states=(AttentionStub(1199).state,),
+                meta_states=(None,),
+            ),
             snapshot_epoch=1200,
             gdn_boundaries=[(1024, boundary_state, hidden_last)],
         )
@@ -1072,6 +1078,10 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
         assert restored_k.shape == (1, 1, 1024, 2)
         assert restored_v.shape == (1, 1, 1024, 2)
         assert ssd_entry.cache_snapshot.states[1] is None
+        assert ssd_entry.mtp_history_snapshot_prefix_len == 1023
+        assert ssd_entry.mtp_history_snapshot is not None
+        assert ssd_entry.mtp_history_snapshot.states[0][0].shape == (1, 1, 1023, 2)
+        assert ssd_entry.mtp_history_snapshot.states[0][1].shape == (1, 1, 1023, 2)
         restored_hidden = ssd_entry.gdn_boundaries[0][2]
         assert restored_hidden is not None
         assert float(mx.max(mx.abs(restored_hidden - hidden_last)).item()) == 0.0
@@ -1085,14 +1095,18 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
             # factory.  Boundary metadata must still replace this cache's
             # initial recurrent metadata.
             cache_factory=lambda: [AttentionStub(0), RecurrentStub()],
+            mtp_cache_factory=lambda: [AttentionStub(0)],
         )
         assert restored is not None
-        cache, _mtp, mode, restore_point, boundary_hidden = restored
+        cache, mtp_cache, mode, restore_point, boundary_hidden = restored
         assert restore_point == 1024
         assert boundary_hidden is not None
         attention, recurrent = cache
         assert attention.state[0].shape == (1, 1, 1024, 2)
         assert attention.state[1].shape == (1, 1, 1024, 2)
+        assert mtp_cache is not None
+        assert mtp_cache[0].state[0].shape == (1, 1, 1023, 2)
+        assert mtp_cache[0].state[1].shape == (1, 1, 1023, 2)
         assert float(mx.max(mx.abs(recurrent.state[0] - mx.full((2, 2), 7.0))).item()) == 0.0
         assert recurrent.meta_state == ("boundary_recurrent_state",)
     finally:

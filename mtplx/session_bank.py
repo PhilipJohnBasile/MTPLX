@@ -1751,9 +1751,13 @@ class SessionBank:
             getattr(entry, "cache_snapshot_prefix_len", None)
             or entry.prefix_len
         )
-        mtp_snapshot_prefix_len = int(
-            getattr(entry, "mtp_history_snapshot_prefix_len", None)
-            or entry.prefix_len
+        mtp_prefix_recorded = getattr(
+            entry, "mtp_history_snapshot_prefix_len", None
+        )
+        mtp_snapshot_prefix_len = (
+            int(mtp_prefix_recorded)
+            if mtp_prefix_recorded is not None
+            else int(entry.prefix_len)
         )
         required_cache_prefix_len = (
             restore_point if boundary_snapshot is not None else restore_point - 1
@@ -1763,13 +1767,19 @@ class SessionBank:
             return None
         if (
             entry.mtp_history_snapshot is not None
-            and mtp_snapshot_prefix_len < restore_point
+            and mtp_snapshot_prefix_len < max(0, restore_point - 1)
         ):
             self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
             return None
 
         actual_restore_mode = "clone"
-        mtp_history_trim_tokens = max(0, mtp_snapshot_prefix_len - restore_point)
+        # Committed MTP history is built from prompt_ids[1:], so a boundary at
+        # N retains N-1 history rows.  Legacy full snapshots retain the
+        # nominal entry prefix length and therefore preserve the established
+        # delta-trim behavior; prefix-decoded entries record their true span.
+        mtp_history_trim_tokens = max(
+            0, mtp_snapshot_prefix_len - max(0, restore_point - 1)
+        )
         # Boundary restores land the KV at the full boundary (no seed forward
         # will run — it would advance recurrent state past the captured
         # boundary a second time). Non-boundary restores keep the seed-forward
