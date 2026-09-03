@@ -2633,7 +2633,7 @@ def test_pull_refreshes_when_remote_index_changed(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    def fake_download(repo_id, filename, revision=None):
+    def fake_download(repo_id, filename, revision=None, token=None):
         return str(fake_download.target)
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
@@ -2644,7 +2644,7 @@ def test_pull_refreshes_when_remote_index_changed(monkeypatch, tmp_path):
     fake_download.target = remote_changed
     assert hf_loader._local_matches_remote_index(local, "org/repo", None) is False
 
-    def broken_download(repo_id, filename, revision=None):
+    def broken_download(repo_id, filename, revision=None, token=None):
         raise RuntimeError("offline")
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", broken_download)

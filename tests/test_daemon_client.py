@@ -5,9 +5,12 @@ import json
 import signal
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from mtplx import daemon_client
 from mtplx.commands import public
@@ -16,8 +19,10 @@ from mtplx.daemon_client import (
     PORT_FOREIGN,
     PORT_FREE,
     PORT_MTPLX_SERVER,
+    AttachChatError,
     AttachChatSession,
     PortOccupant,
+    RunningDaemon,
     classify_port_occupant,
     detect_attachable_daemon,
     fetch_daemon_health,
@@ -74,12 +79,19 @@ class _StubDaemonHandler(BaseHTTPRequestHandler):
         self.server.requests.append(  # type: ignore[attr-defined]
             {"path": self.path, "body": request_body, "headers": dict(self.headers)}
         )
+        config = self.server.config  # type: ignore[attr-defined]
+        release = self.server.release  # type: ignore[attr-defined]
+        if config.get("hang_before_headers"):
+            # A wedged daemon: the request is read and nothing ever comes back.
+            release.wait(30)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
 
         def sse(payload: dict) -> None:
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
+            self.wfile.flush()
 
         sse(
             {
@@ -88,6 +100,16 @@ class _StubDaemonHandler(BaseHTTPRequestHandler):
                 ]
             }
         )
+        if config.get("hang_after_first_chunk"):
+            sse(
+                {
+                    "choices": [
+                        {"index": 0, "delta": {"content": "Hello "}, "finish_reason": None}
+                    ]
+                }
+            )
+            release.wait(30)
+            return
         sse(
             {
                 "choices": [
@@ -131,11 +153,13 @@ def _stub_daemon(config: dict | None = None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StubDaemonHandler)
     server.config = dict(config or {})  # type: ignore[attr-defined]
     server.requests = []  # type: ignore[attr-defined]
+    server.release = threading.Event()  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         yield server
     finally:
+        server.release.set()  # type: ignore[attr-defined]
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -403,6 +427,110 @@ def test_run_attach_chat_repl_supports_stats_and_exit():
         str(text) for kind, text in printer.events if kind == "reasoning"
     )
     assert reasoning == "thinking..."
+
+
+def test_attach_chat_gives_up_on_a_daemon_that_stops_mid_stream():
+    # The session used to open the connection with timeout=None and block in
+    # `for raw_line in response:` forever when the daemon stopped emitting
+    # frames: a blank answer until Ctrl-C. The socket now waits at most the
+    # inactivity deadline between frames and the turn fails with a plain line.
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_after_first_chunk": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        session = AttachChatSession(daemon, inactivity_timeout=0.3)
+        chunks: list[str] = []
+        started = time.monotonic()
+        with pytest.raises(AttachChatError) as excinfo:
+            session.run_turn("hi", on_content=chunks.append)
+        elapsed = time.monotonic() - started
+
+    assert "server stopped responding" in str(excinfo.value)
+    assert "0s" in str(excinfo.value)
+    assert chunks == ["Hello "]  # what did arrive was shown as it arrived
+    assert 0.2 < elapsed < 5.0
+    assert session.history == []  # a failed turn is not remembered as an exchange
+
+
+def test_attach_chat_gives_up_on_a_daemon_that_never_answers():
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_before_headers": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        session = AttachChatSession(daemon, inactivity_timeout=0.3)
+        with pytest.raises(AttachChatError, match="server stopped responding"):
+            session.run_turn("hi")
+
+
+def test_run_attach_chat_reports_a_stalled_daemon_and_exits_nonzero():
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_after_first_chunk": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        printer = _RecordingPrinter()
+        original = daemon_client.AttachChatSession
+
+        def short_deadline(*args, **kwargs):
+            kwargs.setdefault("inactivity_timeout", 0.3)
+            return original(*args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(daemon_client, "AttachChatSession", short_deadline)
+            code = run_attach_chat(daemon, prompt="hi", printer=printer)
+
+    assert code == 1
+    kinds = [kind for kind, _ in printer.events]
+    assert kinds.index("content") < kinds.index("end_assistant") < kinds.index("error")
+    errors = [str(text) for kind, text in printer.events if kind == "error"]
+    assert errors == ["server stopped responding (nothing received for 0s)"]
+
+
+def test_attach_chat_connect_and_inactivity_timeouts_are_wired(monkeypatch):
+    # The connect deadline is short and separate from the inactivity deadline
+    # that governs the wait for headers and every frame after them.
+    recorded: dict[str, object] = {}
+
+    class FakeSocket:
+        def settimeout(self, value):
+            recorded["socket_timeout"] = value
+
+    class FakeResponse:
+        status = 200
+
+        def __iter__(self):
+            yield b"data: [DONE]\n"
+
+    class FakeConnection:
+        def __init__(self, host, port, timeout=None):
+            recorded["connect_timeout"] = timeout
+            self.sock = None
+
+        def connect(self):
+            self.sock = FakeSocket()
+
+        def request(self, *_args, **_kwargs):
+            recorded["requested"] = True
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            recorded["closed"] = True
+
+    monkeypatch.setattr(daemon_client.http.client, "HTTPConnection", FakeConnection)
+    daemon = RunningDaemon(
+        host="127.0.0.1", port=1, model="m", model_path=None, launch_id=None,
+        pid=None, api_key_required=False, health={},
+    )
+
+    AttachChatSession(daemon).run_turn("hi")
+
+    assert recorded["connect_timeout"] == daemon_client.ATTACH_CHAT_CONNECT_TIMEOUT_S == 5.0
+    assert recorded["socket_timeout"] == daemon_client.ATTACH_CHAT_INACTIVITY_TIMEOUT_S == 120.0
+    assert recorded["requested"] and recorded["closed"]
 
 
 # ---------- public.py integration: guard + port auto-select -----------------
