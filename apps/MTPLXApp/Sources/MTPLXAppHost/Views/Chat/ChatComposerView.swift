@@ -85,7 +85,7 @@ struct ChatComposerView: View {
                         errorMessage:
                             (attachment.imageData == nil
                                 && attachment.extractedText.isEmpty)
-                            ? "Could not read" : nil,
+                            ? tr("Could not read") : nil,
                         onRemove: { viewModel.removeAttachment(attachment) }
                     )
                 }
@@ -110,8 +110,8 @@ struct ChatComposerView: View {
                 )
         }
         .buttonStyle(.plain)
-        .help("Attach a file (PDF, docx, md, txt)")
-        .accessibilityLabel("Attach file")
+        .help(tr("Attach a file (PDF, docx, md, txt)"))
+        .accessibilityLabel(tr("Attach file"))
     }
 
     private var webSearchToggle: some View {
@@ -122,7 +122,7 @@ struct ChatComposerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "globe")
                     .font(.system(size: 12, weight: .semibold))
-                Text("Web")
+                Text(tr("Web"))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .tracking(0.2)
             }
@@ -146,8 +146,8 @@ struct ChatComposerView: View {
             )
         }
         .buttonStyle(.plain)
-        .help(isOn ? "Web search is on for this conversation" : "Enable web search for this conversation")
-        .accessibilityLabel("Web search")
+        .help(isOn ? tr("Web search is on for this conversation") : tr("Enable web search for this conversation"))
+        .accessibilityLabel(tr("Web search"))
         .accessibilityValue(isOn ? "on" : "off")
     }
 
@@ -175,8 +175,8 @@ struct ChatComposerView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.isStreaming && !canSend)
         .onHover { sendButtonHovering = $0 }
-        .help(viewModel.isStreaming ? "Stop generating" : "Send")
-        .accessibilityLabel(viewModel.isStreaming ? "Stop generating" : "Send message")
+        .help(viewModel.isStreaming ? tr("Stop generating") : tr("Send"))
+        .accessibilityLabel(viewModel.isStreaming ? tr("Stop generating") : tr("Send message"))
         .animation(.smooth(duration: 0.18), value: viewModel.isStreaming)
         .animation(.smooth(duration: 0.18), value: sendButtonHovering)
     }
@@ -196,13 +196,13 @@ struct ChatComposerView: View {
     private var engineStatusText: String? {
         switch daemonState.kind {
         case .starting, .warming:
-            return "Loading \(selectedModelName)…"
+            return tr("Loading %@…", selectedModelName)
         case .stopping:
-            return "Stopping MTPLX…"
+            return tr("Stopping MTPLX…")
         case .stopped:
-            return "Start MTPLX to send."
+            return tr("Start MTPLX to send.")
         case .degraded, .crashed:
-            return "Restart MTPLX to send."
+            return tr("Restart MTPLX to send.")
         case .running:
             return nil
         }
@@ -235,10 +235,10 @@ struct ChatComposerView: View {
         panel.allowedContentTypes = Self.allowedContentTypes(
             includeImages: visionEnabled
         )
-        panel.prompt = "Attach"
+        panel.prompt = tr("Attach")
         panel.message = visionEnabled
             ? "Attach documents (PDF, docx, md, txt) or images (PNG, JPEG, WebP)."
-            : "Attach files (PDF, docx, md, txt) to include their text in your message."
+            : tr("Attach files (PDF, docx, md, txt) to include their text in your message.")
         if panel.runModal() == .OK {
             let urls = panel.urls
             Task { await viewModel.attach(urls) }

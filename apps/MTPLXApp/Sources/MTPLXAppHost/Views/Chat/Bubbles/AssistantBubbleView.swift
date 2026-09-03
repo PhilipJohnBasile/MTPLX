@@ -82,8 +82,8 @@ struct AssistantBubbleView: View {
                     id: "fetched-pages",
                     systemName: "doc.text",
                     text: fetchedPageCount == 1
-                        ? "Read 1 page"
-                        : "Read \(fetchedPageCount) pages",
+                        ? tr("Read 1 page")
+                        : tr("Read %lld pages", fetchedPageCount),
                     detail: "",
                     isLive: false
                 )
@@ -117,7 +117,7 @@ struct AssistantBubbleView: View {
                     Group {
                         if isInterruptedReply && !expandedLongReply {
                             LongAssistantReplyPreview(
-                                title: "Interrupted reply",
+                                title: tr("Interrupted reply"),
                                 previewText: longReplyPreviewText ?? replyCopyText,
                                 characterCount: message.visibleContent.count,
                                 onCopy: { copyToPasteboard(replyCopyText) },
@@ -158,7 +158,7 @@ struct AssistantBubbleView: View {
                 }
             } else if !hasReasoning && !hasTrace && !hasToolCalls {
                 HStack(alignment: .top, spacing: 0) {
-                    Text("No visible answer generated.")
+                    Text(tr("No visible answer generated."))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Brand.typeSecondary)
                         .frame(maxWidth: 576, alignment: .leading)
@@ -277,7 +277,7 @@ struct AssistantBubbleView: View {
         else { return [] }
         var items: [MetricItem] = []
         if let tps = stats.rawDecodeTokS ?? stats.displayDecodeTokS, tps > 0 {
-            items.append(MetricItem(label: "tok/s", value: String(format: "%.1f", tps)))
+            items.append(MetricItem(label: tr("tok/s"), value: String(format: "%.1f", tps)))
         }
         if let completion = stats.completionTokens, completion > 0 {
             items.append(MetricItem(label: "out", value: Self.formatCount(completion)))
@@ -286,7 +286,7 @@ struct AssistantBubbleView: View {
             items.append(MetricItem(label: "in", value: Self.formatCount(prompt)))
         }
         if let ttft = stats.ttftS, ttft > 0 {
-            items.append(MetricItem(label: "TTFT", value: Self.formatSeconds(ttft)))
+            items.append(MetricItem(label: tr("TTFT"), value: Self.formatSeconds(ttft)))
         }
         if let verifyCalls = stats.verifyCalls, verifyCalls > 0 {
             items.append(MetricItem(label: "verify", value: "\(verifyCalls)"))
@@ -323,7 +323,7 @@ struct AssistantBubbleView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Copy reply to clipboard")
+        .help(tr("Copy reply to clipboard"))
     }
 
     private func copyToPasteboard(_ text: String) {
@@ -354,19 +354,19 @@ struct AssistantBubbleView: View {
                         .foregroundStyle(Brand.typeTertiary)
                     Spacer(minLength: 8)
                     Button(action: onCopy) {
-                        Label("Copy", systemImage: "doc.on.doc")
+                        Label(tr("Copy"), systemImage: "doc.on.doc")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Brand.typeSecondary)
-                    .help("Copy full reply")
+                    .help(tr("Copy full reply"))
                     Button(action: onExpand) {
-                        Label("Show", systemImage: "arrow.down.right.and.arrow.up.left")
+                        Label(tr("Show"), systemImage: "arrow.down.right.and.arrow.up.left")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Brand.typeSecondary)
-                    .help("Show full reply")
+                    .help(tr("Show full reply"))
                 }
 
                 AssistantReplyPreviewViewport(text: previewText)
@@ -377,9 +377,9 @@ struct AssistantBubbleView: View {
 
         private static func formatCount(_ value: Int) -> String {
             if value >= 1000 {
-                return String(format: "%.1fk chars", Double(value) / 1000.0)
+                return tr("%.1fk chars", Double(value) / 1000.0)
             }
-            return "\(value) chars"
+            return tr("%lld chars", value)
         }
     }
 
