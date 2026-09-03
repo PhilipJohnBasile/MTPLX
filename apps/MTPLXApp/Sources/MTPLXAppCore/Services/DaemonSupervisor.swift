@@ -546,8 +546,10 @@ public final class DaemonSupervisor: @unchecked Sendable {
             throw DaemonSupervisorError.launchFailed("daemon launch was cancelled")
         }
         notifyStatusObserver()
+        // Logs are pasted into bug reports; the command line goes in with
+        // every secret flag value masked, never verbatim.
         await logStore.append(
-            "launched \(command.executableURL.path) \(command.arguments.joined(separator: " "))",
+            "launched \(command.redactedCommandLine)",
             stream: .system
         )
 

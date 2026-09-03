@@ -307,8 +307,17 @@ public struct MTPLXCommandBuilder: Sendable {
         if let contextWindow = resolved.contextWindow, contextWindow > 0 {
             arguments.append(contentsOf: ["--context-window", String(contextWindow)])
         }
+        // The key never rides on argv: every local process can read a
+        // process's arguments through `ps`, and the supervisor writes the
+        // launched command line into the Logs pane that users paste into
+        // bug reports. The daemon reads the key from a 0600 file instead.
+        // The file is (re)written on every build so the daemon always
+        // starts with the key the app currently holds; a missing file
+        // would make `mtplx serve` mint its own key and lock the app out.
         if let apiKey = configuration.apiKey, !apiKey.isEmpty {
-            arguments.append(contentsOf: ["--api-key", apiKey])
+            let apiKeyFileURL = Self.daemonAPIKeyFileURL(environment: environment)
+            try Self.writeDaemonAPIKeyFile(apiKey, to: apiKeyFileURL)
+            arguments.append(contentsOf: ["--api-key-file", apiKeyFileURL.path])
         }
         if configuration.enableThermalPolling {
             arguments.append("--enable-thermal-poll")
@@ -641,7 +650,12 @@ public struct MTPLXCommandBuilder: Sendable {
         isDevelopmentWrapperPath(candidatePath)
     }
 
-    public static func appRuntimeDirectory(
+    /// The app's own folder under the user's Application Support directory
+    /// (`~/Library/Application Support/MTPLX`), resolved from the same HOME
+    /// the rest of the builder uses so hermetic tests stay hermetic. The
+    /// settings file, the chat store, and the app-owned runtime venv all
+    /// live under this directory.
+    public static func appSupportDirectory(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String {
         let home = environment["HOME"] ?? NSHomeDirectory()
@@ -649,8 +663,47 @@ public struct MTPLXCommandBuilder: Sendable {
             .appendingPathComponent("Library")
             .appendingPathComponent("Application Support")
             .appendingPathComponent("MTPLX")
+            .path
+    }
+
+    public static func appRuntimeDirectory(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        URL(fileURLWithPath: appSupportDirectory(environment: environment))
             .appendingPathComponent("runtime-venv")
             .path
+    }
+
+    /// Where the daemon reads its API key from (`--api-key-file`). Kept
+    /// beside `settings.json`, which is the durable copy of the key; this
+    /// file is a 0600 hand-off to the daemon process only.
+    public static func daemonAPIKeyFileURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        URL(fileURLWithPath: appSupportDirectory(environment: environment), isDirectory: true)
+            .appendingPathComponent("daemon-api-key")
+    }
+
+    /// Write `key` to `url` readable by the current user only. The file is
+    /// created 0600 before any byte is written, and an existing file is
+    /// tightened to 0600 before it is truncated, so the key is never
+    /// readable by another local user even for an instant. The daemon
+    /// strips surrounding whitespace when it reads the file.
+    public static func writeDaemonAPIKeyFile(_ key: String, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        guard fchmod(descriptor, 0o600) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EPERM)
+        }
+        try handle.write(contentsOf: Data(key.utf8))
+        try handle.close()
     }
 
     public static func appRuntimeBinDirectory(

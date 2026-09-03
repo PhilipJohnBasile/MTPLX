@@ -1099,3 +1099,68 @@ public struct DaemonCommand: Equatable, Sendable {
         self.environment = environment
     }
 }
+
+// MARK: - Secret redaction for logged or exported argv
+
+extension DaemonCommand {
+    /// Stand-in for a secret value in any logged or exported command line.
+    public static let redactedValue = "<redacted>"
+
+    /// Flag-name suffixes whose following value is a secret. `--api-key`
+    /// is the one the daemon takes today; the suffix rule covers every
+    /// future `*-key`, `*-token`, `*-secret` and `*-password` flag without
+    /// another edit here. `--api-key-file` ends in `-file` and is a path,
+    /// so it is deliberately not matched.
+    private static let secretFlagSuffixes = ["-key", "-token", "-secret", "-password"]
+
+    /// True when `argument` is a flag whose value must never be logged.
+    /// Accepts both `--flag` and `--flag=value` spellings.
+    public static func isSecretFlag(_ argument: String) -> Bool {
+        guard argument.hasPrefix("-") else { return false }
+        var name = argument.drop { $0 == "-" }.lowercased()
+        if let equals = name.firstIndex(of: "=") {
+            name = String(name[..<equals])
+        }
+        guard !name.isEmpty else { return false }
+        return secretFlagSuffixes.contains { name.hasSuffix($0) }
+    }
+
+    /// `arguments` with every secret flag value replaced by
+    /// `redactedValue`. Every other argument is returned unchanged, in
+    /// order, so the result still reads as the command that ran.
+    public static func redactingSecrets(in arguments: [String]) -> [String] {
+        var redacted: [String] = []
+        redacted.reserveCapacity(arguments.count)
+        var maskNext = false
+        for argument in arguments {
+            if maskNext {
+                redacted.append(redactedValue)
+                maskNext = false
+                continue
+            }
+            guard isSecretFlag(argument) else {
+                redacted.append(argument)
+                continue
+            }
+            if let equals = argument.firstIndex(of: "=") {
+                redacted.append(String(argument[...equals]) + redactedValue)
+            } else {
+                redacted.append(argument)
+                maskNext = true
+            }
+        }
+        return redacted
+    }
+
+    /// The arguments as they may appear in logs, diagnostics, or bug
+    /// reports.
+    public var redactedArguments: [String] {
+        Self.redactingSecrets(in: arguments)
+    }
+
+    /// The full command line with secrets masked. This is the only form
+    /// of the command that may be written to a log store or exported.
+    public var redactedCommandLine: String {
+        ([executableURL.path] + redactedArguments).joined(separator: " ")
+    }
+}

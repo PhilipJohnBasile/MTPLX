@@ -1085,7 +1085,11 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     func testCommandBuilderEmitsServeArgsWithoutBrowserFlags() throws {
         let fake = try makeExecutable(named: "mtplx")
-        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let home = temporaryDirectory()
+        let builder = MTPLXCommandBuilder(environment: [
+            "PATH": fake.deletingLastPathComponent().path,
+            "HOME": home.path,
+        ])
         let command = try builder.buildServeCommand(
             configuration: MTPLXAppConfiguration(
                 executablePath: fake.path,
@@ -1110,7 +1114,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                 "--scheduler-mode", "serial",
                 "--batching-preset", "latency",
                 "--ssd-session-cache", "off",
-                "--api-key", "secret",
+                "--api-key-file",
+                home.appendingPathComponent("Library/Application Support/MTPLX/daemon-api-key").path,
                 "--enable-thermal-poll",
                 "--fan-mode", "smart",
                 "--unsafe-force-unverified",
