@@ -135,6 +135,100 @@ def _boundary_true_restore_enabled() -> bool:
     raw = str(os.environ.get("MTPLX_SESSION_BOUNDARY_TRUE_RESTORE", "1")).strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
+
+FABLE_NEAR_PREFIX_RESTORE_ENV = "MTPLX_FABLE_NEAR_PREFIX_RESTORE"
+
+
+def _fable_near_prefix_restore_enabled() -> bool:
+    """Shed GDN boundary records to fit, instead of dropping the whole entry.
+
+    THE BUG, measured 2026-09-01 (.benchmark-artifacts/fable/ttft/control.json).
+    A three-scenario TTFT screen on Qwen3.8 Flash-Next: a 19,022-token cold
+    turn, the same conversation with the model's own reply appended (0.217 s
+    visible TTFT, exact restore), and the same turn with the prior assistant
+    message re-rendered -- which took **15.79 s, cached=0, cold, on all three
+    repeats**. A 70x cliff on exactly the traffic shape the near-prefix lane
+    exists for.
+
+    The chain, from the receipt:
+
+    * The bank auto-sized to its 1 GiB FLOOR ("session-bank budget: 1.0G total
+      (auto: machine memory plan...), model weights 107.1G" -- the same
+      resolution production gets on this box).
+    * A 19K-token entry's base snapshot is ~711 MB. Its GDN boundary records
+      cost ~87-101 MB EACH, and MTPLX_GDN_BOUNDARY_MAX is 8, so the boundary
+      payload alone is ~700-810 MB.
+    * ``put`` counts that payload into ``entry_nbytes`` and then refuses the
+      ENTIRE entry: eviction_log shows ``skipped_oversized_snapshot`` at
+      nbytes=1,398,321,776 and 1,520,850,304 against a 1,073,741,824 budget --
+      while the same turn's boundary-LESS commit (710,255,120) was admitted.
+    * So the bank only ever held boundary-less entries. The one survivor in the
+      receipt reports ``gdn_boundaries: []``.
+    * ``recurrent_boundary_at_or_below()`` returns None on such an entry, so
+      ``_restore_near_prefix_prompt_state`` rejects every candidate
+      (``boundary_not_better:0``), the request falls through to ``restore()``,
+      the SSD lookup misses, and the response reports ``ssd_prefix_miss`` --
+      which MASKS the real RAM-lane reason and is why this read as an SSD
+      problem rather than an admission one.
+
+    Boundary records are the *sheddable* part of an entry: they are pure
+    acceleration, reconstructible by re-prefill, and an entry with FEWER
+    boundaries still serves every restore an entry with none can. Dropping the
+    entry to protect the budget therefore trades a 0.5 s restore for a 15.8 s
+    cold prefill in order to save bytes it could have saved by keeping three
+    fewer records.
+
+    With shedding, the prompt-boundary entry is admitted with as many records
+    as fit; ``put``'s existing ``prefix_donor`` inheritance then carries those
+    records onto the generation-final commit, ``_supersede_contained_prefixes``
+    collapses the pair (a boundary-carrying container legitimately dominates
+    its contained prefixes), and the single entry the 1 GiB budget allows is a
+    boundary-carrying one.
+
+    Note the corollary: under this bug, raising MTPLX_GDN_BOUNDARY_MAX from 8 --
+    the audit's "cheapest lever" -- makes things WORSE, because it enlarges the
+    payload that triggers the refusal.
+
+    Default OFF; read at SessionBank construction (see __init__) so one bank
+    keeps one admission policy for its whole life and an A/B arm cannot drift
+    mid-run.
+    """
+    raw = str(os.environ.get(FABLE_NEAR_PREFIX_RESTORE_ENV, "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+FABLE_PROTECTED_TERMINAL_ENV = "MTPLX_FABLE_PROTECTED_TERMINAL"
+
+
+def _fable_protected_terminal_enabled() -> bool:
+    """Protected-terminal eviction order (oMLX PR #3330, exact_resident.py).
+
+    Ported policy, in oMLX's words: two candidates compete under one byte
+    ceiling -- the longer *matching terminal* (a banked turn that strictly
+    extends the incoming prompt) and the shorter *input-prompt fallback* (the
+    prompt itself, being published now). Publishing the fallback must never be
+    what evicts the terminal that extends it: the terminal can serve every
+    restore the fallback can (exact hits trim; boundary-true restores pick a
+    boundary <= the matched point) plus the tail the fallback cannot, so
+    trading it for the fallback strictly loses coverage. oMLX keeps the NEWEST
+    such terminal, deliberately not letting length override insertion recency
+    (`_newest_extending_entry`, exact_resident.py:87-103), and counts the
+    deflections (`protected_rejections`, exact_resident.py:189-215).
+
+    This is an eviction ORDER change and nothing else. It adds no byte ceiling
+    (effective_max_bytes() and the per-session cap already exist and are
+    model-aware), no background work, and no idle lane -- see the phase-3
+    falsification recorded at _snapshot_settle_enabled above and in commit
+    b5fac4ac: on this box, adding work to the idle lane produced the WORST
+    observed stall (27.6 s) across a warm 91K-turn A/B.
+
+    Default OFF; read at SessionBank construction (see __init__), so one bank
+    keeps one policy for its whole life and an A/B arm cannot drift mid-run.
+    """
+    raw = str(os.environ.get(FABLE_PROTECTED_TERMINAL_ENV, "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 GIB = 1024**3
 # Tool sessions store ~3 entries per turn (prompt-prefix commit, postcommit,
 # generation-final); an 8-entry cap churned the whole bank every ~3 turns and
@@ -508,6 +602,18 @@ class SessionBank:
         self.dynamic_ceiling_fn: Callable[[], int] | None = None
         self.last_dynamic_ceiling_bytes: int | None = None
         self.dynamic_ceiling_errors: int = 0
+        # MTPLX_FABLE_PROTECTED_TERMINAL, resolved ONCE here so a bank keeps
+        # one eviction policy for its whole life (see the gate's docstring).
+        self.protect_newest_extending: bool = _fable_protected_terminal_enabled()
+        # Deflections: how many times publishing a shorter input-prompt
+        # fallback would have evicted the newest terminal extending it and
+        # took another victim instead. oMLX's `protected_rejections`.
+        self.protected_rejections: int = 0
+        # MTPLX_FABLE_NEAR_PREFIX_RESTORE, resolved ONCE here (see the gate's
+        # docstring for the 2026-09-01 15.79 s receipt this exists to fix).
+        self.shed_gdn_boundaries_to_fit: bool = _fable_near_prefix_restore_enabled()
+        self.boundary_shed_puts: int = 0
+        self.boundary_shed_records: int = 0
 
     # Capability marker for generation: near_prefix_candidates accepts
     # min_restore_tokens so resident-duplicate eligibility mirrors the
@@ -809,6 +915,35 @@ class SessionBank:
             )
         )
         entry_nbytes = int(nbytes_override if nbytes_override is not None else computed_nbytes)
+        if (
+            self.shed_gdn_boundaries_to_fit
+            and nbytes_override is None
+            and normalized_boundaries
+            and entry_nbytes > self.per_session_max_bytes
+        ):
+            kept, shed_nbytes, shed = self._shed_boundaries_to_fit(
+                normalized_boundaries, entry_nbytes
+            )
+            # Only apply a shed that actually rescues the entry. When the BASE
+            # snapshot alone is over budget, dropping records changes nothing
+            # about the outcome, so leave the entry exactly as it was and let
+            # the unchanged refusal below report the real size.
+            if shed and shed_nbytes <= self.per_session_max_bytes:
+                normalized_boundaries, entry_nbytes = kept, shed_nbytes
+                self.boundary_shed_puts += 1
+                self.boundary_shed_records += shed
+                self.eviction_log.append(
+                    {
+                        "reason": "shed_gdn_boundaries",
+                        "session_id": session_id,
+                        "prefix_len": len(tokens),
+                        "token_hash": token_prefix_hash(tokens),
+                        "nbytes": int(entry_nbytes),
+                        "budget": int(self.per_session_max_bytes),
+                        "boundaries_shed": int(shed),
+                        "boundaries_kept": len(normalized_boundaries),
+                    }
+                )
         self.last_put_nbytes = int(entry_nbytes)
         if entry_nbytes > self.per_session_max_bytes:
             self.last_put_skipped_oversized_snapshot = True
@@ -1670,6 +1805,16 @@ class SessionBank:
             "effective_max_bytes": self.effective_max_bytes(),
             "dynamic_ceiling_bytes": self.last_dynamic_ceiling_bytes,
             "dynamic_ceiling_errors": self.dynamic_ceiling_errors,
+            # Engagement receipt for MTPLX_FABLE_PROTECTED_TERMINAL: a lane
+            # that reads flat in an A/B must still be able to prove it ran.
+            "protect_newest_extending": bool(self.protect_newest_extending),
+            "protected_rejections": int(self.protected_rejections),
+            # MTPLX_FABLE_NEAR_PREFIX_RESTORE: boundary_shed_puts > 0 is the
+            # proof that entries which used to be refused wholesale are now
+            # being admitted with a reduced boundary set.
+            "shed_gdn_boundaries_to_fit": bool(self.shed_gdn_boundaries_to_fit),
+            "boundary_shed_puts": int(self.boundary_shed_puts),
+            "boundary_shed_records": int(self.boundary_shed_records),
             "per_session_max_bytes": self.per_session_max_bytes,
             "idle_ttl_s": self.idle_ttl_s,
             "entries": len(self._entries),
@@ -2344,6 +2489,72 @@ class SessionBank:
         for entry in entries[cap:]:
             self._evict_entry(entry, reason="session_entry_retention")
 
+    def _shed_boundaries_to_fit(
+        self,
+        boundaries: list[tuple[int, CacheSnapshot, Any]],
+        entry_nbytes: int,
+    ) -> tuple[list[tuple[int, CacheSnapshot, Any]], int, int]:
+        """Drop boundary records until the entry fits its per-session budget.
+
+        Returns ``(kept, nbytes, shed_count)``. ``kept`` keeps the input's
+        ascending-position ordering, so callers see the same shape they passed.
+
+        Records are dropped FURTHEST-FROM-THE-TAIL first, and the newest record
+        is never dropped while any is kept. That is deliberately not
+        ``generation._thin_gdn_boundary_records``'s geometric policy, which
+        preserves a deep-divergence anchor: under byte pressure the anchor is
+        the first thing that has to go, because agent divergence concentrates
+        near the prompt tail (the same reason MTPLX_GDN_BOUNDARY_TAIL_INTERVAL
+        gives the final chunk a finer grid). The trade is explicit: a
+        deep-divergence match may find no boundary at or below it and fail
+        closed to a cold prefill -- which is exactly what it does TODAY, when
+        the whole entry is refused. Shedding is never worse and is usually the
+        difference between a 0.5 s restore and a 15.8 s re-prefill.
+
+        Shedding stops at zero records: an entry whose BASE snapshot already
+        exceeds the budget is still refused by the caller, unchanged.
+        """
+
+        budget = int(self.per_session_max_bytes)
+        sizes = [
+            _snapshot_nbytes(record[1]) + _tree_nbytes(record[2])
+            for record in boundaries
+        ]
+        total = int(entry_nbytes)
+        kept = list(boundaries)
+        kept_sizes = list(sizes)
+        shed = 0
+        # kept/kept_sizes are sorted ascending by position (put normalizes
+        # them), so index 0 is the record furthest from the tail.
+        while kept and total > budget:
+            total -= kept_sizes.pop(0)
+            kept.pop(0)
+            shed += 1
+        return kept, int(total), int(shed)
+
+    def _newest_extending_entry(
+        self, tokens: tuple[int, ...] | None
+    ) -> SessionBankEntry | None:
+        """The newest banked entry that STRICTLY extends ``tokens``.
+
+        Port of oMLX ``_newest_extending_entry`` (exact_resident.py:87-103):
+        insertion recency wins, deliberately NOT length -- a longer but older
+        branch of a diverged transcript is not the branch the client is on.
+        ``self._entries`` is a plain dict, so ``reversed()`` is newest-first by
+        insertion for exactly the same reason oMLX's is.
+
+        Returns None when the gate is off, so the whole rule costs one boolean
+        read on the default path.
+        """
+
+        if not self.protect_newest_extending or not tokens:
+            return None
+        width = len(tokens)
+        for key, entry in reversed(self._entries.items()):
+            if len(key) > width and key[:width] == tokens:
+                return entry
+        return None
+
     def _evict_if_needed(self, *, protected_tokens: tuple[int, ...] | None = None) -> None:
         while True:
             if not self._entries:
@@ -2406,6 +2617,24 @@ class SessionBank:
                 candidates,
                 key=lambda entry: (entry.last_access_s, -entry.nbytes, entry.created_at_s),
             )
+            terminal = self._newest_extending_entry(protected_tokens)
+            if terminal is not None and victim is terminal and len(candidates) > 1:
+                # Protected-terminal rule (see _fable_protected_terminal_enabled):
+                # the shorter fallback being published must not be what evicts
+                # the newest terminal extending it. Order only -- if the
+                # terminal is the LAST candidate standing it is still evicted,
+                # because the budget has to be met and refusing here would
+                # spin this loop forever.
+                self.protected_rejections += 1
+                candidates = [entry for entry in candidates if entry is not terminal]
+                victim = min(
+                    candidates,
+                    key=lambda entry: (
+                        entry.last_access_s,
+                        -entry.nbytes,
+                        entry.created_at_s,
+                    ),
+                )
             self._evict_entry(victim, reason=reason)
 
     def shrink_to_bytes(
