@@ -44,7 +44,7 @@ public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 public final class ThemeStore: ObservableObject {
     /// UserDefaults key of the appearance preference.
-    public static let appearanceKey = "mtplx.app.appearance"
+    nonisolated public static let appearanceKey = "mtplx.app.appearance"
 
     @AppStorage("mtplx.app.soundEnabled") public var soundEnabled: Bool = false
     @AppStorage("mtplx.app.reduceMotion") public var reduceMotionPreference: Bool = false
