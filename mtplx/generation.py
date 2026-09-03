@@ -405,6 +405,27 @@ def _mlx_live_memory_bytes() -> int:
     return int(mx.get_active_memory()) + int(mx.get_cache_memory())
 
 
+def _mlx_release_allocator_cache() -> int:
+    """Return the allocator's cached (free but held) bytes to the system.
+
+    The cache is reclaimable by definition; a gate that counts it as live
+    memory refuses work the machine can hold (2026-09-03 W3: after a 100k
+    prefill on a 128 GB M5 Max the cache sat at the 96 GiB cap and the
+    compiled fixed-M4 lane skipped with "live 103.0 GB + promotion 2.9 GB
+    over the 100.0 GB line" while active memory was far lower). Returns the
+    bytes released; 0 when nothing was cached or MLX is unavailable.
+    """
+
+    try:
+        before = int(mx.get_cache_memory())
+        if before <= 0:
+            return 0
+        mx.clear_cache()
+        return max(0, before - int(mx.get_cache_memory()))
+    except Exception:
+        return 0
+
+
 def _metal_memory_limit_bytes(rt: Any) -> int:
     """The allocator ceiling the serve path pinned at startup.
 
@@ -471,9 +492,19 @@ def _qwen4_fixed_m4_lane_fits(rt: Any, *, prompt_tokens: int) -> bool:
     line = int(limit * _QWEN4_FIXED_M4_PRESSURE_FRACTION)
     if live + need <= line:
         return True
+    # The allocator cache is free memory the allocator is holding; only
+    # when it stands between this request and the lane is it released, so
+    # the common case pays nothing and the promotion's own allocations
+    # reuse the space the prefill scratch left behind.
+    released = _mlx_release_allocator_cache()
+    if released > 0:
+        live = _mlx_live_memory_bytes()
+        if live + need <= line:
+            return True
     _announce_qwen4_fixed_m4_skip(
         f"prompt {prompt_tokens} tokens: live {live / 1e9:.1f} GB + promotion "
         f"{need / 1e9:.1f} GB over the {line / 1e9:.1f} GB line"
+        + (f" (allocator cache released: {released / 1e9:.1f} GB)" if released else "")
     )
     return False
 
