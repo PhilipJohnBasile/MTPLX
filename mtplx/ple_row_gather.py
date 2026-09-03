@@ -817,6 +817,51 @@ def prewarm_prefix(path, budget_bytes: int, *, chunk_bytes: int = PREWARM_CHUNK_
 _RESERVATION: dict = {"bytes": 0, "source": "unset"}
 
 
+def estimate_engine_growth_bytes(model_dir) -> tuple[int, str]:
+    """Bytes the engine may still take after the weights: its budget minus the weights on disk.
+
+    The pre-read fills the page cache, and the kernel evicts that cache as the
+    engine grows toward its budget on a long prompt.  A pre-read larger than
+    what survives that growth is wasted at best; at 206k on a 128 GB Mac it
+    left the kernel with no free pages (2026-09-03 crash receipt).  So the
+    reservation the pre-read subtracts is the engine's whole remaining growth,
+    not the KV estimate alone: budget (the allocator cap when one is set,
+    otherwise the machine's engine envelope) minus the weights the pack loads
+    (every safetensors file except the streamed n-gram table).
+
+    Returns ``(0, reason)`` when an input is unknown; the caller then keeps the
+    KV estimate.
+    """
+
+    from pathlib import Path
+
+    try:
+        from mtplx.memory_plan import (
+            NGRAM_TABLE_FILENAME,
+            detect_total_ram_bytes,
+            usable_engine_bytes,
+        )
+
+        total = detect_total_ram_bytes()
+        if not total:
+            return 0, "ram_unknown"
+        budget = int(usable_engine_bytes(int(total)))
+        cap = os.environ.get("MTPLX_MEMORY_LIMIT_BYTES", "").strip()
+        if cap.isdigit() and int(cap) > 0:
+            budget = int(cap)
+        weights = 0
+        for f in Path(model_dir).glob("*.safetensors"):
+            if f.name == NGRAM_TABLE_FILENAME:
+                continue
+            weights += f.stat().st_size
+        if weights <= 0:
+            return 0, "weights_unknown"
+        growth = max(0, budget - weights)
+        return growth, f"engine_growth(budget={budget // 1024**3}GiB,weights={weights // 1024**3}GiB)"
+    except Exception as error:
+        return 0, f"unavailable: {error!r}"
+
+
 def set_prewarm_reservation(reserved_bytes: int, source: str) -> None:
     _RESERVATION["bytes"] = max(0, int(reserved_bytes))
     _RESERVATION["source"] = str(source)

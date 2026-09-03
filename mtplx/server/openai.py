@@ -1775,6 +1775,7 @@ def _publish_ngram_prewarm_reservation(args: Any) -> dict[str, Any]:
 
     try:
         from mtplx.ple_row_gather import (
+            estimate_engine_growth_bytes,
             estimate_kv_reservation_bytes,
             set_prewarm_reservation,
         )
@@ -1787,6 +1788,14 @@ def _publish_ngram_prewarm_reservation(args: Any) -> dict[str, Any]:
         reserved, source = estimate_kv_reservation_bytes(
             getattr(args, "model", None), tokens
         )
+        # The KV estimate undercounts what the engine takes on a long prompt
+        # (bank, indexer promotion, prefill scratch): reserve its whole growth
+        # to the budget when that is larger (2026-09-03 crash receipt).
+        growth, growth_source = estimate_engine_growth_bytes(
+            getattr(args, "model", None)
+        )
+        if int(growth) > int(reserved):
+            reserved, source = int(growth), growth_source
         set_prewarm_reservation(reserved, source)
         return {"bytes": int(reserved), "source": source, "tokens": tokens}
     except Exception as error:  # a startup knob must not break startup
