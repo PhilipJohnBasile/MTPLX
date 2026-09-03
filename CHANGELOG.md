@@ -4,10 +4,25 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [2.11.0] - 2026-09-02
+## [2.11.1] - 2026-09-03
+
+MTPLX 2.11. The artifact number is 2.11.1 because 2.11.0 was consumed by a
+mis-stamped upload to PyPI on 2026-09-01 that was retracted; it contained
+nothing beyond 2.10.2.
 
 ### Added
 
+- **Light appearance for the app (#428).** A curated cream palette
+  (cream ground, warm ink type, graphite chrome, matching code colors),
+  not an inversion; every pair is gated on WCAG AA and the dark palette
+  is byte-identical to 2.10. Settings > Behavior > Appearance: System,
+  Dark, Light. The default stays Dark.
+- **The app in twelve languages.** Onboarding opens with a searchable
+  language step with flags (English, Simplified Chinese, Spanish, Hindi,
+  Arabic, Brazilian Portuguese, French, Russian, Japanese, German, Korean,
+  Indonesian); the same picker in Settings switches the app live, and
+  Arabic lays the app out right-to-left. Every string goes through the
+  localization layer with English as the fallback.
 - **`--allow-swap` serves past the machine fit again (#427).** 2.10
   capped the default window at the memory plan's fit and refused prompts
   past it with a 507; operators who ran 2.9.x past the fit on purpose
