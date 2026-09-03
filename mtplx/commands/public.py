@@ -15366,12 +15366,22 @@ def cmd_config_public(args: Any) -> int:
             "config set key must be one of: " + ", ".join(CONFIG_VALUE_KEYS)
         )
     value = str(args.value).strip()
+    # Every conversion below rejects a bad value with one plain line. A value
+    # that gets past here is written verbatim and re-read on every later
+    # command, so a traceback here would also mean a config file the rest of
+    # the CLI has to degrade around.
     if key == "profile":
-        value = resolve_profile_name(value)
+        try:
+            value = resolve_profile_name(value)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     if key == "thermal_control" and value not in {"auto", "none"}:
         raise SystemExit("thermal_control must be auto or none")
     if key == "paged_kv_quantization":
-        value = normalize_paged_kv_quantization(value)
+        try:
+            value = normalize_paged_kv_quantization(value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
     if key == "scheduler_mode":
         # Single source of truth: the SchedulerMode enum (also feeds the CLI
         # choices), so `mtplx config set` can never trail a new server mode.
@@ -15414,11 +15424,17 @@ def cmd_config_public(args: Any) -> int:
         "context_window",
         "top_k",
     }:
-        value = int(value)
+        try:
+            value = int(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a whole number, got {value!r}") from None
         if value < 1:
             raise SystemExit(f"{key} must be >= 1")
     if key in {"batch_wait_ms", "temperature", "top_p"}:
-        value = float(value)
+        try:
+            value = float(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a number, got {value!r}") from None
     if key in {"experimental_mtp_cohorts", "ram_session_block_prefix_restore"}:
         value = _parse_config_bool(value, key=key)
     values[key] = value
