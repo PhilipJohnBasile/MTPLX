@@ -27,6 +27,16 @@ from typing import Any, Callable, Iterator, Mapping
 DAEMON_PROBE_PORTS: tuple[int, ...] = (8000, 18083, 18084, 18085)
 ATTACH_PROBE_ENV = "MTPLX_START_ATTACH_PROBE"
 _PROBE_DISABLED_VALUES = frozenset({"0", "off", "no", "false", "disabled"})
+# Attached chat runs against a daemon on this machine, so the TCP connect
+# either succeeds at once or the daemon is gone.
+ATTACH_CHAT_CONNECT_TIMEOUT_S = 5.0
+# A healthy streamed request never goes quiet for long: the server writes an
+# SSE keep-alive comment every 5 s before the first token (10 s progress
+# chunks fill any later gap), and its own stall watchdog fails a frozen model
+# owner with an error frame well inside 300 s. Only a daemon that is wedged
+# (or a dead connection) puts nothing on the wire for this long, so waiting
+# it out never trips on a slow prefill of a large prompt.
+ATTACH_CHAT_INACTIVITY_TIMEOUT_S = 120.0
 
 
 @dataclass(frozen=True)
@@ -437,11 +447,13 @@ class AttachChatSession:
         daemon: RunningDaemon,
         *,
         api_key: str | None = None,
-        timeout: float | None = None,
+        connect_timeout: float = ATTACH_CHAT_CONNECT_TIMEOUT_S,
+        inactivity_timeout: float = ATTACH_CHAT_INACTIVITY_TIMEOUT_S,
     ) -> None:
         self.daemon = daemon
         self.api_key = api_key
-        self.timeout = timeout
+        self.connect_timeout = float(connect_timeout)
+        self.inactivity_timeout = float(inactivity_timeout)
         self.history: list[dict[str, str]] = []
         self.last_stats: Mapping[str, Any] | None = None
 
@@ -469,7 +481,7 @@ class AttachChatSession:
         connection = http.client.HTTPConnection(
             self.daemon.host,
             self.daemon.port,
-            timeout=self.timeout,
+            timeout=self.connect_timeout,
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -477,6 +489,17 @@ class AttachChatSession:
         stats: Mapping[str, Any] | None = None
         cancelled = False
         try:
+            try:
+                connection.connect()
+            except TimeoutError:
+                raise AttachChatError(
+                    f"could not connect to the server within {self.connect_timeout:.0f}s"
+                ) from None
+            # The short timeout above governed the TCP connect only. From here
+            # on the socket waits at most the inactivity deadline for the
+            # response headers and then between SSE frames: a wedged daemon
+            # used to leave this loop blocked forever with a blank answer.
+            connection.sock.settimeout(self.inactivity_timeout)
             connection.request(
                 "POST", "/v1/chat/completions", body=body, headers=self._headers()
             )
@@ -514,6 +537,11 @@ class AttachChatSession:
                 # Closing the connection triggers the server's
                 # disconnect-cancel path, so generation stops promptly.
                 cancelled = True
+        except TimeoutError:
+            raise AttachChatError(
+                "server stopped responding "
+                f"(nothing received for {self.inactivity_timeout:.0f}s)"
+            ) from None
         finally:
             try:
                 connection.close()
