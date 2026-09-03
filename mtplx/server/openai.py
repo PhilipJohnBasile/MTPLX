@@ -3119,6 +3119,33 @@ class ServerState:
         # surface as user requests.
         self.dashboard = DashboardState()
         self.ar_batch_service = _BatchedARGenerationService(self)
+        self.ar_batch_unavailable_reason: str | None = None
+        if scheduler_config.mode in {
+            SchedulerMode.AR_BATCH,
+            SchedulerMode.MTP_COHORT_EXPERIMENTAL,
+        }:
+            # MTPLX_AR_BATCH_CACHE_PROBE=0 is the operator belt: skip the
+            # probe and let the lane try to batch anyway.
+            if os.environ.get("MTPLX_AR_BATCH_CACHE_PROBE", "1").strip().lower() in {
+                "0",
+                "off",
+                "false",
+                "no",
+            }:
+                _startup_line(
+                    "[5/6] Scheduler: ar_batch cache-family probe skipped "
+                    "(MTPLX_AR_BATCH_CACHE_PROBE=0)"
+                )
+            else:
+                self.ar_batch_unavailable_reason = _ar_batch_unavailable_reason(
+                    self.runtime
+                )
+            if self.ar_batch_unavailable_reason:
+                _startup_line(
+                    f"[5/6] Scheduler: --scheduler-mode {scheduler_config.mode.value} "
+                    f"requested but {self.ar_batch_unavailable_reason}; "
+                    "concurrent requests serve one at a time on the solo lane"
+                )
         self.mtp_batch_service = (
             MTPBatchGenerationService(
                 self,
@@ -16592,6 +16619,9 @@ def _mtplx_scheduler_state(state: "ServerState") -> dict[str, Any]:
             )
         },
         "path": "mtp_batch" if config.mode == SchedulerMode.MTP_BATCH else "path_a",
+        "ar_batch_unavailable_reason": getattr(
+            state, "ar_batch_unavailable_reason", None
+        ),
         "path_a": {
             "solo_mtp_protected": True,
             "concurrent_strategy": "cooperative_ar_batch",
@@ -21051,6 +21081,46 @@ def _ar_batch_mtp_fallback_reason(state: ServerState) -> str | None:
         time.sleep(0.001)
 
 
+def _ar_batch_unavailable_reason(runtime: Any) -> str | None:
+    """Why the batched AR lane cannot serve this model family, or None.
+
+    mlx-lm's BatchGenerator merges the per-request caches of every prompt
+    it batches (PromptProcessingBatch -> _merge_caches), which requires
+    each cache entry to expose merge(). The Flash-Next family's QSACache
+    does not, so two concurrent requests under --scheduler-mode ar_batch
+    died with an unhandled ValueError while sequential requests were fine
+    (#420, reproduced 2026-09-02 on the M5 Max: 3 sequential OK, 2
+    concurrent 500). The app passes ar_batch for every family, so the lane
+    has to refuse itself for a family it cannot batch and let the solo
+    lane serve the requests one at a time.
+    """
+
+    # Probe exactly what the batch generator builds for a fresh request:
+    # mlx-lm's make_prompt_cache on the runtime's model object. This is not
+    # runtime.make_cache(): that one asks the inner language model and, for
+    # the 27B family, returns the paged KV classes the solo lane uses, which
+    # have no merge() either while the batch lane happily batches the 27B
+    # (verified 2026-09-02: the outer model has no make_cache, so mlx-lm
+    # builds stock KVCache entries for it).
+    try:
+        from mlx_lm.models.cache import make_prompt_cache
+
+        cache = make_prompt_cache(runtime.model)
+    except Exception as exc:
+        return f"cache probe failed: {exc!r}"
+    if cache is None:
+        return None
+    unmergeable = sorted(
+        {type(entry).__name__ for entry in cache if not hasattr(entry, "merge")}
+    )
+    if not unmergeable:
+        return None
+    return (
+        "this model's cache family cannot batch: "
+        f"{', '.join(unmergeable)} has no merge()"
+    )
+
+
 def _use_live_ar_batch(
     state: ServerState,
     *,
@@ -21061,6 +21131,10 @@ def _use_live_ar_batch(
         SchedulerMode.AR_BATCH,
         SchedulerMode.MTP_COHORT_EXPERIMENTAL,
     }:
+        return False, None
+    if getattr(state, "ar_batch_unavailable_reason", None):
+        # #420: the lane refused itself at startup for this cache family;
+        # every request rides the solo lane, serialized by the scheduler.
         return False, None
     if effective_mode == "ar":
         return True, "generation_mode_ar"

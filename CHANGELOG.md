@@ -34,6 +34,15 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Flash-Next no longer 500s under concurrency in the `ar_batch` lane (#420).**
+  mlx-lm's batch generator merges every batched prompt's caches and the
+  family's QSA cache has no merge, so two concurrent requests under
+  `--scheduler-mode ar_batch` (the app's lane) raised an unhandled
+  `ValueError` while sequential requests were fine. The lane now probes
+  the model's cache family at startup, says so in the banner and in
+  `/health` (`scheduler.ar_batch_unavailable_reason`), and serves
+  concurrent requests one at a time on the solo lane instead. The 27B
+  keeps batching. `MTPLX_AR_BATCH_CACHE_PROBE=0` skips the probe.
 - **Anthropic `/v1/messages` image blocks reach the vision tower (#441).**
   `image` blocks (base64 or URL, including ones nested inside a
   `tool_result`) become image parts instead of base64 prose, so Claude
