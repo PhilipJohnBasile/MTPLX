@@ -392,6 +392,19 @@ SSE_KEEPALIVE_MIN_INTERVAL_S = 1.0
 STREAM_STALL_DEADLINE_S = float(
     os.environ.get("MTPLX_STREAM_STALL_DEADLINE_S") or 300.0
 )
+# Absolute bound on the post-generation commit wait of a streamed response
+# (issue #425, 66duke66). Once decode has finished the client already holds
+# every token; only the terminal frame and [DONE] are missing. The session
+# postcommit that the terminal frame waits for runs as foreground scheduler
+# work, so behind a queued foreground prefill from ANOTHER request the wait is
+# long but alive: the owner heartbeat keeps ticking on that other request and
+# the stall probe above can never fire. Past this many seconds the stream
+# emits its terminal frame with the snapshot marked deferred and the
+# postcommit keeps running in the background; the next same-session request
+# waits for it through the pending-postcommit path as usual. 0 disables.
+STREAM_COMMIT_WAIT_MAX_S = float(
+    os.environ.get("MTPLX_STREAM_COMMIT_WAIT_MAX_S") or 30.0
+)
 # Runaway-hidden-generation backstop. Native-tool agent workloads stream
 # multi-thousand-token arguments (whole files) as legitimate hidden text, so
 # the ceilings are env-tunable; the defaults keep the original chat-UX guard.
@@ -17844,6 +17857,34 @@ class _OwnerStallProbe:
         return None
 
 
+def _log_stream_commit_wait_deferred(
+    state: Any,
+    *,
+    response_id: str | None,
+    session_id: str | None,
+    waited_s: float,
+    streamed_tokens: int,
+) -> None:
+    """One structured line when a stream closes ahead of its postcommit (#425)."""
+
+    try:
+        print(
+            json.dumps(
+                {
+                    "event": "mtplx_stream_commit_wait_deferred",
+                    "response_id": response_id,
+                    "session_id": session_id,
+                    "waited_s": round(float(waited_s), 3),
+                    "completion_tokens": int(streamed_tokens),
+                    "deadline_s": STREAM_COMMIT_WAIT_MAX_S,
+                }
+            ),
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 def _log_stream_stall_break(
     state: Any,
     *,
@@ -32756,6 +32797,7 @@ def create_app(state: ServerState) -> FastAPI:
                                 commit_wait_probe = _OwnerStallProbe(
                                     deadline_s=STREAM_STALL_DEADLINE_S
                                 )
+                                commit_wait_started_s = time.perf_counter()
                                 while True:
                                     try:
                                         commit_kind, commit_item = await queue.get(
@@ -32763,6 +32805,39 @@ def create_app(state: ServerState) -> FastAPI:
                                         )
                                     except Empty:
                                         now_s = time.perf_counter()
+                                        if (
+                                            STREAM_COMMIT_WAIT_MAX_S > 0
+                                            and now_s - commit_wait_started_s
+                                            >= STREAM_COMMIT_WAIT_MAX_S
+                                        ):
+                                            # #425: the owner is alive but busy
+                                            # with someone else's prefill and
+                                            # our postcommit is queued behind
+                                            # it. Close the stream now; the
+                                            # snapshot lands when the owner
+                                            # reaches it.
+                                            waited_s = now_s - commit_wait_started_s
+                                            _log_stream_commit_wait_deferred(
+                                                state,
+                                                response_id=response_id,
+                                                session_id=session_id,
+                                                waited_s=waited_s,
+                                                streamed_tokens=(
+                                                    streamed_progress_tokens
+                                                ),
+                                            )
+                                            commit_kind = "released"
+                                            commit_item = {
+                                                "generated": generated,
+                                                "postcommit": {
+                                                    "stored": False,
+                                                    "deferred": (
+                                                        "stream_commit_wait_deadline"
+                                                    ),
+                                                    "waited_s": round(waited_s, 3),
+                                                },
+                                            }
+                                            break
                                         frozen_for_s = commit_wait_probe.observe(
                                             now_s
                                         )
