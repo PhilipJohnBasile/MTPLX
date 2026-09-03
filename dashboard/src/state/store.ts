@@ -52,6 +52,10 @@ export type DashboardStore = {
   connection: ConnectionState;
   reconnectAttempts: number;
   lastSnapshotAtMs: number | null;
+  // The server answered 401: it runs with an API key and this browser has no
+  // valid session cookie. The page shows a sign-in state instead of
+  // reporting a lost connection.
+  authRequired: boolean;
 
   // ---- UI ----
   sessionFilter: string | null;
@@ -66,6 +70,7 @@ export type DashboardStore = {
   // snapshot, so the controls reflect the server's post-write values at once.
   mergeSettings: (patch: Partial<MutableSettings>) => void;
   setConnection: (state: ConnectionState) => void;
+  setAuthRequired: (required: boolean) => void;
   setSessionFilter: (sessionId: string | null) => void;
   setTheme: (theme: ThemeName) => void;
   cycleTheme: () => void;
@@ -124,6 +129,7 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   connection: "idle",
   reconnectAttempts: 0,
   lastSnapshotAtMs: null,
+  authRequired: false,
 
   sessionFilter: null,
   theme: readPersistedTheme(),
@@ -264,6 +270,8 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
       reconnectAttempts: state === "reconnecting" ? prev.reconnectAttempts + 1 : 0,
     }));
   },
+
+  setAuthRequired: (required) => set({ authRequired: required }),
 
   setSessionFilter: (sessionId) => set({ sessionFilter: sessionId }),
 
