@@ -31,10 +31,10 @@ struct LaunchPopover: View {
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Start MTPLX")
+            Text(tr("Start MTPLX"))
                 .font(.system(.caption, design: .rounded).weight(.semibold))
                 .foregroundStyle(.primary)
-            Text("Pick what you're serving.")
+            Text(tr("Pick what you're serving."))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

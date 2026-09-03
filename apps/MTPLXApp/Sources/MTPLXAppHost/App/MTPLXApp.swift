@@ -281,26 +281,26 @@ struct MTPLXApp: App {
             // `replacing` (not `after`): the system's default About
             // item would otherwise sit alongside ours (QA-124).
             CommandGroup(replacing: .appInfo) {
-                Button("About MTPLX…") { router.presentAbout() }
+                Button(tr("About MTPLX…")) { router.presentAbout() }
                 CheckForUpdatesCommand(updater: appUpdater)
             }
 
             CommandGroup(after: .appInfo) {
                 Divider()
 
-                Button("Start MTPLX") {
+                Button(tr("Start MTPLX")) {
                     Task { await backend.startDaemon() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Stop MTPLX") {
+                Button(tr("Stop MTPLX")) {
                     Task {
                         await stopCoordinator.stopAll(reason: "menu_stop_daemon")
                     }
                 }
                 .keyboardShortcut(".", modifiers: [.command])
 
-                Button("Restart MTPLX") {
+                Button(tr("Restart MTPLX")) {
                     Task {
                         await stopCoordinator.stopAll(reason: "menu_restart_daemon")
                         await backend.startDaemon()
@@ -310,7 +310,7 @@ struct MTPLXApp: App {
 
                 Divider()
 
-                Button("Toggle Performance Lock") {
+                Button(tr("Toggle Performance Lock")) {
                     Task {
                         var config = backend.configuration
                         config.performanceLock.toggle()
@@ -321,7 +321,7 @@ struct MTPLXApp: App {
                 .keyboardShortcut("l", modifiers: [.command, .option])
             }
 
-            CommandMenu("View") {
+            CommandMenu(tr("View")) {
                 ForEach(Array(AppTab.allCases.enumerated()), id: \.element.id) { index, tab in
                     Button(tab.title) {
                         router.select(tab)
@@ -329,12 +329,12 @@ struct MTPLXApp: App {
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command])
                 }
                 Divider()
-                Button("Next Tab") { router.nextTab() }
+                Button(tr("Next Tab")) { router.nextTab() }
                     .keyboardShortcut("]", modifiers: [.command])
-                Button("Previous Tab") { router.previousTab() }
+                Button(tr("Previous Tab")) { router.previousTab() }
                     .keyboardShortcut("[", modifiers: [.command])
                 Divider()
-                Button(router.benchmarkOverlayPresented ? "Close Benchmark" : "Open Benchmark") {
+                Button(router.benchmarkOverlayPresented ? tr("Close Benchmark") : tr("Open Benchmark")) {
                     if router.benchmarkOverlayPresented {
                         router.closeBenchmark()
                     } else {
@@ -343,9 +343,9 @@ struct MTPLXApp: App {
                 }
                 .keyboardShortcut("b", modifiers: [.command])
                 Divider()
-                Button("Open Logs…") { router.presentLogs() }
+                Button(tr("Open Logs…")) { router.presentLogs() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
-                Button("Refresh") {
+                Button(tr("Refresh")) {
                     Task {
                         try? await backend.refreshStaticState()
                         try? await backend.refreshSnapshot()
@@ -354,13 +354,13 @@ struct MTPLXApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .option])
             }
 
-            CommandMenu("Chat") {
-                Button("New Chat") {
+            CommandMenu(tr("Chat")) {
+                Button(tr("New Chat")) {
                     if router.primaryMode != .chat { router.showChat() }
                     _ = chatViewModel.createNewConversation()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
-                Button(router.chatSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar") {
+                Button(router.chatSidebarCollapsed ? tr("Show Sidebar") : tr("Hide Sidebar")) {
                     withAnimation(.smooth(duration: 0.22)) {
                         router.chatSidebarCollapsed.toggle()
                     }
@@ -368,13 +368,13 @@ struct MTPLXApp: App {
                 .keyboardShortcut("/", modifiers: [.command])
                 .disabled(router.primaryMode != .chat)
                 Divider()
-                Button("Toggle Web Search") {
+                Button(tr("Toggle Web Search")) {
                     chatViewModel.webSearchEnabled.toggle()
                 }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(chatViewModel.current == nil)
                 Divider()
-                Button("Stop Generating") {
+                Button(tr("Stop Generating")) {
                     Task { await chatViewModel.cancel() }
                 }
                 .keyboardShortcut(.escape, modifiers: [])

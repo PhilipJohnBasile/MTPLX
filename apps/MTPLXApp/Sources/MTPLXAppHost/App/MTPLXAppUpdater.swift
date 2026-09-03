@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import MTPLXAppCore
 @preconcurrency import Sparkle
 
 /// Sparkle wiring with gentle scheduled-update reminders.
@@ -118,7 +119,7 @@ struct CheckForUpdatesCommand: View {
     @ObservedObject var updater: MTPLXAppUpdater
 
     var body: some View {
-        Button("Check for Updates...") {
+        Button(tr("Check for Updates...")) {
             updater.checkForUpdates()
         }
         .disabled(!updater.canCheckForUpdates)

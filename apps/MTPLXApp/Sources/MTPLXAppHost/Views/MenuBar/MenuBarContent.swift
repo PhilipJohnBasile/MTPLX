@@ -62,7 +62,7 @@ struct MenuBarContent: View {
             // so the menubar never opens on a misleading warm-up record.
             if backend.observedCompletionCount > 0,
                let max = backend.rolling?.stickyAllTimeMax, max > 0 {
-                Text("ALL-TIME MAX \(Format.tps(max)) TPS")
+                Text(tr("ALL-TIME MAX %@ TPS", Format.tps(max)))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.textHighlight.opacity(0.7))
@@ -77,7 +77,7 @@ struct MenuBarContent: View {
         VStack(spacing: 8) {
             primaryActionButton
             HStack {
-                Text("FAN")
+                Text(tr("FAN"))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.textHighlight.opacity(0.6))
@@ -85,7 +85,7 @@ struct MenuBarContent: View {
                 FanModeToggle()
             }
             HStack {
-                Text("PERF LOCK")
+                Text(tr("PERF LOCK"))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.textHighlight.opacity(0.6))
@@ -147,22 +147,22 @@ struct MenuBarContent: View {
     @ViewBuilder
     private var actionsSection: some View {
         VStack(spacing: 0) {
-            actionRow("Open MTPLX", symbol: "macwindow") {
+            actionRow(tr("Open MTPLX"), symbol: "macwindow") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             }
-            actionRow("Open Logs", symbol: "doc.text") {
+            actionRow(tr("Open Logs"), symbol: "doc.text") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
                 router.presentLogs()
             }
-            actionRow("About MTPLX…", symbol: "info.circle") {
+            actionRow(tr("About MTPLX…"), symbol: "info.circle") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
                 router.presentAbout()
             }
             Divider().overlay(Brand.separator).padding(.vertical, 4)
-            actionRow("Quit MTPLX", symbol: "power") {
+            actionRow(tr("Quit MTPLX"), symbol: "power") {
                 NSApp.terminate(nil)
             }
         }

@@ -197,7 +197,7 @@ struct GaugeView: View {
             pendingSpeedTask = nil
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(mode.isDim ? "Start MTPLX" : "MTPLX hero gauge")
+        .accessibilityLabel(mode.isDim ? tr("Start MTPLX") : tr("MTPLX hero gauge"))
         .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(mode.isDim && onPowerTap != nil ? .isButton : [])
     }
@@ -640,15 +640,15 @@ struct GaugeView: View {
     private var accessibilityValue: String {
         switch mode {
         case let .tps(decode, _):
-            return "\(Format.tps(decode)) TPS decoding"
+            return tr("%@ TPS decoding", Format.tps(decode))
         case let .prefill(progress, livePrefillTPS, eta, _):
-            var parts = ["Prefilling \(Int((progress * 100).rounded())) percent"]
-            if let live = livePrefillTPS { parts.append("\(Format.tps(live)) TPS") }
-            if let eta { parts.append("ETA \(Format.duration(eta))") }
+            var parts = [tr("Prefilling %lld percent", Int((progress * 100).rounded()))]
+            if let live = livePrefillTPS { parts.append(tr("%@ TPS", Format.tps(live))) }
+            if let eta { parts.append(tr("ETA %@", Format.duration(eta))) }
             return parts.joined(separator: ", ")
-        case .dim:                  return "MTPLX stopped, tap to start"
+        case .dim:                  return tr("MTPLX stopped, tap to start")
         case .loading(let phase):   return phase.label.lowercased()
-        case .degraded:             return "MTPLX degraded"
+        case .degraded:             return tr("MTPLX degraded")
         }
     }
 }
