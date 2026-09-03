@@ -353,7 +353,7 @@ struct ForgePrimaryButton: View {
                     .fill(
                         isEnabled
                             ? AnyShapeStyle(Brand.typeBody)
-                            : AnyShapeStyle(Color.white.opacity(0.06))
+                            : AnyShapeStyle(Brand.wash.opacity(0.06))
                     )
             )
             .overlay(

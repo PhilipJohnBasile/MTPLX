@@ -41,7 +41,7 @@ struct UpdateAvailableToast: View {
             Button(action: onInstall) {
                 Text("Install Now")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(Brand.invertedType)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background {
@@ -66,9 +66,9 @@ struct UpdateAvailableToast: View {
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: Brand.hairline)
+                        .strokeBorder(Brand.wash.opacity(0.12), lineWidth: Brand.hairline)
                 }
-                .shadow(color: .black.opacity(0.55), radius: 20, y: 8)
+                .shadow(color: Brand.shade.opacity(0.55), radius: 20, y: 8)
         }
         .frame(maxWidth: 440)
     }

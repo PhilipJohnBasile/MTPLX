@@ -163,7 +163,7 @@ struct ForgeDiscoverView: View {
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.03))
+                .fill(Brand.wash.opacity(0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

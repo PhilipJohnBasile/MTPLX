@@ -105,7 +105,7 @@ struct ChatComposerView: View {
                 .frame(width: 32, height: 32)
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(0.04))
+                        .fill(Brand.wash.opacity(0.04))
                         .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                 )
         }
@@ -134,7 +134,7 @@ struct ChatComposerView: View {
                     .fill(
                         isOn
                             ? Brand.accentChrome.opacity(0.12)
-                            : Color.white.opacity(0.04)
+                            : Brand.wash.opacity(0.04)
                     )
                     .overlay(
                         Capsule(style: .continuous)
@@ -165,7 +165,7 @@ struct ChatComposerView: View {
                     .opacity(canSend || viewModel.isStreaming ? 1.0 : 0.4)
                 Image(systemName: viewModel.isStreaming ? "stop.fill" : "arrow.up")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Brand.onAccent)
                     .symbolRenderingMode(.monochrome)
                     .contentTransition(.symbolEffect(.replace))
             }

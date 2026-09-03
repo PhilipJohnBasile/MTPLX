@@ -499,8 +499,8 @@ private struct AssistantTableView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .background(
                     rowIndex == 0 && hasHeader
-                        ? Color.white.opacity(0.05)
-                        : (rowIndex % 2 == 0 ? Color.clear : Color.white.opacity(0.02))
+                        ? Brand.wash.opacity(0.05)
+                        : (rowIndex % 2 == 0 ? Color.clear : Brand.wash.opacity(0.02))
                 )
                 if rowIndex == 0 && hasHeader {
                     Divider()
@@ -1142,7 +1142,7 @@ private struct StreamingOpenCodeCardView: View, Equatable {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 5)
-            .background(Color.white.opacity(0.035))
+            .background(Brand.wash.opacity(0.035))
 
             StreamingCodeTextViewport(
                 renderModel: renderModel,
@@ -1615,7 +1615,7 @@ extension Theme {
                 FontFamilyVariant(.monospaced)
                 FontSize(13)
                 ForegroundColor(Brand.typeHi)
-                BackgroundColor(Color.white.opacity(0.06))
+                BackgroundColor(Brand.wash.opacity(0.06))
             }
             .link {
                 ForegroundColor(Brand.accentChrome)
@@ -1725,7 +1725,7 @@ private struct AssistantCodeBlockView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 5)
-            .background(Color.white.opacity(0.035))
+            .background(Brand.wash.opacity(0.035))
 
             CodeTextViewport(
                 code: code,

@@ -126,7 +126,7 @@ private struct UIPerfHUDView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.black.opacity(0.72))
+                .fill(Brand.hudFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

@@ -263,7 +263,7 @@ private struct OrphanRunRow: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.025))
+                .fill(Brand.wash.opacity(0.025))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

@@ -58,7 +58,7 @@ struct ForgeTabHeader: View {
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.white.opacity(0.03))
+                .fill(Brand.wash.opacity(0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

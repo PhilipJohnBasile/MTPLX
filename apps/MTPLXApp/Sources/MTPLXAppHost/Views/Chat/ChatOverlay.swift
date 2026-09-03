@@ -95,7 +95,7 @@ struct ChatCloseButton: View {
             .padding(.vertical, 5)
             .background {
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                    .fill(Brand.wash.opacity(0.04))
                     .overlay {
                         Capsule(style: .continuous)
                             .strokeBorder(

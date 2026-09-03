@@ -69,7 +69,7 @@ struct WarmingScreen: View {
 
                 VStack(spacing: 12) {
                     Rectangle()
-                        .fill(Color.white.opacity(0.10))
+                        .fill(Brand.wash.opacity(0.10))
                         .frame(width: 320, height: 1)
                     Text(progressLabel)
                         .font(BrandFont.subtitle())

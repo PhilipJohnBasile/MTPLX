@@ -645,7 +645,7 @@ struct HermesPanel: View {
             } label: {
                 Image(systemName: hermes.isStreaming ? "stop.fill" : "arrow.up")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Brand.onAccent)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(canSend ? Brand.accentChrome : Brand.typeTertiary.opacity(0.45)))
             }

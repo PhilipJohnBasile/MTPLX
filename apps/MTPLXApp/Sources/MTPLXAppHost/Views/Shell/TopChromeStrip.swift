@@ -152,7 +152,7 @@ struct RefreshButton: View {
                 .background(
                     Circle()
                         .stroke(Brand.separatorStrong, lineWidth: 1.0)
-                        .background(Circle().fill(Color.white.opacity(0.04)))
+                        .background(Circle().fill(Brand.wash.opacity(0.04)))
                 )
         }
         .buttonStyle(.plain)
