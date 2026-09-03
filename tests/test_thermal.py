@@ -142,6 +142,31 @@ class _FastTime:
         return None
 
 
+def test_wait_for_auto_fans_polls_until_rows_report_auto(monkeypatch):
+    """The shared #201 verification (used by set_thermal_profile and the fan
+    sidecar) keeps polling through ramped and unreadable summaries and returns
+    True the moment every fan row is back on auto."""
+    summaries = iter([_RAMPED_SUMMARY, {"ok": False, "fans": []}, _AUTO_SUMMARY])
+    polled = {"n": 0}
+
+    def fake_summary():
+        polled["n"] += 1
+        return next(summaries)
+
+    monkeypatch.setattr(thermal, "fan_summary", fake_summary)
+    monkeypatch.setattr(thermal, "time", _FastTime())
+
+    assert thermal.wait_for_auto_fans(timeout_s=10.0) is True
+    assert polled["n"] == 3
+
+
+def test_wait_for_auto_fans_gives_up_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(thermal, "fan_summary", lambda: _RAMPED_SUMMARY)
+    monkeypatch.setattr(thermal, "time", _FastTime())
+
+    assert thermal.wait_for_auto_fans(timeout_s=3.0) is False
+
+
 def test_set_thermal_profile_silent_falls_back_to_cli_without_daemon(monkeypatch):
     """With no daemon socket reachable (the autouse default), the reset uses the
     `auto` CLI candidates."""

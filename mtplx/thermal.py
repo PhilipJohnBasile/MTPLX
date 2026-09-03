@@ -505,6 +505,37 @@ def _summary_indicates_auto(summary: dict[str, Any]) -> bool:
     return True
 
 
+# How long a restore may take to show up in the fan rows before the reply
+# that promised it is disbelieved (#201).
+FAN_RESTORE_VERIFY_TIMEOUT_S = 3.0
+
+
+def wait_for_auto_fans(
+    *,
+    timeout_s: float = FAN_RESTORE_VERIFY_TIMEOUT_S,
+    poll_interval_s: float = 0.5,
+) -> bool:
+    """Poll the fan rows until every one reports the automatic curve.
+
+    A daemon "ok" reply or a zero exit from ``thermalforge auto`` is a
+    promise, not proof: a wedged or stale daemon can acknowledge without
+    acting (#201). Only the fan rows say whether the restore happened. Returns
+    False once ``timeout_s`` passes without a verified reading. Shared by the
+    in-process restore path and the detached fan-restore sidecar.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        try:
+            if _summary_indicates_auto(fan_summary()):
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.05, float(poll_interval_s)))
+
+
 def set_thermal_profile_verified(
     profile: str,
     *,
@@ -2203,18 +2234,7 @@ def set_thermal_profile(profile: str, *, dry_run: bool = False) -> dict[str, Any
         if reset is not None:
             attempts.append(reset)
             if reset["ok"]:
-                verify_deadline = time.monotonic() + 3.0
-                verified = False
-                while True:
-                    try:
-                        if _summary_indicates_auto(fan_summary()):
-                            verified = True
-                            break
-                    except Exception:
-                        pass
-                    if time.monotonic() >= verify_deadline:
-                        break
-                    time.sleep(0.5)
+                verified = wait_for_auto_fans()
                 reset["verified"] = verified
                 if verified:
                     return {
