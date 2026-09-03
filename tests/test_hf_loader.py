@@ -10,11 +10,14 @@ from pathlib import Path
 import pytest
 
 from mtplx.hf_loader import (
+    RepoFile,
     cached_model_is_complete,
     cached_model_path,
+    directory_size_bytes,
     hf_token_for_download,
     hf_cache_report,
     list_cached_models,
+    manifest_bytes_on_disk,
     pull_model,
     remove_cached_model,
     repo_id_from_model_ref,
@@ -492,6 +495,74 @@ def test_pull_model_structured_stream_reports_written_bytes(
     progress_events = [event for event in events if event["event"] == "progress"]
     assert any(event.get("delta_bytes", 0) > 0 for event in progress_events)
     assert all(event.get("message") == "Downloading model files" for event in progress_events)
+
+
+def test_manifest_bytes_on_disk_counts_only_manifest_files(tmp_path: Path):
+    destination = tmp_path / "mtplx--example"
+    (destination / "sub").mkdir(parents=True)
+    (destination / "config.json").write_bytes(b"{}\n")
+    (destination / "sub" / "shard.safetensors.incomplete").write_bytes(b"12345")
+    (destination / "stale.safetensors").write_bytes(b"0123456789")
+    (destination / "model-00001-of-00002.safetensors").write_bytes(b"x" * 200)
+    leftovers = destination / ".cache" / "huggingface" / "download"
+    leftovers.mkdir(parents=True)
+    (leftovers / "model.safetensors.incomplete").write_bytes(b"y" * 300)
+    manifest = [
+        RepoFile(path="config.json", size_bytes=3),
+        RepoFile(path="sub/shard.safetensors", size_bytes=3),
+        RepoFile(path="stale.safetensors", size_bytes=4),
+        RepoFile(path="missing.json", size_bytes=9),
+    ]
+
+    assert directory_size_bytes(destination) > 500
+    # landed and matching (3) + partial capped at its expected size (3);
+    # the size-mismatched stale copy, the missing file, the shard from a
+    # superseded revision, and the hub staging leftover count nothing.
+    assert manifest_bytes_on_disk(destination, manifest) == 6
+
+
+def test_pull_model_progress_never_exceeds_repo_size_with_stale_files(
+    tmp_path: Path, monkeypatch
+):
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / "model-00001-of-00003.safetensors").write_bytes(b"s" * 200)
+    leftovers = cached / ".cache" / "huggingface" / "download"
+    leftovers.mkdir(parents=True)
+    (leftovers / "model-00001-of-00001.safetensors.incomplete").write_bytes(b"l" * 300)
+    index = b'{"weight_map": {"lm_head.weight": "model-00001-of-00001.safetensors"}}\n'
+    _install_fake_hub(
+        monkeypatch,
+        {
+            "config.json": b"{}\n",
+            "model.safetensors.index.json": index,
+            "model-00001-of-00001.safetensors": [
+                (b"w" * 32, 0.02),
+                (b"w" * 32, 0.02),
+            ],
+        },
+    )
+    events: list[dict] = []
+
+    result = pull_model(
+        "mtplx/example",
+        cache_dir=tmp_path,
+        progress_callback=events.append,
+        progress_interval_s=0.01,
+    )
+
+    total = 3 + len(index) + 64
+    assert result["started_size_bytes"] == 0
+    assert result["resumed_existing"] is False
+    assert events[0]["event"] == "start"
+    assert events[0]["size_bytes"] == 0
+    assert directory_size_bytes(cached) > total
+    sized = [event for event in events if event.get("size_bytes") is not None and event.get("total_bytes")]
+    assert sized
+    assert all(event["size_bytes"] <= event["total_bytes"] for event in sized)
+    assert events[-1]["event"] == "complete"
+    assert events[-1]["size_bytes"] == total
+    assert events[-1]["total_bytes"] == total
 
 
 def test_hf_token_for_download_uses_explicit_env_only(monkeypatch):

@@ -134,8 +134,9 @@ struct DownloadStep: View {
         let bytes = progress?.bytesOnDisk ?? 0
         let total = progress?.totalBytes
         let percent = progress?.fraction ?? 0
+        let shown = total.map { min(bytes, $0) } ?? bytes
         return HStack(spacing: 12) {
-            Text(formatBytesShort(bytes))
+            Text(formatBytesShort(shown))
                 .font(.system(size: 13, weight: .semibold, design: .monospaced))
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()

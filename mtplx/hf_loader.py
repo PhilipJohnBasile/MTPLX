@@ -12,7 +12,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from mtplx.artifacts import _hf_repo_id_from_ref
 from mtplx.models.laguna_config import (
@@ -546,6 +546,60 @@ def directory_size_bytes(path: Path) -> int:
     return total
 
 
+def manifest_bytes_on_disk(destination: Path, repo_files: Iterable[RepoFile]) -> int:
+    """Bytes already landed for the files this download ships.
+
+    Download progress used to be the byte count of the whole destination
+    folder, so anything the folder held beyond the current manifest (shards
+    from a superseded revision, staging leftovers from an interrupted hub
+    transfer) counted as downloaded: the app showed more bytes than the repo
+    has, at 100 percent, while still downloading. Only manifest files count
+    here. A landed file counts when its size matches the Hub's (a mismatch is
+    a stale copy the download discards and refetches), an in-flight
+    ``*.incomplete`` partial counts up to its expected size, nothing else.
+    """
+
+    total = 0
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        expected = (
+            repo_file.size_bytes
+            if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes >= 0
+            else None
+        )
+        try:
+            if target.is_file():
+                size = target.stat().st_size
+                if expected is not None and size != expected:
+                    size = 0
+            else:
+                partial = target.with_name(target.name + ".incomplete")
+                size = partial.stat().st_size if partial.is_file() else 0
+                if expected is not None:
+                    size = min(size, expected)
+        except OSError:
+            continue
+        total += size
+    return total
+
+
+def _repo_files_from_snapshot(
+    remote_files: dict[str, dict[str, Any]] | None,
+) -> list[RepoFile]:
+    if not remote_files:
+        return []
+    return [
+        RepoFile(
+            path=name,
+            size_bytes=entry.get("size") if isinstance(entry.get("size"), int) else None,
+        )
+        for name, entry in remote_files.items()
+    ]
+
+
 def _emit_download_progress(callback: DownloadProgressCallback | None, payload: dict[str, Any]) -> None:
     if callback is None:
         return
@@ -632,11 +686,13 @@ def _emit_current_download_size(
     last_emit_at: float,
     last_emit_size: int,
     file_path: str | None = None,
+    measure: Callable[[], int] | None = None,
 ) -> tuple[float, int]:
     now = time.monotonic()
-    current_size = directory_size_bytes(destination)
+    current_size = measure() if measure is not None else directory_size_bytes(destination)
     interval = max(0.001, now - last_emit_at)
     delta = current_size - last_emit_size
+    reported_size = min(current_size, total_bytes) if total_bytes else current_size
     _emit_download_progress(
         callback,
         {
@@ -644,7 +700,7 @@ def _emit_current_download_size(
             "repo_id": repo_id,
             "path": str(destination),
             "file": file_path,
-            "size_bytes": current_size,
+            "size_bytes": reported_size,
             "total_bytes": total_bytes,
             "delta_bytes": delta,
             "rate_bps": float(max(0, delta)) / interval,
@@ -698,6 +754,7 @@ def _download_repo_file(
     progress_interval_s: float,
     last_emit_at: float,
     last_emit_size: int,
+    measure: Callable[[], int] | None = None,
 ) -> tuple[float, int]:
     target = _safe_destination_for_repo_file(destination, repo_file)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -741,6 +798,7 @@ def _download_repo_file(
                 last_emit_at=last_emit_at,
                 last_emit_size=last_emit_size,
                 file_path=repo_file.path,
+                measure=measure,
             )
         hf_raise_for_status(response)
         mode = "ab" if existing > 0 else "wb"
@@ -760,6 +818,7 @@ def _download_repo_file(
                         last_emit_at=last_emit_at,
                         last_emit_size=last_emit_size,
                         file_path=repo_file.path,
+                        measure=measure,
                     )
     if expected_size is not None and partial.stat().st_size != expected_size:
         raise RuntimeError(
@@ -776,6 +835,7 @@ def _download_repo_file(
         last_emit_at=last_emit_at,
         last_emit_size=last_emit_size,
         file_path=repo_file.path,
+        measure=measure,
     )
 
 
@@ -814,9 +874,13 @@ def _download_snapshot_with_structured_progress(
         if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes > 0
     ) or None
     session = get_session()
+
+    def measure() -> int:
+        return manifest_bytes_on_disk(destination, repo_files)
+
     started_at = time.monotonic()
     last_emit_at = started_at
-    last_emit_size = directory_size_bytes(destination)
+    last_emit_size = measure()
     for repo_file in repo_files:
         try:
             last_emit_at, last_emit_size = _download_repo_file(
@@ -834,6 +898,7 @@ def _download_snapshot_with_structured_progress(
                 progress_interval_s=max(0.1, progress_interval_s),
                 last_emit_at=last_emit_at,
                 last_emit_size=last_emit_size,
+                measure=measure,
             )
         except Exception as exc:
             raise RuntimeError(_classify_pull_error(exc, repo_id)) from exc
@@ -1003,10 +1068,15 @@ def pull_model(
         )
     else:
         reused_existing = False
-        resumed_existing = destination.exists() and started_size > 0
         # Pin the whole download to one resolved commit so every file comes
         # from the same snapshot even if the repo is pushed to mid-download.
         _resolve_remote_snapshot()
+        manifest = _repo_files_from_snapshot(remote_files)
+        if manifest:
+            # Only what this download ships counts toward the resume/start
+            # decision, the disk headroom, and the progress the app shows.
+            started_size = manifest_bytes_on_disk(destination, manifest)
+        resumed_existing = destination.exists() and started_size > 0
         download_revision = revision if revision is not None else remote_sha
         if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
             total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES
@@ -1028,6 +1098,13 @@ def pull_model(
             total_bytes=total_bytes,
             started_size_bytes=started_size,
         )
+
+        def _landed_bytes(path: Path) -> int:
+            if not manifest:
+                return directory_size_bytes(path)
+            landed = manifest_bytes_on_disk(path, manifest)
+            return min(landed, total_bytes) if total_bytes else landed
+
         destination.mkdir(parents=True, exist_ok=True)
         _emit_download_progress(
             progress_callback,
@@ -1076,7 +1153,7 @@ def pull_model(
                 "event": "verifying",
                 "repo_id": repo_id,
                 "path": str(resolved),
-                "size_bytes": directory_size_bytes(resolved),
+                "size_bytes": _landed_bytes(resolved),
                 "total_bytes": total_bytes,
             },
         )
@@ -1101,7 +1178,7 @@ def pull_model(
             resolved_sha=remote_sha,
             files=remote_files,
         )
-        final_size = directory_size_bytes(resolved)
+        final_size = _landed_bytes(resolved)
         _emit_download_progress(
             progress_callback,
             {

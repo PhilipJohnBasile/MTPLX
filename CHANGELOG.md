@@ -163,6 +163,13 @@ nothing beyond 2.10.2.
   Mac the gate read the freed prefill scratch held by the allocator as live
   and fell back to the plain verify; it now releases that cache when it
   stands between the request and the lane and re-reads.
+- **The download panel counts only the files the repo ships.** Progress
+  was the byte count of the whole model folder, so shards from a
+  superseded revision or staging leftovers from an interrupted Hugging
+  Face transfer counted as downloaded: the panel read 47.38 GB of
+  18.52 GB at 100 percent while still downloading. The daemon's progress
+  events, the resume decision and the disk headroom check now use the
+  repo's manifest, and the app never prints past the repo size.
 
 ## [2.10.2] - 2026-09-01
 

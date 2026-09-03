@@ -511,8 +511,11 @@ struct ModelDownloadSheet: View {
         let bytes = progress?.bytesOnDisk ?? 0
         let total = progress?.totalBytes ?? request?.totalBytes
         let fraction = progress?.fraction ?? 0
+        // The daemon counts only the repo's own files now; an older daemon
+        // still reports the whole folder, so never print past the repo size.
+        let shown = total.map { min(bytes, $0) } ?? bytes
         return HStack(spacing: 10) {
-            Text(formatBytesShort(bytes))
+            Text(formatBytesShort(shown))
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()
