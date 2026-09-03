@@ -819,6 +819,25 @@ def test_stage_timing_wraps_the_whole_gather_and_survives_early_returns():
     assert "_PLE_STAGE_CALLS[0] +=" in stage
 
 
+# ---------------------------------------------------------------------------
+# Unwired prefill loops must refuse an armed lane outright
+# ---------------------------------------------------------------------------
+
+
+#: Chunked prefill loops the lane is NOT wired to.  Each is selected by a
+#: BOOT-shaped condition (MTPLX_SUSTAINED_PREFILL off, a non-committed MTP
+#: history policy), so the tripwire fires on the process's first request
+#: rather than on a request whose SHAPE the server happens to accept.
+#: `_prefill_restored_prompt_suffix` is not one of them any more: it is
+#: selected per REQUEST -- any prompt whose prefix the session bank holds --
+#: and raising there was a serving outage for most real traffic (the
+#: 2026-09-02 battery, cells 8 through 20).
+UNWIRED_LOOPS = (
+    "_prefill",
+    "_prefill_with_hidden_sequence",
+)
+
+
 def test_reject_unwired_prefill_loop_is_silent_when_the_flag_is_off(monkeypatch):
     monkeypatch.delenv(lookahead_mod.ENV_FLAG, raising=False)
     lookahead_mod.enabled.cache_clear()
@@ -840,12 +859,6 @@ def test_reject_unwired_prefill_loop_raises_when_armed(monkeypatch):
     finally:
         lookahead_mod.enabled.cache_clear()
 
-
-UNWIRED_LOOPS = (
-    "_prefill",
-    "_prefill_with_hidden_sequence",
-    "_prefill_restored_prompt_suffix",
-)
 
 @pytest.mark.parametrize("loop", UNWIRED_LOOPS)
 def test_every_unwired_chunked_prefill_loop_carries_the_tripwire(loop):
@@ -869,6 +882,24 @@ def test_the_wired_loop_opens_the_scope_instead_of_the_tripwire():
     )
     body = ast.unparse(node)
     assert "_ple_prefill_lookahead_scope(rt, body, mtp_streaming_spans)" in body
+    assert "_reject_unwired_ple_lookahead" not in body
+
+
+def test_the_restored_suffix_loop_is_wired_too_not_tripwired():
+    """A prompt whose prefix the bank holds takes this loop, not the cold one.
+
+    Behaviour lives in tests/test_fable_ple_lookahead_restored_suffix.py; this
+    is the structural half, next to the cold loop's, so the two cannot drift.
+    """
+
+    node = next(
+        n
+        for n in ast.parse(GENERATION_TEXT).body
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_prefill_restored_prompt_suffix"
+    )
+    body = ast.unparse(node)
+    assert "_ple_prefill_lookahead_scope(" in body
     assert "_reject_unwired_ple_lookahead" not in body
 
 
@@ -1309,7 +1340,6 @@ def test_disabling_the_hot_lru_makes_every_span_required():
 # ---------------------------------------------------------------------------
 # MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: the same prepare, measured warm/cold
 # ---------------------------------------------------------------------------
-
 
 
 def _wire_warm(sidecar):

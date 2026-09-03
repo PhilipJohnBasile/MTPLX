@@ -2963,6 +2963,7 @@ def _prefill_restored_prompt_suffix(
     gdn_boundary_sink: list[tuple[int, Any, Any]] | None = None,
     vision_splice: Any | None = None,
     stable_prefix_len: int | None = None,
+    plan_ids: Sequence[int] | None = None,
 ) -> tuple[Any, Any, float, float]:
     """Extend a restored SessionBank prefix without one giant suffix forward.
 
@@ -2974,7 +2975,6 @@ def _prefill_restored_prompt_suffix(
     the body, then a single final-token logits/hidden pass for decode startup.
     """
 
-    _reject_unwired_ple_lookahead("_prefill_restored_prompt_suffix")
     if not suffix:
         raise ValueError("suffix must not be empty")
     _check_postcommit_abort(abort_check)
@@ -2985,6 +2985,50 @@ def _prefill_restored_prompt_suffix(
     cached_tokens = max(0, int(cached_tokens))
     suffix_total = int(len(suffix))
     suffix_done = 0
+
+    def _lookahead_plan(
+        spans_rel: Sequence[tuple[int, int]],
+    ) -> tuple[Sequence[int], list[tuple[int, int]]]:
+        """(plan ids, spans) for this suffix's chunk grid, in PROMPT coords.
+
+        A restored suffix is the same chunked prefill as a fresh prompt's,
+        over a shorter span: the same two grid helpers, one ``stage()`` per
+        chunk, in chunk order.  The one difference that matters to the PLE
+        lookahead is where a chunk's n-gram history comes from -- the owner
+        reads it off the RESTORED state cache, so the worker has to rebuild it
+        from the whole prompt, not from the suffix alone.  Hence absolute
+        spans over ``plan_ids``, which both callers already hold.
+
+        The prompt is compared against the suffix rather than assumed: a plan
+        whose tail is not what the chunks carry would make every
+        ``span_index_of`` miss, and an armed lane reads a required span it
+        never served as inertness.
+        """
+
+        from mtplx.ple_prefill_lookahead import enabled as _lookahead_enabled
+
+        rel = [(int(start), int(end)) for start, end in spans_rel]
+        if not _lookahead_enabled():
+            # Unarmed: the scope is a no-op that only needs a non-empty plan
+            # to know the prefill is not empty.  Walking the whole prompt here
+            # would be host work on the control arm's TTFT path.
+            return suffix, rel
+        if (
+            plan_ids is not None
+            and len(plan_ids) == cached_tokens + len(suffix)
+            and list(plan_ids[cached_tokens:]) == list(suffix)
+        ):
+            return plan_ids, [
+                (cached_tokens + start, cached_tokens + end) for start, end in rel
+            ]
+        # No prompt handed down, or one that is not this suffix's: the suffix
+        # alone is a correct plan for every chunk but the first, whose n-gram
+        # history reaches back into the restored prefix.  That chunk's rows
+        # then fail the row-equality check in `_take_prefill_lookahead` and it
+        # pays the ordinary gather -- counted (`miss_row_mismatch`), exact,
+        # never silent.
+        return suffix, rel
+
     # A committed history needs a draft head to append to. Requiring
     # rt.mtp_enabled here is the chokepoint that keeps the hidden-only chunk
     # branch (and every append_history call) off target-only AR runtimes, whose
@@ -3121,7 +3165,15 @@ def _prefill_restored_prompt_suffix(
         fused_array = mx.array([suffix])
         fused_embeddings = _suffix_chunk_embeddings(fused_array)
         started = time.perf_counter()
-        with attention_phase("prefill"):
+        # One fused forward is one `stage()`: nothing to look ahead TO, which
+        # is the lane's own `single_span` decline -- counted in the W84
+        # receipt by the scope, never a raise.
+        with (
+            _ple_prefill_lookahead_scope(
+                rt, *_lookahead_plan([(0, len(suffix))])
+            ),
+            attention_phase("prefill"),
+        ):
             suffix_logits, suffix_hidden = _forward_ar_optional_hidden(
                 rt,
                 fused_array,
@@ -3163,10 +3215,12 @@ def _prefill_restored_prompt_suffix(
         gdn_boundary_sink is not None
         and _cache_has_recurrent_entries(restored.cache)
     )
-    if len(suffix) > 1:
-        body = suffix[:-1]
+    body = suffix[:-1]
+    body_array = None
+    spans: list[tuple[int, int]] = []
+    if body:
         body_array = mx.array([body])
-        spans = (
+        spans = list(
             _prefill_spans_with_tail_grid(
                 len(body),
                 tail_interval=_gdn_boundary_tail_interval(),
@@ -3177,11 +3231,23 @@ def _prefill_restored_prompt_suffix(
             if capture_boundaries
             else _iter_prefill_chunk_spans(len(body))
         )
+    # PLE n-gram prefill lookahead (MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD, off by
+    # default), wired to the warm loop exactly as to the cold one: chunk k+1's
+    # 32,768 sidecar rows are hashed and page-warmed on a worker thread while
+    # chunk k's forward owns the GPU.  The final single-token pass below stays
+    # OUTSIDE the scope, as it does on the cold path.  A one-token suffix has
+    # no chunk loop at all -- the final pass IS its prefill -- so the scope is
+    # opened on that single span and declines itself as `single_span`, which
+    # is the lane's by-design decline, counted, never a raise.
+    with _ple_prefill_lookahead_scope(
+        rt, *_lookahead_plan(spans or [(0, len(suffix))])
+    ):
         for start, end in spans:
             _check_postcommit_abort(abort_check)
             chunk_array = body_array[:, start:end]
             chunk_embeddings = _suffix_chunk_embeddings(chunk_array)
             started = time.perf_counter()
+            chunk_gather_before = _ple_stage_seconds()
             with attention_phase("prefill"):
                 if use_committed_mtp:
                     logits_chunk, hidden_chunk = rt.forward_ar(
@@ -3211,6 +3277,18 @@ def _prefill_restored_prompt_suffix(
                 _eval(logits_chunk, hidden_chunk)
             chunk_elapsed = time.perf_counter() - started
             target_forward_time += chunk_elapsed
+            # The same two numbers the cold loop records, for the same reason:
+            # the PLE gather is a host stall INSIDE the chunk's wall, so a
+            # reader can separate "the GPU was slow" from "the host was late"
+            # on a warm restore too.  Without it the driver's per-chunk
+            # receipt was empty for every request the session bank served.
+            _record_prefill_chunk(
+                start=float(cached_tokens + start),
+                end=float(cached_tokens + end),
+                wall_s=chunk_elapsed,
+                ple_gather_s=_ple_stage_seconds() - chunk_gather_before,
+                group_chunks=1.0,
+            )
             _runtime_count(rt, "restored_suffix_prefill_chunks")
             _runtime_count(rt, "prefill_chunks")
             suffix_done = min(suffix_total, end)
@@ -3817,6 +3895,10 @@ def _restore_near_prefix_prompt_state(
                 gdn_boundary_sink=suffix_boundary_sink,
                 stable_prefix_len=stable_prefix_len,
                 vision_splice=vision_splice,
+                # The whole prompt, so the PLE lookahead's worker rebuilds
+                # each suffix chunk's n-gram history from the same tokens the
+                # restored state cache holds.
+                plan_ids=prompt_ids,
             )
         )
         entry.hits += 1
@@ -4633,6 +4715,8 @@ def restore_or_prefill_prompt_state(
                     gdn_boundary_sink=suffix_boundary_sink,
                     vision_splice=vision_splice,
                     stable_prefix_len=stable_prefix_len,
+                    # The whole prompt: see the near-prefix caller above.
+                    plan_ids=prompt_ids,
                 )
             )
             return _emit_prefill_complete(PromptState(
