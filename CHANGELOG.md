@@ -26,10 +26,13 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
-- **Copy-lane streaming no longer pastes and freezes.** The app's
-  typewriter rates arrivals over a wall-clock window and types each
-  24-token block across its round (95th-percentile flush 65 to 25
-  characters, longest on-screen pause 767 to 233 ms on the same flow).
+- **Copy-lane streaming no longer pastes and freezes.** The server
+  releases block-sized token batches piece by piece across the round
+  (`MTPLX_STREAM_PACER`, default on; StreamScope copy-lane arm burst p95
+  58 to 9 characters), and the app's typewriter rates arrivals over a
+  wall-clock window and types each block across its round
+  (95th-percentile flush 65 to 25 characters, longest on-screen pause
+  767 to 233 ms on the same flow).
 - **Fully accepted copy blocks skip the recurrent-state replay** in the
   Flash-Next family commit; the Route Tape records every copy-lane round.
 - **`reasoning_effort` accepts the off-ish values some clients send**
