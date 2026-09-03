@@ -503,7 +503,9 @@ public final class MTPLXBackendStore: ObservableObject {
                 "batching_preset": .string(scheduling.batchingPreset),
                 "scheduling_preset": .string(scheduling.selectedPreset),
                 "launch_target": .string(scheduling.target),
-                "launch_id": .string(launchID)
+                "launch_id": .string(launchID),
+                "memory_limit_gb": .int(configuration.memoryLimitGB ?? 0),
+                "allow_swap": .bool(configuration.allowSwap)
             ],
             flushImmediately: true,
             force: true

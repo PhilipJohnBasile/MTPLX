@@ -177,6 +177,7 @@
 "All" = "الكل";
 "ALL-TIME MAX %@ TPS" = "الحد الأقصى على الإطلاق %@ TPS";
 "Allocation policy" = "سياسة التخصيص";
+"Allow swap" = "السماح بالتبديل";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "يحمل علامة MTPLX بالفعل — تم التحقق من العمق %lld. قم بالتثبيت بدلاً من إعادة البناء.";
 "Already on your Mac" = "موجود بالفعل على الـ Mac";
 "Always reasons before answering. Best quality, more tokens." = "يفكر دائماً قبل الإجابة. أفضل جودة، والمزيد من الرموز.";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "المنقضي %@، تم حل %lld من %lld، %@ %@";
 "Embedding and reranking served by this daemon." = "يتم تقديم التضمين وإعادة الترتيب بواسطة هذه العملية الخلفية (daemon).";
 "Embedding models" = "نماذج التضمين";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "اتركه فارغًا لاستخدام خطة المحرك نفسها، أي نحو ثلاثة أرباع ذاكرة هذا الـ Mac. ارفعه لخدمة سياقات أطول على جهاز به متسع.";
 "Enable thermal polling" = "تفعيل الاستقصاء الحراري";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "فعّل الاستقصاء الحراري في الإعدادات للتحقق من تسارع المروحة قبل اختبار الأداء. الأرقام الرئيسية بدون مراوح تم التحقق منها هي لأغراض التشخيص فقط.";
 "Enable web search for this conversation" = "تفعيل البحث في الويب لهذه المحادثة";
 "Endpoint" = "نقطة النهاية";
 "Endpoint name" = "اسم نقطة النهاية";
 "ENDPOINTS" = "نقاط النهاية";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "خطة المحرك: %@ قابلة للاستخدام من %@ من الذاكرة، نافذة السياق %lld رمزًا.";
+"Engine plan: %@ usable of %@ memory." = "خطة المحرك: %@ قابلة للاستخدام من %@ من الذاكرة.";
 "Engine Sessions" = "جلسات المحرك";
 "Engine, fan control, and your command line — a one-time setup." = "المحرك، والتحكم في المروحة، وسطر الأوامر الخاص بك — إعداد لمرة واحدة.";
 "Enter a Hugging Face repo id like org/name." = "أدخل معرف مستودع Hugging Face مثل org/name.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "البوابة متصلة";
 "Gateway service loaded" = "تم تحميل خدمة البوابة";
 "Gateway service not loaded" = "خدمة البوابة غير محملة";
+"GB" = "غيغابايت";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "MTP مساعد Gemma";
 "Gemma sampler defaults" = "الإعدادات الافتراضية لأخذ عينات Gemma";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "لم يتم العثور على Homebrew، لذا يستخدم Terminal الآن واجهة أسطر الأوامر (CLI) الخاصة بالتطبيق (%@، كان %@). افتح نافذة Terminal جديدة.";
 "Host / Port" = "المضيف / المنفذ";
 "How long the scheduler waits for peers before firing." = "المدة التي ينتظرها المجدول للنظراء قبل الانطلاق.";
+"How much of this Mac the engine may plan with. Restart required." = "مقدار ما يمكن للمحرك التخطيط به من هذا الـ Mac. يلزم إعادة التشغيل.";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "نقطة نهاية Hugging Face لتنزيل النماذج. لا يتم إرسال رمز HF الخاص بك إلى خادم متطابق أبداً.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "مصدر Hugging Face. سيقوم Forge بالتحويل إلى MLX وحزم ملحق MTP الجانبي.";
@@ -747,6 +753,7 @@
 "Memory" = "الذاكرة";
 "Memory Cache (RAM)" = "التخزين المؤقت في الذاكرة (RAM)";
 "Memory Detail" = "تفاصيل الذاكرة";
+"Memory limit" = "حد الذاكرة";
 "Memory pressure — engine shedding caches" = "ضغط الذاكرة — المحرك يفرغ ذاكرات التخزين المؤقت";
 "Memory running high" = "الذاكرة قاربت على النفاد";
 "Memory snapshot unavailable." = "لقطة الذاكرة غير متاحة.";
@@ -1196,6 +1203,7 @@
 "Searching: %@" = "جارٍ البحث: %@";
 "Send" = "إرسال";
 "Send message" = "إرسال رسالة";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "قدّم سياقات أكبر مما يتسع في الذاكرة. يقوم macOS بالترحيل إلى SSD، فتنخفض السرعة بشدة، لكن الجلسات الطويلة لن تُرفض بعد الآن.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "تقديم التضمين وإعادة الترتيب من هذه العملية الخلفية (daemon). اتركه فارغاً لإبقاء MTPLX للدردشة فقط.";
 "server %@" = "الخادم %@";
 "server cap" = "الحد الأقصى للخادم";
@@ -1275,6 +1283,7 @@
 "Start MTPLX when the app opens" = "بدء تشغيل MTPLX عند فتح التطبيق";
 "Start serving" = "بدء التقديم";
 "Start the daemon to see in-flight and recent requests." = "ابدأ العملية الخلفية (daemon) لرؤية الطلبات قيد التنفيذ والأخيرة.";
+"Start the model to see the plan the engine computes for this Mac." = "شغّل النموذج لرؤية الخطة التي يحسبها المحرك لهذا الـ Mac.";
 "Start tuning" = "بدء الضبط";
 "Starting" = "جارٍ البدء";
 "STARTING" = "جارٍ البدء";

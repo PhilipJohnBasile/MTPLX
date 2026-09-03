@@ -177,6 +177,7 @@
 "All" = "Все";
 "ALL-TIME MAX %@ TPS" = "МАКСИМУМ ЗА ВСЁ ВРЕМЯ: %@ TPS";
 "Allocation policy" = "Политика выделения памяти";
+"Allow swap" = "Разрешить подкачку";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "Уже помечена как MTPLX — глубина %lld проверена. Установите вместо пересборки.";
 "Already on your Mac" = "Уже на вашем Mac";
 "Always reasons before answering. Best quality, more tokens." = "Всегда рассуждает перед ответом. Лучшее качество, больше токенов.";
@@ -495,12 +496,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "Прошло %@, решено %lld из %lld, %@ %@";
 "Embedding and reranking served by this daemon." = "Эмбеддинги и реранжирование, которые обслуживает этот демон.";
 "Embedding models" = "Модели эмбеддингов";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "Пустое поле означает собственный план движка, примерно три четверти памяти этого Mac. Увеличьте значение, чтобы обслуживать более длинные контексты на Mac с запасом.";
 "Enable thermal polling" = "Включить опрос температуры";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "Включите опрос температуры в «Настройках», чтобы проверять разгон вентиляторов перед бенчмарком. Без проверенных вентиляторов итоговые цифры носят лишь диагностический характер.";
 "Enable web search for this conversation" = "Включить поиск в интернете для этого разговора";
 "Endpoint" = "Эндпоинт";
 "Endpoint name" = "Имя эндпоинта";
 "ENDPOINTS" = "ЭНДПОИНТЫ";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "План движка: %@ доступно из %@ памяти, окно контекста %lld токенов.";
+"Engine plan: %@ usable of %@ memory." = "План движка: %@ доступно из %@ памяти.";
 "Engine Sessions" = "Сессии движка";
 "Engine, fan control, and your command line — a one-time setup." = "Движок, управление вентиляторами и командная строка — однократная настройка.";
 "Enter a Hugging Face repo id like org/name." = "Введите идентификатор репозитория Hugging Face вида org/name.";
@@ -588,6 +592,7 @@
 "Gateway service not loaded" = "Служба шлюза не загружена";
 "cached" = "в кэше";
 "copy" = "копировать";
+"GB" = "ГБ";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Ассистент Gemma MTP";
 "Gemma sampler defaults" = "Параметры сэмплера Gemma по умолчанию";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew не найден, поэтому теперь ваш терминал использует CLI приложения (%@, было %@). Откройте новый терминал.";
 "Host / Port" = "Хост / Порт";
 "How long the scheduler waits for peers before firing." = "Сколько времени планировщик ожидает пиров перед запуском.";
+"How much of this Mac the engine may plan with. Restart required." = "Какую часть этого Mac движок может закладывать в план. Требуется перезапуск.";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "Эндпоинт Hugging Face для загрузки моделей. Ваш токен HF никогда не отправляется на зеркало.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Источник Hugging Face. Forge преобразует модель в MLX и упакует сайдкар MTP.";
@@ -747,6 +753,7 @@
 "Memory" = "Память";
 "Memory Cache (RAM)" = "Кэш памяти (RAM)";
 "Memory Detail" = "Подробности о памяти";
+"Memory limit" = "Лимит памяти";
 "Memory pressure — engine shedding caches" = "Нагрузка на память — движок сбрасывает кэши";
 "Memory running high" = "Память на исходе";
 "Memory snapshot unavailable." = "Снимок памяти недоступен.";
@@ -1196,6 +1203,7 @@
 "Searching: %@" = "Поиск: %@";
 "Send" = "Отправить";
 "Send message" = "Отправить сообщение";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "Обслуживайте контексты больше того, что помещается в память. macOS выгружает страницы на SSD, скорость резко падает, но длинные сессии перестают отклоняться.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "Обслуживать эмбеддинги и реранкинг из этого демона. Оставьте пустым, чтобы MTPLX работал только как чат.";
 "server %@" = "сервер %@";
 "server cap" = "лимит сервера";
@@ -1275,6 +1283,7 @@
 "Start MTPLX when the app opens" = "Запускать MTPLX при открытии приложения";
 "Start serving" = "Запустить обслуживание";
 "Start the daemon to see in-flight and recent requests." = "Запустите демон, чтобы увидеть запросы в обработке и недавние запросы.";
+"Start the model to see the plan the engine computes for this Mac." = "Запустите модель, чтобы увидеть план, который движок рассчитывает для этого Mac.";
 "Start tuning" = "Запустить автонастройку";
 "Starting" = "Запуск";
 "STARTING" = "ЗАПУСК";

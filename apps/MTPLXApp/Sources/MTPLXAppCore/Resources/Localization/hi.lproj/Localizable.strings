@@ -177,6 +177,7 @@
 "All" = "सभी";
 "ALL-TIME MAX %@ TPS" = "सर्वकालिक अधिकतम %@ TPS";
 "Allocation policy" = "आवंटन नीति";
+"Allow swap" = "स्वैप की अनुमति दें";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "पहले से ही MTPLX-ब्रांडेड — गहराई %lld सत्यापित। फिर से बनाने के बजाय इंस्टॉल करें।";
 "Already on your Mac" = "आपके Mac पर पहले से मौजूद";
 "Always reasons before answering. Best quality, more tokens." = "उत्तर देने से पहले हमेशा विचार करता है। सर्वश्रेष्ठ गुणवत्ता, अधिक टोकन।";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "बीता समय %1$@, %3$lld में से %2$lld हल हुए, %4$@ %5$@";
 "Embedding and reranking served by this daemon." = "इस डेमन द्वारा एम्बेडिंग और रीरैंकिंग प्रदान की जाती है।";
 "Embedding models" = "एम्बेडिंग मॉडल";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "खाली छोड़ने पर इंजन की अपनी योजना चलती है, यानी इस Mac की लगभग तीन-चौथाई मेमोरी। गुंजाइश वाले Mac पर लंबे कॉन्टेक्स्ट चलाने के लिए इसे बढ़ाएं।";
 "Enable thermal polling" = "थर्मल पोलिंग सक्षम करें";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "बेंचमार्किंग से पहले फ़ैन रैंप को सत्यापित करने के लिए सेटिंग्स में थर्मल पोलिंग सक्षम करें। सत्यापित पंखों के बिना हेडलाइन संख्याएं केवल नैदानिक हैं।";
 "Enable web search for this conversation" = "इस बातचीत के लिए वेब खोज सक्षम करें";
 "Endpoint" = "एंडपॉइंट";
 "Endpoint name" = "एंडपॉइंट का नाम";
 "ENDPOINTS" = "एंडपॉइंट्स";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "इंजन योजना: %@ मेमोरी में से %@ उपयोग योग्य, कॉन्टेक्स्ट विंडो %lld टोकन।";
+"Engine plan: %@ usable of %@ memory." = "इंजन योजना: %@ मेमोरी में से %@ उपयोग योग्य।";
 "Engine Sessions" = "इंजन सत्र";
 "Engine, fan control, and your command line — a one-time setup." = "इंजन, फ़ैन नियंत्रण, और आपकी कमांड लाइन — एक बार का सेटअप।";
 "Enter a Hugging Face repo id like org/name." = "Hugging Face रेपो आईडी दर्ज करें जैसे org/name।";
@@ -588,6 +592,7 @@
 "Gateway connected" = "गेटवे कनेक्ट हो गया";
 "Gateway service loaded" = "गेटवे सेवा लोड हो गई";
 "Gateway service not loaded" = "गेटवे सेवा लोड नहीं हुई";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Gemma सहायक MTP";
 "Gemma sampler defaults" = "Gemma सैंपलर डिफ़ॉल्ट";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew नहीं मिला, इसलिए आपका टर्मिनल अब ऐप के CLI (%@, पहले %@ था) का उपयोग करता है। एक नया टर्मिनल खोलें।";
 "Host / Port" = "होस्ट / पोर्ट";
 "How long the scheduler waits for peers before firing." = "शेड्यूलर निष्पादित करने से पहले साथियों के लिए कितनी देर प्रतीक्षा करता है।";
+"How much of this Mac the engine may plan with. Restart required." = "इंजन इस Mac का कितना हिस्सा योजना में ले सकता है। पुनरारंभ आवश्यक है।";
 "HTTP %@: %@" = "HTTP %@: %@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "मॉडल डाउनलोड के लिए Hugging Face एंडपॉइंट। आपका HF टोकन कभी भी मिरर पर नहीं भेजा जाता है।";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Face स्रोत। Forge MLX में बदलेगा और MTP साइडकार पैक करेगा।";
@@ -747,6 +753,7 @@
 "Memory" = "मेमोरी";
 "Memory Cache (RAM)" = "मेमोरी कैश (RAM)";
 "Memory Detail" = "मेमोरी विवरण";
+"Memory limit" = "मेमोरी सीमा";
 "Memory pressure — engine shedding caches" = "मेमोरी दबाव — इंजन कैश हटा रहा है";
 "Memory running high" = "मेमोरी कम हो रही है";
 "Memory snapshot unavailable." = "मेमोरी स्नैपशॉट अनुपलब्ध है।";
@@ -1196,6 +1203,7 @@
 "Searching: %@" = "खोजा जा रहा है: %@";
 "Send" = "भेजें";
 "Send message" = "संदेश भेजें";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "मेमोरी में समाने से बड़े कॉन्टेक्स्ट भी चलाएं। macOS SSD पर पेजिंग करता है, इसलिए गति बहुत गिरती है, पर लंबे सत्र अस्वीकार होना बंद हो जाते हैं।";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "इस डेमन से एम्बेडिंग और रीरैंकिंग प्रदान करें। MTPLX को केवल चैट रखने के लिए खाली छोड़ें।";
 "server %@" = "सर्वर %@";
 "server cap" = "सर्वर सीमा";
@@ -1275,6 +1283,7 @@
 "Start MTPLX when the app opens" = "ऐप खुलने पर MTPLX शुरू करें";
 "Start serving" = "सर्विंग शुरू करें";
 "Start the daemon to see in-flight and recent requests." = "प्रगति में और हाल के अनुरोध देखने के लिए डेमन शुरू करें।";
+"Start the model to see the plan the engine computes for this Mac." = "इंजन इस Mac के लिए जो योजना बनाता है, उसे देखने के लिए मॉडल शुरू करें।";
 "Start tuning" = "ट्यूनिंग शुरू करें";
 "Starting" = "शुरू हो रहा है";
 "STARTING" = "शुरू हो रहा है";

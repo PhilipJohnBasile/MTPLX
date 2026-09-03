@@ -177,6 +177,7 @@
 "All" = "Alle";
 "ALL-TIME MAX %@ TPS" = "ALLZEITHOCH %@ TPS";
 "Allocation policy" = "Zuweisungsrichtlinie";
+"Allow swap" = "Auslagerung erlauben";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "Bereits mit MTPLX-Kennzeichnung — Tiefe %lld verifiziert. Installiere es, statt es neu zu bauen.";
 "Already on your Mac" = "Bereits auf deinem Mac";
 "Always reasons before answering. Best quality, more tokens." = "Denkt vor jeder Antwort nach. Beste Qualität, mehr Token.";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "Verstrichen %@, %lld von %lld gelöst, %@ %@";
 "Embedding and reranking served by this daemon." = "Embedding und Reranking, die dieser Daemon bereitstellt.";
 "Embedding models" = "Embedding-Modelle";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "Leer nutzt den eigenen Plan der Engine, etwa drei Viertel des Speichers dieses Mac. Erhöhe ihn, um auf einem Mac mit Reserven längere Kontexte zu bedienen.";
 "Enable thermal polling" = "Temperaturabfrage aktivieren";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "Aktiviere die Temperaturabfrage in den Einstellungen, um den Lüfterhochlauf vor dem Benchmark zu verifizieren. Spitzenwerte ohne verifizierte Lüfter sind nur diagnostisch.";
 "Enable web search for this conversation" = "Websuche für diese Unterhaltung aktivieren";
 "Endpoint" = "Endpunkt";
 "Endpoint name" = "Endpunktname";
 "ENDPOINTS" = "ENDPUNKTE";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "Engine-Plan: %@ nutzbar von %@ Speicher, Kontextfenster %lld Tokens.";
+"Engine plan: %@ usable of %@ memory." = "Engine-Plan: %@ nutzbar von %@ Speicher.";
 "Engine Sessions" = "Engine-Sitzungen";
 "Engine, fan control, and your command line — a one-time setup." = "Engine, Lüftersteuerung und deine Kommandozeile — eine einmalige Einrichtung.";
 "Enter a Hugging Face repo id like org/name." = "Gib eine Hugging-Face-Repo-ID wie org/name ein.";
@@ -588,6 +592,7 @@
 "Gateway connected" = "Gateway verbunden";
 "Gateway service loaded" = "Gateway-Dienst geladen";
 "Gateway service not loaded" = "Gateway-Dienst nicht geladen";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Gemma-Assistent-MTP";
 "Gemma sampler defaults" = "Gemma-Sampler-Standardwerte";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "Homebrew wurde nicht gefunden, daher verwendet dein Terminal nun das CLI der App (%1$@, war %2$@). Öffne ein neues Terminal.";
 "Host / Port" = "Host / Port";
 "How long the scheduler waits for peers before firing." = "Wie lange der Scheduler auf Peers wartet, bevor er auslöst.";
+"How much of this Mac the engine may plan with. Restart required." = "Wie viel von diesem Mac die Engine einplanen darf. Neustart erforderlich.";
 "HTTP %@: %@" = "HTTP %1$@: %2$@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "Hugging Face-Endpunkt für Modell-Downloads. Dein HF-Token wird niemals an einen Mirror gesendet.";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Face-Quelle. Forge konvertiert zu MLX und packt das MTP-Sidecar.";
@@ -747,6 +753,7 @@
 "Memory" = "Speicher";
 "Memory Cache (RAM)" = "Speicher-Cache (RAM)";
 "Memory Detail" = "Speicherdetails";
+"Memory limit" = "Speicherlimit";
 "Memory pressure — engine shedding caches" = "Speicherdruck — Engine baut Caches ab";
 "Memory running high" = "Speicher wird knapp";
 "Memory snapshot unavailable." = "Speicher-Snapshot nicht verfügbar.";
@@ -1196,6 +1203,7 @@
 "Searching: %@" = "Suche: %@";
 "Send" = "Senden";
 "Send message" = "Nachricht senden";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "Bediene Kontexte, die größer sind als der verfügbare Speicher. macOS lagert auf die SSD aus, die Geschwindigkeit bricht deutlich ein, aber lange Sitzungen werden nicht mehr abgelehnt.";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "Embeddings und Reranking über diesen Daemon bereitstellen. Leer lassen, um MTPLX auf Chat zu beschränken.";
 "server %@" = "Server %@";
 "server cap" = "Server-Limit";
@@ -1275,6 +1283,7 @@
 "Start MTPLX when the app opens" = "MTPLX beim Öffnen der App starten";
 "Start serving" = "Bereitstellung starten";
 "Start the daemon to see in-flight and recent requests." = "Starte den Daemon, um laufende und kürzliche Anfragen zu sehen.";
+"Start the model to see the plan the engine computes for this Mac." = "Starte das Modell, um den Plan zu sehen, den die Engine für diesen Mac berechnet.";
 "Start tuning" = "Abstimmung starten";
 "Starting" = "Startet";
 "STARTING" = "STARTET";

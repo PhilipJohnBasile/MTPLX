@@ -397,6 +397,16 @@ public struct MTPLXCommandBuilder: Sendable {
         if let mirror = MTPLXAppConfiguration.hfMirrorEnvironment(configuration.hfEndpoint) {
             environment.merge(mirror) { _, new in new }
         }
+        // Settings memory card (#431 asks for a higher cap on a 128 GB Mac,
+        // #427 for an "I know what I'm doing" swap opt-in). Both are engine
+        // env-only knobs, and the user's explicit number outranks whatever
+        // the surrounding app process happened to inherit.
+        environment.merge(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: configuration.memoryLimitGB,
+                allowSwap: configuration.allowSwap
+            )
+        ) { _, new in new }
         return DaemonCommand(
             executableURL: executableURL,
             arguments: arguments,

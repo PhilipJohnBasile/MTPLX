@@ -4330,6 +4330,121 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertNil(MTPLXCommandBuilder.flagValue("--depth", in: ["--depth"]))
     }
 
+    // MARK: - Issues #431 / #427: Settings memory card
+
+    func testMemoryOverrideEnvironmentConvertsGigabytesToBytes() throws {
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(memoryLimitGB: 116, allowSwap: false),
+            ["MTPLX_MEMORY_LIMIT_BYTES": "124554051584"]
+        )
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(memoryLimitGB: 1, allowSwap: false),
+            ["MTPLX_MEMORY_LIMIT_BYTES": "1073741824"]
+        )
+    }
+
+    func testMemoryOverrideEnvironmentIsEmptyWhenTheCardIsUntouched() throws {
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: nil,
+                allowSwap: false
+            ).isEmpty
+        )
+        // Zero and negatives are not "no memory": they fall back to the
+        // engine's own plan rather than launching an unusable cap.
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: 0,
+                allowSwap: false
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: -8,
+                allowSwap: false
+            ).isEmpty
+        )
+    }
+
+    func testMemoryOverrideEnvironmentSetsAllowSwapOnlyWhenEnabled() throws {
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: nil,
+                allowSwap: true
+            ),
+            ["MTPLX_ALLOW_SWAP": "1"]
+        )
+        XCTAssertNil(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: 64,
+                allowSwap: false
+            )["MTPLX_ALLOW_SWAP"]
+        )
+    }
+
+    func testMemoryLimitIsClampedAndRoundTripsThroughSettings() throws {
+        XCTAssertNil(MTPLXAppConfiguration.normalizedMemoryLimitGB(nil))
+        XCTAssertNil(MTPLXAppConfiguration.normalizedMemoryLimitGB(0))
+        XCTAssertEqual(MTPLXAppConfiguration.normalizedMemoryLimitGB(124), 124)
+        XCTAssertEqual(
+            MTPLXAppConfiguration.normalizedMemoryLimitGB(999_999),
+            MTPLXAppConfiguration.maximumMemoryLimitGB
+        )
+
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        try store.save(
+            MTPLXAppConfiguration(model: "/models/qwen", memoryLimitGB: 116, allowSwap: true)
+        )
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.memoryLimitGB, 116)
+        XCTAssertTrue(reloaded.allowSwap)
+
+        let raw = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        XCTAssertEqual(raw["memory_limit_gb"] as? Int, 116)
+        XCTAssertEqual(raw["allow_swap"] as? Bool, true)
+    }
+
+    func testServeCommandCarriesTheMemoryCardIntoTheDaemonEnvironment() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                memoryLimitGB: 116,
+                allowSwap: true
+            ),
+            target: .chat,
+            launchID: "memory-431"
+        )
+
+        XCTAssertEqual(command.environment["MTPLX_MEMORY_LIMIT_BYTES"], "124554051584")
+        XCTAssertEqual(command.environment["MTPLX_ALLOW_SWAP"], "1")
+    }
+
+    func testServeCommandOmitsMemoryOverridesWhenTheCardIsUntouched() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen"
+            ),
+            target: .chat,
+            launchID: "memory-default"
+        )
+
+        XCTAssertNil(command.environment["MTPLX_MEMORY_LIMIT_BYTES"])
+        XCTAssertNil(command.environment["MTPLX_ALLOW_SWAP"])
+    }
+
     func testSettingsStoreRoundTripsConfiguration() throws {
         let url = temporaryDirectory().appendingPathComponent("settings.json")
         let store = MTPLXSettingsStore(settingsURL: url)

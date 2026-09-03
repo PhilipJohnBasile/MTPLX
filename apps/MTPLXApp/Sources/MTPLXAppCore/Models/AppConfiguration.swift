@@ -190,6 +190,17 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// to daemon and pull subprocesses as HF_ENDPOINT; the stored HF
     /// token never travels to a non-official endpoint.
     public var hfEndpoint: String?
+    /// Optional hard memory cap for the daemon, in whole GB (issue #431).
+    /// `nil` leaves the engine's own plan in charge (75% of RAM, bounded);
+    /// a value is passed down as MTPLX_MEMORY_LIMIT_BYTES so the launched
+    /// daemon sizes its allocator caps and its context fit against the
+    /// number the user can see in Settings.
+    public var memoryLimitGB: Int?
+    /// "I know what I'm doing" swap opt-in (issue #427). On, the daemon
+    /// launches with MTPLX_ALLOW_SWAP=1, which drops the machine-fit clamp
+    /// on the context window and accepts paging instead of refusing the
+    /// request. Off is the shipped default: the fit clamp stays.
+    public var allowSwap: Bool
 
     public init(
         executablePath: String? = nil,
@@ -254,7 +265,9 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         tunedControlRecordsByModel: [String: TunedControlRecord] = [:],
         customModels: [MTPLXModelOption] = [],
         huggingFaceHandle: String? = nil,
-        hfEndpoint: String? = nil
+        hfEndpoint: String? = nil,
+        memoryLimitGB: Int? = nil,
+        allowSwap: Bool = false
     ) {
         self.executablePath = executablePath
         self.model = model
@@ -326,6 +339,8 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.customModels = customModels
         self.huggingFaceHandle = huggingFaceHandle
         self.hfEndpoint = hfEndpoint
+        self.memoryLimitGB = Self.normalizedMemoryLimitGB(memoryLimitGB)
+        self.allowSwap = allowSwap
     }
 
     /// Fresh installs must be portable. Installed local copies are discovered
@@ -516,6 +531,8 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case customModels = "custom_models"
         case huggingFaceHandle = "hugging_face_handle"
         case hfEndpoint = "hf_endpoint"
+        case memoryLimitGB = "memory_limit_gb"
+        case allowSwap = "allow_swap"
     }
 
     public init(from decoder: Decoder) throws {
@@ -611,6 +628,10 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         customModels = try container.decodeIfPresent([MTPLXModelOption].self, forKey: .customModels) ?? defaults.customModels
         huggingFaceHandle = try container.decodeIfPresent(String.self, forKey: .huggingFaceHandle)
         hfEndpoint = try container.decodeIfPresent(String.self, forKey: .hfEndpoint)
+        memoryLimitGB = Self.normalizedMemoryLimitGB(
+            try container.decodeIfPresent(Int.self, forKey: .memoryLimitGB)
+        )
+        allowSwap = try container.decodeIfPresent(Bool.self, forKey: .allowSwap) ?? defaults.allowSwap
         sanitizeLaunchCriticalFields()
     }
 
@@ -655,6 +676,41 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// overridden to empty alongside any non-official endpoint. Returns
     /// nil when no valid mirror is configured (including the official
     /// host, where nothing should change).
+    /// Largest memory cap the picker accepts, in GB. Well past the 512 GB
+    /// M3 Ultra so no real Mac is clamped, small enough that a typo cannot
+    /// overflow the byte conversion.
+    public static let maximumMemoryLimitGB = 2048
+
+    /// Clamp a user-entered memory cap. Zero, negatives, and nonsense fall
+    /// back to `nil` (engine default) rather than launching a daemon with a
+    /// cap it cannot honor. 1 GB is the floor: below that no model loads.
+    public static func normalizedMemoryLimitGB(_ raw: Int?) -> Int? {
+        guard let raw, raw > 0 else { return nil }
+        return min(max(raw, 1), maximumMemoryLimitGB)
+    }
+
+    /// Daemon environment for the Settings memory card (issues #431, #427).
+    ///
+    /// The engine reads both of these from its own process environment
+    /// (`MTPLX_MEMORY_LIMIT_BYTES` sizes the Metal allocator caps, and
+    /// `MTPLX_ALLOW_SWAP` drops the machine-fit context clamp), which is the
+    /// only override channel a GUI launcher has: `mtplx serve` exposes no
+    /// flag for either. An unset limit and a swap toggle left off contribute
+    /// nothing, so an untouched card launches a byte-identical daemon.
+    public static func memoryOverrideEnvironment(
+        memoryLimitGB: Int?,
+        allowSwap: Bool
+    ) -> [String: String] {
+        var environment: [String: String] = [:]
+        if let gigabytes = normalizedMemoryLimitGB(memoryLimitGB) {
+            environment["MTPLX_MEMORY_LIMIT_BYTES"] = String(Int64(gigabytes) * 1024 * 1024 * 1024)
+        }
+        if allowSwap {
+            environment["MTPLX_ALLOW_SWAP"] = "1"
+        }
+        return environment
+    }
+
     /// Picker-level normalization of the Performance mode selection. The
     /// Settings picker, the persisted `scheduling_preset`, and the launch
     /// resolver all read the choice through this one function so a tag can
