@@ -1515,3 +1515,5 @@
 "· logical %@" = "· 論理 %@";
 "· scanning" = "· スキャン中";
 "· untracked %@" = "· 未追跡 %@";
+"Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "設定を読み込めなかったため、MTPLX はデフォルト設定を使用しています。読み込めなかったファイルは %@ として保存されています。";
+"Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "設定を読み込めなかったため、MTPLX はデフォルト設定を使用しています。%@ を退避できなかったため、次回の保存時に置き換えられます。";

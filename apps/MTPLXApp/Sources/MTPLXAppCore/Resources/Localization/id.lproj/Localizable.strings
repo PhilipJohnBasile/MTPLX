@@ -1515,3 +1515,5 @@
 "· logical %@" = "· logis %@";
 "· scanning" = "· memindai";
 "· untracked %@" = "· tidak terlacak %@";
+"Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "Pengaturan tidak dapat dibaca, jadi MTPLX menggunakan pengaturan bawaan. Berkas yang tidak terbaca disimpan sebagai %@.";
+"Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Pengaturan tidak dapat dibaca, jadi MTPLX menggunakan pengaturan bawaan. %@ tidak dapat disisihkan dan akan diganti saat penyimpanan berikutnya.";

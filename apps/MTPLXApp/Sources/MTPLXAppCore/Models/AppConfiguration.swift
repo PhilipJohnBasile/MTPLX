@@ -1,5 +1,137 @@
 import Foundation
 
+// MARK: - Lenient settings decoding
+
+/// One stored settings value that could not be decoded and fell back to
+/// its default: `path` is the JSON location (`port`,
+/// `custom_models[1]`, `tuned_control_records_by_model.<model>`), `reason`
+/// the decoder's complaint.
+public struct SettingsDecodeIssue: Equatable, Sendable, CustomStringConvertible {
+    public let path: String
+    public let reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+
+    public var description: String { "\(path): \(reason)" }
+
+    static func path(_ codingPath: [any CodingKey]) -> String {
+        var text = ""
+        for key in codingPath {
+            if let index = key.intValue {
+                text += "[\(index)]"
+            } else {
+                text += text.isEmpty ? key.stringValue : ".\(key.stringValue)"
+            }
+        }
+        return text
+    }
+
+    /// A short, log-friendly rendering of a decoding failure.
+    static func describe(_ error: Error) -> String {
+        switch error as? DecodingError {
+        case .typeMismatch(let type, let context)?:
+            return "expected \(type)" + (context.debugDescription.isEmpty ? "" : " (\(context.debugDescription))")
+        case .valueNotFound(let type, _)?:
+            return "expected \(type), found null"
+        case .keyNotFound(let key, _)?:
+            return "missing \(key.stringValue)"
+        case .dataCorrupted(let context)?:
+            return context.debugDescription.isEmpty ? "malformed value" : context.debugDescription
+        default:
+            return String(describing: error)
+        }
+    }
+}
+
+/// Collects the fields a settings decode had to degrade. Installed in
+/// `Decoder.userInfo` by the settings store so the configuration decoder
+/// and the per-element wrappers can report without changing the
+/// `Codable` surface; a decode without a collector still degrades
+/// leniently and simply has nowhere to report.
+public final class SettingsDecodeIssues: @unchecked Sendable {
+    public static let userInfoKey = CodingUserInfoKey(rawValue: "com.mtplx.app.settingsDecodeIssues")!
+
+    private let lock = NSLock()
+    private var issues: [SettingsDecodeIssue] = []
+
+    public init() {}
+
+    public func record(path: [any CodingKey], error: Error) {
+        let issue = SettingsDecodeIssue(
+            path: SettingsDecodeIssue.path(path),
+            reason: SettingsDecodeIssue.describe(error)
+        )
+        lock.withLock { issues.append(issue) }
+    }
+
+    public var all: [SettingsDecodeIssue] {
+        lock.withLock { issues }
+    }
+
+    static func installed(in decoder: any Decoder) -> SettingsDecodeIssues? {
+        decoder.userInfo[userInfoKey] as? SettingsDecodeIssues
+    }
+}
+
+/// Decodes one element of a collection, or records the failure and yields
+/// nil, so one malformed custom model or tuned record never sinks the rest
+/// of its collection.
+struct LenientElement<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) {
+        do {
+            value = try Value(from: decoder)
+        } catch {
+            value = nil
+            SettingsDecodeIssues.installed(in: decoder)?.record(path: decoder.codingPath, error: error)
+        }
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// `decodeIfPresent` that treats a wrong-typed or malformed value like
+    /// a missing one: the field falls back to its default and the failure
+    /// is recorded with its coding path instead of failing the whole file.
+    func lenientDecodeIfPresent<Value: Decodable>(
+        _ type: Value.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> Value? {
+        do {
+            return try decodeIfPresent(type, forKey: key)
+        } catch {
+            issues?.record(path: codingPath + [key], error: error)
+            return nil
+        }
+    }
+
+    /// Lenient array decode: a wrong-typed array falls back to nil, and a
+    /// malformed element is skipped while its siblings load.
+    func lenientDecodeArrayIfPresent<Element: Decodable>(
+        of type: Element.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> [Element]? {
+        lenientDecodeIfPresent([LenientElement<Element>].self, forKey: key, issues: issues)?
+            .compactMap(\.value)
+    }
+
+    /// Lenient string-keyed dictionary decode with the same per-entry
+    /// tolerance as the array form.
+    func lenientDecodeDictionaryIfPresent<Value: Decodable>(
+        of type: Value.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> [String: Value]? {
+        lenientDecodeIfPresent([String: LenientElement<Value>].self, forKey: key, issues: issues)?
+            .compactMapValues(\.value)
+    }
+}
+
 public struct TunedControlRecord: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var modelID: String
@@ -535,71 +667,82 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case allowSwap = "allow_swap"
     }
 
+    /// Field-lenient decoder. A missing key falls back to the default, and
+    /// so does a wrong-typed or malformed value: one bad field (a hand edit,
+    /// a downgrade after a newer build changed a type, a future record
+    /// schema bump) must never make the whole file unreadable, because an
+    /// unreadable file used to send the user back through onboarding and
+    /// then overwrite their custom models, API key, tuned records and
+    /// mirror settings with defaults. Each degraded field is reported to the
+    /// `SettingsDecodeIssues` collector when the decoder carries one. The
+    /// only failures that still throw are structural — the document is not
+    /// a JSON object at all — and the settings store treats those as an
+    /// unreadable file to be set aside, not decoded.
     public init(from decoder: Decoder) throws {
         let defaults = MTPLXAppConfiguration()
+        let issues = SettingsDecodeIssues.installed(in: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
-        model = try container.decodeIfPresent(String.self, forKey: .model) ?? defaults.model
-        profile = try container.decodeIfPresent(String.self, forKey: .profile) ?? defaults.profile
-        host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
-        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
-        generationMode = try container.decodeIfPresent(String.self, forKey: .generationMode) ?? defaults.generationMode
-        loadMTP = try container.decodeIfPresent(Bool.self, forKey: .loadMTP) ?? defaults.loadMTP
-        schedulerMode = try container.decodeIfPresent(String.self, forKey: .schedulerMode) ?? defaults.schedulerMode
-        batchingPreset = try container.decodeIfPresent(String.self, forKey: .batchingPreset) ?? defaults.batchingPreset
-        let decodedSchedulingPreset = try container.decodeIfPresent(String.self, forKey: .schedulingPreset)
+        func field<Value: Decodable>(_ type: Value.Type, _ key: CodingKeys) -> Value? {
+            container.lenientDecodeIfPresent(type, forKey: key, issues: issues)
+        }
+        executablePath = field(String.self, .executablePath)
+        model = field(String.self, .model) ?? defaults.model
+        profile = field(String.self, .profile) ?? defaults.profile
+        host = field(String.self, .host) ?? defaults.host
+        port = field(Int.self, .port) ?? defaults.port
+        generationMode = field(String.self, .generationMode) ?? defaults.generationMode
+        loadMTP = field(Bool.self, .loadMTP) ?? defaults.loadMTP
+        schedulerMode = field(String.self, .schedulerMode) ?? defaults.schedulerMode
+        batchingPreset = field(String.self, .batchingPreset) ?? defaults.batchingPreset
+        let decodedSchedulingPreset = field(String.self, .schedulingPreset)
         schedulingPreset = Self.normalizedSchedulingPreset(
             decodedSchedulingPreset ?? defaults.schedulingPreset,
             schedulerMode: schedulerMode,
             batchingPreset: batchingPreset,
             inferLegacyModePair: false
         )
-        maxActiveRequests = try container.decodeIfPresent(Int.self, forKey: .maxActiveRequests)
-        decodeBatchMax = try container.decodeIfPresent(Int.self, forKey: .decodeBatchMax)
-        batchWaitMs = try container.decodeIfPresent(Double.self, forKey: .batchWaitMs)
-        prefillChunkTokens = try container.decodeIfPresent(Int.self, forKey: .prefillChunkTokens)
-        experimentalMTPCohorts = try container.decodeIfPresent(Bool.self, forKey: .experimentalMTPCohorts) ?? defaults.experimentalMTPCohorts
-        embeddingModels = try container.decodeIfPresent([String].self, forKey: .embeddingModels) ?? defaults.embeddingModels
-        rerankerModels = try container.decodeIfPresent([String].self, forKey: .rerankerModels) ?? defaults.rerankerModels
-        retrievalMaxResident = try container.decodeIfPresent(Int.self, forKey: .retrievalMaxResident) ?? defaults.retrievalMaxResident
-        retrievalIdleTimeout = try container.decodeIfPresent(Double.self, forKey: .retrievalIdleTimeout) ?? defaults.retrievalIdleTimeout
-        ramSessionCachePolicy = try container.decodeIfPresent(String.self, forKey: .ramSessionCachePolicy) ?? defaults.ramSessionCachePolicy
-        ramSessionBlockPrefixRestore = try container.decodeIfPresent(Bool.self, forKey: .ramSessionBlockPrefixRestore) ?? defaults.ramSessionBlockPrefixRestore
-        ramSessionCacheMaxEntries = try container.decodeIfPresent(Int.self, forKey: .ramSessionCacheMaxEntries) ?? defaults.ramSessionCacheMaxEntries
-        ramSessionCacheMaxSize = try container.decodeIfPresent(String.self, forKey: .ramSessionCacheMaxSize) ?? defaults.ramSessionCacheMaxSize
-        ramSessionCachePerSessionMaxSize = try container.decodeIfPresent(String.self, forKey: .ramSessionCachePerSessionMaxSize) ?? defaults.ramSessionCachePerSessionMaxSize
-        pagedKVQuantization = try container.decodeIfPresent(String.self, forKey: .pagedKVQuantization) ?? defaults.pagedKVQuantization
-        ssdSessionCache = try container.decodeIfPresent(String.self, forKey: .ssdSessionCache) ?? defaults.ssdSessionCache
-        ssdSessionCacheDir = try container.decodeIfPresent(String.self, forKey: .ssdSessionCacheDir)
-        ssdSessionCacheMaxSize = try container.decodeIfPresent(String.self, forKey: .ssdSessionCacheMaxSize) ?? defaults.ssdSessionCacheMaxSize
-        ssdSessionCacheMinPrefixTokens = try container.decodeIfPresent(Int.self, forKey: .ssdSessionCacheMinPrefixTokens) ?? defaults.ssdSessionCacheMinPrefixTokens
-        contextWindow = try container.decodeIfPresent(Int.self, forKey: .contextWindow)
-        contextWindowModelFamily = try container.decodeIfPresent(String.self, forKey: .contextWindowModelFamily)
-        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
-        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
-        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
-        samplerLegacyTripleMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .samplerLegacyTripleMigrated
-        ) ?? false
-        profileLegacyDefaultMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .profileLegacyDefaultMigrated
-        ) ?? false
-        streamCadenceMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .streamCadenceMigrated
-        ) ?? false
-        presencePenalty = try container.decodeIfPresent(Double.self, forKey: .presencePenalty)
-        reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
-        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
-        liveSettingsModelFamily = try container.decodeIfPresent(String.self, forKey: .liveSettingsModelFamily)
-        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
-        enableThermalPolling = try container.decodeIfPresent(Bool.self, forKey: .enableThermalPolling) ?? defaults.enableThermalPolling
-        streamSnapshotIntervalMs = try container.decodeIfPresent(Int.self, forKey: .streamSnapshotIntervalMs) ?? defaults.streamSnapshotIntervalMs
-        performanceLock = try container.decodeIfPresent(Bool.self, forKey: .performanceLock) ?? defaults.performanceLock
-        launchDaemonOnOpen = try container.decodeIfPresent(Bool.self, forKey: .launchDaemonOnOpen) ?? defaults.launchDaemonOnOpen
-        automaticDaemonRestart = try container.decodeIfPresent(Bool.self, forKey: .automaticDaemonRestart) ?? defaults.automaticDaemonRestart
-        hermesAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .hermesAutoApprove) ?? defaults.hermesAutoApprove
-        let decodedFanMode = try container.decodeIfPresent(String.self, forKey: .fanMode)
-        let legacyPin = try container.decodeIfPresent(Bool.self, forKey: .pinFansAtMaxOnStart)
+        maxActiveRequests = field(Int.self, .maxActiveRequests)
+        decodeBatchMax = field(Int.self, .decodeBatchMax)
+        batchWaitMs = field(Double.self, .batchWaitMs)
+        prefillChunkTokens = field(Int.self, .prefillChunkTokens)
+        experimentalMTPCohorts = field(Bool.self, .experimentalMTPCohorts) ?? defaults.experimentalMTPCohorts
+        embeddingModels = container.lenientDecodeArrayIfPresent(of: String.self, forKey: .embeddingModels, issues: issues)
+            ?? defaults.embeddingModels
+        rerankerModels = container.lenientDecodeArrayIfPresent(of: String.self, forKey: .rerankerModels, issues: issues)
+            ?? defaults.rerankerModels
+        retrievalMaxResident = field(Int.self, .retrievalMaxResident) ?? defaults.retrievalMaxResident
+        retrievalIdleTimeout = field(Double.self, .retrievalIdleTimeout) ?? defaults.retrievalIdleTimeout
+        ramSessionCachePolicy = field(String.self, .ramSessionCachePolicy) ?? defaults.ramSessionCachePolicy
+        ramSessionBlockPrefixRestore = field(Bool.self, .ramSessionBlockPrefixRestore) ?? defaults.ramSessionBlockPrefixRestore
+        ramSessionCacheMaxEntries = field(Int.self, .ramSessionCacheMaxEntries) ?? defaults.ramSessionCacheMaxEntries
+        ramSessionCacheMaxSize = field(String.self, .ramSessionCacheMaxSize) ?? defaults.ramSessionCacheMaxSize
+        ramSessionCachePerSessionMaxSize = field(String.self, .ramSessionCachePerSessionMaxSize) ?? defaults.ramSessionCachePerSessionMaxSize
+        pagedKVQuantization = field(String.self, .pagedKVQuantization) ?? defaults.pagedKVQuantization
+        ssdSessionCache = field(String.self, .ssdSessionCache) ?? defaults.ssdSessionCache
+        ssdSessionCacheDir = field(String.self, .ssdSessionCacheDir)
+        ssdSessionCacheMaxSize = field(String.self, .ssdSessionCacheMaxSize) ?? defaults.ssdSessionCacheMaxSize
+        ssdSessionCacheMinPrefixTokens = field(Int.self, .ssdSessionCacheMinPrefixTokens) ?? defaults.ssdSessionCacheMinPrefixTokens
+        contextWindow = field(Int.self, .contextWindow)
+        contextWindowModelFamily = field(String.self, .contextWindowModelFamily)
+        temperature = field(Double.self, .temperature)
+        topP = field(Double.self, .topP)
+        topK = field(Int.self, .topK)
+        samplerLegacyTripleMigrated = field(Bool.self, .samplerLegacyTripleMigrated) ?? false
+        profileLegacyDefaultMigrated = field(Bool.self, .profileLegacyDefaultMigrated) ?? false
+        streamCadenceMigrated = field(Bool.self, .streamCadenceMigrated) ?? false
+        presencePenalty = field(Double.self, .presencePenalty)
+        reasoning = field(String.self, .reasoning)
+        reasoningEffort = field(String.self, .reasoningEffort)
+        liveSettingsModelFamily = field(String.self, .liveSettingsModelFamily)
+        apiKey = field(String.self, .apiKey)
+        enableThermalPolling = field(Bool.self, .enableThermalPolling) ?? defaults.enableThermalPolling
+        streamSnapshotIntervalMs = field(Int.self, .streamSnapshotIntervalMs) ?? defaults.streamSnapshotIntervalMs
+        performanceLock = field(Bool.self, .performanceLock) ?? defaults.performanceLock
+        launchDaemonOnOpen = field(Bool.self, .launchDaemonOnOpen) ?? defaults.launchDaemonOnOpen
+        automaticDaemonRestart = field(Bool.self, .automaticDaemonRestart) ?? defaults.automaticDaemonRestart
+        hermesAutoApprove = field(Bool.self, .hermesAutoApprove) ?? defaults.hermesAutoApprove
+        let decodedFanMode = field(String.self, .fanMode)
+        let legacyPin = field(Bool.self, .pinFansAtMaxOnStart)
         let legacyFallback: String
         if let legacyPin {
             legacyFallback = legacyPin ? MTPLXFanMode.max.rawValue : MTPLXFanMode.default.rawValue
@@ -609,29 +752,31 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         let resolvedFanMode = MTPLXFanMode.normalized(decodedFanMode ?? legacyFallback)
         fanMode = resolvedFanMode.rawValue
         pinFansAtMaxOnStart = resolvedFanMode == .max
-        lastLaunchTarget = try container.decodeIfPresent(String.self, forKey: .lastLaunchTarget) ?? defaults.lastLaunchTarget
+        lastLaunchTarget = field(String.self, .lastLaunchTarget) ?? defaults.lastLaunchTarget
         hermesWorkspacePath = Self.normalizedHermesWorkspacePath(
-            try container.decodeIfPresent(String.self, forKey: .hermesWorkspacePath)
-                ?? defaults.hermesWorkspacePath
+            field(String.self, .hermesWorkspacePath) ?? defaults.hermesWorkspacePath
         )
-        lastHermesProfile = try container.decodeIfPresent(String.self, forKey: .lastHermesProfile)
-        lastHermesSessionID = try container.decodeIfPresent(String.self, forKey: .lastHermesSessionID)
-        lastHermesSessionTitle = try container.decodeIfPresent(String.self, forKey: .lastHermesSessionTitle)
-        onboardingCompletedAt = try container.decodeIfPresent(Date.self, forKey: .onboardingCompletedAt)
-        lastTunedDepth = try container.decodeIfPresent(Int.self, forKey: .lastTunedDepth)
-        lastTunedAt = try container.decodeIfPresent(Date.self, forKey: .lastTunedAt)
-        tunedControlRecord = try container.decodeIfPresent(TunedControlRecord.self, forKey: .tunedControlRecord)
-        tunedControlRecordsByModel = try container.decodeIfPresent(
-            [String: TunedControlRecord].self,
-            forKey: .tunedControlRecordsByModel
+        lastHermesProfile = field(String.self, .lastHermesProfile)
+        lastHermesSessionID = field(String.self, .lastHermesSessionID)
+        lastHermesSessionTitle = field(String.self, .lastHermesSessionTitle)
+        onboardingCompletedAt = field(Date.self, .onboardingCompletedAt)
+        lastTunedDepth = field(Int.self, .lastTunedDepth)
+        lastTunedAt = field(Date.self, .lastTunedAt)
+        // A tune record with a missing or mistyped field carries nothing
+        // usable, so the record is skipped as a whole and its siblings
+        // load; the legacy single record follows the same rule.
+        tunedControlRecord = field(TunedControlRecord.self, .tunedControlRecord)
+        tunedControlRecordsByModel = container.lenientDecodeDictionaryIfPresent(
+            of: TunedControlRecord.self,
+            forKey: .tunedControlRecordsByModel,
+            issues: issues
         ) ?? defaults.tunedControlRecordsByModel
-        customModels = try container.decodeIfPresent([MTPLXModelOption].self, forKey: .customModels) ?? defaults.customModels
-        huggingFaceHandle = try container.decodeIfPresent(String.self, forKey: .huggingFaceHandle)
-        hfEndpoint = try container.decodeIfPresent(String.self, forKey: .hfEndpoint)
-        memoryLimitGB = Self.normalizedMemoryLimitGB(
-            try container.decodeIfPresent(Int.self, forKey: .memoryLimitGB)
-        )
-        allowSwap = try container.decodeIfPresent(Bool.self, forKey: .allowSwap) ?? defaults.allowSwap
+        customModels = container.lenientDecodeArrayIfPresent(of: MTPLXModelOption.self, forKey: .customModels, issues: issues)
+            ?? defaults.customModels
+        huggingFaceHandle = field(String.self, .huggingFaceHandle)
+        hfEndpoint = field(String.self, .hfEndpoint)
+        memoryLimitGB = Self.normalizedMemoryLimitGB(field(Int.self, .memoryLimitGB))
+        allowSwap = field(Bool.self, .allowSwap) ?? defaults.allowSwap
         sanitizeLaunchCriticalFields()
     }
 

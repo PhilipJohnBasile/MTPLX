@@ -256,6 +256,9 @@ public final class MTPLXBackendStore: ObservableObject {
     /// One-line banner shown after the configured port was occupied and the
     /// daemon moved to the next free port (persisted to settings).
     @Published public private(set) var portFallbackNotice: String?
+    /// One-line, dismissable banner shown when `settings.json` could not be
+    /// read at launch and was set aside (see `loadPersistedSettings`).
+    @Published public private(set) var settingsRecoveryNotice: SettingsRecoveryNotice?
     @Published public private(set) var pendingModelDownload: PendingModelDownload?
     @Published public private(set) var modelDownloadProgress: DownloadProgressSnapshot?
     @Published public private(set) var modelDownloadFailure: String?
@@ -444,16 +447,50 @@ public final class MTPLXBackendStore: ObservableObject {
         }
     }
 
+    /// Load `settings.json`. A file with some bad fields loads with those
+    /// fields at their defaults (each one logged); a file that cannot be
+    /// read at all is set aside beside itself and the app starts from
+    /// defaults with `settingsRecoveryNotice` naming the preserved file, so
+    /// the reset is visible and the user's original bytes survive the next
+    /// save.
     public func loadPersistedSettings() {
-        if var loaded = try? settingsStore.load() {
-            if shouldPromoteStaleOpenCodeTarget(loaded) {
-                loaded.lastLaunchTarget = LaunchTarget.openCode.rawValue
-                try? settingsStore.save(loaded)
-            }
-            configuration = loaded
-            seedLiveSettingsFromConfiguration(loaded)
-            supervisor.setAutomaticRestartEnabled(loaded.automaticDaemonRestart)
+        let result = settingsStore.loadWithRecovery()
+        var loaded = result.configuration
+        if shouldPromoteStaleOpenCodeTarget(loaded) {
+            loaded.lastLaunchTarget = LaunchTarget.openCode.rawValue
+            try? settingsStore.save(loaded)
         }
+        configuration = loaded
+        seedLiveSettingsFromConfiguration(loaded)
+        supervisor.setAutomaticRestartEnabled(loaded.automaticDaemonRestart)
+        settingsRecoveryNotice = result.recovery
+        var lines = result.degradedFields.map { issue in
+            "settings: \(issue.path) could not be read (\(issue.reason)); using the default"
+        }
+        switch result.recovery {
+        case .unreadableFileKept(let preservedAt, let reason)?:
+            lines.append(
+                "settings: \(settingsStore.settingsURL.path) could not be read (\(reason)); "
+                    + "kept as \(preservedAt.path) and started from defaults"
+            )
+        case .unreadableFileLeftInPlace(let url, let reason, let moveFailure)?:
+            lines.append(
+                "settings: \(url.path) could not be read (\(reason)) and could not be moved aside "
+                    + "(\(moveFailure)); started from defaults"
+            )
+        case nil:
+            break
+        }
+        guard !lines.isEmpty else { return }
+        Task { [supervisor] in
+            for line in lines {
+                await supervisor.logs.append(line, stream: .system)
+            }
+        }
+    }
+
+    public func dismissSettingsRecoveryNotice() {
+        settingsRecoveryNotice = nil
     }
 
     public func saveSettings(_ next: MTPLXAppConfiguration) throws {

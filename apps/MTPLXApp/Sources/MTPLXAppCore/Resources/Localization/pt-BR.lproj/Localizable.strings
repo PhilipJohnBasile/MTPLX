@@ -1515,3 +1515,5 @@
 "· logical %@" = "· lógico %@";
 "· scanning" = "· verificando";
 "· untracked %@" = "· não rastreado %@";
+"Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "Não foi possível ler as configurações, então o MTPLX está usando os padrões. O arquivo ilegível foi mantido como %@.";
+"Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Não foi possível ler as configurações, então o MTPLX está usando os padrões. Não foi possível reservar %@, e ele será substituído no próximo salvamento.";

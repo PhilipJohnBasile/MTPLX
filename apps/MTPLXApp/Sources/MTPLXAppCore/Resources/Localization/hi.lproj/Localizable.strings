@@ -1515,3 +1515,5 @@
 "· logical %@" = "· लॉजिकल %@";
 "· scanning" = "· स्कैनिंग";
 "· untracked %@" = "· अनट्रैक्ड %@";
+"Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "सेटिंग्स पढ़ी नहीं जा सकीं, इसलिए MTPLX डिफ़ॉल्ट सेटिंग्स का उपयोग कर रहा है। न पढ़ी जा सकने वाली फ़ाइल %@ के रूप में सुरक्षित रखी गई है।";
+"Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "सेटिंग्स पढ़ी नहीं जा सकीं, इसलिए MTPLX डिफ़ॉल्ट सेटिंग्स का उपयोग कर रहा है। %@ को अलग नहीं रखा जा सका और अगली बार सहेजने पर इसे बदल दिया जाएगा।";

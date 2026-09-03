@@ -1515,3 +1515,5 @@
 "· logical %@" = "· 逻辑 %@";
 "· scanning" = "· 正在扫描";
 "· untracked %@" = "· 未跟踪 %@";
+"Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "无法读取设置，MTPLX 正在使用默认设置。无法读取的文件已保留为 %@。";
+"Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "无法读取设置，MTPLX 正在使用默认设置。无法将 %@ 移至一旁，下次保存时将被替换。";

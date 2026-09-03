@@ -29,6 +29,7 @@ private struct ContentViewBackendSnapshot: Equatable {
     let modelPackUpdatingRepoID: String?
     let modelPackUpdateStatus: String?
     let modelPackUpdateNeedsRestart: ModelUpdateInfo?
+    let settingsRecoveryNotice: SettingsRecoveryNotice?
 
     @MainActor
     init(backend: MTPLXBackendStore, configuredModelFamily: String) {
@@ -51,6 +52,7 @@ private struct ContentViewBackendSnapshot: Equatable {
         modelPackUpdatingRepoID = backend.modelPackUpdatingRepoID
         modelPackUpdateStatus = backend.modelPackUpdateStatus
         modelPackUpdateNeedsRestart = backend.modelPackUpdateNeedsRestart
+        settingsRecoveryNotice = backend.settingsRecoveryNotice
     }
 }
 
@@ -213,6 +215,12 @@ struct ContentView: View {
                         .layoutPriority(2)
                     ConnectionIssueBanner(state: snapshot.connectionState)
                         .layoutPriority(2)
+                    if let notice = snapshot.settingsRecoveryNotice {
+                        SettingsRecoveryBanner(notice: notice) {
+                            backend.dismissSettingsRecoveryNotice()
+                        }
+                        .layoutPriority(2)
+                    }
 
                     // Dashboard + BottomTabBar are rendered for the normal
                     // app shell. Benchmark mode intentionally unmounts this
@@ -406,6 +414,64 @@ private struct DashboardBackdropSurface: View {
         Brand.pianoRadial
             .ignoresSafeArea()
             .accessibilityHidden(true)
+    }
+}
+
+// MARK: - SettingsRecoveryBanner
+
+/// One-line, dismissable top-of-window notice: `settings.json` could not be
+/// read at launch, the app started from defaults, and the original file
+/// was kept beside it. Same shape as `ConnectionIssueBanner`, with a
+/// Reveal in Finder action so the user can find what was preserved.
+private struct SettingsRecoveryBanner: View {
+    let notice: SettingsRecoveryNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.badge.exclamationmark")
+                .font(.callout)
+                .foregroundStyle(Brand.warning)
+            Text(message)
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(Brand.textHighlight)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(message)
+            Spacer(minLength: 8)
+            Button(tr("Reveal in Finder")) {
+                NSWorkspace.shared.activateFileViewerSelecting([notice.fileURL])
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Button(tr("Dismiss"), action: onDismiss)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Brand.warning.opacity(0.14))
+        .overlay(
+            Rectangle()
+                .fill(Brand.warning.opacity(0.35))
+                .frame(height: 0.5),
+            alignment: .bottom
+        )
+    }
+
+    private var message: String {
+        switch notice {
+        case .unreadableFileKept(let preservedAt, _):
+            return tr(
+                "Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@.",
+                preservedAt.lastPathComponent
+            )
+        case .unreadableFileLeftInPlace(let url, _, _):
+            return tr(
+                "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save.",
+                url.lastPathComponent
+            )
+        }
     }
 }
 
