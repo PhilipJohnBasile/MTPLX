@@ -332,18 +332,59 @@ def _complete_indexed_weights(path: Path, index_name: str) -> bool:
 _SHARD_FILENAME_RE = re.compile(r"-\d+-of-\d+", re.IGNORECASE)
 
 
-def _has_incomplete_transfers(path: Path) -> bool:
-    """``snapshot_download`` stages in-flight files as ``*.incomplete``.
+def _indexed_weight_files(path: Path) -> set[str] | None:
+    """Relative names of the files the weight index needs, or None when the
+    checkpoint has no index."""
 
-    Markers inside the hub's ``.cache`` bookkeeping tree are ignored: they
-    can outlive a successful resume, and the weight checks verify the final
-    files directly. A marker next to the weights, however, means the final
-    file never landed.
+    for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        index = path / index_name
+        if not index.is_file():
+            continue
+        try:
+            data = json.loads(index.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        weight_map = data.get("weight_map") if isinstance(data, dict) else None
+        names = {
+            name
+            for name in (weight_map.values() if isinstance(weight_map, dict) else [])
+            if isinstance(name, str) and name.strip()
+        }
+        names.add(index_name)
+        return names
+    return None
+
+
+def _has_incomplete_transfers(path: Path) -> bool:
+    """An interrupted transfer of a file the model needs.
+
+    Downloads stage in-flight files as ``*.incomplete``. A partial blocks
+    only when its final file has not landed and the checkpoint needs it:
+    markers inside the hub's ``.cache`` bookkeeping tree, partials next to
+    a landed final file (an older attempt's leftover; the downloader
+    replaces its partial into the final atomically and unlinks a stale
+    final before refetching) and partials of files the current weight
+    index does not list (an earlier revision's shard names) are not
+    transfers. Treating every stray marker as "partial" kept a
+    byte-complete folder on an endless Retry.
     """
 
+    needed = _indexed_weight_files(path)
     try:
         for marker in path.rglob("*.incomplete"):
-            if ".cache" in marker.relative_to(path).parts:
+            relative = marker.relative_to(path)
+            if ".cache" in relative.parts:
+                continue
+            final = marker.with_name(marker.name[: -len(".incomplete")])
+            try:
+                if final.is_file() and final.stat().st_size > 0:
+                    continue
+            except OSError:
+                continue
+            if needed is None:
+                if _complete_unindexed_weights(path):
+                    continue
+            elif str(final.relative_to(path)) not in needed:
                 continue
             return True
     except OSError:
@@ -598,6 +639,59 @@ def _repo_files_from_snapshot(
         )
         for name, entry in remote_files.items()
     ]
+
+
+def stale_transient_bytes(destination: Path, repo_files: Iterable[RepoFile]) -> tuple[int, int]:
+    """Leftover transients under ``destination`` as (bytes, file count).
+
+    ``*.incomplete`` partials that belong to no manifest file, and anything
+    under the hub cache's ``.cache`` staging tree. They are what inflated the
+    download panel; they are reported so the user knows the folder holds
+    them, never removed here.
+    """
+
+    if not destination.is_dir():
+        return 0, 0
+    manifest: set[Path] = set()
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        manifest.add(target)
+        manifest.add(target.with_name(target.name + ".incomplete"))
+    total = 0
+    count = 0
+    for child in destination.rglob("*"):
+        try:
+            if not child.is_file() or child in manifest:
+                continue
+            parts = child.relative_to(destination).parts
+            if child.suffix != ".incomplete" and ".cache" not in parts:
+                continue
+            total += child.stat().st_size
+            count += 1
+        except OSError:
+            continue
+    return total, count
+
+
+def _model_bytes_without_transients(path: Path) -> int:
+    """The folder's bytes minus the ``.cache`` staging tree and partials, for
+    caches whose manifest is unknown (pulls older than the 2.9 marker)."""
+
+    if not path.exists():
+        return 0
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if ".cache" in child.relative_to(path).parts:
+                continue
+            if child.is_file() and child.suffix != ".incomplete":
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def _emit_download_progress(callback: DownloadProgressCallback | None, payload: dict[str, Any]) -> None:
@@ -1009,6 +1103,7 @@ def pull_model(
         destination = cached_model_path(repo_id, cache_dir=root)
 
     started_size = directory_size_bytes(destination)
+    started_disk_bytes = started_size
     marker = read_source_marker(destination)
     remote_sha: str | None = None
     remote_files: dict[str, dict[str, Any]] | None = None
@@ -1054,14 +1149,26 @@ def pull_model(
                 "cached MTPLX model is incomplete: "
                 + ", ".join(validation["missing_files"] or [str(validation.get("contract_error"))])
             )
+        reuse_manifest = _repo_files_from_snapshot((marker or {}).get("files"))
+        model_bytes = (
+            manifest_bytes_on_disk(resolved, reuse_manifest)
+            if reuse_manifest
+            else _model_bytes_without_transients(resolved)
+        )
+        started_size = model_bytes
+        disk_bytes = directory_size_bytes(resolved)
+        stale_bytes, stale_files = stale_transient_bytes(resolved, reuse_manifest)
         _emit_download_progress(
             progress_callback,
             {
                 "event": "complete",
                 "repo_id": repo_id,
                 "path": str(resolved),
-                "size_bytes": directory_size_bytes(resolved),
-                "total_bytes": directory_size_bytes(resolved),
+                "size_bytes": model_bytes,
+                "total_bytes": model_bytes,
+                "disk_bytes": disk_bytes,
+                "stale_bytes": stale_bytes,
+                "stale_files": stale_files,
                 "delta_bytes": 0,
                 "reused_existing": True,
             },
@@ -1114,6 +1221,9 @@ def pull_model(
                 "path": str(destination),
                 "size_bytes": started_size,
                 "total_bytes": total_bytes,
+                "disk_bytes": started_disk_bytes,
+                "stale_bytes": stale_transient_bytes(destination, manifest)[0],
+                "stale_files": stale_transient_bytes(destination, manifest)[1],
             },
         )
         progress_suppression = (
@@ -1179,6 +1289,9 @@ def pull_model(
             files=remote_files,
         )
         final_size = _landed_bytes(resolved)
+        model_bytes = final_size
+        disk_bytes = directory_size_bytes(resolved)
+        stale_bytes, stale_files = stale_transient_bytes(resolved, manifest)
         _emit_download_progress(
             progress_callback,
             {
@@ -1187,6 +1300,9 @@ def pull_model(
                 "path": str(resolved),
                 "size_bytes": final_size,
                 "total_bytes": total_bytes if total_bytes else final_size,
+                "disk_bytes": disk_bytes,
+                "stale_bytes": stale_bytes,
+                "stale_files": stale_files,
                 "delta_bytes": final_size - started_size,
             },
         )
@@ -1201,7 +1317,10 @@ def pull_model(
         "reused_existing": reused_existing,
         "resumed_existing": resumed_existing,
         "started_size_bytes": started_size,
-        "size_bytes": directory_size_bytes(resolved),
+        "size_bytes": model_bytes,
+        "disk_bytes": disk_bytes,
+        "stale_bytes": stale_bytes,
+        "stale_files": stale_files,
         "has_runtime_contract": (resolved / "mtplx_runtime.json").exists(),
         "has_config": (resolved / "config.json").exists(),
         "validation": _pull_validation(resolved, repo_id),

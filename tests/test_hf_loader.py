@@ -214,13 +214,28 @@ def test_cached_model_is_complete_rejects_partial_index_even_with_one_shard(
 
 
 def test_cached_model_is_complete_rejects_incomplete_transfer_marker(tmp_path: Path):
+    # A partial whose final file has not landed is an interrupted transfer.
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / "config.json").write_text("{}\n", encoding="utf-8")
+    (cached / "model.safetensors.incomplete").write_bytes(b"partial")
+
+    assert cached_model_is_complete(cached) is False
+
+
+def test_cached_model_is_complete_ignores_partial_next_to_landed_weights(tmp_path: Path):
+    # A partial next to a landed final file is a leftover of an earlier
+    # attempt, not a transfer: the downloader replaces its partial into the
+    # final atomically and unlinks a stale final before re-fetching. Treating
+    # the leftover as "partial" kept a byte-complete folder on an endless
+    # Retry in the app.
     cached = tmp_path / "mtplx--example"
     cached.mkdir()
     (cached / "config.json").write_text("{}\n", encoding="utf-8")
     (cached / "model.safetensors").write_bytes(b"weights")
     (cached / "model.safetensors.incomplete").write_bytes(b"partial")
 
-    assert cached_model_is_complete(cached) is False
+    assert cached_model_is_complete(cached) is True
 
 
 def test_cached_model_is_complete_rejects_shards_that_sort_before_index(
