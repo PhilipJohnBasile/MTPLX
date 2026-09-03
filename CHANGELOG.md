@@ -8,6 +8,14 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Added
 
+- **`--allow-swap` serves past the machine fit again (#427).** 2.10
+  capped the default window at the memory plan's fit and refused prompts
+  past it with a 507; operators who ran 2.9.x past the fit on purpose
+  (32 GB Macs, swap accepted) lost that option. With the flag the
+  default window is the model's own maximum, prompts past the fit are
+  admitted, the banner and `/health` say so, and the plan still reports
+  the overcommit. `MTPLX_ALLOW_SWAP=1` is the env form for the app and
+  `mtplx start`.
 - **Flash-Next speed lane on by default (PR #391 by @davidtai).** The
   compiled fixed-M4 verifier, batched target distributions, compiled MTP
   prepare, relaxed draft ties and the fused K/V gather are the family

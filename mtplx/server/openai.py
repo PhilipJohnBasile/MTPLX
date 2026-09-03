@@ -2294,6 +2294,19 @@ def apply_memory_caps_preflight(
     return outcome
 
 
+def _allow_swap_enabled(args: Any) -> bool:
+    """--allow-swap on the command line, or MTPLX_ALLOW_SWAP=1 in the env.
+
+    The env form exists for launchers that do not expose serve flags (the
+    desktop app, ``mtplx start``): the daemon inherits its environment.
+    """
+
+    if bool(getattr(args, "allow_swap", False)):
+        return True
+    raw = os.environ.get("MTPLX_ALLOW_SWAP", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _select_backend_context_window(
     backend: BackendDescriptor,
     *,
@@ -2859,6 +2872,11 @@ class ServerState:
             args.model,
         )
         requested_context_window = int(getattr(args, "context_window", None) or 0)
+        # --allow-swap / MTPLX_ALLOW_SWAP (#427): the operator accepts swap
+        # past the machine fit. The fit stops shaping the default window
+        # and stops refusing prompts; the plan still reports the
+        # overcommit honestly and the pressure guard keeps shedding.
+        self.allow_swap = _allow_swap_enabled(args)
         # Machine memory plan (issue #305): weights are a disk scan, RAM a
         # sysctl, so the machine's largest safe window is knowable BEFORE
         # any request — and it shapes the default window below. Five
@@ -2977,7 +2995,7 @@ class ServerState:
             self.backend_descriptor,
             model_max=int(self.model_context_window_max),
             requested=requested_context_window,
-            machine_fit=_machine_fit,
+            machine_fit=0 if self.allow_swap else _machine_fit,
         )
         if (
             scheduler_config.mode == SchedulerMode.MTP_BATCH
@@ -3001,7 +3019,9 @@ class ServerState:
         )
 
         _plan_inputs["requested_context"] = (
-            int(self.context_window) if requested_context_window > 0 else None
+            int(self.context_window)
+            if requested_context_window > 0 or self.allow_swap
+            else None
         )
         _plan_inputs["dense_decode_ceiling"] = int(_dense_decode_ceiling())
         self.memory_plan = _plan_memory(**_plan_inputs)
@@ -3011,6 +3031,12 @@ class ServerState:
             )
             for _plan_note in self.memory_plan.notes:
                 _startup_line(f"[5/6] Memory plan: {_plan_note}")
+            if self.allow_swap and self.memory_plan.context_overcommitted:
+                _startup_line(
+                    "[5/6] Memory plan: --allow-swap: prompts past the fit of "
+                    f"{self.memory_plan.context_window_fit} tokens are admitted; "
+                    "expect swap and slow decode there"
+                )
         else:
             # A detector whose failure path is "quietly use the default"
             # is how the app-daemon PATH bug shipped (mistakes ledger);
@@ -16638,6 +16664,7 @@ def _mtplx_dashboard_snapshot(state: "ServerState") -> dict[str, Any]:
             if getattr(state, "memory_plan", None) is not None
             else None
         ),
+        "allow_swap": bool(getattr(state, "allow_swap", False)),
         "memory_guard_events": list(
             getattr(dashboard, "memory_guard_events", ()) or ()
         )[-8:],
@@ -16762,6 +16789,13 @@ def _allocation_failure_http_exception(
             f"machine's fit of {plan.context_window_fit} tokens; serve at or "
             "below the fit (or use q8 KV quantization)."
         )
+        if bool(getattr(state, "allow_swap", False)):
+            advice = (
+                "--allow-swap admitted this prompt past the machine's fit of "
+                f"{plan.context_window_fit} tokens and the allocator still "
+                "refused; reduce the prompt, close other apps, or use q8 KV "
+                "quantization."
+            )
     return HTTPException(
         status_code=507,
         detail=(
@@ -20771,6 +20805,9 @@ def _reject_prompt_over_context(state: ServerState, prompt_token_count: int) -> 
                 "code": "context_length_exceeded",
             },
         )
+    if bool(getattr(state, "allow_swap", False)):
+        # #427: the operator asked for the pre-2.10 behavior past the fit.
+        return None
     plan = getattr(state, "memory_plan", None)
     if (
         plan is not None
@@ -34606,6 +34643,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=0,
         help="Override context window. Default reads the model/tokenizer config.",
+    )
+    parser.add_argument(
+        "--allow-swap",
+        action="store_true",
+        help=(
+            "Serve past this machine's memory fit (#427): the default window "
+            "is the model's own maximum again and prompts past the fit are "
+            "admitted instead of refused with 507. Expect swap and slow "
+            "decode there. MTPLX_ALLOW_SWAP=1 is the env form."
+        ),
     )
     parser.add_argument(
         "--temperature",
