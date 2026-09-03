@@ -135,7 +135,7 @@ struct OnboardingStepContainer<Content: View, Primary: View>: View {
                         HStack(spacing: 4) {
                             Image(systemName: "chevron.left")
                                 .font(.system(size: 11, weight: .semibold))
-                            Text("Back")
+                            Text(tr("Back"))
                                 .font(.system(size: 13, weight: .medium))
                         }
                         .foregroundStyle(Brand.typeSecondary)
@@ -144,7 +144,7 @@ struct OnboardingStepContainer<Content: View, Primary: View>: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Back to previous step")
+                    .accessibilityLabel(tr("Back to previous step"))
                 }
                 Spacer(minLength: 0)
                 primary()
@@ -166,12 +166,12 @@ struct OnboardingStepContainer<Content: View, Primary: View>: View {
                     .animation(.spring(response: 0.45, dampingFraction: 0.85), value: progressFraction)
             }
             .accessibilityHidden(true)
-            Text("Step \(stepIndex + 1) of \(stepCount)")
+            Text(tr("Step %lld of %lld", stepIndex + 1, stepCount))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .tracking(0.6)
                 .foregroundStyle(Brand.typeTertiary)
                 .contentTransition(.numericText())
-                .accessibilityLabel("Step \(stepIndex + 1) of \(stepCount)")
+                .accessibilityLabel(tr("Step %lld of %lld", stepIndex + 1, stepCount))
         }
     }
 

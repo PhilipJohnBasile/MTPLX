@@ -33,17 +33,17 @@ struct TuneStep: View {
 
     private var title: String {
         if !supportsTune {
-            return "Defaults configured"
+            return tr("Defaults configured")
         }
         if orchestrator.tuneResult != nil {
-            return "You're set"
+            return tr("You're set")
         }
-        return "Tuning for your Mac"
+        return tr("Tuning for your Mac")
     }
 
     private var subtitle: String? {
         if !supportsTune {
-            return "\(modelFamilyLabel) uses its backend defaults for this release."
+            return tr("%@ uses its backend defaults for this release.", modelFamilyLabel)
         }
         if let status = orchestrator.tuneStatusMessage {
             return status
@@ -51,19 +51,19 @@ struct TuneStep: View {
         if orchestrator.tuneResult != nil {
             return nil
         }
-        return "Finding the fastest setting for your Mac."
+        return tr("Finding the fastest setting for your Mac.")
     }
 
     @ViewBuilder
     private var primaryButton: some View {
         if !supportsTune || orchestrator.tuneResult != nil {
-            OnboardingPrimaryButton("Open Dashboard") { onFinish() }
+            OnboardingPrimaryButton(tr("Open Dashboard")) { onFinish() }
         } else if orchestrator.isTuning {
-            OnboardingPrimaryButton("Stop") { orchestrator.cancelTune() }
+            OnboardingPrimaryButton(tr("Stop")) { orchestrator.cancelTune() }
         } else if orchestrator.tuneFailure != nil {
-            OnboardingPrimaryButton("Retry") { orchestrator.startTune() }
+            OnboardingPrimaryButton(tr("Retry")) { orchestrator.startTune() }
         } else {
-            OnboardingPrimaryButton("Start tuning") { orchestrator.startTune() }
+            OnboardingPrimaryButton(tr("Start tuning")) { orchestrator.startTune() }
         }
     }
 
@@ -83,17 +83,17 @@ struct TuneStep: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 28, weight: .semibold))
                 .foregroundStyle(Brand.success)
-            Text("\(modelFamilyLabel) is ready.")
+            Text(tr("%@ is ready.", modelFamilyLabel))
                 .font(.system(.title3, design: .rounded).weight(.semibold))
                 .foregroundStyle(Brand.typeHi)
-            Text("MTPLX will use the model's runtime defaults for this release.")
+            Text(tr("MTPLX will use the model's runtime defaults for this release."))
                 .font(.system(size: 13))
                 .foregroundStyle(Brand.typeSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
             HStack(spacing: 6) {
                 pillTag(modelTag)
-                pillTag("Tune skipped")
+                pillTag(tr("Tune skipped"))
                 Spacer()
             }
         }
@@ -117,19 +117,19 @@ struct TuneStep: View {
             }
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 8) {
-                Text("Takes a few minutes. Your fans will spin up for accurate timing.")
+                Text(tr("Takes a few minutes. Your fans will spin up for accurate timing."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
                 if !orchestrator.isTuning {
                     Button {
                         orchestrator.skipTuneWithSafeDefault()
                     } label: {
-                        Text("Skip for now")
+                        Text(tr("Skip for now"))
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Skip tuning and use a safe default")
+                    .accessibilityLabel(tr("Skip tuning and use a safe default"))
                 }
             }
         }
@@ -156,7 +156,7 @@ struct TuneStep: View {
                     .foregroundStyle(Brand.typeBody)
                     .monospacedDigit()
             } else if isRunning {
-                Text("running…")
+                Text(tr("running…"))
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Brand.typeSecondary)
             } else {
@@ -212,7 +212,7 @@ struct TuneStep: View {
                     .foregroundStyle(Brand.typeHi)
                 Spacer(minLength: 10)
                 if supportsTune {
-                    rerunButton(isSafeDefault(result) ? "Run tuning" : "Rerun")
+                    rerunButton(isSafeDefault(result) ? tr("Run tuning") : tr("Rerun"))
                 }
             }
             Text(result.bestDepth == 0 && result.allCandidates.isEmpty
@@ -221,7 +221,7 @@ struct TuneStep: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Brand.typeSecondary)
             if isSafeDefault(result) {
-                Text("You can run tuning later for measured speed.")
+                Text(tr("You can run tuning later for measured speed."))
                     .font(.system(size: 12))
                     .foregroundStyle(Brand.typeTertiary)
             }
@@ -254,7 +254,7 @@ struct TuneStep: View {
                 )
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title == "Run tuning" ? "Run tuning" : "Rerun tuning")
+        .accessibilityLabel(title == "Run tuning" ? tr("Run tuning") : tr("Rerun tuning"))
     }
 
     private func centeredResultTags(for result: TuneResult) -> some View {
@@ -303,15 +303,15 @@ struct TuneStep: View {
 
     private func headlineForResult(_ result: TuneResult) -> String {
         if result.bestDepth == 0 && result.allCandidates.isEmpty {
-            return "Model defaults selected."
+            return tr("Model defaults selected.")
         }
         if isSafeDefault(result) {
-            return "Safe default selected."
+            return tr("Safe default selected.")
         }
         if result.bestDepth == 0 {
-            return "Standard mode is fastest on your Mac."
+            return tr("Standard mode is fastest on your Mac.")
         }
-        return "Found your sweet spot."
+        return tr("Found your sweet spot.")
     }
 
     private func isSafeDefault(_ result: TuneResult) -> Bool {
@@ -321,7 +321,7 @@ struct TuneStep: View {
     private var modelTag: String {
         orchestrator.state.resolvedModel?.shortName
             ?? orchestrator.state.resolvedRepoID
-            ?? "Model"
+            ?? tr("Model")
     }
 
     private var supportsTune: Bool {
@@ -330,24 +330,24 @@ struct TuneStep: View {
 
     private var modelFamilyLabel: String {
         switch orchestrator.state.resolvedModelFamily {
-        case "gemma4": return "Gemma"
-        case "step": return "Step"
-        case "glm": return "GLM"
-        case "deepseek": return "DeepSeek"
-        case "qwen3_5": return "Qwen 3.5"
-        case "qwen3_6": return "Qwen 3.6"
-        case "qwen3_8": return "Qwen 3.8"
-        case "qwen4_exp": return "Flash-Next"
-        default: return "This model"
+        case "gemma4": return tr("Gemma")
+        case "step": return tr("Step")
+        case "glm": return tr("GLM")
+        case "deepseek": return tr("DeepSeek")
+        case "qwen3_5": return tr("Qwen 3.5")
+        case "qwen3_6": return tr("Qwen 3.6")
+        case "qwen3_8": return tr("Qwen 3.8")
+        case "qwen4_exp": return tr("Flash-Next")
+        default: return tr("This model")
         }
     }
 
     private func depthTag(for result: TuneResult) -> String {
-        if result.bestDepth == 0 { return "Base" }
+        if result.bestDepth == 0 { return tr("Base") }
         if orchestrator.state.resolvedModelFamily == "gemma4" {
-            return "Block \(result.bestDepth)"
+            return tr("Block %lld", result.bestDepth)
         }
-        return "MTP \(result.bestDepth)"
+        return tr("MTP %lld", result.bestDepth)
     }
 
     /// Same hairline-outline chip vocabulary as `ModelPickStep.badge`
@@ -373,7 +373,7 @@ struct TuneStep: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Brand.warning)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Tuning didn't finish")
+                Text(tr("Tuning didn't finish"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
                 Text(message)
@@ -429,7 +429,7 @@ struct TuneStep: View {
 
     private func formatTokS(_ tokS: Double) -> String {
         if tokS <= 0 { return "—" }
-        return String(format: "%.1f tok/s", tokS)
+        return tr("%.1f tok/s", tokS)
     }
 }
 
@@ -443,7 +443,7 @@ private struct TuneThroughputGrid: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("THROUGHPUT")
+            Text(tr("THROUGHPUT"))
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .tracking(1.0)
                 .foregroundStyle(Brand.typeSecondary)
@@ -518,7 +518,7 @@ private struct TuneThroughputGrid: View {
                 }
             }
             .frame(height: 6)
-            Text(String(format: "%.1f tok/s", candidate.tokS))
+            Text(tr("%.1f tok/s", candidate.tokS))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(isBest ? Brand.typeHi : Brand.typeSecondary)
                 .monospacedDigit()
@@ -529,7 +529,7 @@ private struct TuneThroughputGrid: View {
             format: "%@ %.1f tokens per second%@",
             candidate.candidate.displayLabel,
             candidate.tokS,
-            isBest ? ", selected" : ""
+            isBest ? tr(", selected") : ""
         ))
     }
 }
@@ -582,7 +582,7 @@ private struct TuneResultReveal: View {
                 .foregroundStyle(Brand.typeSecondary)
                 .monospacedDigit()
                 .strikethrough(true, color: Brand.typeTertiary.opacity(0.6))
-            Text("BEFORE · tok/s")
+            Text(tr("BEFORE · tok/s"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.0)
                 .foregroundStyle(Brand.typeTertiary)
@@ -597,7 +597,7 @@ private struct TuneResultReveal: View {
                 .font(.system(size: 32, weight: .heavy, design: .rounded))
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()
-            Text("NOW · tok/s")
+            Text(tr("NOW · tok/s"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.0)
                 .foregroundStyle(Brand.typeBody)
@@ -608,12 +608,12 @@ private struct TuneResultReveal: View {
 
     private var multiplierBlock: some View {
         VStack(spacing: 4) {
-            Text(String(format: "%.2f×", animatedMultiplier))
+            Text(tr("%.2f×", animatedMultiplier))
                 .font(.system(size: 40, weight: .heavy, design: .rounded))
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()
                 .shadow(color: Brand.typeBody.opacity(0.20), radius: 18, x: 0, y: 6)
-            Text("FASTER")
+            Text(tr("FASTER"))
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .tracking(1.6)
                 .foregroundStyle(Brand.typeSecondary)

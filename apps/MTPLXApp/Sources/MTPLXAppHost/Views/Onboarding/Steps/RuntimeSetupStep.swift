@@ -25,8 +25,8 @@ struct RuntimeSetupStep: View {
 
     var body: some View {
         OnboardingStepContainer(
-            title: "Setting up MTPLX",
-            subtitle: "Engine, fan control, and your command line — a one-time setup.",
+            title: tr("Setting up MTPLX"),
+            subtitle: tr("Engine, fan control, and your command line — a one-time setup."),
             stepIndex: 3,
             stepCount: OnboardingStep.allCases.count,
             onBack: orchestrator.isRunningRuntimeSetup ? nil : { orchestrator.goBack() },
@@ -57,13 +57,13 @@ struct RuntimeSetupStep: View {
     @ViewBuilder
     private var primaryButton: some View {
         if orchestrator.isRunningRuntimeSetup {
-            OnboardingPrimaryButton("Setting up…", isEnabled: false) {}
+            OnboardingPrimaryButton(tr("Setting up…"), isEnabled: false) {}
         } else if orchestrator.runtimeSetupComplete {
-            OnboardingPrimaryButton("Continue") { orchestrator.goNext() }
+            OnboardingPrimaryButton(tr("Continue")) { orchestrator.goNext() }
         } else if orchestrator.runtimeSetupFailure != nil {
-            OnboardingPrimaryButton("Retry") { orchestrator.retryRuntimeSetup() }
+            OnboardingPrimaryButton(tr("Retry")) { orchestrator.retryRuntimeSetup() }
         } else {
-            OnboardingPrimaryButton("Set up") { orchestrator.startRuntimeSetup() }
+            OnboardingPrimaryButton(tr("Set up")) { orchestrator.startRuntimeSetup() }
         }
     }
 
@@ -162,7 +162,7 @@ private struct RuntimeSetupRowView: View {
     private var accessibilityState: String {
         switch row.state {
         case .pending: return "pending"
-        case .running: return "in progress"
+        case .running: return tr("in progress")
         case .done: return "done"
         case .warning: return "warning"
         case .failed: return "failed"
@@ -190,7 +190,7 @@ private struct RuntimeSetupRowView: View {
                     .foregroundStyle(copied ? Brand.success : Brand.typeTertiary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(copied ? "Copied" : "Copy command")
+            .accessibilityLabel(copied ? tr("Copied") : tr("Copy command"))
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 8)
