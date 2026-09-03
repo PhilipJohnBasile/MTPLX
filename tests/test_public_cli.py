@@ -9072,3 +9072,36 @@ def test_connect_opencode_actually_writes_the_config(tmp_path, monkeypatch, caps
     assert "qwen4-new-family-model" in models
     assert written["model"] == "mtplx/qwen4-new-family-model"
     assert "unrelated" in written["provider"], "other providers must survive"
+
+
+def test_publish_check_blocks_local_paths_and_scrubs_on_request(tmp_path, capsys):
+    import json as _json
+
+    from mtplx.cli import main as _main
+    from mtplx.commands.public import EXIT_STRICT_GATE as _gate
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "config.json").write_text('{"model_type": "qwen3"}', encoding="utf-8")
+    (staging / "mtplx_runtime.json").write_text(
+        _json.dumps({"base_trunk": "/Users/someone/.mtplx/models/Owner--Trunk"}),
+        encoding="utf-8",
+    )
+
+    code = _main(["model", "publish-check", "--staging-dir", str(staging), "--repo-id", "x/y"])
+    report = _json.loads(capsys.readouterr().out)
+
+    assert code == _gate
+    assert report["gates"]["no_local_paths"] is False
+    assert report["local_paths"] == {
+        "mtplx_runtime.json": ["/Users/someone/.mtplx/models/Owner--Trunk"]
+    }
+
+    _main(["model", "publish-check", "--staging-dir", str(staging), "--repo-id", "x/y", "--scrub"])
+    report = _json.loads(capsys.readouterr().out)
+
+    assert report["gates"]["no_local_paths"] is True
+    assert report["scrubbed"] == ["mtplx_runtime.json"]
+    rewritten = _json.loads((staging / "mtplx_runtime.json").read_text(encoding="utf-8"))
+    assert rewritten == {"base_trunk": "<redacted>/Owner--Trunk"}
+    assert (staging / "config.json").read_text(encoding="utf-8") == '{"model_type": "qwen3"}'
