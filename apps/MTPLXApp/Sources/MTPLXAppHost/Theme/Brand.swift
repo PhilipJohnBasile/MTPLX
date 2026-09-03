@@ -208,7 +208,7 @@ struct BrandPalette: Sendable {
         accentWarm: Tone(0x6E6252),
         coolChrome: Tone(0x3F5566),
         chromeHalo: Tone(0x3B2F1F, alpha: 0.10),
-        warning: Tone(0x8F6300),
+        warning: Tone(0x866000),
         danger: Tone(0xB4432E),
         success: Tone(0x2A7247),
         separator: Tone(0x2B251E, alpha: 0.10),
