@@ -25,65 +25,291 @@ extension Color {
     }
 }
 
+// MARK: - BrandPalette
+//
+// One appearance's worth of MTPLX tones. `dark` is the shipped "Jet
+// Chrome" identity, byte for byte: every hex in it is the constant the
+// app rendered before light mode existed, and BrandPaletteTests freezes
+// those values so a tweak cannot drift the dark look. `light` is the
+// curated cream counterpart: warm paper surfaces, warm ink type, a
+// graphite take on the polished-steel chrome, and status tones re-tuned
+// to hold WCAG AA on cream. It is a designed palette, not an inversion.
+//
+// `Brand` reads every token through an appearance-aware NSColor, so the
+// hundreds of existing `Brand.*` call sites keep compiling and pick the
+// right tone from the window's effective appearance. Every tone and its
+// NSColor is built once (static lets); resolving a token at draw time is
+// a key-path read, never an allocation.
+
+struct BrandPalette: Sendable {
+    /// One sRGB tone with an alpha. The NSColor is created when the
+    /// palette is built, so the dynamic providers below hand back a
+    /// cached instance instead of allocating during a render pass.
+    struct Tone: Sendable, Equatable {
+        let hex: UInt32
+        let alpha: Double
+        let nsColor: NSColor
+
+        init(_ hex: UInt32, alpha: Double = 1) {
+            self.hex = hex
+            self.alpha = alpha
+            self.nsColor = NSColor(
+                srgbRed: Double((hex >> 16) & 0xFF) / 255.0,
+                green: Double((hex >> 8) & 0xFF) / 255.0,
+                blue: Double(hex & 0xFF) / 255.0,
+                alpha: alpha
+            )
+        }
+
+        static func == (lhs: Tone, rhs: Tone) -> Bool {
+            lhs.hex == rhs.hex && lhs.alpha == rhs.alpha
+        }
+    }
+
+    // Surfaces
+    let bgInner: Tone
+    let bgMid: Tone
+    let bgOuter: Tone
+    let cardSurface: Tone
+    let raisedSurface: Tone
+    let panelSurfaceTop: Tone
+    let panelSurfaceBottom: Tone
+    /// Stops of the window floor. Equal in dark (a flat piano black);
+    /// a subtle warm vignette in light.
+    let floorCenter: Tone
+    let floorEdge: Tone
+
+    // Type
+    let typeHi: Tone
+    let typeBody: Tone
+    let typeSecondary: Tone
+    let typeTertiary: Tone
+    /// Type painted on a `typeHi` / `typeBody` filled pill (the inverted
+    /// CTA): black on the off-white pill in dark, paper on the ink pill
+    /// in light.
+    let invertedType: Tone
+    let typeGradientTop: Tone
+    let typeGradientMid: Tone
+    let typeGradientBottom: Tone
+
+    // Chrome
+    let chromeStop0: Tone
+    let chromeStop1: Tone
+    let chromeStop2: Tone
+    let chromeStop3: Tone
+    let chromeStop4: Tone
+    let accentChrome: Tone
+    let accentWarm: Tone
+    let coolChrome: Tone
+    /// Ambient halo behind chrome text: a faint white glow on jet, a
+    /// soft warm shadow on cream.
+    let chromeHalo: Tone
+
+    // Status
+    let warning: Tone
+    let danger: Tone
+    let success: Tone
+
+    // Hairlines, washes, shadows
+    let separator: Tone
+    let separatorStrong: Tone
+    /// The tone every chip, hover wash, and bevel edge is built from at
+    /// low opacity: white on jet, warm ink on cream.
+    let wash: Tone
+    /// The tone every drop shadow is built from. Black on jet; on cream
+    /// a warm umber pre-dimmed so the same call-site opacity yields a
+    /// soft paper shadow instead of a hard grey one.
+    let shade: Tone
+    /// Solid ink used where a dark layer must stay dark in both looks
+    /// (badge glyphs, the attachment remove disc).
+    let ink: Tone
+    /// Type painted on `ink`.
+    let onInk: Tone
+    /// Type and glyphs painted on an `accentChrome` or `danger` fill.
+    let onAccent: Tone
+    /// Backdrop of the floating render HUD.
+    let hudFill: Tone
+    let shadowLow: Tone
+    let shadowMid: Tone
+    let shadowHi: Tone
+
+    /// Jet Chrome. True-neutral dark surfaces (R == G == B), off-white
+    /// type tiers, polished-steel chrome. Frozen by BrandPaletteTests.
+    static let dark = BrandPalette(
+        bgInner: Tone(0x121212),
+        bgMid: Tone(0x0A0A0A),
+        bgOuter: Tone(0x050505),
+        cardSurface: Tone(0x101010),
+        raisedSurface: Tone(0x161616),
+        panelSurfaceTop: Tone(0x1A1A1A),
+        panelSurfaceBottom: Tone(0x101010),
+        floorCenter: Tone(0x050505),
+        floorEdge: Tone(0x050505),
+        typeHi: Tone(0xEFEFEF),
+        typeBody: Tone(0xDEDEDE),
+        typeSecondary: Tone(0x9A9A9A),
+        typeTertiary: Tone(0x6A6A6A),
+        invertedType: Tone(0x000000),
+        typeGradientTop: Tone(0xFFFFFF),
+        typeGradientMid: Tone(0xF0F0EA),
+        typeGradientBottom: Tone(0xCFCFC8),
+        chromeStop0: Tone(0xF6F6F6),
+        chromeStop1: Tone(0xE0E0E0),
+        chromeStop2: Tone(0x9A9A9A),
+        chromeStop3: Tone(0xE0E0E0),
+        chromeStop4: Tone(0xF6F6F6),
+        accentChrome: Tone(0xC8D0D5),
+        accentWarm: Tone(0xD5CFC4),
+        coolChrome: Tone(0xBFD4E0),
+        chromeHalo: Tone(0xFFFFFF, alpha: 0.06),
+        warning: Tone(0xE9C46A),
+        danger: Tone(0xE76F51),
+        success: Tone(0x88D498),
+        separator: Tone(0xFFFFFF, alpha: 0.06),
+        separatorStrong: Tone(0xFFFFFF, alpha: 0.14),
+        wash: Tone(0xFFFFFF),
+        shade: Tone(0x000000),
+        ink: Tone(0x000000),
+        onInk: Tone(0xEFEFEF),
+        onAccent: Tone(0xFFFFFF),
+        hudFill: Tone(0x000000, alpha: 0.72),
+        shadowLow: Tone(0x000000, alpha: 0.30),
+        shadowMid: Tone(0x000000, alpha: 0.40),
+        shadowHi: Tone(0x000000, alpha: 0.50)
+    )
+
+    /// Cream. Warm paper floor with brighter cream cards and raised
+    /// surfaces, warm near-black ink type, graphite chrome that still
+    /// reads as light on a bevel, and warm hairlines and shadows.
+    static let light = BrandPalette(
+        bgInner: Tone(0xF9F5EB),
+        bgMid: Tone(0xF7F2E6),
+        bgOuter: Tone(0xF5EFE1),
+        cardSurface: Tone(0xFBF7EE),
+        raisedSurface: Tone(0xFFFCF5),
+        panelSurfaceTop: Tone(0xFFFCF5),
+        panelSurfaceBottom: Tone(0xFBF7EE),
+        floorCenter: Tone(0xF7F2E6),
+        floorEdge: Tone(0xF1EADB),
+        typeHi: Tone(0x1A1612),
+        typeBody: Tone(0x2B251E),
+        typeSecondary: Tone(0x6B6257),
+        typeTertiary: Tone(0x857C71),
+        invertedType: Tone(0xFBF7EE),
+        typeGradientTop: Tone(0x1A1612),
+        typeGradientMid: Tone(0x2B251E),
+        typeGradientBottom: Tone(0x4A423A),
+        chromeStop0: Tone(0x5C6368),
+        chromeStop1: Tone(0x40474C),
+        chromeStop2: Tone(0x22272B),
+        chromeStop3: Tone(0x40474C),
+        chromeStop4: Tone(0x5C6368),
+        accentChrome: Tone(0x4B5359),
+        accentWarm: Tone(0x6E6252),
+        coolChrome: Tone(0x3F5566),
+        chromeHalo: Tone(0x3B2F1F, alpha: 0.10),
+        warning: Tone(0x8F6300),
+        danger: Tone(0xB4432E),
+        success: Tone(0x2A7247),
+        separator: Tone(0x2B251E, alpha: 0.10),
+        separatorStrong: Tone(0x2B251E, alpha: 0.18),
+        wash: Tone(0x2B251E),
+        shade: Tone(0x3B2F1F, alpha: 0.36),
+        ink: Tone(0x1F1A14),
+        onInk: Tone(0xFBF7EE),
+        onAccent: Tone(0xFFFFFF),
+        hudFill: Tone(0xFBF7EE, alpha: 0.92),
+        shadowLow: Tone(0x3B2F1F, alpha: 0.11),
+        shadowMid: Tone(0x3B2F1F, alpha: 0.14),
+        shadowHi: Tone(0x3B2F1F, alpha: 0.18)
+    )
+
+    /// The palette for an AppKit appearance. `bestMatch` folds the
+    /// high-contrast variants onto their base look.
+    static func palette(for appearance: NSAppearance) -> BrandPalette {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
+    }
+
+    /// An NSColor that resolves the tone from the drawing appearance.
+    /// Safe to hand to AppKit views and attributed strings: they re-read
+    /// it whenever their effective appearance changes.
+    static func nsColor(_ tone: KeyPath<BrandPalette, Tone>) -> NSColor {
+        NSColor(name: nil) { appearance in
+            palette(for: appearance)[keyPath: tone].nsColor
+        }
+    }
+
+    /// A SwiftUI Color that resolves the tone from the environment's
+    /// color scheme (SwiftUI matches the NSColor provider to the scheme
+    /// set by `preferredColorScheme`). `.opacity(_:)` multiplies the
+    /// tone's own alpha, so call sites keep their literal opacities.
+    static func color(_ tone: KeyPath<BrandPalette, Tone>) -> Color {
+        Color(nsColor: nsColor(tone))
+    }
+}
+
 // MARK: - Brand
 //
-// MTPLX "Jet Chrome" — single source of truth for every token the app
-// reads. Identity is jet black + off-white + sparing polished-steel chrome.
-// Every dark surface hex is a true neutral (R == G == B) so no surface
-// reads with a blue or purple cast on a wide-gamut Apple display. The
-// chrome accent is a desaturated cool-steel solid (`accentChrome`) plus a
-// 5-stop polished-steel `chromeAccent` LinearGradient for the wordmark,
-// hero TPS, and ALL-TIME MAX hero badge. The previous `accentBlue` cool
-// blue is deprecated and aliased to `accentChrome` so any missed call site
-// still renders as chrome instead of regressing to the old "AI blue."
+// MTPLX "Jet Chrome": single source of truth for every token the app
+// reads. Identity is jet black + off-white + sparing polished-steel
+// chrome, with a cream counterpart selected by the user's appearance
+// preference (see `ThemeStore.appearance`). Every token here is
+// appearance-aware; the per-look values live in `BrandPalette`. The
+// chrome accent is a desaturated steel solid (`accentChrome`) plus a
+// 5-stop polished-steel `chromeAccent` gradient for the wordmark, hero
+// TPS, and ALL-TIME MAX hero badge. The old `accentBlue` is deprecated
+// and aliased to `accentChrome` so any missed call site still renders
+// as chrome instead of regressing to the old "AI blue."
 
 enum Brand {
-    // MARK: - Surfaces (true neutral; no +B bias)
+    // MARK: - Surfaces (true neutral on jet; warm paper on cream)
 
-    /// Innermost panel / card surface. Was `0x121216` (B+4); neutralized.
-    static let bgInner = Color(hex: 0x121212)
+    /// Innermost panel / card surface.
+    static let bgInner = BrandPalette.color(\.bgInner)
 
-    /// Middle background — the layer most views read against. Was
-    /// `0x0A0A0C` (B+2); neutralized.
-    static let bgMid = Color(hex: 0x0A0A0A)
+    /// Middle background: the layer most views read against.
+    static let bgMid = BrandPalette.color(\.bgMid)
 
-    /// Outermost floor color (window background). Was `0x07070A` (B+3);
-    /// neutralized to a clean piano black.
-    static let bgOuter = Color(hex: 0x050505)
+    /// Outermost floor color (window background).
+    static let bgOuter = BrandPalette.color(\.bgOuter)
 
-    /// Card / raised surface — the panel a list-row or content card sits
-    /// on. Was `0x101015` (B+5); neutralized.
-    static let cardSurface = Color(hex: 0x101010)
+    /// Card / raised surface: the panel a list-row or content card sits
+    /// on.
+    static let cardSurface = BrandPalette.color(\.cardSurface)
 
-    /// Slightly elevated surface (chips, pucks, inner controls). Was
-    /// `0x14141A` (B+6); neutralized and lifted 2 steps.
-    static let raisedSurface = Color(hex: 0x161616)
+    /// Slightly elevated surface (chips, pucks, inner controls).
+    static let raisedSurface = BrandPalette.color(\.raisedSurface)
 
     /// Top stop of the canonical chrome panel gradient. Used by
     /// `PanelChrome` and any per-surface panel that wants the same
     /// vertical fade.
-    static let panelSurfaceTop = Color(hex: 0x1A1A1A)
+    static let panelSurfaceTop = BrandPalette.color(\.panelSurfaceTop)
 
     /// Bottom stop of the canonical chrome panel gradient. Matches
     /// `cardSurface` so the panel grounds into the surrounding layout.
-    static let panelSurfaceBottom = Color(hex: 0x101010)
+    static let panelSurfaceBottom = BrandPalette.color(\.panelSurfaceBottom)
 
-    // MARK: - Off-white type tokens (slightly cooler to match chrome)
+    // MARK: - Type tokens (off-white on jet; warm ink on cream)
 
-    /// Headline white. Wordmark fallback, hero TPS digits, gauge headline.
-    static let typeHi = Color(hex: 0xEFEFEF)
+    /// Headline tier. Wordmark fallback, hero TPS digits, gauge headline.
+    static let typeHi = BrandPalette.color(\.typeHi)
 
-    /// Body white — primary running text.
-    static let typeBody = Color(hex: 0xDEDEDE)
+    /// Body tier: primary running text.
+    static let typeBody = BrandPalette.color(\.typeBody)
 
-    /// Secondary type — labels, captions, supporting metadata.
-    static let typeSecondary = Color(hex: 0x9A9A9A)
+    /// Secondary type: labels, captions, supporting metadata.
+    static let typeSecondary = BrandPalette.color(\.typeSecondary)
 
-    /// Tertiary type — the quietest metadata tier.
-    static let typeTertiary = Color(hex: 0x6A6A6A)
+    /// Tertiary type: the quietest metadata tier.
+    static let typeTertiary = BrandPalette.color(\.typeTertiary)
+
+    /// Type painted on a `typeHi` / `typeBody` filled pill (the inverted
+    /// CTA). Black on the off-white pill in dark, paper on the ink pill
+    /// in light.
+    static let invertedType = BrandPalette.color(\.invertedType)
 
     /// Backwards-compat aliases for the old `textHighlight`/`accent`
-    /// references. Resolved to the same off-white tiers so existing call
+    /// references. Resolved to the same type tiers so existing call
     /// sites keep compiling while the rest of the app moves to explicit
     /// `typeHi` / `typeBody` references.
     static let textHighlight = typeBody
@@ -91,13 +317,13 @@ enum Brand {
 
     // MARK: - Wordmark gradient (kept for the < 14pt fallback)
 
-    /// Three-stop off-white gradient used only by the small-size text
-    /// wordmark fallback in `WordmarkView`. The real wordmark ships as a
-    /// PNG asset for any height >= 14pt.
+    /// Three-stop type gradient used only by the small-size text
+    /// wordmark fallback in `WordmarkView` and the chrome CTA fills.
+    /// The real wordmark ships as a PNG asset for any height >= 14pt.
     static let typeGradientStops: [Gradient.Stop] = [
-        .init(color: Color(hex: 0xFFFFFF), location: 0.0),
-        .init(color: Color(hex: 0xF0F0EA), location: 0.55),
-        .init(color: Color(hex: 0xCFCFC8), location: 1.0),
+        .init(color: BrandPalette.color(\.typeGradientTop), location: 0.0),
+        .init(color: BrandPalette.color(\.typeGradientMid), location: 0.55),
+        .init(color: BrandPalette.color(\.typeGradientBottom), location: 1.0),
     ]
 
     static let typeGradient = LinearGradient(
@@ -111,13 +337,14 @@ enum Brand {
     /// Polished-steel 5-stop sheen used for `MTPLXChromeText`, the gauge
     /// max tick, hero TPS, ALL-TIME MAX badge, and panel highlights.
     /// Bright top / dim middle / bright bottom so the gradient reads as
-    /// light catching a curved bevel.
+    /// light catching a curved bevel. On cream the same shape runs in
+    /// graphite: lighter steel at the edges, near-black in the middle.
     static let chromeAccentStops: [Gradient.Stop] = [
-        .init(color: Color(hex: 0xF6F6F6), location: 0.00),
-        .init(color: Color(hex: 0xE0E0E0), location: 0.25),
-        .init(color: Color(hex: 0x9A9A9A), location: 0.55),
-        .init(color: Color(hex: 0xE0E0E0), location: 0.80),
-        .init(color: Color(hex: 0xF6F6F6), location: 1.00),
+        .init(color: BrandPalette.color(\.chromeStop0), location: 0.00),
+        .init(color: BrandPalette.color(\.chromeStop1), location: 0.25),
+        .init(color: BrandPalette.color(\.chromeStop2), location: 0.55),
+        .init(color: BrandPalette.color(\.chromeStop3), location: 0.80),
+        .init(color: BrandPalette.color(\.chromeStop4), location: 1.00),
     ]
 
     static let chromeAccent = LinearGradient(
@@ -126,31 +353,35 @@ enum Brand {
         endPoint: .bottom
     )
 
-    /// Desaturated cool-steel solid. Single replacement for every
+    /// Desaturated steel solid. Single replacement for every
     /// `accentBlue` reference. Reads as polished metal, never as blue.
-    static let accentChrome = Color(hex: 0xC8D0D5)
+    static let accentChrome = BrandPalette.color(\.accentChrome)
 
     /// Warm-steel sister tone. Used only to distinguish prefill from
     /// decode on the gauge and to mark warm semantic states.
-    static let accentWarm = Color(hex: 0xD5CFC4)
+    static let accentWarm = BrandPalette.color(\.accentWarm)
 
     /// Deprecated. Repointed to `accentChrome` so any missed call site
     /// still renders as polished chrome instead of regressing to the old
     /// "AI blue." Migrate references to `Brand.accentChrome` (solid) or
     /// `Brand.chromeAccent` (gradient).
     @available(*, deprecated, message: "Use Brand.accentChrome (solid) or Brand.chromeAccent (gradient).")
-    static let accentBlue: Color = Color(hex: 0xC8D0D5)
+    static let accentBlue: Color = BrandPalette.color(\.accentChrome)
 
     /// Cool-chrome tint reused as the gauge border when fans are pinned
     /// to max. Slightly cooler than `accentChrome` so it reads as
     /// "state," not "action."
-    static let coolChrome = Color(hex: 0xBFD4E0)
+    static let coolChrome = BrandPalette.color(\.coolChrome)
 
-    // MARK: - Status colors (already neutral; unchanged)
+    /// Ambient halo behind chrome text and the hero TPS digits: a faint
+    /// white glow on jet, a soft warm shadow on cream.
+    static let chromeHalo = BrandPalette.color(\.chromeHalo)
 
-    static let warning = Color(hex: 0xE9C46A)
-    static let danger = Color(hex: 0xE76F51)
-    static let success = Color(hex: 0x88D498)
+    // MARK: - Status colors
+
+    static let warning = BrandPalette.color(\.warning)
+    static let danger = BrandPalette.color(\.danger)
+    static let success = BrandPalette.color(\.success)
 
     // MARK: - Hairlines (tokenized, no more 1.4 / 1.5 drift)
 
@@ -158,13 +389,44 @@ enum Brand {
     static let hairlineStrong: CGFloat = 0.75
     static let hairlineHeavy: CGFloat = 1.0
 
-    /// Hairline separator at 6% white. Cards, dividers, tab-bar lines.
-    static let separator = Color.white.opacity(0.06)
+    /// Hairline separator at 6% white on jet, 10% warm ink on cream.
+    /// Cards, dividers, tab-bar lines.
+    static let separator = BrandPalette.color(\.separator)
 
     /// Slightly stronger hairline for active/selected boundaries.
-    static let separatorStrong = Color.white.opacity(0.14)
+    static let separatorStrong = BrandPalette.color(\.separatorStrong)
 
-    /// Square diameter of every chrome-strip action button — the
+    // MARK: - Washes, shades, inks
+    //
+    // The dark look built every chip, hover state, and bevel edge from
+    // white at a low opacity, and every shadow from black. These tokens
+    // keep those call-site opacities intact and swap the base tone per
+    // appearance, so `Brand.wash.opacity(0.04)` is a faint lift on jet
+    // and a faint warm wash on cream.
+
+    /// Low-opacity wash for chips, hover states, and bevel edges. Use
+    /// with `.opacity(_:)`. White on jet, warm ink on cream.
+    static let wash = BrandPalette.color(\.wash)
+
+    /// Drop-shadow base. Use with `.opacity(_:)`. Black on jet; a warm
+    /// umber, pre-dimmed, on cream so the same opacity reads as a soft
+    /// paper shadow.
+    static let shade = BrandPalette.color(\.shade)
+
+    /// Solid ink that stays dark in both looks. Use for glyph plates and
+    /// discs that sit on colored badges, with `.opacity(_:)`.
+    static let ink = BrandPalette.color(\.ink)
+
+    /// Type and glyphs painted on `ink`.
+    static let onInk = BrandPalette.color(\.onInk)
+
+    /// Type and glyphs painted on an `accentChrome` or `danger` fill.
+    static let onAccent = BrandPalette.color(\.onAccent)
+
+    /// Backdrop of the floating render HUD.
+    static let hudFill = BrandPalette.color(\.hudFill)
+
+    /// Square diameter of every chrome-strip action button: the
     /// LaunchButton play/stop, the inference-params slider button, and
     /// the refresh button all share this so they read as a uniform row
     /// of circular controls.
@@ -172,23 +434,22 @@ enum Brand {
 
     // MARK: - Elevation tokens
     //
-    // Real shadows — the previous `Brand.Depth` tuple was deliberately
-    // zeroed out (`color: .clear`), which made every `.shadow(color:
-    // Brand.Depth.ambient.color, ...)` call a no-op. The new tokens are
-    // black at meaningful opacities so cards, panels, and overlays
-    // actually feel raised. Legacy `Depth.ambient` and `Depth.near`
-    // aliases below point at `Elevation.low` so existing call sites pick
-    // up real elevation without a rewrite.
+    // Real shadows. Black at meaningful opacities on jet so cards,
+    // panels, and overlays feel raised; a warm umber at lower opacities
+    // on cream so they cast soft paper shadows instead of grey smudges.
+    // Legacy `Depth.ambient` and `Depth.near` aliases below point at
+    // `Elevation.low` so existing call sites pick up real elevation
+    // without a rewrite.
 
     enum Elevation {
         /// Tiles, chips, low-profile controls.
-        static let low = (color: Color.black.opacity(0.30), radius: 6.0, x: 0.0, y: 2.0)
+        static let low = (color: BrandPalette.color(\.shadowLow), radius: 6.0, x: 0.0, y: 2.0)
 
         /// Cards, secondary surfaces.
-        static let mid = (color: Color.black.opacity(0.40), radius: 12.0, x: 0.0, y: 6.0)
+        static let mid = (color: BrandPalette.color(\.shadowMid), radius: 12.0, x: 0.0, y: 6.0)
 
         /// Panels, overlays, sheets.
-        static let hi = (color: Color.black.opacity(0.50), radius: 24.0, x: 0.0, y: 12.0)
+        static let hi = (color: BrandPalette.color(\.shadowHi), radius: 24.0, x: 0.0, y: 12.0)
     }
 
     // MARK: - Spacing tokens (4pt grid)
@@ -214,9 +475,9 @@ enum Brand {
 
     // MARK: - Legacy Depth aliases (now point at real elevation)
     //
-    // Preserved so the 6 existing `.shadow(color: Brand.Depth.ambient.color, ...)`
-    // call sites — `BottomTabBar`, `MenuBarContent`, `TileRow`,
-    // `WelcomeScreen` (dead), `Primitives`, `BottomBar` — pick up a real
+    // Preserved so the existing `.shadow(color: Brand.Depth.ambient.color, ...)`
+    // call sites (`BottomTabBar`, `MenuBarContent`, `TileRow`,
+    // `WelcomeScreen` (dead), `Primitives`, `BottomBar`) pick up a real
     // shadow color for free until they migrate to `Brand.Elevation.*`.
 
     enum Depth {
@@ -224,7 +485,7 @@ enum Brand {
         static let ambient = Elevation.low
     }
 
-    // MARK: - Backwards-compat aliases (V1 chrome → off-white)
+    // MARK: - Backwards-compat aliases (V1 chrome)
     //
     // These exist so the wholesale V1 view files keep compiling while we
     // simplify them. Kept untouched until each call site is migrated.
@@ -234,8 +495,8 @@ enum Brand {
     static let warmChromeStops = typeGradientStops
     static let warmChromeFill = typeGradient
     static let shineStops: [Gradient.Stop] = [
-        .init(color: Color.white.opacity(0.0), location: 0.0),
-        .init(color: Color.white.opacity(0.0), location: 1.0),
+        .init(color: wash.opacity(0.0), location: 0.0),
+        .init(color: wash.opacity(0.0), location: 1.0),
     ]
     static let shineGradient = LinearGradient(
         stops: shineStops,
@@ -252,14 +513,19 @@ enum Brand {
     }
     static let extrusionLayers: [ExtrusionLayer] = []
 
-    /// Piano radial → flat. The radial pulled focus from the type and
-    /// read "showroom carpet" rather than "tool." A flat bgOuter reads
-    /// cleaner and ages better.
+    /// The window floor. On jet both stops are `bgOuter`, so this renders
+    /// the same flat piano black it always has (the radial pulled focus
+    /// from the type and read "showroom carpet" rather than "tool"). On
+    /// cream the two stops differ slightly, giving a subtle warm vignette
+    /// instead of a flat white blast.
     static let pianoRadial = RadialGradient(
-        gradient: Gradient(colors: [bgOuter, bgOuter]),
+        gradient: Gradient(colors: [
+            BrandPalette.color(\.floorCenter),
+            BrandPalette.color(\.floorEdge),
+        ]),
         center: .center,
         startRadius: 0,
-        endRadius: 1
+        endRadius: 900
     )
 }
 
@@ -267,7 +533,7 @@ enum Brand {
 
 /// Minimal Apple-ish typography. SF Pro Rounded for the wordmark + hero
 /// numbers, SF Pro for body, SF Mono only for actual data. No Inter
-/// dependency — system fonts only.
+/// dependency, system fonts only.
 enum BrandFont {
     /// Wordmark / hero number. Lighter weight than V0 (was .black) for
     /// a less aggressive read at large sizes.

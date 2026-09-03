@@ -1,43 +1,103 @@
 import SwiftUI
 
+// MARK: - AppAppearance
+
+/// The user's appearance preference. `dark` is the brand's first-run
+/// look (Jet Chrome), `light` is the cream counterpart, and `system`
+/// follows the macOS Appearance setting. Persisted by `ThemeStore`.
+public enum AppAppearance: String, CaseIterable, Identifiable, Sendable {
+    case system
+    case dark
+    case light
+
+    public var id: String { rawValue }
+
+    /// The scheme handed to `preferredColorScheme`. `nil` lets the
+    /// window follow macOS.
+    public var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .dark: return .dark
+        case .light: return .light
+        }
+    }
+
+    /// Segmented-control label.
+    public var title: String {
+        switch self {
+        case .system: return "System"
+        case .dark: return "Dark"
+        case .light: return "Light"
+        }
+    }
+}
+
 // MARK: - ThemeStore
 //
-// MTPLX V1 is locked to a single brand identity (piano black + chrome
-// silver). The old multi-theme picker (system/hippo/river/mono) is gone —
-// the app is one curated surface, not a customizable one. What survives in
-// the store are the two preferences that genuinely belong to the user:
-// whether they want subtle sound cues and whether they want motion reduced
-// for accessibility.
+// MTPLX V1 is one curated brand identity (piano black + chrome silver)
+// with a cream counterpart. The old multi-theme picker
+// (system/hippo/river/mono) is gone; what the store holds are the
+// preferences that genuinely belong to the user: which of the two looks
+// to render (or whether to follow macOS), whether they want subtle sound
+// cues, and whether they want motion reduced for accessibility.
 
 @MainActor
 public final class ThemeStore: ObservableObject {
+    /// UserDefaults key of the appearance preference.
+    public static let appearanceKey = "mtplx.app.appearance"
+
     @AppStorage("mtplx.app.soundEnabled") public var soundEnabled: Bool = false
     @AppStorage("mtplx.app.reduceMotion") public var reduceMotionPreference: Bool = false
+
+    /// Appearance preference. Defaults to `dark` so a first launch renders
+    /// exactly the Jet Chrome identity it always has.
+    @AppStorage("mtplx.app.appearance") public var appearance: AppAppearance = .dark
 
     public init() {}
 }
 
-// MARK: - Modifier
+// MARK: - Modifiers
 
-/// Pins the window to the MTPLX V1 brand identity:
-/// - `.preferredColorScheme(.dark)` so the radial / chrome reads correctly
-///   regardless of the user's macOS Appearance setting.
-/// - `.tint(Brand.accent)` so all standard controls pick up the chrome tone.
+/// Applies the store's appearance preference to the enclosing window
+/// via `preferredColorScheme`. Sheets and the menu bar popover are
+/// separate windows on macOS, so each root applies this itself.
+public struct AppliesAppearance: ViewModifier {
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    public init() {}
+
+    public func body(content: Content) -> some View {
+        content.preferredColorScheme(themeStore.appearance.colorScheme)
+    }
+}
+
+/// Pins the window to the MTPLX brand identity:
+/// - `preferredColorScheme` from the store, so the tokens resolve to the
+///   look the user chose regardless of the macOS Appearance setting.
+/// - `.tint(Brand.accent)` so all standard controls pick up the brand tone.
 /// - `.background(Brand.bgOuter)` as the floor color (the piano radial
 ///   sits on top of this in `ContentView`).
 public struct AppliesBrand: ViewModifier {
+    public init() {}
+
     public func body(content: Content) -> some View {
         content
-            .preferredColorScheme(.dark)
+            .modifier(AppliesAppearance())
             .tint(Brand.accent)
             .background(Brand.bgOuter)
     }
 }
 
 public extension View {
-    /// Apply at the root of the view hierarchy to lock the MTPLX V1 brand.
+    /// Apply at the root of the view hierarchy to lock the MTPLX brand.
     func appliesBrand() -> some View {
         modifier(AppliesBrand())
+    }
+
+    /// Apply at the root of every separately-windowed surface (sheets,
+    /// the menu bar popover) so it follows the appearance preference.
+    func appliesAppearance() -> some View {
+        modifier(AppliesAppearance())
     }
 }
 
@@ -60,10 +120,10 @@ extension Color {
     /// Calm success tint used by fan-verified / cache-hit indicators.
     static var mtplxSuccess: Color { Brand.success }
 
-    /// Default accent — polished chrome. Use this anywhere the old code
+    /// Default accent, polished chrome. Use this anywhere the old code
     /// reached for `Color.accentColor`. Resolves to the desaturated
-    /// cool-steel solid so toolbar tints, focus rings, and system
-    /// controls all pick up the Jet Chrome identity.
+    /// steel solid so toolbar tints, focus rings, and system controls
+    /// all pick up the brand identity.
     static var mtplxAccent: Color { Brand.accentChrome }
 }
 
