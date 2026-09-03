@@ -1,6 +1,6 @@
-"""Boundary shedding on admission (MTPLX_FABLE_NEAR_PREFIX_RESTORE).
+"""Boundary shedding on admission (MTPLX_SESSION_BANK_SHED_BOUNDARIES).
 
-The bug these tests pin, from .benchmark-artifacts/fable/ttft/control.json
+The bug these tests pin, from PR #391 receipts/ttft/control.json
 (2026-09-01, Qwen3.8 Flash-Next, three repeats):
 
     cold                 19,022-tok prompt   15.47 s visible TTFT
@@ -31,7 +31,7 @@ import pytest
 
 from mtplx.cache_state import CacheSnapshot
 from mtplx.session_bank import (
-    FABLE_NEAR_PREFIX_RESTORE_ENV,
+    SESSION_BANK_SHED_BOUNDARIES_ENV,
     SessionBank,
 )
 
@@ -60,7 +60,7 @@ def _boundary(position: int, *, size: int = BOUNDARY_BYTES):
 
 @pytest.fixture(autouse=True)
 def _no_inherited_gate(monkeypatch):
-    monkeypatch.delenv(FABLE_NEAR_PREFIX_RESTORE_ENV, raising=False)
+    monkeypatch.delenv(SESSION_BANK_SHED_BOUNDARIES_ENV, raising=False)
 
 
 def _bank(**kwargs) -> SessionBank:
@@ -95,20 +95,20 @@ def test_gate_defaults_off():
 
 @pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
 def test_gate_accepts_truthy(monkeypatch, value):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, value)
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, value)
     assert _bank().shed_gdn_boundaries_to_fit is True
 
 
 @pytest.mark.parametrize("value", ["0", "", "off", "nope"])
 def test_gate_rejects_everything_else(monkeypatch, value):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, value)
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, value)
     assert _bank().shed_gdn_boundaries_to_fit is False
 
 
 def test_gate_is_construction_time(monkeypatch):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
-    monkeypatch.delenv(FABLE_NEAR_PREFIX_RESTORE_ENV)
+    monkeypatch.delenv(SESSION_BANK_SHED_BOUNDARIES_ENV)
     assert bank.shed_gdn_boundaries_to_fit is True
     assert _bank().shed_gdn_boundaries_to_fit is False
 
@@ -146,7 +146,7 @@ def test_control_admits_the_same_entry_with_no_boundaries():
 
 
 def test_shed_admits_the_entry_with_the_tail_nearest_boundaries(monkeypatch):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
 
     entry = _put(bank, boundaries=FOUR)
@@ -172,7 +172,7 @@ def test_shed_restores_the_capability_the_near_prefix_lane_needs(monkeypatch):
     re-rendered turn to a 15.79 s cold prefill.
     """
 
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
     entry = _put(bank, boundaries=FOUR)
 
@@ -216,7 +216,7 @@ def test_shed_stops_at_zero_records_and_does_not_loop():
 def test_an_oversized_base_snapshot_is_still_refused(monkeypatch):
     """Shedding rescues entries whose PAYLOAD is the problem, nothing else."""
 
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
 
     assert _put(bank, boundaries=FOUR, base=BUDGET + 64) is None
@@ -232,7 +232,7 @@ def test_an_oversized_base_snapshot_is_still_refused(monkeypatch):
 def test_nbytes_override_is_never_shed(monkeypatch):
     """A caller that pinned the size owns it; shedding would falsify it."""
 
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
     entry = bank.put(
         runtime=RUNTIME,
@@ -249,7 +249,7 @@ def test_nbytes_override_is_never_shed(monkeypatch):
 
 
 def test_entries_that_fit_are_untouched_under_the_flag(monkeypatch):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
     two = FOUR[:2]
     entry = _put(bank, boundaries=two)
@@ -275,7 +275,7 @@ def test_a_boundary_carrying_container_supersedes_its_prefixes(monkeypatch):
     can still serve sub-prefix restores.
     """
 
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank(per_session_max_bytes=BUDGET, max_bytes=100_000)
 
     short = _put(bank, boundaries=FOUR, tokens=(1, 2, 3))
@@ -295,7 +295,7 @@ def test_a_boundary_carrying_container_supersedes_its_prefixes(monkeypatch):
 
 
 def test_to_dict_publishes_the_engagement_receipt(monkeypatch):
-    monkeypatch.setenv(FABLE_NEAR_PREFIX_RESTORE_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_SHED_BOUNDARIES_ENV, "1")
     bank = _bank()
     _put(bank, boundaries=FOUR)
     snapshot = bank.to_dict()

@@ -59,7 +59,7 @@ from mlx_lm.models.qwen3_next import (
 )
 
 from mtplx.attention_context import current_attention_phase
-from mtplx.runtime_options import fable_opdiet_enabled, fable_verify_glue_enabled
+from mtplx.runtime_options import qwen4_opdiet_enabled, qwen4_verify_glue_enabled
 
 
 @dataclass
@@ -350,7 +350,7 @@ def _apply_partial_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
 
 
 # ---------------------------------------------------------------------------
-# MTPLX_FABLE_OPDIET — exact-preserving op diet for the compiled verifier.
+# MTPLX_QWEN4_OPDIET - exact-preserving op diet for the compiled verifier.
 #
 # Every helper below is a VALUE-IDENTICAL twin of the expression it replaces:
 # same arithmetic on the same operands in the same order, only the op graph is
@@ -481,7 +481,7 @@ def _rope_inv_freq_and_scaling_shared(args: TextArgs) -> tuple[mx.array, float]:
 
 
 def _rope_inv_freq_and_scaling_for(args: TextArgs) -> tuple[mx.array, float]:
-    if fable_opdiet_enabled("rope"):
+    if qwen4_opdiet_enabled("rope"):
         return _rope_inv_freq_and_scaling_shared(args)
     return _rope_inv_freq_and_scaling(args)
 
@@ -500,7 +500,7 @@ def _hyper_residual_write(
     one kernel. Same operands, same order, same result.
     """
 
-    if not fable_opdiet_enabled("resid"):
+    if not qwen4_opdiet_enabled("resid"):
         return hyper + (block_out[..., None, :] * inject[..., :, None]).reshape(
             *hyper.shape
         )
@@ -2212,7 +2212,7 @@ class QSAIndexer(nn.Module):
             candidate = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
             candidate = self.k_layernorm(candidate)
             starts = safe_block.reshape(1).astype(mx.int32) * self.ratio
-            if fable_opdiet_enabled("rope"):
+            if qwen4_opdiet_enabled("rope"):
                 cos, sin = _rope_cos_sin_half(
                     starts,
                     self._inv_freq,
@@ -2230,7 +2230,7 @@ class QSAIndexer(nn.Module):
                 candidate = _apply_partial_rope(
                     candidate[:, :, None, :], cos, sin
                 )[:, :, 0, :]
-            if fable_opdiet_enabled("bank"):
+            if qwen4_opdiet_enabled("bank"):
                 # One conditional pass over the bank instead of two, and that
                 # pass stays a CONTIGUOUS copy.
                 #
@@ -2247,7 +2247,7 @@ class QSAIndexer(nn.Module):
                 # operands broadcast, so MLX emits a general (strided) select
                 # whose per-element index arithmetic gives most of the win
                 # back. This spelling measured -49%
-                # (scripts/fable/micro_opdiet.py, compiled lane, 2026-09-01:
+                # (the PR #391 harness micro_opdiet.py, compiled lane, 2026-09-01:
                 # 0.492 -> 0.392 -> 0.253 ms per 12 QSA layers), which is why
                 # it ships despite issuing MORE dispatches than either.
                 #
@@ -2610,7 +2610,7 @@ class QSAIndexer(nn.Module):
         )
 
     def _verify_glue_rope_idx(self) -> bool:
-        """True when ``MTPLX_FABLE_VERIFY_GLUE``'s ``qsa_rope_idx`` serves.
+        """True when ``MTPLX_QWEN4_VERIFY_GLUE``'s ``qsa_rope_idx`` serves.
 
         Host-only, and read from the verdict the install probe recorded at
         model build outside any trace, so two traces of the same compiled
@@ -2619,9 +2619,9 @@ class QSAIndexer(nn.Module):
         disabled it); a contract miss raised at install and never gets here.
         """
 
-        if not fable_verify_glue_enabled("qsa_rope_idx"):
+        if not qwen4_verify_glue_enabled("qsa_rope_idx"):
             return False
-        from mtplx import fable_verify_glue as _glue
+        from mtplx import qwen4_verify_glue as _glue
 
         if not _glue.qsa_rope_idx_installed():
             return False
@@ -2656,7 +2656,7 @@ class QSAIndexer(nn.Module):
         """Stock query preparation kept as the numeric oracle."""
 
         q = self.q_layernorm(q)
-        if fable_opdiet_enabled("rope"):
+        if qwen4_opdiet_enabled("rope"):
             cos, sin = _shared_rope_cos_sin_half(
                 pos_start,
                 int(q.shape[1]),
@@ -3095,7 +3095,7 @@ class QSAIndexer(nn.Module):
         k = k.reshape(B, S, self.head_dim)
         if fixed_capacity:
             if self._verify_glue_rope_idx():
-                # MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx': RMSNorm and
+                # MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx': RMSNorm and
                 # partial RoPE through the shipped fused preparation kernel.
                 q = self._prepare_queries_m4(q, pos_start)
             else:
@@ -3435,7 +3435,7 @@ class Attention(nn.Module):
         )
 
     def _verify_glue_rope(self, rows: int) -> bool:
-        """True when ``MTPLX_FABLE_VERIFY_GLUE``'s ``qsa_rope`` serves this call.
+        """True when ``MTPLX_QWEN4_VERIFY_GLUE``'s ``qsa_rope`` serves this call.
 
         Host-only, from the verdict the install probe recorded at model build
         outside any trace.  Width is a NARROWING, not a failure: the kernel is
@@ -3443,9 +3443,9 @@ class Attention(nn.Module):
         regime nothing here has measured, so prefill keeps the stock chain.
         """
 
-        if not fable_verify_glue_enabled("qsa_rope"):
+        if not qwen4_verify_glue_enabled("qsa_rope"):
             return False
-        from mtplx import fable_verify_glue as _glue
+        from mtplx import qwen4_verify_glue as _glue
 
         if not _glue.serves_rows(rows):
             return False
@@ -3508,7 +3508,7 @@ class Attention(nn.Module):
                     positions, self._inv_freq, self._rope_attention_scaling
                 )
         elif vrope is None and self._verify_glue_rope(int(S)):
-            # MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope': the table build and
+            # MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope': the table build and
             # both rotations as ONE dispatch. Same arithmetic, same order --
             # the install probe proved it bit-exact against whichever stock
             # spelling this process armed.
@@ -3523,7 +3523,7 @@ class Attention(nn.Module):
             )
             q = rotated_q
             cos = sin = None
-        elif fable_opdiet_enabled("rope"):
+        elif qwen4_opdiet_enabled("rope"):
             # Text rope: one half-width table per (pos_start, S) instead of a
             # full-width table per consumer. The indexer above already asked
             # for this exact table, so this is a memo hit inside the layer.
@@ -3932,10 +3932,10 @@ class _SidecarGather:
             try:
                 # Default (flag off): MADV_RANDOM -- row ids are
                 # hash-scattered, so readahead around a mapping fault is
-                # wasted IO.  Under MTPLX_FABLE_PLE_FIRST_GATHER_EARLY the
+                # wasted IO.  Under MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY the
                 # mapping faults are the ascending pre-touch and the
                 # vectorised gather's residual misses instead, which readahead
-                # helps, so `madvise_choice` flips it; MTPLX_FABLE_NGRAM_MADVISE
+                # helps, so `madvise_choice` flips it; MTPLX_QWEN4_NGRAM_MADVISE
                 # overrides either way.  (pread(2) never consulted this advice
                 # at all, so the pread pool's behaviour is unchanged.)
                 mm._mmap.madvise(_advice_value)
@@ -4096,7 +4096,7 @@ class _SidecarGather:
 
             vectorized = _vectorized_enabled()
         if vectorized and len(uniq) > self._HOT_PATH_MAX_ROWS:
-            # MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: the warm pass is ~165 ms of
+            # MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY: the warm pass is ~165 ms of
             # GIL-contended pread per 32,768 rows and the fancy index behind
             # it is 0.44 ms, so on a page-warm table the warm pass IS the
             # gather.  Skip it only when mincore says the rows this gather
@@ -4865,7 +4865,7 @@ class Qwen4ExpTextModel(nn.Module):
     def ple_prefill_lookahead(self, token_ids, spans):
         """Request-scoped PLE n-gram lookahead for a chunked prefill.
 
-        Returns a ``PrefillLookahead`` when MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD
+        Returns a ``PrefillLookahead`` when MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD
         is armed and this model can serve it, otherwise None.  Construction
         time is the only eligibility decision; the flag is read once.
 
@@ -4926,7 +4926,7 @@ class Qwen4ExpTextModel(nn.Module):
     def ple_first_gather_early(self, token_ids, span):
         """Start the FIRST prefill chunk's PLE gather now -- request arrival.
 
-        Returns an ``EarlyFirstGather`` when MTPLX_FABLE_PLE_FIRST_GATHER_EARLY
+        Returns an ``EarlyFirstGather`` when MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY
         is armed and this model can serve it, otherwise None.  The eligibility
         rules are the lookahead's, for the same reasons: an armed flag on a
         model whose sidecar never attached, or with staging routed in-graph,
@@ -4985,7 +4985,7 @@ class Qwen4ExpTextModel(nn.Module):
         )
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
-        if fable_opdiet_enabled("rope"):
+        if qwen4_opdiet_enabled("rope"):
             with _rope_table_scope():
                 return self._forward(inputs, cache, input_embeddings)
         return self._forward(inputs, cache, input_embeddings)

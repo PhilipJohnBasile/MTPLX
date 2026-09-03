@@ -1,4 +1,4 @@
-"""Fixed-M4 MoE routing scaffold as two kernels (MTPLX_FABLE_ROUTE_KERNEL).
+"""Fixed-M4 MoE routing scaffold as two kernels (MTPLX_QWEN4_ROUTE_KERNEL).
 
 WHAT IT REPLACES
 ----------------
@@ -114,7 +114,7 @@ not a rounding-class difference.
 
    NOTE FOR TESTS: this is the METAL rule.  MLX's CPU ``argpartition`` is an
    unstable partial selection -- same SET, different slot ORDER (proved in
-   tests/test_fable_route_kernel.py).  ``mx.argsort`` is stable on both
+   tests/test_qwen4_route_kernel.py).  ``mx.argsort`` is stable on both
    backends, so the CPU-side reference for this kernel is argsort, never
    argpartition.
 
@@ -181,7 +181,7 @@ NTOT = NUM_EXPERTS + 1  # + the folded shared-expert gate row
 #: the same per-vector accumulation order -- bit-identical, four times the
 #: threads, and the weight octet each vector lane loads is the same address in
 #: the same threadgroup on the same cycle, so DRAM traffic is unchanged.
-#: Which one is faster is a measurement (scripts/fable/micro_route_kernel.py);
+#: Which one is faster is a measurement (the PR #391 harness micro_route_kernel.py);
 #: neither can change a number.
 VEC_LANES_CHOICES = (1, 4)
 DEFAULT_VEC_LANES = 4
@@ -514,7 +514,7 @@ def _projection_fields(projection: Any, name: str) -> tuple[Any, Any, Any]:
     biases = getattr(projection, "biases", None)
     if weight is None or scales is None or biases is None:
         raise ValueError(
-            f"MTPLX_FABLE_ROUTE_KERNEL: {name} is not an affine-quantized "
+            f"MTPLX_QWEN4_ROUTE_KERNEL: {name} is not an affine-quantized "
             "projection; the kernel reads a q8/g64 pack directly"
         )
     return weight, scales, biases
@@ -530,7 +530,7 @@ def check_contract(block: Any, *, index: int) -> None:
     reverting to the ten-dispatch scaffold.
     """
 
-    label = f"MTPLX_FABLE_ROUTE_KERNEL layer {index}"
+    label = f"MTPLX_QWEN4_ROUTE_KERNEL layer {index}"
     if int(getattr(block, "num_experts", -1)) != NUM_EXPERTS:
         raise ValueError(
             f"{label}: requires {NUM_EXPERTS} experts, got "
@@ -596,12 +596,12 @@ def check_input(x: mx.array) -> None:
         rows *= int(s)
     if x.shape[-1] != HIDDEN or rows != ROWS:
         raise ValueError(
-            f"MTPLX_FABLE_ROUTE_KERNEL is wired for exactly [{ROWS}, {HIDDEN}]; "
+            f"MTPLX_QWEN4_ROUTE_KERNEL is wired for exactly [{ROWS}, {HIDDEN}]; "
             f"got {tuple(x.shape)}"
         )
     if x.dtype != mx.bfloat16:
         raise ValueError(
-            f"MTPLX_FABLE_ROUTE_KERNEL: hidden dtype {x.dtype} (want bfloat16)"
+            f"MTPLX_QWEN4_ROUTE_KERNEL: hidden dtype {x.dtype} (want bfloat16)"
         )
 
 

@@ -1,4 +1,4 @@
-"""MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: head start, vectorised gather, exactness.
+"""MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY: head start, vectorised gather, exactness.
 
 Pure Python + NumPy.  ``mtplx.ple_row_gather`` and
 ``mtplx.ple_prefill_lookahead`` import no MLX; the row half is exercised
@@ -347,7 +347,7 @@ def test_scope_without_a_gather_records_the_reason():
 
 
 def test_flag_parses_like_the_lookahead_flag(monkeypatch):
-    assert row_gather.ENV_FLAG == "MTPLX_FABLE_PLE_FIRST_GATHER_EARLY"
+    assert row_gather.ENV_FLAG == "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY"
     assert lookahead_mod.EARLY_ENV_FLAG == row_gather.ENV_FLAG
     for raw, want in (("", False), ("0", False), ("1", True), ("on", True)):
         row_gather.enabled.cache_clear()

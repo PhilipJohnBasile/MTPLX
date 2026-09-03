@@ -9,7 +9,7 @@ from typing import Callable
 import mlx.core as mx
 import numpy as np
 
-from .runtime_options import fable_opdiet_enabled
+from .runtime_options import qwen4_opdiet_enabled
 from .sampling import (
     PENALTY_MAX,
     PENALTY_MIN,
@@ -190,7 +190,7 @@ def _order_bounded_mlx_top_k_support(
 
 
 # ---------------------------------------------------------------------------
-# MTPLX_FABLE_OPDIET — fused, value-identical twin of
+# MTPLX_QWEN4_OPDIET - fused, value-identical twin of
 # ``_order_bounded_mlx_top_k_support(_deterministic_mlx_top_k_support(x, k))``.
 # ---------------------------------------------------------------------------
 
@@ -281,7 +281,7 @@ def ordered_top_k_support(
 ) -> tuple[mx.array, mx.array]:
     """One K20 support ordered by (value desc, id asc); op diet aware."""
 
-    if fable_opdiet_enabled("k20"):
+    if qwen4_opdiet_enabled("k20"):
         return _opdiet_ordered_top_k_support(scaled, top_k)
     top_idx, top_vals = _deterministic_mlx_top_k_support(scaled, top_k)
     return _order_bounded_mlx_top_k_support(top_idx, top_vals)

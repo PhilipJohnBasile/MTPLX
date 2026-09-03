@@ -1,6 +1,6 @@
 """The request-time DECLINE / install-time RAISE contract.
 
-Pure Python: no MLX, no model, no device.  These pin the rule that a fable
+Pure Python: no MLX, no model, no device.  These pin the rule that a PR #391
 flag's precondition check must not turn an ineligible REQUEST into an outage,
 while an install-time contract violation still fails loudly.
 """
@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from mtplx import fable_claim_contract as contract
+from mtplx import qwen4_claim_contract as contract
 
 
 class _Ineligible(RuntimeError):
     pass
 
 
-FLAG = "MTPLX_FABLE_TEST_LANE"
+FLAG = "MTPLX_QWEN4_TEST_LANE"
 
 
 @pytest.fixture(autouse=True)

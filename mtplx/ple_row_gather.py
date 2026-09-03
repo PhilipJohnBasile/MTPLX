@@ -82,7 +82,7 @@ __all__ = [
     "warm_decision",
 ]
 
-ENV_FLAG = "MTPLX_FABLE_PLE_FIRST_GATHER_EARLY"
+ENV_FLAG = "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -268,20 +268,20 @@ def touch_rows(memmaps, rows, *, block: int = 1 << 18) -> int:
 # Mapping advice, and the load-time sequential prewarm
 # ---------------------------------------------------------------------------
 
-MADVISE_ENV = "MTPLX_FABLE_NGRAM_MADVISE"
+MADVISE_ENV = "MTPLX_QWEN4_NGRAM_MADVISE"
 
 #: The official knob.  The n-gram pre-read is not an experiment any more: it
 #: is on by default and it is what `mtplx serve --ngram-prewarm /
 #: --no-ngram-prewarm` sets, so it lives in the MTPLX_* namespace with the
 #: other runtime keys (mtplx/profiles.py MODEL_RUNTIME_ENV_OVERRIDE_KEYS)
-#: rather than in the fable benchmark namespace.
+#: rather than in the PR #391 benchmark namespace.
 PREWARM_ENV = "MTPLX_NGRAM_PREWARM"
 
 #: Deprecated alias, honoured with a one-line warning so branches and scripts
 #: that already set it keep working.
-PREWARM_AT_LOAD_ENV = "MTPLX_FABLE_NGRAM_PREWARM_AT_LOAD"
+PREWARM_AT_LOAD_ENV = "MTPLX_QWEN4_NGRAM_PREWARM_AT_LOAD"
 
-#: 64 MiB, the same unit the fable driver's ``--prewarm-ngram-table`` uses, so
+#: 64 MiB, the same unit the PR #391 driver's ``--prewarm-ngram-table`` uses, so
 #: the two receipts' GiB/s are directly comparable.
 PREWARM_CHUNK_BYTES = 64 * 1024 * 1024
 
@@ -303,12 +303,12 @@ def madvise_choice() -> tuple[str, int]:
     hash-scattered so readahead around a fault is wasted IO.  That argument is
     about MAPPING FAULTS only -- ``pread(2)`` does not consult it at all, so it
     never governed the pread pool the comment credits it to -- and under
-    MTPLX_FABLE_PLE_FIRST_GATHER_EARLY the mapping faults are exactly the two
+    MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY the mapping faults are exactly the two
     cases readahead helps: the ascending-order pre-touch of the whole prompt's
     rows, and the vectorised gather's residual faults on a partly-cold table.
     So the flag flips it to the kernel default.
 
-    ``MTPLX_FABLE_NGRAM_MADVISE=random|normal|sequential`` overrides either
+    ``MTPLX_QWEN4_NGRAM_MADVISE=random|normal|sequential`` overrides either
     way, so the choice is A/B-able without a code change.  It is applied once,
     at construction, and recorded on the sidecar.
     """
@@ -349,11 +349,11 @@ def prewarm_source() -> tuple[bool, str]:
 
     Precedence: :data:`PREWARM_ENV` (which is what the CLI stamps, so
     ``--ngram-prewarm`` wins over a shell-set value), then the deprecated
-    fable alias, then the default.
+    PR #391 alias, then the default.
 
     Default ON, in ``auto`` mode.  The as-found page-cache state is what
     production actually serves at, and a benchmark harness reads the table
-    itself (the fable driver's ``--prewarm-ngram-table``) so its receipts
+    itself (the PR #391 driver's ``--prewarm-ngram-table``) so its receipts
     never showed the difference -- while the daemon, which had no equivalent,
     did: the w22 window measured a 1.9 s vs 4.4 s first prefill chunk,
     perfectly concordant with the prewarm read's own throughput, and cold
@@ -537,7 +537,7 @@ def parse_prewarm_mode(text, *, key: str = "MTPLX_NGRAM_PREWARM"):
     A bare ``1`` is ONE GiB, not "on".  The number grammar has to be
     consistent to be usable at all, and the setting is new enough
     (unreleased) that no one can be relying on the boolean reading of it --
-    the deprecated fable alias, which only ever had a boolean reading, is
+    the deprecated PR #391 alias, which only ever had a boolean reading, is
     parsed separately by :func:`_parse_bool_env`.
     """
 

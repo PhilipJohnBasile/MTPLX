@@ -1,6 +1,6 @@
-"""MTPLX_FABLE_OPDIET — value-identity proofs for the compiled-verifier op diet.
+"""MTPLX_QWEN4_OPDIET - value-identity proofs for the compiled-verifier op diet.
 
-Every rewrite behind ``MTPLX_FABLE_OPDIET`` claims to be *value identical* to
+Every rewrite behind ``MTPLX_QWEN4_OPDIET`` claims to be *value identical* to
 the expression it replaces, not merely close. These tests hold each rewrite
 next to its original on random inputs and compare RAW BITS (through an integer
 view, so a sign-flipped zero or a one-ulp drift fails), and they assert the
@@ -33,9 +33,9 @@ def _cpu_stream():
 
 @pytest.fixture
 def opdiet(monkeypatch):
-    """Arm MTPLX_FABLE_OPDIET for one test."""
+    """Arm MTPLX_QWEN4_OPDIET for one test."""
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     return True
 
 
@@ -80,20 +80,20 @@ def _kernel_primitives(*outputs: mx.array) -> list[str]:
 
 
 def test_opdiet_defaults_off_and_is_read_once_at_import(monkeypatch):
-    assert runtime_options.fable_opdiet_enabled() is False
+    assert runtime_options.qwen4_opdiet_enabled() is False
     # A late env change must NOT flip the hot path: the value was frozen at
     # import so two traces of one graph can never disagree.
-    monkeypatch.setenv("MTPLX_FABLE_OPDIET", "1")
-    assert runtime_options.fable_opdiet_enabled() is False
+    monkeypatch.setenv("MTPLX_QWEN4_OPDIET", "1")
+    assert runtime_options.qwen4_opdiet_enabled() is False
 
 
 def test_every_gated_module_reads_the_same_flag():
-    assert qwen4_exp.fable_opdiet_enabled is runtime_options.fable_opdiet_enabled
-    assert fast_sampling.fable_opdiet_enabled is runtime_options.fable_opdiet_enabled
+    assert qwen4_exp.qwen4_opdiet_enabled is runtime_options.qwen4_opdiet_enabled
+    assert fast_sampling.qwen4_opdiet_enabled is runtime_options.qwen4_opdiet_enabled
 
 
 # --------------------------------------------------------------------------
-# item 4 — hyper-connection residual write
+# item 4 - hyper-connection residual write
 # --------------------------------------------------------------------------
 
 
@@ -112,9 +112,9 @@ def test_residual_write_is_bitwise_identical(monkeypatch, dtype, rows):
     inject = mx.random.normal((1, rows, hc)).astype(dtype)
     mx.eval(hyper, block_out, inject)
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = qwen4_exp._hyper_residual_write(hyper, block_out, inject)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet = qwen4_exp._hyper_residual_write(hyper, block_out, inject)
 
     assert _identical(stock, diet)
@@ -122,7 +122,7 @@ def test_residual_write_is_bitwise_identical(monkeypatch, dtype, rows):
 
 
 def test_residual_write_off_emits_the_stock_two_kernel_graph(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     hc, hidden = 4, 6
     args = (
         mx.zeros((1, 2, hc * hidden)),
@@ -150,7 +150,7 @@ def test_residual_write_on_fuses_multiply_and_add(opdiet):
 
 
 # --------------------------------------------------------------------------
-# item 2 — RoPE tables and the partial rotation
+# item 2 - RoPE tables and the partial rotation
 # --------------------------------------------------------------------------
 
 
@@ -259,12 +259,12 @@ def test_shared_rope_table_matches_the_stock_table():
 
 def test_shared_inv_freq_is_one_object_per_args(monkeypatch):
     args = qwen4_exp.TextArgs()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     plain_a, scale_a = qwen4_exp._rope_inv_freq_and_scaling_for(args)
     plain_b, _ = qwen4_exp._rope_inv_freq_and_scaling_for(args)
     assert plain_a is not plain_b  # stock: a fresh array per module
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     shared_a, scale_b = qwen4_exp._rope_inv_freq_and_scaling_for(args)
     shared_b, _ = qwen4_exp._rope_inv_freq_and_scaling_for(args)
     assert shared_a is shared_b
@@ -273,7 +273,7 @@ def test_shared_inv_freq_is_one_object_per_args(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# item 1 — fixed QSA pooled bank update
+# item 1 - fixed QSA pooled bank update
 # --------------------------------------------------------------------------
 
 
@@ -362,7 +362,7 @@ def test_bank_update_drops_one_full_bank_pass_and_keeps_the_rest_contiguous():
 
 
 # --------------------------------------------------------------------------
-# item 3 — MoE routing scaffold (documented as not applicable)
+# item 3 - MoE routing scaffold (documented as not applicable)
 # --------------------------------------------------------------------------
 
 
@@ -392,7 +392,7 @@ def test_moe_routing_scaffold_has_no_python_side_constant_to_hoist():
 
 
 # --------------------------------------------------------------------------
-# item 5 — eager K20 target/draft support
+# item 5 - eager K20 target/draft support
 # --------------------------------------------------------------------------
 
 
@@ -493,7 +493,7 @@ def test_ordered_top_k_preserves_the_prefix_shape():
 def test_ordered_top_k_support_runs_the_stock_pair_when_the_flag_is_off(
     monkeypatch,
 ):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     calls: list[str] = []
     stock_deterministic = fast_sampling._deterministic_mlx_top_k_support
     stock_order = fast_sampling._order_bounded_mlx_top_k_support
@@ -578,7 +578,7 @@ def test_ordered_top_k_drops_the_full_vocabulary_cumsum_and_widenings():
 def test_flag_off_model_sites_keep_the_stock_expressions(monkeypatch):
     """With the flag off the gated sites must build the pre-diet graph."""
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
 
     def guard(*_args, **_kwargs):
         pytest.fail("an op-diet helper ran with the flag off")
@@ -646,18 +646,18 @@ def test_extend_pooled_fixed_is_bitwise_identical(monkeypatch, offset):
     """The real method, flag off vs flag on, on the same bank and keys."""
 
     args = _tiny_indexer_args()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock_indexer = qwen4_exp.QSAIndexer(args)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet_indexer = qwen4_exp.QSAIndexer(args)
     diet_indexer.k_layernorm.weight = stock_indexer.k_layernorm.weight
 
     capacity_blocks, head_dim, rows = 12, 32, 4
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = _run_extend_pooled_fixed(
         stock_indexer, offset, capacity_blocks, head_dim, rows, seed=7
     )
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet = _run_extend_pooled_fixed(
         diet_indexer, offset, capacity_blocks, head_dim, rows, seed=7
     )
@@ -668,19 +668,19 @@ def test_extend_pooled_fixed_past_capacity_is_bitwise_identical(monkeypatch):
     """The clamped/no-write branch (block >= capacity) must also match."""
 
     args = _tiny_indexer_args()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock_indexer = qwen4_exp.QSAIndexer(args)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet_indexer = qwen4_exp.QSAIndexer(args)
     diet_indexer.k_layernorm.weight = stock_indexer.k_layernorm.weight
 
     capacity_blocks, head_dim, rows = 8, 32, 4
     offset = capacity_blocks * 4  # one block PAST the bank
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = _run_extend_pooled_fixed(
         stock_indexer, offset, capacity_blocks, head_dim, rows, seed=3
     )
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet = _run_extend_pooled_fixed(
         diet_indexer, offset, capacity_blocks, head_dim, rows, seed=3
     )
@@ -690,18 +690,18 @@ def test_extend_pooled_fixed_past_capacity_is_bitwise_identical(monkeypatch):
 @pytest.mark.parametrize("pos_start", [0, 13])
 def test_prepare_queries_eager_is_bitwise_identical(monkeypatch, pos_start):
     args = _tiny_indexer_args()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock_indexer = qwen4_exp.QSAIndexer(args)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet_indexer = qwen4_exp.QSAIndexer(args)
     diet_indexer.q_layernorm.weight = stock_indexer.q_layernorm.weight
 
     q = mx.random.normal((1, 4, args.indexer_n_heads, args.indexer_head_dim))
     mx.eval(q)
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = stock_indexer._prepare_queries_eager(q, pos_start)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     with qwen4_exp._rope_table_scope():
         diet = diet_indexer._prepare_queries_eager(q, pos_start)
     assert _identical(stock, diet)
@@ -730,12 +730,12 @@ def test_extend_pooled_fixed_uses_the_rowsel_form_when_armed(monkeypatch):
     """
 
     args = _tiny_indexer_args()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     armed = _extend_pooled_fixed_primitives(qwen4_exp.QSAIndexer(args))
     assert armed.count("DynamicSlice") == 2
     assert armed.count("DynamicSliceUpdate") == 1
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = _extend_pooled_fixed_primitives(qwen4_exp.QSAIndexer(args))
     assert stock.count("DynamicSlice") == 1
     assert stock.count("DynamicSliceUpdate") == 1
@@ -765,7 +765,7 @@ def test_text_trunk_opens_a_rope_scope_only_when_armed():
     import inspect
 
     source = inspect.getsource(qwen4_exp.Qwen4ExpTextModel.__call__)
-    assert 'fable_opdiet_enabled("rope")' in source
+    assert 'qwen4_opdiet_enabled("rope")' in source
     assert "_rope_table_scope()" in source
     assert "return self._forward(inputs, cache, input_embeddings)" in source
 
@@ -781,9 +781,9 @@ def test_extend_pooled_fixed_keeps_the_bank_dtype_when_the_norm_widens(
     """
 
     args = _tiny_indexer_args()
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock_indexer = qwen4_exp.QSAIndexer(args)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet_indexer = qwen4_exp.QSAIndexer(args)
     diet_indexer.k_layernorm.weight = stock_indexer.k_layernorm.weight
     assert stock_indexer.k_layernorm.weight.dtype == mx.float32
@@ -800,9 +800,9 @@ def test_extend_pooled_fixed_keeps_the_bank_dtype_when_the_norm_widens(
         mx.eval(out)
         return out
 
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     stock = run(stock_indexer)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     diet = run(diet_indexer)
 
     assert stock.dtype == mx.bfloat16
@@ -810,13 +810,13 @@ def test_extend_pooled_fixed_keeps_the_bank_dtype_when_the_norm_widens(
 
 
 # --------------------------------------------------------------------------
-# per-item selection (MTPLX_FABLE_OPDIET_ITEMS)
+# per-item selection (MTPLX_QWEN4_OPDIET_ITEMS)
 # --------------------------------------------------------------------------
 
 
 def test_opdiet_items_default_to_all_four():
-    assert runtime_options.FABLE_OPDIET_ITEMS == ("bank", "rope", "resid", "k20")
-    every = frozenset(runtime_options.FABLE_OPDIET_ITEMS)
+    assert runtime_options.QWEN4_OPDIET_ITEMS == ("bank", "rope", "resid", "k20")
+    every = frozenset(runtime_options.QWEN4_OPDIET_ITEMS)
     for raw in (None, "", "   ", "all", ",,"):
         assert runtime_options.parse_opdiet_items(raw) == every, raw
 
@@ -838,30 +838,30 @@ def test_opdiet_items_reject_a_typo_instead_of_dropping_it():
 
 
 def test_master_switch_gates_every_item(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", False)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", False)
     monkeypatch.setattr(
-        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope"})
+        runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"bank", "rope"})
     )
-    for item in runtime_options.FABLE_OPDIET_ITEMS:
-        assert runtime_options.fable_opdiet_enabled(item) is False
-    assert runtime_options.fable_opdiet_enabled() is False
+    for item in runtime_options.QWEN4_OPDIET_ITEMS:
+        assert runtime_options.qwen4_opdiet_enabled(item) is False
+    assert runtime_options.qwen4_opdiet_enabled() is False
 
 
 def test_one_item_can_be_armed_alone(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank"}))
-    assert runtime_options.fable_opdiet_enabled() is True
-    assert runtime_options.fable_opdiet_enabled("bank") is True
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"bank"}))
+    assert runtime_options.qwen4_opdiet_enabled() is True
+    assert runtime_options.qwen4_opdiet_enabled("bank") is True
     for item in ("rope", "resid", "k20"):
-        assert runtime_options.fable_opdiet_enabled(item) is False
+        assert runtime_options.qwen4_opdiet_enabled(item) is False
     with pytest.raises(ValueError):
-        runtime_options.fable_opdiet_enabled("nope")
+        runtime_options.qwen4_opdiet_enabled("nope")
 
 
 def test_deselecting_resid_restores_the_stock_residual_graph(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     monkeypatch.setattr(
-        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope", "k20"})
+        runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"bank", "rope", "k20"})
     )
     args = (mx.zeros((1, 2, 24)), mx.zeros((1, 2, 6)), mx.zeros((1, 2, 4)))
     mx.eval(*args)
@@ -870,9 +870,9 @@ def test_deselecting_resid_restores_the_stock_residual_graph(monkeypatch):
 
 
 def test_deselecting_bank_restores_the_stock_bank_write(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     monkeypatch.setattr(
-        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"rope", "resid", "k20"})
+        runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"rope", "resid", "k20"})
     )
     args = _tiny_indexer_args()
     primitives = _extend_pooled_fixed_primitives(qwen4_exp.QSAIndexer(args))
@@ -882,9 +882,9 @@ def test_deselecting_bank_restores_the_stock_bank_write(monkeypatch):
 
 
 def test_deselecting_rope_restores_the_stock_tables(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     monkeypatch.setattr(
-        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "resid", "k20"})
+        runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"bank", "resid", "k20"})
     )
     monkeypatch.setattr(
         qwen4_exp,
@@ -898,9 +898,9 @@ def test_deselecting_rope_restores_the_stock_tables(monkeypatch):
 
 
 def test_deselecting_k20_restores_the_stock_pair(monkeypatch):
-    monkeypatch.setattr(runtime_options, "_FABLE_OPDIET", True)
+    monkeypatch.setattr(runtime_options, "_QWEN4_OPDIET", True)
     monkeypatch.setattr(
-        runtime_options, "_FABLE_OPDIET_SELECTED", frozenset({"bank", "rope", "resid"})
+        runtime_options, "_QWEN4_OPDIET_SELECTED", frozenset({"bank", "rope", "resid"})
     )
     monkeypatch.setattr(
         fast_sampling,
@@ -925,8 +925,8 @@ def test_every_item_is_reachable_from_a_gated_call_site():
             "mtplx/generation.py",
         )
     )
-    for item in runtime_options.FABLE_OPDIET_ITEMS:
-        assert 'fable_opdiet_enabled("' + item + '")' in sources, item
-    assert "fable_opdiet_enabled()" not in sources
+    for item in runtime_options.QWEN4_OPDIET_ITEMS:
+        assert 'qwen4_opdiet_enabled("' + item + '")' in sources, item
+    assert "qwen4_opdiet_enabled()" not in sources
 
 

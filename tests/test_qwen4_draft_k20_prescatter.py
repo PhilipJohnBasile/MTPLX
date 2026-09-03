@@ -1,4 +1,4 @@
-"""MTPLX_FABLE_DRAFT_K20_PRESCATTER -- equivalence and construction proofs.
+"""MTPLX_QWEN4_DRAFT_K20_PRESCATTER -- equivalence and construction proofs.
 
 The lane claims the draft K20 support built from the FR-Spec head's 65,536-row
 output is the SAME support the shipped builder produces from the 248,320-wide
@@ -10,8 +10,8 @@ They run entirely on the CPU stream: no Metal, no model, no kernels.  The one
 claim that is stream-dependent -- whether the two DIFFERENT-WIDTH reductions
 behind ``mx.logsumexp`` associate their float32 partial sums identically -- is
 pinned here on the CPU stream and re-measured on the Metal stream by
-``scripts/fable/micro_draft_k20.py``, which prints the differing-row counters
-instead of assuming.  See ``mtplx/fable_draft_k20_prescatter`` for why a
+``the PR #391 harness micro_draft_k20.py``, which prints the differing-row counters
+instead of assuming.  See ``mtplx/qwen4_draft_k20_prescatter`` for why a
 residual ULP there could not change the SUPPORT.
 """
 
@@ -24,11 +24,11 @@ import pytest
 import re
 from types import SimpleNamespace
 
-import mtplx.fable_claim_contract as contract
-import mtplx.fable_draft_k20_prescatter as prescatter
+import mtplx.qwen4_claim_contract as contract
+import mtplx.qwen4_draft_k20_prescatter as prescatter
 import mtplx.fast_sampling as fast_sampling
 import mtplx.frspec_draft as frspec_draft
-from mtplx.fable_draft_k20_prescatter import (
+from mtplx.qwen4_draft_k20_prescatter import (
     DraftK20PrescatterIneligible,
     DraftK20PrescatterPlan,
 )
@@ -482,7 +482,7 @@ def test_the_greedy_chain_call_site_uses_the_plan():
     from mtplx import generation
 
     source = inspect.getsource(generation.generate_mtpk)
-    assert "_fable_draft_k20_prescatter_greedy_step(" in source
+    assert "_qwen4_draft_k20_prescatter_greedy_step(" in source
     # ...and still has the stock chain for a flag-off / declined request.
     assert "_chain_arg = mx.argmax(_chain_row, axis=-1)" in source
 
@@ -963,7 +963,7 @@ def test_a_greedy_request_claims_without_the_chain_too(armed):
 
 
 def test_strict_claims_turns_a_decline_back_into_a_failure(armed, monkeypatch):
-    """A measured arm still fails closed under MTPLX_FABLE_STRICT_CLAIMS."""
+    """A measured arm still fails closed under MTPLX_STRICT_CLAIMS."""
 
     monkeypatch.setattr(contract, "_STRICT", True)
     rt, head, _ = _runtime()
@@ -1016,7 +1016,7 @@ def test_claim_declines_without_top_k(armed):
 def test_gate_is_off_by_default_in_generation():
     from mtplx import generation
 
-    assert generation._FABLE_DRAFT_K20_PRESCATTER is False
+    assert generation._QWEN4_DRAFT_K20_PRESCATTER is False
     assert "draft_k20_prescatter" in generation.GenerationStats.__dataclass_fields__
 
 
@@ -1029,7 +1029,7 @@ def test_the_draft_loop_reads_the_plan_before_the_stock_reader():
 
     source = inspect.getsource(generation.generate_mtpk)
     assert "elif _draft_k20_prescatter_plan is not None:" in source
-    assert "_fable_draft_k20_prescatter_read(" in source
+    assert "_qwen4_draft_k20_prescatter_read(" in source
     assert "draft_k20_prescatter=_draft_k20_prescatter_receipt," in source
 
 

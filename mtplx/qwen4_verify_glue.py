@@ -1,4 +1,4 @@
-"""W70 -- ``MTPLX_FABLE_VERIFY_GLUE``: install gate and engagement receipts.
+"""W70 -- ``MTPLX_QWEN4_VERIFY_GLUE``: install gate and engagement receipts.
 
 The compiled fixed-M4 verify body is one replayed graph of ~2,750 dispatch
 nodes per decode cycle (``docs/perf/verify-node-census.md``).  Half of them
@@ -20,7 +20,7 @@ TWO ITEMS, both off by default:
                   pinned in ``tests/test_qsa_indexer_prepare_metal.py``.  The
                   fixed-M4 lane never called it: ``_prepare_queries`` gates on
                   ``MTPLX_QSA_FUSED_INDEXER``, and the fixed-capacity branch
-                  goes straight to the eager chain.  ``MTPLX_FABLE_QSA_M4``
+                  goes straight to the eager chain.  ``MTPLX_QWEN4_QSA_M4``
                   also uses this kernel, bundled with three other rewrites
                   (one of which carries an fp32 reassociation assumption);
                   this item is that flag's exact subset, alone.
@@ -54,8 +54,8 @@ from typing import Any, Dict, Iterable, Optional
 import mlx.core as mx
 
 from mtplx.runtime_options import (
-    FABLE_VERIFY_GLUE_ITEMS,
-    fable_verify_glue_enabled,
+    QWEN4_VERIFY_GLUE_ITEMS,
+    qwen4_verify_glue_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ def qsa_rope_installed() -> bool:
 
     if _rope.pending():
         raise VerifyGlueContractError(
-            "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope' is armed but its install "
+            "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope' is armed but its install "
             "probe never ran: this route did not go through "
             "install_qwen4_fixed_verify_route, so the item would be inert"
         )
@@ -126,7 +126,7 @@ def qsa_rope_idx_installed() -> bool:
 
     if _IDX_DISABLED_REASON is None:
         raise VerifyGlueContractError(
-            "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx' is armed but its "
+            "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx' is armed but its "
             "install probe never ran: this route did not go through "
             "install_qwen4_fixed_verify_route, so the item would be inert"
         )
@@ -163,7 +163,7 @@ def _check_indexer_contract(indexer: Any, *, index: int) -> mx.Dtype:
     from mtplx.kernels.qwen4_qsa_m4_indexer import MAX_EXACT_HEAD_DIM
 
     _IDX_COUNTS["contract_checks"] += 1
-    where = f"MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx' layer {index}"
+    where = f"MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx' layer {index}"
     if not mx.metal.is_available():
         raise VerifyGlueContractError(
             f"{where}: the fused indexer preparation is a Metal kernel and "
@@ -245,13 +245,13 @@ def install(
 
     layers = tuple(qsa_layers)
     report: Dict[str, Any] = {
-        "armed": bool(fable_verify_glue_enabled()),
+        "armed": bool(qwen4_verify_glue_enabled()),
         "items": {},
         "qsa_layers": len(layers),
         "rows": int(rows),
     }
 
-    if fable_verify_glue_enabled("qsa_rope"):
+    if qwen4_verify_glue_enabled("qsa_rope"):
         from mtplx.kernels import qwen4_m4_rope as _rope
 
         ok = _rope.install(layers, rows=int(rows), logger=logger)
@@ -260,7 +260,7 @@ def install(
             "%s", _rope.engagement_line(layers=len(layers), enabled=ok)
         )
 
-    if fable_verify_glue_enabled("qsa_rope_idx"):
+    if qwen4_verify_glue_enabled("qsa_rope_idx"):
         if _IDX_DISABLED_REASON is None:
             reason = None
             seen = 0
@@ -271,7 +271,7 @@ def install(
                 indexer = getattr(attention, "indexer", None)
                 if indexer is None:
                     raise VerifyGlueContractError(
-                        "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx' layer "
+                        "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx' layer "
                         f"{index}: this attention block has no QSA indexer"
                     )
                 reason = _probe_indexer(indexer, index=index, rows=int(rows))
@@ -280,7 +280,7 @@ def install(
                 seen += 1
             if seen == 0 and reason is None:
                 raise VerifyGlueContractError(
-                    "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx' found no QSA "
+                    "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx' found no QSA "
                     "indexer to install on"
                 )
             if reason is None:
@@ -291,7 +291,7 @@ def install(
                 _IDX_DISABLED_REASON = reason
                 _IDX_PROBE_REPORT["failed"] = reason
                 logger.warning(
-                    "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope_idx': %s; "
+                    "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx': %s; "
                     "disabling the item for every layer (this arm now "
                     "measures the eager chain)",
                     reason,
@@ -323,9 +323,9 @@ def idx_engagement_line(*, layers: int, enabled: bool) -> str:
     if not enabled:
         reason = qsa_rope_idx_disabled_reason()
         suffix = f" ({reason})" if reason else ""
-        return f"[fable] verify-glue qsa_rope_idx: off{suffix}"
+        return f"[PR #391] verify-glue qsa_rope_idx: off{suffix}"
     return (
-        "[fable] verify-glue qsa_rope_idx: on, "
+        "[PR #391] verify-glue qsa_rope_idx: on, "
         f"layers={layers}, dispatches/layer 10->1, "
         f"dependent_levels/layer 7->1, "
         f"prep_calls={_IDX_COUNTS['prep_calls']}, "
@@ -339,12 +339,12 @@ def engagement() -> Dict[str, Any]:
     from mtplx.kernels import qwen4_m4_rope as _rope
 
     return {
-        "armed": bool(fable_verify_glue_enabled()),
-        "known_items": list(FABLE_VERIFY_GLUE_ITEMS),
+        "armed": bool(qwen4_verify_glue_enabled()),
+        "known_items": list(QWEN4_VERIFY_GLUE_ITEMS),
         "selected": [
             item
-            for item in FABLE_VERIFY_GLUE_ITEMS
-            if fable_verify_glue_enabled(item)
+            for item in QWEN4_VERIFY_GLUE_ITEMS
+            if qwen4_verify_glue_enabled(item)
         ],
         "install": dict(_REPORT),
         "qsa_rope": _rope.engagement(),

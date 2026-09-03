@@ -136,13 +136,13 @@ def _boundary_true_restore_enabled() -> bool:
     return raw not in {"0", "false", "off", "no"}
 
 
-FABLE_NEAR_PREFIX_RESTORE_ENV = "MTPLX_FABLE_NEAR_PREFIX_RESTORE"
+SESSION_BANK_SHED_BOUNDARIES_ENV = "MTPLX_SESSION_BANK_SHED_BOUNDARIES"
 
 
-def _fable_near_prefix_restore_enabled() -> bool:
+def _shed_boundaries_enabled() -> bool:
     """Shed GDN boundary records to fit, instead of dropping the whole entry.
 
-    THE BUG, measured 2026-09-01 (.benchmark-artifacts/fable/ttft/control.json).
+    THE BUG, measured 2026-09-01 (PR #391 receipts/ttft/control.json).
     A three-scenario TTFT screen on Qwen3.8 Flash-Next: a 19,022-token cold
     turn, the same conversation with the model's own reply appended (0.217 s
     visible TTFT, exact restore), and the same turn with the prior assistant
@@ -193,14 +193,14 @@ def _fable_near_prefix_restore_enabled() -> bool:
     keeps one admission policy for its whole life and an A/B arm cannot drift
     mid-run.
     """
-    raw = str(os.environ.get(FABLE_NEAR_PREFIX_RESTORE_ENV, "0")).strip().lower()
+    raw = str(os.environ.get(SESSION_BANK_SHED_BOUNDARIES_ENV, "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
-FABLE_PROTECTED_TERMINAL_ENV = "MTPLX_FABLE_PROTECTED_TERMINAL"
+SESSION_BANK_PROTECTED_TERMINAL_ENV = "MTPLX_SESSION_BANK_PROTECTED_TERMINAL"
 
 
-def _fable_protected_terminal_enabled() -> bool:
+def _protected_terminal_enabled() -> bool:
     """Protected-terminal eviction order (oMLX PR #3330, exact_resident.py).
 
     Ported policy, in oMLX's words: two candidates compete under one byte
@@ -225,7 +225,7 @@ def _fable_protected_terminal_enabled() -> bool:
     Default OFF; read at SessionBank construction (see __init__), so one bank
     keeps one policy for its whole life and an A/B arm cannot drift mid-run.
     """
-    raw = str(os.environ.get(FABLE_PROTECTED_TERMINAL_ENV, "0")).strip().lower()
+    raw = str(os.environ.get(SESSION_BANK_PROTECTED_TERMINAL_ENV, "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -602,16 +602,16 @@ class SessionBank:
         self.dynamic_ceiling_fn: Callable[[], int] | None = None
         self.last_dynamic_ceiling_bytes: int | None = None
         self.dynamic_ceiling_errors: int = 0
-        # MTPLX_FABLE_PROTECTED_TERMINAL, resolved ONCE here so a bank keeps
+        # MTPLX_SESSION_BANK_PROTECTED_TERMINAL, resolved ONCE here so a bank keeps
         # one eviction policy for its whole life (see the gate's docstring).
-        self.protect_newest_extending: bool = _fable_protected_terminal_enabled()
+        self.protect_newest_extending: bool = _protected_terminal_enabled()
         # Deflections: how many times publishing a shorter input-prompt
         # fallback would have evicted the newest terminal extending it and
         # took another victim instead. oMLX's `protected_rejections`.
         self.protected_rejections: int = 0
-        # MTPLX_FABLE_NEAR_PREFIX_RESTORE, resolved ONCE here (see the gate's
+        # MTPLX_SESSION_BANK_SHED_BOUNDARIES, resolved ONCE here (see the gate's
         # docstring for the 2026-09-01 15.79 s receipt this exists to fix).
-        self.shed_gdn_boundaries_to_fit: bool = _fable_near_prefix_restore_enabled()
+        self.shed_gdn_boundaries_to_fit: bool = _shed_boundaries_enabled()
         self.boundary_shed_puts: int = 0
         self.boundary_shed_records: int = 0
 
@@ -1805,11 +1805,11 @@ class SessionBank:
             "effective_max_bytes": self.effective_max_bytes(),
             "dynamic_ceiling_bytes": self.last_dynamic_ceiling_bytes,
             "dynamic_ceiling_errors": self.dynamic_ceiling_errors,
-            # Engagement receipt for MTPLX_FABLE_PROTECTED_TERMINAL: a lane
+            # Engagement receipt for MTPLX_SESSION_BANK_PROTECTED_TERMINAL: a lane
             # that reads flat in an A/B must still be able to prove it ran.
             "protect_newest_extending": bool(self.protect_newest_extending),
             "protected_rejections": int(self.protected_rejections),
-            # MTPLX_FABLE_NEAR_PREFIX_RESTORE: boundary_shed_puts > 0 is the
+            # MTPLX_SESSION_BANK_SHED_BOUNDARIES: boundary_shed_puts > 0 is the
             # proof that entries which used to be refused wholesale are now
             # being admitted with a reduced boundary set.
             "shed_gdn_boundaries_to_fit": bool(self.shed_gdn_boundaries_to_fit),
@@ -2619,7 +2619,7 @@ class SessionBank:
             )
             terminal = self._newest_extending_entry(protected_tokens)
             if terminal is not None and victim is terminal and len(candidates) > 1:
-                # Protected-terminal rule (see _fable_protected_terminal_enabled):
+                # Protected-terminal rule (see _protected_terminal_enabled):
                 # the shorter fallback being published must not be what evicts
                 # the newest terminal extending it. Order only -- if the
                 # terminal is the LAST candidate standing it is still evicted,

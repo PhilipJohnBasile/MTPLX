@@ -4,7 +4,7 @@
 # GPU exclusive lock -- it replays logged K20 rows on the CPU.
 # ---------------------------------------------------------------------------
 """Score the block-verification law (H §Option B) against the shipped law,
-offline, on the K20 rows captured by ``MTPLX_FABLE_K20_LOG``.
+offline, on the K20 rows captured by ``MTPLX_QWEN4_K20_LOG``.
 
 Why offline, and which number to read
 -------------------------------------
@@ -35,7 +35,7 @@ the same uniform), so read it for correctness, not for magnitude.
 
 Two lanes, one loader
 ---------------------
-``MTPLX_FABLE_K20_LOG`` writes one normalised schema from either of the two
+``MTPLX_QWEN4_K20_LOG`` writes one normalised schema from either of the two
 lanes that make an accept decision, and this script loads both.  The only
 place they differ is how far the rows have already been shaped, which
 :func:`build_window` branches on and nothing else does:
@@ -177,23 +177,23 @@ warning for debugging.
 Which law that replay uses is a property of the log.  A ``pr391_raw`` or
 ``stock_prepared`` log ran the shipped law, so :func:`decide_current` is the
 oracle.  A ``stock_prepared_bv`` log was produced with
-``MTPLX_FABLE_BLOCK_VERIFY=1``, so :func:`decide_block` is -- per window, since
+``MTPLX_QWEN4_BLOCK_VERIFY=1``, so :func:`decide_block` is -- per window, since
 a window that could not arm (a row the lane never materialised) fell back to
 the shipped law and records ``block_valid = 0``.  An armed log carries the
 in-loop ladder as well, and :func:`block_ladder_columns` recomputes it here and
 demands entry-for-entry equality: that is the exactness proof that
-``mtplx/fable_block_verify.py`` implements the law in this file, and it is what
+``mtplx/qwen4_block_verify.py`` implements the law in this file, and it is what
 a BV-armed run must show.
 
 Usage::
 
-    python scripts/fable/offline_block_verification.py rows.npz
-    python scripts/fable/offline_block_verification.py rows.npz --ms-per-window 37.47
-    python scripts/fable/offline_block_verification.py rows.npz --cap one --json out.json
+    python the PR #391 harness offline_block_verification.py rows.npz
+    python the PR #391 harness offline_block_verification.py rows.npz --ms-per-window 37.47
+    python the PR #391 harness offline_block_verification.py rows.npz --cap one --json out.json
 
     # exactness check of the in-loop implementation, on a BV-armed run
-    MTPLX_FABLE_BLOCK_VERIFY=1 MTPLX_FABLE_K20_LOG=/path/bv.npz <benchmark>
-    python scripts/fable/offline_block_verification.py /path/bv.npz
+    MTPLX_QWEN4_BLOCK_VERIFY=1 MTPLX_QWEN4_K20_LOG=/path/bv.npz <benchmark>
+    python the PR #391 harness offline_block_verification.py /path/bv.npz
 """
 
 from __future__ import annotations
@@ -800,7 +800,7 @@ def block_ladder_columns(
 ) -> dict[str, np.ndarray]:
     """The block law's per-depth ladder, unconditional on the accept coins.
 
-    This is what ``mtplx/fable_block_verify.BlockVerifier`` computes up front
+    This is what ``mtplx/qwen4_block_verify.BlockVerifier`` computes up front
     and what an armed ``stock_prepared_bv`` log records, so comparing the two
     is the exactness check on the in-loop implementation.  Computing every
     depth (rather than stopping at the first rejection like :func:`decide_block`)
@@ -948,7 +948,7 @@ def load_log(path: str) -> dict[str, np.ndarray]:
     )
     missing = [key for key in required if key not in log]
     if missing:
-        raise KeyError(f"K20 log is missing {missing}; was it written by fable_k20_log?")
+        raise KeyError(f"K20 log is missing {missing}; was it written by qwen4_k20_log?")
     log.setdefault("layout", np.asarray(LAYOUT_PR391))
     return log
 
@@ -980,7 +980,7 @@ def score(
     windows of a ``stock_prepared_bv`` log whose ``block_valid`` is 1 (a window
     that could not arm fell back to the shipped law and is checked against it).
     On an armed log the recomputed ladder is compared entry for entry against
-    the one ``mtplx/fable_block_verify.py`` wrote, which is the exactness proof
+    the one ``mtplx/qwen4_block_verify.py`` wrote, which is the exactness proof
     of the in-loop implementation rather than a smoke test of it.
     """
 
@@ -1282,7 +1282,7 @@ def report(result: dict[str, Any], *, ms_per_window: float | None) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("npz", help="path written by MTPLX_FABLE_K20_LOG")
+    parser.add_argument("npz", help="path written by MTPLX_QWEN4_K20_LOG")
     parser.add_argument(
         "--cap",
         choices=("reach", "one"),
@@ -1302,7 +1302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=0.0,
         help="tolerance for the armed-log ladder check; 0 demands bit equality "
-        "with mtplx/fable_block_verify.py, which is what the two float64 "
+        "with mtplx/qwen4_block_verify.py, which is what the two float64 "
         "mirrors are built to deliver",
     )
     parser.add_argument("--json", default=None, help="also write the result as JSON")
@@ -1344,7 +1344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if result["block_ladder_mismatch_cycles"] and not args.allow_replay_mismatch:
         print(
             "\nFAIL: the in-loop block ladder does not match this reference. "
-            "mtplx/fable_block_verify.py and this file are mirrors of one law; "
+            "mtplx/qwen4_block_verify.py and this file are mirrors of one law; "
             "one of them has drifted.",
             file=sys.stderr,
         )

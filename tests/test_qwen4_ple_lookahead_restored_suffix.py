@@ -1,4 +1,4 @@
-"""MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD on the RESTORED-SUFFIX prefill loop.
+"""MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD on the RESTORED-SUFFIX prefill loop.
 
 The 2026-09-02 served battery armed the lane and then 500ed every cell whose
 prompt shared a prefix with an earlier one: the session bank restored the

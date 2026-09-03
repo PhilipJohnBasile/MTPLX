@@ -87,7 +87,7 @@ __all__ = [
     "snapshot_counters",
 ]
 
-ENV_FLAG = "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD"
+ENV_FLAG = "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD"
 
 #: The first chunk's gather is the one the lookahead cannot hide: it has no
 #: previous chunk to run behind, so `prefill_lookahead_scope` submits it and
@@ -98,7 +98,7 @@ ENV_FLAG = "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD"
 #: work between tokenisation and the first forward pays for it.  It lives in
 #: `mtplx.ple_row_gather` because the vectorised gather it also turns on has
 #: to be importable without this module.
-EARLY_ENV_FLAG = "MTPLX_FABLE_PLE_FIRST_GATHER_EARLY"
+EARLY_ENV_FLAG = "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -818,7 +818,7 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
     # claimed the worker yet.  Submitting it HERE still leaves it exposed --
     # `stage()` blocks on it microseconds later (0.627 s on chunk 1 against
     # 0.0006 s on chunks 2-4, the 16K prefill-stack receipt) -- so when
-    # MTPLX_FABLE_PLE_FIRST_GATHER_EARLY armed the same span at request
+    # MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY armed the same span at request
     # arrival, adopt that in-flight future instead of preparing it twice.
     if not lookahead.adopt_early(active_early_first_gather()):
         lookahead.submit(0)

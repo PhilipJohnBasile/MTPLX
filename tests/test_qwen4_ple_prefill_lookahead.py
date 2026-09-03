@@ -1,4 +1,4 @@
-"""MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD: one-slot lifecycle and exactness.
+"""MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD: one-slot lifecycle and exactness.
 
 Pure Python + NumPy.  ``mtplx.ple_prefill_lookahead`` imports no MLX, and the
 sidecar half is exercised against a real on-disk memmap built in tmp_path at
@@ -888,7 +888,7 @@ def test_the_wired_loop_opens_the_scope_instead_of_the_tripwire():
 def test_the_restored_suffix_loop_is_wired_too_not_tripwired():
     """A prompt whose prefix the bank holds takes this loop, not the cold one.
 
-    Behaviour lives in tests/test_fable_ple_lookahead_restored_suffix.py; this
+    Behaviour lives in tests/test_qwen4_ple_lookahead_restored_suffix.py; this
     is the structural half, next to the cold loop's, so the two cannot drift.
     """
 
@@ -1338,7 +1338,7 @@ def test_disabling_the_hot_lru_makes_every_span_required():
 
 
 # ---------------------------------------------------------------------------
-# MTPLX_FABLE_PLE_FIRST_GATHER_EARLY: the same prepare, measured warm/cold
+# MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY: the same prepare, measured warm/cold
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""``MTPLX_FABLE_DRAFT_K20_PRESCATTER`` -- draft K20 support on the FR-Spec row.
+"""``MTPLX_QWEN4_DRAFT_K20_PRESCATTER`` -- draft K20 support on the FR-Spec row.
 
 Read ONCE at import, default OFF.  Flag-off, :func:`is_enabled` is False, no
 plan is ever built, and the single call site in ``generation.py`` stays behind
@@ -106,8 +106,8 @@ temperature and ``scaled = row.astype(float32) * (1/T)``.
    partitions the 65,536 nonzero terms across threads/blocks differently than a
    65,536-lane one does; a residual of a few ULP in ``log_total`` is admissible
    in principle.  Measured on the CPU stream (which this repo's tests can run)
-   the two are bit-identical -- ``tests/test_fable_draft_k20_prescatter.py``
-   pins that -- and ``scripts/fable/micro_draft_k20.py`` re-measures it on the
+   the two are bit-identical -- ``tests/test_qwen4_draft_k20_prescatter.py``
+   pins that -- and ``the PR #391 harness micro_draft_k20.py`` re-measures it on the
    Metal stream and prints the differing-row and ULP counters rather than
    assuming.  A residual ULP would scale every q entry by ``1 +- 2**-24`` and
    could only change behaviour by flipping a knife-edge top-p ``cumulative_before``
@@ -147,7 +147,7 @@ penalties / steering overlays           stock reader (they index by real
 The rows that do not say "pre-scatter" are ROUTING, decided once at
 construction and never mid-decode: those readers are different selectors with
 their own contracts, not this one refusing to work.  The lane stands aside
-(:mod:`mtplx.fable_claim_contract`), the plan is ``None``, the shipped reader
+(:mod:`mtplx.qwen4_claim_contract`), the plan is ``None``, the shipped reader
 runs, and the receipt records ``declined`` with the reason and a per-process
 tally -- ``installed`` stays False, so no receipt ever claims this selector
 produced a number it did not.
@@ -157,7 +157,7 @@ the live draft route, a wrong-width or unordered ranked table -- raises
 :class:`DraftK20PrescatterIneligible`.  No request in the process could be
 served, so failing the first one loudly is the honest report.
 
-``MTPLX_FABLE_STRICT_CLAIMS=1`` turns the routing declines into raises for a
+``MTPLX_STRICT_CLAIMS=1`` turns the routing declines into raises for a
 measured arm that must prove the lane ran.
 
 NO device work happens at import.
@@ -171,7 +171,7 @@ from typing import Any
 
 import numpy as np
 
-from .fable_claim_contract import (
+from .qwen4_claim_contract import (
     ClaimDeclined,
     decline as _decline,
     declined_receipt,
@@ -179,7 +179,7 @@ from .fable_claim_contract import (
 from .sampling import SamplerConfig, SparseDistribution, sample_from_distribution
 
 
-_ENV_VAR = "MTPLX_FABLE_DRAFT_K20_PRESCATTER"
+_ENV_VAR = "MTPLX_QWEN4_DRAFT_K20_PRESCATTER"
 
 #: The only ranked-table width this route admits.  The built-in artifact
 #: ``mtplx/data/qwen38_code_ranked_64k.json`` is exactly this wide; a different
@@ -201,7 +201,7 @@ _ENABLED = _env_truthy(_ENV_VAR)
 
 
 def is_enabled() -> bool:
-    """True when ``MTPLX_FABLE_DRAFT_K20_PRESCATTER`` was set at import."""
+    """True when ``MTPLX_QWEN4_DRAFT_K20_PRESCATTER`` was set at import."""
 
     return _ENABLED
 
@@ -222,7 +222,7 @@ class DraftK20PrescatterIneligible(RuntimeError):
 
     A request whose SHAPE this lane does not serve (greedy, penalties, a
     competing owner of the draft chain, ...) does NOT raise: it declines to
-    the shipped draft path, which is what :mod:`mtplx.fable_claim_contract`
+    the shipped draft path, which is what :mod:`mtplx.qwen4_claim_contract`
     exists for.  Raising on those turned every greedy request into an HTTP
     500 in serving (composed-decode-stack HumanEval gate, 2026-09-02).
     """
@@ -292,7 +292,7 @@ def _refuse(reason: str) -> None:
     """Install-time contract violation: no request here could be served.
 
     Request-SHAPE ineligibility uses ``_decline`` instead -- see
-    :mod:`mtplx.fable_claim_contract`.
+    :mod:`mtplx.qwen4_claim_contract`.
     """
 
     raise DraftK20PrescatterIneligible(
@@ -398,7 +398,7 @@ def claim_draft_route(
 
     Raises :class:`DraftK20PrescatterIneligible` only for an INSTALL-time
     contract violation -- something no request in this process could satisfy.
-    ``MTPLX_FABLE_STRICT_CLAIMS=1`` turns declines back into that exception for
+    ``MTPLX_STRICT_CLAIMS=1`` turns declines back into that exception for
     a measured arm that must prove the lane ran.
     """
 
@@ -563,7 +563,7 @@ def _claim_draft_route(
     if device_k20_route is not None:
         _decline(
             "device_k20_owns_selector",
-            "MTPLX_FABLE_DEVICE_K20 owns the draft selector",
+            "MTPLX_QWEN4_DEVICE_K20 owns the draft selector",
         )
     if pr391_route is not None:
         _decline(

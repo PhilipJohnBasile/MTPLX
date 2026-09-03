@@ -745,7 +745,7 @@ def _add_ngram_prewarm_args(parser: argparse.ArgumentParser) -> None:
             "deciding WHICH rows a partial pre-read warms. Defaults to "
             "<model>/ngram-hotness.npy when present, else the file prefix is "
             "read sequentially. Build one with "
-            "scripts/fable/ngram_row_hotness.py."
+            "the PR #391 harness ngram_row_hotness.py."
         ),
     )
 

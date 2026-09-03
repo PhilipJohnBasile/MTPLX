@@ -111,7 +111,7 @@ import numpy as np
 
 from .sampling import SparseDistribution
 
-_ENV_VAR = "MTPLX_FABLE_BLOCK_VERIFY"
+_ENV_VAR = "MTPLX_QWEN4_BLOCK_VERIFY"
 
 #: The only water-fill cap the in-loop lane implements.  See the module
 #: docstring: H's literal ``min(1, .)`` does not yield a probability.
@@ -133,7 +133,7 @@ _ENABLED = _env_truthy(_ENV_VAR)
 
 
 def is_enabled() -> bool:
-    """True when ``MTPLX_FABLE_BLOCK_VERIFY`` was set at import."""
+    """True when ``MTPLX_QWEN4_BLOCK_VERIFY`` was set at import."""
 
     return _ENABLED
 
@@ -162,7 +162,7 @@ def renormalize(probabilities: np.ndarray) -> np.ndarray:
 def prepared_pair(distribution: Any) -> tuple[np.ndarray, np.ndarray] | None:
     """``(ids ascending, probs)`` from a host row, or ``None`` when empty.
 
-    Composes ``fable_k20_log._distribution_rows`` with the reference's
+    Composes ``qwen4_k20_log._distribution_rows`` with the reference's
     ``prepared_row``: read ``token_ids``/``probs`` off a sparse row (or the
     positive entries of a dense one), drop the zero-probability padding, sort
     by token id, renormalise once.  Doing it here rather than through

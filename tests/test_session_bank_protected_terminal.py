@@ -1,4 +1,4 @@
-"""Protected-terminal eviction order (MTPLX_FABLE_PROTECTED_TERMINAL).
+"""Protected-terminal eviction order (MTPLX_SESSION_BANK_PROTECTED_TERMINAL).
 
 Port of oMLX PR #3330's ``exact_resident.py`` rule: when the shorter
 input-prompt fallback and the longer matching terminal compete under one byte
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mtplx.session_bank import FABLE_PROTECTED_TERMINAL_ENV, SessionBank
+from mtplx.session_bank import SESSION_BANK_PROTECTED_TERMINAL_ENV, SessionBank
 
 
 RUNTIME = SimpleNamespace(model_path=Path("models/example"), mtp_enabled=True)
@@ -29,7 +29,7 @@ UNRELATED = (9, 9, 9)
 
 @pytest.fixture(autouse=True)
 def _no_inherited_gate(monkeypatch):
-    monkeypatch.delenv(FABLE_PROTECTED_TERMINAL_ENV, raising=False)
+    monkeypatch.delenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, raising=False)
 
 
 def _bank(**kwargs) -> SessionBank:
@@ -63,20 +63,20 @@ def test_gate_defaults_off():
 
 @pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
 def test_gate_accepts_truthy(monkeypatch, value):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, value)
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, value)
     assert _bank().protect_newest_extending is True
 
 
 @pytest.mark.parametrize("value", ["0", "", "off", "nope"])
 def test_gate_rejects_everything_else(monkeypatch, value):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, value)
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, value)
     assert _bank().protect_newest_extending is False
 
 
 def test_gate_is_construction_time(monkeypatch):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank()
-    monkeypatch.delenv(FABLE_PROTECTED_TERMINAL_ENV)
+    monkeypatch.delenv(SESSION_BANK_PROTECTED_TERMINAL_ENV)
     assert bank.protect_newest_extending is True
     assert _bank().protect_newest_extending is False
 
@@ -93,7 +93,7 @@ def test_newest_extending_entry_is_inert_when_gate_off():
 
 
 def test_newest_extending_entry_prefers_recency_over_length(monkeypatch):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank(max_bytes=10_000, per_session_max_bytes=10_000)
     longer_older = _put(bank, (1, 2, 3, 7, 7, 7, 7), session_id="s1", nbytes=10)
     shorter_newer = _put(bank, (1, 2, 3, 8, 8), session_id="s1", nbytes=10)
@@ -102,7 +102,7 @@ def test_newest_extending_entry_prefers_recency_over_length(monkeypatch):
 
 
 def test_newest_extending_entry_ignores_non_extensions(monkeypatch):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank(max_bytes=10_000, per_session_max_bytes=10_000)
     _put(bank, UNRELATED, session_id="s2", nbytes=10)
     _put(bank, FALLBACK, session_id="s1", nbytes=10)
@@ -137,7 +137,7 @@ def test_control_fallback_evicts_the_terminal():
 
 
 def test_protected_terminal_survives_the_fallback_publish(monkeypatch):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank()
     _setup_contended_bank(bank)
     _put(bank, FALLBACK, session_id="s1", nbytes=150)
@@ -149,7 +149,7 @@ def test_protected_terminal_survives_the_fallback_publish(monkeypatch):
 def test_protection_keeps_recency_not_length(monkeypatch):
     """The newest terminal stays; an older, longer branch is the victim."""
 
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank(max_bytes=260)
     longer_older = _put(bank, (1, 2, 3, 7, 7, 7, 7), session_id="s1", nbytes=50)
     shorter_newer = _put(bank, (1, 2, 3, 8, 8), session_id="s1", nbytes=50)
@@ -169,7 +169,7 @@ def test_protection_is_order_only_and_yields_to_the_budget(monkeypatch):
     ceiling. The rule reorders victims; it never suspends the budget.
     """
 
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank(max_bytes=200, per_session_max_bytes=200)
     _put(bank, TERMINAL, session_id="s1", nbytes=100)
     _put(bank, FALLBACK, session_id="s1", nbytes=150)
@@ -181,7 +181,7 @@ def test_protection_is_order_only_and_yields_to_the_budget(monkeypatch):
 def test_protection_does_not_shield_unrelated_entries(monkeypatch):
     """Only the extending terminal is protected; ordinary LRU is untouched."""
 
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank()
     stale = _put(bank, UNRELATED, session_id="s2", nbytes=100)
     fresh = _put(bank, (8, 8, 8, 8), session_id="s3", nbytes=100)
@@ -197,7 +197,7 @@ def test_protection_does_not_shield_unrelated_entries(monkeypatch):
 def test_eviction_terminates_when_every_candidate_is_the_terminal(monkeypatch):
     """Repeated pressure must not loop: each pass evicts exactly one entry."""
 
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank(max_bytes=120, per_session_max_bytes=120)
     _put(bank, TERMINAL, session_id="s1", nbytes=60)
     _put(bank, (1, 2, 3, 6), session_id="s1", nbytes=60)
@@ -213,7 +213,7 @@ def test_eviction_terminates_when_every_candidate_is_the_terminal(monkeypatch):
 
 
 def test_to_dict_publishes_the_engagement_receipt(monkeypatch):
-    monkeypatch.setenv(FABLE_PROTECTED_TERMINAL_ENV, "1")
+    monkeypatch.setenv(SESSION_BANK_PROTECTED_TERMINAL_ENV, "1")
     bank = _bank()
     _setup_contended_bank(bank)
     _put(bank, FALLBACK, session_id="s1", nbytes=150)

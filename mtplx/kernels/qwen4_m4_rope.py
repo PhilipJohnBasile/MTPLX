@@ -5,7 +5,7 @@ WHY THIS EXISTS
 W69's node census of the compiled fixed-M4 verify body found ``qsa_rope`` --
 the rotary embedding applied inside the twelve QSA layers -- to be the largest
 fusable glue group in the graph.  On today's stack
-(``MTPLX_FABLE_OPDIET=1`` with the ``rope`` item, ``MTPLX_FABLE_QSA_M4``
+(``MTPLX_QWEN4_OPDIET=1`` with the ``rope`` item, ``MTPLX_QWEN4_QSA_M4``
 **off**) one QSA layer issues its rotation as a chain of small elementwise and
 copy dispatches:
 
@@ -34,7 +34,7 @@ WHAT IT DOES NOT DO
 * **No indexer query prep and no pooled bank row.**  Those two rope sites of
   the same QSA layer already have shipped, pinned-bit-exact kernels
   (``qsa_indexer_prepare_queries_metal`` and ``qsa_m4_pooled_row``); see
-  ``MTPLX_FABLE_VERIFY_GLUE_ITEMS=qsa_rope_idx`` and ``MTPLX_FABLE_QSA_M4``.
+  ``MTPLX_QWEN4_VERIFY_GLUE_ITEMS=qsa_rope_idx`` and ``MTPLX_QWEN4_QSA_M4``.
 
 NUMERICS
 --------
@@ -64,7 +64,7 @@ pinned in ``tests/test_qsa_indexer_prepare_metal.py``.  It is NOT a proof
 against the *compiled* body, where MLX fuses the multiply-add chain into a
 kernel of its own whose contraction behaviour we do not control.  So the
 install probe in this module is ``mx.array_equal`` against the live eager
-expression and the microbench (``scripts/fable/micro_verify_glue_a.py``)
+expression and the microbench (``the PR #391 harness micro_verify_glue_a.py``)
 re-checks against the compiled one; a probe miss DISABLES the item and logs
 rather than raising, because rope rounding is a numerical verdict, while a
 contract miss (geometry, dtype, rotary width) always RAISES.
@@ -520,11 +520,11 @@ def stock_reference(
     """
 
     from mtplx.models import qwen4_exp as _model
-    from mtplx.runtime_options import fable_opdiet_enabled
+    from mtplx.runtime_options import qwen4_opdiet_enabled
 
     rows = int(keys.shape[1])
     positions = pos_start + mx.arange(rows, dtype=mx.int32)
-    if fable_opdiet_enabled("rope"):
+    if qwen4_opdiet_enabled("rope"):
         cos, sin = _model._rope_cos_sin_half(
             positions, inv_freq, attention_scaling
         )
@@ -657,7 +657,7 @@ def install(
                 _PROBE_REPORT["failed"] = _DISABLED_REASON
                 if logger is not None:
                     logger.warning(
-                        "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope': %s; "
+                        "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope': %s; "
                         "disabling the item for every layer (this arm now "
                         "measures the stock chain)",
                         _DISABLED_REASON,
@@ -669,7 +669,7 @@ def install(
         # Nothing to serve is a configuration error, not a numerical verdict:
         # the flag was armed against a model with no QSA layers.
         raise RopeGlueContractError(
-            "MTPLX_FABLE_VERIFY_GLUE item 'qsa_rope' found no QSA attention "
+            "MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope' found no QSA attention "
             "layer to install on"
         )
     _PROBE_REPORT["layers"] = seen
@@ -695,9 +695,9 @@ def engagement_line(*, layers: int, enabled: bool) -> str:
     if not enabled:
         reason = disabled_reason()
         suffix = f" ({reason})" if reason else ""
-        return f"[fable] verify-glue qsa_rope: off{suffix}"
+        return f"[PR #391] verify-glue qsa_rope: off{suffix}"
     return (
-        "[fable] verify-glue qsa_rope: on, "
+        "[PR #391] verify-glue qsa_rope: on, "
         f"layers={layers}, "
         f"dispatches/layer {STOCK_DISPATCHES_PER_LAYER_WITH_POSITIONS}->"
         f"{FUSED_DISPATCHES_PER_LAYER}, "

@@ -51,17 +51,17 @@ from .cache_state import (
     tail_owned_attention_kv_stats,
     trim_verified_window_to_prefix,
 )
-from .fable_draft_k20_prescatter import (
+from .qwen4_draft_k20_prescatter import (
     DraftK20PrescatterIneligible,
-    claim_draft_route as _fable_draft_k20_prescatter_claim,
-    greedy_chain_step as _fable_draft_k20_prescatter_greedy_step,
-    is_enabled as _fable_draft_k20_prescatter_enabled,
-    read_draft as _fable_draft_k20_prescatter_read,
-    release_draft_route as _fable_draft_k20_prescatter_release,
+    claim_draft_route as _qwen4_draft_k20_prescatter_claim,
+    greedy_chain_step as _qwen4_draft_k20_prescatter_greedy_step,
+    is_enabled as _qwen4_draft_k20_prescatter_enabled,
+    read_draft as _qwen4_draft_k20_prescatter_read,
+    release_draft_route as _qwen4_draft_k20_prescatter_release,
 )
-from .fable_block_verify import (
-    build_verifier as _fable_build_block_verifier,
-    is_enabled as _fable_block_verify_enabled,
+from .qwen4_block_verify import (
+    build_verifier as _qwen4_build_block_verifier,
+    is_enabled as _qwen4_block_verify_enabled,
 )
 from .forkev_telemetry import ForkEVRecorder
 from .fast_sampling import (
@@ -108,7 +108,7 @@ from .session_bank import _boundary_true_restore_enabled
 from .runtime_options import (
     block_prefix_restore_enabled,
     env_bool,
-    fable_opdiet_enabled,
+    qwen4_opdiet_enabled,
 )
 from .route_tape import RouteTape, counter_deltas
 
@@ -308,8 +308,8 @@ def _env_falsey(name: str) -> bool:
     }
 
 
-# MTPLX_FABLE_DRAFT_K20_PRESCATTER -- read ONCE at import (in
-# ``mtplx.fable_draft_k20_prescatter``), default OFF.  When off this constant
+# MTPLX_QWEN4_DRAFT_K20_PRESCATTER -- read ONCE at import (in
+# ``mtplx.qwen4_draft_k20_prescatter``), default OFF.  When off this constant
 # is False, no plan is claimed, `_draft_k20_prescatter_plan` stays None, and
 # the one draft-read site below is behind `is not None`, so the retained stock
 # lane runs the code it ran before this module existed.
@@ -320,10 +320,10 @@ def _env_falsey(name: str) -> bool:
 # 65,536-lane `argpartition` and `logsumexp` instead of 248,320-lane ones, and
 # the same `(ids, probs)` support because the ranked id table is strictly
 # ascending.  See that module's docstring for the exactness argument.
-_FABLE_DRAFT_K20_PRESCATTER = _fable_draft_k20_prescatter_enabled()
+_QWEN4_DRAFT_K20_PRESCATTER = _qwen4_draft_k20_prescatter_enabled()
 
-# MTPLX_FABLE_BLOCK_VERIFY -- read ONCE at import (in
-# ``mtplx.fable_block_verify``), default OFF.  When off this constant is False,
+# MTPLX_QWEN4_BLOCK_VERIFY -- read ONCE at import (in
+# ``mtplx.qwen4_block_verify``), default OFF.  When off this constant is False,
 # no verifier is built, and the stock accept loop evaluates exactly the
 # expressions it evaluated before -- same acceptance probability, same
 # residual, same uniforms, same order.  When on, the loop runs block
@@ -333,8 +333,8 @@ _FABLE_DRAFT_K20_PRESCATTER = _fable_draft_k20_prescatter_enabled()
 # draft support, and corrects from the SCALED residual (c*p - q)+.  Both laws
 # are exact samplers of the same target distribution; BV accepts deeper more
 # often (+1.85% tokens/window measured offline on 381 real windows) and draws
-# exactly the same number of uniforms.  See ``mtplx/fable_block_verify.py``.
-_FABLE_BLOCK_VERIFY = _fable_block_verify_enabled()
+# exactly the same number of uniforms.  See ``mtplx/qwen4_block_verify.py``.
+_QWEN4_BLOCK_VERIFY = _qwen4_block_verify_enabled()
 
 def _family_capture_commit_enabled() -> bool:
     """qwen4_exp layer-owned capture-commit (``MTPLX_FAMILY_CAPTURE_COMMIT``).
@@ -617,7 +617,7 @@ def _resolve_mtp_history_policy(requested_policy: str, prompt_tokens: int) -> st
 
 #: Per-chunk prefill timings for the most recent chunked prompt prefill.
 #: Written on BOTH A/B arms (the scope below is entered unconditionally) and
-#: read by scripts/fable/abba_driver.py.  Bounded and replaced wholesale at
+#: read by the PR #391 harness abba_driver.py.  Bounded and replaced wholesale at
 #: each scope entry, so it can never grow across a session.
 _PREFILL_CHUNK_RECORDS: list[dict[str, float]] = []
 _PREFILL_CHUNK_RECORD_CAP = 512
@@ -685,7 +685,7 @@ def _ple_prefill_lookahead_scope(rt, body, spans):
     """Arm the model's PLE prefill lookahead for this chunked prefill.
 
     Entered on BOTH arms, so it also owns the per-chunk timing records.  With
-    MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD unset this yields a no-op scope and the
+    MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD unset this yields a no-op scope and the
     prefill loop below behaves exactly as before.
 
     When the flag IS armed, an unresolvable hook raises HERE rather than
@@ -699,7 +699,7 @@ def _ple_prefill_lookahead_scope(rt, body, spans):
 
         if hook is None and body and _lookahead_enabled():
             raise RuntimeError(
-                "MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD=1 but nothing under "
+                "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD=1 but nothing under "
                 f"{type(getattr(rt, 'model', None)).__name__} exposes "
                 "ple_prefill_lookahead; this architecture cannot serve the lane"
             )
@@ -774,7 +774,7 @@ def _with_ple_first_gather_early(fn):
     A decorator rather than a ``with`` inside the body because
     ``restore_or_prefill_prompt_state`` returns from a dozen places (every
     session-bank restore lane is one), and every one of them must release the
-    worker.  Off by default; with MTPLX_FABLE_PLE_FIRST_GATHER_EARLY unset this
+    worker.  Off by default; with MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY unset this
     is one contextvar set and a ``None`` yield.
     """
 
@@ -816,7 +816,7 @@ def _ple_first_gather_early_scope(
     hook = _resolve_ple_lookahead_hook(rt, "ple_first_gather_early")
     if hook is None:
         raise RuntimeError(
-            "MTPLX_FABLE_PLE_FIRST_GATHER_EARLY=1 but nothing under "
+            "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY=1 but nothing under "
             f"{type(getattr(rt, 'model', None)).__name__} exposes "
             "ple_first_gather_early; this architecture cannot serve the lane"
         )
@@ -2577,7 +2577,7 @@ class GenerationStats:
     adapter_ensemble_q: dict[str, object] = field(default_factory=dict)
     mtp_topk_reranker: dict[str, object] = field(default_factory=dict)
     draft_core: dict[str, object] = field(default_factory=dict)
-    #: MTPLX_FABLE_DRAFT_K20_PRESCATTER receipt: ``{installed, rows, ...}``.
+    #: MTPLX_QWEN4_DRAFT_K20_PRESCATTER receipt: ``{installed, rows, ...}``.
     draft_k20_prescatter: dict[str, object] = field(default_factory=dict)
     owned_recurrent_state: dict[str, object] = field(default_factory=dict)
     owned_attn_kv: dict[str, object] = field(default_factory=dict)
@@ -3231,7 +3231,7 @@ def _prefill_restored_prompt_suffix(
             if capture_boundaries
             else _iter_prefill_chunk_spans(len(body))
         )
-    # PLE n-gram prefill lookahead (MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD, off by
+    # PLE n-gram prefill lookahead (MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD, off by
     # default), wired to the warm loop exactly as to the cold one: chunk k+1's
     # 32,768 sidecar rows are hashed and page-warmed on a worker thread while
     # chunk k's forward owns the GPU.  The final single-token pass below stays
@@ -5974,7 +5974,7 @@ def _prefill_committed_mtp_history_streaming(
             len(body), chunk_size=prefill_chunk_size
         )
     )
-    # PLE n-gram prefill lookahead (MTPLX_FABLE_PLE_PREFILL_LOOKAHEAD, off
+    # PLE n-gram prefill lookahead (MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD, off
     # by default). Every prompt token is known here, so a worker thread can
     # hash and page-warm chunk k+1's 32,768 sidecar rows while chunk k's
     # forward owns the GPU. The census measures those gathers as 8 host-late
@@ -9783,7 +9783,7 @@ def generate_mtpk(
     # and compiled indexer pass their deferred model/MTP gates.  The disabled
     # branch below preserves v2.10's original rollback/reappend behavior.
     qsa_mtp_precompute_active = qsa_mtp_precompute_enabled()
-    # MTPLX_FABLE_DRAFT_K20_PRESCATTER (default off).  Claimed ONCE, here,
+    # MTPLX_QWEN4_DRAFT_K20_PRESCATTER (default off).  Claimed ONCE, here,
     # after every request-invariant term it refuses on already exists.  The
     # claim arms the FR-Spec head's compact-row stash and raises on an
     # unsupported request instead of falling back, so the receipt below can
@@ -9792,8 +9792,8 @@ def generate_mtpk(
     # both are passed as absent.
     _draft_k20_prescatter_plan = None
     _draft_k20_prescatter_receipt: dict[str, object] = {"installed": False}
-    if _FABLE_DRAFT_K20_PRESCATTER:
-        _draft_k20_prescatter_plan = _fable_draft_k20_prescatter_claim(
+    if _QWEN4_DRAFT_K20_PRESCATTER:
+        _draft_k20_prescatter_plan = _qwen4_draft_k20_prescatter_claim(
             rt,
             greedy_chain_enabled=_greedy_chain_eligible,
             receipt=_draft_k20_prescatter_receipt,
@@ -11028,18 +11028,18 @@ def generate_mtpk(
                     position_offset=_chain_offset,
                 )
                 if _draft_k20_prescatter_plan is not None:
-                    # MTPLX_FABLE_DRAFT_K20_PRESCATTER on the greedy chain:
+                    # MTPLX_QWEN4_DRAFT_K20_PRESCATTER on the greedy chain:
                     # the same argmax (and the same traced confidence) taken
                     # over the FR-Spec head's 65,536-row PRE-scatter output,
                     # with the winning local row mapped to its real token id
                     # by one device `mx.take` through the strictly ascending
-                    # ranked table. Same token, same tie-break — the proof is
-                    # in `fable_draft_k20_prescatter.greedy_chain_step`. Both
+                    # ranked table. Same token, same tie-break - the proof is
+                    # in `qwen4_draft_k20_prescatter.greedy_chain_step`. Both
                     # arrays stay unevaluated, so this still costs the one
                     # `_eval` below and the 248,320-lane scatter behind
                     # `_chain_logits` is built and dropped, never run.
                     _chain_arg, _chain_conf = (
-                        _fable_draft_k20_prescatter_greedy_step(
+                        _qwen4_draft_k20_prescatter_greedy_step(
                             _draft_k20_prescatter_plan,
                             _chain_logits,
                             want_confidence=_draft_conf_trace,
@@ -11054,7 +11054,7 @@ def generate_mtpk(
                     _chain_pending.append(_chain_arg)
                     if _draft_conf_trace:
                         # Greedy: max(row) IS the drafted token's logit, so
-                        # this is p(drafted) without a gather. Lazy — rides
+                        # this is p(drafted) without a gather. Lazy - rides
                         # the eval.
                         _chain_conf_pending.append(
                             mx.exp(mx.max(_chain_row) - mx.logsumexp(_chain_row))
@@ -11311,11 +11311,11 @@ def generate_mtpk(
                         draft_token, draft_q = prepared_greedy_draft
                         greedy_confidence_token_reuses += 1
                     elif _draft_k20_prescatter_plan is not None:
-                        # MTPLX_FABLE_DRAFT_K20_PRESCATTER: the same read the
+                        # MTPLX_QWEN4_DRAFT_K20_PRESCATTER: the same read the
                         # fixed-width reader does, on the FR-Spec head's
                         # compact row.  `draft_logits` is never evaluated on
                         # this branch, so the scatter behind it is never run.
-                        draft_token, draft_q = _fable_draft_k20_prescatter_read(
+                        draft_token, draft_q = _qwen4_draft_k20_prescatter_read(
                             _draft_k20_prescatter_plan,
                             draft_logits,
                             draft_sampler,
@@ -11992,7 +11992,7 @@ def generate_mtpk(
             # pre-sample above already carried the overlay (and its lane has
             # no draft distributions to fall back on).
             target_distribution_batch = None
-        # MTPLX_FABLE_BLOCK_VERIFY (default off): build the window's block
+        # MTPLX_QWEN4_BLOCK_VERIFY (default off): build the window's block
         # ladder BEFORE the accept loop. It is a deterministic function of the
         # rows and the drafted tokens -- it consults no uniform and draws
         # nothing -- and the M4 verify has already produced every target row,
@@ -12005,12 +12005,12 @@ def generate_mtpk(
         _host_accept_drafts = draft_tokens
         _bv = None
         if (
-            _FABLE_BLOCK_VERIFY
+            _QWEN4_BLOCK_VERIFY
             and _host_accept_drafts
             and sampler.temperature > 0
             and target_prefix_tokens is None
         ):
-            _bv = _fable_build_block_verifier(
+            _bv = _qwen4_build_block_verifier(
                 draft_tokens=draft_tokens,
                 draft_probs=draft_probs,
                 target_batch=target_distribution_batch,
@@ -12240,7 +12240,7 @@ def generate_mtpk(
             event["drafts"][depth_index]["accepted"] = accepted_now
             event["drafts"][depth_index]["accept_probability"] = float(accept_prob)
             event["drafts"][depth_index]["correction"] = int(correction)
-            # Under MTPLX_FABLE_BLOCK_VERIFY this sum (and the per-draft
+            # Under MTPLX_QWEN4_BLOCK_VERIFY this sum (and the per-draft
             # `accept_probability` above) carries a_d = w_d / w_{d-1}, the
             # CONDITIONAL probability that depth's coin accepts given the
             # window reached it -- the same operational meaning min(1, p/q)
@@ -13131,7 +13131,7 @@ def generate_mtpk(
     # scatter graph alive between requests.  A raise before this point leaves
     # it armed with at most one stale entry, which the next claim clears and
     # which `take_prescatter_row`'s identity check can never mis-consume.
-    _fable_draft_k20_prescatter_release(_draft_k20_prescatter_plan)
+    _qwen4_draft_k20_prescatter_release(_draft_k20_prescatter_plan)
     if constraint is not None:
         # Final sync so `completed` reflects every committed token (the loop
         # may exit between the per-cycle sync and the last commit).

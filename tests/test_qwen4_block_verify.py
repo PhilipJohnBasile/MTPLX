@@ -1,10 +1,10 @@
 """Pure-python coverage for block verification on the stock native-MTP lane.
 
-No MLX import happens here.  ``mtplx.fable_block_verify``,
-``mtplx.fable_k20_log``, ``mtplx.sampling`` and the offline scorer are all
+No MLX import happens here.  ``mtplx.qwen4_block_verify``,
+``mtplx.qwen4_k20_log``, ``mtplx.sampling`` and the offline scorer are all
 plain NumPy, so the law can be driven directly; the generation-side wiring is
 checked by source inspection, which is how the rest of this lane is guarded
-(see ``tests/test_fable_k20_log.py`` and ``tests/test_pr391_float32_d3_core.py``).
+(see ``tests/test_qwen4_k20_log.py`` and ``tests/test_pr391_float32_d3_core.py``).
 
 The oracle is ``tests/block_verify_reference.py``.  Every
 behavioural test below builds the SAME prepared rows for both implementations
@@ -20,8 +20,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mtplx import fable_block_verify as bv_mod
-from mtplx.fable_block_verify import (
+from mtplx import qwen4_block_verify as bv_mod
+from mtplx.qwen4_block_verify import (
     BlockVerifier,
     build_verifier,
     prepared_pair,
@@ -289,12 +289,12 @@ def _accept_loop_source(source: str) -> str:
 
 def test_the_gate_is_read_once_at_import_and_only_in_one_place():
     source = _generation_source()
-    assert "_FABLE_BLOCK_VERIFY = _fable_block_verify_enabled()" in source
+    assert "_QWEN4_BLOCK_VERIFY = _qwen4_block_verify_enabled()" in source
     # generation.py never reads the variable itself.
-    assert 'os.environ.get("MTPLX_FABLE_BLOCK_VERIFY"' not in source
-    assert '_env_truthy("MTPLX_FABLE_BLOCK_VERIFY")' not in source
-    module = (REPO_ROOT / "mtplx" / "fable_block_verify.py").read_text()
-    assert module.count('_ENV_VAR = "MTPLX_FABLE_BLOCK_VERIFY"') == 1
+    assert 'os.environ.get("MTPLX_QWEN4_BLOCK_VERIFY"' not in source
+    assert '_env_truthy("MTPLX_QWEN4_BLOCK_VERIFY")' not in source
+    module = (REPO_ROOT / "mtplx" / "qwen4_block_verify.py").read_text()
+    assert module.count('_ENV_VAR = "MTPLX_QWEN4_BLOCK_VERIFY"') == 1
     assert module.count("_env_truthy(_ENV_VAR)") == 1
     assert "os.environ" not in inspect.getsource(bv_mod.BlockVerifier)
     assert "os.environ" not in inspect.getsource(bv_mod.build_verifier)
@@ -350,13 +350,13 @@ def test_the_verifier_is_built_once_before_the_loop_and_is_gated():
         if isinstance(node, ast.FunctionDef) and node.name == "generate_mtpk"
     )
     body = ast.get_source_segment(source, function)
-    built = body.index("_bv = _fable_build_block_verifier(")
+    built = body.index("_bv = _qwen4_build_block_verifier(")
     loop = body.index(
         "for depth_index, draft_token in enumerate(_host_accept_drafts):"
     )
     assert built < loop
-    assert body.count("_fable_build_block_verifier(") == 1
-    gate = body.rindex("_FABLE_BLOCK_VERIFY", 0, built)
+    assert body.count("_qwen4_build_block_verifier(") == 1
+    gate = body.rindex("_QWEN4_BLOCK_VERIFY", 0, built)
     # The construction sits under the module-level gate, and under the
     # preconditions that make a block law meaningful at all.
     guard = body[gate:built]
@@ -368,7 +368,7 @@ def test_the_verifier_is_built_once_before_the_loop_and_is_gated():
 def test_no_rng_reaches_the_block_verification_module():
     """The law draws nothing, so arming it cannot shift the PCG64 stream."""
 
-    path = REPO_ROOT / "mtplx" / "fable_block_verify.py"
+    path = REPO_ROOT / "mtplx" / "qwen4_block_verify.py"
     module = path.read_text()
     assert "import mlx" not in module and "mlx.core" not in module
     assert "np.random" not in module

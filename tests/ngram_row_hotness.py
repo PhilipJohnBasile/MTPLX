@@ -17,7 +17,7 @@ number of PAGES -- rows are ~100 B and hash-scattered, so a row costs a whole
 the answer: row ids in descending gather frequency, which
 ``ple_row_gather.load_hotness_order`` reads.
 
-Nothing on disk already answers it.  The fable receipts carry only aggregate
+Nothing on disk already answers it.  The PR #391 receipts carry only aggregate
 `ple_hot_rows` hit/miss counts, the server request logs
 (``~/.mtplx/logs/request-log-*.jsonl``) record token COUNTS and never ids,
 ``mtplx/request_capture.py`` would record ids but is off by default and has
@@ -27,7 +27,7 @@ the only way left: hash a corpus through the model's own n-gram hash.
 
 Usage
 -----
-    python scripts/fable/ngram_row_hotness.py \\
+    python the PR #391 harness ngram_row_hotness.py \\
         --model ~/.mtplx/models/Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed \\
         --prompt-tokens 65536 --top-rows 8000000
 
@@ -203,7 +203,7 @@ def corpus_texts(paths) -> list[str]:
 def prompt_id_streams(tokenizer, texts, *, prompt_tokens: int):
     """Token-id streams of ``prompt_tokens`` each, tiled from the corpus.
 
-    Tiling mirrors what the fable driver does to hit an exact prompt length
+    Tiling mirrors what the PR #391 driver does to hit an exact prompt length
     (``build_exact_coding_prompt_ids``): a long-context prompt is the same
     context repeated, and repetition is exactly what makes n-gram rows hot,
     so the frequencies this produces are the ones a long prompt really has.
@@ -254,7 +254,7 @@ def main(argv=None) -> int:
         "--prompts",
         nargs="*",
         default=[],
-        help="Text or .jsonl corpus files. Defaults to the fable fixtures.",
+        help="Text or .jsonl corpus files. Defaults to the PR #391 fixtures.",
     )
     parser.add_argument(
         "--prompt-tokens",

@@ -1,11 +1,11 @@
-"""MTPLX_FABLE_ROUTE_KERNEL — the routing head's op contract, gate, and refusals.
+"""MTPLX_QWEN4_ROUTE_KERNEL - the routing head's op contract, gate, and refusals.
 
 Everything here runs on the CPU stream with toy tensors: no Metal, no kernel
 dispatch, no model.  That bounds what can be proved, and the boundary matters:
 
   * The KERNEL cannot be executed here, so nothing below claims the Metal
     source is correct.  What is proved is the *contract the source is written
-    against* — every MLX rounding and ordering boundary the two kernels
+    against* - every MLX rounding and ordering boundary the two kernels
     transcribe.  If MLX changes one (bf16 sum widening to fp32, the sigmoid
     decomposition, argsort losing stability), these fail instead of the kernel
     silently routing to different experts.
@@ -17,8 +17,8 @@ dispatch, no model.  That bounds what can be proved, and the boundary matters:
     "simplifies" the reference back to ``argpartition``.
   * The gate: flag off, nothing changes; flag on with the wrong pack, geometry
     or companion flag, it RAISES with the offending field named.  The one
-    check that needs a GPU — the per-layer ``mx.array_equal`` of the whole
-    emitted tuple against the stock scaffold — lives in
+    check that needs a GPU - the per-layer ``mx.array_equal`` of the whole
+    emitted tuple against the stock scaffold - lives in
     ``install_qwen4_m4_stage3`` and runs at model build.
 """
 
@@ -525,7 +525,7 @@ def test_contract_refuses_an_unquantized_router(toy_block):
     ),
 )
 def test_check_input_refuses_a_shape_or_dtype_the_kernel_cannot_serve(shape, dtype):
-    with pytest.raises(ValueError, match="MTPLX_FABLE_ROUTE_KERNEL"):
+    with pytest.raises(ValueError, match="MTPLX_QWEN4_ROUTE_KERNEL"):
         route_kernel.check_input(mx.zeros(shape, dtype=dtype))
 
 
@@ -541,34 +541,34 @@ def test_check_input_accepts_the_verify_width():
 
 def test_gate_defaults_off(monkeypatch):
     monkeypatch.setattr(stage3, "_ROUTE_KERNEL_CACHE", None)
-    monkeypatch.delenv(stage3.FABLE_ROUTE_KERNEL_ENV, raising=False)
-    assert stage3.fable_route_kernel_enabled() is False
+    monkeypatch.delenv(stage3.QWEN4_ROUTE_KERNEL_ENV, raising=False)
+    assert stage3.qwen4_route_kernel_enabled() is False
 
 
 def test_gate_reads_the_environment_once(monkeypatch):
     monkeypatch.setattr(stage3, "_ROUTE_KERNEL_CACHE", None)
-    monkeypatch.setenv(stage3.FABLE_ROUTE_KERNEL_ENV, "1")
-    assert stage3.fable_route_kernel_enabled() is True
-    monkeypatch.delenv(stage3.FABLE_ROUTE_KERNEL_ENV)
-    assert stage3.fable_route_kernel_enabled() is True  # memoized
-    stage3.reset_fable_route_kernel_cache()
-    assert stage3.fable_route_kernel_enabled() is False
+    monkeypatch.setenv(stage3.QWEN4_ROUTE_KERNEL_ENV, "1")
+    assert stage3.qwen4_route_kernel_enabled() is True
+    monkeypatch.delenv(stage3.QWEN4_ROUTE_KERNEL_ENV)
+    assert stage3.qwen4_route_kernel_enabled() is True  # memoized
+    stage3.reset_qwen4_route_kernel_cache()
+    assert stage3.qwen4_route_kernel_enabled() is False
 
 
 def test_vec_lanes_defaults_and_validates(monkeypatch):
     monkeypatch.setattr(stage3, "_ROUTE_KERNEL_VEC_LANES_CACHE", None)
-    monkeypatch.delenv(stage3.FABLE_ROUTE_KERNEL_VEC_LANES_ENV, raising=False)
-    assert stage3.fable_route_kernel_vec_lanes() == route_kernel.DEFAULT_VEC_LANES
+    monkeypatch.delenv(stage3.QWEN4_ROUTE_KERNEL_VEC_LANES_ENV, raising=False)
+    assert stage3.qwen4_route_kernel_vec_lanes() == route_kernel.DEFAULT_VEC_LANES
 
     for raw, match in (("2", "is not one of"), ("wide", "not an integer")):
-        stage3.reset_fable_route_kernel_cache()
-        monkeypatch.setenv(stage3.FABLE_ROUTE_KERNEL_VEC_LANES_ENV, raw)
+        stage3.reset_qwen4_route_kernel_cache()
+        monkeypatch.setenv(stage3.QWEN4_ROUTE_KERNEL_VEC_LANES_ENV, raw)
         with pytest.raises(ValueError, match=match):
-            stage3.fable_route_kernel_vec_lanes()
+            stage3.qwen4_route_kernel_vec_lanes()
 
-    stage3.reset_fable_route_kernel_cache()
-    monkeypatch.setenv(stage3.FABLE_ROUTE_KERNEL_VEC_LANES_ENV, "1")
-    assert stage3.fable_route_kernel_vec_lanes() == 1
+    stage3.reset_qwen4_route_kernel_cache()
+    monkeypatch.setenv(stage3.QWEN4_ROUTE_KERNEL_VEC_LANES_ENV, "1")
+    assert stage3.qwen4_route_kernel_vec_lanes() == 1
 
 
 def test_route_kernel_requires_the_paired_routed_glu_lane():
@@ -597,7 +597,7 @@ def test_route_kernel_requires_stage3(monkeypatch):
 def test_flags_capture_a_bad_vec_lane_value_before_any_weight(monkeypatch):
     monkeypatch.setattr(stage3, "_ROUTE_KERNEL_CACHE", True)
     monkeypatch.setattr(stage3, "_ROUTE_KERNEL_VEC_LANES_CACHE", None)
-    monkeypatch.setenv(stage3.FABLE_ROUTE_KERNEL_VEC_LANES_ENV, "16")
+    monkeypatch.setenv(stage3.QWEN4_ROUTE_KERNEL_VEC_LANES_ENV, "16")
     monkeypatch.setattr(stage3, "qwen4_m4_stage3_enabled", lambda: True)
     monkeypatch.setattr(stage3, "qwen4_m4_routed_down_reduce_enabled", lambda: True)
     monkeypatch.setattr(
@@ -654,7 +654,7 @@ def test_paired_forward_defaults_to_the_stock_head():
 
 
 def test_the_forward_gate_is_install_bound_not_request_bound():
-    """MTPLX_FABLE_ROUTE_KERNEL is decided once, when the layer is installed.
+    """MTPLX_QWEN4_ROUTE_KERNEL is decided once, when the layer is installed.
 
     `install_qwen4_m4_stage3` validates the kernel bit-exact per layer and
     binds it; the forward then branches on whether a `route` callable exists,

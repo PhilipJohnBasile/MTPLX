@@ -1,10 +1,10 @@
-"""Tests for ``MTPLX_FABLE_VERIFY_GLUE`` (W70).
+"""Tests for ``MTPLX_QWEN4_VERIFY_GLUE`` (W70).
 
 PURE PYTHON ON PURPOSE.  Nothing here evaluates an MLX array: a benchmark
 queue owns the GPU lock while this branch is built, and one un-flocked
 ``mx.eval`` corrupts a measurement window.  The MLX-evaluating checks --
 bit-exact parity at the real layer shapes and the queued-lane timing -- live
-in ``scripts/fable/micro_verify_glue_a.py``, which runs inside a guarded
+in ``the PR #391 harness micro_verify_glue_a.py``, which runs inside a guarded
 window.
 
 What IS falsifiable without a GPU, and is tested here:
@@ -32,22 +32,22 @@ import pytest
 # Flag parsing -- no MLX needed
 # --------------------------------------------------------------------------
 from mtplx.runtime_options import (
-    FABLE_VERIFY_GLUE_ITEMS,
+    QWEN4_VERIFY_GLUE_ITEMS,
     parse_verify_glue_items,
 )
 
 
 def test_items_are_the_two_built_ones():
-    assert FABLE_VERIFY_GLUE_ITEMS == ("qsa_rope", "qsa_rope_idx")
+    assert QWEN4_VERIFY_GLUE_ITEMS == ("qsa_rope", "qsa_rope_idx")
 
 
 def test_unset_selects_everything():
-    assert parse_verify_glue_items(None) == frozenset(FABLE_VERIFY_GLUE_ITEMS)
+    assert parse_verify_glue_items(None) == frozenset(QWEN4_VERIFY_GLUE_ITEMS)
 
 
 def test_empty_and_all_select_everything():
     for raw in ("", "   ", ",,", "all"):
-        assert parse_verify_glue_items(raw) == frozenset(FABLE_VERIFY_GLUE_ITEMS)
+        assert parse_verify_glue_items(raw) == frozenset(QWEN4_VERIFY_GLUE_ITEMS)
 
 
 def test_single_item_selects_only_it():
@@ -70,7 +70,7 @@ def test_hc_triple_is_not_an_item():
     # W69 ranked it second; it is structurally not fusable (grid-wide
     # read-after-write between the three hyper-connection kernels), and the
     # reason is recorded next to the item list.
-    assert "hc_triple" not in FABLE_VERIFY_GLUE_ITEMS
+    assert "hc_triple" not in QWEN4_VERIFY_GLUE_ITEMS
     with pytest.raises(ValueError):
         parse_verify_glue_items("hc_triple")
 
@@ -78,37 +78,37 @@ def test_hc_triple_is_not_an_item():
 def test_env_gate_defaults_off_and_item_names_are_checked():
     from mtplx import runtime_options
 
-    runtime_options.reset_fable_verify_glue_cache(env={})
-    assert runtime_options.fable_verify_glue_enabled() is False
-    assert runtime_options.fable_verify_glue_enabled("qsa_rope") is False
+    runtime_options.reset_qwen4_verify_glue_cache(env={})
+    assert runtime_options.qwen4_verify_glue_enabled() is False
+    assert runtime_options.qwen4_verify_glue_enabled("qsa_rope") is False
 
-    runtime_options.reset_fable_verify_glue_cache(
-        env={"MTPLX_FABLE_VERIFY_GLUE": "1"}
+    runtime_options.reset_qwen4_verify_glue_cache(
+        env={"MTPLX_QWEN4_VERIFY_GLUE": "1"}
     )
     try:
-        assert runtime_options.fable_verify_glue_enabled() is True
-        assert runtime_options.fable_verify_glue_enabled("qsa_rope") is True
-        assert runtime_options.fable_verify_glue_enabled("qsa_rope_idx") is True
+        assert runtime_options.qwen4_verify_glue_enabled() is True
+        assert runtime_options.qwen4_verify_glue_enabled("qsa_rope") is True
+        assert runtime_options.qwen4_verify_glue_enabled("qsa_rope_idx") is True
         with pytest.raises(ValueError):
-            runtime_options.fable_verify_glue_enabled("nope")
+            runtime_options.qwen4_verify_glue_enabled("nope")
     finally:
-        runtime_options.reset_fable_verify_glue_cache(env={})
+        runtime_options.reset_qwen4_verify_glue_cache(env={})
 
 
 def test_item_selection_isolates_one_rewrite():
     from mtplx import runtime_options
 
-    runtime_options.reset_fable_verify_glue_cache(
+    runtime_options.reset_qwen4_verify_glue_cache(
         env={
-            "MTPLX_FABLE_VERIFY_GLUE": "1",
-            "MTPLX_FABLE_VERIFY_GLUE_ITEMS": "qsa_rope",
+            "MTPLX_QWEN4_VERIFY_GLUE": "1",
+            "MTPLX_QWEN4_VERIFY_GLUE_ITEMS": "qsa_rope",
         }
     )
     try:
-        assert runtime_options.fable_verify_glue_enabled("qsa_rope") is True
-        assert runtime_options.fable_verify_glue_enabled("qsa_rope_idx") is False
+        assert runtime_options.qwen4_verify_glue_enabled("qsa_rope") is True
+        assert runtime_options.qwen4_verify_glue_enabled("qsa_rope_idx") is False
     finally:
-        runtime_options.reset_fable_verify_glue_cache(env={})
+        runtime_options.reset_qwen4_verify_glue_cache(env={})
 
 
 # --------------------------------------------------------------------------
@@ -317,8 +317,8 @@ def test_pending_until_the_probe_runs():
 
 
 def test_hot_path_gate_raises_while_pending():
-    from mtplx import fable_verify_glue as glue
-    from mtplx.fable_verify_glue import VerifyGlueContractError
+    from mtplx import qwen4_verify_glue as glue
+    from mtplx.qwen4_verify_glue import VerifyGlueContractError
 
     glue.reset_for_tests()
     with pytest.raises(VerifyGlueContractError) as excinfo:
@@ -459,7 +459,7 @@ def test_probe_runs_once_per_geometry_not_once_per_layer(monkeypatch):
 
 def test_engagement_line_reports_the_counters_and_the_off_reason(monkeypatch):
     off = rope.engagement_line(layers=12, enabled=False)
-    assert off == "[fable] verify-glue qsa_rope: off"
+    assert off == "[PR #391] verify-glue qsa_rope: off"
 
     on = rope.engagement_line(layers=12, enabled=True)
     assert "layers=12" in on
@@ -477,7 +477,7 @@ def test_node_accounting_matches_the_engagement_line():
 
 
 def test_rows_narrowing_is_decode_and_verify_only():
-    from mtplx import fable_verify_glue as glue
+    from mtplx import qwen4_verify_glue as glue
 
     assert glue.serves_rows(1) is True
     assert glue.serves_rows(4) is True
@@ -496,7 +496,7 @@ from pathlib import Path  # noqa: E402
 MICRO_PATH = (
     Path(__file__).resolve().parents[1]
     / "scripts"
-    / "fable"
+    / "PR #391"
     / "micro_verify_glue_a.py"
 )
 

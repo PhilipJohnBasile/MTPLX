@@ -37,28 +37,28 @@ def qwen4_m4_stage3_enabled() -> bool:
 #: stock scaffold with ``mx.array_equal`` at install, and a mismatch raises.
 #: A flipped near-tie changes WHICH experts run, so there is no tolerance to
 #: fall back on and no silent fallback path.
-FABLE_ROUTE_KERNEL_ENV = "MTPLX_FABLE_ROUTE_KERNEL"
+QWEN4_ROUTE_KERNEL_ENV = "MTPLX_QWEN4_ROUTE_KERNEL"
 
 #: Threads per output row in the router GEMV: ``1`` reproduces MLX's own
 #: ``qmv_wide`` thread layout (4,160 threads), ``4`` gives each verifier vector
 #: its own lane octet (16,640 threads).  Both run the identical per-vector
 #: accumulation, so this is a scheduling knob only.
-FABLE_ROUTE_KERNEL_VEC_LANES_ENV = "MTPLX_FABLE_ROUTE_KERNEL_VEC_LANES"
+QWEN4_ROUTE_KERNEL_VEC_LANES_ENV = "MTPLX_QWEN4_ROUTE_KERNEL_VEC_LANES"
 
 _ROUTE_KERNEL_CACHE: bool | None = None
 _ROUTE_KERNEL_VEC_LANES_CACHE: int | None = None
 
 
-def fable_route_kernel_enabled() -> bool:
-    """Return the ``MTPLX_FABLE_ROUTE_KERNEL`` gate; read once, default off."""
+def qwen4_route_kernel_enabled() -> bool:
+    """Return the ``MTPLX_QWEN4_ROUTE_KERNEL`` gate; read once, default off."""
 
     global _ROUTE_KERNEL_CACHE
     if _ROUTE_KERNEL_CACHE is None:
-        _ROUTE_KERNEL_CACHE = env_bool(FABLE_ROUTE_KERNEL_ENV, default=False)
+        _ROUTE_KERNEL_CACHE = env_bool(QWEN4_ROUTE_KERNEL_ENV, default=False)
     return _ROUTE_KERNEL_CACHE
 
 
-def fable_route_kernel_vec_lanes() -> int:
+def qwen4_route_kernel_vec_lanes() -> int:
     """Return the route GEMV's vector-lane count; read once, default 4.
 
     Raises on anything the kernel is not built for rather than clamping: a
@@ -67,7 +67,7 @@ def fable_route_kernel_vec_lanes() -> int:
 
     global _ROUTE_KERNEL_VEC_LANES_CACHE
     if _ROUTE_KERNEL_VEC_LANES_CACHE is None:
-        raw = os.environ.get(FABLE_ROUTE_KERNEL_VEC_LANES_ENV)
+        raw = os.environ.get(QWEN4_ROUTE_KERNEL_VEC_LANES_ENV)
         if raw is None or raw.strip() == "":
             value = _route_kernel.DEFAULT_VEC_LANES
         else:
@@ -75,19 +75,19 @@ def fable_route_kernel_vec_lanes() -> int:
                 value = int(raw.strip())
             except ValueError as exc:
                 raise ValueError(
-                    f"{FABLE_ROUTE_KERNEL_VEC_LANES_ENV}={raw!r} is not an "
+                    f"{QWEN4_ROUTE_KERNEL_VEC_LANES_ENV}={raw!r} is not an "
                     "integer"
                 ) from exc
             if value not in _route_kernel.VEC_LANES_CHOICES:
                 raise ValueError(
-                    f"{FABLE_ROUTE_KERNEL_VEC_LANES_ENV}={value} is not one of "
+                    f"{QWEN4_ROUTE_KERNEL_VEC_LANES_ENV}={value} is not one of "
                     f"{_route_kernel.VEC_LANES_CHOICES}"
                 )
         _ROUTE_KERNEL_VEC_LANES_CACHE = value
     return _ROUTE_KERNEL_VEC_LANES_CACHE
 
 
-def reset_fable_route_kernel_cache() -> None:
+def reset_qwen4_route_kernel_cache() -> None:
     """Drop the memoized route-kernel gates.  Test-support only."""
 
     global _ROUTE_KERNEL_CACHE, _ROUTE_KERNEL_VEC_LANES_CACHE
@@ -116,7 +116,7 @@ def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool, bool]:
         qwen4_m4_routed_down_residual_tail_enabled()
     )
     routed_glu_enabled = qwen4_m4_routed_glu_enabled()
-    route_kernel_enabled = fable_route_kernel_enabled()
+    route_kernel_enabled = qwen4_route_kernel_enabled()
     if not stage3_enabled and (
         routed_down_reduce_enabled
         or routed_down_residual_tail_enabled
@@ -133,7 +133,7 @@ def qwen4_m4_stage3_flags() -> tuple[bool, bool, bool, bool]:
     if route_kernel_enabled:
         # Read now so a typo'd sweep value fails at flag capture, before any
         # weight is touched.
-        fable_route_kernel_vec_lanes()
+        qwen4_route_kernel_vec_lanes()
     return (
         stage3_enabled,
         routed_down_reduce_enabled,
@@ -157,7 +157,7 @@ def _validate_feature_combination(
         raise ValueError("qwen4 M4 routed GLU requires routed residual tail")
     if route_kernel_enabled and not routed_glu_enabled:
         raise ValueError(
-            f"{FABLE_ROUTE_KERNEL_ENV} replaces the routing head of the paired "
+            f"{QWEN4_ROUTE_KERNEL_ENV} replaces the routing head of the paired "
             "routed-GLU lane and requires MTPLX_QWEN4_M4_ROUTED_GLU"
         )
 
@@ -353,7 +353,7 @@ def _m4_paired_routed_glu_residual_tail_forward(
         route_scores = route_scores.reshape(4, 10)
         shared_factor = mx.sigmoid(block.shared_expert_gate(x)).reshape(4)
     else:
-        # MTPLX_FABLE_ROUTE_KERNEL: the same ten dispatches in two, emitting
+        # MTPLX_QWEN4_ROUTE_KERNEL: the same ten dispatches in two, emitting
         # the tuple below directly. Validated bit-exact per layer at install.
         expert_ids, route_scores, shared_factor = route(
             rows,
@@ -808,9 +808,9 @@ def install_qwen4_m4_stage3(
     if len(layers) != 48:
         raise ValueError(f"qwen4 M4 stage3 requires 48 layers, got {len(layers)}")
 
-    route_kernel_enabled = fable_route_kernel_enabled()
+    route_kernel_enabled = qwen4_route_kernel_enabled()
     route_kernel_vec_lanes = (
-        fable_route_kernel_vec_lanes() if route_kernel_enabled else None
+        qwen4_route_kernel_vec_lanes() if route_kernel_enabled else None
     )
     _validate_feature_combination(
         routed_down_reduce_enabled=routed_down_reduce_enabled,
@@ -877,7 +877,7 @@ def install_qwen4_m4_stage3(
             for name, ok in zip(names, checks):
                 if not bool(ok.item()):
                     raise ValueError(
-                        f"{FABLE_ROUTE_KERNEL_ENV} layer {index}: {name} is "
+                        f"{QWEN4_ROUTE_KERNEL_ENV} layer {index}: {name} is "
                         "not bit-exact with the stock routing scaffold"
                     )
         stock = None if routed_down_residual_tail_enabled else block(sample)
@@ -960,15 +960,15 @@ def install_qwen4_m4_stage3(
 
 
 __all__ = [
-    "FABLE_ROUTE_KERNEL_ENV",
-    "FABLE_ROUTE_KERNEL_VEC_LANES_ENV",
-    "fable_route_kernel_enabled",
-    "fable_route_kernel_vec_lanes",
+    "QWEN4_ROUTE_KERNEL_ENV",
+    "QWEN4_ROUTE_KERNEL_VEC_LANES_ENV",
+    "qwen4_route_kernel_enabled",
+    "qwen4_route_kernel_vec_lanes",
     "install_qwen4_m4_stage3",
     "qwen4_m4_routed_down_reduce_enabled",
     "qwen4_m4_routed_down_residual_tail_enabled",
     "qwen4_m4_routed_glu_enabled",
     "qwen4_m4_stage3_enabled",
     "qwen4_m4_stage3_flags",
-    "reset_fable_route_kernel_cache",
+    "reset_qwen4_route_kernel_cache",
 ]

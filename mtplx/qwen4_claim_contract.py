@@ -1,8 +1,8 @@
-"""Request-time DECLINE vs install-time RAISE for the armed fable lanes.
+"""Request-time DECLINE vs install-time RAISE for the armed PR #391 lane.
 
 The problem this fixes
 ----------------------
-An armed fable flag names a fast path for a SHAPE of request: the pre-scatter
+An armed PR #391 flag names a fast path for a SHAPE of request: the pre-scatter
 draft read wants a sampled top-k draft; the device draft chain wants
 temperature > 0 at depth >= 1; device K20 wants the stock selector.  Each of
 them checked those terms in a ``claim`` at the top of ``generate_mtpk`` and
@@ -13,7 +13,7 @@ which code produced the number.
 That reasoning is right for a benchmark arm and wrong for a server.  A
 benchmark runs one request shape it chose; a server runs whatever arrives.
 On 2026-09-02 the composed-decode-stack HumanEval gate launched a server with
-``MTPLX_FABLE_DRAFT_K20_PRESCATTER=1`` and the very first request -- HumanEval
+``MTPLX_QWEN4_DRAFT_K20_PRESCATTER=1`` and the very first request -- HumanEval
 is GREEDY -- came back HTTP 500:
 ``DraftK20PrescatterIneligible: the greedy device chain owns the draft read``.
 Every ABBA window had been temperature 1, so no window ever reached it.  The
@@ -28,7 +28,7 @@ In order:
    stand aside.  Greedy was the motivating case: it looked like an unservable
    shape and it was not -- ``argmax`` over the pre-scattered rows is the same
    ``argmax`` as over the full-vocabulary row, so
-   ``MTPLX_FABLE_DRAFT_K20_PRESCATTER`` now serves temperature-0 requests on
+   ``MTPLX_QWEN4_DRAFT_K20_PRESCATTER`` now serves temperature-0 requests on
    the greedy chain instead of refusing them.  Reach for the two outcomes
    below only after establishing the lane genuinely cannot serve the shape.
 2. **Install-time contract violation -> RAISE.**  The armed flag cannot work
@@ -61,9 +61,9 @@ stood aside and why.
 
 Benchmarks keep their fail-closed guarantee
 -------------------------------------------
-``MTPLX_FABLE_STRICT_CLAIMS=1`` turns every decline back into the lane's own
+``MTPLX_STRICT_CLAIMS=1`` turns every decline back into the lane's own
 ``*Ineligible`` exception.  A measured arm that must PROVE its lane ran sets
-it; a server never does.  Read once at import, like every other fable gate.
+it; a server never does.  Read once at import, like every other PR #391 gate.
 
 NO device work happens here, and nothing in this module imports MLX.
 """
@@ -75,7 +75,7 @@ import sys
 from typing import NoReturn
 
 
-STRICT_ENV = "MTPLX_FABLE_STRICT_CLAIMS"
+STRICT_ENV = "MTPLX_STRICT_CLAIMS"
 
 
 def _env_truthy(name: str) -> bool:
@@ -87,7 +87,7 @@ _STRICT = _env_truthy(STRICT_ENV)
 
 
 def strict_claims() -> bool:
-    """True when ``MTPLX_FABLE_STRICT_CLAIMS`` armed this process at import."""
+    """True when ``MTPLX_STRICT_CLAIMS`` armed this process at import."""
 
     return _STRICT
 
@@ -138,7 +138,7 @@ def declined_receipt(
 ) -> dict[str, object]:
     """Record one decline and return its receipt.
 
-    Under ``MTPLX_FABLE_STRICT_CLAIMS`` the decline is re-raised as ``flag``'s
+    Under ``MTPLX_STRICT_CLAIMS`` the decline is re-raised as ``flag``'s
     own ineligibility error instead, so a measured arm still fails closed.
     """
 
@@ -153,7 +153,7 @@ def declined_receipt(
         _LOGGED.add((flag, exc.key))
         # stderr, not `logging`: this is the same channel the lanes' own
         # install/engagement receipts use (`[frspec] install report:`,
-        # `[MTPLX_FABLE_GRAPH_BUILD_OVERLAP] armed:`), so a decline lands in
+        # `[MTPLX_QWEN4_GRAPH_BUILD_OVERLAP] armed:`), so a decline lands in
         # `server.log` next to them without depending on a logging config the
         # server does not set.
         print(

@@ -51,7 +51,7 @@ def _full_vocab_head(head: Any, ids: Any, vocab_rows: int) -> Any:
             self.head = head
             object.__setattr__(self, "_ids", ids)
             object.__setattr__(self, "_vocab_rows", int(vocab_rows))
-            # MTPLX_FABLE_DRAFT_K20_PRESCATTER (default off).  Disarmed, the
+            # MTPLX_QWEN4_DRAFT_K20_PRESCATTER (default off).  Disarmed, the
             # branch below is one attribute read per draft step and the call
             # returns exactly what it returned before; nothing is retained.
             object.__setattr__(self, "_prescatter_capture", False)
