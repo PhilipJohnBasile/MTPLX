@@ -275,9 +275,11 @@ struct AssistantBubbleView: View {
         }
     }
 
-    private static func isInterruptedFinishReason(_ reason: String?) -> Bool {
+    /// User stop, daemon-reported failure, or a reply the daemon never
+    /// finished (bytes stopped without a terminal chunk).
+    static func isInterruptedFinishReason(_ reason: String?) -> Bool {
         switch reason?.lowercased() {
-        case "cancelled", "error":
+        case "cancelled", "error", ChatViewModel.streamLostFinishReason:
             return true
         default:
             return false

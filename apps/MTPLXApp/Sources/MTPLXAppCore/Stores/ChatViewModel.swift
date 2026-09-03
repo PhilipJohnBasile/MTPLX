@@ -582,7 +582,7 @@ public final class ChatViewModel: ObservableObject {
                 toolChoice: toolChoice
             )
             stream.roundToolCalls.removeAll(keepingCapacity: true)
-            stream.roundFinishReason = "stop"
+            stream.roundFinishReason = nil
             stream.roundUsage = nil
             stream.roundStats = nil
             stream.roundServerError = nil
@@ -638,8 +638,18 @@ public final class ChatViewModel: ObservableObject {
                 return
             }
 
+            // The bytes stopped without a terminal chunk: the daemon
+            // died or the connection was cut mid-reply. URLSession ends
+            // the byte stream normally in both cases (a clean close and
+            // a chunked body cut before its last chunk alike), so the
+            // absence of the finish frame is the only evidence — and a
+            // half answer must never be filed as a finished one.
+            guard let finishReason = stream.roundFinishReason else {
+                handleStreamLost(stream: stream)
+                return
+            }
+
             let accumulatedToolCalls = stream.roundToolCalls
-            let finishReason = stream.roundFinishReason
             let finalUsage = stream.roundUsage
             let finalStats = stream.roundStats
 
@@ -1513,6 +1523,10 @@ public final class ChatViewModel: ObservableObject {
             case .bodyEncodingFailed: reportedError = .malformedRequest
             case .invalidResponse: reportedError = .streamLost
             }
+        case let urlError as URLError where urlError.code == .networkConnectionLost:
+            // The transport reported the cut itself (the other way a
+            // dying daemon shows up); same outcome as a silent end.
+            reportedError = .streamLost
         default:
             reportedError = .unknown(error.localizedDescription)
         }
@@ -1524,7 +1538,25 @@ public final class ChatViewModel: ObservableObject {
         if stream.conversationID == current?.id {
             lastError = reportedError
         }
-        finalizePartialAssistantTurn(of: stream, reason: "error")
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: reportedError == .streamLost ? Self.streamLostFinishReason : "error"
+        )
+    }
+
+    /// Finish reason persisted for a reply the daemon never finished:
+    /// the bytes stopped with no terminal chunk. Distinct from "error"
+    /// (the daemon said why) and "cancelled" (the user stopped it).
+    nonisolated public static let streamLostFinishReason = "incomplete"
+
+    /// The byte stream ended with no terminal chunk and no transport
+    /// error. Keep the partial, persist it as incomplete, and offer
+    /// Retry — never file it as a completed answer.
+    private func handleStreamLost(stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .streamLost
+        }
+        finalizePartialAssistantTurn(of: stream, reason: Self.streamLostFinishReason)
     }
 
     /// The daemon's own failure frame (`finish_reason: "error"`). Same

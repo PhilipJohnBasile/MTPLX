@@ -15,6 +15,11 @@ import XCTest
 // raw request bytes, `count` the 1-based request number, `sse(payload)`
 // encodes one SSE frame, and returning without writing `[DONE]` closes
 // the socket. Any hit on the cancel endpoint drops a marker file.
+//
+// `chunked: true` answers as HTTP/1.1 with `Transfer-Encoding: chunked`
+// (the framing a real ASGI server uses); the handler then writes
+// `self.frame(payload)` per event, `self.done()` for a proper end, and
+// `self.drop()` to cut the connection without the terminating chunk.
 
 struct ChatFakeDaemon {
     let process: Process
@@ -30,7 +35,7 @@ struct ChatFakeDaemon {
     }
 
     /// Starts the daemon and waits until it answers on its port.
-    static func start(chatHandler: String) async throws -> ChatFakeDaemon {
+    static func start(chatHandler: String, chunked: Bool = false) async throws -> ChatFakeDaemon {
         let port = try freeTCPPort()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("mtplx-chat-fake-daemon-\(UUID().uuidString)", isDirectory: true)
@@ -46,23 +51,50 @@ struct ChatFakeDaemon {
         let python = """
         import json
         import os
+        import socket
         import time
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         PORT = \(port)
         CANCEL_MARKER = r'''\(cancelMarkerURL.path)'''
+        CHUNKED = \(chunked ? "True" : "False")
 
         def sse(payload):
             return ("data: " + json.dumps(payload) + "\\n\\n").encode("utf-8")
 
+        def chunk(data):
+            return ("%x\\r\\n" % len(data)).encode("ascii") + data + b"\\r\\n"
+
         class Handler(BaseHTTPRequestHandler):
             count = 0
+            protocol_version = "HTTP/1.1" if CHUNKED else "HTTP/1.0"
 
             def log_message(self, *_args):
                 return
 
+            def frame(self, payload):
+                data = sse(payload)
+                return chunk(data) if CHUNKED else data
+
+            def done(self):
+                data = b"data: [DONE]\\n\\n"
+                self.wfile.write(chunk(data) if CHUNKED else data)
+                if CHUNKED:
+                    self.wfile.write(b"0\\r\\n\\r\\n")
+                self.wfile.flush()
+
+            def drop(self):
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.connection.close()
+
             def do_GET(self):
                 self.send_response(200)
+                self.send_header("Content-Length", "2")
                 self.end_headers()
                 self.wfile.write(b"ok")
 
@@ -84,12 +116,19 @@ struct ChatFakeDaemon {
                 Handler.count += 1
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
+                if CHUNKED:
+                    self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
                 try:
                     self.chat(body, Handler.count)
                     self.wfile.flush()
-                except BrokenPipeError:
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     return
+                finally:
+                    # One response per connection: a chunked body that
+                    # never wrote its terminating chunk must read as a
+                    # dead transport, not as a keep-alive pause.
+                    self.close_connection = True
 
             def chat(self, body, count):
         \(handlerBody)

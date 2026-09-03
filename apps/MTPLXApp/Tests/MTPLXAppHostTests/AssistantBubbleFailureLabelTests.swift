@@ -49,4 +49,18 @@ final class AssistantBubbleFailureLabelTests: XCTestCase {
         XCTAssertNil(AssistantBubbleView.failure(finishReason: "error", statsJSON: nil))
         XCTAssertEqual(AssistantBubbleView.interruptedReplyTitle(failure: nil), "Interrupted reply")
     }
+
+    func testStreamLostTurnsReadAsInterruptedAndCompletionsDoNot() {
+        // A reply the daemon never finished (bytes stopped without a
+        // terminal chunk) is an interrupted reply, without a server message.
+        XCTAssertTrue(AssistantBubbleView.isInterruptedFinishReason(ChatViewModel.streamLostFinishReason))
+        XCTAssertNil(
+            AssistantBubbleView.failure(finishReason: ChatViewModel.streamLostFinishReason, statsJSON: nil)
+        )
+        XCTAssertTrue(AssistantBubbleView.isInterruptedFinishReason("cancelled"))
+        XCTAssertTrue(AssistantBubbleView.isInterruptedFinishReason("error"))
+        XCTAssertFalse(AssistantBubbleView.isInterruptedFinishReason("stop"))
+        XCTAssertFalse(AssistantBubbleView.isInterruptedFinishReason("length"))
+        XCTAssertFalse(AssistantBubbleView.isInterruptedFinishReason(nil))
+    }
 }
