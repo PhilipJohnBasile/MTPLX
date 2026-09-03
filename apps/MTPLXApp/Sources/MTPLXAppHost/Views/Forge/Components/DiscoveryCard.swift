@@ -45,7 +45,7 @@ struct DiscoveryCard: View {
         .background(cardBackground)
         .scaleEffect(hovering ? 1.015 : 1.0)
         .shadow(
-            color: hovering ? Color.black.opacity(0.30) : .clear,
+            color: hovering ? Brand.shade.opacity(0.30) : .clear,
             radius: hovering ? 12 : 0,
             x: 0,
             y: hovering ? 4 : 0

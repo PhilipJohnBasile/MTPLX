@@ -63,7 +63,7 @@ struct SourcesFooterView: View {
             .padding(.vertical, 7)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(isExpanded ? 0.10 : 0.06))
+                    .fill(Brand.wash.opacity(isExpanded ? 0.10 : 0.06))
             )
             .contentShape(Capsule())
         }
@@ -92,7 +92,7 @@ struct SourcesFooterView: View {
             .padding(.vertical, 5)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.05))
+                    .fill(Brand.wash.opacity(0.05))
             )
             .overlay(
                 Capsule(style: .continuous)

@@ -38,7 +38,7 @@ struct LogsSheet: View {
         }
         .frame(minWidth: 720, minHeight: 540)
         .background(Brand.bgOuter.ignoresSafeArea())
-        .preferredColorScheme(.dark)
+        .appliesAppearance()
         .tint(Brand.accent)
         .task { await backend.refreshLogs() }
     }

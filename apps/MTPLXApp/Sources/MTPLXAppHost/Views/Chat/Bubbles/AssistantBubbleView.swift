@@ -400,7 +400,7 @@ struct AssistantBubbleView: View {
             textView.isSelectable = true
             textView.isRichText = false
             textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-            textView.textColor = NSColor(calibratedWhite: 0.88, alpha: 1.0)
+            textView.textColor = MTPLXCodeHighlighter.Palette.adaptive.base
             textView.textContainerInset = NSSize(width: 0, height: 0)
             textView.textContainer?.lineFragmentPadding = 0
             textView.textContainer?.widthTracksTextView = true

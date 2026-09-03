@@ -98,7 +98,7 @@ struct OnboardingStepContainer<Content: View, Primary: View>: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(Brand.separatorStrong, lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.55), radius: 22, x: 0, y: 14)
+            .shadow(color: Brand.shade.opacity(0.55), radius: 22, x: 0, y: 14)
         )
     }
 

@@ -315,7 +315,7 @@ struct InferenceParamsOverlay: View, Equatable {
                     .trim(from: 0, to: borderProgress)
                     .stroke(Brand.separatorStrong, lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
+            .shadow(color: Brand.shade.opacity(0.55), radius: 18, x: 0, y: 10)
         )
     }
 
@@ -1667,7 +1667,7 @@ private struct ControlHoverLift: ViewModifier {
         content
             .offset(y: hovering ? Motion.controlHoverOffsetY : 0)
             .shadow(
-                color: .black.opacity(hovering ? Motion.controlHoverShadowOpacity : 0),
+                color: Brand.shade.opacity(hovering ? Motion.controlHoverShadowOpacity : 0),
                 radius: hovering ? Motion.controlHoverShadowRadius : 0,
                 x: 0,
                 y: hovering ? Motion.controlHoverShadowYOffset : 0

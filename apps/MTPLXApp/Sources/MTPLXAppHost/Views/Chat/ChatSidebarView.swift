@@ -62,7 +62,7 @@ struct ChatSidebarView: View {
                     .frame(width: 24, height: 24)
                     .background(
                         Circle()
-                            .fill(Color.white.opacity(0.04))
+                            .fill(Brand.wash.opacity(0.04))
                             .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                     )
             }
@@ -88,7 +88,7 @@ struct ChatSidebarView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Brand.wash.opacity(0.04))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)
@@ -130,7 +130,7 @@ struct ChatSidebarView: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.white.opacity(0.06) : Color.clear)
+                    .fill(isSelected ? Brand.wash.opacity(0.06) : Color.clear)
             )
             .contentShape(Rectangle())
         }

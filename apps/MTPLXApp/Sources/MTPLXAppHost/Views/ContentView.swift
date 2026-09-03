@@ -148,6 +148,7 @@ struct ContentView: View {
         .sheet(isPresented: $router.aboutSheetPresented) {
             AboutSheet()
                 .environmentObject(backend)
+                .environmentObject(themeStore)
         }
         .sheet(isPresented: modelDownloadSheetPresented) {
             ModelDownloadSheet()
@@ -176,7 +177,7 @@ struct ContentView: View {
     private var appShell: some View {
         let snapshot = backendProjection.snapshot
         ZStack(alignment: .top) {
-            Brand.bgOuter
+            Brand.pianoRadial
                 .ignoresSafeArea()
 
             if router.benchmarkOverlayPresented {
@@ -396,7 +397,7 @@ struct DashboardSurface: View {
 
 private struct DashboardBackdropSurface: View {
     var body: some View {
-        Brand.bgOuter
+        Brand.pianoRadial
             .ignoresSafeArea()
             .accessibilityHidden(true)
     }
@@ -428,6 +429,7 @@ struct ModelDownloadSheet: View {
         .padding(24)
         .frame(width: 520, alignment: .leading)
         .background(Brand.bgInner)
+        .appliesAppearance()
     }
 
     private var header: some View {

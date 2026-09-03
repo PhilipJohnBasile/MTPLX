@@ -189,7 +189,7 @@ struct ModelPickerOverlay: View, Equatable {
                     .trim(from: 0, to: borderProgress)
                     .stroke(Brand.separatorStrong, lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
+            .shadow(color: Brand.shade.opacity(0.55), radius: 18, x: 0, y: 10)
         )
     }
 
@@ -343,7 +343,7 @@ struct ModelPickerOverlay: View, Equatable {
                         .frame(width: 22, height: 22)
                         .background(
                             Circle()
-                                .fill(Color.white.opacity(0.04))
+                                .fill(Brand.wash.opacity(0.04))
                                 .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                         )
                     VStack(alignment: .leading, spacing: 4) {
@@ -810,7 +810,7 @@ private struct ModelPickerPreparedOption: Equatable, Identifiable, Sendable {
 // other: a thin tinted full-width fill (Brand.accentChrome at 8%
 // opacity), a brighter title colour (Brand.typeHi vs typeBody), and a
 // filled blue checkmark on the trailing edge. Hover is an even
-// quieter Color.white opacity-0.04 stripe that the selection fill
+// quieter Brand.wash opacity-0.04 stripe that the selection fill
 // composites on top of, so hovering the selected row still reads as
 // "selected" but with a subtle lift.
 
@@ -862,7 +862,7 @@ private struct ModelRowView: View {
                         Brand.accentChrome.opacity(0.10)
                     }
                     if hovering {
-                        Color.white.opacity(0.05)
+                        Brand.wash.opacity(0.05)
                     }
                 }
             }
@@ -873,7 +873,7 @@ private struct ModelRowView: View {
         .offset(y: visible ? 0 : 8)
         .scaleEffect(hovering ? 1.015 : 1.0, anchor: .center)
         .shadow(
-            color: .black.opacity(hovering ? 0.32 : 0),
+            color: Brand.shade.opacity(hovering ? 0.32 : 0),
             radius: hovering ? 6 : 0,
             x: 0,
             y: hovering ? 3 : 0

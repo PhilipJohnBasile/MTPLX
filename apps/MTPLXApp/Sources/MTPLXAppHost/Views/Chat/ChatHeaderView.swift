@@ -148,7 +148,7 @@ struct ChatHeaderView: View {
         .padding(.vertical, 4)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Brand.wash.opacity(0.04))
                 .overlay(
                     Capsule(style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

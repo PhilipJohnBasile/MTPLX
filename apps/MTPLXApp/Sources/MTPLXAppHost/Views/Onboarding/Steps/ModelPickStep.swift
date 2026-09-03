@@ -281,7 +281,7 @@ struct ModelPickStep: View {
             )
             .scaleEffect(hovering ? 1.012 : 1.0)
             .shadow(
-                color: .black.opacity(hovering ? 0.22 : 0),
+                color: Brand.shade.opacity(hovering ? 0.22 : 0),
                 radius: hovering ? 7 : 0,
                 x: 0,
                 y: hovering ? 4 : 0

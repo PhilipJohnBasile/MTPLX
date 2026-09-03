@@ -114,7 +114,7 @@ struct TurnActivityStrip<ThoughtWell: View, SearchWell: View>: View {
             .padding(.vertical, 7)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(chip.isLive || isOpen ? 0.10 : 0.06))
+                    .fill(Brand.wash.opacity(chip.isLive || isOpen ? 0.10 : 0.06))
             )
             .contentShape(Capsule())
         }
@@ -132,7 +132,7 @@ struct TurnActivityStrip<ThoughtWell: View, SearchWell: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                    .fill(Brand.wash.opacity(0.04))
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .stroke(Brand.separator, lineWidth: 1)
