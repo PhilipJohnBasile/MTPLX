@@ -259,6 +259,7 @@ public final class ChatViewModel: ObservableObject {
         self.onLiveTurnActivityChanged = onLiveTurnActivityChanged
         self.maxToolRounds = maxToolRounds
         refreshConversations()
+        retitlePlaceholderConversations()
         if let first = conversations.first {
             select(first)
         }
@@ -275,12 +276,35 @@ public final class ChatViewModel: ObservableObject {
 
     @discardableResult
     public func createNewConversation() -> ChatConversation {
-        let convo = ChatConversation(title: tr("New Chat"))
+        let convo = ChatConversation(title: ChatConversationTitle.placeholder)
         context.insert(convo)
         saveContext()
         refreshConversations()
         select(convo)
         return convo
+    }
+
+    /// Gives a name to every conversation that already has a first
+    /// message but still carries a placeholder title. Those rows exist
+    /// because the auto-title guard compared against the English
+    /// literal and never fired in other languages; one pass at launch
+    /// makes an existing user's sidebar (and its title search) usable
+    /// without waiting for the next message in each chat.
+    private func retitlePlaceholderConversations() {
+        var changed = false
+        for conversation in conversations where conversation.titleIsPlaceholder {
+            guard let firstUserMessage = conversation.messages
+                .filter({ $0.role == .user })
+                .min(by: { $0.createdAt < $1.createdAt })
+            else { continue }
+            let derived = ChatConversationTitle.derived(from: firstUserMessage.visibleContent)
+            guard !ChatConversationTitle.isPlaceholder(derived) else { continue }
+            conversation.title = derived
+            changed = true
+        }
+        if changed {
+            saveContext()
+        }
     }
 
     public func select(_ conversation: ChatConversation) {
@@ -405,8 +429,8 @@ public final class ChatViewModel: ObservableObject {
         context.insert(userMessage)
         conversation.messages.append(userMessage)
         conversation.updatedAt = userMessage.createdAt
-        if conversation.title == "New Chat", !visibleUserContent.isEmpty {
-            conversation.title = Self.firstNWords(visibleUserContent, n: 5)
+        if conversation.titleIsPlaceholder, !visibleUserContent.isEmpty {
+            conversation.title = ChatConversationTitle.derived(from: visibleUserContent)
         }
         saveContext()
         publishVisibleMessages(for: conversation, ensuring: userMessage)
@@ -1700,16 +1724,6 @@ public final class ChatViewModel: ObservableObject {
                 return "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
             }
         return urls.isEmpty ? nil : urls
-    }
-
-    private static func firstNWords(_ text: String, n: Int) -> String {
-        let words = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            .prefix(n)
-            .map { String($0) }
-        let joined = words.joined(separator: " ")
-        return joined.isEmpty ? tr("New Chat") : joined
     }
 
     static func buildRequestMessages(
