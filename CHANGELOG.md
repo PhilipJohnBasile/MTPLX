@@ -81,6 +81,34 @@ nothing beyond 2.10.2.
 
 ### Fixed
 
+- **A resumed download can no longer splice a new commit's tail onto a
+  stale partial.** `mtplx pull`, and the app's downloader behind it,
+  range-resumed any `*.incomplete` partial next to the target whichever
+  commit had written it and accepted the result on size alone, so a pack
+  repaired in place on the Hub could come back as a corrupt file that
+  loaded. A transfer marker now records the blob every file is fetched
+  from: a partial whose blob changed, or one nothing vouches for, is
+  discarded; a landed file whose recorded blob changed is refetched; and
+  every LFS file is hashed as it lands against the sha256 the Hub
+  publishes, so a mismatch discards the partial with a plain message
+  instead of installing it. The progress figures are unchanged.
+- **Published packs no longer name the machine that forged them.**
+  `mtplx forge` stamped the local trunk directory it was pointed at into
+  `mtplx_runtime.json` (`base_trunk`, `forge_provenance.source_repo`, the
+  forge inputs), and the scrubber written to prevent that had no caller,
+  so the flagship 27B packs carried a home directory. The stamper names a
+  local trunk by its Hub identity (the pull marker's repo id and commit,
+  or the `owner--name` cache layout), `forge publish` uploads scrubbed
+  copies of every top-level JSON document that carries a local path, and
+  `mtplx model publish-check` gains a `no_local_paths` gate with
+  `--scrub` to rewrite staged documents in place. The scrubber itself no
+  longer mistakes every string that starts with a slash for a path.
+- **The browser dashboard's Thermal tab no longer shows an internal
+  benchmarking rule.** On a default install (thermal polling off) every
+  generation raised a banner saying that per the project's Universal
+  Thermal Rule model work should run under verified max-fan mode. The
+  banner is gone; the fan panel keeps its note about
+  `--enable-thermal-poll`.
 - **macOS 27 no longer answers long prompts with a 500 (#404, #405, #407).**
   The macOS 27 Metal Performance Primitives header rejects the
   address-space-qualified cooperative-tensor operands the QSA sparse
