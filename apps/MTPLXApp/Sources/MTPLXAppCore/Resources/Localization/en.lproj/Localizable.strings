@@ -274,6 +274,7 @@
 "Cache size" = "Cache size";
 "Cache Summary" = "Cache Summary";
 "Cache Truth" = "Cache Truth";
+"cached" = "cached";
 "Cached" = "Cached";
 "cached %@" = "cached %@";
 "Cached chats will show up here as you use the app." = "Cached chats will show up here as you use the app.";
@@ -369,6 +370,7 @@
 "Converting to MLX" = "Converting to MLX";
 "Cooling" = "Cooling";
 "Copied" = "Copied";
+"copy" = "copy";
 "Copy" = "Copy";
 "Copy code" = "Copy code";
 "Copy command" = "Copy command";
@@ -666,7 +668,9 @@
 "IDENTITY" = "IDENTITY";
 "IDLE" = "IDLE";
 "Idle" = "Idle";
+"idle" = "idle";
 "image exceeds the 20MB attachment limit" = "image exceeds the 20MB attachment limit";
+"in" = "in";
 "In Flight" = "In Flight";
 "in progress" = "in progress";
 "In-flight requests appear here in real time. Each row carries a Cancel button that flips the worker's cancel_event on a best-effort basis." = "In-flight requests appear here in real time. Each row carries a Cancel button that flips the worker's cancel_event on a best-effort basis.";
@@ -692,6 +696,7 @@
 "KV quantization is not supported for this model." = "KV quantization is not supported for this model.";
 "Language" = "Language";
 "LAST" = "LAST";
+"last" = "last";
 "Last error" = "Last error";
 "Last miss" = "Last miss";
 "Last save error" = "Last save error";
@@ -702,6 +707,7 @@
 "License" = "License";
 "lifetime %@ tok" = "lifetime %@ tok";
 "Live" = "Live";
+"live" = "live";
 "Live frontier" = "Live frontier";
 "Live mutable" = "Live mutable";
 "Live requests will show up here. Hit Cancel to stop one." = "Live requests will show up here. Hit Cancel to stop one.";
@@ -922,9 +928,11 @@
 "opened Hermes in Terminal" = "opened Hermes in Terminal";
 "opened Pi in Terminal" = "opened Pi in Terminal";
 "Optimizing setup for your hardware." = "Optimizing setup for your hardware.";
+"optional" = "optional";
 "Optional mirror, e.g. https://hf-mirror.com" = "Optional mirror, e.g. https://hf-mirror.com";
 "Other" = "Other";
 "Otherwise you start MTPLX from the toolbar manually." = "Otherwise you start MTPLX from the toolbar manually.";
+"out" = "out";
 "Override" = "Override";
 "p%lld %lld%%" = "p%lld %lld%%";
 "Pack sidecar" = "Pack sidecar";
@@ -1017,6 +1025,7 @@
 "Publish failed." = "Publish failed.";
 "Publish to HF" = "Publish to HF";
 "Publish to Hugging Face" = "Publish to Hugging Face";
+"published" = "published";
 "Python" = "Python";
 "Python 3.11 or newer was not found, so MTPLX could not prepare its command-line runtime. Install Homebrew from brew.sh, then press Retry." = "Python 3.11 or newer was not found, so MTPLX could not prepare its command-line runtime. Install Homebrew from brew.sh, then press Retry.";
 "Q%lld · %@ #%lld" = "Q%lld · %@ #%lld";
@@ -1121,6 +1130,7 @@
 "restart to apply" = "restart to apply";
 "Restart-Required Settings" = "Restart-Required Settings";
 "Restarting MTPLX (attempt %lld)." = "Restarting MTPLX (attempt %lld).";
+"restorable" = "restorable";
 "restore %@" = "restore %@";
 "Restore a shared prompt prefix and prefill only the changed suffix." = "Restore a shared prompt prefix and prefill only the changed suffix.";
 "Resume" = "Resume";
@@ -1139,6 +1149,7 @@
 "Revert" = "Revert";
 "Review the build" = "Review the build";
 "Review your model" = "Review your model";
+"rpm" = "rpm";
 "Run %@. Score %lld of %lld. Accuracy %@." = "Run %@. Score %lld of %lld. Accuracy %@.";
 "Run a Forge build under the Create tab and your models will land here for re-verification, publishing, and inspection." = "Run a Forge build under the Create tab and your models will land here for re-verification, publishing, and inspection.";
 "Run AIME 2026" = "Run AIME 2026";
@@ -1148,6 +1159,7 @@
 "Run tuning" = "Run tuning";
 "Run tuning now, or skip and use the default MTP setting." = "Run tuning now, or skip and use the default MTP setting.";
 "Running" = "Running";
+"running" = "running";
 "Running and ready." = "Running and ready.";
 "Running the first warmup tokens before chat opens." = "Running the first warmup tokens before chat opens.";
 "Running tool…" = "Running tool…";
@@ -1369,6 +1381,7 @@
 "Toggle Web Search" = "Toggle Web Search";
 "tok/s" = "tok/s";
 "Tokens" = "Tokens";
+"tokens" = "tokens";
 "Tool" = "Tool";
 "tool output compacted %@" = "tool output compacted %@";
 "Tool surface" = "Tool surface";
@@ -1403,6 +1416,7 @@
 "unknown · %@" = "unknown · %@";
 "unknown · no cache verdict from the model" = "unknown · no cache verdict from the model";
 "Unload the model and build" = "Unload the model and build";
+"unsaved" = "unsaved";
 "Unsupported file type for %@: .%@" = "Unsupported file type for %@: .%@";
 "Untitled Agent" = "Untitled Agent";
 "Unverified" = "Unverified";
@@ -1415,6 +1429,8 @@
 "Update Runtime" = "Update Runtime";
 "Updated the mtplx command to %@ (was %@). Open a new terminal to use it." = "Updated the mtplx command to %@ (was %@). Open a new terminal to use it.";
 "UPDATES" = "UPDATES";
+"uploaded" = "uploaded";
+"uploading" = "uploading";
 "UPLOADING" = "UPLOADING";
 "Use" = "Use";
 "Use %@" = "Use %@";
@@ -1430,6 +1446,7 @@
 "Using saved Hugging Face token" = "Using saved Hugging Face token";
 "Verified" = "Verified";
 "Verified MTPLX creator" = "Verified MTPLX creator";
+"verify" = "verify";
 "Verify" = "Verify";
 "Verify cost" = "Verify cost";
 "VERIFY WATERFALL" = "VERIFY WATERFALL";

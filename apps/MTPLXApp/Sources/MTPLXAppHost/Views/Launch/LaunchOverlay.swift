@@ -229,7 +229,7 @@ struct LaunchOverlay: View, Equatable {
                     .font(.system(.callout).weight(.medium))
                     .foregroundStyle(Brand.typeBody)
                     .frame(width: 64, alignment: .leading)
-                SecureField("optional", text: $customApiKey)
+                SecureField(tr("optional"), text: $customApiKey)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.callout, design: .monospaced))
             }

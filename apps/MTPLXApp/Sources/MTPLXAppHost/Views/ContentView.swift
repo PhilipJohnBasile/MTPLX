@@ -635,7 +635,7 @@ struct ModelDownloadSheet: View {
                     .foregroundStyle(Brand.typeBody)
                     .monospacedDigit()
             } else if isRunning {
-                Text("running")
+                Text(tr("running"))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Brand.typeSecondary)
             } else {

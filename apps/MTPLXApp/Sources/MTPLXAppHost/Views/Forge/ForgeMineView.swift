@@ -110,7 +110,7 @@ struct ForgeMineView: View {
                     chip(text: formatGiB(entry.sizeOnDisk))
                 }
                 if entry.publishedToHF {
-                    chip(text: "published", systemImage: "checkmark.seal")
+                    chip(text: tr("published"), systemImage: "checkmark.seal")
                 }
             }
         }

@@ -280,16 +280,16 @@ struct AssistantBubbleView: View {
             items.append(MetricItem(label: tr("tok/s"), value: String(format: "%.1f", tps)))
         }
         if let completion = stats.completionTokens, completion > 0 {
-            items.append(MetricItem(label: "out", value: Self.formatCount(completion)))
+            items.append(MetricItem(label: tr("out"), value: Self.formatCount(completion)))
         }
         if let prompt = stats.promptTokens, prompt > 0 {
-            items.append(MetricItem(label: "in", value: Self.formatCount(prompt)))
+            items.append(MetricItem(label: tr("in"), value: Self.formatCount(prompt)))
         }
         if let ttft = stats.ttftS, ttft > 0 {
             items.append(MetricItem(label: tr("TTFT"), value: Self.formatSeconds(ttft)))
         }
         if let verifyCalls = stats.verifyCalls, verifyCalls > 0 {
-            items.append(MetricItem(label: "verify", value: "\(verifyCalls)"))
+            items.append(MetricItem(label: tr("verify"), value: "\(verifyCalls)"))
         }
         return items
     }
@@ -315,7 +315,7 @@ struct AssistantBubbleView: View {
             HStack(spacing: 4) {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 9, weight: .semibold))
-                Text("copy")
+                Text(tr("copy"))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(0.6)
             }

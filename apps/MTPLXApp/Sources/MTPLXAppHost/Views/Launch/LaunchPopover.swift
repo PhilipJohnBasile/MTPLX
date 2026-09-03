@@ -60,7 +60,7 @@ struct LaunchPopover: View {
                             .font(.system(.callout).weight(.medium))
                             .foregroundStyle(.primary)
                         if isLast {
-                            Text("last")
+                            Text(tr("last"))
                                 .font(.system(size: 9, weight: .heavy))
                                 .foregroundStyle(Color.accentColor)
                                 .padding(.horizontal, 4)

@@ -177,9 +177,9 @@ struct CacheTab: View {
             .foregroundStyle(.secondary)
             HStack {
                 if prefix.hasLiveRef == true {
-                    PillBadge(text: "live", systemImage: "bolt.fill", tint: .accentColor)
+                    PillBadge(text: tr("live"), systemImage: "bolt.fill", tint: .accentColor)
                 } else {
-                    PillBadge(text: "cached", systemImage: "checkmark", tint: .secondary)
+                    PillBadge(text: tr("cached"), systemImage: "checkmark", tint: .secondary)
                 }
                 Text(tr("%lld hits", prefix.hits))
                     .font(.caption2)

@@ -552,7 +552,7 @@ struct SettingsTab: View {
         Card(tr("KV Quantization"),
              subtitle: tr("Paged-attention KV cache precision. Restart required.")) {
             if kvDirty {
-                PillBadge(text: "unsaved", systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+                PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
             }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
@@ -686,7 +686,7 @@ struct SettingsTab: View {
                     Divider().overlay(Brand.separator)
                     HStack(spacing: 8) {
                         PillBadge(
-                            text: "unsaved",
+                            text: tr("unsaved"),
                             systemImage: "circle.fill",
                             tint: .mtplxWarning,
                             emphasized: true
@@ -883,7 +883,7 @@ struct SettingsTab: View {
             Spacer()
             if cold.restorable == true {
                 PillBadge(
-                    text: "restorable",
+                    text: tr("restorable"),
                     systemImage: "checkmark.seal",
                     tint: Brand.success
                 )
@@ -1003,7 +1003,7 @@ struct SettingsTab: View {
              subtitle: tr("Changing these restarts the engine. Changes are saved to %@.", settingsFilePathHint)) {
             HStack(spacing: 8) {
                 if dirty {
-                    PillBadge(text: "unsaved", systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+                    PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
                 }
                 Button {
                     saveAndMaybeRestart(restart: running)
@@ -1125,7 +1125,7 @@ struct SettingsTab: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 120)
-                        Text("tokens")
+                        Text(tr("tokens"))
                             .font(.caption)
                             .foregroundStyle(Brand.typeTertiary)
                         Text(tr("max %@", Self.formatTokens(settingsModelMaxContext)))

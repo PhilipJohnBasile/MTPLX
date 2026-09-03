@@ -422,7 +422,7 @@ struct FanRing: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                         .foregroundStyle(Brand.chromeFill)
-                    Text("rpm")
+                    Text(tr("rpm"))
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(Brand.textHighlight.opacity(0.65))

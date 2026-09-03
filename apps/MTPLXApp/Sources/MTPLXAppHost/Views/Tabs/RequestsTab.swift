@@ -36,7 +36,7 @@ struct RequestsTab: View {
     private func inFlightCard(requests: [InFlightRequest]) -> some View {
         Card(tr("In Flight"), subtitle: requests.isEmpty ? tr("No active requests.") : tr("%lld active", requests.count)) {
             if requests.isEmpty {
-                PillBadge(text: "idle", systemImage: "moon.stars", tint: .secondary)
+                PillBadge(text: tr("idle"), systemImage: "moon.stars", tint: .secondary)
             }
         } content: {
             if requests.isEmpty {

@@ -524,7 +524,7 @@ public final class ForgeOrchestrator: ObservableObject {
     private func handlePublishEvent(_ event: HFPublishEvent) {
         switch event {
         case .started:
-            publishProgress = ForgePhaseProgress(phase: .publish, progress: 0, label: "uploading")
+            publishProgress = ForgePhaseProgress(phase: .publish, progress: 0, label: tr("uploading"))
         case .progress(let bytes, let total, let mbps):
             let fraction: Double
             if let total, total > 0 {
@@ -546,7 +546,7 @@ public final class ForgeOrchestrator: ObservableObject {
                 publishProgress = current
             }
         case .completed(_, _):
-            publishProgress = ForgePhaseProgress(phase: .publish, progress: 1, label: "uploaded", finished: true)
+            publishProgress = ForgePhaseProgress(phase: .publish, progress: 1, label: tr("uploaded"), finished: true)
             isPublishing = false
         case .failed(_, let stderrTail):
             publishFailure = stderrTail.isEmpty ? tr("Publish failed.") : stderrTail
