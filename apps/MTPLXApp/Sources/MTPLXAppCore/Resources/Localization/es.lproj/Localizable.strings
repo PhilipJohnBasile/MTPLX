@@ -524,6 +524,7 @@
 "External terminal client launched by MTPLX." = "Cliente de terminal externo lanzado por MTPLX.";
 "Extract MTP weights" = "Extraer pesos MTP";
 "Failed to start AIME run: %@" = "No se pudo iniciar la ejecución de AIME: %@";
+"Failed: %@" = "Error: %@";
 "FAN" = "VENTILADOR";
 "Fan %lld" = "Ventilador %lld";
 "Fan control" = "Control de ventiladores";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Reparando";
 "Replace" = "Reemplazar";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Se reemplazó un mtplx ilegible en %@: abre un nuevo terminal para usar el comando actualizado.";
+"Reply failed: %@" = "La respuesta falló: %@";
 "repo created — uploading" = "repositorio creado — subiendo";
 "Repository name (owner/name) is required." = "El nombre del repositorio (propietario/nombre) es obligatorio.";
 "Repository or config.json not found on Hugging Face." = "No se encontró el repositorio o config.json en Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "El runtime de Homebrew instalado está por debajo del límite mínimo de compatibilidad.";
 "The language MTPLX uses across the app. Changes apply immediately." = "El idioma que usa MTPLX en toda la app. Los cambios se aplican de inmediato.";
 "The model rejected the request. Set an API key in Settings." = "El modelo rechazó la solicitud. Configura una clave de API en Ajustes.";
+"The model server reported an error." = "El servidor del modelo informó de un error.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "El sufijo MTPLX está bloqueado y esta construcción ha superado el control de velocidad.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "El razonamiento de este problema no se guardó: vuelve a abrir un problema resuelto en esta sesión para ver el desarrollo completo.";
 "There is not enough free disk space to finish this download." = "No hay suficiente espacio libre en disco para finalizar esta descarga.";

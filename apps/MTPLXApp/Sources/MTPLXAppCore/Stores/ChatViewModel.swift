@@ -28,6 +28,10 @@ public enum ChatError: LocalizedError, Equatable {
     case http(Int, String)
     case malformedRequest
     case daemonStopped
+    /// The daemon failed the request mid-stream and said why (its
+    /// `finish_reason: "error"` frame). The message is the server's
+    /// own, shown verbatim.
+    case server(String)
     case unknown(String)
 
     public var errorDescription: String? {
@@ -39,6 +43,7 @@ public enum ChatError: LocalizedError, Equatable {
             return tr("HTTP %@: %@", String(code), String(truncated))
         case .malformedRequest: return tr("Couldn't send the message.")
         case .daemonStopped: return tr("MTPLX isn't running. Hit the play button to start a model.")
+        case .server(let message): return tr("Reply failed: %@", message)
         case .unknown(let detail): return detail
         }
     }
@@ -556,6 +561,7 @@ public final class ChatViewModel: ObservableObject {
             stream.roundFinishReason = "stop"
             stream.roundUsage = nil
             stream.roundStats = nil
+            stream.roundServerError = nil
             var streamError: Error?
             do {
                 try await client.stream(
@@ -596,6 +602,15 @@ public final class ChatViewModel: ObservableObject {
 
             if let streamError {
                 handleStreamError(streamError, stream: stream)
+                return
+            }
+
+            // The daemon failed the request and said why (memory guard,
+            // context overflow, tool-loop exception). Whatever partial
+            // text arrived is kept, but the turn is a failure: Retry
+            // card now, "Failed: <message>" on the settled bubble.
+            if let serverMessage = stream.roundServerError {
+                handleServerFailure(serverMessage, stream: stream)
                 return
             }
 
@@ -846,6 +861,8 @@ public final class ChatViewModel: ObservableObject {
             stream.roundFinishReason = reason
             stream.roundUsage = usage
             stream.roundStats = stats
+        case .serverError(let message):
+            stream.roundServerError = message
         }
     }
 
@@ -1411,7 +1428,14 @@ public final class ChatViewModel: ObservableObject {
         stream.task = nil
     }
 
-    private func finalizePartialAssistantTurn(of stream: ChatTurnStream, reason: String) {
+    /// Persists whatever the interrupted turn produced. `failure` is
+    /// the daemon's own message for a server-reported error; it rides
+    /// in `statsJSON` so the settled bubble can read "Failed: <message>".
+    private func finalizePartialAssistantTurn(
+        of stream: ChatTurnStream,
+        reason: String,
+        failure: ChatTurnFailure? = nil
+    ) {
         let conversation = stream.conversation
         flushLeakedThinkingSplitter(of: stream)
         flushStreamingBuffers(of: stream)
@@ -1428,6 +1452,7 @@ public final class ChatViewModel: ObservableObject {
                 role: .assistant,
                 visibleContent: content,
                 reasoningContent: roundReasoning,
+                statsJSON: ChatTurnFailure.statsJSON(stats: nil, failure: failure),
                 finishReason: reason,
                 turnGroupID: stream.turnID,
                 sourcesJSON: SourceRecord.encodeJSON(stream.liveTurnSources),
@@ -1476,6 +1501,21 @@ public final class ChatViewModel: ObservableObject {
             lastError = reportedError
         }
         finalizePartialAssistantTurn(of: stream, reason: "error")
+    }
+
+    /// The daemon's own failure frame (`finish_reason: "error"`). Same
+    /// surface rules as a transport error — banner only for the visible
+    /// conversation, partial persisted with finishReason "error" — plus
+    /// the server's message, persisted so the transcript can show it.
+    private func handleServerFailure(_ message: String, stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .server(message)
+        }
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: "error",
+            failure: ChatTurnFailure(errorMessage: message)
+        )
     }
 
     // MARK: - Glue

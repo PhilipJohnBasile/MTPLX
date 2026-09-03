@@ -524,6 +524,7 @@
 "External terminal client launched by MTPLX." = "Cliente de terminal externo aberto pelo MTPLX.";
 "Extract MTP weights" = "Extrair pesos MTP";
 "Failed to start AIME run: %@" = "Falha ao iniciar a execução do AIME: %@";
+"Failed: %@" = "Falha: %@";
 "FAN" = "VENTOINHA";
 "Fan %lld" = "Ventoinha %lld";
 "Fan control" = "Controle de ventoinhas";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Reparando";
 "Replace" = "Substituir";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "mtplx ilegível substituído em %@ — abra um novo terminal para usar o comando atualizado.";
+"Reply failed: %@" = "A resposta falhou: %@";
 "repo created — uploading" = "repositório criado — enviando";
 "Repository name (owner/name) is required." = "O nome do repositório (proprietário/nome) é obrigatório.";
 "Repository or config.json not found on Hugging Face." = "Repositório ou config.json não encontrado no Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "O runtime do Homebrew instalado está abaixo do piso de compatibilidade.";
 "The language MTPLX uses across the app. Changes apply immediately." = "O idioma que o MTPLX usa em todo o app. As alterações entram em vigor imediatamente.";
 "The model rejected the request. Set an API key in Settings." = "O modelo rejeitou a requisição. Defina uma chave de API nos Ajustes.";
+"The model server reported an error." = "O servidor do modelo relatou um erro.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "O sufixo MTPLX está bloqueado e este build passou pelo controle de velocidade.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "O raciocínio deste problema não foi salvo — reabra um problema resolvido nesta sessão para ler todo o processo de resolução.";
 "There is not enough free disk space to finish this download." = "Não há espaço livre em disco suficiente para concluir este download.";

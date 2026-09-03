@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "Externer Terminal-Client, von MTPLX gestartet.";
 "Extract MTP weights" = "MTP-Gewichte extrahieren";
 "Failed to start AIME run: %@" = "AIME-Lauf konnte nicht gestartet werden: %@";
+"Failed: %@" = "Fehlgeschlagen: %@";
 "FAN" = "LÜFTER";
 "Fan %lld" = "Lüfter %lld";
 "Fan control" = "Lüftersteuerung";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Reparatur läuft";
 "Replace" = "Ersetzen";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Unlesbares mtplx unter %@ wurde ersetzt — öffne ein neues Terminal, um den aktualisierten Befehl zu verwenden.";
+"Reply failed: %@" = "Antwort fehlgeschlagen: %@";
 "repo created — uploading" = "Repo erstellt — wird hochgeladen";
 "Repository name (owner/name) is required." = "Repository-Name (Owner/Name) ist erforderlich.";
 "Repository or config.json not found on Hugging Face." = "Repository oder config.json auf Hugging Face nicht gefunden.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Die installierte Homebrew-Runtime liegt unterhalb der Mindestkompatibilität.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Die Sprache, die MTPLX in der gesamten App verwendet. Änderungen werden sofort angewendet.";
 "The model rejected the request. Set an API key in Settings." = "Das Modell hat die Anfrage abgelehnt. Lege einen API-Schlüssel in den Einstellungen fest.";
+"The model server reported an error." = "Der Modellserver hat einen Fehler gemeldet.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Das MTPLX-Suffix ist gesperrt und dieser Build hat das Speed-Gate passiert.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Das Reasoning für dieses Problem wurde nicht gesichert — öffne ein in dieser Sitzung gelöstes Problem erneut, um den vollständigen Rechenweg zu lesen.";
 "There is not enough free disk space to finish this download." = "Es ist nicht genügend freier Festplattenspeicher vorhanden, um diesen Download abzuschließen.";

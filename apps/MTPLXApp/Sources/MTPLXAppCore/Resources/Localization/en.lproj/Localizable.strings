@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "External terminal client launched by MTPLX.";
 "Extract MTP weights" = "Extract MTP weights";
 "Failed to start AIME run: %@" = "Failed to start AIME run: %@";
+"Failed: %@" = "Failed: %@";
 "FAN" = "FAN";
 "Fan %lld" = "Fan %lld";
 "Fan control" = "Fan control";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Repairing";
 "Replace" = "Replace";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command.";
+"Reply failed: %@" = "Reply failed: %@";
 "repo created — uploading" = "repo created — uploading";
 "Repository name (owner/name) is required." = "Repository name (owner/name) is required.";
 "Repository or config.json not found on Hugging Face." = "Repository or config.json not found on Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "The installed Homebrew runtime is below the compatibility floor.";
 "The language MTPLX uses across the app. Changes apply immediately." = "The language MTPLX uses across the app. Changes apply immediately.";
 "The model rejected the request. Set an API key in Settings." = "The model rejected the request. Set an API key in Settings.";
+"The model server reported an error." = "The model server reported an error.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "The MTPLX suffix is locked and this build has passed the speed gate.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working.";
 "There is not enough free disk space to finish this download." = "There is not enough free disk space to finish this download.";

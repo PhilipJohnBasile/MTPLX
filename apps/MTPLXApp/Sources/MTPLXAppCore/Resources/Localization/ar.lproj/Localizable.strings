@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "عميل Terminal خارجي تم تشغيله بواسطة MTPLX.";
 "Extract MTP weights" = "استخراج أوزان MTP";
 "Failed to start AIME run: %@" = "فشل بدء تشغيل AIME: %@";
+"Failed: %@" = "فشل: %@";
 "FAN" = "المروحة";
 "Fan %lld" = "المروحة %lld";
 "Fan control" = "التحكم في المروحة";
@@ -1102,6 +1103,7 @@
 "Repairing" = "جارٍ الإصلاح";
 "Replace" = "استبدال";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "تم استبدال mtplx غير قابل للقراءة في %@ — افتح نافذة Terminal جديدة لاستخدام الأمر المحدث.";
+"Reply failed: %@" = "فشل الرد: %@";
 "repo created — uploading" = "تم إنشاء المستودع — جارٍ الرفع";
 "Repository name (owner/name) is required." = "اسم المستودع (owner/name) مطلوب.";
 "Repository or config.json not found on Hugging Face." = "لم يتم العثور على المستودع أو config.json على Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "بيئة تشغيل Homebrew المثبتة أقل من الحد الأدنى للتوافق.";
 "The language MTPLX uses across the app. Changes apply immediately." = "اللغة التي يستخدمها MTPLX في جميع أنحاء التطبيق. تُطبق التغييرات فوراً.";
 "The model rejected the request. Set an API key in Settings." = "رفض النموذج الطلب. قم بتعيين مفتاح API في الإعدادات.";
+"The model server reported an error." = "أبلغ خادم النموذج عن خطأ.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "لاحقة MTPLX مقفلة واجتاز هذا البناء اختبار السرعة.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "لم يتم حفظ التفكير المنطقي لهذه المسألة — أعد فتح مسألة قمت بحلها في هذه الجلسة لقراءة خطوات الحل الكاملة.";
 "There is not enough free disk space to finish this download." = "لا توجد مساحة قرص خالية كافية لإكمال هذا التنزيل.";

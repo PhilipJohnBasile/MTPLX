@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "MTPLX에서 실행한 외부 터미널 클라이언트입니다.";
 "Extract MTP weights" = "MTP 가중치 추출";
 "Failed to start AIME run: %@" = "AIME 실행 시작 실패: %@";
+"Failed: %@" = "실패: %@";
 "FAN" = "팬";
 "Fan %lld" = "팬 %lld";
 "Fan control" = "팬 제어";
@@ -1102,6 +1103,7 @@
 "Repairing" = "복구 중";
 "Replace" = "대체";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@의 읽을 수 없는 mtplx를 교체했습니다 — 업데이트된 명령어를 사용하려면 새 터미널을 여십시오.";
+"Reply failed: %@" = "응답 실패: %@";
 "repo created — uploading" = "저장소 생성됨 — 업로드 중";
 "Repository name (owner/name) is required." = "저장소 이름(소유자/이름)이 필요합니다.";
 "Repository or config.json not found on Hugging Face." = "Hugging Face에서 저장소 또는 config.json을 찾을 수 없습니다.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "설치된 Homebrew 런타임이 최소 호환 버전보다 낮습니다.";
 "The language MTPLX uses across the app. Changes apply immediately." = "MTPLX 앱 전체에서 사용할 언어입니다. 변경 사항은 즉시 적용됩니다.";
 "The model rejected the request. Set an API key in Settings." = "모델이 요청을 거부했습니다. 설정에서 API 키를 지정하십시오.";
+"The model server reported an error." = "모델 서버에서 오류를 보고했습니다.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX 접미사가 고정되었으며 이 빌드가 속도 기준을 통과했습니다.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "이 문제의 추론 과정이 저장되지 않았습니다 — 전체 과정을 보려면 이번 세션에서 해결한 문제를 다시 여십시오.";
 "There is not enough free disk space to finish this download." = "이 다운로드를 완료하기 위한 여유 디스크 공간이 부족합니다.";

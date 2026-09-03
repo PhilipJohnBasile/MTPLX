@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "Klien terminal eksternal diluncurkan oleh MTPLX.";
 "Extract MTP weights" = "Ekstrak bobot MTP";
 "Failed to start AIME run: %@" = "Gagal memulai eksekusi AIME: %@";
+"Failed: %@" = "Gagal: %@";
 "FAN" = "KIPAS";
 "Fan %lld" = "Kipas %lld";
 "Fan control" = "Kontrol kipas";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Memperbaiki";
 "Replace" = "Ganti";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Mengganti mtplx yang tidak dapat dibaca di %@ — buka terminal baru untuk menggunakan perintah yang diperbarui.";
+"Reply failed: %@" = "Balasan gagal: %@";
 "repo created — uploading" = "repo dibuat — mengunggah";
 "Repository name (owner/name) is required." = "Nama repositori (pemilik/nama) diperlukan.";
 "Repository or config.json not found on Hugging Face." = "Repositori atau config.json tidak ditemukan di Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Runtime Homebrew yang terpasang berada di bawah batas minimum kompatibilitas.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Bahasa yang digunakan MTPLX di seluruh aplikasi. Perubahan langsung diterapkan.";
 "The model rejected the request. Set an API key in Settings." = "Model menolak permintaan tersebut. Tetapkan kunci API di Pengaturan.";
+"The model server reported an error." = "Server model melaporkan kesalahan.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Sufiks MTPLX dikunci dan build ini telah melewati ambang batas kecepatan.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Penalaran untuk soal ini tidak disimpan — buka kembali soal yang Anda selesaikan dalam sesi ini untuk membaca pengerjaan lengkapnya.";
 "There is not enough free disk space to finish this download." = "Ruang disk kosong tidak cukup untuk menyelesaikan unduhan ini.";

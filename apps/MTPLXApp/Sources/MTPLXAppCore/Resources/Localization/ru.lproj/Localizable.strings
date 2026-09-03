@@ -524,6 +524,7 @@
 "External terminal client launched by MTPLX." = "Внешний терминальный клиент, запущенный MTPLX.";
 "Extract MTP weights" = "Извлечь веса MTP";
 "Failed to start AIME run: %@" = "Не удалось запустить прогон AIME: %@";
+"Failed: %@" = "Ошибка: %@";
 "FAN" = "ВЕНТИЛЯТОР";
 "Fan %lld" = "Вентилятор %lld";
 "Fan control" = "Управление вентиляторами";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Восстановление";
 "Replace" = "Заменить";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Заменён нечитаемый mtplx по пути %@ — откройте новый терминал, чтобы использовать обновлённую команду.";
+"Reply failed: %@" = "Не удалось получить ответ: %@";
 "repo created — uploading" = "репозиторий создан — идёт загрузка";
 "Repository name (owner/name) is required." = "Требуется имя репозитория (владелец/имя).";
 "Repository or config.json not found on Hugging Face." = "Репозиторий или config.json не найден на Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Установленная среда выполнения Homebrew ниже порога совместимости.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Язык, используемый MTPLX во всём приложении. Изменения применяются немедленно.";
 "The model rejected the request. Set an API key in Settings." = "Модель отклонила запрос. Задайте ключ API в «Настройках».";
+"The model server reported an error." = "Сервер модели сообщил об ошибке.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Суффикс MTPLX зафиксирован, и эта сборка прошла проверку скорости.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Рассуждения для этой задачи не были сохранены — откройте заново задачу, решённую в этой сессии, чтобы просмотреть полное решение.";
 "There is not enough free disk space to finish this download." = "Недостаточно свободного места на диске для завершения этой загрузки.";

@@ -29,6 +29,11 @@ struct AssistantBubbleView: View {
     private let metricItems: [MetricItem]
     private let replyCopyText: String
     private let isInterruptedReply: Bool
+    /// The daemon's own failure message when the turn ended on its
+    /// `finish_reason: "error"` frame (read from `statsJSON`). Nil for
+    /// completed turns, user stops, and failures recorded before the
+    /// message was persisted.
+    private let failure: ChatTurnFailure?
     private let longReplyPreviewText: String?
     @State private var isHovered: Bool = false
     @State private var expandedLongReply: Bool = false
@@ -47,11 +52,21 @@ struct AssistantBubbleView: View {
         self.replyCopyText = finalMessage.visibleContent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         self.isInterruptedReply = Self.isInterruptedFinishReason(finalMessage.finishReason)
+        self.failure = Self.failure(
+            finishReason: finalMessage.finishReason,
+            statsJSON: finalMessage.statsJSON
+        )
         self.longReplyPreviewText = Self.longReplyPreview(for: self.replyCopyText)
     }
 
     init(message: ChatMessage) {
         self.init(group: AssistantTurnGroup(id: message.id, members: [message]))
+    }
+
+    /// Caption over an interrupted reply's preview: the daemon's message
+    /// for a server failure, the plain interruption label otherwise.
+    private var interruptedReplyTitle: String {
+        Self.interruptedReplyTitle(failure: failure)
     }
 
     private var activityModel: TurnActivityModel {
@@ -117,7 +132,7 @@ struct AssistantBubbleView: View {
                     Group {
                         if isInterruptedReply && !expandedLongReply {
                             LongAssistantReplyPreview(
-                                title: tr("Interrupted reply"),
+                                title: interruptedReplyTitle,
                                 previewText: longReplyPreviewText ?? replyCopyText,
                                 characterCount: message.visibleContent.count,
                                 onCopy: { copyToPasteboard(replyCopyText) },
@@ -156,36 +171,13 @@ struct AssistantBubbleView: View {
                         )
                     Spacer(minLength: 60)
                 }
+            } else if failure != nil {
+                // The daemon failed before any answer text: the failure
+                // IS the reply, so the transcript says so instead of
+                // reading as an empty or complete turn.
+                noticeBubble(interruptedReplyTitle, tint: Brand.warning)
             } else if !hasReasoning && !hasTrace && !hasToolCalls {
-                HStack(alignment: .top, spacing: 0) {
-                    Text(tr("No visible answer generated."))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Brand.typeSecondary)
-                        .frame(maxWidth: 576, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .background(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 14,
-                                bottomLeadingRadius: 4,
-                                bottomTrailingRadius: 14,
-                                topTrailingRadius: 14,
-                                style: .continuous
-                            )
-                            .fill(Brand.cardSurface)
-                            .overlay(
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 14,
-                                    bottomLeadingRadius: 4,
-                                    bottomTrailingRadius: 14,
-                                    topTrailingRadius: 14,
-                                    style: .continuous
-                                )
-                                .stroke(Brand.separator, lineWidth: 1)
-                            )
-                        )
-                    Spacer(minLength: 60)
-                }
+                noticeBubble(tr("No visible answer generated."), tint: Brand.typeSecondary)
             }
             // Where the turn's web sources live — one quiet pill row,
             // not a card per fetched page.
@@ -248,6 +240,41 @@ struct AssistantBubbleView: View {
         let value: String
     }
 
+    /// One-line stand-in for the answer bubble (same chrome), used when
+    /// the turn has no answer text to show.
+    private func noticeBubble(_ text: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .textSelection(.enabled)
+                .frame(maxWidth: 576, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 14,
+                        bottomLeadingRadius: 4,
+                        bottomTrailingRadius: 14,
+                        topTrailingRadius: 14,
+                        style: .continuous
+                    )
+                    .fill(Brand.cardSurface)
+                    .overlay(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 14,
+                            bottomLeadingRadius: 4,
+                            bottomTrailingRadius: 14,
+                            topTrailingRadius: 14,
+                            style: .continuous
+                        )
+                        .stroke(Brand.separator, lineWidth: 1)
+                    )
+                )
+            Spacer(minLength: 60)
+        }
+    }
+
     private static func isInterruptedFinishReason(_ reason: String?) -> Bool {
         switch reason?.lowercased() {
         case "cancelled", "error":
@@ -255,6 +282,21 @@ struct AssistantBubbleView: View {
         default:
             return false
         }
+    }
+
+    /// Persisted failure for a turn that ended on the daemon's error
+    /// frame. Only an "error" finish carries one; other finish reasons
+    /// ignore any stale key.
+    static func failure(finishReason: String?, statsJSON: String?) -> ChatTurnFailure? {
+        guard finishReason?.lowercased() == "error" else { return nil }
+        return ChatTurnFailure.decode(fromStatsJSON: statsJSON)
+    }
+
+    static func interruptedReplyTitle(failure: ChatTurnFailure?) -> String {
+        if let failure {
+            return tr("Failed: %@", failure.errorMessage)
+        }
+        return tr("Interrupted reply")
     }
 
     private static func longReplyPreview(for text: String) -> String? {

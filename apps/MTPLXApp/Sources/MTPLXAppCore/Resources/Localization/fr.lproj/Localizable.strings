@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "Client de terminal externe lancé par MTPLX.";
 "Extract MTP weights" = "Extraire les poids MTP";
 "Failed to start AIME run: %@" = "Échec du démarrage de l'exécution AIME : %@";
+"Failed: %@" = "Échec : %@";
 "FAN" = "VENTILATEUR";
 "Fan %lld" = "Ventilateur %lld";
 "Fan control" = "Contrôle des ventilateurs";
@@ -1102,6 +1103,7 @@
 "Repairing" = "Réparation en cours";
 "Replace" = "Remplacer";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Remplacement d'un fichier mtplx illisible à l'emplacement %@ — ouvrez un nouveau terminal pour utiliser la commande mise à jour.";
+"Reply failed: %@" = "La réponse a échoué : %@";
 "repo created — uploading" = "dépôt créé — envoi en cours";
 "Repository name (owner/name) is required." = "Le nom du dépôt (propriétaire/nom) est requis.";
 "Repository or config.json not found on Hugging Face." = "Dépôt ou config.json introuvable sur Hugging Face.";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Le runtime Homebrew installé est en dessous du seuil de compatibilité.";
 "The language MTPLX uses across the app. Changes apply immediately." = "La langue utilisée par MTPLX dans toute l'application. Les modifications s'appliquent immédiatement.";
 "The model rejected the request. Set an API key in Settings." = "Le modèle a rejeté la requête. Définissez une clé d'API dans les Réglages.";
+"The model server reported an error." = "Le serveur du modèle a signalé une erreur.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Le suffixe MTPLX est verrouillé et cette version a validé le critère de vitesse.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Le raisonnement pour ce problème n'a pas été enregistré — rouvrez un problème résolu au cours de cette session pour consulter l'intégralité de la démarche.";
 "There is not enough free disk space to finish this download." = "Il n'y a pas assez d'espace disque libre pour terminer ce téléchargement.";

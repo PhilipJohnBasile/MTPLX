@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "由 MTPLX 启动的外部终端客户端。";
 "Extract MTP weights" = "提取 MTP 权重";
 "Failed to start AIME run: %@" = "无法启动 AIME 运行：%@";
+"Failed: %@" = "失败：%@";
 "FAN" = "风扇";
 "Fan %lld" = "风扇 %lld";
 "Fan control" = "风扇控制";
@@ -1102,6 +1103,7 @@
 "Repairing" = "正在修复";
 "Replace" = "替换";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "已替换位于 %@ 的不可读 mtplx — 打开新终端即可使用更新后的命令。";
+"Reply failed: %@" = "回复失败：%@";
 "repo created — uploading" = "仓库已创建 — 正在上传";
 "Repository name (owner/name) is required." = "需要仓库名称（所有者/名称）。";
 "Repository or config.json not found on Hugging Face." = "未在 Hugging Face 上找到仓库或 config.json。";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "已安装的 Homebrew 运行时低于最低兼容版本。";
 "The language MTPLX uses across the app. Changes apply immediately." = "MTPLX 在整个应用中使用的语言。更改立即生效。";
 "The model rejected the request. Set an API key in Settings." = "模型拒绝了请求。请在“设置”中配置 API 密钥。";
+"The model server reported an error." = "模型服务器报告了一个错误。";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX 后缀已锁定，且此构建已通过速度关口。";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "此题目的推理未保存 — 重新打开你在本次会话中解决的题目可阅读其完整步骤。";
 "There is not enough free disk space to finish this download." = "可用磁盘空间不足，无法完成此下载。";

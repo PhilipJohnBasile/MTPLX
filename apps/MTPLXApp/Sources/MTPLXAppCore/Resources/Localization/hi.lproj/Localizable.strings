@@ -526,6 +526,7 @@
 "External terminal client launched by MTPLX." = "MTPLX द्वारा लॉन्च किया गया बाहरी टर्मिनल क्लाइंट।";
 "Extract MTP weights" = "MTP वज़न निकालें";
 "Failed to start AIME run: %@" = "AIME रन शुरू करने में विफल: %@";
+"Failed: %@" = "विफल: %@";
 "FAN" = "फ़ैन";
 "Fan %lld" = "फ़ैन %lld";
 "Fan control" = "फ़ैन नियंत्रण";
@@ -1102,6 +1103,7 @@
 "Repairing" = "मरम्मत की जा रही है";
 "Replace" = "बदलें";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@ पर अपठनीय mtplx को बदला गया — अपडेट की गई कमांड का उपयोग करने के लिए एक नया टर्मिनल खोलें।";
+"Reply failed: %@" = "उत्तर विफल रहा: %@";
 "repo created — uploading" = "रेपो बनाया गया — अपलोड हो रहा है";
 "Repository name (owner/name) is required." = "रिपॉजिटरी का नाम (मालिक/नाम) आवश्यक है।";
 "Repository or config.json not found on Hugging Face." = "Hugging Face पर रिपॉजिटरी या config.json नहीं मिला।";
@@ -1355,6 +1357,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "स्थापित Homebrew रनटाइम संगतता सीमा से नीचे है।";
 "The language MTPLX uses across the app. Changes apply immediately." = "वह भाषा जिसका उपयोग MTPLX पूरे ऐप में करता है। परिवर्तन तुरंत लागू होते हैं।";
 "The model rejected the request. Set an API key in Settings." = "मॉडल ने अनुरोध अस्वीकार कर दिया। सेटिंग्स में एक API कुंजी सेट करें।";
+"The model server reported an error." = "मॉडल सर्वर ने एक त्रुटि की सूचना दी।";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX प्रत्यय लॉक है और इस बिल्ड ने गति गेट को पार कर लिया है।";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "इस प्रश्न के लिए तर्क सहेजा नहीं गया था — इसकी पूरी कार्यप्रणाली पढ़ने के लिए इस सत्र में आपके द्वारा हल किए गए प्रश्न को फिर से खोलें।";
 "There is not enough free disk space to finish this download." = "इस डाउनलोड को पूरा करने के लिए पर्याप्त खाली डिस्क स्थान नहीं है।";
