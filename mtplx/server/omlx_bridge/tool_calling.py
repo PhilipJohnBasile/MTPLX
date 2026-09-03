@@ -1056,6 +1056,68 @@ class ToolCallStreamFilter:
             or bool(re.match(r"^<tool_calls?:[A-Za-z_][\w.-]*$", candidate))
         )
 
+    _BRACKET_CALL_HEAD_RE = re.compile(
+        r"^\[(?:Calling tool|Tool call):\s*([A-Za-z_][\w.-]*)?(\()?"
+    )
+
+    @classmethod
+    def _bracket_call_may_complete(cls, candidate: str) -> bool:
+        """True while ``candidate`` (starting at a bracket prefix) is still a
+        structurally consistent prefix of ``[Calling tool: name({...})]``.
+
+        This is what bounds the hold: a real call is held whole until its
+        ``]`` however long its JSON arguments run (a file body is
+        legitimate), while prose that merely quotes the marker ("MTPLX
+        prints [Calling tool: read_file when it starts a tool") is released
+        at the first character that can no longer belong to a call. Without
+        this test the hold was unbounded and finish() dropped the rest of
+        the answer.
+        """
+
+        head = cls._BRACKET_CALL_HEAD_RE.match(candidate)
+        if head is None:
+            return False
+        rest = candidate[head.end() :]
+        if not rest:
+            return True
+        if not head.group(1) or not head.group(2):
+            # Text right after the prefix that is not a name, or text after
+            # the name that is not "(": a complete "[...: name]" would already
+            # have been consumed, so this is prose.
+            return False
+        if rest[0] != "{":
+            return False
+        end = cls._balanced_json_object_end(rest)
+        if end is None:
+            return True
+        return re.fullmatch(r"\)?\]?", rest[end:]) is not None
+
+    @staticmethod
+    def _balanced_json_object_end(text: str) -> int | None:
+        """Index just past the object that opens at ``text[0]``, or None if
+        the object is still open (string- and escape-aware)."""
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return None
+
     def _partial_suffix_len(self, text: str) -> int:
         keep = 0
         for marker, _close in self._marker_pairs:
@@ -1070,8 +1132,9 @@ class ToolCallStreamFilter:
                 keep = max(keep, len(candidate))
         for prefix in self._bracket_prefixes:
             keep = max(keep, self._partial_prefix_len(text, prefix))
-            if (index := text.rfind(prefix)) >= 0 and "]" not in text[index:]:
-                return max(keep, len(text[index:]))
+            index = text.rfind(prefix)
+            if index >= 0 and self._bracket_call_may_complete(text[index:]):
+                return max(keep, len(text) - index)
         return min(keep, 128)
 
     def _should_drop_tail_at_finish(self, tail: str) -> bool:
@@ -1081,8 +1144,11 @@ class ToolCallStreamFilter:
             if marker.startswith(tail):
                 return True
         for prefix in self._bracket_prefixes:
+            # An unclosed call-shaped block stays suppressed (drift dialect
+            # never reaches the transcript); a bracket tail that stopped
+            # being a possible call is the answer's own words and is kept.
             if tail.startswith(prefix):
-                return True
+                return self._bracket_call_may_complete(tail)
         return tail.startswith("<") and ">" not in tail and ":" in tail
 
     def feed(self, text: str) -> str:
