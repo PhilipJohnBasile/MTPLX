@@ -219,7 +219,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap.";
 "Auto-approve on, tap to require approval" = "Auto-approve on, tap to require approval";
@@ -1161,6 +1161,7 @@
 "Running" = "Running";
 "running" = "running";
 "Running and ready." = "Running and ready.";
+"Running now: %@ (%@ / %@)." = "Running now: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Running the first warmup tokens before chat opens.";
 "Running tool…" = "Running tool…";
 "Running your new model on this Mac to see how fast it actually is." = "Running your new model on this Mac to see how fast it actually is.";

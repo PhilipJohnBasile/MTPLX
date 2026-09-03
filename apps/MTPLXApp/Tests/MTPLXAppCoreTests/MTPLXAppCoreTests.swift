@@ -4210,6 +4210,126 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--ssd-session-cache-min-prefix-tokens", "512"]))
     }
 
+    // MARK: - Issue #398: the Performance mode must survive a model restart
+
+    /// The reporter picked a non-Auto mode, restarted the model, and the
+    /// daemon still came up `--scheduler-mode serial --batching-preset solo`
+    /// with the picker back on Auto. This is the whole round trip: the
+    /// selection lands in settings.json, comes back off disk unchanged, and
+    /// the very next serve command carries it into argv.
+    func testSchedulingPresetSurvivesSettingsRoundTripIntoTheNextLaunch() throws {
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        let fake = try makeExecutable(named: "mtplx")
+
+        var configuration = MTPLXAppConfiguration(
+            executablePath: fake.path,
+            model: "/models/qwen"
+        )
+        configuration.applySchedulingPreset("throughput")
+        try store.save(configuration)
+
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.schedulingPreset, "throughput")
+
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        // Chat is the target whose preset produced the reported serial/solo
+        // launch; the persisted selection has to outrank it.
+        let command = try builder.buildServeCommand(
+            configuration: reloaded,
+            target: .chat,
+            launchID: "restart-398"
+        )
+        XCTAssertTrue(command.arguments.containsInOrder(["--scheduler-mode", "ar_batch"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--batching-preset", "throughput"]))
+        XCTAssertFalse(command.arguments.containsInOrder(["--batching-preset", "solo"]))
+    }
+
+    /// An untouched picker still gets the target preset, so Auto launches
+    /// stay byte-identical to before the fix.
+    func testAutoSchedulingPresetStillYieldsTheChatTargetPreset() throws {
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        let fake = try makeExecutable(named: "mtplx")
+        try store.save(
+            MTPLXAppConfiguration(executablePath: fake.path, model: "/models/qwen")
+        )
+
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.schedulingPreset, "target-default")
+
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: reloaded,
+            target: .chat,
+            launchID: "auto-398"
+        )
+        XCTAssertTrue(command.arguments.containsInOrder(["--scheduler-mode", "serial"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--batching-preset", "solo"]))
+    }
+
+    /// The Settings picker and the persisted configuration must read a tag
+    /// through the same table, or the menu can show a mode the launch
+    /// resolver does not honor.
+    func testSchedulingPresetSelectionMatchesWhatApplyPersists() throws {
+        for (raw, expected) in [
+            ("target-default", "target-default"),
+            ("auto", "target-default"),
+            ("", "target-default"),
+            ("nonsense", "target-default"),
+            ("latency", "latency"),
+            ("serial-latency", "latency"),
+            ("throughput", "throughput"),
+            ("ar_batch_throughput", "throughput"),
+            ("AR-BATCH-AGENT", "agent"),
+            ("agent", "agent"),
+        ] {
+            XCTAssertEqual(
+                MTPLXAppConfiguration.schedulingPresetSelection(raw),
+                expected,
+                raw
+            )
+            var configuration = MTPLXAppConfiguration()
+            configuration.applySchedulingPreset(raw)
+            XCTAssertEqual(configuration.schedulingPreset, expected, raw)
+        }
+    }
+
+    /// The launch record the app writes to its diagnostics reads the flags
+    /// back out of the argv the daemon actually receives.
+    func testFlagValueReadsSchedulingFlagsBackOutOfTheBuiltArgv() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                schedulingPreset: "agent"
+            ),
+            target: .chat,
+            launchID: "record-398"
+        )
+
+        XCTAssertEqual(
+            MTPLXCommandBuilder.flagValue("--scheduler-mode", in: command.arguments),
+            "ar_batch"
+        )
+        XCTAssertEqual(
+            MTPLXCommandBuilder.flagValue("--batching-preset", in: command.arguments),
+            "agent"
+        )
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--not-a-flag", in: command.arguments))
+        // A flag whose value is missing must not report the next flag as one.
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--depth", in: ["--depth", "--profile"]))
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--depth", in: ["--depth"]))
+    }
+
     func testSettingsStoreRoundTripsConfiguration() throws {
         let url = temporaryDirectory().appendingPathComponent("settings.json")
         let store = MTPLXSettingsStore(settingsURL: url)

@@ -219,7 +219,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Automático reserva metade da RAM que sobra depois que o modelo carrega. Prompts antigos são descartados ao passar do limite.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Automático escolhe o melhor modo para o que você está usando. Escolha um modo abaixo para usá-lo em todo lugar. As execuções de benchmark mantêm a própria configuração de stream único.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Automático escolhe o melhor modo para o que você usa. Escolha um modo abaixo para usá-lo em todo lugar. Salvo assim que você escolhe. Execuções de benchmark mantêm a própria configuração de fluxo único.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Automático escolhe o perfil recomendado para o modelo selecionado — Turbo para os modelos 27B e Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Automático escala conforme a faixa de RAM do seu Mac (16 GB a 100 GB). Entradas antigas são descartadas para ficar abaixo do limite.";
 "Auto-approve on, tap to require approval" = "Aprovação automática ativada, clique para exigir aprovação";
@@ -1161,6 +1161,7 @@
 "Running" = "Em execução";
 "running" = "em execução";
 "Running and ready." = "Em execução e pronto.";
+"Running now: %@ (%@ / %@)." = "Em execução agora: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Executando os primeiros tokens de aquecimento antes que o chat se abra.";
 "Running tool…" = "Executando ferramenta…";
 "Running your new model on this Mac to see how fast it actually is." = "Executando seu novo modelo neste Mac para ver quão rápido ele é na prática.";

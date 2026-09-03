@@ -182,14 +182,14 @@ struct SettingsTab: View {
         let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
         Card(tr("Performance"),
              subtitle: tr("Speed and batching. Needs a restart to apply.")) {
-            if dirty && running {
+            if (dirty || schedulingRestartPending) && running {
                 PillBadge(text: tr("restart to apply"), systemImage: "arrow.clockwise.circle.fill", tint: .mtplxWarning, emphasized: true)
             }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
                     label: tr("Mode"),
-                    caption: tr("Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup.")
+                    caption: tr("Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup.")
                 ) {
                     Picker(tr("Mode"), selection: schedulerPresetBinding) {
                         Text(tr("Auto")).tag("target-default")
@@ -200,6 +200,21 @@ struct SettingsTab: View {
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .frame(maxWidth: 280, alignment: .leading)
+                }
+
+                // The picker says what the next launch will use; this says
+                // what the daemon in front of you actually launched with.
+                // Issue #398 could not tell those two apart at all.
+                if running, let launched = backend.lastLaunchScheduling {
+                    Text(tr(
+                        "Running now: %@ (%@ / %@).",
+                        schedulingPresetLabel(launched.selectedPreset),
+                        launched.schedulerMode,
+                        launched.batchingPreset
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(Brand.typeSecondary)
+                    .textSelection(.enabled)
                 }
 
                 Divider().overlay(Brand.separator)
@@ -276,32 +291,58 @@ struct SettingsTab: View {
         }
     }
 
+    /// Mode saves the moment it is picked (issue #398). Every other control
+    /// on this card is a draft the Save button commits, but this tab's
+    /// `@State` is destroyed the instant the user leaves Settings, so a
+    /// draft-only Mode was silently discarded by the very navigation the
+    /// user needs to make to restart the model, and the picker came back
+    /// on Auto with no notice. Appearance and Language already commit on
+    /// selection; Mode now behaves the same way.
     private var schedulerPresetBinding: Binding<String> {
         Binding(
             get: {
                 normalizedSchedulingPreset(draftConfig.schedulingPreset)
             },
             set: { preset in
-                draftConfig.applySchedulingPreset(normalizedSchedulingPreset(preset))
+                commitSchedulingPreset(normalizedSchedulingPreset(preset))
             }
         )
     }
 
-    private func normalizedSchedulingPreset(_ raw: String) -> String {
-        switch raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        {
-        case "latency", "serial-latency":
-            return "latency"
-        case "throughput", "ar-batch-throughput":
-            return "throughput"
-        case "agent", "ar-batch-agent":
-            return "agent"
-        default:
-            return "target-default"
+    private func commitSchedulingPreset(_ preset: String) {
+        draftConfig.applySchedulingPreset(preset)
+        lastSyncedConfig.applySchedulingPreset(preset)
+        do {
+            try backend.applySchedulingPresetSelection(preset)
+            lastSaveError = nil
+        } catch {
+            lastSaveError = tr("Apply failed: %@", String(describing: error))
         }
+    }
+
+    private func normalizedSchedulingPreset(_ raw: String) -> String {
+        MTPLXAppConfiguration.schedulingPresetSelection(raw)
+    }
+
+    private func schedulingPresetLabel(_ raw: String) -> String {
+        switch normalizedSchedulingPreset(raw) {
+        case "latency":
+            return tr("Fastest response")
+        case "throughput":
+            return tr("Handle multiple at once")
+        case "agent":
+            return tr("Long agent tasks")
+        default:
+            return tr("Auto")
+        }
+    }
+
+    /// True when the running daemon launched under a different Mode than
+    /// the one now saved. This is what makes "restart to apply" honest for
+    /// a control that no longer goes through the draft/dirty path.
+    private var schedulingRestartPending: Bool {
+        guard let launched = backend.lastLaunchScheduling else { return false }
+        return launched.selectedPreset != normalizedSchedulingPreset(draftConfig.schedulingPreset)
     }
 
     private var defaultMaxActiveRequests: Int {

@@ -655,6 +655,27 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// overridden to empty alongside any non-official endpoint. Returns
     /// nil when no valid mirror is configured (including the official
     /// host, where nothing should change).
+    /// Picker-level normalization of the Performance mode selection. The
+    /// Settings picker, the persisted `scheduling_preset`, and the launch
+    /// resolver all read the choice through this one function so a tag can
+    /// never drift away from what gets saved (2026-09-03, issue #398).
+    public static func schedulingPresetSelection(_ raw: String) -> String {
+        switch raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        {
+        case "latency", "serial-latency":
+            return "latency"
+        case "throughput", "ar-batch-throughput":
+            return "throughput"
+        case "agent", "ar-batch-agent":
+            return "agent"
+        default:
+            return "target-default"
+        }
+    }
+
     public static func hfMirrorEnvironment(_ rawEndpoint: String?) -> [String: String]? {
         guard let rawEndpoint else { return nil }
         let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -999,14 +1020,10 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
             // pair as target-default unless the new explicit preset says
             // otherwise.
             return "target-default"
-        case "serial-latency", "latency":
-            return "latency"
-        case "ar-batch-throughput", "throughput":
-            return "throughput"
-        case "ar-batch-agent", "agent":
-            return "agent"
         default:
-            return "target-default"
+            // One table for the concrete tags, shared with the Settings
+            // picker so a menu label can never drift from what is saved.
+            return schedulingPresetSelection(normalized)
         }
     }
 }

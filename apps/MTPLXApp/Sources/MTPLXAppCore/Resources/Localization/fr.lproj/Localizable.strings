@@ -219,7 +219,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Auto alloue la moitié de la RAM restante après le chargement du modèle. Les anciennes invites sont expulsées au-delà de la limite.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Auto choisit le meilleur mode selon votre usage. Choisissez un mode ci-dessous pour l'appliquer partout. Les sessions de benchmark conservent leur configuration à flux unique.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Auto choisit le meilleur mode pour ce que vous utilisez. Choisissez un mode ci-dessous pour l'utiliser partout. Enregistré dès que vous le choisissez. Les tests de performance gardent leur propre configuration à flux unique.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Auto choisit le profil recommandé pour le modèle sélectionné — Turbo pour les modèles 27B et Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Auto s'ajuste selon la quantité de RAM de votre Mac (de 16 GB à 100 GB). Les anciennes entrées sont expulsées pour ne pas dépasser la limite.";
 "Auto-approve on, tap to require approval" = "Approbation auto activée, touchez pour exiger l'approbation";
@@ -1161,6 +1161,7 @@
 "Running" = "En cours d'exécution";
 "running" = "en cours";
 "Running and ready." = "En cours d'exécution et prêt.";
+"Running now: %@ (%@ / %@)." = "En cours: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Exécution des premiers tokens d'échauffement avant l'ouverture de la discussion.";
 "Running tool…" = "Exécution de l'outil…";
 "Running your new model on this Mac to see how fast it actually is." = "Exécution de votre nouveau modèle sur ce Mac pour mesurer sa vitesse réelle.";

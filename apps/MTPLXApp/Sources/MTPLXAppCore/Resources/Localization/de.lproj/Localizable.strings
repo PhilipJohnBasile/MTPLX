@@ -219,7 +219,7 @@
 "auto bf16" = "auto bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Auto reserviert die Hälfte des RAM, der nach dem Laden des Modells übrig bleibt. Alte Prompts werden oberhalb des Limits verdrängt.";
 "auto fp16" = "auto fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Auto wählt den besten Modus für deine Nutzung. Wähle unten einen Modus, um ihn überall zu verwenden. Benchmark-Läufe behalten ihr eigenes Single-Stream-Setup.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Auto wählt den besten Modus für das, was du nutzt. Wähle unten einen Modus, um ihn überall zu verwenden. Wird sofort bei der Auswahl gesichert. Benchmark-Läufe behalten ihr eigenes Einzelstrom-Setup.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Auto wählt das empfohlene Profil für das ausgewählte Modell — Turbo für die 27B- und Flash-Next-Modelle.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Auto skaliert mit der RAM-Stufe deines Mac (16 GB bis 100 GB). Alte Einträge werden verdrängt, um unter dem Limit zu bleiben.";
 "Auto-approve on, tap to require approval" = "Automatische Genehmigung an, klicken, um eine Genehmigung zu verlangen";
@@ -1161,6 +1161,7 @@
 "Running" = "Läuft";
 "running" = "läuft";
 "Running and ready." = "Läuft und ist bereit.";
+"Running now: %@ (%@ / %@)." = "Läuft gerade: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Die ersten Warmup-Token werden vor dem Öffnen des Chats ausgeführt.";
 "Running tool…" = "Tool wird ausgeführt …";
 "Running your new model on this Mac to see how fast it actually is." = "Dein neues Modell wird auf diesem Mac ausgeführt, um zu sehen, wie schnell es tatsächlich ist.";

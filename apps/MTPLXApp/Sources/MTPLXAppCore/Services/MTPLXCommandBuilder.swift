@@ -404,6 +404,18 @@ public struct MTPLXCommandBuilder: Sendable {
         )
     }
 
+    /// Value that follows `flag` in a built argv, or nil when the flag was
+    /// not emitted. Reading the launch record back out of the arguments the
+    /// daemon actually received is what makes the launch diagnostic honest:
+    /// it reports what ran, not what the resolver intended to run (#398).
+    public static func flagValue(_ flag: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: flag) else { return nil }
+        let next = arguments.index(after: index)
+        guard arguments.indices.contains(next) else { return nil }
+        let value = arguments[next]
+        return value.hasPrefix("--") ? nil : value
+    }
+
     private func resolveExecutable(_ explicitPath: String?) throws -> URL {
         try Self.resolveInstalledExecutable(
             explicitPath: explicitPath,

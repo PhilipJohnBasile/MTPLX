@@ -219,7 +219,7 @@
 "auto bf16" = "स्वचालित bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "स्वचालित मॉडल लोड होने के बाद बची आधी RAM आवंटित करता है। सीमा पार होने पर पुराने प्रॉम्प्ट हटा दिए जाते हैं।";
 "auto fp16" = "स्वचालित fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "आप जो उपयोग कर रहे हैं उसके लिए ऑटो सबसे अच्छा मोड चुनता है। इसे हर जगह उपयोग करने के लिए नीचे एक मोड चुनें। बेंचमार्क रन अपना सिंगल-स्ट्रीम सेटअप बनाए रखते हैं।";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "स्वचालित आपके उपयोग के लिए सबसे अच्छा मोड चुनता है। हर जगह उपयोग करने के लिए नीचे कोई मोड चुनें। चुनते ही सहेजा जाता है। बेंचमार्क रन अपना एकल-स्ट्रीम सेटअप बनाए रखते हैं।";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "ऑटो चयनित मॉडल के लिए अनुशंसित प्रोफ़ाइल चुनता है — 27B और Flash-Next मॉडल के लिए Turbo।";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "ऑटो आपके Mac के RAM टियर (16 GB से 100 GB) के साथ स्केल करता है। सीमा के अंदर रहने के लिए पुरानी प्रविष्टियां हटा दी जाती हैं।";
 "Auto-approve on, tap to require approval" = "ऑटो-अनुमोदन चालू है, अनुमोदन आवश्यक करने के लिए टैप करें";
@@ -1161,6 +1161,7 @@
 "Running" = "चल रहा है";
 "running" = "चल रहा है";
 "Running and ready." = "चल रहा है और तैयार है।";
+"Running now: %@ (%@ / %@)." = "अभी चल रहा है: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "चैट खुलने से पहले पहले वार्मअप टोकन चलाए जा रहे हैं।";
 "Running tool…" = "टूल चलाया जा रहा है…";
 "Running your new model on this Mac to see how fast it actually is." = "यह देखने के लिए कि आपका नया मॉडल वास्तव में कितना तेज़ है, इसे इस Mac पर चलाया जा रहा है।";

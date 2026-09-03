@@ -219,7 +219,7 @@
 "auto bf16" = "авто bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "«Авто» выделяет половину памяти, оставшейся после загрузки модели. При превышении лимита старые промпты вытесняются.";
 "auto fp16" = "авто fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "«Авто» выбирает лучший режим для вашего сценария. Выберите режим ниже, чтобы использовать его везде. Прогоны бенчмарка сохраняют собственную однопоточную конфигурацию.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "«Авто» подбирает лучший режим под то, что вы используете. Выберите режим ниже, чтобы применять его везде. Сохраняется сразу после выбора. Тестовые прогоны сохраняют собственную однопоточную настройку.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "«Авто» выбирает рекомендуемый профиль для выбранной модели — Turbo для 27B и моделей Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "«Авто» масштабируется по объёму памяти вашего Mac (от 16 до 100 ГБ). Старые записи вытесняются, чтобы не превышать лимит.";
 "Auto-approve on, tap to require approval" = "Автоподтверждение включено, нажмите, чтобы требовать подтверждение";
@@ -1161,6 +1161,7 @@
 "Running" = "Выполняется";
 "running" = "выполняется";
 "Running and ready." = "Работает и готов.";
+"Running now: %@ (%@ / %@)." = "Сейчас работает: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Прогон первых токенов прогрева перед открытием чата.";
 "Running tool…" = "Выполнение инструмента…";
 "Running your new model on this Mac to see how fast it actually is." = "Запуск вашей новой модели на этом Mac для проверки реальной скорости.";

@@ -219,7 +219,7 @@
 "auto bf16" = "自动 bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "“自动”会将模型加载后剩余内存的一半作为预算。超过上限后会逐出旧提示。";
 "auto fp16" = "自动 fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "“自动”会根据你的使用方式选择最佳模式。在下方选择一种模式即可在所有场景中使用。基准测试运行保留其自有的单流设置。";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "自动会为你正在使用的场景挑选最合适的模式。在下方选择一个模式即可全局使用。选择后立即保存。基准测试运行保留各自的单流设置。";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "“自动”会为所选模型选择推荐的配置：27B 和 Flash-Next 模型使用 Turbo。";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "“自动”会根据你 Mac 的内存档位（16 GB 到 100 GB）进行调整。会逐出旧条目以保持在上限以下。";
 "Auto-approve on, tap to require approval" = "自动批准已开启，点按以要求批准";
@@ -1161,6 +1161,7 @@
 "Running" = "运行中";
 "running" = "运行中";
 "Running and ready." = "正在运行并已就绪。";
+"Running now: %@ (%@ / %@)." = "当前运行: %@ (%@ / %@)。";
 "Running the first warmup tokens before chat opens." = "在聊天打开前运行首批预热词元。";
 "Running tool…" = "正在运行工具…";
 "Running your new model on this Mac to see how fast it actually is." = "在这台 Mac 上运行你的新模型以测试其实际速度。";

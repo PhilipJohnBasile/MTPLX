@@ -219,7 +219,7 @@
 "auto bf16" = "자동 bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "자동 모드는 모델이 로드된 후 남은 RAM의 절반을 할당합니다. 상한을 초과하면 오래된 프롬프트가 축출됩니다.";
 "auto fp16" = "자동 fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "자동 모드는 사용 중인 환경에 가장 적합한 모드를 선택합니다. 모든 곳에 동일하게 사용하려면 아래에서 모드를 선택하세요. 벤치마크 실행은 자체 단일 스트림 구성을 유지합니다.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "자동은 사용 중인 작업에 가장 알맞은 모드를 고릅니다. 어디서나 쓸 모드는 아래에서 선택하세요. 선택하는 즉시 저장됩니다. 벤치마크 실행은 자체 단일 스트림 설정을 유지합니다.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "자동 모드는 선택된 모델에 권장되는 프로필을 선택합니다 — 27B 및 Flash-Next 모델의 경우 Turbo입니다.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "자동 모드는 Mac의 RAM 사양(16 GB ~ 100 GB)에 맞춰 확장됩니다. 상한을 유지하기 위해 오래된 항목이 축출됩니다.";
 "Auto-approve on, tap to require approval" = "자동 승인 켜짐, 탭하여 승인 요구로 전환";
@@ -1161,6 +1161,7 @@
 "Running" = "실행 중";
 "running" = "실행 중";
 "Running and ready." = "실행 중이며 준비되었습니다.";
+"Running now: %@ (%@ / %@)." = "현재 실행 중: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "대화가 열리기 전 첫 번째 워밍업 토큰을 실행하는 중입니다.";
 "Running tool…" = "도구 실행 중…";
 "Running your new model on this Mac to see how fast it actually is." = "새 모델이 실제로 얼마나 빠른지 확인하기 위해 이 Mac에서 실행하는 중입니다.";

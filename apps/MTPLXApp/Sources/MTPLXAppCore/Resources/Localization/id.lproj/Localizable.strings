@@ -219,7 +219,7 @@
 "auto bf16" = "otomatis bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "Otomatis menganggarkan setengah RAM yang tersisa setelah model dimuat. Prompt lama dikeluarkan jika melewati batas.";
 "auto fp16" = "otomatis fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "Otomatis memilih mode terbaik untuk yang sedang Anda gunakan. Pilih mode di bawah untuk memakainya di mana saja. Proses Benchmark tetap memakai pengaturan aliran tunggalnya sendiri.";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "Otomatis memilih mode terbaik untuk yang sedang Anda pakai. Pilih mode di bawah untuk memakainya di mana saja. Disimpan begitu Anda memilihnya. Uji tolok ukur tetap memakai pengaturan aliran tunggalnya sendiri.";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "Otomatis memilih profil yang direkomendasikan untuk model terpilih — Turbo untuk model 27B dan Flash-Next.";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "Otomatis menyesuaikan dengan tingkat RAM Mac Anda (16 GB hingga 100 GB). Entri lama dikeluarkan agar tetap di bawah batas.";
 "Auto-approve on, tap to require approval" = "Setujui otomatis aktif, ketuk untuk mewajibkan persetujuan";
@@ -1161,6 +1161,7 @@
 "Running" = "Berjalan";
 "running" = "berjalan";
 "Running and ready." = "Berjalan dan siap.";
+"Running now: %@ (%@ / %@)." = "Sedang berjalan: %@ (%@ / %@).";
 "Running the first warmup tokens before chat opens." = "Menjalankan token pemanasan pertama sebelum obrolan dibuka.";
 "Running tool…" = "Menjalankan alat…";
 "Running your new model on this Mac to see how fast it actually is." = "Menjalankan model baru Anda di Mac ini untuk melihat seberapa cepat performa sebenarnya.";

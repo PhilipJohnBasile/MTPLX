@@ -9,6 +9,36 @@ public enum PendingModelDownloadLaunchAction: String, Equatable, Sendable {
     case restart
 }
 
+/// What the last app-launched daemon actually got on its command line for
+/// scheduling, plus the Settings selection that produced it.
+///
+/// Issue #398: the app logged only `app_stop_all_invoked` around a restart,
+/// so "my pick never reached the daemon" and "my pick ran and the UI forgot
+/// it" were indistinguishable from the outside. Recording the flags read
+/// back out of the built argv makes the answer readable in the app's own
+/// log pane and in the AIME diagnostics file, and it gives Settings a true
+/// "running now" value to compare the picker against.
+public struct DaemonLaunchScheduling: Equatable, Sendable {
+    public var schedulerMode: String
+    public var batchingPreset: String
+    /// Normalized Performance picker selection at launch time.
+    public var selectedPreset: String
+    /// `mtplx start <target>` surface, or "none" for a bare serve.
+    public var target: String
+
+    public init(
+        schedulerMode: String,
+        batchingPreset: String,
+        selectedPreset: String,
+        target: String
+    ) {
+        self.schedulerMode = schedulerMode
+        self.batchingPreset = batchingPreset
+        self.selectedPreset = selectedPreset
+        self.target = target
+    }
+}
+
 public struct PendingModelDownload: Identifiable, Equatable, Sendable {
     public var id: String
     public var repoID: String
@@ -179,6 +209,9 @@ public final class MTPLXBackendStore: ObservableObject {
     /// nil until a source-aware (2.10+) daemon reports.
     @Published public private(set) var memoryPressureSource: String?
     @Published public private(set) var memoryPlan: MemoryPlanStatus?
+    /// Scheduling flags the most recent app-owned daemon launch carried
+    /// (issue #398). nil until this app session has launched a daemon.
+    @Published public private(set) var lastLaunchScheduling: DaemonLaunchScheduling?
     /// True when the guard's event ring shows caches actually shed within
     /// the recency window — the banner's "shedding" claim keys off this,
     /// never off the pressure level alone (a warning-level tick during a
@@ -427,6 +460,62 @@ public final class MTPLXBackendStore: ObservableObject {
         try settingsStore.save(next)
     }
 
+    /// Commit a Performance mode pick straight to settings.json.
+    ///
+    /// Issue #398: Mode used to live in the Settings draft behind a Save
+    /// button in a different card, and the tab's `@State` dies whenever the
+    /// user navigates away, so "pick a mode, go start the model" silently
+    /// threw the pick away and the picker was back on Auto. Mode is one
+    /// discrete global, like Appearance and Language, so it saves on
+    /// selection and the next daemon launch reads it from disk. It stays
+    /// restart-required: the running daemon is not touched here.
+    public func applySchedulingPresetSelection(_ raw: String) throws {
+        var next = configuration
+        next.applySchedulingPreset(MTPLXAppConfiguration.schedulingPresetSelection(raw))
+        guard next != configuration else { return }
+        try saveSettings(next)
+    }
+
+    /// Record the scheduling flags a launch is about to hand the daemon
+    /// (issue #398). Read back out of the built argv so the record is what
+    /// actually ran, never what the resolver meant to run.
+    private func recordLaunchScheduling(
+        command: DaemonCommand,
+        configuration: MTPLXAppConfiguration,
+        target: LaunchTarget?,
+        launchID: String
+    ) async {
+        let scheduling = DaemonLaunchScheduling(
+            schedulerMode: MTPLXCommandBuilder.flagValue("--scheduler-mode", in: command.arguments)
+                ?? "unset",
+            batchingPreset: MTPLXCommandBuilder.flagValue("--batching-preset", in: command.arguments)
+                ?? "unset",
+            selectedPreset: MTPLXAppConfiguration.schedulingPresetSelection(
+                configuration.schedulingPreset
+            ),
+            target: target?.rawValue ?? "none"
+        )
+        lastLaunchScheduling = scheduling
+        AIMEDiagnostics.record(
+            "daemon_launch_scheduling",
+            fields: [
+                "scheduler_mode": .string(scheduling.schedulerMode),
+                "batching_preset": .string(scheduling.batchingPreset),
+                "scheduling_preset": .string(scheduling.selectedPreset),
+                "launch_target": .string(scheduling.target),
+                "launch_id": .string(launchID)
+            ],
+            flushImmediately: true,
+            force: true
+        )
+        await supervisor.logs.append(
+            "launch scheduling: --scheduler-mode \(scheduling.schedulerMode) "
+                + "--batching-preset \(scheduling.batchingPreset) "
+                + "(Settings mode \(scheduling.selectedPreset), target \(scheduling.target))",
+            stream: .system
+        )
+    }
+
     public func applyConfiguration(
         _ next: MTPLXAppConfiguration,
         restartIfRunning: Bool = true
@@ -516,6 +605,12 @@ public final class MTPLXBackendStore: ObservableObject {
                 clearLiveMetricsState()
             }
             let command = try commandBuilder.buildServeCommand(
+                configuration: next,
+                target: target,
+                launchID: launchID
+            )
+            await recordLaunchScheduling(
+                command: command,
                 configuration: next,
                 target: target,
                 launchID: launchID
@@ -732,6 +827,12 @@ public final class MTPLXBackendStore: ObservableObject {
                 )
             }
             let command = try commandBuilder.buildServeCommand(
+                configuration: configuration,
+                target: target,
+                launchID: launchID
+            )
+            await recordLaunchScheduling(
+                command: command,
                 configuration: configuration,
                 target: target,
                 launchID: launchID
