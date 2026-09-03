@@ -81,6 +81,17 @@ nothing beyond 2.10.2.
 
 ### Fixed
 
+- **macOS 27 no longer answers long prompts with a 500 (#404, #405, #407).**
+  The macOS 27 Metal Performance Primitives header rejects the
+  address-space-qualified cooperative-tensor operands the QSA sparse
+  prefill kernels and the 27B flash-decoding route used, so 2.10.x on the
+  27 betas failed every prompt past the ~32K sparse-prefill crossover
+  mid-request ("Unable to build metal library from source"). The seven
+  kernel sites use the address-space-neutral operand types, and a startup
+  probe dispatches the real sparse-prefill pipeline once, degrading to
+  dense prefill with a diagnostic on an SDK that refuses it. Credit
+  @mrmurphy (first patch), @sunnybluesea (root cause, three-site sweep,
+  macOS 27 receipts), reporters @DigiJoe79 and @rameshn007.
 - **Flash-Next no longer 500s under concurrency in the `ar_batch` lane (#420).**
   mlx-lm's batch generator merges every batched prompt's caches and the
   family's QSA cache has no merge, so two concurrent requests under
