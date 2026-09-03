@@ -13235,25 +13235,52 @@ def _quickstart_autoselect_busy_port(
 ) -> None:
     """Auto-bump a default port held by a non-MTPLX app.
 
-    Only fires for spawning targets when the user did not pass ``--port``.
-    A healthy MTPLX daemon on the port is left alone: the downstream
-    "MTPLX is already running" reuse path attaches to it instead of
-    spawning a duplicate.
+    Only fires for spawning targets, and only for a port the user did not
+    choose. A healthy MTPLX daemon on the port is left alone: the
+    downstream "MTPLX is already running" reuse path attaches to it
+    instead of spawning a duplicate.
+
+    Issue #409 (reporter kmei3560) closed two holes here:
+
+    1. A STOPPING MTPLX server keeps its listener while it drains but
+       stops answering /health first, so the probe read our own process
+       as another app and bumped. Every stop/start cycle moved the port.
+       Fixed by settling the classification over a bounded window before
+       believing "foreign".
+    2. A port the user CONFIGURED must never be silently relocated. The
+       CLI already honored that for --port; the app's persisted port now
+       counts as configured too, so an app user who pinned 1234 keeps
+       1234 and gets actionable copy instead of a silent 1235.
     """
 
-    if target not in _QUICKSTART_SPAWNING_TARGETS or "port" in cli_flags:
+    if target not in _QUICKSTART_SPAWNING_TARGETS:
         return
     host = str(getattr(args, "host", "127.0.0.1"))
     port = int(getattr(args, "port", 8000))
     try:
         from mtplx.daemon_client import (
             PORT_FOREIGN,
+            app_configured_port,
             classify_port_occupant,
             find_free_port,
+            port_busy_advice,
+            wait_for_port_settle,
         )
 
+        configured = "port" in cli_flags or port == app_configured_port()
         occupant = classify_port_occupant(host, port)
+        if occupant.kind == PORT_FOREIGN:
+            # Give our own drain the few seconds it needs before treating
+            # the listener as a stranger's.
+            occupant = wait_for_port_settle(host, port)
         if occupant.kind != PORT_FOREIGN:
+            return
+        if configured:
+            for line in port_busy_advice(occupant, port=port):
+                _quickstart_line(line)
+            _quickstart_line(
+                f"Keeping the configured port {port} (never moved silently)."
+            )
             return
         free_port = find_free_port(host, port + 1)
     except Exception:

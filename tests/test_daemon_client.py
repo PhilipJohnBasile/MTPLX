@@ -24,6 +24,7 @@ from mtplx.daemon_client import (
     find_free_port,
     port_busy_advice,
     probe_running_daemons,
+    wait_for_port_settle,
     run_attach_chat,
     stop_daemon,
 )
@@ -480,6 +481,15 @@ def test_terminal_chat_attach_guard_passes_through_without_daemon(monkeypatch):
 
 
 def test_quickstart_autoselect_busy_port_bumps_only_foreign(monkeypatch):
+    # #409: the sweep now settles a foreign reading before believing it, and
+    # treats the app's persisted port as user-configured. Both are stubbed
+    # here so this test keeps pinning the original bump contract (and so it
+    # never reads the developer's real app settings).
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda host, port, **_kw: daemon_client.classify_port_occupant(host, port),
+    )
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: None)
     monkeypatch.setattr(
         "mtplx.daemon_client.classify_port_occupant",
         lambda _host, _port: PortOccupant(kind=PORT_FOREIGN),
@@ -538,3 +548,171 @@ def test_daemon_runs_model_matches_path_and_public_id(tmp_path):
 
     other = SimpleNamespace(model="mtplx-other", model_path="/x")
     assert public._daemon_runs_model(other, str(tmp_path / "unrelated")) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #409 (reporter kmei3560): "Port XXXX was in use by another app. MTPLX
+# now uses port (XXXX+1)" on almost every stop/start, forcing him to configure
+# 1233 so the bump landed on the 1234 he actually wanted. Two defects: the
+# probe misreads our own DRAINING server as a foreign app (its listener
+# outlives its /health), and a port the user configured is moved silently.
+
+
+def test_wait_for_port_settle_returns_when_the_drain_finishes():
+    """A draining MTPLX reads foreign until its listener closes."""
+    readings = [
+        PortOccupant(kind=PORT_FOREIGN),
+        PortOccupant(kind=PORT_FOREIGN),
+        PortOccupant(kind=PORT_FREE),
+        PortOccupant(kind=PORT_FOREIGN),  # never reached
+    ]
+    calls: list[tuple[str, int]] = []
+
+    def fake_classify(host, port, *, api_key=None):
+        calls.append((host, port))
+        return readings[len(calls) - 1]
+
+    import mtplx.daemon_client as dc
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = fake_classify
+    try:
+        slept: list[float] = []
+        occupant = wait_for_port_settle(
+            "127.0.0.1",
+            1234,
+            timeout_s=5.0,
+            poll_s=0.25,
+            clock=lambda: 0.0,
+            sleep=slept.append,
+        )
+    finally:
+        dc.classify_port_occupant = original
+
+    assert occupant.kind == PORT_FREE
+    assert len(calls) == 3
+    assert slept == [0.25, 0.25]
+
+
+def test_wait_for_port_settle_gives_up_on_a_steady_foreign_listener():
+    """The window is bounded: a real stranger still resolves as foreign."""
+    import mtplx.daemon_client as dc
+
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    calls = {"n": 0}
+
+    def fake_classify(host, port, *, api_key=None):
+        calls["n"] += 1
+        return PortOccupant(kind=PORT_FOREIGN)
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = fake_classify
+    try:
+        occupant = wait_for_port_settle(
+            "127.0.0.1",
+            1234,
+            timeout_s=3.0,
+            poll_s=0.25,
+            clock=lambda: next(ticks),
+            sleep=lambda _s: None,
+        )
+    finally:
+        dc.classify_port_occupant = original
+
+    assert occupant.kind == PORT_FOREIGN
+    # Bounded, not a spin: the deadline is honored.
+    assert calls["n"] <= 6
+
+
+def test_wait_for_port_settle_short_circuits_on_a_healthy_daemon():
+    """A terminal classification returns at once and never sleeps."""
+
+    def _no_sleep(_seconds: float) -> None:
+        raise AssertionError("a terminal classification must not sleep")
+
+    import mtplx.daemon_client as dc
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = lambda _h, _p, **_kw: PortOccupant(
+        kind=PORT_APP_DAEMON
+    )
+    try:
+        occupant = wait_for_port_settle("127.0.0.1", 1234, sleep=_no_sleep)
+    finally:
+        dc.classify_port_occupant = original
+    assert occupant.kind == PORT_APP_DAEMON
+
+
+def test_quickstart_waits_out_our_own_drain_instead_of_bumping(monkeypatch):
+    """The reporter's stop/start cycle: foreign for a moment, then free.
+
+    The first classification still says foreign (the old server's listener
+    is draining); the settle window then sees it clear, so the launch keeps
+    the port instead of moving to +1.
+    """
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: None)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FREE),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port",
+        lambda _host, _start: (_ for _ in ()).throw(
+            AssertionError("must not look for another port")
+        ),
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=1234)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+    assert args.port == 1234
+
+
+def test_quickstart_never_moves_the_app_configured_port(monkeypatch):
+    """His exact seat: the port lives in app settings, not on the CLI."""
+    printed: list[str] = []
+    monkeypatch.setattr(public, "_quickstart_line", printed.append)
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: 1234)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port",
+        lambda _host, _start: (_ for _ in ()).throw(
+            AssertionError("a configured port is never relocated")
+        ),
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=1234)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+
+    assert args.port == 1234
+    joined = " ".join(printed)
+    assert "not MTPLX" in joined  # the actionable occupant copy
+    assert "Keeping the configured port 1234" in joined
+
+
+def test_quickstart_still_bumps_an_unconfigured_default_port(monkeypatch):
+    """Auto-pick survives for a port nobody chose."""
+    monkeypatch.setattr(public, "_quickstart_line", lambda _line: None)
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: 1234)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port", lambda _host, _start: 8010
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=8000)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+    assert args.port == 8010
