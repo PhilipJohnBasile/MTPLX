@@ -53,9 +53,9 @@ public enum WebSearchServiceError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidSearchURL:
-            return "Could not build a valid search URL."
+            return tr("Could not build a valid search URL.")
         case .badServerResponse(let statusCode):
-            return "Search backend returned HTTP \(statusCode)."
+            return tr("Search backend returned HTTP %@.", String(statusCode))
         }
     }
 }

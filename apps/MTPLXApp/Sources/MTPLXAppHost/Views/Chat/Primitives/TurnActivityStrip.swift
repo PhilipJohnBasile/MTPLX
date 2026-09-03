@@ -120,7 +120,7 @@ struct TurnActivityStrip<ThoughtWell: View, SearchWell: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isOpen ? "Collapse \(chip.label)" : "Expand \(chip.label)"
+            isOpen ? tr("Collapse %@", chip.label) : tr("Expand %@", chip.label)
         )
     }
 
@@ -311,7 +311,7 @@ private struct ThoughtStreamViewport: NSViewRepresentable {
                 return
             }
             appliedText = text
-            let visible = text.isEmpty ? "Processing…" : text
+            let visible = text.isEmpty ? tr("Processing…") : text
             surface.textStorage.setAttributedString(NSAttributedString(
                 string: visible,
                 attributes: textAttributes

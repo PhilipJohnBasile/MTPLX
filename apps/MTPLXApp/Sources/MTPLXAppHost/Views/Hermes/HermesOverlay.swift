@@ -47,7 +47,7 @@ struct HermesOverlay: View {
             HStack(spacing: 6) {
                 Image(systemName: on ? "bolt.fill" : "hand.raised.fill")
                     .font(.system(size: 10, weight: .bold))
-                Text(on ? "YOLO" : "ASK FIRST")
+                Text(on ? tr("YOLO") : tr("ASK FIRST"))
                     .font(.system(size: 10, weight: .heavy, design: .monospaced))
                     .tracking(0.8)
             }
@@ -67,7 +67,7 @@ struct HermesOverlay: View {
         .help(on
             ? "Auto-approve is on: Hermes runs tools without asking. Click to make it ask first. Applies next time Hermes starts."
             : "Hermes will ask before running tools. Click to auto-approve (YOLO). Applies next time Hermes starts.")
-        .accessibilityLabel(on ? "Auto-approve on, tap to require approval" : "Approval required, tap to auto-approve")
+        .accessibilityLabel(on ? tr("Auto-approve on, tap to require approval") : tr("Approval required, tap to auto-approve"))
     }
 }
 
@@ -157,7 +157,7 @@ struct HermesPanel: View {
                 .font(.caption)
                 .foregroundStyle(idleStatusColor)
         case .checkingInstall:
-            Text("Checking install")
+            Text(tr("Checking install"))
                 .font(.caption)
                 .foregroundStyle(Brand.typeTertiary)
         case .needsSetup(let message):
@@ -166,11 +166,11 @@ struct HermesPanel: View {
                 .foregroundStyle(Brand.warning)
                 .fixedSize(horizontal: false, vertical: true)
         case .starting:
-            Text("Starting gateway")
+            Text(tr("Starting gateway"))
                 .font(.caption)
                 .foregroundStyle(Brand.typeTertiary)
         case .connected:
-            Text("Gateway connected")
+            Text(tr("Gateway connected"))
                 .font(.caption)
                 .foregroundStyle(Brand.success)
         case .failed(let message):
@@ -183,11 +183,11 @@ struct HermesPanel: View {
 
     private var idleStatusLabel: String {
         guard let status = hermes.installStatus, status.gatewayNeedsRepair else {
-            return "Ready"
+            return tr("Ready")
         }
         return status.gatewayHealth == .unavailable
             ? "Messaging unavailable"
-            : "Messaging needs repair"
+            : tr("Messaging needs repair")
     }
 
     private var idleStatusColor: Color {
@@ -200,7 +200,7 @@ struct HermesPanel: View {
     private var setupBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let status = hermes.installStatus {
-                Label(status.kind == .missing ? "Hermes isn't installed yet" : "Hermes needs an update",
+                Label(status.kind == .missing ? tr("Hermes isn't installed yet") : tr("Hermes needs an update"),
                       systemImage: status.kind == .missing ? "shippingbox" : "arrow.down.circle")
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(Brand.typeBody)
@@ -222,7 +222,7 @@ struct HermesPanel: View {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 10, weight: .bold))
-                        Text("Recheck")
+                        Text(tr("Recheck"))
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                     }
                     .frame(maxWidth: .infinity)
@@ -263,8 +263,8 @@ struct HermesPanel: View {
                     .foregroundStyle(Brand.typeSecondary)
             }
             .buttonStyle(.plain)
-            .help("Copy command")
-            .accessibilityLabel("Copy install command")
+            .help(tr("Copy command"))
+            .accessibilityLabel(tr("Copy install command"))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
@@ -280,28 +280,28 @@ struct HermesPanel: View {
 
     private func capabilityBlock(_ status: HermesInstallStatus) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Tools")
-            capabilityRow("Tools", status.enabledToolsets.joined(separator: ", "))
+            sectionLabel(tr("Tools"))
+            capabilityRow(tr("Tools"), status.enabledToolsets.joined(separator: ", "))
             if let version = status.versionSummary {
-                capabilityRow("Version", version)
+                capabilityRow(tr("Version"), version)
             }
             if let update = status.updateSummary {
-                capabilityRow("Update", update, color: Brand.warning)
+                capabilityRow(tr("Update"), update, color: Brand.warning)
             }
             if let updateCommand = status.updateCommand, status.updateSummary != nil {
-                capabilityRow("Command", updateCommand)
+                capabilityRow(tr("Command"), updateCommand)
             }
             if let gateway = status.gatewaySummary {
-                capabilityRow("Messaging", gateway, color: gatewayColor(for: status.gatewayHealth))
+                capabilityRow(tr("Messaging"), gateway, color: gatewayColor(for: status.gatewayHealth))
             }
             if let repairMessage = hermes.gatewayRepairMessage {
-                capabilityRow("Repair", repairMessage)
+                capabilityRow(tr("Repair"), repairMessage)
             }
             ForEach(status.integrationSummaries.prefix(3), id: \.self) { item in
-                capabilityRow("Channels", item)
+                capabilityRow(tr("Channels"), item)
             }
             ForEach(status.warnings.prefix(2), id: \.self) { warning in
-                capabilityRow("Heads up", warning, color: Brand.warning)
+                capabilityRow(tr("Heads up"), warning, color: Brand.warning)
             }
             // Repair is a deliberate action, so it sits at the bottom as a
             // full-width button rather than wedged between status rows.
@@ -334,7 +334,7 @@ struct HermesPanel: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.system(size: 10, weight: .bold))
                 }
-                Text(hermes.gatewayRepairInFlight ? "Reconnecting…" : "Reconnect messaging")
+                Text(hermes.gatewayRepairInFlight ? tr("Reconnecting…") : tr("Reconnect messaging"))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
             }
             .frame(maxWidth: .infinity)
@@ -357,20 +357,20 @@ struct HermesPanel: View {
 
     private var terminalHandoffBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Agent")
+            sectionLabel(tr("Agent"))
             capabilityRow(
-                "Status",
+                tr("Status"),
                 hermes.terminalAgentRunning
                     ? "Chatting in your Terminal window"
-                    : "Ready to start"
+                    : tr("Ready to start")
             )
             capabilityRow(
-                "Where",
-                "Hermes chats in a Terminal window. This panel shows its tools, messaging, and status."
+                tr("Where"),
+                tr("Hermes chats in a Terminal window. This panel shows its tools, messaging, and status.")
             )
             capabilityRow(
-                "Messaging",
-                "To text Hermes from Telegram, set it up once with Hermes, then check the status above.",
+                tr("Messaging"),
+                tr("To text Hermes from Telegram, set it up once with Hermes, then check the status above."),
                 color: Brand.typeSecondary
             )
         }
@@ -406,7 +406,7 @@ struct HermesPanel: View {
 
     private var profileList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Profiles")
+            sectionLabel(tr("Profiles"))
             ForEach(hermes.profiles) { profile in
                 Button {
                     Task { await selectProfile(profile) }
@@ -441,7 +441,7 @@ struct HermesPanel: View {
     private var sessionList: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                sectionLabel("Agents")
+                sectionLabel(tr("Agents"))
                 Spacer()
                 Button {
                     Task { await startNew() }
@@ -453,10 +453,10 @@ struct HermesPanel: View {
                         .background(Capsule().stroke(Brand.separator, lineWidth: 0.75))
                 }
                 .buttonStyle(.plain)
-                .help("New Agent")
+                .help(tr("New Agent"))
             }
             if hermes.sessions.isEmpty {
-                Text("No saved agents")
+                Text(tr("No saved agents"))
                     .font(.caption)
                     .foregroundStyle(Brand.typeTertiary)
                     .padding(.horizontal, 10)
@@ -488,13 +488,13 @@ struct HermesPanel: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
                 HStack {
-                    Button("Cancel") {
+                    Button(tr("Cancel")) {
                         creatingProfile = false
                         createProfileName = ""
                     }
                     .buttonStyle(.plain)
                     Spacer()
-                    Button("Create") {
+                    Button(tr("Create")) {
                         Task {
                             guard await ensureDaemonReady() else { return }
                             await hermes.createProfile(
@@ -514,7 +514,7 @@ struct HermesPanel: View {
                 Button {
                     creatingProfile = true
                 } label: {
-                    Label("Create Profile", systemImage: "person.badge.plus")
+                    Label(tr("Create Profile"), systemImage: "person.badge.plus")
                         .font(.system(.caption, design: .rounded).weight(.semibold))
                         .foregroundStyle(Brand.typeSecondary)
                 }
@@ -527,17 +527,17 @@ struct HermesPanel: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(hermes.activeSessionTitle ?? "Hermes Agent")
+                Text(hermes.activeSessionTitle ?? tr("Hermes Agent"))
                     .font(.system(.title3, design: .rounded).weight(.semibold))
                     .foregroundStyle(Brand.typeBody)
                     .lineLimit(1)
-                Text(hermes.selectedProfile?.name ?? "No profile")
+                Text(hermes.selectedProfile?.name ?? tr("No profile"))
                     .font(.caption)
                     .foregroundStyle(Brand.typeTertiary)
             }
             Spacer()
             if let value = backend.headlineDecode.value {
-                Text(String(format: "%.1f tok/s", value))
+                Text(tr("%.1f tok/s", value))
                     .font(.system(.caption, design: .monospaced).weight(.bold))
                     .foregroundStyle(backend.headlineDecode.isLive ? Brand.success : Brand.typeSecondary)
                     .padding(.horizontal, 10)
@@ -555,7 +555,7 @@ struct HermesPanel: View {
             }
             .buttonStyle(.plain)
             .disabled(!hermes.isStreaming)
-            .help("Stop Hermes")
+            .help(tr("Stop Hermes"))
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
@@ -606,7 +606,7 @@ struct HermesPanel: View {
                 Image(systemName: "terminal")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeSecondary)
-                Text("Hermes is chatting in your Terminal window — this panel shows its status and setup.")
+                Text(tr("Hermes is chatting in your Terminal window — this panel shows its status and setup."))
                     .font(.system(.callout, design: .rounded))
                     .foregroundStyle(Brand.typeSecondary)
                 Spacer(minLength: 0)
@@ -651,7 +651,7 @@ struct HermesPanel: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend && !hermes.isStreaming)
-            .help(hermes.isStreaming ? "Stop" : "Send")
+            .help(hermes.isStreaming ? tr("Stop") : tr("Send"))
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 16)
@@ -688,7 +688,7 @@ struct HermesPanel: View {
             }
             .frame(width: 72, height: 72)
 
-            Text(hermes.terminalAgentRunning ? "Hermes is in your Terminal" : "Start Hermes")
+            Text(hermes.terminalAgentRunning ? tr("Hermes is in your Terminal") : tr("Start Hermes"))
                 .font(.system(.title3, design: .rounded).weight(.semibold))
                 .foregroundStyle(Brand.typeBody)
 
@@ -707,7 +707,7 @@ struct HermesPanel: View {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.up.forward.app")
                         .font(.system(size: 12, weight: .bold))
-                    Text(hermes.terminalAgentRunning ? "Open a new Terminal" : "Open Hermes in Terminal")
+                    Text(hermes.terminalAgentRunning ? tr("Open a new Terminal") : tr("Open Hermes in Terminal"))
                 }
             }
             .buttonStyle(.mtplxPrimary)
@@ -794,7 +794,7 @@ struct HermesPanel: View {
         if backend.daemonState.kind == .running {
             return true
         }
-        localError = "MTPLX is not ready yet."
+        localError = tr("MTPLX is not ready yet.")
         return false
     }
 
@@ -883,7 +883,7 @@ struct HermesPanel: View {
     private func sessionRow(_ session: HermesSavedSession) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text(session.title.isEmpty ? "Untitled Agent" : session.title)
+                Text(session.title.isEmpty ? tr("Untitled Agent") : session.title)
                     .font(.system(.callout, design: .rounded).weight(.medium))
                     .foregroundStyle(Brand.typeBody)
                     .lineLimit(1)

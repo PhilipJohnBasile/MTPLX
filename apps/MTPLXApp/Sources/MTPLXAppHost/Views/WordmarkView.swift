@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MTPLXAppCore
 
 // MARK: - WordmarkView
 //
@@ -223,7 +224,7 @@ struct WordmarkSubtitle: View {
             Rectangle()
                 .fill(Brand.separator)
                 .frame(width: dividerWidth, height: 1)
-            Text("native MTP · Apple Silicon")
+            Text(tr("native MTP · Apple Silicon"))
                 .font(BrandFont.subtitle())
                 .foregroundStyle(Brand.typeSecondary)
         }

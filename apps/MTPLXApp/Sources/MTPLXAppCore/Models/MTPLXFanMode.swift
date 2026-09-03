@@ -7,20 +7,20 @@ public enum MTPLXFanMode: String, CaseIterable, Codable, Equatable, Sendable {
 
     public var title: String {
         switch self {
-        case .default: return "Default"
-        case .smart: return "Smart"
-        case .max: return "Max"
+        case .default: return tr("Default")
+        case .smart: return tr("Smart")
+        case .max: return tr("Max")
         }
     }
 
     public var help: String {
         switch self {
         case .default:
-            return "Apple's fan curve owns idle and generation."
+            return tr("Apple's fan curve owns idle and generation.")
         case .smart:
-            return "Fans boost during generation, then return to auto."
+            return tr("Fans boost during generation, then return to auto.")
         case .max:
-            return "Fans pin to verified max until you change mode or stop."
+            return tr("Fans pin to verified max until you change mode or stop.")
         }
     }
 

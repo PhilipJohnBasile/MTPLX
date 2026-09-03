@@ -13,9 +13,9 @@ public enum RuntimeSetupRowID: String, CaseIterable, Equatable, Sendable {
 
     public var title: String {
         switch self {
-        case .engine: return "MTPLX engine"
-        case .fanControl: return "Fan control"
-        case .globalCLI: return "Terminal command line"
+        case .engine: return tr("MTPLX engine")
+        case .fanControl: return tr("Fan control")
+        case .globalCLI: return tr("Terminal command line")
         }
     }
 }
@@ -244,7 +244,7 @@ public struct RuntimeSetupService: Sendable {
             rows.update(
                 .globalCLI,
                 .done,
-                "Source checkout runtime active. Existing terminal command left unchanged."
+                tr("Source checkout runtime active. Existing terminal command left unchanged.")
             )
             publish()
             return
@@ -270,14 +270,14 @@ public struct RuntimeSetupService: Sendable {
                     .globalCLI,
                     .done,
                     installedNow
-                        ? "Installed the mtplx command — open a new terminal to use it."
-                        : "mtplx command ready."
+                        ? tr("Installed the mtplx command — open a new terminal to use it.")
+                        : tr("mtplx command ready.")
                 )
             } catch {
                 rows.update(
                     .globalCLI,
                     .warning,
-                    "Couldn't install the mtplx terminal command (\(error.localizedDescription)). The app is unaffected.",
+                    tr("Couldn't install the mtplx terminal command (%@). The app is unaffected.", error.localizedDescription),
                     command: MTPLXCommandBuilder.homebrewInstallCommand
                 )
             }
@@ -302,13 +302,13 @@ public struct RuntimeSetupService: Sendable {
                 rows.update(
                     .globalCLI,
                     .done,
-                    "Replaced an unreadable mtplx at \(globalCLI.path) — open a new terminal to use the updated command."
+                    tr("Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command.", globalCLI.path)
                 )
             } catch {
                 rows.update(
                     .globalCLI,
                     .warning,
-                    "Found \(globalCLI.path) but couldn't read its version. The app uses its own runtime either way."
+                    tr("Found %@ but couldn't read its version. The app uses its own runtime either way.", globalCLI.path)
                 )
             }
             publish()
@@ -330,7 +330,7 @@ public struct RuntimeSetupService: Sendable {
                     rows: rows,
                     oldVersion: version,
                     latest: latest,
-                    detailWhenShimmed: "Homebrew was not found, so your terminal now uses the app's CLI (\(latest), was \(version)). Open a new terminal."
+                    detailWhenShimmed: tr("Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal.", String(describing: latest), String(describing: version))
                 )
                 publish()
                 return
@@ -352,7 +352,7 @@ public struct RuntimeSetupService: Sendable {
                     rows: rows,
                     oldVersion: version,
                     latest: latest,
-                    detailWhenShimmed: "Homebrew didn't update (\(message)), so your terminal now uses the app's CLI (\(latest)). Open a new terminal."
+                    detailWhenShimmed: tr("Homebrew didn't update (%@), so your terminal now uses the app's CLI (%@). Open a new terminal.", message, String(describing: latest))
                 )
             }
             publish()
@@ -360,7 +360,7 @@ public struct RuntimeSetupService: Sendable {
             rows.update(
                 .globalCLI,
                 .done,
-                "Source checkout on PATH (\(version)). The app uses its own runtime."
+                tr("Source checkout on PATH (%@). The app uses its own runtime.", String(describing: version))
             )
             publish()
         case .pipLike, .appOwned, .custom, .missing:
@@ -372,7 +372,7 @@ public struct RuntimeSetupService: Sendable {
                 rows: rows,
                 oldVersion: version,
                 latest: latest,
-                detailWhenShimmed: "Updated the mtplx command to \(latest) (was \(version)). Open a new terminal to use it."
+                detailWhenShimmed: tr("Updated the mtplx command to %@ (was %@). Open a new terminal to use it.", String(describing: latest), String(describing: version))
             )
             publish()
         }
@@ -396,7 +396,7 @@ public struct RuntimeSetupService: Sendable {
             rows.update(
                 .globalCLI,
                 .warning,
-                "Your mtplx CLI is \(oldVersion); the app ships \(latest). It couldn't be updated automatically (\(error.localizedDescription)).",
+                tr("Your mtplx CLI is %@; the app ships %@. It couldn't be updated automatically (%@).", String(describing: oldVersion), String(describing: latest), error.localizedDescription),
                 command: MTPLXCommandBuilder.homebrewInstallCommand
             )
         }
@@ -554,17 +554,17 @@ public struct RuntimeSetupService: Sendable {
 
     private static func engineReadyDetail(version: String?) -> String {
         if let version, !version.isEmpty {
-            return "MTPLX \(version) ready"
+            return tr("MTPLX %@ ready", version)
         }
-        return "MTPLX runtime ready"
+        return tr("MTPLX runtime ready")
     }
 
     private static func fanControlWarningDetail(message: String) -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return "Fan control unavailable — tuning will use safe defaults."
+            return tr("Fan control unavailable — tuning will use safe defaults.")
         }
-        return "Fan control unavailable — tuning will use safe defaults. (\(trimmed))"
+        return tr("Fan control unavailable — tuning will use safe defaults. (%@)", trimmed)
     }
 }
 

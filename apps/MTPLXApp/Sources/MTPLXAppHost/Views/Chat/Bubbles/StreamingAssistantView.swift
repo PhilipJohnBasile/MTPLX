@@ -146,8 +146,8 @@ struct StreamingAssistantView: View {
                 .replacingOccurrences(of: "Searching: ", with: "")
         }
         switch trace.name {
-        case "web_search": return "Searching the web"
-        case "fetch_url": return "Reading page"
+        case "web_search": return tr("Searching the web")
+        case "fetch_url": return tr("Reading page")
         default: return trace.name.replacingOccurrences(of: "_", with: " ")
         }
     }

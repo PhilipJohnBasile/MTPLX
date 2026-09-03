@@ -29,11 +29,11 @@ struct WelcomeStep: View {
 
     var body: some View {
         OnboardingStepContainer(
-            stepIndex: 0,
+            stepIndex: OnboardingStep.welcome.index,
             stepCount: OnboardingStep.allCases.count,
             centerPrimary: true,
             primary: {
-                OnboardingPrimaryButton("Get Started") { orchestrator.goNext() }
+                OnboardingPrimaryButton(tr("Get Started")) { orchestrator.goNext() }
                     .opacity(ctaVisible ? 1 : 0)
                     .offset(y: ctaVisible ? 0 : 8)
             },
@@ -70,7 +70,7 @@ struct WelcomeStep: View {
     }
 
     private var tagline: some View {
-        Text("The fastest way to run local AI.")
+        Text(tr("The fastest way to run local AI."))
             .font(.system(size: 15, weight: .medium, design: .rounded))
             .foregroundStyle(Brand.typeSecondary)
             .opacity(taglineVisible ? 1 : 0)

@@ -1116,12 +1116,12 @@ private struct StreamingOpenCodeCardView: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Text(language == .generic ? "CODE" : language.rawValue.uppercased())
+                Text(language == .generic ? tr("CODE") : language.rawValue.uppercased())
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.typeTertiary)
                 Spacer(minLength: 12)
-                Text("STREAMING")
+                Text(tr("STREAMING"))
                     .font(.system(size: 8, weight: .heavy, design: .monospaced))
                     .tracking(1.2)
                     .foregroundStyle(Brand.typeTertiary.opacity(0.7))
@@ -1132,12 +1132,12 @@ private struct StreamingOpenCodeCardView: View, Equatable {
                         forType: .string
                     )
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    Label(tr("Copy"), systemImage: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Brand.typeTertiary)
-                .help("Copy code")
+                .help(tr("Copy code"))
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -1153,9 +1153,9 @@ private struct StreamingOpenCodeCardView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
-                "\(language.rawValue) code block, streaming"
+                tr("%@ code block, streaming", language.rawValue)
             )
-            .accessibilityHint("Use the Copy button to copy the full code.")
+            .accessibilityHint(tr("Use the Copy button to copy the full code."))
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1736,7 +1736,7 @@ private struct AssistantCodeBlockView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(codeAccessibilitySummary)
-            .accessibilityHint("Use the Copy button to copy the full code.")
+            .accessibilityHint(tr("Use the Copy button to copy the full code."))
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1751,8 +1751,8 @@ private struct AssistantCodeBlockView: View {
     }
 
     private var codeAccessibilitySummary: String {
-        let label = languageLabel ?? "Plain text"
-        return "\(label) code block, \(code.count) characters"
+        let label = languageLabel ?? tr("Plain text")
+        return tr("%@ code block, %lld characters", label, code.count)
     }
 
     private var codeViewportHeight: CGFloat {
@@ -1771,13 +1771,13 @@ private struct AssistantCodeBlockView: View {
                 showCopied = false
             }
         } label: {
-            Label(showCopied ? "Copied" : "Copy", systemImage: showCopied ? "checkmark" : "doc.on.doc")
+            Label(showCopied ? tr("Copied") : tr("Copy"), systemImage: showCopied ? "checkmark" : "doc.on.doc")
                 .font(.system(size: 11, weight: .semibold))
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(showCopied ? Brand.success : Brand.typeTertiary)
         }
         .buttonStyle(.plain)
-        .help(showCopied ? "Copied" : "Copy code")
+        .help(showCopied ? tr("Copied") : tr("Copy code"))
     }
 }
 

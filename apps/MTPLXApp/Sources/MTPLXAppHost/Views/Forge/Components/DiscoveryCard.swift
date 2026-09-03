@@ -67,8 +67,8 @@ struct DiscoveryCard: View {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Self.verifiedBlue)
-                        .help("Verified MTPLX creator")
-                        .accessibilityLabel("Verified MTPLX creator")
+                        .help(tr("Verified MTPLX creator"))
+                        .accessibilityLabel(tr("Verified MTPLX creator"))
                 }
                 Spacer(minLength: 0)
                 downloadsCount
@@ -93,10 +93,10 @@ struct DiscoveryCard: View {
     private var chipRow: some View {
         HStack(spacing: 5) {
             if let depth = entry.depth, depth > 0 {
-                chip(text: "D\(depth) verified")
+                chip(text: tr("D%lld verified", depth))
             }
             if let multiplier = entry.multiplierVsAr, multiplier > 1.0 {
-                chip(text: String(format: "%.2f× baseline", multiplier))
+                chip(text: tr("%.2f× baseline", multiplier))
             }
             if let size = entry.sizeBytes {
                 chip(text: formatGB(size))
@@ -158,7 +158,7 @@ struct DiscoveryCard: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.up.right.square")
                     .font(.system(size: 10.5, weight: .semibold))
-                Text("View on HF")
+                Text(tr("View on HF"))
                     .font(.system(size: 11, weight: .semibold))
             }
             .foregroundStyle(Brand.typeSecondary)
@@ -171,7 +171,7 @@ struct DiscoveryCard: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help("Open \(entry.repo) on huggingface.co")
+        .help(tr("Open %@ on huggingface.co", entry.repo))
     }
 
     private var cardBackground: some View {
@@ -204,15 +204,15 @@ struct DiscoveryCard: View {
     }
 
     private func formatDownloads(_ count: Int) -> String {
-        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1_000_000 { return tr("%.1fM", Double(count) / 1_000_000) }
         if count >= 1_000 { return String(format: "%.1fk", Double(count) / 1_000) }
         return String(count)
     }
 
     private func formatGB(_ bytes: Int64) -> String {
         let gb = Double(bytes) / 1_073_741_824
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        if gb >= 1 { return tr("%.1f GB", gb) }
         let mb = Double(bytes) / 1_048_576
-        return String(format: "%.0f MB", mb)
+        return tr("%.0f MB", mb)
     }
 }

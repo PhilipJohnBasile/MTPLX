@@ -20,10 +20,10 @@ struct LogsSheet: View {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .all: return "All"
-            case .stdout: return "Stdout"
-            case .stderr: return "Stderr"
-            case .system: return "System"
+            case .all: return tr("All")
+            case .stdout: return tr("Stdout")
+            case .stderr: return tr("Stderr")
+            case .system: return tr("System")
             }
         }
     }
@@ -51,12 +51,12 @@ struct LogsSheet: View {
             Image(systemName: "doc.text")
                 .font(.title3)
                 .foregroundStyle(Brand.accent)
-            Text("LOGS")
+            Text(tr("LOGS"))
                 .font(.system(size: 14, weight: .heavy, design: .monospaced))
                 .tracking(4)
                 .foregroundStyle(Brand.textHighlight)
             Spacer()
-            Button("Close") { dismiss() }
+            Button(tr("Close")) { dismiss() }
                 .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16)
@@ -67,18 +67,18 @@ struct LogsSheet: View {
     @ViewBuilder
     private var controlsBar: some View {
         HStack(spacing: 12) {
-            Picker("Stream", selection: $filter) {
+            Picker(tr("Stream"), selection: $filter) {
                 ForEach(LogFilter.allCases) { f in
                     Text(f.label).tag(f)
                 }
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 320)
-            TextField("Search", text: $search)
+            TextField(tr("Search"), text: $search)
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 240)
             Spacer()
-            Toggle("Auto-scroll", isOn: $autoScroll)
+            Toggle(tr("Auto-scroll"), isOn: $autoScroll)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
             Button {
@@ -87,8 +87,8 @@ struct LogsSheet: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
-            .help("Refresh log buffer")
-            .accessibilityLabel("Refresh logs")
+            .help(tr("Refresh log buffer"))
+            .accessibilityLabel(tr("Refresh logs"))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -157,7 +157,7 @@ struct LogsSheet: View {
     private var emptyMessage: String {
         backend.logs.isEmpty
             ? "No output yet."
-            : "No log lines match the current filter."
+            : tr("No log lines match the current filter.")
     }
 
     private func tint(for stream: LogEntry.Stream) -> Color {

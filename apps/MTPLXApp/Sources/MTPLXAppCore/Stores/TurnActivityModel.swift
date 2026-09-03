@@ -91,9 +91,9 @@ public struct TurnActivityModel: Equatable {
         if hasReasoning || thoughtIsLive {
             let label: String
             if thoughtIsLive {
-                label = (phase == .generating && !hasReasoning) ? "Generating" : "Thinking"
+                label = (phase == .generating && !hasReasoning) ? tr("Generating") : "Thinking"
             } else {
-                label = "Thought"
+                label = tr("Thought")
             }
             chips.append(
                 Chip(kind: .thought, systemName: "brain", label: label, isLive: thoughtIsLive)
@@ -108,7 +108,7 @@ public struct TurnActivityModel: Equatable {
             let label: String
             var caption: String?
             if searchIsLive {
-                label = phase == .reading ? "Reading" : "Searching"
+                label = phase == .reading ? tr("Reading") : "Searching"
             } else {
                 (label, caption) = Self.settledSearchLabel(
                     searchCount: searches,
@@ -145,7 +145,7 @@ public struct TurnActivityModel: Equatable {
                 Chip(
                     kind: .thought,
                     systemName: "brain",
-                    label: "Thought",
+                    label: tr("Thought"),
                     caption: thinkingTimeMs.map(Self.formatDuration)
                 )
             )
@@ -173,7 +173,7 @@ public struct TurnActivityModel: Equatable {
         }
         if fetchedPageCount > 0 {
             return (
-                fetchedPageCount == 1 ? "Read a page" : "Read pages",
+                fetchedPageCount == 1 ? tr("Read a page") : "Read pages",
                 fetchedPageCount > 1 ? "×\(fetchedPageCount)" : nil
             )
         }

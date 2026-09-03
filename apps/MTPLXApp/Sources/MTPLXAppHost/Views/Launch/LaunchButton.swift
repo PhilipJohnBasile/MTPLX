@@ -73,21 +73,21 @@ struct LaunchButton: View {
     private var helpText: String {
         switch daemonState.kind {
         case .stopped, .crashed, .degraded:
-            return "Pick how you want to use it, then start"
-        case .starting: return "Starting — click to cancel"
-        case .warming: return "Loading the model — click to cancel"
-        case .running: return "Stop"
-        case .stopping: return "Stopping…"
+            return tr("Pick how you want to use it, then start")
+        case .starting: return tr("Starting — click to cancel")
+        case .warming: return tr("Loading the model — click to cancel")
+        case .running: return tr("Stop")
+        case .stopping: return tr("Stopping…")
         }
     }
 
     private var accessibilityLabel: String {
         switch daemonState.kind {
-        case .stopped, .crashed, .degraded: return "Start MTPLX"
-        case .starting: return "Starting — tap to stop"
-        case .warming: return "Loading — tap to stop"
-        case .running: return "Stop MTPLX"
-        case .stopping: return "Stopping"
+        case .stopped, .crashed, .degraded: return tr("Start MTPLX")
+        case .starting: return tr("Starting — tap to stop")
+        case .warming: return tr("Loading — tap to stop")
+        case .running: return tr("Stop MTPLX")
+        case .stopping: return tr("Stopping")
         }
     }
 

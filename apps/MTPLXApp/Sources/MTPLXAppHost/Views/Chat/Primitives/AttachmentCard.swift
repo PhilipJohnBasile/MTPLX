@@ -85,9 +85,9 @@ struct AttachmentCard: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .offset(x: 6, y: -6)
+                .offset(towardsTrailing: 6, y: -6)
                 .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                .accessibilityLabel("Remove attachment")
+                .accessibilityLabel(tr("Remove attachment"))
             }
         }
         .animation(.smooth(duration: 0.16), value: hovering)

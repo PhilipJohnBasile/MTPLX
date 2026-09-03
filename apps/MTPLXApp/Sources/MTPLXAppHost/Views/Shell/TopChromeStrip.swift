@@ -70,7 +70,7 @@ struct TopChromeStrip: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Change model")
+                    .help(tr("Change model"))
                     .opacity(router.modelPickerPresented ? 1 : 0.82)
                     .animation(.smooth(duration: 0.2), value: router.modelPickerPresented)
                 }
@@ -156,6 +156,6 @@ struct RefreshButton: View {
                 )
         }
         .buttonStyle(.plain)
-        .help("Refresh snapshot + capabilities")
+        .help(tr("Refresh snapshot + capabilities"))
     }
 }

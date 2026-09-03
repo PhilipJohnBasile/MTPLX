@@ -159,7 +159,7 @@ struct LaunchOverlay: View, Equatable {
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(otherExpanded ? "Custom client" : "Start MTPLX")
+                Text(otherExpanded ? tr("Custom client") : tr("Start MTPLX"))
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(Brand.typeBody)
                 Text(otherExpanded
@@ -181,7 +181,7 @@ struct LaunchOverlay: View, Equatable {
                         )
                 }
                 .buttonStyle(.plain)
-                .help("Back")
+                .help(tr("Back"))
             }
         }
         .padding(.horizontal, 14)
@@ -210,7 +210,7 @@ struct LaunchOverlay: View, Equatable {
         VStack(alignment: .leading, spacing: 12) {
             // Port
             HStack(spacing: 10) {
-                Text("Port")
+                Text(tr("Port"))
                     .font(.system(.callout).weight(.medium))
                     .foregroundStyle(Brand.typeBody)
                     .frame(width: 64, alignment: .leading)
@@ -225,11 +225,11 @@ struct LaunchOverlay: View, Equatable {
 
             // API key
             HStack(spacing: 10) {
-                Text("API key")
+                Text(tr("API key"))
                     .font(.system(.callout).weight(.medium))
                     .foregroundStyle(Brand.typeBody)
                     .frame(width: 64, alignment: .leading)
-                SecureField("optional", text: $customApiKey)
+                SecureField(tr("optional"), text: $customApiKey)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.callout, design: .monospaced))
             }
@@ -238,7 +238,7 @@ struct LaunchOverlay: View, Equatable {
 
             // Connection details
             VStack(alignment: .leading, spacing: 8) {
-                Text("CONNECT YOUR CLIENT TO")
+                Text(tr("CONNECT YOUR CLIENT TO"))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.typeTertiary)
@@ -251,7 +251,7 @@ struct LaunchOverlay: View, Equatable {
             } label: {
                 HStack {
                     Spacer()
-                    Text("Start serving")
+                    Text(tr("Start serving"))
                         .font(.system(.callout, design: .rounded).weight(.semibold))
                     Image(systemName: "play.fill")
                         .font(.system(size: 10, weight: .semibold))
@@ -297,7 +297,7 @@ struct LaunchOverlay: View, Equatable {
                     .foregroundStyle(Brand.typeSecondary)
             }
             .buttonStyle(.plain)
-            .help("Copy")
+            .help(tr("Copy"))
         }
     }
 
@@ -415,7 +415,7 @@ private struct LaunchRow: View {
                             .font(.system(.callout, design: .rounded).weight(.medium))
                             .foregroundStyle(Brand.typeBody)
                         if isLast {
-                            Text("LAST")
+                            Text(tr("LAST"))
                                 .font(.system(size: 8, weight: .heavy, design: .monospaced))
                                 .tracking(1)
                                 .foregroundStyle(Brand.typeBody)

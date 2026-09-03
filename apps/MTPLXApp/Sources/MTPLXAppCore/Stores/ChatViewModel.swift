@@ -32,13 +32,13 @@ public enum ChatError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .streamLost: return "Connection dropped mid-reply. Try again."
-        case .unauthorized: return "The model rejected the request. Set an API key in Settings."
+        case .streamLost: return tr("Connection dropped mid-reply. Try again.")
+        case .unauthorized: return tr("The model rejected the request. Set an API key in Settings.")
         case .http(let code, let body):
             let truncated = body.prefix(160)
-            return "HTTP \(code): \(truncated)"
-        case .malformedRequest: return "Couldn't send the message."
-        case .daemonStopped: return "MTPLX isn't running. Hit the play button to start a model."
+            return tr("HTTP %@: %@", String(code), String(truncated))
+        case .malformedRequest: return tr("Couldn't send the message.")
+        case .daemonStopped: return tr("MTPLX isn't running. Hit the play button to start a model.")
         case .unknown(let detail): return detail
         }
     }
@@ -270,7 +270,7 @@ public final class ChatViewModel: ObservableObject {
 
     @discardableResult
     public func createNewConversation() -> ChatConversation {
-        let convo = ChatConversation(title: "New Chat")
+        let convo = ChatConversation(title: tr("New Chat"))
         context.insert(convo)
         saveContext()
         refreshConversations()
@@ -1603,7 +1603,7 @@ public final class ChatViewModel: ObservableObject {
         guard data.count <= imageAttachmentMaxBytes else {
             throw FileExtractorError.unreadable(
                 filename: url.lastPathComponent,
-                reason: "image exceeds the 20MB attachment limit"
+                reason: tr("image exceeds the 20MB attachment limit")
             )
         }
         let downscaled = downscaledImageData(data)
@@ -1669,7 +1669,7 @@ public final class ChatViewModel: ObservableObject {
             .prefix(n)
             .map { String($0) }
         let joined = words.joined(separator: " ")
-        return joined.isEmpty ? "New Chat" : joined
+        return joined.isEmpty ? tr("New Chat") : joined
     }
 
     static func buildRequestMessages(
@@ -1993,9 +1993,9 @@ public final class ChatViewModel: ObservableObject {
                 let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let query = dict["query"] as? String, !query.isEmpty
             {
-                return "Searching: \(query)"
+                return tr("Searching: %@", query)
             }
-            return "Searching"
+            return tr("Searching")
         case "fetch_url":
             if let data = call.arguments.data(using: .utf8),
                 let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -2003,7 +2003,7 @@ public final class ChatViewModel: ObservableObject {
             {
                 return url
             }
-            return "Reading URL"
+            return tr("Reading URL")
         default:
             return call.name.replacingOccurrences(of: "_", with: " ")
         }
@@ -2011,9 +2011,9 @@ public final class ChatViewModel: ObservableObject {
 
     private static func liveDetail(for toolName: String) -> String {
         switch toolName {
-        case "web_search": return "Querying DuckDuckGo + Brave…"
-        case "fetch_url": return "Fetching page content…"
-        default: return "Running tool…"
+        case "web_search": return tr("Querying DuckDuckGo + Brave…")
+        case "fetch_url": return tr("Fetching page content…")
+        default: return tr("Running tool…")
         }
     }
 
@@ -2045,9 +2045,9 @@ public final class ChatViewModel: ObservableObject {
     private static func shortResultDetail(for toolName: String, json: String) -> String {
         guard let data = json.data(using: .utf8),
             let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "Done" }
+        else { return tr("Done") }
         if let error = dict["error"] as? String {
-            return "Error: \(error)"
+            return tr("Error: %@", error)
         }
         switch toolName {
         case "web_search":
@@ -2055,16 +2055,16 @@ public final class ChatViewModel: ObservableObject {
                 let titles = results.prefix(3)
                     .compactMap { $0["title"] as? String }
                     .joined(separator: " · ")
-                return "Found \(results.count) results — \(titles)"
+                return tr("Found %lld results — %@", results.count, titles)
             }
-            return "Done"
+            return tr("Done")
         case "fetch_url":
             if let title = dict["title"] as? String, !title.isEmpty {
-                return "Read: \(title)"
+                return tr("Read: %@", title)
             }
-            return "Read"
+            return tr("Read")
         default:
-            return "Done"
+            return tr("Done")
         }
     }
 }
