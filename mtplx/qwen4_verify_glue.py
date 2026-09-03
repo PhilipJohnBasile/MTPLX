@@ -160,7 +160,10 @@ def reset_for_tests() -> None:
 def _check_indexer_contract(indexer: Any, *, index: int) -> mx.Dtype:
     """Validate the indexer half.  Raises; never returns False."""
 
-    from mtplx.kernels.qwen4_qsa_m4_indexer import MAX_EXACT_HEAD_DIM
+    # The shipped fused query-preparation kernel is exact for head_dim up to
+    # four SIMD groups of 32 lanes; the PR carried this bound in its QSA M4
+    # indexer module, which is not on this tree.
+    MAX_EXACT_HEAD_DIM = 128
 
     _IDX_COUNTS["contract_checks"] += 1
     where = f"MTPLX_QWEN4_VERIFY_GLUE item 'qsa_rope_idx' layer {index}"
