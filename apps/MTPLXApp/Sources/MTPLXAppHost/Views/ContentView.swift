@@ -111,6 +111,7 @@ struct ContentView: View {
     @StateObject private var backendProjection: ContentViewBackendProjection
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var languageStore: LanguageStore
 
     @MainActor
     init(backend: MTPLXBackendStore) {
@@ -127,7 +128,12 @@ struct ContentView: View {
                 OnboardingExperienceView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .completed:
+                // A new identity per language tears the shell down and
+                // rebuilds it, so every cached tr() string re-resolves at
+                // once. Onboarding is left out: its language step observes
+                // the store directly and the orchestrator must survive.
                 appShell
+                    .id(languageStore.language)
             }
         }
         // Allow the window to shrink to a thin bar. The dashboard reflows

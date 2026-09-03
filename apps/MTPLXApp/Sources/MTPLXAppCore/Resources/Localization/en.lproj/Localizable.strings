@@ -34,6 +34,7 @@
 "%.2f×" = "%.2f×";
 "%.2f× baseline" = "%.2f× baseline";
 "%@  ·  Step %lld of %lld" = "%@  ·  Step %lld of %lld";
+"%@ (%@)" = "%@ (%@)";
 "%@ / call" = "%@ / call";
 "%@ active tools" = "%@ active tools";
 "%@ cached" = "%@ cached";
@@ -294,6 +295,7 @@
 "CAPABILITIES" = "CAPABILITIES";
 "Capability" = "Capability";
 "Change model" = "Change model";
+"Change…" = "Change…";
 "Changing these restarts the engine. Changes are saved to %@." = "Changing these restarts the engine. Changes are saved to %@.";
 "Channels" = "Channels";
 "Chat" = "Chat";
@@ -315,6 +317,7 @@
 "Chip" = "Chip";
 "Choose agent workspace" = "Choose agent workspace";
 "Choose the project folder Hermes should use for terminal and file tools." = "Choose the project folder Hermes should use for terminal and file tools.";
+"Choose your language" = "Choose your language";
 "Chosen for %@ with %.0f GB unified memory." = "Chosen for %@ with %.0f GB unified memory.";
 "Chosen for Apple Silicon and MTPLX speed." = "Chosen for Apple Silicon and MTPLX speed.";
 "Chosen for this Mac with %.0f GB unified memory." = "Chosen for this Mac with %.0f GB unified memory.";
@@ -409,6 +412,7 @@
 "Create" = "Create";
 "Create Profile" = "Create Profile";
 "Critical memory pressure" = "Critical memory pressure";
+"Current language: %@" = "Current language: %@";
 "Current RAM cache" = "Current RAM cache";
 "Current usage" = "Current usage";
 "Custom" = "Custom";
@@ -686,6 +690,7 @@
 "KV quantization is not supported for Gemma." = "KV quantization is not supported for Gemma.";
 "KV quantization is not supported for Step." = "KV quantization is not supported for Step.";
 "KV quantization is not supported for this model." = "KV quantization is not supported for this model.";
+"Language" = "Language";
 "LAST" = "LAST";
 "Last error" = "Last error";
 "Last miss" = "Last miss";
@@ -816,6 +821,7 @@
 "MTPLX suffix locked" = "MTPLX suffix locked";
 "MTPLX took too long to start up." = "MTPLX took too long to start up.";
 "MTPLX will use the model's runtime defaults for this release." = "MTPLX will use the model's runtime defaults for this release.";
+"MTPLX will use this language everywhere. You can change it later in Settings." = "MTPLX will use this language everywhere. You can change it later in Settings.";
 "MTPLX — %@" = "MTPLX — %@";
 "mtplx_runtime.json missing or unreadable." = "mtplx_runtime.json missing or unreadable.";
 "MTPLX_RUNTIME.JSON PREVIEW" = "MTPLX_RUNTIME.JSON PREVIEW";
@@ -856,6 +862,7 @@
 "No frontier data yet." = "No frontier data yet.";
 "No generation data yet." = "No generation data yet.";
 "No log lines match the current filter." = "No log lines match the current filter.";
+"No matching languages." = "No matching languages.";
 "no miss" = "no miss";
 "No model selected to tune." = "No model selected to tune.";
 "No MTPLX models on Hugging Face yet" = "No MTPLX models on Hugging Face yet";
@@ -1169,6 +1176,7 @@
 "SCORE" = "SCORE";
 "Search" = "Search";
 "Search backend returned HTTP %@." = "Search backend returned HTTP %@.";
+"Search languages" = "Search languages";
 "Search models, creators…" = "Search models, creators…";
 "Searching" = "Searching";
 "Searching the web" = "Searching the web";
@@ -1323,6 +1331,7 @@
 "The engine emptied its caches to avoid swapping. Speed is protected, but warm turns will restore from SSD." = "The engine emptied its caches to avoid swapping. Speed is protected, but warm turns will restore from SSD.";
 "The fastest way to run local AI." = "The fastest way to run local AI.";
 "The installed Homebrew runtime is below the compatibility floor." = "The installed Homebrew runtime is below the compatibility floor.";
+"The language MTPLX uses across the app. Changes apply immediately." = "The language MTPLX uses across the app. Changes apply immediately.";
 "The model rejected the request. Set an API key in Settings." = "The model rejected the request. Set an API key in Settings.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "The MTPLX suffix is locked and this build has passed the speed gate.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working.";

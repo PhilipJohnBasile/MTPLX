@@ -8,6 +8,8 @@ struct SettingsTab: View {
     @EnvironmentObject private var backend: MTPLXBackendStore
     @EnvironmentObject private var hermes: HermesAgentStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var languageStore: LanguageStore
+    @State private var languagePopoverPresented = false
 
     // Working copy of the persisted configuration. Saved on demand.
     // Live-mutable sampling/depth/reasoning knobs live in the
@@ -25,6 +27,7 @@ struct SettingsTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 appearanceCard
+                languageCard
                 performanceCard
                 ramCacheCard
                 kvQuantCard
@@ -95,6 +98,45 @@ struct SettingsTab: View {
                     caption: tr("Plays a soft chime when your Mac hits a new top speed."),
                     isOn: $themeStore.soundEnabled
                 )
+            }
+        }
+    }
+
+    // MARK: - Language
+
+    /// Same searchable picker as the onboarding step, in a popover so the
+    /// card stays one row tall. Picking applies immediately: the store
+    /// activates the language and the app shell re-renders.
+    @ViewBuilder
+    private var languageCard: some View {
+        let language = languageStore.language
+        Card(tr("Language"),
+             subtitle: tr("The language MTPLX uses across the app. Changes apply immediately.")) {
+            HStack(spacing: 12) {
+                Text(language.flag)
+                    .font(.system(size: 22))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(language.nativeName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Brand.typeHi)
+                    Text(language.englishName)
+                        .font(.caption)
+                        .foregroundStyle(Brand.typeTertiary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(tr("Current language: %@", language.nativeName))
+                Spacer(minLength: 0)
+                Button(tr("Change…")) {
+                    languagePopoverPresented = true
+                }
+                .buttonStyle(MTPLXGhostButton())
+                .popover(isPresented: $languagePopoverPresented, arrowEdge: .bottom) {
+                    LanguagePickerList(onPick: { _ in languagePopoverPresented = false })
+                        .frame(width: 320, height: 400)
+                        .padding(12)
+                        .environmentObject(languageStore)
+                }
             }
         }
     }

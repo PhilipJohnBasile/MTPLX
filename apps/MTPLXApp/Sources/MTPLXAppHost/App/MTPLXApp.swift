@@ -63,6 +63,9 @@ struct MTPLXApp: App {
     @NSApplicationDelegateAdaptor(MTPLXApplicationDelegate.self) private var appDelegate
     @StateObject private var backend: MTPLXBackendStore
     @StateObject private var themeStore = ThemeStore()
+    /// Language choice; constructed in init() so tr() answers in the
+    /// persisted language before the first body evaluation.
+    @StateObject private var languageStore: LanguageStore
     @StateObject private var router = AppRouter()
     @StateObject private var chatViewModel: ChatViewModel
     @StateObject private var hermesAgentStore: HermesAgentStore
@@ -86,6 +89,7 @@ struct MTPLXApp: App {
         // symlink on every app launch before it can run the bundled Python
         // without the signature-safe bytecode cache environment.
         _ = try? RuntimeSetupService.migrateLegacyTerminalShimIfNeeded()
+        let languageStore = LanguageStore()
         let backend = MTPLXBackendStore()
         let hermesAgentStore = HermesAgentStore()
         let benchmarkOrchestrator = BenchmarkOrchestrator()
@@ -131,6 +135,7 @@ struct MTPLXApp: App {
             }
         )
         _backend = StateObject(wrappedValue: backend)
+        _languageStore = StateObject(wrappedValue: languageStore)
         _chatViewModel = StateObject(wrappedValue: viewModel)
         _hermesAgentStore = StateObject(wrappedValue: hermesAgentStore)
         _stopCoordinator = StateObject(wrappedValue: stopCoordinator)
@@ -173,6 +178,13 @@ struct MTPLXApp: App {
             ContentView(backend: backend)
                 .environmentObject(backend)
                 .environmentObject(themeStore)
+                .environmentObject(languageStore)
+                // Live language switch: every tr() lookup already answers
+                // in the new language once the store publishes; the locale
+                // drives SwiftUI's own number/date formatting and the
+                // layout direction flips the whole tree for Arabic.
+                .environment(\.locale, languageStore.language.locale)
+                .environment(\.layoutDirection, languageStore.language.isRightToLeft ? .rightToLeft : .leftToRight)
                 .environmentObject(router)
                 .environmentObject(chatViewModel)
                 .environmentObject(hermesAgentStore)
