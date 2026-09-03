@@ -90,6 +90,22 @@ struct SettingsTab: View {
         Card("Behavior",
              subtitle: "App preferences saved on your Mac.") {
             VStack(alignment: .leading, spacing: 8) {
+                FormRow(
+                    label: "Appearance",
+                    caption: "Jet black, warm cream, or follow macOS."
+                ) {
+                    Picker("Appearance", selection: $themeStore.appearance) {
+                        ForEach(AppAppearance.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                }
+
+                Divider().overlay(Brand.separator)
+
                 FormToggleRow(
                     label: "Sound on new speed record",
                     caption: "Plays a soft chime when your Mac hits a new top speed.",
