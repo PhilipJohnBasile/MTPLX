@@ -69,9 +69,18 @@ final class ChatTurnStream {
 
     // Per-round accumulation for the tool loop.
     var roundToolCalls: [Int: AccumulatingToolCall] = [:]
-    var roundFinishReason = "stop"
+    /// The terminal chunk's finish reason, set only when one arrives.
+    /// Nil after the byte stream ends means the daemon never finished
+    /// the reply (process death, a dropped connection): the round is
+    /// lost, not complete. It used to default to "stop", which turned
+    /// every such half answer into a persisted, complete-looking reply.
+    var roundFinishReason: String?
     var roundUsage: ChatUsage?
     var roundStats: ChatStreamStats?
+    /// The daemon's failure message when the round ended with its
+    /// `finish_reason: "error"` frame. A round that carries one is a
+    /// failed reply, whatever else arrived.
+    var roundServerError: String?
 
     // Think-span accounting (multi-round "Thought · Ns" chip).
     var reasoningStartedAt: Date?

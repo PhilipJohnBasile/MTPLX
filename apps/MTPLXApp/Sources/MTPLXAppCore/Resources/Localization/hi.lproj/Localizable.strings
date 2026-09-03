@@ -95,6 +95,7 @@
 "%lld correct" = "%lld सही";
 "%lld correct · %lld left" = "%lld सही · %lld बाकी";
 "%lld correct · %lld missed · %lld left" = "%lld सही · %lld छूटे · %lld बाकी";
+"%lld failed" = "%lld विफल";
 "%lld fields" = "%lld फ़ील्ड";
 "%lld hidden" = "%lld छिपे हुए";
 "%lld hits" = "%lld हिट";
@@ -525,7 +526,10 @@
 "External Client" = "बाहरी क्लाइंट";
 "External terminal client launched by MTPLX." = "MTPLX द्वारा लॉन्च किया गया बाहरी टर्मिनल क्लाइंट।";
 "Extract MTP weights" = "MTP वज़न निकालें";
+"Extracting attachments…" = "अटैचमेंट निकाले जा रहे हैं…";
+"Extracting…" = "निकाला जा रहा है…";
 "Failed to start AIME run: %@" = "AIME रन शुरू करने में विफल: %@";
+"Failed: %@" = "विफल: %@";
 "FAN" = "फ़ैन";
 "Fan %lld" = "फ़ैन %lld";
 "Fan control" = "फ़ैन नियंत्रण";
@@ -547,6 +551,8 @@
 "FASTER" = "अधिक तेज़";
 "Fastest response" = "सबसे तेज़ प्रतिक्रिया";
 "FEATURE FLAGS" = "फ़ीचर फ़्लैग";
+"Fetch failed" = "पेज लाना विफल";
+"Fetch failed: %@" = "पेज लाना विफल: %@";
 "Fetching page content…" = "पेज की सामग्री लाई जा रही है…";
 "Figure on AoPS" = "AoPS पर चित्र";
 "Files land in ~/.mtplx/models. Resume is automatic." = "फ़ाइलें ~/.mtplx/models में रखी जाती हैं। रिज़्यूम स्वचालित है।";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "अभी तक कोई प्रॉम्प्ट डेटा नहीं।";
 "No request completed yet." = "अभी तक कोई अनुरोध पूरा नहीं हुआ।";
 "No saved agents" = "कोई सहेजे गए एजेंट नहीं";
+"No search provider could be reached (%@)." = "किसी भी खोज प्रदाता से संपर्क नहीं हो सका (%@)।";
 "No speed data yet." = "अभी तक कोई गति डेटा नहीं।";
 "No tool data yet." = "अभी तक कोई टूल डेटा नहीं।";
 "No transcript data yet." = "अभी तक कोई प्रतिलेख डेटा नहीं।";
@@ -895,6 +902,7 @@
 "no work yet" = "अभी तक कोई कार्य नहीं";
 "Non-localhost host: an API key is required." = "गैर-लोकलहोस्ट होस्ट: एक API कुंजी आवश्यक है।";
 "none loaded" = "कोई लोड नहीं हुआ";
+"not a readable image" = "पढ़ने योग्य छवि नहीं है";
 "not loaded — loads on first request" = "लोड नहीं हुआ — पहले अनुरोध पर लोड होता है";
 "Not running." = "चल नहीं रहा है।";
 "Not solved yet" = "अभी तक हल नहीं हुआ";
@@ -1102,6 +1110,7 @@
 "Repairing" = "मरम्मत की जा रही है";
 "Replace" = "बदलें";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@ पर अपठनीय mtplx को बदला गया — अपडेट की गई कमांड का उपयोग करने के लिए एक नया टर्मिनल खोलें।";
+"Reply failed: %@" = "उत्तर विफल रहा: %@";
 "repo created — uploading" = "रेपो बनाया गया — अपलोड हो रहा है";
 "Repository name (owner/name) is required." = "रिपॉजिटरी का नाम (मालिक/नाम) आवश्यक है।";
 "Repository or config.json not found on Hugging Face." = "Hugging Face पर रिपॉजिटरी या config.json नहीं मिला।";
@@ -1196,6 +1205,8 @@
 "SCORE" = "स्कोर";
 "Search" = "खोजें";
 "Search backend returned HTTP %@." = "खोज बैकएंड ने HTTP %@ लौटाया।";
+"Search failed" = "खोज विफल";
+"Search failed: %@" = "खोज विफल: %@";
 "Search languages" = "भाषाएं खोजें";
 "Search models, creators…" = "मॉडल, निर्माता खोजें…";
 "Searching" = "खोजा जा रहा है";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "स्थापित Homebrew रनटाइम संगतता सीमा से नीचे है।";
 "The language MTPLX uses across the app. Changes apply immediately." = "वह भाषा जिसका उपयोग MTPLX पूरे ऐप में करता है। परिवर्तन तुरंत लागू होते हैं।";
 "The model rejected the request. Set an API key in Settings." = "मॉडल ने अनुरोध अस्वीकार कर दिया। सेटिंग्स में एक API कुंजी सेट करें।";
+"The model server reported an error." = "मॉडल सर्वर ने एक त्रुटि की सूचना दी।";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX प्रत्यय लॉक है और इस बिल्ड ने गति गेट को पार कर लिया है।";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "इस प्रश्न के लिए तर्क सहेजा नहीं गया था — इसकी पूरी कार्यप्रणाली पढ़ने के लिए इस सत्र में आपके द्वारा हल किए गए प्रश्न को फिर से खोलें।";
 "There is not enough free disk space to finish this download." = "इस डाउनलोड को पूरा करने के लिए पर्याप्त खाली डिस्क स्थान नहीं है।";
@@ -1393,6 +1405,7 @@
 "Tokens" = "टोकन";
 "tokens" = "टोकन";
 "Tool" = "टूल";
+"Tool failed: %@" = "टूल विफल: %@";
 "tool output compacted %@" = "टूल आउटपुट संक्षिप्त किया गया %@";
 "Tool surface" = "टूल इंटरफ़ेस";
 "Tools" = "टूल";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "कुल verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "प्रतिलेख";
+"Truncated to %@ of %@ characters" = "पहले %@ वर्ण रखे गए (कुल %@)";
+"Truncated to %lld of %lld pages" = "पहले %lld पृष्ठ रखे गए (कुल %lld)";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@ ट्यून करें?";

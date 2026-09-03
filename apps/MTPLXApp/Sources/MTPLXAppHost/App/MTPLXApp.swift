@@ -401,10 +401,14 @@ struct MTPLXApp: App {
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(chatViewModel.current == nil)
                 Divider()
+                // Its own shortcut, not Esc: the chat surface owns Esc
+                // (stop while streaming, close when idle — see
+                // ChatEscapePolicy), and two Esc bindings left the
+                // outcome to responder order.
                 Button(tr("Stop Generating")) {
                     Task { await chatViewModel.cancel() }
                 }
-                .keyboardShortcut(.escape, modifiers: [])
+                .keyboardShortcut(".", modifiers: [.command, .shift])
                 .disabled(!chatViewModel.isStreaming)
             }
         }

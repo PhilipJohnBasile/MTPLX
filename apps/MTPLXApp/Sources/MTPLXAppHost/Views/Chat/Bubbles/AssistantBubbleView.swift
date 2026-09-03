@@ -23,12 +23,20 @@ struct AssistantBubbleView: View {
     private let message: ChatMessage
     private let combinedReasoning: String
     private let sources: [SourceRecord]
-    private let searchQueries: [String]
+    private let searchReceipts: [AssistantTurnGroup.SearchReceipt]
+    private let successfulSearchCount: Int
+    private let failedSearchCount: Int
     private let fetchedPageCount: Int
+    private let failedFetchCount: Int
     private let thinkingTimeMs: Int?
     private let metricItems: [MetricItem]
     private let replyCopyText: String
     private let isInterruptedReply: Bool
+    /// The daemon's own failure message when the turn ended on its
+    /// `finish_reason: "error"` frame (read from `statsJSON`). Nil for
+    /// completed turns, user stops, and failures recorded before the
+    /// message was persisted.
+    private let failure: ChatTurnFailure?
     private let longReplyPreviewText: String?
     @State private var isHovered: Bool = false
     @State private var expandedLongReply: Bool = false
@@ -40,13 +48,20 @@ struct AssistantBubbleView: View {
         self.message = finalMessage
         self.combinedReasoning = group.combinedReasoning
         self.sources = group.sources
-        self.searchQueries = group.searchQueries
+        self.searchReceipts = group.searchReceipts
+        self.successfulSearchCount = group.successfulSearchCount
+        self.failedSearchCount = group.failedSearchCount
         self.fetchedPageCount = group.fetchedPageCount
+        self.failedFetchCount = group.failedFetchCount
         self.thinkingTimeMs = group.thinkingTimeMs
         self.metricItems = Self.formattedMetrics(from: finalMessage.statsJSON)
         self.replyCopyText = finalMessage.visibleContent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         self.isInterruptedReply = Self.isInterruptedFinishReason(finalMessage.finishReason)
+        self.failure = Self.failure(
+            finishReason: finalMessage.finishReason,
+            statsJSON: finalMessage.statsJSON
+        )
         self.longReplyPreviewText = Self.longReplyPreview(for: self.replyCopyText)
     }
 
@@ -54,25 +69,34 @@ struct AssistantBubbleView: View {
         self.init(group: AssistantTurnGroup(id: message.id, members: [message]))
     }
 
+    /// Caption over an interrupted reply's preview: the daemon's message
+    /// for a server failure, the plain interruption label otherwise.
+    private var interruptedReplyTitle: String {
+        Self.interruptedReplyTitle(failure: failure)
+    }
+
     private var activityModel: TurnActivityModel {
         TurnActivityModel.settled(
             hasThought: !combinedReasoning.isEmpty,
             thinkingTimeMs: thinkingTimeMs,
-            searchCount: searchQueries.count,
+            searchCount: successfulSearchCount,
             fetchedPageCount: fetchedPageCount,
-            hasOtherToolActivity: !group.traces.isEmpty
+            hasOtherToolActivity: !group.traces.isEmpty,
+            failedSearchCount: failedSearchCount,
+            failedFetchCount: failedFetchCount
         )
     }
 
-    /// Search-well receipt rows: one per query, plus a page-read
-    /// summary line when the turn fetched pages.
+    /// Search-well receipt rows: one per query (a failed search is
+    /// marked as such, not listed as one that ran), a page-read summary
+    /// line when the turn fetched pages, and a line for failed fetches.
     private var settledActivityRows: [ThinkingActivityRow] {
-        var rows = searchQueries.enumerated().map { index, query in
+        var rows = searchReceipts.enumerated().map { index, receipt in
             ThinkingActivityRow(
                 id: "query-\(index)",
-                systemName: "magnifyingglass",
-                text: query,
-                detail: "",
+                systemName: receipt.failed ? "exclamationmark.triangle" : "magnifyingglass",
+                text: receipt.query,
+                detail: receipt.failed ? tr("Search failed") : "",
                 isLive: false
             )
         }
@@ -85,6 +109,17 @@ struct AssistantBubbleView: View {
                         ? tr("Read 1 page")
                         : tr("Read %lld pages", fetchedPageCount),
                     detail: "",
+                    isLive: false
+                )
+            )
+        }
+        if failedFetchCount > 0 {
+            rows.append(
+                ThinkingActivityRow(
+                    id: "failed-fetches",
+                    systemName: "exclamationmark.triangle",
+                    text: tr("Fetch failed"),
+                    detail: failedFetchCount > 1 ? "×\(failedFetchCount)" : "",
                     isLive: false
                 )
             )
@@ -117,7 +152,7 @@ struct AssistantBubbleView: View {
                     Group {
                         if isInterruptedReply && !expandedLongReply {
                             LongAssistantReplyPreview(
-                                title: tr("Interrupted reply"),
+                                title: interruptedReplyTitle,
                                 previewText: longReplyPreviewText ?? replyCopyText,
                                 characterCount: message.visibleContent.count,
                                 onCopy: { copyToPasteboard(replyCopyText) },
@@ -156,36 +191,13 @@ struct AssistantBubbleView: View {
                         )
                     Spacer(minLength: 60)
                 }
+            } else if failure != nil {
+                // The daemon failed before any answer text: the failure
+                // IS the reply, so the transcript says so instead of
+                // reading as an empty or complete turn.
+                noticeBubble(interruptedReplyTitle, tint: Brand.warning)
             } else if !hasReasoning && !hasTrace && !hasToolCalls {
-                HStack(alignment: .top, spacing: 0) {
-                    Text(tr("No visible answer generated."))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Brand.typeSecondary)
-                        .frame(maxWidth: 576, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .background(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 14,
-                                bottomLeadingRadius: 4,
-                                bottomTrailingRadius: 14,
-                                topTrailingRadius: 14,
-                                style: .continuous
-                            )
-                            .fill(Brand.cardSurface)
-                            .overlay(
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 14,
-                                    bottomLeadingRadius: 4,
-                                    bottomTrailingRadius: 14,
-                                    topTrailingRadius: 14,
-                                    style: .continuous
-                                )
-                                .stroke(Brand.separator, lineWidth: 1)
-                            )
-                        )
-                    Spacer(minLength: 60)
-                }
+                noticeBubble(tr("No visible answer generated."), tint: Brand.typeSecondary)
             }
             // Where the turn's web sources live — one quiet pill row,
             // not a card per fetched page.
@@ -248,13 +260,65 @@ struct AssistantBubbleView: View {
         let value: String
     }
 
-    private static func isInterruptedFinishReason(_ reason: String?) -> Bool {
+    /// One-line stand-in for the answer bubble (same chrome), used when
+    /// the turn has no answer text to show.
+    private func noticeBubble(_ text: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .textSelection(.enabled)
+                .frame(maxWidth: 576, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 14,
+                        bottomLeadingRadius: 4,
+                        bottomTrailingRadius: 14,
+                        topTrailingRadius: 14,
+                        style: .continuous
+                    )
+                    .fill(Brand.cardSurface)
+                    .overlay(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 14,
+                            bottomLeadingRadius: 4,
+                            bottomTrailingRadius: 14,
+                            topTrailingRadius: 14,
+                            style: .continuous
+                        )
+                        .stroke(Brand.separator, lineWidth: 1)
+                    )
+                )
+            Spacer(minLength: 60)
+        }
+    }
+
+    /// User stop, daemon-reported failure, or a reply the daemon never
+    /// finished (bytes stopped without a terminal chunk).
+    static func isInterruptedFinishReason(_ reason: String?) -> Bool {
         switch reason?.lowercased() {
-        case "cancelled", "error":
+        case "cancelled", "error", ChatViewModel.streamLostFinishReason:
             return true
         default:
             return false
         }
+    }
+
+    /// Persisted failure for a turn that ended on the daemon's error
+    /// frame. Only an "error" finish carries one; other finish reasons
+    /// ignore any stale key.
+    static func failure(finishReason: String?, statsJSON: String?) -> ChatTurnFailure? {
+        guard finishReason?.lowercased() == "error" else { return nil }
+        return ChatTurnFailure.decode(fromStatsJSON: statsJSON)
+    }
+
+    static func interruptedReplyTitle(failure: ChatTurnFailure?) -> String {
+        if let failure {
+            return tr("Failed: %@", failure.errorMessage)
+        }
+        return tr("Interrupted reply")
     }
 
     private static func longReplyPreview(for text: String) -> String? {

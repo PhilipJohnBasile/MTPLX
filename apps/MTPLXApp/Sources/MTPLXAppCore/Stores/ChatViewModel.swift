@@ -28,6 +28,10 @@ public enum ChatError: LocalizedError, Equatable {
     case http(Int, String)
     case malformedRequest
     case daemonStopped
+    /// The daemon failed the request mid-stream and said why (its
+    /// `finish_reason: "error"` frame). The message is the server's
+    /// own, shown verbatim.
+    case server(String)
     case unknown(String)
 
     public var errorDescription: String? {
@@ -39,6 +43,7 @@ public enum ChatError: LocalizedError, Equatable {
             return tr("HTTP %@: %@", String(code), String(truncated))
         case .malformedRequest: return tr("Couldn't send the message.")
         case .daemonStopped: return tr("MTPLX isn't running. Hit the play button to start a model.")
+        case .server(let message): return tr("Reply failed: %@", message)
         case .unknown(let detail): return detail
         }
     }
@@ -188,6 +193,10 @@ public final class ChatViewModel: ObservableObject {
     /// the last one settles, whichever conversation owns it.
     private let onLiveTurnActivityChanged: @MainActor (Bool) -> Void
     private let maxToolRounds: Int
+    /// Turns a dropped file into attachment data, off the main actor.
+    /// Injectable so tests can pin where it runs and how the card
+    /// follows it.
+    private let attachmentExtractor: AttachmentExtractor
 
     private var context: ModelContext { container.mainContext }
     /// The in-flight turn of each conversation, keyed by conversation
@@ -243,7 +252,8 @@ public final class ChatViewModel: ObservableObject {
         reasoningEnabledProvider: @escaping @MainActor () -> Bool? = { nil },
         onDaemonUnreachable: @escaping @MainActor () -> Void = {},
         onLiveTurnActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
-        maxToolRounds: Int = 1
+        maxToolRounds: Int = 1,
+        attachmentExtractor: @escaping AttachmentExtractor = ChatViewModel.extractAttachment
     ) {
         self.container = container
         self.chatClientProvider = chatClientProvider
@@ -253,7 +263,9 @@ public final class ChatViewModel: ObservableObject {
         self.onDaemonUnreachable = onDaemonUnreachable
         self.onLiveTurnActivityChanged = onLiveTurnActivityChanged
         self.maxToolRounds = maxToolRounds
+        self.attachmentExtractor = attachmentExtractor
         refreshConversations()
+        retitlePlaceholderConversations()
         if let first = conversations.first {
             select(first)
         }
@@ -270,12 +282,35 @@ public final class ChatViewModel: ObservableObject {
 
     @discardableResult
     public func createNewConversation() -> ChatConversation {
-        let convo = ChatConversation(title: tr("New Chat"))
+        let convo = ChatConversation(title: ChatConversationTitle.placeholder)
         context.insert(convo)
         saveContext()
         refreshConversations()
         select(convo)
         return convo
+    }
+
+    /// Gives a name to every conversation that already has a first
+    /// message but still carries a placeholder title. Those rows exist
+    /// because the auto-title guard compared against the English
+    /// literal and never fired in other languages; one pass at launch
+    /// makes an existing user's sidebar (and its title search) usable
+    /// without waiting for the next message in each chat.
+    private func retitlePlaceholderConversations() {
+        var changed = false
+        for conversation in conversations where conversation.titleIsPlaceholder {
+            guard let firstUserMessage = conversation.messages
+                .filter({ $0.role == .user })
+                .min(by: { $0.createdAt < $1.createdAt })
+            else { continue }
+            let derived = ChatConversationTitle.derived(from: firstUserMessage.visibleContent)
+            guard !ChatConversationTitle.isPlaceholder(derived) else { continue }
+            conversation.title = derived
+            changed = true
+        }
+        if changed {
+            saveContext()
+        }
     }
 
     public func select(_ conversation: ChatConversation) {
@@ -311,47 +346,129 @@ public final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Attachments
+    //
+    // Extraction (PDFKit page walk, a docx unzip that waits on a child
+    // process, image decoding) runs OFF the main actor. `attach` is a
+    // main-actor method, so it used to do that work inline and a large
+    // file froze the whole app — composer, transcript and any streaming
+    // reply — for seconds. Now every file gets its card at once, marked
+    // extracting, the work runs detached one file at a time, and each
+    // card settles to ready (with a truncation note when the caps cut
+    // something) or to a visible failure. The card is the surface for
+    // attachment problems; the transcript's error card (and its Retry)
+    // is for replies.
 
-    private static let imageAttachmentExtensions: Set<String> = [
+    /// Everything extraction produces for one file, as a value that can
+    /// cross back to the main actor (the `ChatAttachment` model object
+    /// is built there).
+    public struct ExtractedAttachment: Sendable, Equatable {
+        public var filename: String
+        public var mimeType: String
+        public var sizeBytes: Int
+        public var extractedText: String
+        public var imageData: Data?
+        public var truncation: ExtractionTruncation?
+
+        public init(
+            filename: String,
+            mimeType: String,
+            sizeBytes: Int,
+            extractedText: String,
+            imageData: Data? = nil,
+            truncation: ExtractionTruncation? = nil
+        ) {
+            self.filename = filename
+            self.mimeType = mimeType
+            self.sizeBytes = sizeBytes
+            self.extractedText = extractedText
+            self.imageData = imageData
+            self.truncation = truncation
+        }
+    }
+
+    /// Where a pending attachment is in its life on the composer strip.
+    public enum AttachmentExtractionState: Equatable, Sendable {
+        case extracting
+        case ready(truncation: ExtractionTruncation?)
+        case failed(message: String)
+    }
+
+    public typealias AttachmentExtractor = @Sendable (URL) throws -> ExtractedAttachment
+
+    @Published public private(set) var attachmentStates: [UUID: AttachmentExtractionState] = [:]
+
+    public var isExtractingAttachments: Bool {
+        attachmentStates.values.contains(.extracting)
+    }
+
+    public func extractionState(for attachment: ChatAttachment) -> AttachmentExtractionState? {
+        attachmentStates[attachment.id]
+    }
+
+    nonisolated private static let imageAttachmentExtensions: Set<String> = [
         "png", "jpg", "jpeg", "webp",
     ]
-    private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
-    private static let imageAttachmentMaxDimension = 2048
+    nonisolated private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
+    nonisolated private static let imageAttachmentMaxDimension = 2048
 
     public func attach(_ urls: [URL]) async {
-        var added: [ChatAttachment] = []
+        // Every file gets its card immediately, so the strip shows the
+        // whole drop while the work is still running.
+        var queued: [(attachment: ChatAttachment, url: URL)] = []
         for url in urls {
-            if Self.imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
-                do {
-                    added.append(try Self.imageAttachment(from: url))
-                } catch {
-                    lastError = .unknown(error.localizedDescription)
-                }
+            let placeholder = ChatAttachment(
+                filename: url.lastPathComponent,
+                mimeType: FileExtractor.mimeType(for: url.pathExtension),
+                sizeBytes: 0,
+                extractedText: ""
+            )
+            pendingAttachments.append(placeholder)
+            attachmentStates[placeholder.id] = .extracting
+            queued.append((placeholder, url))
+        }
+
+        let extractor = attachmentExtractor
+        for (attachment, url) in queued {
+            // Detached, not a child task: a child would inherit this
+            // method's main-actor isolation and run on the main thread.
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result { try extractor(url) }
+            }.value
+            // Removed from the strip while extracting: nothing to update.
+            guard pendingAttachments.contains(where: { $0.id == attachment.id }) else {
+                attachmentStates[attachment.id] = nil
                 continue
             }
-            do {
-                let extracted = try FileExtractor.extract(from: url)
-                let attachment = ChatAttachment(
-                    filename: extracted.filename,
-                    mimeType: extracted.mimeType,
-                    sizeBytes: extracted.sizeBytes,
-                    extractedText: extracted.combinedText
-                )
-                added.append(attachment)
-            } catch let error as FileExtractorError {
-                let placeholder = ChatAttachment(
-                    filename: url.lastPathComponent,
-                    mimeType: FileExtractor.mimeType(for: url.pathExtension),
-                    sizeBytes: 0,
-                    extractedText: ""
-                )
-                lastError = .unknown(error.localizedDescription)
-                added.append(placeholder)
-            } catch {
-                lastError = .unknown(error.localizedDescription)
+            objectWillChange.send()
+            switch outcome {
+            case .success(let extracted):
+                attachment.filename = extracted.filename
+                attachment.mimeType = extracted.mimeType
+                attachment.sizeBytes = extracted.sizeBytes
+                attachment.extractedText = extracted.extractedText
+                attachment.imageData = extracted.imageData
+                attachmentStates[attachment.id] = .ready(truncation: extracted.truncation)
+            case .failure(let error):
+                attachmentStates[attachment.id] = .failed(message: error.localizedDescription)
             }
         }
-        pendingAttachments.append(contentsOf: added)
+    }
+
+    /// The production extractor: images decode (and downscale) to
+    /// `imageData`; everything else goes through `FileExtractor`, whose
+    /// caps report what they cut.
+    nonisolated public static func extractAttachment(from url: URL) throws -> ExtractedAttachment {
+        if imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
+            return try imageAttachment(from: url)
+        }
+        let extracted = try FileExtractor.extract(from: url)
+        return ExtractedAttachment(
+            filename: extracted.filename,
+            mimeType: extracted.mimeType,
+            sizeBytes: extracted.sizeBytes,
+            extractedText: extracted.combinedText,
+            truncation: extracted.truncation
+        )
     }
 
     public var hasSendablePendingAttachments: Bool {
@@ -365,6 +482,7 @@ public final class ChatViewModel: ObservableObject {
 
     public func removeAttachment(_ attachment: ChatAttachment) {
         pendingAttachments.removeAll { $0.id == attachment.id }
+        attachmentStates[attachment.id] = nil
     }
 
     // MARK: - Send / cancel
@@ -373,10 +491,17 @@ public final class ChatViewModel: ObservableObject {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || hasSendablePendingAttachments else { return }
         guard !isStreaming else { return }
+        // A file still extracting would otherwise be left behind on the
+        // strip and ride along with the NEXT message; the composer
+        // disables Send for the same reason.
+        guard !isExtractingAttachments else { return }
 
         let conversation = current ?? createNewConversation()
         let attachments = pendingAttachments.filter(Self.isSendableAttachment)
         pendingAttachments.removeAll(where: Self.isSendableAttachment)
+        for attachment in attachments {
+            attachmentStates[attachment.id] = nil
+        }
 
         let fencedAttachmentText = Self.buildAttachmentContext(attachments: attachments)
         let visibleUserContent = text
@@ -400,8 +525,8 @@ public final class ChatViewModel: ObservableObject {
         context.insert(userMessage)
         conversation.messages.append(userMessage)
         conversation.updatedAt = userMessage.createdAt
-        if conversation.title == "New Chat", !visibleUserContent.isEmpty {
-            conversation.title = Self.firstNWords(visibleUserContent, n: 5)
+        if conversation.titleIsPlaceholder, !visibleUserContent.isEmpty {
+            conversation.title = ChatConversationTitle.derived(from: visibleUserContent)
         }
         saveContext()
         publishVisibleMessages(for: conversation, ensuring: userMessage)
@@ -553,9 +678,10 @@ public final class ChatViewModel: ObservableObject {
                 toolChoice: toolChoice
             )
             stream.roundToolCalls.removeAll(keepingCapacity: true)
-            stream.roundFinishReason = "stop"
+            stream.roundFinishReason = nil
             stream.roundUsage = nil
             stream.roundStats = nil
+            stream.roundServerError = nil
             var streamError: Error?
             do {
                 try await client.stream(
@@ -599,8 +725,27 @@ public final class ChatViewModel: ObservableObject {
                 return
             }
 
+            // The daemon failed the request and said why (memory guard,
+            // context overflow, tool-loop exception). Whatever partial
+            // text arrived is kept, but the turn is a failure: Retry
+            // card now, "Failed: <message>" on the settled bubble.
+            if let serverMessage = stream.roundServerError {
+                handleServerFailure(serverMessage, stream: stream)
+                return
+            }
+
+            // The bytes stopped without a terminal chunk: the daemon
+            // died or the connection was cut mid-reply. URLSession ends
+            // the byte stream normally in both cases (a clean close and
+            // a chunked body cut before its last chunk alike), so the
+            // absence of the finish frame is the only evidence — and a
+            // half answer must never be filed as a finished one.
+            guard let finishReason = stream.roundFinishReason else {
+                handleStreamLost(stream: stream)
+                return
+            }
+
             let accumulatedToolCalls = stream.roundToolCalls
-            let finishReason = stream.roundFinishReason
             let finalUsage = stream.roundUsage
             let finalStats = stream.roundStats
 
@@ -650,27 +795,37 @@ public final class ChatViewModel: ObservableObject {
                         )
                     )
                     stream.phase = Self.streamingPhase(forTool: call.name)
-                    let result = await toolFactory.dispatch(
+                    let outcome = await toolFactory.dispatch(
                         name: call.name,
                         argumentsJSON: call.arguments
                     )
+                    // A failed call is recorded as a failure everywhere
+                    // it shows: the live strip, the persisted trace,
+                    // and (through resultJSON) the model's tool result.
+                    let result = outcome.resultJSON
+                    let status: ToolTraceStatus = outcome.succeeded ? .success : .failed
                     updatePendingTrace(of: stream, id: traceId) { trace in
-                        trace.status = .success
-                        trace.detail = Self.shortResultDetail(for: call.name, json: result)
+                        trace.status = status
+                        trace.detail = outcome.failure.map(Self.failureDetail)
+                            ?? Self.shortResultDetail(for: call.name, json: result)
                     }
-                    accumulateTurnSources(
-                        into: stream,
-                        toolName: call.name,
-                        argumentsJSON: call.arguments,
-                        resultJSON: result
-                    )
+                    // A failed fetch has a URL in its arguments but no
+                    // page was read: it is not a source.
+                    if outcome.succeeded {
+                        accumulateTurnSources(
+                            into: stream,
+                            toolName: call.name,
+                            argumentsJSON: call.arguments,
+                            resultJSON: result
+                        )
+                    }
                     persistToolTrace(
                         on: assistantMessage,
                         id: call.id,
                         name: call.name,
                         argumentsJSON: call.arguments,
                         resultJSON: result,
-                        status: .success
+                        status: status
                     )
                     let requestResult = Self.compactToolResultContent(result)
                     messages.append(
@@ -846,6 +1001,8 @@ public final class ChatViewModel: ObservableObject {
             stream.roundFinishReason = reason
             stream.roundUsage = usage
             stream.roundStats = stats
+        case .serverError(let message):
+            stream.roundServerError = message
         }
     }
 
@@ -1411,7 +1568,14 @@ public final class ChatViewModel: ObservableObject {
         stream.task = nil
     }
 
-    private func finalizePartialAssistantTurn(of stream: ChatTurnStream, reason: String) {
+    /// Persists whatever the interrupted turn produced. `failure` is
+    /// the daemon's own message for a server-reported error; it rides
+    /// in `statsJSON` so the settled bubble can read "Failed: <message>".
+    private func finalizePartialAssistantTurn(
+        of stream: ChatTurnStream,
+        reason: String,
+        failure: ChatTurnFailure? = nil
+    ) {
         let conversation = stream.conversation
         flushLeakedThinkingSplitter(of: stream)
         flushStreamingBuffers(of: stream)
@@ -1428,6 +1592,7 @@ public final class ChatViewModel: ObservableObject {
                 role: .assistant,
                 visibleContent: content,
                 reasoningContent: roundReasoning,
+                statsJSON: ChatTurnFailure.statsJSON(stats: nil, failure: failure),
                 finishReason: reason,
                 turnGroupID: stream.turnID,
                 sourcesJSON: SourceRecord.encodeJSON(stream.liveTurnSources),
@@ -1464,6 +1629,10 @@ public final class ChatViewModel: ObservableObject {
             case .bodyEncodingFailed: reportedError = .malformedRequest
             case .invalidResponse: reportedError = .streamLost
             }
+        case let urlError as URLError where urlError.code == .networkConnectionLost:
+            // The transport reported the cut itself (the other way a
+            // dying daemon shows up); same outcome as a silent end.
+            reportedError = .streamLost
         default:
             reportedError = .unknown(error.localizedDescription)
         }
@@ -1475,7 +1644,40 @@ public final class ChatViewModel: ObservableObject {
         if stream.conversationID == current?.id {
             lastError = reportedError
         }
-        finalizePartialAssistantTurn(of: stream, reason: "error")
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: reportedError == .streamLost ? Self.streamLostFinishReason : "error"
+        )
+    }
+
+    /// Finish reason persisted for a reply the daemon never finished:
+    /// the bytes stopped with no terminal chunk. Distinct from "error"
+    /// (the daemon said why) and "cancelled" (the user stopped it).
+    nonisolated public static let streamLostFinishReason = "incomplete"
+
+    /// The byte stream ended with no terminal chunk and no transport
+    /// error. Keep the partial, persist it as incomplete, and offer
+    /// Retry — never file it as a completed answer.
+    private func handleStreamLost(stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .streamLost
+        }
+        finalizePartialAssistantTurn(of: stream, reason: Self.streamLostFinishReason)
+    }
+
+    /// The daemon's own failure frame (`finish_reason: "error"`). Same
+    /// surface rules as a transport error — banner only for the visible
+    /// conversation, partial persisted with finishReason "error" — plus
+    /// the server's message, persisted so the transcript can show it.
+    private func handleServerFailure(_ message: String, stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .server(message)
+        }
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: "error",
+            failure: ChatTurnFailure(errorMessage: message)
+        )
     }
 
     // MARK: - Glue
@@ -1598,16 +1800,30 @@ public final class ChatViewModel: ObservableObject {
             || !attachment.extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private static func imageAttachment(from url: URL) throws -> ChatAttachment {
-        let data = try Data(contentsOf: url)
+    nonisolated private static func imageAttachment(from url: URL) throws -> ExtractedAttachment {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw FileExtractorError.unreadable(
+                filename: url.lastPathComponent,
+                reason: error.localizedDescription
+            )
+        }
         guard data.count <= imageAttachmentMaxBytes else {
             throw FileExtractorError.unreadable(
                 filename: url.lastPathComponent,
                 reason: tr("image exceeds the 20MB attachment limit")
             )
         }
+        guard CGImageSourceCreateWithData(data as CFData, nil).map({ CGImageSourceGetCount($0) > 0 }) == true else {
+            throw FileExtractorError.unreadable(
+                filename: url.lastPathComponent,
+                reason: tr("not a readable image")
+            )
+        }
         let downscaled = downscaledImageData(data)
-        return ChatAttachment(
+        return ExtractedAttachment(
             filename: url.lastPathComponent,
             mimeType: downscaled != nil
                 ? "image/png"
@@ -1620,7 +1836,7 @@ public final class ChatViewModel: ObservableObject {
 
     /// Returns PNG bytes capped at the max dimension, or nil when the
     /// original already fits (keep the original bytes and format).
-    private static func downscaledImageData(_ data: Data) -> Data? {
+    nonisolated private static func downscaledImageData(_ data: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any]
@@ -1660,16 +1876,6 @@ public final class ChatViewModel: ObservableObject {
                 return "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
             }
         return urls.isEmpty ? nil : urls
-    }
-
-    private static func firstNWords(_ text: String, n: Int) -> String {
-        let words = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            .prefix(n)
-            .map { String($0) }
-        let joined = words.joined(separator: " ")
-        return joined.isEmpty ? tr("New Chat") : joined
     }
 
     static func buildRequestMessages(
@@ -2040,6 +2246,19 @@ public final class ChatViewModel: ObservableObject {
             return "{\"error\":\"tool_not_executed\",\"note\":\"MTPLX chat did not execute this call.\"}"
         }
         return text
+    }
+
+    /// Activity-strip caption for a failed call: a localised label for
+    /// what failed, then the reason as the tool reported it.
+    static func failureDetail(_ failure: ChatToolFailure) -> String {
+        switch failure.kind {
+        case .searchFailed, .emptyQuery:
+            return tr("Search failed: %@", failure.detail)
+        case .fetchFailed, .invalidURL:
+            return tr("Fetch failed: %@", failure.detail)
+        case .unknownTool:
+            return tr("Tool failed: %@", failure.detail)
+        }
     }
 
     private static func shortResultDetail(for toolName: String, json: String) -> String {

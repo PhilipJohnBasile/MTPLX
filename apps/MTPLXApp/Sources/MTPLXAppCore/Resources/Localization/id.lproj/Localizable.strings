@@ -95,6 +95,7 @@
 "%lld correct" = "%lld benar";
 "%lld correct · %lld left" = "%lld benar · %lld tersisa";
 "%lld correct · %lld missed · %lld left" = "%lld benar · %lld terlewat · %lld tersisa";
+"%lld failed" = "%lld gagal";
 "%lld fields" = "%lld bidang";
 "%lld hidden" = "%lld disembunyikan";
 "%lld hits" = "%lld hit";
@@ -525,7 +526,10 @@
 "External Client" = "Klien Eksternal";
 "External terminal client launched by MTPLX." = "Klien terminal eksternal diluncurkan oleh MTPLX.";
 "Extract MTP weights" = "Ekstrak bobot MTP";
+"Extracting attachments…" = "Mengekstrak lampiran…";
+"Extracting…" = "Mengekstrak…";
 "Failed to start AIME run: %@" = "Gagal memulai eksekusi AIME: %@";
+"Failed: %@" = "Gagal: %@";
 "FAN" = "KIPAS";
 "Fan %lld" = "Kipas %lld";
 "Fan control" = "Kontrol kipas";
@@ -547,6 +551,8 @@
 "FASTER" = "LEBIH CEPAT";
 "Fastest response" = "Respons tercepat";
 "FEATURE FLAGS" = "FEATURE FLAG";
+"Fetch failed" = "Pengambilan gagal";
+"Fetch failed: %@" = "Pengambilan gagal: %@";
 "Fetching page content…" = "Mengambil konten halaman…";
 "Figure on AoPS" = "Gambar di AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "File disimpan di ~/.mtplx/models. Pelanjutan otomatis.";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "Belum ada data prompt.";
 "No request completed yet." = "Belum ada permintaan yang selesai.";
 "No saved agents" = "Tidak ada agen tersimpan";
+"No search provider could be reached (%@)." = "Tidak ada penyedia pencarian yang dapat dihubungi (%@).";
 "No speed data yet." = "Belum ada data kecepatan.";
 "No tool data yet." = "Belum ada data alat.";
 "No transcript data yet." = "Belum ada data transkrip.";
@@ -895,6 +902,7 @@
 "no work yet" = "belum ada pekerjaan";
 "Non-localhost host: an API key is required." = "Host non-localhost: kunci API diperlukan.";
 "none loaded" = "tidak ada yang dimuat";
+"not a readable image" = "bukan gambar yang dapat dibaca";
 "not loaded — loads on first request" = "tidak dimuat — dimuat pada permintaan pertama";
 "Not running." = "Tidak berjalan.";
 "Not solved yet" = "Belum terselesaikan";
@@ -1102,6 +1110,7 @@
 "Repairing" = "Memperbaiki";
 "Replace" = "Ganti";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Mengganti mtplx yang tidak dapat dibaca di %@ — buka terminal baru untuk menggunakan perintah yang diperbarui.";
+"Reply failed: %@" = "Balasan gagal: %@";
 "repo created — uploading" = "repo dibuat — mengunggah";
 "Repository name (owner/name) is required." = "Nama repositori (pemilik/nama) diperlukan.";
 "Repository or config.json not found on Hugging Face." = "Repositori atau config.json tidak ditemukan di Hugging Face.";
@@ -1196,6 +1205,8 @@
 "SCORE" = "SKOR";
 "Search" = "Cari";
 "Search backend returned HTTP %@." = "Backend pencarian mengembalikan HTTP %@.";
+"Search failed" = "Pencarian gagal";
+"Search failed: %@" = "Pencarian gagal: %@";
 "Search languages" = "Cari bahasa";
 "Search models, creators…" = "Cari model, kreator…";
 "Searching" = "Mencari";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Runtime Homebrew yang terpasang berada di bawah batas minimum kompatibilitas.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Bahasa yang digunakan MTPLX di seluruh aplikasi. Perubahan langsung diterapkan.";
 "The model rejected the request. Set an API key in Settings." = "Model menolak permintaan tersebut. Tetapkan kunci API di Pengaturan.";
+"The model server reported an error." = "Server model melaporkan kesalahan.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Sufiks MTPLX dikunci dan build ini telah melewati ambang batas kecepatan.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Penalaran untuk soal ini tidak disimpan — buka kembali soal yang Anda selesaikan dalam sesi ini untuk membaca pengerjaan lengkapnya.";
 "There is not enough free disk space to finish this download." = "Ruang disk kosong tidak cukup untuk menyelesaikan unduhan ini.";
@@ -1393,6 +1405,7 @@
 "Tokens" = "Token";
 "tokens" = "token";
 "Tool" = "Alat";
+"Tool failed: %@" = "Alat gagal: %@";
 "tool output compacted %@" = "output alat dipadatkan %@";
 "Tool surface" = "Antarmuka alat";
 "Tools" = "Alat";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "Total verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "Transkrip";
+"Truncated to %@ of %@ characters" = "Dipotong menjadi %@ dari %@ karakter";
+"Truncated to %lld of %lld pages" = "Dipotong menjadi %lld dari %lld halaman";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "Setel %@?";

@@ -95,6 +95,7 @@
 "%lld correct" = "%lld개 정답";
 "%lld correct · %lld left" = "%lld개 정답 · %lld개 남음";
 "%lld correct · %lld missed · %lld left" = "%lld개 정답 · %lld개 오답 · %lld개 남음";
+"%lld failed" = "%lld개 실패";
 "%lld fields" = "%lld개 필드";
 "%lld hidden" = "%lld개 숨김";
 "%lld hits" = "%lld회 적중";
@@ -525,7 +526,10 @@
 "External Client" = "외부 클라이언트";
 "External terminal client launched by MTPLX." = "MTPLX에서 실행한 외부 터미널 클라이언트입니다.";
 "Extract MTP weights" = "MTP 가중치 추출";
+"Extracting attachments…" = "첨부 파일 추출 중…";
+"Extracting…" = "추출 중…";
 "Failed to start AIME run: %@" = "AIME 실행 시작 실패: %@";
+"Failed: %@" = "실패: %@";
 "FAN" = "팬";
 "Fan %lld" = "팬 %lld";
 "Fan control" = "팬 제어";
@@ -547,6 +551,8 @@
 "FASTER" = "더 빠름";
 "Fastest response" = "가장 빠른 응답";
 "FEATURE FLAGS" = "기능 플래그";
+"Fetch failed" = "가져오기 실패";
+"Fetch failed: %@" = "가져오기 실패: %@";
 "Fetching page content…" = "페이지 콘텐츠 가져오는 중…";
 "Figure on AoPS" = "AoPS 그림";
 "Files land in ~/.mtplx/models. Resume is automatic." = "파일은 ~/.mtplx/models에 저장됩니다. 자동으로 재개됩니다.";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "아직 프롬프트 데이터가 없습니다.";
 "No request completed yet." = "아직 완료된 요청이 없습니다.";
 "No saved agents" = "저장된 에이전트 없음";
+"No search provider could be reached (%@)." = "검색 제공자에 연결할 수 없습니다 (%@).";
 "No speed data yet." = "아직 속도 데이터가 없습니다.";
 "No tool data yet." = "아직 도구 데이터가 없습니다.";
 "No transcript data yet." = "아직 대화 기록 데이터가 없습니다.";
@@ -895,6 +902,7 @@
 "no work yet" = "아직 작업 없음";
 "Non-localhost host: an API key is required." = "로컬호스트가 아닌 호스트: API 키가 필요합니다.";
 "none loaded" = "로드된 항목 없음";
+"not a readable image" = "읽을 수 있는 이미지가 아닙니다";
 "not loaded — loads on first request" = "로드되지 않음 — 첫 요청 시 로드됨";
 "Not running." = "실행 중이 아닙니다.";
 "Not solved yet" = "아직 해결되지 않음";
@@ -1102,6 +1110,7 @@
 "Repairing" = "복구 중";
 "Replace" = "대체";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@의 읽을 수 없는 mtplx를 교체했습니다 — 업데이트된 명령어를 사용하려면 새 터미널을 여십시오.";
+"Reply failed: %@" = "응답 실패: %@";
 "repo created — uploading" = "저장소 생성됨 — 업로드 중";
 "Repository name (owner/name) is required." = "저장소 이름(소유자/이름)이 필요합니다.";
 "Repository or config.json not found on Hugging Face." = "Hugging Face에서 저장소 또는 config.json을 찾을 수 없습니다.";
@@ -1196,6 +1205,8 @@
 "SCORE" = "점수";
 "Search" = "검색";
 "Search backend returned HTTP %@." = "검색 백엔드에서 HTTP %@을(를) 반환했습니다.";
+"Search failed" = "검색 실패";
+"Search failed: %@" = "검색 실패: %@";
 "Search languages" = "언어 검색";
 "Search models, creators…" = "모델, 제작자 검색…";
 "Searching" = "검색 중";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "설치된 Homebrew 런타임이 최소 호환 버전보다 낮습니다.";
 "The language MTPLX uses across the app. Changes apply immediately." = "MTPLX 앱 전체에서 사용할 언어입니다. 변경 사항은 즉시 적용됩니다.";
 "The model rejected the request. Set an API key in Settings." = "모델이 요청을 거부했습니다. 설정에서 API 키를 지정하십시오.";
+"The model server reported an error." = "모델 서버에서 오류를 보고했습니다.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX 접미사가 고정되었으며 이 빌드가 속도 기준을 통과했습니다.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "이 문제의 추론 과정이 저장되지 않았습니다 — 전체 과정을 보려면 이번 세션에서 해결한 문제를 다시 여십시오.";
 "There is not enough free disk space to finish this download." = "이 다운로드를 완료하기 위한 여유 디스크 공간이 부족합니다.";
@@ -1393,6 +1405,7 @@
 "Tokens" = "토큰";
 "tokens" = "토큰";
 "Tool" = "도구";
+"Tool failed: %@" = "도구 실패: %@";
 "tool output compacted %@" = "도구 출력 압축됨 %@";
 "Tool surface" = "도구 환경";
 "Tools" = "도구";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "총 verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "대화 기록";
+"Truncated to %@ of %@ characters" = "앞 %@자로 잘림 (전체 %@자)";
+"Truncated to %lld of %lld pages" = "앞 %lld페이지로 잘림 (전체 %lld페이지)";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@을(를) 튜닝하시겠습니까?";

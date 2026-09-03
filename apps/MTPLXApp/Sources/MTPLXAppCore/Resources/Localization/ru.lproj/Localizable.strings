@@ -95,6 +95,7 @@
 "%lld correct" = "верно: %lld";
 "%lld correct · %lld left" = "верно: %lld · осталось: %lld";
 "%lld correct · %lld missed · %lld left" = "верно: %lld · ошибок: %lld · осталось: %lld";
+"%lld failed" = "%lld с ошибкой";
 "%lld fields" = "Полей: %lld";
 "%lld hidden" = "Скрыто: %lld";
 "%lld hits" = "Попаданий: %lld";
@@ -523,7 +524,10 @@
 "External Client" = "Внешний клиент";
 "External terminal client launched by MTPLX." = "Внешний терминальный клиент, запущенный MTPLX.";
 "Extract MTP weights" = "Извлечь веса MTP";
+"Extracting attachments…" = "Извлечение вложений…";
+"Extracting…" = "Извлечение…";
 "Failed to start AIME run: %@" = "Не удалось запустить прогон AIME: %@";
+"Failed: %@" = "Ошибка: %@";
 "FAN" = "ВЕНТИЛЯТОР";
 "Fan %lld" = "Вентилятор %lld";
 "Fan control" = "Управление вентиляторами";
@@ -545,6 +549,8 @@
 "FASTER" = "БЫСТРЕЕ";
 "Fastest response" = "Самый быстрый ответ";
 "FEATURE FLAGS" = "ФЛАГИ ФУНКЦИЙ";
+"Fetch failed" = "Не удалось получить страницу";
+"Fetch failed: %@" = "Не удалось получить страницу: %@";
 "Fetching page content…" = "Получение содержимого страницы…";
 "Figure on AoPS" = "Рисунок на AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "Файлы сохраняются в ~/.mtplx/models. Возобновление происходит автоматически.";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "Данных о промпте пока нет.";
 "No request completed yet." = "Ни один запрос ещё не завершён.";
 "No saved agents" = "Нет сохранённых агентов";
+"No search provider could be reached (%@)." = "Ни один поисковый сервис недоступен (%@).";
 "No speed data yet." = "Данных о скорости пока нет.";
 "No tool data yet." = "Данных об инструментах пока нет.";
 "No transcript data yet." = "Данных о стенограмме пока нет.";
@@ -895,6 +902,7 @@
 "no work yet" = "пока нет работы";
 "Non-localhost host: an API key is required." = "Хост не localhost: требуется ключ API.";
 "none loaded" = "ничего не загружено";
+"not a readable image" = "изображение не читается";
 "not loaded — loads on first request" = "не загружено — загружается при первом запросе";
 "Not running." = "Не запущено.";
 "Not solved yet" = "Ещё не решено";
@@ -1102,6 +1110,7 @@
 "Repairing" = "Восстановление";
 "Replace" = "Заменить";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Заменён нечитаемый mtplx по пути %@ — откройте новый терминал, чтобы использовать обновлённую команду.";
+"Reply failed: %@" = "Не удалось получить ответ: %@";
 "repo created — uploading" = "репозиторий создан — идёт загрузка";
 "Repository name (owner/name) is required." = "Требуется имя репозитория (владелец/имя).";
 "Repository or config.json not found on Hugging Face." = "Репозиторий или config.json не найден на Hugging Face.";
@@ -1196,6 +1205,8 @@
 "SCORE" = "БАЛЛЫ";
 "Search" = "Поиск";
 "Search backend returned HTTP %@." = "Бэкенд поиска вернул HTTP %@.";
+"Search failed" = "Ошибка поиска";
+"Search failed: %@" = "Ошибка поиска: %@";
 "Search languages" = "Поиск языков";
 "Search models, creators…" = "Поиск моделей, создателей…";
 "Searching" = "Поиск";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Установленная среда выполнения Homebrew ниже порога совместимости.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Язык, используемый MTPLX во всём приложении. Изменения применяются немедленно.";
 "The model rejected the request. Set an API key in Settings." = "Модель отклонила запрос. Задайте ключ API в «Настройках».";
+"The model server reported an error." = "Сервер модели сообщил об ошибке.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Суффикс MTPLX зафиксирован, и эта сборка прошла проверку скорости.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Рассуждения для этой задачи не были сохранены — откройте заново задачу, решённую в этой сессии, чтобы просмотреть полное решение.";
 "There is not enough free disk space to finish this download." = "Недостаточно свободного места на диске для завершения этой загрузки.";
@@ -1393,6 +1405,7 @@
 "Tokens" = "Токены";
 "tokens" = "токены";
 "Tool" = "Инструмент";
+"Tool failed: %@" = "Ошибка инструмента: %@";
 "tool output compacted %@" = "вывод инструмента сжат %@";
 "Tool surface" = "Интерфейс инструментов";
 "Tools" = "Инструменты";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "Общее verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "Стенограмма";
+"Truncated to %@ of %@ characters" = "Оставлено %@ из %@ символов";
+"Truncated to %lld of %lld pages" = "Оставлено %lld из %lld страниц";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "Выполнить автонастройку %@?";

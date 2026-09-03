@@ -95,6 +95,7 @@
 "%lld correct" = "%lld 题正确";
 "%lld correct · %lld left" = "%lld 题正确 · 剩余 %lld 题";
 "%lld correct · %lld missed · %lld left" = "%lld 题正确 · %lld 题答错 · 剩余 %lld 题";
+"%lld failed" = "%lld 个失败";
 "%lld fields" = "%lld 个字段";
 "%lld hidden" = "已隐藏 %lld 个";
 "%lld hits" = "%lld 次命中";
@@ -525,7 +526,10 @@
 "External Client" = "外部客户端";
 "External terminal client launched by MTPLX." = "由 MTPLX 启动的外部终端客户端。";
 "Extract MTP weights" = "提取 MTP 权重";
+"Extracting attachments…" = "正在提取附件…";
+"Extracting…" = "正在提取…";
 "Failed to start AIME run: %@" = "无法启动 AIME 运行：%@";
+"Failed: %@" = "失败：%@";
 "FAN" = "风扇";
 "Fan %lld" = "风扇 %lld";
 "Fan control" = "风扇控制";
@@ -547,6 +551,8 @@
 "FASTER" = "更快";
 "Fastest response" = "最快响应";
 "FEATURE FLAGS" = "功能标志";
+"Fetch failed" = "获取失败";
+"Fetch failed: %@" = "获取失败：%@";
 "Fetching page content…" = "正在获取页面内容…";
 "Figure on AoPS" = "AoPS 上的图表";
 "Files land in ~/.mtplx/models. Resume is automatic." = "文件保存在 ~/.mtplx/models 中。会自动续传。";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "尚无提示数据。";
 "No request completed yet." = "尚无已完成的请求。";
 "No saved agents" = "无已保存的智能体";
+"No search provider could be reached (%@)." = "无法连接到任何搜索服务（%@）。";
 "No speed data yet." = "尚无速度数据。";
 "No tool data yet." = "尚无工具数据。";
 "No transcript data yet." = "尚无对话记录数据。";
@@ -895,6 +902,7 @@
 "no work yet" = "尚无工作";
 "Non-localhost host: an API key is required." = "非本地主机：需要 API 密钥。";
 "none loaded" = "未加载任何内容";
+"not a readable image" = "不是可读取的图片";
 "not loaded — loads on first request" = "未加载 — 将在首次请求时加载";
 "Not running." = "未在运行。";
 "Not solved yet" = "尚未解决";
@@ -1102,6 +1110,7 @@
 "Repairing" = "正在修复";
 "Replace" = "替换";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "已替换位于 %@ 的不可读 mtplx — 打开新终端即可使用更新后的命令。";
+"Reply failed: %@" = "回复失败：%@";
 "repo created — uploading" = "仓库已创建 — 正在上传";
 "Repository name (owner/name) is required." = "需要仓库名称（所有者/名称）。";
 "Repository or config.json not found on Hugging Face." = "未在 Hugging Face 上找到仓库或 config.json。";
@@ -1196,6 +1205,8 @@
 "SCORE" = "得分";
 "Search" = "搜索";
 "Search backend returned HTTP %@." = "搜索后端返回 HTTP %@。";
+"Search failed" = "搜索失败";
+"Search failed: %@" = "搜索失败：%@";
 "Search languages" = "搜索语言";
 "Search models, creators…" = "搜索模型、创作者…";
 "Searching" = "正在搜索";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "已安装的 Homebrew 运行时低于最低兼容版本。";
 "The language MTPLX uses across the app. Changes apply immediately." = "MTPLX 在整个应用中使用的语言。更改立即生效。";
 "The model rejected the request. Set an API key in Settings." = "模型拒绝了请求。请在“设置”中配置 API 密钥。";
+"The model server reported an error." = "模型服务器报告了一个错误。";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLX 后缀已锁定，且此构建已通过速度关口。";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "此题目的推理未保存 — 重新打开你在本次会话中解决的题目可阅读其完整步骤。";
 "There is not enough free disk space to finish this download." = "可用磁盘空间不足，无法完成此下载。";
@@ -1393,6 +1405,7 @@
 "Tokens" = "词元";
 "tokens" = "词元";
 "Tool" = "工具";
+"Tool failed: %@" = "工具失败：%@";
 "tool output compacted %@" = "工具输出已紧凑化 %@";
 "Tool surface" = "工具界面";
 "Tools" = "工具";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "总验证时间（秒）：%@";
 "TPS" = "TPS";
 "Transcript" = "对话记录";
+"Truncated to %@ of %@ characters" = "仅保留前 %@ 个字符（共 %@ 个）";
+"Truncated to %lld of %lld pages" = "仅保留前 %lld 页（共 %lld 页）";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "调优 %@？";

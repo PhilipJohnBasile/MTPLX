@@ -95,6 +95,7 @@
 "%lld correct" = "%lld richtig";
 "%lld correct · %lld left" = "%lld richtig · %lld übrig";
 "%lld correct · %lld missed · %lld left" = "%lld richtig · %lld verfehlt · %lld übrig";
+"%lld failed" = "%lld fehlgeschlagen";
 "%lld fields" = "%lld Felder";
 "%lld hidden" = "%lld ausgeblendet";
 "%lld hits" = "%lld Treffer";
@@ -525,7 +526,10 @@
 "External Client" = "Externer Client";
 "External terminal client launched by MTPLX." = "Externer Terminal-Client, von MTPLX gestartet.";
 "Extract MTP weights" = "MTP-Gewichte extrahieren";
+"Extracting attachments…" = "Anhänge werden extrahiert…";
+"Extracting…" = "Wird extrahiert…";
 "Failed to start AIME run: %@" = "AIME-Lauf konnte nicht gestartet werden: %@";
+"Failed: %@" = "Fehlgeschlagen: %@";
 "FAN" = "LÜFTER";
 "Fan %lld" = "Lüfter %lld";
 "Fan control" = "Lüftersteuerung";
@@ -547,6 +551,8 @@
 "FASTER" = "SCHNELLER";
 "Fastest response" = "Schnellste Antwort";
 "FEATURE FLAGS" = "FEATURE-FLAGS";
+"Fetch failed" = "Abruf fehlgeschlagen";
+"Fetch failed: %@" = "Abruf fehlgeschlagen: %@";
 "Fetching page content…" = "Seiteninhalt wird abgerufen…";
 "Figure on AoPS" = "Abbildung auf AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "Dateien landen in ~/.mtplx/models. Die Fortsetzung erfolgt automatisch.";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "Noch keine Prompt-Daten vorhanden.";
 "No request completed yet." = "Noch keine Anfrage abgeschlossen.";
 "No saved agents" = "Keine gesicherten Agenten";
+"No search provider could be reached (%@)." = "Kein Suchanbieter war erreichbar (%@).";
 "No speed data yet." = "Noch keine Geschwindigkeitsdaten vorhanden.";
 "No tool data yet." = "Noch keine Tool-Daten vorhanden.";
 "No transcript data yet." = "Noch keine Transkriptdaten vorhanden.";
@@ -895,6 +902,7 @@
 "no work yet" = "noch keine Arbeit";
 "Non-localhost host: an API key is required." = "Nicht-Localhost-Host: Ein API-Schlüssel ist erforderlich.";
 "none loaded" = "keine geladen";
+"not a readable image" = "kein lesbares Bild";
 "not loaded — loads on first request" = "nicht geladen — lädt bei erster Anfrage";
 "Not running." = "Läuft nicht.";
 "Not solved yet" = "Noch nicht gelöst";
@@ -1102,6 +1110,7 @@
 "Repairing" = "Reparatur läuft";
 "Replace" = "Ersetzen";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Unlesbares mtplx unter %@ wurde ersetzt — öffne ein neues Terminal, um den aktualisierten Befehl zu verwenden.";
+"Reply failed: %@" = "Antwort fehlgeschlagen: %@";
 "repo created — uploading" = "Repo erstellt — wird hochgeladen";
 "Repository name (owner/name) is required." = "Repository-Name (Owner/Name) ist erforderlich.";
 "Repository or config.json not found on Hugging Face." = "Repository oder config.json auf Hugging Face nicht gefunden.";
@@ -1196,6 +1205,8 @@
 "SCORE" = "ERGEBNIS";
 "Search" = "Suchen";
 "Search backend returned HTTP %@." = "Such-Backend gab HTTP %@ zurück.";
+"Search failed" = "Suche fehlgeschlagen";
+"Search failed: %@" = "Suche fehlgeschlagen: %@";
 "Search languages" = "Sprachen suchen";
 "Search models, creators…" = "Modelle, Ersteller suchen …";
 "Searching" = "Suchen läuft";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "Die installierte Homebrew-Runtime liegt unterhalb der Mindestkompatibilität.";
 "The language MTPLX uses across the app. Changes apply immediately." = "Die Sprache, die MTPLX in der gesamten App verwendet. Änderungen werden sofort angewendet.";
 "The model rejected the request. Set an API key in Settings." = "Das Modell hat die Anfrage abgelehnt. Lege einen API-Schlüssel in den Einstellungen fest.";
+"The model server reported an error." = "Der Modellserver hat einen Fehler gemeldet.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "Das MTPLX-Suffix ist gesperrt und dieser Build hat das Speed-Gate passiert.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "Das Reasoning für dieses Problem wurde nicht gesichert — öffne ein in dieser Sitzung gelöstes Problem erneut, um den vollständigen Rechenweg zu lesen.";
 "There is not enough free disk space to finish this download." = "Es ist nicht genügend freier Festplattenspeicher vorhanden, um diesen Download abzuschließen.";
@@ -1393,6 +1405,7 @@
 "Tokens" = "Token";
 "tokens" = "Token";
 "Tool" = "Tool";
+"Tool failed: %@" = "Tool fehlgeschlagen: %@";
 "tool output compacted %@" = "Tool-Ausgabe komprimiert %@";
 "Tool surface" = "Tool-Oberfläche";
 "Tools" = "Tools";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "Gesamt verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "Transkript";
+"Truncated to %@ of %@ characters" = "Gekürzt auf %@ von %@ Zeichen";
+"Truncated to %lld of %lld pages" = "Gekürzt auf %lld von %lld Seiten";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@ abstimmen?";

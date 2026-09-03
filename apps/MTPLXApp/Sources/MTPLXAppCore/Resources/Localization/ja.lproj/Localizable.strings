@@ -95,6 +95,7 @@
 "%lld correct" = "%lld問正解";
 "%lld correct · %lld left" = "%lld問正解 · 残り%lld問";
 "%lld correct · %lld missed · %lld left" = "%lld問正解 · %lld問不正解 · 残り%lld問";
+"%lld failed" = "%lld件失敗";
 "%lld fields" = "%lld個のフィールド";
 "%lld hidden" = "%lld件を非表示";
 "%lld hits" = "%lld件ヒット";
@@ -525,7 +526,10 @@
 "External Client" = "外部クライアント";
 "External terminal client launched by MTPLX." = "MTPLXが起動した外部ターミナルクライアント。";
 "Extract MTP weights" = "MTPの重みを抽出";
+"Extracting attachments…" = "添付ファイルを抽出中…";
+"Extracting…" = "抽出中…";
 "Failed to start AIME run: %@" = "AIME実行を開始できませんでした: %@";
+"Failed: %@" = "失敗: %@";
 "FAN" = "ファン";
 "Fan %lld" = "ファン%lld";
 "Fan control" = "ファン制御";
@@ -547,6 +551,8 @@
 "FASTER" = "高速化";
 "Fastest response" = "最速の応答";
 "FEATURE FLAGS" = "機能フラグ";
+"Fetch failed" = "取得に失敗";
+"Fetch failed: %@" = "取得に失敗: %@";
 "Fetching page content…" = "ページコンテンツを取得中…";
 "Figure on AoPS" = "AoPS上の図";
 "Files land in ~/.mtplx/models. Resume is automatic." = "ファイルは~/.mtplx/modelsに保存されます。再開は自動的に行われます。";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "プロンプトデータはまだありません。";
 "No request completed yet." = "完了したリクエストはまだありません。";
 "No saved agents" = "保存されたエージェントはありません";
+"No search provider could be reached (%@)." = "検索プロバイダーに接続できませんでした（%@）。";
 "No speed data yet." = "速度データはまだありません。";
 "No tool data yet." = "ツールデータはまだありません。";
 "No transcript data yet." = "文字起こしデータはまだありません。";
@@ -895,6 +902,7 @@
 "no work yet" = "作業はまだありません";
 "Non-localhost host: an API key is required." = "localhost以外のホスト: APIキーが必要です。";
 "none loaded" = "読み込みなし";
+"not a readable image" = "読み取り可能な画像ではありません";
 "not loaded — loads on first request" = "未読み込み — 最初のリクエスト時に読み込まれます";
 "Not running." = "実行されていません。";
 "Not solved yet" = "未解決";
@@ -1102,6 +1110,7 @@
 "Repairing" = "修復中";
 "Replace" = "置換";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@の読み取り不能なmtplxを置き換えました — 更新されたコマンドを使用するには新しいターミナルを開いてください。";
+"Reply failed: %@" = "返答に失敗しました: %@";
 "repo created — uploading" = "リポジトリ作成完了 — アップロード中";
 "Repository name (owner/name) is required." = "リポジトリ名（owner/name）が必要です。";
 "Repository or config.json not found on Hugging Face." = "Hugging Face上にリポジトリまたはconfig.jsonが見つかりません。";
@@ -1196,6 +1205,8 @@
 "SCORE" = "スコア";
 "Search" = "検索";
 "Search backend returned HTTP %@." = "検索バックエンドがHTTP %@を返しました。";
+"Search failed" = "検索に失敗";
+"Search failed: %@" = "検索に失敗: %@";
 "Search languages" = "言語を検索";
 "Search models, creators…" = "モデル、作成者を検索…";
 "Searching" = "検索中";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "インストールされているHomebrewランタイムが互換性要件を下回っています。";
 "The language MTPLX uses across the app. Changes apply immediately." = "MTPLXがアプリ全体で使用する言語。変更はすぐに適用されます。";
 "The model rejected the request. Set an API key in Settings." = "モデルがリクエストを拒否しました。設定でAPIキーを設定してください。";
+"The model server reported an error." = "モデルサーバーがエラーを報告しました。";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "MTPLXサフィックスは固定されており、このビルドはスピードゲートを通過しました。";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "この問題の推論は保存されませんでした — 詳しい導出過程を確認するには、このセッションで解決した問題を再度開いてください。";
 "There is not enough free disk space to finish this download." = "このダウンロードを完了するのに十分な空きディスク容量がありません。";
@@ -1393,6 +1405,7 @@
 "Tokens" = "トークン";
 "tokens" = "トークン";
 "Tool" = "ツール";
+"Tool failed: %@" = "ツールの実行に失敗: %@";
 "tool output compacted %@" = "ツール出力を圧縮 %@";
 "Tool surface" = "ツール機能";
 "Tools" = "ツール";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "合計verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "トランスクリプト";
+"Truncated to %@ of %@ characters" = "先頭 %@ 文字に切り詰め（全 %@ 文字）";
+"Truncated to %lld of %lld pages" = "先頭 %lld ページに切り詰め（全 %lld ページ）";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@をチューニングしますか？";

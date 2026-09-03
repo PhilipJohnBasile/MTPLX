@@ -95,6 +95,7 @@
 "%lld correct" = "%lld صحيح";
 "%lld correct · %lld left" = "%lld صحيح · المتبقي %lld";
 "%lld correct · %lld missed · %lld left" = "%lld صحيح · %lld فائت · المتبقي %lld";
+"%lld failed" = "%lld فشلت";
 "%lld fields" = "%lld حقول";
 "%lld hidden" = "%lld مخفي";
 "%lld hits" = "%lld إصابات";
@@ -525,7 +526,10 @@
 "External Client" = "عميل خارجي";
 "External terminal client launched by MTPLX." = "عميل Terminal خارجي تم تشغيله بواسطة MTPLX.";
 "Extract MTP weights" = "استخراج أوزان MTP";
+"Extracting attachments…" = "جارٍ استخراج المرفقات…";
+"Extracting…" = "جارٍ الاستخراج…";
 "Failed to start AIME run: %@" = "فشل بدء تشغيل AIME: %@";
+"Failed: %@" = "فشل: %@";
 "FAN" = "المروحة";
 "Fan %lld" = "المروحة %lld";
 "Fan control" = "التحكم في المروحة";
@@ -547,6 +551,8 @@
 "FASTER" = "أسرع";
 "Fastest response" = "أسرع استجابة";
 "FEATURE FLAGS" = "أعلام الميزات";
+"Fetch failed" = "فشل جلب الصفحة";
+"Fetch failed: %@" = "فشل جلب الصفحة: %@";
 "Fetching page content…" = "جارٍ جلب محتوى الصفحة…";
 "Figure on AoPS" = "الشكل على AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "تستقر الملفات في ‎~/.mtplx/models. الاستئناف تلقائي.";
@@ -886,6 +892,7 @@
 "No prompt data yet." = "لا توجد بيانات للمطالبة بعد.";
 "No request completed yet." = "لم يكتمل أي طلب بعد.";
 "No saved agents" = "لا يوجد وكلاء محفوظون";
+"No search provider could be reached (%@)." = "تعذّر الوصول إلى أي مزوّد بحث (%@).";
 "No speed data yet." = "لا توجد بيانات للسرعة بعد.";
 "No tool data yet." = "لا توجد بيانات للأداة بعد.";
 "No transcript data yet." = "لا توجد بيانات للنص بعد.";
@@ -895,6 +902,7 @@
 "no work yet" = "لا يوجد عمل بعد";
 "Non-localhost host: an API key is required." = "مضيف غير localhost: مطلوب مفتاح API.";
 "none loaded" = "لم يتم تحميل أي منها";
+"not a readable image" = "ليست صورة قابلة للقراءة";
 "not loaded — loads on first request" = "غير محمل — يتم التحميل عند أول طلب";
 "Not running." = "لا يعمل.";
 "Not solved yet" = "لم تُحل بعد";
@@ -1102,6 +1110,7 @@
 "Repairing" = "جارٍ الإصلاح";
 "Replace" = "استبدال";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "تم استبدال mtplx غير قابل للقراءة في %@ — افتح نافذة Terminal جديدة لاستخدام الأمر المحدث.";
+"Reply failed: %@" = "فشل الرد: %@";
 "repo created — uploading" = "تم إنشاء المستودع — جارٍ الرفع";
 "Repository name (owner/name) is required." = "اسم المستودع (owner/name) مطلوب.";
 "Repository or config.json not found on Hugging Face." = "لم يتم العثور على المستودع أو config.json على Hugging Face.";
@@ -1196,6 +1205,8 @@
 "SCORE" = "النتيجة";
 "Search" = "بحث";
 "Search backend returned HTTP %@." = "أرجعت الواجهة الخلفية للبحث HTTP %@.";
+"Search failed" = "فشل البحث";
+"Search failed: %@" = "فشل البحث: %@";
 "Search languages" = "البحث في اللغات";
 "Search models, creators…" = "البحث في النماذج، والمبتكرين…";
 "Searching" = "جارٍ البحث";
@@ -1355,6 +1366,7 @@
 "The installed Homebrew runtime is below the compatibility floor." = "بيئة تشغيل Homebrew المثبتة أقل من الحد الأدنى للتوافق.";
 "The language MTPLX uses across the app. Changes apply immediately." = "اللغة التي يستخدمها MTPLX في جميع أنحاء التطبيق. تُطبق التغييرات فوراً.";
 "The model rejected the request. Set an API key in Settings." = "رفض النموذج الطلب. قم بتعيين مفتاح API في الإعدادات.";
+"The model server reported an error." = "أبلغ خادم النموذج عن خطأ.";
 "The MTPLX suffix is locked and this build has passed the speed gate." = "لاحقة MTPLX مقفلة واجتاز هذا البناء اختبار السرعة.";
 "The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working." = "لم يتم حفظ التفكير المنطقي لهذه المسألة — أعد فتح مسألة قمت بحلها في هذه الجلسة لقراءة خطوات الحل الكاملة.";
 "There is not enough free disk space to finish this download." = "لا توجد مساحة قرص خالية كافية لإكمال هذا التنزيل.";
@@ -1393,6 +1405,7 @@
 "Tokens" = "الرموز";
 "tokens" = "رموز";
 "Tool" = "أداة";
+"Tool failed: %@" = "فشلت الأداة: %@";
 "tool output compacted %@" = "تم ضغط مخرجات الأداة %@";
 "Tool surface" = "واجهة الأداة";
 "Tools" = "الأدوات";
@@ -1403,6 +1416,8 @@
 "Total verify_time_s: %@" = "إجمالي verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "النص الكامل";
+"Truncated to %@ of %@ characters" = "تم الاحتفاظ بأول %@ حرف من أصل %@";
+"Truncated to %lld of %lld pages" = "تم الاحتفاظ بأول %lld صفحة من أصل %lld";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "هل تريد ضبط %@؟";

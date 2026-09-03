@@ -25,23 +25,89 @@ public struct ExtractedFile: Sendable, Hashable {
     public var combinedText: String
     public var sizeBytes: Int
     public var pageCount: Int?
+    /// What the caps cut, when they cut anything. The text itself ends
+    /// with a plain marker saying the same, so the model knows the
+    /// document continues past what it was given.
+    public var truncation: ExtractionTruncation?
 
     public init(
         filename: String,
         mimeType: String,
         combinedText: String,
         sizeBytes: Int,
-        pageCount: Int? = nil
+        pageCount: Int? = nil,
+        truncation: ExtractionTruncation? = nil
     ) {
         self.filename = filename
         self.mimeType = mimeType
         self.combinedText = combinedText
         self.sizeBytes = sizeBytes
         self.pageCount = pageCount
+        self.truncation = truncation
     }
 
     public var isEmpty: Bool {
         combinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// How much of an attachment was kept when it exceeded the extraction
+/// caps. Either span is nil when that cap did not apply.
+public struct ExtractionTruncation: Sendable, Hashable {
+    public struct Span: Sendable, Hashable {
+        public var included: Int
+        public var total: Int
+
+        public init(included: Int, total: Int) {
+            self.included = included
+            self.total = total
+        }
+    }
+
+    public var pages: Span?
+    public var characters: Span?
+
+    public init(pages: Span? = nil, characters: Span? = nil) {
+        self.pages = pages
+        self.characters = characters
+    }
+
+    /// One line for the attachment card, in the active language.
+    public var summary: String {
+        var parts: [String] = []
+        if let pages {
+            parts.append(tr("Truncated to %lld of %lld pages", pages.included, pages.total))
+        }
+        if let characters {
+            parts.append(
+                tr(
+                    "Truncated to %@ of %@ characters",
+                    Self.grouped(characters.included),
+                    Self.grouped(characters.total)
+                )
+            )
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The marker appended to the extracted text so the model knows the
+    /// document continues past what it was given.
+    var modelMarker: String {
+        var parts: [String] = []
+        if let pages {
+            parts.append("first \(pages.included) of \(pages.total) pages")
+        }
+        if let characters {
+            parts.append("first \(characters.included) of \(characters.total) characters")
+        }
+        return "[Attachment truncated: \(parts.joined(separator: ", ")) included]"
+    }
+
+    private static func grouped(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = L10n.language.locale
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 }
 
@@ -65,6 +131,16 @@ public enum FileExtractor {
     public static let supportedExtensions: Set<String> = [
         "pdf", "txt", "md", "docx",
     ]
+
+    // Extraction caps. The text is inlined into the user message
+    // verbatim on every turn, so an unbounded attachment is an unbounded
+    // prefill for a local model. Generous on purpose: a long paper or a
+    // large source file fits; a whole book does not, and the user is
+    // told exactly what was kept (card note) as is the model (marker).
+    /// Most PDF pages read; the rest of the document is not extracted.
+    public static let maxPDFPages = 500
+    /// Most characters kept from any attachment.
+    public static let maxCharacters = 200_000
 
     public static func mimeType(for pathExtension: String) -> String {
         switch pathExtension.lowercased() {
@@ -96,60 +172,69 @@ public enum FileExtractor {
             )
         }
 
+        let rawText: String
+        var pageCount: Int?
+        var pageTruncation: ExtractionTruncation.Span?
         switch ext {
         case "pdf":
             #if canImport(PDFKit)
-            let (text, pages) = extractPDF(from: url)
-            return ExtractedFile(
-                filename: filename,
-                mimeType: mime,
-                combinedText: text,
-                sizeBytes: data.count,
-                pageCount: pages
-            )
+            let pdf = extractPDF(from: url)
+            rawText = pdf.text
+            pageCount = pdf.pageCount
+            pageTruncation = pdf.truncatedPages
             #else
             throw FileExtractorError.unsupported(filename: filename, ext: ext)
             #endif
 
-        case "txt", "md":
-            let text = (String(data: data, encoding: .utf8) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return ExtractedFile(
-                filename: filename,
-                mimeType: mime,
-                combinedText: text,
-                sizeBytes: data.count
-            )
-
         case "docx":
-            let text = (extractDocxText(from: data) ?? "")
+            rawText = (extractDocxText(from: data) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return ExtractedFile(
-                filename: filename,
-                mimeType: mime,
-                combinedText: text,
-                sizeBytes: data.count
-            )
 
         default:
-            let text = (String(data: data, encoding: .utf8) ?? "")
+            // txt, md, and a best-effort UTF-8 read of anything else.
+            rawText = (String(data: data, encoding: .utf8) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return ExtractedFile(
-                filename: filename,
-                mimeType: mime,
-                combinedText: text,
-                sizeBytes: data.count
-            )
         }
+
+        let capped = applyCharacterCap(to: rawText, pageTruncation: pageTruncation)
+        return ExtractedFile(
+            filename: filename,
+            mimeType: mime,
+            combinedText: capped.text,
+            sizeBytes: data.count,
+            pageCount: pageCount,
+            truncation: capped.truncation
+        )
+    }
+
+    /// Cuts `text` to `maxCharacters` and, when anything was cut (pages
+    /// or characters), appends the marker the model reads.
+    static func applyCharacterCap(
+        to text: String,
+        pageTruncation: ExtractionTruncation.Span?
+    ) -> (text: String, truncation: ExtractionTruncation?) {
+        var truncation = ExtractionTruncation(pages: pageTruncation)
+        var kept = text
+        if text.count > maxCharacters {
+            kept = String(text.prefix(maxCharacters))
+            truncation.characters = .init(included: maxCharacters, total: text.count)
+        }
+        guard truncation.pages != nil || truncation.characters != nil else {
+            return (kept, nil)
+        }
+        return (kept + "\n\n" + truncation.modelMarker, truncation)
     }
 
     // MARK: - Private helpers
 
     #if canImport(PDFKit)
-    private static func extractPDF(from url: URL) -> (text: String, pageCount: Int) {
-        guard let document = PDFDocument(url: url) else { return ("", 0) }
+    private static func extractPDF(
+        from url: URL
+    ) -> (text: String, pageCount: Int, truncatedPages: ExtractionTruncation.Span?) {
+        guard let document = PDFDocument(url: url) else { return ("", 0, nil) }
+        let readPages = min(document.pageCount, maxPDFPages)
         var parts: [String] = []
-        for index in 0..<document.pageCount {
+        for index in 0..<readPages {
             guard let page = document.page(at: index),
                 let pageText = page.string?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -157,7 +242,10 @@ public enum FileExtractor {
             else { continue }
             parts.append(pageText)
         }
-        return (parts.joined(separator: "\n\n"), document.pageCount)
+        let truncated: ExtractionTruncation.Span? = readPages < document.pageCount
+            ? .init(included: readPages, total: document.pageCount)
+            : nil
+        return (parts.joined(separator: "\n\n"), document.pageCount, truncated)
     }
     #endif
 

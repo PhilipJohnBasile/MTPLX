@@ -17,6 +17,48 @@ import os
 //     factory dispatches one call at a time and is stateless except for
 //     the Jaccard duplicate-query guard.
 
+// MARK: - Dispatch outcome
+
+/// Why a tool call produced no usable result. `detail` is plain
+/// English for the model's tool result and the activity strip's
+/// caption (the UI adds its own localised label in front of it).
+public struct ChatToolFailure: Error, Equatable, Sendable {
+    public enum Kind: String, Equatable, Sendable {
+        case unknownTool = "unknown_tool"
+        case emptyQuery = "empty_query"
+        case invalidURL = "invalid_url"
+        case searchFailed = "search_failed"
+        case fetchFailed = "fetch_failed"
+    }
+
+    public var kind: Kind
+    public var detail: String
+
+    public init(kind: Kind, detail: String) {
+        self.kind = kind
+        self.detail = detail
+    }
+}
+
+/// What one tool call came back with. `resultJSON` is always the
+/// content of the `role: "tool"` message the model receives; when the
+/// call failed it says so and why, so the model reports the failure
+/// instead of answering as if a search had found nothing. `failure` is
+/// the typed reason the app records and shows — the dispatch loop used
+/// to hard-code every call as a success because the factory only ever
+/// returned a string.
+public struct ChatToolDispatchResult: Equatable, Sendable {
+    public var resultJSON: String
+    public var failure: ChatToolFailure?
+
+    public init(resultJSON: String, failure: ChatToolFailure? = nil) {
+        self.resultJSON = resultJSON
+        self.failure = failure
+    }
+
+    public var succeeded: Bool { failure == nil }
+}
+
 public struct MTPLXChatToolFactory: Sendable {
     public let webSearch: WebSearchService
     public let urlFetcher: URLFetcher
@@ -51,9 +93,10 @@ public struct MTPLXChatToolFactory: Sendable {
 
     // MARK: - Dispatch
 
-    /// Routes a tool call. Returns the raw JSON string to send back as
-    /// the assistant's tool-result message content.
-    public func dispatch(name: String, argumentsJSON: String) async -> String {
+    /// Routes a tool call. The result's JSON is the content of the
+    /// `role: "tool"` message sent back to the model; its `failure` is
+    /// set when the call could not be carried out.
+    public func dispatch(name: String, argumentsJSON: String) async -> ChatToolDispatchResult {
         switch name {
         case "web_search":
             return await dispatchWebSearch(argumentsJSON: argumentsJSON)
@@ -61,23 +104,27 @@ public struct MTPLXChatToolFactory: Sendable {
             return await dispatchFetchURL(argumentsJSON: argumentsJSON)
         default:
             Self.log.warning("Unknown tool name: \(name, privacy: .public)")
-            return jsonObject([
-                "error": "unknown_tool",
-                "tool": name,
-                "note": "Tool not implemented in MTPLX chat; answer from knowledge.",
-            ])
+            return failed(
+                .unknownTool,
+                detail: "\(name) is not a tool MTPLX chat provides",
+                fields: ["tool": name],
+                note: "This tool is not available in MTPLX chat, so the call did nothing. "
+                    + "Tell the user if they asked for it, and answer from what you already have."
+            )
         }
     }
 
     // MARK: - web_search
 
-    private func dispatchWebSearch(argumentsJSON: String) async -> String {
+    private func dispatchWebSearch(argumentsJSON: String) async -> ChatToolDispatchResult {
         let query = parseQuery(from: argumentsJSON).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
-            return jsonObject([
-                "error": "empty_query",
-                "note": "web_search called with empty query; answer from knowledge.",
-            ])
+            return failed(
+                .emptyQuery,
+                detail: "web_search was called without a query",
+                note: "web_search was called with an empty query, so nothing was searched. "
+                    + "Call it again with a specific query, or answer from knowledge."
+            )
         }
 
         switch await session.begin(query: query) {
@@ -87,7 +134,7 @@ public struct MTPLXChatToolFactory: Sendable {
             Self.log.info(
                 "Skipping duplicate web_search query='\(query, privacy: .public)' previous='\(previous, privacy: .public)' warnings=\(warningCount, privacy: .public)"
             )
-            return jsonObject([
+            return succeeded([
                 "query": query,
                 "previous_query": previous,
                 "warning_count": warningCount,
@@ -95,7 +142,7 @@ public struct MTPLXChatToolFactory: Sendable {
             ])
         case .disabled:
             Self.log.info("web_search disabled for the remainder of this turn")
-            return jsonObject([
+            return succeeded([
                 "query": query,
                 "note": "web_search is disabled for the rest of this turn. Answer from knowledge or the previously fetched sources.",
             ])
@@ -107,16 +154,19 @@ public struct MTPLXChatToolFactory: Sendable {
             searchResults = try await webSearch.search(searchRequest)
         } catch {
             Self.log.error("web_search failed: \(error.localizedDescription, privacy: .public)")
-            return jsonObject([
-                "query": query,
-                "error": "search_failed",
-                "detail": error.localizedDescription,
-                "note": "Search backend errored; answer from knowledge and do not retry.",
-            ])
+            return failed(
+                .searchFailed,
+                detail: error.localizedDescription,
+                fields: ["query": query],
+                note: "The web search could not be carried out (network or provider error), "
+                    + "so nothing is known about what it would have found. Tell the user the "
+                    + "search failed, answer from your own knowledge if you can, and do not "
+                    + "claim that nothing was found. Do not retry this turn."
+            )
         }
 
         guard !searchResults.isEmpty else {
-            return jsonObject([
+            return succeeded([
                 "query": query,
                 "results": [] as [Any],
                 "note": "No results. Answer the user's question from your knowledge.",
@@ -158,7 +208,7 @@ public struct MTPLXChatToolFactory: Sendable {
             return dict
         }
 
-        return jsonObject([
+        return succeeded([
             "query": query,
             "results": resultObjects,
         ])
@@ -166,35 +216,62 @@ public struct MTPLXChatToolFactory: Sendable {
 
     // MARK: - fetch_url
 
-    private func dispatchFetchURL(argumentsJSON: String) async -> String {
+    private func dispatchFetchURL(argumentsJSON: String) async -> ChatToolDispatchResult {
         let rawURL = parseString(from: argumentsJSON, key: "url")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: rawURL), let scheme = url.scheme,
             scheme == "http" || scheme == "https"
         else {
-            return jsonObject([
-                "error": "invalid_url",
-                "url": rawURL,
-                "note": "fetch_url requires an http(s) URL.",
-            ])
+            return failed(
+                .invalidURL,
+                detail: "\"\(rawURL)\" is not an http(s) URL",
+                fields: ["url": rawURL],
+                note: "fetch_url needs an http(s) URL, so nothing was fetched."
+            )
         }
 
         do {
             let result = try await urlFetcher.fetch(URLFetchRequest(url: url))
-            return jsonObject([
+            return succeeded([
                 "url": result.url.absoluteString,
                 "title": result.title ?? "",
                 "content": result.content,
             ])
         } catch {
             Self.log.error("fetch_url failed for \(url, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return jsonObject([
-                "error": "fetch_failed",
-                "url": url.absoluteString,
-                "detail": error.localizedDescription,
-                "note": "Could not fetch the URL; do not retry the same URL this turn.",
-            ])
+            return failed(
+                .fetchFailed,
+                detail: error.localizedDescription,
+                fields: ["url": url.absoluteString],
+                note: "The page could not be fetched (network or server error), so its "
+                    + "content is unknown. Tell the user the fetch failed; do not retry the "
+                    + "same URL this turn."
+            )
         }
+    }
+
+    // MARK: - Outcomes
+
+    private func succeeded(_ dict: [String: Any]) -> ChatToolDispatchResult {
+        ChatToolDispatchResult(resultJSON: jsonObject(dict))
+    }
+
+    /// A failed call still hands the model a result — one that names the
+    /// failure and says what to do — and the app a typed reason.
+    private func failed(
+        _ kind: ChatToolFailure.Kind,
+        detail: String,
+        fields: [String: Any] = [:],
+        note: String
+    ) -> ChatToolDispatchResult {
+        var payload = fields
+        payload["error"] = kind.rawValue
+        payload["detail"] = detail
+        payload["note"] = note
+        return ChatToolDispatchResult(
+            resultJSON: jsonObject(payload),
+            failure: ChatToolFailure(kind: kind, detail: detail)
+        )
     }
 
     // MARK: - Schema definitions
