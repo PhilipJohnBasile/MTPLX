@@ -40,12 +40,44 @@ nothing beyond 2.10.2.
   time -12% at 16k, -18.5% at 100k, -14% at 206k. A per-request memory
   gate hands prompts whose bank promotion would not fit back to the
   plain verify (`MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT` is the operator belt).
+- **Flash-Next: David's decode and prefill stack, on by default (PR #391 by
+  @davidtai).** The second half of the PR, ported commit by commit under his
+  name and measured on the coding cells: the two-kernel MoE routing head, the
+  exact op diet, block verification in the accept loop, the fused QSA rope
+  glue inside the compiled verify body, the M4 kernel trio, the PLE prefill
+  lookahead (chunk k+1's n-gram rows gathered under chunk k, also on the
+  restored-suffix prefill of warm agent turns), the first chunk's gather at
+  request arrival, the n-gram table pre-read at model load
+  (`--ngram-prewarm auto|all|off|<GiB>`), and the session bank's boundary
+  shedding and protected terminal. The pre-scatter draft read serves greedy
+  requests. Every item is exact (token-identical at temperature 0) and every
+  key yields to an explicit export, `=0` included. 16k: 41.8 to 39.2 ms per
+  round (-6.2%, -18.6% against 2.10.2), 63.2 to 68.4 tok/s; 100k: 46.7 to
+  43.4 ms (-7.2%, -20.4% against 2.10.2), 54.0 to 60.9 tok/s, TTFT 117.0 to
+  113.2 s; 206k: not re-measured after the release-night harness crash
+  (2.11 as built: 56.2 ms, 44.8 tok/s); peak memory within 2.3 GB of 2.11 as
+  built at 100k, flat at 16k.
 - **27B flash-decoding verify route on in turbo** (`MTPLX_NAX_FLASH_ROUTE=1`,
   dim-split block defaults from the 72.7k and 128k sweeps).
 - **Opt-in Steel sparse-GQA prefill consumer for M3** (PR #423 by
   @humanrouter), shipped as a native extension, not yet in the app bundle.
 - **StreamScope two-turn copy-lane arm** so the streaming gate covers
   block-sized emits.
+- **The n-gram pre-read reserves the engine's growth to its budget.** The
+  automatic pre-read at model load subtracts max(KV estimate, engine budget
+  minus the weights on disk) from free memory instead of the KV estimate
+  alone; on a 128 GB Mac it drops from 23.4 GiB to 14.2 GiB, the amount the
+  page cache can keep once a long prefill has grown the engine to its
+  envelope. `tests/test_ngram_prewarm_reservation.py`.
+- **Settings > Memory card (#431 @Journey0723, #427 @localbylocal).** A memory
+  limit in GB and an allow-swap switch, carried into the daemon as
+  `MTPLX_MEMORY_LIMIT_BYTES` / `MTPLX_ALLOW_SWAP`; the card shows the plan the
+  engine computed for this Mac.
+- **`finish_stop_origin` in the public stats and the request log (#414, PR
+  #426 by @atirna).** A stop's commit path is diagnosable from the log alone.
+- **`/health` carries `qwen4_install_reports`.** The stage-3 kernel report,
+  the rope glue's per-item verdicts and the n-gram pre-read plan, so a
+  default's engagement is readable without the serve log.
 
 ### Fixed
 
@@ -87,6 +119,30 @@ nothing beyond 2.10.2.
 - **App CPU:** the decode chip publishes only on change, metrics
   snapshots slow to 500 ms while a turn streams, and the redundant
   auto-scroll task is gone.
+- **The chat composer scrolls past ten lines instead of jumping to the top
+  (#424, PR #437 by @MohammedThowfiq).**
+- **The Performance mode survives a model restart and the launch logs the
+  effective scheduling (#398 @variablefate).** The picker is a saved global;
+  Settings shows "Running now: ..." and the log pane carries the
+  `--scheduler-mode` / `--batching-preset` the daemon launched with.
+- **A small request from another session no longer kills a marathon
+  postcommit (#432 @nomishbhardwaj).** `MTPLX_POSTCOMMIT_MARATHON_PROTECT_TOKENS`
+  reaches the cross-session abort with a bounded grace (one 30 s window per
+  landed commit, keyed to the session), and the pending record is seeded
+  from the committed frontier at arm time.
+- **A draining MTPLX is not mistaken for a foreign process on its port, and a
+  configured port never moves to +1 on a transient occupant (#409 @kmei3560;
+  CLI lane; the app's own port handling is unchanged in this release).**
+- **A streamed response closes within 30 s of its last token when another
+  request's prefill is queued ahead of its session snapshot (#425
+  @66duke66).** `MTPLX_STREAM_COMMIT_WAIT_MAX_S` bounds the post-generation
+  commit wait; the snapshot lands in the background and the next turn waits
+  for it through the pending-postcommit path.
+- **The compiled fixed-M4 lane no longer skips long prompts because the
+  allocator cache looked like live memory.** After a 100k prefill on a 128 GB
+  Mac the gate read the freed prefill scratch held by the allocator as live
+  and fell back to the plain verify; it now releases that cache when it
+  stands between the request and the lane and re-reads.
 
 ## [2.10.2] - 2026-09-01
 
