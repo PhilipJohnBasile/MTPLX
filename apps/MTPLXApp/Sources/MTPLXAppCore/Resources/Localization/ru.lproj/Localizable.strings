@@ -1517,3 +1517,5 @@
 "· untracked %@" = "· неотслеживаемый объем %@";
 "Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "Не удалось прочитать настройки, поэтому MTPLX использует значения по умолчанию. Нечитаемый файл сохранён как %@.";
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Не удалось прочитать настройки, поэтому MTPLX использует значения по умолчанию. Файл %@ не удалось отложить, и он будет заменён при следующем сохранении.";
+"Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "Не удалось открыть ваши прежние чаты. Они сохранены как %@, и начата новая история чатов.";
+"Chats cannot be saved right now, so this session's chats will not be kept." = "Сейчас чаты нельзя сохранить, поэтому чаты этого сеанса не будут сохранены.";

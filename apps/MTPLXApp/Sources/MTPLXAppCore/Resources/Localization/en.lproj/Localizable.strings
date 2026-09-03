@@ -1517,3 +1517,5 @@
 "· untracked %@" = "· untracked %@";
 "Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@.";
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save.";
+"Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started.";
+"Chats cannot be saved right now, so this session's chats will not be kept." = "Chats cannot be saved right now, so this session's chats will not be kept.";

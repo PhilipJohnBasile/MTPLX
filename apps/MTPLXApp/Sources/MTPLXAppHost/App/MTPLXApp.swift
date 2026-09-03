@@ -81,6 +81,10 @@ struct MTPLXApp: App {
     /// dismissable but does NOT cancel the run). Same lifetime
     /// guarantee as forgeOrchestrator.
     @StateObject private var benchmarkOrchestrator: BenchmarkOrchestrator
+    /// What the chat store had to do at launch to open (kept aside an
+    /// unreadable store, or fell back to memory). Lives at the app root so
+    /// the sidebar's banner survives until the user dismisses it.
+    @StateObject private var chatStoreRecovery: ChatStoreRecoveryState
     private let chatContainer: ModelContainer
     private let memoryPressureMonitor = AppMemoryPressureMonitor()
 
@@ -94,15 +98,12 @@ struct MTPLXApp: App {
         let hermesAgentStore = HermesAgentStore()
         let benchmarkOrchestrator = BenchmarkOrchestrator()
         let stopCoordinator = AppStopCoordinator()
-        let container: ModelContainer
-        do {
-            container = try ChatStore.makeContainer()
-        } catch {
-            // SwiftData store is corrupt or inaccessible. Fall back to
-            // an in-memory store so the app can still launch; the user
-            // gets a fresh chat history but the dashboard still works.
-            container = try! ChatStore.makeInMemoryContainer()
-        }
+        // A store that will not open is kept beside itself and replaced
+        // with a fresh one, or the app runs on memory for this session;
+        // the notice reaches the chat sidebar so neither is silent.
+        let openedStore = ChatStore.open()
+        let container = openedStore.container
+        let chatStoreRecovery = ChatStoreRecoveryState(notice: openedStore.notice)
         let viewModel = ChatViewModel(
             container: container,
             chatClientProvider: { [backend] in
@@ -140,6 +141,7 @@ struct MTPLXApp: App {
         _hermesAgentStore = StateObject(wrappedValue: hermesAgentStore)
         _stopCoordinator = StateObject(wrappedValue: stopCoordinator)
         _benchmarkOrchestrator = StateObject(wrappedValue: benchmarkOrchestrator)
+        _chatStoreRecovery = StateObject(wrappedValue: chatStoreRecovery)
         self.chatContainer = container
         memoryPressureMonitor.start()
         stopCoordinator.stopAllHandler = { [backend, viewModel, hermesAgentStore, benchmarkOrchestrator] reason in
@@ -191,6 +193,7 @@ struct MTPLXApp: App {
                 .environmentObject(stopCoordinator)
                 .environmentObject(forgeOrchestrator)
                 .environmentObject(benchmarkOrchestrator)
+                .environmentObject(chatStoreRecovery)
                 .modelContainer(chatContainer)
                 .task {
                     // Wire the benchmark orchestrator to read the

@@ -1517,3 +1517,5 @@
 "· untracked %@" = "· अनट्रैक्ड %@";
 "Settings could not be read, so MTPLX is using defaults. The unreadable file was kept as %@." = "सेटिंग्स पढ़ी नहीं जा सकीं, इसलिए MTPLX डिफ़ॉल्ट सेटिंग्स का उपयोग कर रहा है। न पढ़ी जा सकने वाली फ़ाइल %@ के रूप में सुरक्षित रखी गई है।";
 "Settings could not be read, so MTPLX is using defaults. %@ could not be set aside and will be replaced on the next save." = "सेटिंग्स पढ़ी नहीं जा सकीं, इसलिए MTPLX डिफ़ॉल्ट सेटिंग्स का उपयोग कर रहा है। %@ को अलग नहीं रखा जा सका और अगली बार सहेजने पर इसे बदल दिया जाएगा।";
+"Your earlier chats could not be opened. They were kept as %@ and a new chat history was started." = "आपकी पिछली चैट खोली नहीं जा सकीं। उन्हें %@ के रूप में सुरक्षित रखा गया है और एक नया चैट इतिहास शुरू किया गया है।";
+"Chats cannot be saved right now, so this session's chats will not be kept." = "अभी चैट सहेजी नहीं जा सकतीं, इसलिए इस सत्र की चैट नहीं रखी जाएँगी।";
