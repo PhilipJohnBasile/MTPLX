@@ -14565,6 +14565,43 @@ def _stream_census_record(
         pass
 
 
+def _stream_pacer_enabled() -> bool:
+    """Release pacer for block-sized token batches (MTPLX_STREAM_PACER, default on).
+
+    A context-copy round commits up to 25 tokens at once and the stream used
+    to hand the client one frame per round: two lines, then nothing until the
+    next round (2026-09-02 wire receipt: 24 tokens every ~113 ms on
+    Flash-Next). With the pacer on, a batch of at least
+    MTPLX_STREAM_PACER_MIN_TOKENS tokens is released token by token across
+    the expected gap to the next batch, so every client sees a flow instead
+    of a paste. Batches below the floor (a normal MTP round) are untouched,
+    a cancel or stop flushes the rest at once, and the final bytes are the
+    same: only the write cadence changes.
+    """
+
+    return os.environ.get("MTPLX_STREAM_PACER", "1").strip().lower() not in {
+        "0", "false", "no", "off", ""
+    }
+
+
+def _stream_pacer_min_tokens() -> int:
+    raw = os.environ.get("MTPLX_STREAM_PACER_MIN_TOKENS", "6").strip()
+    try:
+        return max(2, int(raw))
+    except ValueError:
+        return 6
+
+
+def _stream_pacer_interval(pieces: int, gap_ema_s: float) -> float:
+    """Seconds between released pieces so a batch drains in ~90% of the
+    expected inter-batch gap; never slower than 30 ms per piece."""
+
+    if pieces <= 1:
+        return 0.0
+    gap = gap_ema_s if gap_ema_s > 0 else 0.1
+    return max(0.001, min(0.030, gap * 0.9 / pieces))
+
+
 def _coalesce_stream_fields(
     chunks: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
@@ -29809,6 +29846,10 @@ def create_app(state: ServerState) -> FastAPI:
                     )
 
                 stream_interval = max(1, int(state.args.stream_interval))
+                pacer_enabled = _stream_pacer_enabled()
+                pacer_min_tokens = _stream_pacer_min_tokens()
+                pacer_gap_ema_s = 0.0
+                pacer_last_batch_s = 0.0
                 content_tool_translator = (
                     _ToolAwareContentStreamTranslator(
                         tools=tool_specs,
@@ -31451,6 +31492,7 @@ def create_app(state: ServerState) -> FastAPI:
                     tokens: list[int],
                     *,
                     force: bool = False,
+                    coalesce: bool = True,
                 ) -> list[tuple[str, str]]:
                     pending_stream_tokens.extend(tokens)
                     chunks: list[tuple[str, str]] = []
@@ -31470,8 +31512,9 @@ def create_app(state: ServerState) -> FastAPI:
                         )
                     # One committed verify step (or one force-drain) emits
                     # one write per channel run, not one per token — see
-                    # _coalesce_stream_fields.
-                    return _coalesce_stream_fields(chunks)
+                    # _coalesce_stream_fields. The release pacer asks for the
+                    # per-token pieces and paces them itself.
+                    return _coalesce_stream_fields(chunks) if coalesce else chunks
 
                 def streamed_history_content() -> str:
                     # Always capture the natural-language portion of the
@@ -31724,7 +31767,38 @@ def create_app(state: ServerState) -> FastAPI:
                                         progress_chunk(published_progress)
                                     )
                             if not buffer_read_only_force_answer_stream:
-                                for field, text in drain_stream_tokens(stream_tokens):
+                                if pacer_enabled and stream_tokens:
+                                    if pacer_last_batch_s > 0:
+                                        gap = min(
+                                            1.0,
+                                            max(0.001, token_timestamp_s - pacer_last_batch_s),
+                                        )
+                                        pacer_gap_ema_s = (
+                                            gap
+                                            if pacer_gap_ema_s <= 0
+                                            else pacer_gap_ema_s * 0.7 + gap * 0.3
+                                        )
+                                    pacer_last_batch_s = token_timestamp_s
+                                pieces = drain_stream_tokens(
+                                    stream_tokens, coalesce=not pacer_enabled
+                                )
+                                pace_dt = 0.0
+                                if pacer_enabled:
+                                    if len(pieces) >= pacer_min_tokens:
+                                        pace_dt = _stream_pacer_interval(
+                                            len(pieces), pacer_gap_ema_s
+                                        )
+                                    else:
+                                        pieces = _coalesce_stream_fields(pieces)
+                                for index, (field, text) in enumerate(pieces):
+                                    if pace_dt > 0 and index:
+                                        if cancel_event.is_set() or (
+                                            stop_monitor is not None
+                                            and stop_monitor.stopped
+                                        ):
+                                            pace_dt = 0.0
+                                        else:
+                                            await asyncio.sleep(pace_dt)
                                     for chunk in stream_content_delta_chunks(
                                         field, text
                                     ):
