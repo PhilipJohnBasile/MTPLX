@@ -25,6 +25,14 @@ struct ComposerInputTextView: NSViewRepresentable {
     let onFileDrop: ([URL]) -> Void
     var shouldFocus: Bool = false
 
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// The AppKit appearance matching the SwiftUI scheme, so caret,
+    /// selection, and marked-text chrome follow the brand look.
+    private var appearanceName: NSAppearance.Name {
+        colorScheme == .light ? .aqua : .darkAqua
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
     }
@@ -77,7 +85,7 @@ struct ComposerInputTextView: NSViewRepresentable {
         }
         textView.onFileDrop = onFileDrop
         textView.string = text
-        textView.appearance = NSAppearance(named: .darkAqua)
+        textView.appearance = NSAppearance(named: appearanceName)
         textView.selectedTextAttributes = [
             .backgroundColor: NSColor(Brand.accentChrome.opacity(0.35)),
             .foregroundColor: NSColor(Brand.typeHi),
@@ -100,6 +108,9 @@ struct ComposerInputTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? ComposerNSTextView else { return }
         context.coordinator.parent = self
+        if textView.appearance?.name != appearanceName {
+            textView.appearance = NSAppearance(named: appearanceName)
+        }
         textView.onSubmit = onSubmit
         textView.onSyncText = { [coordinator = context.coordinator] committed in
             coordinator.parent.text = committed

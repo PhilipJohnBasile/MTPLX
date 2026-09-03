@@ -32,7 +32,7 @@ struct MenuBarContent: View {
         }
         .frame(width: 300)
         .background(Brand.pianoRadial)
-        .preferredColorScheme(.dark)
+        .appliesAppearance()
         .tint(Brand.accent)
     }
 

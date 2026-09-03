@@ -33,7 +33,7 @@ struct AboutSheet: View {
         }
         .frame(minWidth: 540, minHeight: 560)
         .background(Brand.pianoRadial.ignoresSafeArea())
-        .preferredColorScheme(.dark)
+        .appliesAppearance()
         .tint(Brand.accent)
         .toolbar { dismissButton }
         .task {

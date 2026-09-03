@@ -27,7 +27,7 @@ struct OnboardingExperienceView: View {
 
     var body: some View {
         ZStack {
-            Brand.bgOuter.ignoresSafeArea()
+            Brand.pianoRadial.ignoresSafeArea()
             Group {
                 switch orchestrator.state.step {
                 case .welcome:
