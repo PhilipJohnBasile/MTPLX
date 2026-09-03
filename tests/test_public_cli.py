@@ -9128,3 +9128,34 @@ def test_interrupt_during_a_command_exits_130_without_a_traceback(monkeypatch, c
     assert code == 130
     assert captured.out == ""
     assert captured.err == "\n"
+
+
+def test_bare_bench_lists_its_actions_and_runs_nothing(monkeypatch, capsys, tmp_path):
+    # `mtplx bench` with no action used to fall into the legacy manifest
+    # scaffold and crash with FileNotFoundError on a cwd-relative prompt path
+    # from every directory except a checkout root. It is a question, not a
+    # run: list the actions, exit 0, write nothing.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "absent.toml"))
+
+    assert main(["bench"]) == 0
+
+    out = capsys.readouterr().out
+    for action in ("run", "tune", "prefill-ladder", "nightly", "compare", "reference-vllm"):
+        assert action in out
+    assert "mtplx bench run --suite flappy" in out
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_bench_run_dry_run_resolves_the_suite_inside_the_package(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MTPLX_CONFIG", str(tmp_path / "absent.toml"))
+
+    assert main(["bench", "run", "--suite", "flappy", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    suite_path = Path(payload["prompt_suite"])
+    assert payload["dry_run"] is True
+    assert suite_path.is_absolute()
+    assert suite_path.is_file()
+    assert suite_path.name == "flappy.jsonl"

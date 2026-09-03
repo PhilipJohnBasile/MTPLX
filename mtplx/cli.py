@@ -1296,13 +1296,56 @@ def _cmd_connect(args: argparse.Namespace) -> int:
     return cmd_integrate_public(args)
 
 
+BENCH_ACTIONS = (
+    ("run", "Decode benchmark on a prompt suite (--suite, --max-tokens)"),
+    ("context", "Alias of run"),
+    ("tune", "Find the fastest MTP depth for the current model"),
+    ("aime", "Run the AIME reasoning benchmark against a running server"),
+    ("prefill-ladder", "Prompt-processing speed across context sizes"),
+    ("nightly", "Full regression gate: speed, exactness, quality"),
+    ("suite", "Run the nightly task set now (--quick for the compact set)"),
+    ("compare", "Compare two envelopes (--before/--after) or models (--models)"),
+    ("serve", "Smoke-check a running server's health and metrics"),
+    ("reference", "Print the diagnostic reference-floor plan (not a product gate)"),
+    ("reference-vllm", "Capture a remote vLLM reference run over SSH"),
+)
+
+
+def _format_bench_actions_help() -> str:
+    rows = "\n".join(
+        f"  {_command_cell(action, 16)} {summary}" for action, summary in BENCH_ACTIONS
+    )
+    return (
+        f"""{_heading("MTPLX bench")}
+
+Usage: mtplx bench <action> [options]
+
+Actions:
+{rows}
+
+Examples:
+  mtplx bench run --suite flappy --max-tokens 10000 --no-fanmax
+  mtplx bench nightly --json --dry-run
+
+Run `mtplx bench --help` for every flag.
+"""
+    )
+
+
 def _cmd_bench(args: argparse.Namespace) -> int:
     if getattr(args, "bench_action", None):
         return cmd_bench_public(args)
     if args.profile:
         return _cmd_bench_profile(args)
+    if not (getattr(args, "_cli_flags", None) or set()):
+        # A bare `mtplx bench` is someone asking what bench can do, not a
+        # request to run the legacy manifest scaffold from wherever they
+        # happen to be standing. List the actions and stop.
+        print(_format_bench_actions_help())
+        return 0
     from .benchmarks.runners.harness import run_manifest_only
     from .benchmarks.schema import BenchmarkConfig, now_run_id
+    from .kpi.runtime_kpis import prompt_suite_path
 
     out = (
         Path(args.output)
@@ -1324,22 +1367,22 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     )
     if args.backend != "manifest":
         raise SystemExit("Only backend=manifest is implemented in this scaffold gate")
-    records = run_manifest_only(args.prompts, config, out)
+    records = run_manifest_only(prompt_suite_path(args.prompts), config, out)
     print(json.dumps({"records": len(records), "output": str(out)}, indent=2))
     return 0
 
 
-def _suite_to_prompts(suite: str | None, fallback: str) -> str:
-    if suite is None:
-        return fallback
-    suites = {
-        "default": "mtplx/benchmarks/prompts/default.jsonl",
-        "long_code": "mtplx/benchmarks/prompts/long_code.jsonl",
-        "calibration_coding": "mtplx/benchmarks/prompts/calibration_coding.jsonl",
-    }
-    if suite not in suites:
-        raise SystemExit(f"unknown benchmark suite: {suite}")
-    return suites[suite]
+def _suite_to_prompts(suite: str | None, fallback: str | None) -> str:
+    """Resolve `--suite` (or the `--prompts` fallback) to a packaged suite file.
+
+    Suites live inside the installed package, so this goes through the one
+    suite table in ``mtplx.kpi.runtime_kpis`` and never through the current
+    directory.
+    """
+
+    from .kpi.runtime_kpis import prompt_suite_path
+
+    return prompt_suite_path(suite or fallback)
 
 
 def _cmd_bench_profile(args: argparse.Namespace) -> int:
@@ -3761,7 +3804,7 @@ def build_parser() -> argparse.ArgumentParser:
             "reference",
             "reference-vllm",
         ],
-        help="Public benchmark action. Omit for legacy benchmark flags.",
+        help="Benchmark action; a bare `mtplx bench` lists them.",
     )
     bench_p.add_argument("--backend", default="manifest")
     bench_p.add_argument(
@@ -3875,7 +3918,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench_p.add_argument("--min-free-gib", type=float, default=25.0)
     bench_p.add_argument("--model", default=default_model)
     bench_p.add_argument("--cache-dir")
-    bench_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")
+    bench_p.add_argument(
+        "--prompts",
+        help="Prompt suite name or .jsonl path; defaults to the packaged default suite",
+    )
     bench_p.add_argument("--output")
     bench_p.add_argument("--out", dest="output", help="Alias for --output")
     bench_p.add_argument(
