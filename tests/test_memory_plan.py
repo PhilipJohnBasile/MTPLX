@@ -237,6 +237,51 @@ def test_budget_beats_the_real_machines_metal_limit() -> None:
     assert plan.usable_bytes == 36 * GIB
 
 
+def test_explicit_metal_limit_is_the_engine_budget_both_ways() -> None:
+    # Issue #443: a 96 GB seat serving a 69.2 GiB pack. The default 75%
+    # envelope (72 GiB) refuses it as "does not fit", yet the operator's
+    # explicit MTPLX_MEMORY_LIMIT_BYTES=80G runs it. An explicit limit is
+    # the engine budget, bounded by the machine.
+    weights = int(69.2 * GIB)
+    refused = _plan(96, weights=weights, usable_bytes_override=72 * GIB)
+    assert not refused.model_fits
+    assert refused.usable_source == "formula"
+    assert "MTPLX_MEMORY_LIMIT_BYTES" in " ".join(refused.notes)
+    plan = _plan(
+        96, weights=weights, usable_bytes_override=80 * GIB, usable_bytes_explicit=True
+    )
+    assert plan.usable_bytes == 80 * GIB
+    assert plan.model_fits
+    assert plan.usable_source == "metal_limit"
+    assert "engine budget 80.0G (Metal limit)" in describe_plan(plan)
+    assert "MTPLX_MEMORY_LIMIT_BYTES" not in " ".join(plan.notes)
+    capped = _plan(
+        96, weights=weights, usable_bytes_override=120 * GIB, usable_bytes_explicit=True
+    )
+    assert capped.usable_bytes == RAM[96]
+
+
+def test_default_metal_limit_stays_under_the_formula() -> None:
+    # The server passes its default cap as the override too; only an
+    # operator-set limit may raise the envelope.
+    plan = _plan(96, usable_bytes_override=80 * GIB)
+    assert plan.usable_bytes == 72 * GIB
+    assert plan.usable_source == "formula"
+
+
+def test_explicit_limit_yields_to_a_tighter_budget() -> None:
+    # A simulated 48G seat on a 128G box keeps the budgeted formula even
+    # when the real machine carries an explicit, larger limit.
+    plan = _plan(
+        128,
+        memory_budget_bytes=RAM[48],
+        usable_bytes_override=100 * GIB,
+        usable_bytes_explicit=True,
+    )
+    assert plan.usable_bytes == 36 * GIB
+    assert plan.usable_source == "formula"
+
+
 # ---------------------------------------------------------------------------
 # the dynamic ceiling (the guard that turns on)
 

@@ -92,6 +92,15 @@ nothing beyond 2.10.2.
   dense prefill with a diagnostic on an SDK that refuses it. Credit
   @mrmurphy (first patch), @sunnybluesea (root cause, three-site sweep,
   macOS 27 receipts), reporters @DigiJoe79 and @rameshn007.
+- **An explicit `MTPLX_MEMORY_LIMIT_BYTES` is the engine budget both ways
+  (#443 @yermakovm).** The planner clamped the configured Metal limit under
+  its own 75% envelope, so a 96 GB Mac serving the 69.2 GiB Flash-Next
+  Bare-Speed pack was refused as "does not fit" (72 GiB budget against a
+  73.3 GiB minimum) even under a limit of 80G that runs it. An operator-set
+  limit now plans the engine budget up to the machine's RAM, the banner
+  says "(Metal limit)", and the "does not fit" note names the lever. A
+  `--memory-budget` below the machine still wins, so a simulated smaller
+  seat stays small.
 - **Flash-Next no longer 500s under concurrency in the `ar_batch` lane (#420).**
   mlx-lm's batch generator merges every batched prompt's caches and the
   family's QSA cache has no merge, so two concurrent requests under

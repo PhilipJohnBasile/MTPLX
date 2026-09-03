@@ -2393,6 +2393,9 @@ def _apply_metal_memory_caps(
             mx, "set_memory_limit", int(mem_limit)
         )
         applied["memory_limit_bytes"] = int(mem_limit)
+        # "env": the operator set MTPLX_MEMORY_LIMIT_BYTES; the memory plan
+        # then takes it as the engine budget both ways (#443).
+        applied["memory_limit_source"] = "env" if mem_raw else "default"
     except Exception as exc:
         applied["memory_limit_error"] = str(exc)
     try:
@@ -3128,11 +3131,13 @@ class ServerState:
                 _plan_kv_from_config(_plan_model_config) or 65536
             )
         _plan_metal_limit: int | None = None
+        _plan_metal_explicit = False
         _caps = getattr(self, "metal_memory_caps", None)
         if isinstance(_caps, dict):
             _cap_value = _caps.get("memory_limit_bytes")
             if isinstance(_cap_value, int) and _cap_value > 0:
                 _plan_metal_limit = _cap_value
+                _plan_metal_explicit = _caps.get("memory_limit_source") == "env"
         from mtplx.memory_plan import (
             qsa_aux_bytes_per_token_from_config as _plan_aux_from_config,
         )
@@ -3167,6 +3172,7 @@ class ServerState:
             "model_max_context": int(self.model_context_window_max),
             "memory_budget_bytes": self.memory_budget_bytes,
             "usable_bytes_override": _plan_metal_limit,
+            "usable_bytes_explicit": _plan_metal_explicit,
             # Family terms the KV number misses (QSA streams + MTP-head KV,
             # and the context-linear QSA prefill transient) — issue #393:
             # without them a 262K window was admitted on 128 GB with 2.4x
