@@ -214,7 +214,7 @@ struct OnboardingPrimaryButton: View {
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11, weight: .heavy))
                     .opacity(isEnabled ? 1 : 0)
-                    .offset(x: isHovering && isEnabled ? 3 : 0)
+                    .offset(towardsTrailing: isHovering && isEnabled ? 3 : 0)
             }
             .foregroundStyle(isEnabled ? Brand.bgOuter : Brand.typeTertiary)
             .padding(.horizontal, 22)

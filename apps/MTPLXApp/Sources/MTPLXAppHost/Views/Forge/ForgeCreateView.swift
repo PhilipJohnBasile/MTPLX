@@ -342,7 +342,7 @@ struct ForgePrimaryButton: View {
                     Image(systemName: icon)
                         .font(.system(size: 11, weight: .heavy))
                         .opacity(isEnabled ? 1 : 0.5)
-                        .offset(x: isHovering && isEnabled ? 3 : 0)
+                        .offset(towardsTrailing: isHovering && isEnabled ? 3 : 0)
                 }
             }
             .foregroundStyle(isEnabled ? Brand.bgOuter : Brand.typeSecondary)

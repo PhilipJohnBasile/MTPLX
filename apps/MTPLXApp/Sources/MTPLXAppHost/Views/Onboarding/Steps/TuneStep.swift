@@ -555,7 +555,7 @@ private struct TuneResultReveal: View {
                     .font(.system(size: 16, weight: .heavy))
                     .foregroundStyle(Brand.typeTertiary)
                     .opacity(revealStage >= 2 ? 1 : 0)
-                    .offset(x: revealStage >= 2 ? 0 : -5)
+                    .offset(towardsTrailing: revealStage >= 2 ? 0 : -5)
                 metricNow
             }
             .frame(maxWidth: .infinity, alignment: .center)

@@ -984,6 +984,9 @@ private struct ProviderLogoMark: View {
                 .offset(x: 8, y: -3)
         }
         .frame(width: 19, height: 19)
+        // A drawn glyph, not text: keep its strokes where they were
+        // composed regardless of the app's layout direction.
+        .environment(\.layoutDirection, .leftToRight)
     }
 
     private static let cachedQwenIcon: NSImage? = {

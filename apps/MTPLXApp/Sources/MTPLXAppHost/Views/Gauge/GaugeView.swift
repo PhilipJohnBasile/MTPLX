@@ -123,6 +123,10 @@ struct GaugeView: View {
                 .animation(nil, value: mode)
         }
         .frame(width: diameter, height: diameter)
+        // The dial is an instrument: the arc, ticks and sticky-max dot
+        // are placed by angle, and speed always grows clockwise, so the
+        // ring keeps its LTR geometry even when the app runs RTL.
+        .environment(\.layoutDirection, .leftToRight)
         .padding(8)
         .contentShape(Circle())
         .onHover { hovering in
