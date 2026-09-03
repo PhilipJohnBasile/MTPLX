@@ -49,6 +49,10 @@ public struct URLSessionWebTransport: WebTransport {
 public enum WebSearchServiceError: LocalizedError {
     case invalidSearchURL
     case badServerResponse(Int)
+    /// Every provider errored (offline, blocked, non-2xx), so nothing was
+    /// searched. Distinct from an empty result set, which is a search
+    /// that ran and found nothing. Carries each provider's own error.
+    case allProvidersFailed([String: String])
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +60,11 @@ public enum WebSearchServiceError: LocalizedError {
             return tr("Could not build a valid search URL.")
         case .badServerResponse(let statusCode):
             return tr("Search backend returned HTTP %@.", String(statusCode))
+        case .allProvidersFailed(let errors):
+            let details = errors.keys.sorted()
+                .map { "\($0): \(errors[$0] ?? "")" }
+                .joined(separator: "; ")
+            return tr("No search provider could be reached (%@).", details)
         }
     }
 }
@@ -128,6 +137,18 @@ public final class WebSearchService: @unchecked Sendable {
         }
         let batches = await [ddgBatch, braveBatch]
 
+        // One provider failing while the other answers is routine and
+        // the merge absorbs it. Every provider failing means nothing was
+        // searched at all: that is a failure the caller must see, not an
+        // empty result set it would report as "nothing found".
+        if batches.allSatisfy({ $0.error != nil }) {
+            var errors: [String: String] = [:]
+            for batch in batches {
+                errors[batch.provider.displayName] = batch.error ?? ""
+            }
+            throw WebSearchServiceError.allProvidersFailed(errors)
+        }
+
         let merged = WebSearchService.mergeProviderBatches(batches, maxResults: providerLimit)
         if merged.isEmpty {
             Self.log.error("All search providers returned empty for '\(request.query.prefix(60), privacy: .public)'")
@@ -162,7 +183,11 @@ public final class WebSearchService: @unchecked Sendable {
             Self.log.error(
                 "\(provider.displayName, privacy: .public) failed for '\(query.prefix(60), privacy: .public)': \(error.localizedDescription, privacy: .public)"
             )
-            return ProviderResultBatch(provider: provider, results: [])
+            return ProviderResultBatch(
+                provider: provider,
+                results: [],
+                error: error.localizedDescription
+            )
         }
     }
 
@@ -246,6 +271,10 @@ extension WebSearchService {
     struct ProviderResultBatch: Sendable {
         let provider: SearchProvider
         let results: [MergedProviderCandidate]
+        /// The provider's error when its request failed outright (no
+        /// answer to merge). Nil for a provider that answered, even
+        /// with zero results.
+        var error: String? = nil
     }
 
     static func preferredCandidate(

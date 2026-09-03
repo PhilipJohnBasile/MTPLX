@@ -95,6 +95,7 @@
 "%lld correct" = "верно: %lld";
 "%lld correct · %lld left" = "верно: %lld · осталось: %lld";
 "%lld correct · %lld missed · %lld left" = "верно: %lld · ошибок: %lld · осталось: %lld";
+"%lld failed" = "%lld с ошибкой";
 "%lld fields" = "Полей: %lld";
 "%lld hidden" = "Скрыто: %lld";
 "%lld hits" = "Попаданий: %lld";
@@ -546,6 +547,8 @@
 "FASTER" = "БЫСТРЕЕ";
 "Fastest response" = "Самый быстрый ответ";
 "FEATURE FLAGS" = "ФЛАГИ ФУНКЦИЙ";
+"Fetch failed" = "Не удалось получить страницу";
+"Fetch failed: %@" = "Не удалось получить страницу: %@";
 "Fetching page content…" = "Получение содержимого страницы…";
 "Figure on AoPS" = "Рисунок на AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "Файлы сохраняются в ~/.mtplx/models. Возобновление происходит автоматически.";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "Данных о промпте пока нет.";
 "No request completed yet." = "Ни один запрос ещё не завершён.";
 "No saved agents" = "Нет сохранённых агентов";
+"No search provider could be reached (%@)." = "Ни один поисковый сервис недоступен (%@).";
 "No speed data yet." = "Данных о скорости пока нет.";
 "No tool data yet." = "Данных об инструментах пока нет.";
 "No transcript data yet." = "Данных о стенограмме пока нет.";
@@ -1198,6 +1202,8 @@
 "SCORE" = "БАЛЛЫ";
 "Search" = "Поиск";
 "Search backend returned HTTP %@." = "Бэкенд поиска вернул HTTP %@.";
+"Search failed" = "Ошибка поиска";
+"Search failed: %@" = "Ошибка поиска: %@";
 "Search languages" = "Поиск языков";
 "Search models, creators…" = "Поиск моделей, создателей…";
 "Searching" = "Поиск";
@@ -1396,6 +1402,7 @@
 "Tokens" = "Токены";
 "tokens" = "токены";
 "Tool" = "Инструмент";
+"Tool failed: %@" = "Ошибка инструмента: %@";
 "tool output compacted %@" = "вывод инструмента сжат %@";
 "Tool surface" = "Интерфейс инструментов";
 "Tools" = "Инструменты";

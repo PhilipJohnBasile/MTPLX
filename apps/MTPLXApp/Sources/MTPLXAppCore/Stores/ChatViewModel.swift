@@ -699,27 +699,37 @@ public final class ChatViewModel: ObservableObject {
                         )
                     )
                     stream.phase = Self.streamingPhase(forTool: call.name)
-                    let result = await toolFactory.dispatch(
+                    let outcome = await toolFactory.dispatch(
                         name: call.name,
                         argumentsJSON: call.arguments
                     )
+                    // A failed call is recorded as a failure everywhere
+                    // it shows: the live strip, the persisted trace,
+                    // and (through resultJSON) the model's tool result.
+                    let result = outcome.resultJSON
+                    let status: ToolTraceStatus = outcome.succeeded ? .success : .failed
                     updatePendingTrace(of: stream, id: traceId) { trace in
-                        trace.status = .success
-                        trace.detail = Self.shortResultDetail(for: call.name, json: result)
+                        trace.status = status
+                        trace.detail = outcome.failure.map(Self.failureDetail)
+                            ?? Self.shortResultDetail(for: call.name, json: result)
                     }
-                    accumulateTurnSources(
-                        into: stream,
-                        toolName: call.name,
-                        argumentsJSON: call.arguments,
-                        resultJSON: result
-                    )
+                    // A failed fetch has a URL in its arguments but no
+                    // page was read: it is not a source.
+                    if outcome.succeeded {
+                        accumulateTurnSources(
+                            into: stream,
+                            toolName: call.name,
+                            argumentsJSON: call.arguments,
+                            resultJSON: result
+                        )
+                    }
                     persistToolTrace(
                         on: assistantMessage,
                         id: call.id,
                         name: call.name,
                         argumentsJSON: call.arguments,
                         resultJSON: result,
-                        status: .success
+                        status: status
                     )
                     let requestResult = Self.compactToolResultContent(result)
                     messages.append(
@@ -2126,6 +2136,19 @@ public final class ChatViewModel: ObservableObject {
             return "{\"error\":\"tool_not_executed\",\"note\":\"MTPLX chat did not execute this call.\"}"
         }
         return text
+    }
+
+    /// Activity-strip caption for a failed call: a localised label for
+    /// what failed, then the reason as the tool reported it.
+    static func failureDetail(_ failure: ChatToolFailure) -> String {
+        switch failure.kind {
+        case .searchFailed, .emptyQuery:
+            return tr("Search failed: %@", failure.detail)
+        case .fetchFailed, .invalidURL:
+            return tr("Fetch failed: %@", failure.detail)
+        case .unknownTool:
+            return tr("Tool failed: %@", failure.detail)
+        }
     }
 
     private static func shortResultDetail(for toolName: String, json: String) -> String {

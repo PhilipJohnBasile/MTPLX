@@ -95,6 +95,7 @@
 "%lld correct" = "%lld問正解";
 "%lld correct · %lld left" = "%lld問正解 · 残り%lld問";
 "%lld correct · %lld missed · %lld left" = "%lld問正解 · %lld問不正解 · 残り%lld問";
+"%lld failed" = "%lld件失敗";
 "%lld fields" = "%lld個のフィールド";
 "%lld hidden" = "%lld件を非表示";
 "%lld hits" = "%lld件ヒット";
@@ -548,6 +549,8 @@
 "FASTER" = "高速化";
 "Fastest response" = "最速の応答";
 "FEATURE FLAGS" = "機能フラグ";
+"Fetch failed" = "取得に失敗";
+"Fetch failed: %@" = "取得に失敗: %@";
 "Fetching page content…" = "ページコンテンツを取得中…";
 "Figure on AoPS" = "AoPS上の図";
 "Files land in ~/.mtplx/models. Resume is automatic." = "ファイルは~/.mtplx/modelsに保存されます。再開は自動的に行われます。";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "プロンプトデータはまだありません。";
 "No request completed yet." = "完了したリクエストはまだありません。";
 "No saved agents" = "保存されたエージェントはありません";
+"No search provider could be reached (%@)." = "検索プロバイダーに接続できませんでした（%@）。";
 "No speed data yet." = "速度データはまだありません。";
 "No tool data yet." = "ツールデータはまだありません。";
 "No transcript data yet." = "文字起こしデータはまだありません。";
@@ -1198,6 +1202,8 @@
 "SCORE" = "スコア";
 "Search" = "検索";
 "Search backend returned HTTP %@." = "検索バックエンドがHTTP %@を返しました。";
+"Search failed" = "検索に失敗";
+"Search failed: %@" = "検索に失敗: %@";
 "Search languages" = "言語を検索";
 "Search models, creators…" = "モデル、作成者を検索…";
 "Searching" = "検索中";
@@ -1396,6 +1402,7 @@
 "Tokens" = "トークン";
 "tokens" = "トークン";
 "Tool" = "ツール";
+"Tool failed: %@" = "ツールの実行に失敗: %@";
 "tool output compacted %@" = "ツール出力を圧縮 %@";
 "Tool surface" = "ツール機能";
 "Tools" = "ツール";

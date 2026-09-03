@@ -23,8 +23,11 @@ struct AssistantBubbleView: View {
     private let message: ChatMessage
     private let combinedReasoning: String
     private let sources: [SourceRecord]
-    private let searchQueries: [String]
+    private let searchReceipts: [AssistantTurnGroup.SearchReceipt]
+    private let successfulSearchCount: Int
+    private let failedSearchCount: Int
     private let fetchedPageCount: Int
+    private let failedFetchCount: Int
     private let thinkingTimeMs: Int?
     private let metricItems: [MetricItem]
     private let replyCopyText: String
@@ -45,8 +48,11 @@ struct AssistantBubbleView: View {
         self.message = finalMessage
         self.combinedReasoning = group.combinedReasoning
         self.sources = group.sources
-        self.searchQueries = group.searchQueries
+        self.searchReceipts = group.searchReceipts
+        self.successfulSearchCount = group.successfulSearchCount
+        self.failedSearchCount = group.failedSearchCount
         self.fetchedPageCount = group.fetchedPageCount
+        self.failedFetchCount = group.failedFetchCount
         self.thinkingTimeMs = group.thinkingTimeMs
         self.metricItems = Self.formattedMetrics(from: finalMessage.statsJSON)
         self.replyCopyText = finalMessage.visibleContent
@@ -73,21 +79,24 @@ struct AssistantBubbleView: View {
         TurnActivityModel.settled(
             hasThought: !combinedReasoning.isEmpty,
             thinkingTimeMs: thinkingTimeMs,
-            searchCount: searchQueries.count,
+            searchCount: successfulSearchCount,
             fetchedPageCount: fetchedPageCount,
-            hasOtherToolActivity: !group.traces.isEmpty
+            hasOtherToolActivity: !group.traces.isEmpty,
+            failedSearchCount: failedSearchCount,
+            failedFetchCount: failedFetchCount
         )
     }
 
-    /// Search-well receipt rows: one per query, plus a page-read
-    /// summary line when the turn fetched pages.
+    /// Search-well receipt rows: one per query (a failed search is
+    /// marked as such, not listed as one that ran), a page-read summary
+    /// line when the turn fetched pages, and a line for failed fetches.
     private var settledActivityRows: [ThinkingActivityRow] {
-        var rows = searchQueries.enumerated().map { index, query in
+        var rows = searchReceipts.enumerated().map { index, receipt in
             ThinkingActivityRow(
                 id: "query-\(index)",
-                systemName: "magnifyingglass",
-                text: query,
-                detail: "",
+                systemName: receipt.failed ? "exclamationmark.triangle" : "magnifyingglass",
+                text: receipt.query,
+                detail: receipt.failed ? tr("Search failed") : "",
                 isLive: false
             )
         }
@@ -100,6 +109,17 @@ struct AssistantBubbleView: View {
                         ? tr("Read 1 page")
                         : tr("Read %lld pages", fetchedPageCount),
                     detail: "",
+                    isLive: false
+                )
+            )
+        }
+        if failedFetchCount > 0 {
+            rows.append(
+                ThinkingActivityRow(
+                    id: "failed-fetches",
+                    systemName: "exclamationmark.triangle",
+                    text: tr("Fetch failed"),
+                    detail: failedFetchCount > 1 ? "×\(failedFetchCount)" : "",
                     isLive: false
                 )
             )

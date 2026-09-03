@@ -95,6 +95,7 @@
 "%lld correct" = "%lld benar";
 "%lld correct · %lld left" = "%lld benar · %lld tersisa";
 "%lld correct · %lld missed · %lld left" = "%lld benar · %lld terlewat · %lld tersisa";
+"%lld failed" = "%lld gagal";
 "%lld fields" = "%lld bidang";
 "%lld hidden" = "%lld disembunyikan";
 "%lld hits" = "%lld hit";
@@ -548,6 +549,8 @@
 "FASTER" = "LEBIH CEPAT";
 "Fastest response" = "Respons tercepat";
 "FEATURE FLAGS" = "FEATURE FLAG";
+"Fetch failed" = "Pengambilan gagal";
+"Fetch failed: %@" = "Pengambilan gagal: %@";
 "Fetching page content…" = "Mengambil konten halaman…";
 "Figure on AoPS" = "Gambar di AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "File disimpan di ~/.mtplx/models. Pelanjutan otomatis.";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "Belum ada data prompt.";
 "No request completed yet." = "Belum ada permintaan yang selesai.";
 "No saved agents" = "Tidak ada agen tersimpan";
+"No search provider could be reached (%@)." = "Tidak ada penyedia pencarian yang dapat dihubungi (%@).";
 "No speed data yet." = "Belum ada data kecepatan.";
 "No tool data yet." = "Belum ada data alat.";
 "No transcript data yet." = "Belum ada data transkrip.";
@@ -1198,6 +1202,8 @@
 "SCORE" = "SKOR";
 "Search" = "Cari";
 "Search backend returned HTTP %@." = "Backend pencarian mengembalikan HTTP %@.";
+"Search failed" = "Pencarian gagal";
+"Search failed: %@" = "Pencarian gagal: %@";
 "Search languages" = "Cari bahasa";
 "Search models, creators…" = "Cari model, kreator…";
 "Searching" = "Mencari";
@@ -1396,6 +1402,7 @@
 "Tokens" = "Token";
 "tokens" = "token";
 "Tool" = "Alat";
+"Tool failed: %@" = "Alat gagal: %@";
 "tool output compacted %@" = "output alat dipadatkan %@";
 "Tool surface" = "Antarmuka alat";
 "Tools" = "Alat";

@@ -95,6 +95,7 @@
 "%lld correct" = "%lld correctos";
 "%lld correct · %lld left" = "%lld correctos · %lld restantes";
 "%lld correct · %lld missed · %lld left" = "%lld correctos · %lld fallados · %lld restantes";
+"%lld failed" = "%lld con error";
 "%lld fields" = "%lld campos";
 "%lld hidden" = "%lld ocultas";
 "%lld hits" = "%lld aciertos";
@@ -546,6 +547,8 @@
 "FASTER" = "MÁS RÁPIDO";
 "Fastest response" = "Respuesta más rápida";
 "FEATURE FLAGS" = "FUNCIONES EXPERIMENTALES";
+"Fetch failed" = "Error al obtener la página";
+"Fetch failed: %@" = "Error al obtener la página: %@";
 "Fetching page content…" = "Obteniendo el contenido de la página…";
 "Figure on AoPS" = "Figura en AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "Los archivos se guardan en ~/.mtplx/models. La reanudación es automática.";
@@ -881,6 +884,7 @@
 "No prompt data yet." = "Aún no hay datos de prompts.";
 "No request completed yet." = "Aún no se ha completado ninguna solicitud.";
 "No saved agents" = "No hay agentes guardados";
+"No search provider could be reached (%@)." = "No se pudo contactar con ningún proveedor de búsqueda (%@).";
 "No speed data yet." = "Aún no hay datos de velocidad.";
 "No tool data yet." = "Aún no hay datos de herramientas.";
 "No transcript data yet." = "Aún no hay datos de transcripción.";
@@ -1198,6 +1202,8 @@
 "SCORE" = "PUNTUACIÓN";
 "Search" = "Buscar";
 "Search backend returned HTTP %@." = "El backend de búsqueda devolvió HTTP %@.";
+"Search failed" = "Error en la búsqueda";
+"Search failed: %@" = "Error en la búsqueda: %@";
 "Search languages" = "Buscar idiomas";
 "Search models, creators…" = "Buscar modelos, creadores…";
 "Searching" = "Buscando";
@@ -1396,6 +1402,7 @@
 "Tokens" = "Tokens";
 "tokens" = "tokens";
 "Tool" = "Herramienta";
+"Tool failed: %@" = "Error en la herramienta: %@";
 "tool output compacted %@" = "salida de la herramienta compactada %@";
 "Tool surface" = "Sección de herramientas";
 "Tools" = "Herramientas";

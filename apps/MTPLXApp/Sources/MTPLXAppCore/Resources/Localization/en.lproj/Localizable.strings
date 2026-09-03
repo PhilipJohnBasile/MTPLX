@@ -95,6 +95,7 @@
 "%lld correct" = "%lld correct";
 "%lld correct · %lld left" = "%lld correct · %lld left";
 "%lld correct · %lld missed · %lld left" = "%lld correct · %lld missed · %lld left";
+"%lld failed" = "%lld failed";
 "%lld fields" = "%lld fields";
 "%lld hidden" = "%lld hidden";
 "%lld hits" = "%lld hits";
@@ -548,6 +549,8 @@
 "FASTER" = "FASTER";
 "Fastest response" = "Fastest response";
 "FEATURE FLAGS" = "FEATURE FLAGS";
+"Fetch failed" = "Fetch failed";
+"Fetch failed: %@" = "Fetch failed: %@";
 "Fetching page content…" = "Fetching page content…";
 "Figure on AoPS" = "Figure on AoPS";
 "Files land in ~/.mtplx/models. Resume is automatic." = "Files land in ~/.mtplx/models. Resume is automatic.";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "No prompt data yet.";
 "No request completed yet." = "No request completed yet.";
 "No saved agents" = "No saved agents";
+"No search provider could be reached (%@)." = "No search provider could be reached (%@).";
 "No speed data yet." = "No speed data yet.";
 "No tool data yet." = "No tool data yet.";
 "No transcript data yet." = "No transcript data yet.";
@@ -1198,6 +1202,8 @@
 "SCORE" = "SCORE";
 "Search" = "Search";
 "Search backend returned HTTP %@." = "Search backend returned HTTP %@.";
+"Search failed" = "Search failed";
+"Search failed: %@" = "Search failed: %@";
 "Search languages" = "Search languages";
 "Search models, creators…" = "Search models, creators…";
 "Searching" = "Searching";
@@ -1396,6 +1402,7 @@
 "Tokens" = "Tokens";
 "tokens" = "tokens";
 "Tool" = "Tool";
+"Tool failed: %@" = "Tool failed: %@";
 "tool output compacted %@" = "tool output compacted %@";
 "Tool surface" = "Tool surface";
 "Tools" = "Tools";

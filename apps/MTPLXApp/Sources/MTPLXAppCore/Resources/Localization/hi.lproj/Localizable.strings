@@ -95,6 +95,7 @@
 "%lld correct" = "%lld सही";
 "%lld correct · %lld left" = "%lld सही · %lld बाकी";
 "%lld correct · %lld missed · %lld left" = "%lld सही · %lld छूटे · %lld बाकी";
+"%lld failed" = "%lld विफल";
 "%lld fields" = "%lld फ़ील्ड";
 "%lld hidden" = "%lld छिपे हुए";
 "%lld hits" = "%lld हिट";
@@ -548,6 +549,8 @@
 "FASTER" = "अधिक तेज़";
 "Fastest response" = "सबसे तेज़ प्रतिक्रिया";
 "FEATURE FLAGS" = "फ़ीचर फ़्लैग";
+"Fetch failed" = "पेज लाना विफल";
+"Fetch failed: %@" = "पेज लाना विफल: %@";
 "Fetching page content…" = "पेज की सामग्री लाई जा रही है…";
 "Figure on AoPS" = "AoPS पर चित्र";
 "Files land in ~/.mtplx/models. Resume is automatic." = "फ़ाइलें ~/.mtplx/models में रखी जाती हैं। रिज़्यूम स्वचालित है।";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "अभी तक कोई प्रॉम्प्ट डेटा नहीं।";
 "No request completed yet." = "अभी तक कोई अनुरोध पूरा नहीं हुआ।";
 "No saved agents" = "कोई सहेजे गए एजेंट नहीं";
+"No search provider could be reached (%@)." = "किसी भी खोज प्रदाता से संपर्क नहीं हो सका (%@)।";
 "No speed data yet." = "अभी तक कोई गति डेटा नहीं।";
 "No tool data yet." = "अभी तक कोई टूल डेटा नहीं।";
 "No transcript data yet." = "अभी तक कोई प्रतिलेख डेटा नहीं।";
@@ -1198,6 +1202,8 @@
 "SCORE" = "स्कोर";
 "Search" = "खोजें";
 "Search backend returned HTTP %@." = "खोज बैकएंड ने HTTP %@ लौटाया।";
+"Search failed" = "खोज विफल";
+"Search failed: %@" = "खोज विफल: %@";
 "Search languages" = "भाषाएं खोजें";
 "Search models, creators…" = "मॉडल, निर्माता खोजें…";
 "Searching" = "खोजा जा रहा है";
@@ -1396,6 +1402,7 @@
 "Tokens" = "टोकन";
 "tokens" = "टोकन";
 "Tool" = "टूल";
+"Tool failed: %@" = "टूल विफल: %@";
 "tool output compacted %@" = "टूल आउटपुट संक्षिप्त किया गया %@";
 "Tool surface" = "टूल इंटरफ़ेस";
 "Tools" = "टूल";

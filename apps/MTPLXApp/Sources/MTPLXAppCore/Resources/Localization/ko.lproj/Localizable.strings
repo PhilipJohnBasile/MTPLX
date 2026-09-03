@@ -95,6 +95,7 @@
 "%lld correct" = "%lld개 정답";
 "%lld correct · %lld left" = "%lld개 정답 · %lld개 남음";
 "%lld correct · %lld missed · %lld left" = "%lld개 정답 · %lld개 오답 · %lld개 남음";
+"%lld failed" = "%lld개 실패";
 "%lld fields" = "%lld개 필드";
 "%lld hidden" = "%lld개 숨김";
 "%lld hits" = "%lld회 적중";
@@ -548,6 +549,8 @@
 "FASTER" = "더 빠름";
 "Fastest response" = "가장 빠른 응답";
 "FEATURE FLAGS" = "기능 플래그";
+"Fetch failed" = "가져오기 실패";
+"Fetch failed: %@" = "가져오기 실패: %@";
 "Fetching page content…" = "페이지 콘텐츠 가져오는 중…";
 "Figure on AoPS" = "AoPS 그림";
 "Files land in ~/.mtplx/models. Resume is automatic." = "파일은 ~/.mtplx/models에 저장됩니다. 자동으로 재개됩니다.";
@@ -887,6 +890,7 @@
 "No prompt data yet." = "아직 프롬프트 데이터가 없습니다.";
 "No request completed yet." = "아직 완료된 요청이 없습니다.";
 "No saved agents" = "저장된 에이전트 없음";
+"No search provider could be reached (%@)." = "검색 제공자에 연결할 수 없습니다 (%@).";
 "No speed data yet." = "아직 속도 데이터가 없습니다.";
 "No tool data yet." = "아직 도구 데이터가 없습니다.";
 "No transcript data yet." = "아직 대화 기록 데이터가 없습니다.";
@@ -1198,6 +1202,8 @@
 "SCORE" = "점수";
 "Search" = "검색";
 "Search backend returned HTTP %@." = "검색 백엔드에서 HTTP %@을(를) 반환했습니다.";
+"Search failed" = "검색 실패";
+"Search failed: %@" = "검색 실패: %@";
 "Search languages" = "언어 검색";
 "Search models, creators…" = "모델, 제작자 검색…";
 "Searching" = "검색 중";
@@ -1396,6 +1402,7 @@
 "Tokens" = "토큰";
 "tokens" = "토큰";
 "Tool" = "도구";
+"Tool failed: %@" = "도구 실패: %@";
 "tool output compacted %@" = "도구 출력 압축됨 %@";
 "Tool surface" = "도구 환경";
 "Tools" = "도구";

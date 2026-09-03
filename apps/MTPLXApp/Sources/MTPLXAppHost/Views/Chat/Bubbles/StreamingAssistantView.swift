@@ -128,7 +128,9 @@ struct StreamingAssistantView: View {
         traces.map { trace in
             ThinkingActivityRow(
                 id: trace.id,
-                systemName: icon(for: trace.name),
+                // A failed call is marked as one; its detail already
+                // reads "Search failed: <reason>".
+                systemName: trace.status == .failed ? "exclamationmark.triangle" : icon(for: trace.name),
                 text: activityText(for: trace),
                 detail: trace.status == .pending ? "" : trace.detail,
                 isLive: trace.status == .pending
