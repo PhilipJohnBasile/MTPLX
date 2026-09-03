@@ -25,6 +25,7 @@ from .codec import (
     build_payload_spec,
     decode_gdn_boundaries,
     decode_payload,
+    decode_payload_prefix,
     encode_payload,
 )
 
@@ -143,6 +144,11 @@ class ColdRestoreRecord:
     has_recurrent: bool = False
     # Lazy loader for boundaries skipped at exact-restore time (callable -> tuple).
     gdn_boundary_loader: Any = None
+    # Prefix lengths represented by the hydrated snapshots.  A cold
+    # sub-prefix restore retains the entry's full token identity, while its
+    # decoded KV only covers the boundary it will actually serve.
+    cache_snapshot_prefix_len: int | None = None
+    mtp_history_snapshot_prefix_len: int | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +277,27 @@ def block_aligned_prefix_len(matched_tokens: int, *, block_size: int) -> int:
     block = max(1, int(block_size))
     matched = max(0, int(matched_tokens))
     return (matched // block) * block
+
+
+def _payload_boundary_at_or_below(
+    payload_spec: dict[str, Any], prefix_len: int
+) -> int | None:
+    """Return the newest persisted recurrent boundary at or below ``prefix_len``.
+
+    This deliberately inspects JSON metadata only.  The matching boundary's
+    tensors are decoded later by ``decode_payload_prefix``; no large blob is
+    read merely to choose a safe restore point.
+    """
+
+    best: int | None = None
+    for record in payload_spec.get("gdn_boundaries") or []:
+        try:
+            tokens = int(record.get("tokens", 0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 0 < tokens <= int(prefix_len) and (best is None or tokens > best):
+            best = tokens
+    return best
 
 
 def chain_block_hashes(
@@ -1006,6 +1033,7 @@ class SessionBankColdTier:
                 started_s=started,
                 require_exact_prefix=False,
                 include_gdn_boundaries=True,
+                prefix_restore_tokens=int(best[1]),
             )
             if record is None:
                 return None
@@ -1921,6 +1949,7 @@ class SessionBankColdTier:
         started_s: float,
         require_exact_prefix: bool = True,
         include_gdn_boundaries: bool = False,
+        prefix_restore_tokens: int | None = None,
     ) -> ColdRestoreRecord | None:
         metadata = dict(row)
         token_ids = tuple(int(token) for token in json.loads(str(metadata["token_ids_json"])))
@@ -1954,14 +1983,50 @@ class SessionBankColdTier:
                 raise FileNotFoundError(str(path))
             return path.read_bytes()
 
-        # Exact-prefix restores never rewind below the stored boundary, so the
-        # (MB-scale x boundary-count) interior snapshots are decoded only for
-        # partial restores — keeps exact restart-warm on the fast path.
-        decoded = decode_payload(
-            payload["payload_spec"],
-            read_tensor,
-            include_gdn_boundaries=include_gdn_boundaries,
+        payload_spec = payload["payload_spec"]
+        partial_restore = (
+            prefix_restore_tokens is not None
+            and not require_exact_prefix
+            and int(prefix_restore_tokens) > 0
         )
+        if partial_restore:
+            requested_prefix = int(prefix_restore_tokens)
+            has_recurrent = bool(payload_spec.get("has_recurrent", False))
+            boundary_prefix = _payload_boundary_at_or_below(
+                payload_spec, requested_prefix
+            )
+            # Recurrent state is only valid at a captured boundary.  Do not
+            # fall back to hydrating the final multi-GB snapshot just to learn
+            # that SessionBank must reject this candidate later.
+            if has_recurrent and boundary_prefix is None:
+                self._set_last_miss("ssd_prefix_boundary_missing")
+                return None
+            restore_point = (
+                int(boundary_prefix)
+                if boundary_prefix is not None
+                else requested_prefix
+            )
+            # Non-boundary restores re-forward token N-1 for fresh logits;
+            # boundary restores resume directly at N.  MTP history always
+            # lands at the true restore boundary.
+            cache_prefix_len = (
+                restore_point if boundary_prefix is not None else restore_point - 1
+            )
+            decoded = decode_payload_prefix(
+                payload_spec,
+                read_tensor,
+                cache_prefix_len=max(0, cache_prefix_len),
+                mtp_history_prefix_len=restore_point,
+                boundary_prefix_len=boundary_prefix,
+            )
+        else:
+            # Exact-prefix restores never rewind below the stored boundary, so
+            # the interior snapshots are decoded lazily as before.
+            decoded = decode_payload(
+                payload_spec,
+                read_tensor,
+                include_gdn_boundaries=include_gdn_boundaries,
+            )
         restore_s = time.perf_counter() - started_s
         self._inc("restore_hits")
         with self._stats_lock:
@@ -1976,10 +2041,9 @@ class SessionBankColdTier:
         )
         metadata["capabilities"] = json.loads(str(metadata.get("capabilities_json") or "[]"))
         metadata["block_hashes"] = json.loads(str(metadata.get("block_hashes_json") or "[]"))
-        payload_spec = payload["payload_spec"]
         boundary_loader = (
             None
-            if include_gdn_boundaries
+            if include_gdn_boundaries or partial_restore
             else (lambda: decode_gdn_boundaries(payload_spec, read_tensor))
         )
         return ColdRestoreRecord(
@@ -1995,6 +2059,10 @@ class SessionBankColdTier:
             gdn_boundaries=tuple(decoded.gdn_boundaries or ()),
             has_recurrent=bool(decoded.has_recurrent),
             gdn_boundary_loader=boundary_loader,
+            cache_snapshot_prefix_len=decoded.cache_snapshot_prefix_len,
+            mtp_history_snapshot_prefix_len=(
+                decoded.mtp_history_snapshot_prefix_len
+            ),
         )
 
     def _candidate_rows(

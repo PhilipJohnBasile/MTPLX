@@ -59,6 +59,12 @@ class DecodedPayload:
     # v3: (token_count, recurrent-only CacheSnapshot, hidden_last|None)
     gdn_boundaries: tuple = ()
     has_recurrent: bool = False
+    # When a cold prefix restore decodes only the attention-KV blocks that
+    # precede a safe boundary, these fields describe the materialized prefix
+    # lengths.  The SessionBank keeps the entry's original token identity;
+    # these are strictly the lengths represented by the decoded snapshots.
+    cache_snapshot_prefix_len: int | None = None
+    mtp_history_snapshot_prefix_len: int | None = None
 
 
 class ColdEncodeInterrupted(RuntimeError):
@@ -329,6 +335,100 @@ def decode_payload(
     return decoded
 
 
+def decode_payload_prefix(
+    spec: dict[str, Any],
+    read_tensor: Callable[[str], bytes],
+    *,
+    cache_prefix_len: int,
+    mtp_history_prefix_len: int | None = None,
+    boundary_prefix_len: int | None = None,
+) -> DecodedPayload:
+    """Decode only the SSD payload needed for a sub-prefix restore.
+
+    The cold tier stores attention tensors in fixed token blocks.  A normal
+    ``decode_payload`` reconstructs every block in a long snapshot, even when
+    a divergent follow-up can restore only a short recurrent-safe boundary.
+    This variant reads only the attention blocks through that boundary and,
+    when needed, the single matching recurrent boundary.  Non-trimmable top
+    level states are deliberately skipped: the boundary snapshot owns those
+    states and will overwrite them during restore.
+    """
+
+    cache_prefix_len = max(0, int(cache_prefix_len))
+    mtp_prefix_len = (
+        None
+        if mtp_history_prefix_len is None
+        else max(0, int(mtp_history_prefix_len))
+    )
+    selected_boundary = _gdn_boundary_spec_at_or_below(
+        spec, boundary_prefix_len
+    )
+    boundary_states = (
+        selected_boundary.get("states") if selected_boundary is not None else None
+    )
+    cache_spec = spec["cache_snapshot"]
+    cache_snapshot = CacheSnapshot(
+        states=_decode_cache_states_prefix(
+            cache_spec["states"],
+            boundary_states,
+            read_tensor,
+            prefix_len=cache_prefix_len,
+        ),
+        # Restoring a partial tensor state must not reinstate the original
+        # full-prefix offset.  Real attention cache state setters derive the
+        # offset from the truncated tensors; recurrent meta is restored from
+        # the selected boundary below.
+        meta_states=_none_tree_like(cache_spec["meta_states"]),
+    )
+    mtp_spec = spec.get("mtp_history_snapshot")
+    mtp_history_snapshot = None
+    if mtp_spec is not None:
+        mtp_history_snapshot = CacheSnapshot(
+            states=_decode_tree_prefix(
+                mtp_spec["states"],
+                read_tensor,
+                prefix_len=mtp_prefix_len,
+            ),
+            meta_states=_none_tree_like(mtp_spec["meta_states"]),
+        )
+    boundaries = ()
+    if selected_boundary is not None:
+        boundaries = (
+            (
+                int(selected_boundary["tokens"]),
+                CacheSnapshot(
+                    states=tuple(
+                        decode_tree(item, read_tensor)
+                        for item in _spec_items(selected_boundary["states"])
+                    ),
+                    meta_states=tuple(
+                        decode_tree(item, read_tensor)
+                        for item in _spec_items(selected_boundary["meta_states"])
+                    ),
+                ),
+                decode_tree(
+                    selected_boundary.get("hidden_last") or {"kind": "none"},
+                    read_tensor,
+                ),
+            ),
+        )
+    decoded = DecodedPayload(
+        cache_snapshot=cache_snapshot,
+        # These are small final-token tensors and remain useful to callers
+        # that reject the partial candidate before it reaches the boundary
+        # restore.  They are not the source of the multi-GB hydration.
+        logits=decode_tree(spec["logits"], read_tensor),
+        hidden=decode_tree(spec["hidden"], read_tensor),
+        mtp_history_snapshot=mtp_history_snapshot,
+        gdn_boundaries=boundaries,
+        has_recurrent=bool(spec.get("has_recurrent", False)),
+        cache_snapshot_prefix_len=cache_prefix_len,
+        mtp_history_snapshot_prefix_len=mtp_prefix_len,
+    )
+    _eval_decoded_arrays(decoded)
+    return decoded
+
+
 def _eval_decoded_arrays(decoded: DecodedPayload) -> None:
     """Single batched evaluation of every decoded array (vs per-tensor eval)."""
     arrays: list[Any] = []
@@ -392,6 +492,104 @@ def decode_gdn_boundaries(
     return boundaries
 
 
+def _gdn_boundary_spec_at_or_below(
+    spec: dict[str, Any], prefix_len: int | None
+) -> dict[str, Any] | None:
+    if prefix_len is None:
+        return None
+    limit = int(prefix_len)
+    best: dict[str, Any] | None = None
+    for record in spec.get("gdn_boundaries") or []:
+        try:
+            tokens = int(record.get("tokens", 0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if 0 < tokens <= limit and (best is None or tokens > int(best["tokens"])):
+            best = record
+    return best
+
+
+def _spec_items(spec: Any) -> list[Any]:
+    if not isinstance(spec, dict) or spec.get("kind") not in {"tuple", "list"}:
+        raise ValueError("expected tuple/list cache-state payload spec")
+    return list(spec.get("items") or [])
+
+
+def _none_tree_like(spec: Any) -> Any:
+    """Return a shape-compatible tree whose leaves are ``None``.
+
+    CacheSnapshot's outer state/meta tuples are positional.  Keeping that
+    shape lets ``restore_cache`` skip every original full-prefix meta state.
+    """
+
+    kind = spec.get("kind") if isinstance(spec, dict) else None
+    if kind == "tuple":
+        return tuple(_none_tree_like(item) for item in spec.get("items") or [])
+    if kind == "list":
+        return [_none_tree_like(item) for item in spec.get("items") or []]
+    return None
+
+
+def _decode_cache_states_prefix(
+    states_spec: Any,
+    boundary_states_spec: Any,
+    read_tensor: Callable[[str], bytes],
+    *,
+    prefix_len: int,
+) -> Any:
+    states = _spec_items(states_spec)
+    boundary_states = (
+        _spec_items(boundary_states_spec)
+        if boundary_states_spec is not None
+        else [None] * len(states)
+    )
+    if len(states) != len(boundary_states):
+        raise ValueError("SSD boundary cache-state shape mismatch")
+    decoded = []
+    for state_spec, boundary_spec in zip(states, boundary_states):
+        # A non-None boundary state identifies a recurrent/non-trimmable
+        # cache entry.  Its state comes from the selected boundary; loading
+        # the full final snapshot here is both unnecessary and expensive.
+        if isinstance(boundary_spec, dict) and boundary_spec.get("kind") != "none":
+            decoded.append(None)
+        else:
+            decoded.append(
+                _decode_tree_prefix(state_spec, read_tensor, prefix_len=prefix_len)
+            )
+    kind = states_spec.get("kind") if isinstance(states_spec, dict) else None
+    return tuple(decoded) if kind == "tuple" else decoded
+
+
+def _decode_tree_prefix(
+    spec: Any,
+    read_tensor: Callable[[str], bytes],
+    *,
+    prefix_len: int | None,
+) -> Any:
+    kind = spec.get("kind") if isinstance(spec, dict) else None
+    if kind == "tuple":
+        return tuple(
+            _decode_tree_prefix(item, read_tensor, prefix_len=prefix_len)
+            for item in spec.get("items") or []
+        )
+    if kind == "list":
+        return [
+            _decode_tree_prefix(item, read_tensor, prefix_len=prefix_len)
+            for item in spec.get("items") or []
+        ]
+    if kind == "dict":
+        return {
+            _decode_tree_prefix(key, read_tensor, prefix_len=prefix_len):
+            _decode_tree_prefix(value, read_tensor, prefix_len=prefix_len)
+            for key, value in spec.get("items") or []
+        }
+    if kind == "tensor_blocks":
+        return _decode_tensor_blocks(
+            spec, read_tensor, prefix_len=prefix_len
+        )
+    return decode_tree(spec, read_tensor)
+
+
 def _decode_tensor(spec: dict[str, Any], read_tensor: Callable[[str], bytes]) -> Any:
     dtype = str(spec["dtype"])
     shape = tuple(int(dim) for dim in spec.get("shape") or [])
@@ -409,14 +607,35 @@ def _decode_tensor(spec: dict[str, Any], read_tensor: Callable[[str], bytes]) ->
     return arr
 
 
-def _decode_tensor_blocks(spec: dict[str, Any], read_tensor: Callable[[str], bytes]) -> Any:
+def _decode_tensor_blocks(
+    spec: dict[str, Any],
+    read_tensor: Callable[[str], bytes],
+    *,
+    prefix_len: int | None = None,
+) -> Any:
     axis = int(spec.get("axis", 2))
-    chunks = [_decode_tensor({**block, "dtype": spec["dtype"]}, read_tensor) for block in spec.get("blocks", [])]
+    limit = None if prefix_len is None else max(0, int(prefix_len))
+    blocks = list(spec.get("blocks", []))
+    if limit is not None:
+        blocks = [block for block in blocks if int(block.get("start", 0)) < limit]
+    chunks = [
+        _decode_tensor({**block, "dtype": spec["dtype"]}, read_tensor)
+        for block in blocks
+    ]
     if not chunks:
         shape = tuple(int(dim) for dim in spec.get("shape") or [])
+        if limit is not None and axis < len(shape):
+            shape = (*shape[:axis], min(limit, shape[axis]), *shape[axis + 1 :])
         return mx.zeros(shape)
     arr = mx.concatenate(chunks, axis=axis)
     shape = tuple(int(dim) for dim in spec.get("shape") or [])
+    if limit is not None and axis < len(shape):
+        size = min(limit, shape[axis])
+        if int(arr.shape[axis]) > size:
+            slices = [slice(None)] * int(arr.ndim)
+            slices[axis] = slice(0, size)
+            arr = arr[tuple(slices)]
+        shape = (*shape[:axis], size, *shape[axis + 1 :])
     if shape:
         arr = arr.reshape(shape)
     return arr
