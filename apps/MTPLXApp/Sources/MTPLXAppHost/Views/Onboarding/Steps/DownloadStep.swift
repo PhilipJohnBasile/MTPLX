@@ -23,7 +23,7 @@ struct DownloadStep: View {
         OnboardingStepContainer(
             title: title,
             subtitle: subtitle,
-            stepIndex: 4,
+            stepIndex: OnboardingStep.download.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: (orchestrator.isDownloading || showingAlreadyInstalledFlash) ? nil : { orchestrator.returnToModelPick() },
             primary: { primaryButton },
@@ -46,26 +46,26 @@ struct DownloadStep: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 36, weight: .medium))
                 .foregroundStyle(Brand.success)
-            Text("Already on your Mac")
+            Text(tr("Already on your Mac"))
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(Brand.typeHi)
-            Text("Skipping download. Moving on.")
+            Text(tr("Skipping download. Moving on."))
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.typeSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Model already installed. Skipping download.")
+        .accessibilityLabel(tr("Model already installed. Skipping download."))
     }
 
     private var title: String {
         let verb: String
         if orchestrator.downloadProgress?.isComplete == true {
-            verb = "Downloaded"
+            verb = tr("Downloaded")
         } else if orchestrator.isDownloading {
-            verb = "Downloading"
+            verb = tr("Downloading")
         } else {
-            verb = "Download"
+            verb = tr("Download")
         }
         if let shortName = orchestrator.state.resolvedModel?.shortName {
             return "\(verb) \(shortName)"
@@ -73,28 +73,28 @@ struct DownloadStep: View {
         if let repo = orchestrator.state.resolvedRepoID {
             return "\(verb) \(repo)"
         }
-        return "Download"
+        return tr("Download")
     }
 
     private var subtitle: String {
         if let progress = orchestrator.downloadProgress, !progress.destinationPath.isEmpty {
             return progress.destinationPath
         }
-        return "Files land in ~/.mtplx/models. Resume is automatic."
+        return tr("Files land in ~/.mtplx/models. Resume is automatic.")
     }
 
     @ViewBuilder
     private var primaryButton: some View {
         if showingAlreadyInstalledFlash {
-            OnboardingPrimaryButton("Skipping...", isEnabled: false) {}
+            OnboardingPrimaryButton(tr("Skipping..."), isEnabled: false) {}
         } else if orchestrator.downloadProgress?.isComplete == true {
-            OnboardingPrimaryButton("Continue") { orchestrator.goNext() }
+            OnboardingPrimaryButton(tr("Continue")) { orchestrator.goNext() }
         } else if orchestrator.isDownloading {
-            OnboardingPrimaryButton("Stop") { orchestrator.cancelDownload() }
+            OnboardingPrimaryButton(tr("Stop")) { orchestrator.cancelDownload() }
         } else if orchestrator.downloadFailure != nil {
-            OnboardingPrimaryButton("Retry") { orchestrator.startDownload() }
+            OnboardingPrimaryButton(tr("Retry")) { orchestrator.startDownload() }
         } else {
-            OnboardingPrimaryButton("Start download") { orchestrator.startDownload() }
+            OnboardingPrimaryButton(tr("Start download")) { orchestrator.startDownload() }
         }
     }
 
@@ -125,8 +125,8 @@ struct DownloadStep: View {
                 .frame(width: max(8, 476 * CGFloat(fraction)), height: 8)
                 .animation(themeStore.reduceMotionPreference ? nil : .easeInOut(duration: 0.3), value: fraction)
         }
-        .accessibilityLabel("Download progress")
-        .accessibilityValue("\(Int(fraction * 100)) percent")
+        .accessibilityLabel(tr("Download progress"))
+        .accessibilityValue(tr("%lld percent", Int(fraction * 100)))
     }
 
     private var statusRow: some View {
@@ -140,7 +140,7 @@ struct DownloadStep: View {
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()
             if let total {
-                Text("of \(formatBytesShort(total))")
+                Text(tr("of %@", formatBytesShort(total)))
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Brand.typeSecondary)
                     .monospacedDigit()
@@ -169,14 +169,14 @@ struct DownloadStep: View {
                 .foregroundStyle(rate > 50_000 ? Brand.typeSecondary : Brand.typeTertiary)
                 .monospacedDigit()
             if stalled == 0, let eta, eta > 0 {
-                Text("ETA \(formatDuration(eta))")
+                Text(tr("ETA %@", formatDuration(eta)))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.typeTertiary)
                     .monospacedDigit()
             }
             if stalled >= 30 {
                 Label(
-                    "Stalled for \(stalled)s, checking Hugging Face…",
+                    tr("Stalled for %llds, checking Hugging Face…", stalled),
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.caption2)
@@ -192,7 +192,7 @@ struct DownloadStep: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Brand.danger)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Download failed")
+                Text(tr("Download failed"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
                 Text(message)
@@ -201,13 +201,13 @@ struct DownloadStep: View {
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
                 TextField(
-                    "Optional mirror, e.g. https://hf-mirror.com",
+                    tr("Optional mirror, e.g. https://hf-mirror.com"),
                     text: $orchestrator.hfMirrorEndpoint
                 )
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11))
                 .padding(.top, 4)
-                Text("Downloads use the mirror instead of huggingface.co. Your HF token is never sent to a mirror.")
+                Text(tr("Downloads use the mirror instead of huggingface.co. Your HF token is never sent to a mirror."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
             }
@@ -226,8 +226,8 @@ struct DownloadStep: View {
     private var footnote: some View {
         let diskFree = orchestrator.freeDiskGiB()
         let text: String = orchestrator.isDownloading
-            ? String(format: "You can stop anytime. %.0f GB free on this Mac.", diskFree)
-            : String(format: "%.0f GB free on this Mac. Resume is automatic.", diskFree)
+            ? tr("You can stop anytime. %.0f GB free on this Mac.", diskFree)
+            : tr("%.0f GB free on this Mac. Resume is automatic.", diskFree)
         return Text(text)
             .font(.caption2)
             .foregroundStyle(Brand.typeTertiary)
@@ -255,15 +255,15 @@ struct DownloadStep: View {
 
     private func formatBytesShort(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        if gib >= 1 { return String(format: "%.2f GB", gib) }
+        if gib >= 1 { return tr("%.2f GB", gib) }
         let mib = Double(bytes) / 1_048_576.0
-        return String(format: "%.0f MB", mib)
+        return tr("%.0f MB", mib)
     }
 
     private func formatRate(_ bytesPerSecond: Double) -> String {
         if bytesPerSecond < 1024 { return "—" }
         let mbps = bytesPerSecond / 1_048_576.0
-        return String(format: "%.1f MB/s", mbps)
+        return tr("%.1f MB/s", mbps)
     }
 
     private func formatDuration(_ seconds: Double) -> String {
@@ -271,8 +271,8 @@ struct DownloadStep: View {
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        if h > 0 { return tr("%lldh %lldm", h, m) }
+        if m > 0 { return tr("%lldm %llds", m, s) }
+        return tr("%llds", s)
     }
 }

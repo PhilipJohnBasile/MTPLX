@@ -185,6 +185,12 @@ def test_qsa_mtp_precompute_is_a_validated_runtime_override() -> None:
     }
 
 
+def test_compiled_verify_growth_reserve_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_COMPILED_VERIFY_GROWTH_RESERVE": 2048}
+    ) == {"MTPLX_COMPILED_VERIFY_GROWTH_RESERVE": "2048"}
+
+
 def test_no_shipped_profile_enables_candidate_qsa_lanes() -> None:
     candidate_flags = {
         "MTPLX_FUSED_QSA_INDEXER",

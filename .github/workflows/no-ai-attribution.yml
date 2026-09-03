@@ -1,0 +1,28 @@
+name: no-ai-attribution
+
+# Fails if any AI identity appears anywhere in the commit graph: author,
+# committer, or co-author trailer. Co-authored-by is the sneaky surface,
+# GitHub counts it toward the contributor graph exactly like authorship
+# (that is how an AI reached rank #3 on this repo before 2026-09-01).
+# Scans the full history every run; it is under a thousand commits and
+# sub-second, and a full scan also catches anything that slips in through
+# a merge, a cherry-pick, or a force-push.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan full history for AI attribution
+        run: python3 scripts/check_ai_attribution.py

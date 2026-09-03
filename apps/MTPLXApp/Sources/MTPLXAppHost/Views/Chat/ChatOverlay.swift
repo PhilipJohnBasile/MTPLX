@@ -86,7 +86,7 @@ struct ChatCloseButton: View {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .heavy))
-                Text("Close chat")
+                Text(tr("Close chat"))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .tracking(0.3)
             }
@@ -95,7 +95,7 @@ struct ChatCloseButton: View {
             .padding(.vertical, 5)
             .background {
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                    .fill(Brand.wash.opacity(0.04))
                     .overlay {
                         Capsule(style: .continuous)
                             .strokeBorder(
@@ -108,8 +108,8 @@ struct ChatCloseButton: View {
         }
         .buttonStyle(.plain)
         .keyboardShortcut(.escape, modifiers: [])
-        .help("Close chat (Esc)")
-        .accessibilityLabel("Close chat")
+        .help(tr("Close chat (Esc)"))
+        .accessibilityLabel(tr("Close chat"))
         .onHover { hovering = $0 }
         .animation(
             reduceMotion ? nil : .easeOut(duration: 0.16),
@@ -139,7 +139,7 @@ struct SurfaceExpandTab: View {
             HStack(spacing: 6) {
                 Image(systemName: "chevron.up")
                     .font(.system(size: 10, weight: .heavy))
-                Text("Expand \(surface.title)")
+                Text(tr("Expand %@", surface.title))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .tracking(0.3)
             }
@@ -172,8 +172,8 @@ struct SurfaceExpandTab: View {
             .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
-        .help("Expand \(surface.title)")
-        .accessibilityLabel("Expand \(surface.title)")
+        .help(tr("Expand %@", surface.title))
+        .accessibilityLabel(tr("Expand %@", surface.title))
         .onHover { hovering = $0 }
         .animation(
             reduceMotion ? nil : .easeOut(duration: 0.16),

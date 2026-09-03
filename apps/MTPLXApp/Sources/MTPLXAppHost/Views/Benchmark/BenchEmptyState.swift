@@ -44,11 +44,11 @@ struct BenchEmptyState: View {
                 }
                 .frame(width: 56, height: 56)
 
-                Text("Run AIME 2026")
+                Text(tr("Run AIME 2026"))
                     .font(.system(size: 22, weight: .heavy, design: .rounded))
                     .foregroundStyle(Brand.typeBody)
 
-                Text("Watch your Mac solve all 30 AIME 2026 problems live — reasoning, decode speed, and a per-question score grid as it goes.")
+                Text(tr("Watch your Mac solve all 30 AIME 2026 problems live — reasoning, decode speed, and a per-question score grid as it goes."))
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(Brand.typeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -59,12 +59,12 @@ struct BenchEmptyState: View {
                         HStack(spacing: 8) {
                             Image(systemName: "bolt.fill")
                                 .font(.system(size: 11, weight: .heavy))
-                            Text("Quick Check")
+                            Text(tr("Quick Check"))
                         }
                     }
                     .buttonStyle(.mtplxPrimary)
                     .disabled(!isRunEnabled)
-                    .accessibilityHint("Runs the first 3 AIME 2026 problems as a bounded health check.")
+                    .accessibilityHint(tr("Runs the first 3 AIME 2026 problems as a bounded health check."))
 
                     Button(action: onRun) {
                         HStack(spacing: 8) {
@@ -75,7 +75,7 @@ struct BenchEmptyState: View {
                     }
                     .buttonStyle(.mtplxGhost)
                     .disabled(!isRunEnabled)
-                    .accessibilityHint("Runs all 30 AIME 2026 problems.")
+                    .accessibilityHint(tr("Runs all 30 AIME 2026 problems."))
                 }
                 .padding(.top, 4)
             }
@@ -86,12 +86,12 @@ struct BenchEmptyState: View {
     private var historyBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("PREVIOUS RUNS")
+                Text(tr("PREVIOUS RUNS"))
                     .font(.system(size: 10, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.typeTertiary)
                 Spacer()
-                Text("Saved on your Mac")
+                Text(tr("Saved on your Mac"))
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.typeTertiary)
             }

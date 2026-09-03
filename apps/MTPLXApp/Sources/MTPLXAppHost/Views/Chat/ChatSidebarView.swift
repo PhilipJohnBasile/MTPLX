@@ -48,7 +48,7 @@ struct ChatSidebarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Chats")
+            Text(tr("Chats"))
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .tracking(1.5)
                 .foregroundStyle(Brand.typeTertiary)
@@ -62,13 +62,13 @@ struct ChatSidebarView: View {
                     .frame(width: 24, height: 24)
                     .background(
                         Circle()
-                            .fill(Color.white.opacity(0.04))
+                            .fill(Brand.wash.opacity(0.04))
                             .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                     )
             }
             .buttonStyle(.plain)
-            .help("New chat (⌘N)")
-            .accessibilityLabel("New chat")
+            .help(tr("New chat (⌘N)"))
+            .accessibilityLabel(tr("New chat"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -79,7 +79,7 @@ struct ChatSidebarView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11))
                 .foregroundStyle(Brand.typeTertiary)
-            TextField("Search", text: $searchQuery)
+            TextField(tr("Search"), text: $searchQuery)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.typeHi)
@@ -88,7 +88,7 @@ struct ChatSidebarView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Brand.wash.opacity(0.04))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)
@@ -130,7 +130,7 @@ struct ChatSidebarView: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.white.opacity(0.06) : Color.clear)
+                    .fill(isSelected ? Brand.wash.opacity(0.06) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -139,11 +139,11 @@ struct ChatSidebarView: View {
             Button(role: .destructive) {
                 confirmingDelete = conversation
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label(tr("Delete"), systemImage: "trash")
             }
         }
         .alert(
-            "Delete this chat?",
+            tr("Delete this chat?"),
             isPresented: Binding(
                 get: { confirmingDelete?.id == conversation.id },
                 set: { newValue in
@@ -151,12 +151,12 @@ struct ChatSidebarView: View {
                 }
             )
         ) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
+            Button(tr("Cancel"), role: .cancel) {}
+            Button(tr("Delete"), role: .destructive) {
                 Task { await viewModel.delete(conversation) }
             }
         } message: {
-            Text("This will remove \"\(conversation.title)\" and its messages.")
+            Text(tr("This will remove \"%@\" and its messages.", conversation.title))
         }
     }
 

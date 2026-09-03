@@ -4,6 +4,90 @@ All notable user-facing changes to MTPLX. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [2.11.1] - 2026-09-03
+
+MTPLX 2.11. The artifact number is 2.11.1 because 2.11.0 was consumed by a
+mis-stamped upload to PyPI on 2026-09-01 that was retracted; it contained
+nothing beyond 2.10.2.
+
+### Added
+
+- **Light appearance for the app (#428).** A curated cream palette
+  (cream ground, warm ink type, graphite chrome, matching code colors),
+  not an inversion; every pair is gated on WCAG AA and the dark palette
+  is byte-identical to 2.10. Settings > Behavior > Appearance: System,
+  Dark, Light. The default stays Dark.
+- **The app in twelve languages.** Onboarding opens with a searchable
+  language step with flags (English, Simplified Chinese, Spanish, Hindi,
+  Arabic, Brazilian Portuguese, French, Russian, Japanese, German, Korean,
+  Indonesian); the same picker in Settings switches the app live, and
+  Arabic lays the app out right-to-left. Every string goes through the
+  localization layer with English as the fallback.
+- **`--allow-swap` serves past the machine fit again (#427).** 2.10
+  capped the default window at the memory plan's fit and refused prompts
+  past it with a 507; operators who ran 2.9.x past the fit on purpose
+  (32 GB Macs, swap accepted) lost that option. With the flag the
+  default window is the model's own maximum, prompts past the fit are
+  admitted, the banner and `/health` say so, and the plan still reports
+  the overcommit. `MTPLX_ALLOW_SWAP=1` is the env form for the app and
+  `mtplx start`.
+- **Flash-Next speed lane on by default (PR #391 by @davidtai).** The
+  compiled fixed-M4 verifier, batched target distributions, compiled MTP
+  prepare, relaxed draft ties and the fused K/V gather are the family
+  defaults for the Flash-Next geometry, with a 32-row rows-gather fence
+  and FR-Spec drafting on packs whose lm_head has the Q8 group-64 layout
+  it needs. Same-hour pairs against 2.10.2 with the copy lane on: round
+  time -12% at 16k, -18.5% at 100k, -14% at 206k. A per-request memory
+  gate hands prompts whose bank promotion would not fit back to the
+  plain verify (`MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT` is the operator belt).
+- **27B flash-decoding verify route on in turbo** (`MTPLX_NAX_FLASH_ROUTE=1`,
+  dim-split block defaults from the 72.7k and 128k sweeps).
+- **Opt-in Steel sparse-GQA prefill consumer for M3** (PR #423 by
+  @humanrouter), shipped as a native extension, not yet in the app bundle.
+- **StreamScope two-turn copy-lane arm** so the streaming gate covers
+  block-sized emits.
+
+### Fixed
+
+- **Flash-Next no longer 500s under concurrency in the `ar_batch` lane (#420).**
+  mlx-lm's batch generator merges every batched prompt's caches and the
+  family's QSA cache has no merge, so two concurrent requests under
+  `--scheduler-mode ar_batch` (the app's lane) raised an unhandled
+  `ValueError` while sequential requests were fine. The lane now probes
+  the model's cache family at startup, says so in the banner and in
+  `/health` (`scheduler.ar_batch_unavailable_reason`), and serves
+  concurrent requests one at a time on the solo lane instead. The 27B
+  keeps batching. `MTPLX_AR_BATCH_CACHE_PROBE=0` skips the probe.
+- **A client-capped one-token answer is diagnosable from the serve log
+  (#436).** Pi caps `max_tokens` at its model `contextWindow` minus a
+  chars/4 estimate of the transcript, and sends `max_tokens=1` when the
+  estimate overflows; the answer then stops after one token, often inside
+  a tool call, and Pi reports a truncated response. The server now logs
+  one WARNING naming the client's cap, and the `mtplx_openai_generation`
+  trace line carries `max_tokens`, `effective_max_tokens` and
+  `finish_reason`.
+- **Anthropic `/v1/messages` image blocks reach the vision tower (#441).**
+  `image` blocks (base64 or URL, including ones nested inside a
+  `tool_result`) become image parts instead of base64 prose, so Claude
+  Code's pasted screenshots and its Read tool on image files are seen
+  instead of hallucinated at 13x to 52x the token cost. Text-only
+  requests render byte-identically; `count_tokens` counts the vision
+  placeholder the way the chat path does.
+- **Copy-lane streaming no longer pastes and freezes.** The server
+  releases block-sized token batches piece by piece across the round
+  (`MTPLX_STREAM_PACER`, default on; StreamScope copy-lane arm burst p95
+  58 to 9 characters), and the app's typewriter rates arrivals over a
+  wall-clock window and types each block across its round
+  (95th-percentile flush 65 to 25 characters, longest on-screen pause
+  767 to 233 ms on the same flow).
+- **Fully accepted copy blocks skip the recurrent-state replay** in the
+  Flash-Next family commit; the Route Tape records every copy-lane round.
+- **`reasoning_effort` accepts the off-ish values some clients send**
+  (PR #433 by @sypsyp97).
+- **App CPU:** the decode chip publishes only on change, metrics
+  snapshots slow to 500 ms while a turn streams, and the redundant
+  auto-scroll task is gone.
+
 ## [2.10.2] - 2026-09-01
 
 ### Fixed

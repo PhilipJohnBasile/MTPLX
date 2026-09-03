@@ -26,7 +26,7 @@ struct InferenceParamsButton: View {
                 .foregroundStyle(Brand.typeHi)
         }
         .buttonStyle(PremiumPuckStyle())
-        .help(performanceLock ? "Settings · Performance mode on" : "Settings")
-        .accessibilityLabel("Settings")
+        .help(performanceLock ? tr("Settings · Performance mode on") : tr("Settings"))
+        .accessibilityLabel(tr("Settings"))
     }
 }

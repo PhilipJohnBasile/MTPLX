@@ -249,9 +249,9 @@ struct BenchmarkOverlay: View {
                 .stroke(
                     LinearGradient(
                         stops: [
-                            .init(color: Color.white.opacity(0.16), location: 0.0),
-                            .init(color: Color.white.opacity(0.05), location: 0.45),
-                            .init(color: Color.white.opacity(0.03), location: 1.0)
+                            .init(color: Brand.wash.opacity(0.16), location: 0.0),
+                            .init(color: Brand.wash.opacity(0.05), location: 0.45),
+                            .init(color: Brand.wash.opacity(0.03), location: 1.0)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -376,30 +376,30 @@ struct BenchmarkOverlay: View {
             return startPendingTitle
         }
         if backend.health?.ok == true || backend.daemonState == .running {
-            return "Run AIME 2026"
+            return tr("Run AIME 2026")
         }
-        return "Start"
+        return tr("Start")
     }
 
     private var startPendingTitle: String {
         switch backend.startupPhase {
         case .launching:
-            return "Starting runtime..."
+            return tr("Starting runtime...")
         case .waitingForOwnedHealth:
-            return "Loading model..."
+            return tr("Loading model...")
         case .rampingFans:
-            return "Preparing fans..."
+            return tr("Preparing fans...")
         case .warming:
-            return "Warming model..."
+            return tr("Warming model...")
         case .ready:
-            return "Starting AIME..."
+            return tr("Starting AIME...")
         case .failed:
-            return "Start failed"
+            return tr("Start failed")
         case .idle:
             if backend.health?.ok == true || backend.daemonState == .running {
-                return "Starting AIME..."
+                return tr("Starting AIME...")
             }
-            return "Starting runtime..."
+            return tr("Starting runtime...")
         }
     }
 }

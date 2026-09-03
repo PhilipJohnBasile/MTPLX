@@ -97,14 +97,14 @@ struct BenchLiveCard: View {
     private var headerRow: some View {
         HStack(spacing: 10) {
             if let problem = currentProblem, !problem.problem.isEmpty {
-                Text("Problem \(currentIdx) of \(displayTotal)")
+                Text(tr("Problem %lld of %lld", currentIdx, displayTotal))
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
                     .foregroundStyle(Brand.typeBody)
                 Text("· \(problem.set) #\(problem.index)")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Brand.typeSecondary)
             } else {
-                Text("Waiting for problem…")
+                Text(tr("Waiting for problem…"))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Brand.typeSecondary)
             }
@@ -123,7 +123,7 @@ struct BenchLiveCard: View {
                         Image(systemName: "checkmark.seal")
                             .foregroundStyle(Brand.accentChrome)
                             .font(.system(size: 11, weight: .heavy))
-                        Text("Checking")
+                        Text(tr("Checking"))
                             .font(.system(size: 11, weight: .heavy, design: .monospaced))
                             .tracking(1.1)
                             .foregroundStyle(Brand.accentChrome)
@@ -138,7 +138,7 @@ struct BenchLiveCard: View {
                     }
                 } else {
                     ThinkingIndicatorDots(color: Brand.accentChrome)
-                    Text("Solving")
+                    Text(tr("Solving"))
                         .font(.system(size: 11, weight: .heavy, design: .monospaced))
                         .tracking(1.1)
                         .foregroundStyle(Brand.accentChrome)
@@ -147,14 +147,14 @@ struct BenchLiveCard: View {
                 Image(systemName: "pause.fill")
                     .foregroundStyle(Brand.warning)
                     .font(.system(size: 11, weight: .heavy))
-                Text("Paused")
+                Text(tr("Paused"))
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
                     .tracking(1.1)
                     .foregroundStyle(Brand.warning)
             case .done:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(Brand.success)
-                Text("Done")
+                Text(tr("Done"))
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
                     .tracking(1.1)
                     .foregroundStyle(Brand.success)
@@ -187,7 +187,7 @@ struct BenchLiveCard: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: "photo")
                                         .font(.system(size: 10, weight: .semibold))
-                                    Text("Figure on AoPS")
+                                    Text(tr("Figure on AoPS"))
                                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                                 }
                                 .foregroundStyle(Brand.accentChrome)
@@ -195,7 +195,7 @@ struct BenchLiveCard: View {
                         }
                         if cleaned.count > 320 {
                             Button(action: { problemExpanded.toggle() }) {
-                                Text(problemExpanded ? "Show less" : "Show more")
+                                Text(problemExpanded ? tr("Show less") : tr("Show more"))
                                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                                     .foregroundStyle(Brand.typeSecondary)
                             }
@@ -224,7 +224,7 @@ struct BenchLiveCard: View {
 
     private var reasoningPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("REASONING")
+            Text(tr("REASONING"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(Brand.typeTertiary)
@@ -248,7 +248,7 @@ struct BenchLiveCard: View {
         // The label sits ABOVE the surface, exactly like the REASONING
         // panel — it is a section header, not part of the answer card.
         VStack(alignment: .leading, spacing: 6) {
-            Text("FINAL ANSWER")
+            Text(tr("FINAL ANSWER"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(Brand.typeTertiary)
@@ -259,7 +259,7 @@ struct BenchLiveCard: View {
                    let extracted = extractedAnswer,
                    currentResultIsGraded,
                    extracted != problem.answer {
-                    Text("expected \(problem.answer)")
+                    Text(tr("expected %lld", problem.answer))
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(Brand.typeSecondary)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -303,14 +303,14 @@ struct BenchLiveCard: View {
 
     private var answerAccessibilityLabel: String {
         guard let extractedAnswer else {
-            return "Final answer pending"
+            return tr("Final answer pending")
         }
         if let problem = currentProblem, currentResultIsGraded {
             return extractedAnswer == problem.answer
-                ? "Final answer \(extractedAnswer), correct."
-                : "Final answer \(extractedAnswer), wrong, expected \(problem.answer)."
+                ? tr("Final answer %lld, correct.", extractedAnswer)
+                : tr("Final answer %lld, wrong, expected %lld.", extractedAnswer, problem.answer)
         }
-        return "Final answer \(extractedAnswer)"
+        return tr("Final answer %lld", extractedAnswer)
     }
 
     private var displayAnswer: String {
@@ -347,10 +347,10 @@ struct BenchLiveCard: View {
 
 private extension BenchAnswerVerificationState {
     var verificationLabel: String {
-        if disputedAnswer { return "Disputed" }
-        if correctedAnswer { return "Corrected" }
-        if hasVerifierAnswer { return "Checked" }
-        return "Unverified"
+        if disputedAnswer { return tr("Disputed") }
+        if correctedAnswer { return tr("Corrected") }
+        if hasVerifierAnswer { return tr("Checked") }
+        return tr("Unverified")
     }
 
     var verificationIcon: String {
@@ -399,25 +399,25 @@ private struct BenchLiveTelemetry: View {
         Grid(horizontalSpacing: 22, verticalSpacing: 0) {
             GridRow {
                 BenchTelemetryCell(
-                    label: "DECODE",
+                    label: tr("DECODE"),
                     value: decode,
                     fractionDigits: 1,
                     unit: decode == nil ? nil : "tok/s",
                     emphasised: true
                 )
                 BenchTelemetryCell(
-                    label: "PREFILL",
+                    label: tr("PREFILL"),
                     value: prefill,
                     fractionDigits: 0,
                     unit: prefill == nil ? nil : "tok/s"
                 )
                 BenchTelemetryCell(
-                    label: "REASONING",
+                    label: tr("REASONING"),
                     integer: reasoningTokens,
                     unit: "tok"
                 )
                 BenchTelemetryCell(
-                    label: "ANSWER",
+                    label: tr("ANSWER"),
                     integer: answerTokens,
                     unit: "tok"
                 )

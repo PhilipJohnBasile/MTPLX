@@ -51,7 +51,7 @@ struct SourcesFooterView: View {
             HStack(spacing: 6) {
                 Image(systemName: "link")
                     .font(.system(size: 10, weight: .medium))
-                Text("\(sources.count) source\(sources.count == 1 ? "" : "s")")
+                Text(sources.count == 1 ? tr("1 source") : tr("%lld sources", sources.count))
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -63,14 +63,14 @@ struct SourcesFooterView: View {
             .padding(.vertical, 7)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(isExpanded ? 0.10 : 0.06))
+                    .fill(Brand.wash.opacity(isExpanded ? 0.10 : 0.06))
             )
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(isExpanded ? "Hide sources" : "Show all \(sources.count) sources")
+        .help(isExpanded ? tr("Hide sources") : tr("Show all %lld sources", sources.count))
         .accessibilityLabel(
-            isExpanded ? "Hide sources" : "Show \(sources.count) sources"
+            isExpanded ? tr("Hide sources") : tr("Show %lld sources", sources.count)
         )
     }
 
@@ -92,7 +92,7 @@ struct SourcesFooterView: View {
             .padding(.vertical, 5)
             .background(
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.05))
+                    .fill(Brand.wash.opacity(0.05))
             )
             .overlay(
                 Capsule(style: .continuous)
@@ -102,6 +102,6 @@ struct SourcesFooterView: View {
         }
         .buttonStyle(.plain)
         .help(source.title.isEmpty ? source.url : source.title)
-        .accessibilityLabel("Open source \(index): \(source.domain)")
+        .accessibilityLabel(tr("Open source %lld: %@", index, source.domain))
     }
 }

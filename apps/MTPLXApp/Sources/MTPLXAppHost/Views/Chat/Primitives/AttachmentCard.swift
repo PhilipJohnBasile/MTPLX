@@ -61,7 +61,7 @@ struct AttachmentCard: View {
             .frame(width: 200, height: 56, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.05))
+                    .fill(Brand.wash.opacity(0.05))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(Brand.separator, lineWidth: 0.5)
@@ -80,14 +80,14 @@ struct AttachmentCard: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(Brand.typeHi, Color.black.opacity(0.5))
+                        .foregroundStyle(Brand.onInk, Brand.ink.opacity(0.5))
                         .padding(4)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .offset(x: 6, y: -6)
+                .offset(towardsTrailing: 6, y: -6)
                 .transition(.opacity.combined(with: .scale(scale: 0.6)))
-                .accessibilityLabel("Remove attachment")
+                .accessibilityLabel(tr("Remove attachment"))
             }
         }
         .animation(.smooth(duration: 0.16), value: hovering)
@@ -108,7 +108,7 @@ struct AttachmentCard: View {
         } else if errorMessage != nil {
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.06))
+                    .fill(Brand.wash.opacity(0.06))
                 Circle()
                     .fill(Brand.warning)
                     .frame(width: 8, height: 8)
@@ -133,7 +133,7 @@ struct AttachmentCard: View {
                     .fill(Self.badgeColor(for: fileExtension))
                 Image(systemName: Self.iconName(for: fileExtension))
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color.black.opacity(0.7))
+                    .foregroundStyle(Brand.ink.opacity(0.7))
             }
             .frame(width: 32, height: 32)
         }

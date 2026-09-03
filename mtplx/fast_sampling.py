@@ -394,6 +394,59 @@ def _device_serial_support_arrays(
     return token_rows, prob_rows, vocab_size
 
 
+def _device_serial_support_arrays_relaxed_ties(
+    logits: mx.array,
+    config: SamplerConfig,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Serial support without the 4k cutoff-tie proof superset.
+
+    The selected top-k set may differ only when multiple vocabulary rows tie
+    exactly at the cutoff. Probability arithmetic, support ordering, nucleus
+    filtering, and the host RNG remain unchanged.
+    """
+    rows = logits.reshape(-1, logits.shape[-1]).astype(mx.float32)
+    vocab_size = int(rows.shape[-1])
+    k = min(int(config.top_k), vocab_size)
+    scaled = rows * (1.0 / float(config.temperature))
+
+    cand_idx = mx.argpartition(-scaled, kth=k - 1, axis=-1)[:, :k]
+    cand_vals = mx.take_along_axis(scaled, cand_idx, axis=-1)
+    top_p_active = 0.0 < float(config.top_p) < 1.0
+    if top_p_active:
+        log_total = mx.logsumexp(scaled, axis=-1, keepdims=True)
+        cand_probs = mx.exp(cand_vals - log_total)
+        mx.eval(cand_idx, cand_vals, cand_probs)
+        prob_rows = np.asarray(cand_probs, dtype=np.float64)
+    else:
+        mx.eval(cand_idx, cand_vals)
+        prob_rows = None
+    token_rows = np.asarray(cand_idx, dtype=np.int64)
+    value_rows = np.asarray(cand_vals, dtype=np.float32)
+
+    order = np.lexsort((token_rows, -value_rows), axis=1)
+    token_rows = np.take_along_axis(token_rows, order, axis=1)
+    value_rows = np.take_along_axis(value_rows, order, axis=1)
+    if prob_rows is not None:
+        prob_rows = np.take_along_axis(prob_rows, order, axis=1)
+        cumulative_before = np.concatenate(
+            (
+                np.zeros((prob_rows.shape[0], 1), dtype=np.float64),
+                np.cumsum(prob_rows[:, :-1], axis=1),
+            ),
+            axis=1,
+        )
+        prob_rows = np.where(
+            cumulative_before < float(config.top_p), prob_rows, 0.0
+        )
+    else:
+        vals64 = value_rows.astype(np.float64)
+        vals64 -= np.max(vals64, axis=1, keepdims=True)
+        prob_rows = np.exp(vals64)
+        prob_rows /= np.sum(prob_rows, axis=1, keepdims=True)
+
+    return token_rows, prob_rows, vocab_size
+
+
 def _serial_row_distribution(
     token_ids: np.ndarray,
     probs: np.ndarray,
@@ -450,6 +503,24 @@ def sparse_distribution_from_mlx_logits(
         return dist
     # Non-finite mass (NaN/inf logits): keep the host reference's one-hot
     # fallback semantics.
+    mx.eval(row)
+    return _host_sparse_distribution(np.asarray(row, dtype=np.float32), config)
+
+
+def sparse_distribution_from_mlx_logits_relaxed_ties(
+    logits: mx.array,
+    config: SamplerConfig,
+) -> SparseDistribution | None:
+    """Return the serial distribution while permitting cutoff tie flips."""
+    if config.temperature <= 0 or config.top_k <= 0:
+        return None
+    row = logits.reshape(-1).astype(mx.float32)
+    token_rows, prob_rows, vocab_size = (
+        _device_serial_support_arrays_relaxed_ties(row, config)
+    )
+    dist = _serial_row_distribution(token_rows[0], prob_rows[0], vocab_size)
+    if dist is not None:
+        return dist
     mx.eval(row)
     return _host_sparse_distribution(np.asarray(row, dtype=np.float32), config)
 

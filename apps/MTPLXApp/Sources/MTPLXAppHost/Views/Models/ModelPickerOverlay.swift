@@ -189,14 +189,14 @@ struct ModelPickerOverlay: View, Equatable {
                     .trim(from: 0, to: borderProgress)
                     .stroke(Brand.separatorStrong, lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
+            .shadow(color: Brand.shade.opacity(0.55), radius: 18, x: 0, y: 10)
         )
     }
 
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Model")
+            Text(tr("Model"))
                 .font(.system(.callout, design: .rounded).weight(.semibold))
                 .foregroundStyle(Brand.typeBody)
             Text(restartHint)
@@ -233,15 +233,15 @@ struct ModelPickerOverlay: View, Equatable {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Brand.typeBody)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(restart.shortName) updated")
+                        Text(tr("%@ updated", restart.shortName))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Brand.typeBody)
-                        Text("Restart MTPLX to load the updated files.")
+                        Text(tr("Restart MTPLX to load the updated files."))
                             .font(.caption2)
                             .foregroundStyle(Brand.typeTertiary)
                     }
                     Spacer(minLength: 8)
-                    Button("Restart") {
+                    Button(tr("Restart")) {
                         Task { await backend.restartToApplyModelUpdate() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -256,8 +256,8 @@ struct ModelPickerOverlay: View, Equatable {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(
                             updateSizeText(update).map {
-                                "Update available: \(update.shortName) (\($0))"
-                            } ?? "Update available: \(update.shortName)"
+                                tr("Update available: %@ (%@)", update.shortName, $0)
+                            } ?? tr("Update available: %@", update.shortName)
                         )
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Brand.typeBody)
@@ -281,7 +281,7 @@ struct ModelPickerOverlay: View, Equatable {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Button("Update") {
+                        Button(tr("Update")) {
                             backend.updateModelPack(update)
                         }
                         .buttonStyle(.bordered)
@@ -343,14 +343,14 @@ struct ModelPickerOverlay: View, Equatable {
                         .frame(width: 22, height: 22)
                         .background(
                             Circle()
-                                .fill(Color.white.opacity(0.04))
+                                .fill(Brand.wash.opacity(0.04))
                                 .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                         )
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Add a model from Hugging Face")
+                        Text(tr("Add a model from Hugging Face"))
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .foregroundStyle(Brand.typeBody)
-                        Text("Paste any org/repo. Added models stay in this list.")
+                        Text(tr("Paste any org/repo. Added models stay in this list."))
                             .font(.caption2)
                             .foregroundStyle(Brand.typeTertiary)
                             .lineLimit(2)
@@ -438,7 +438,7 @@ struct ModelPickerOverlay: View, Equatable {
                                 .controlSize(.mini)
                                 .tint(Brand.bgOuter)
                         }
-                        Text(checkingCustomRepo ? "Checking…" : "Check & Add")
+                        Text(checkingCustomRepo ? tr("Checking…") : tr("Check & Add"))
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .padding(.horizontal, 12)
@@ -525,7 +525,7 @@ struct ModelPickerOverlay: View, Equatable {
                 print("MTPLX: model switch failed: \(error)")
                 await MainActor.run {
                     applyingModelID = nil
-                    errorMessage = "Couldn't switch models. Try again."
+                    errorMessage = tr("Couldn't switch models. Try again.")
                 }
             }
         }
@@ -535,7 +535,7 @@ struct ModelPickerOverlay: View, Equatable {
         guard !checkingCustomRepo, applyingModelID == nil, !isTransitioning else { return }
         guard let option = MTPLXModelOption.customHuggingFaceModel(repoID: customRepoInput) else {
             customProbe = nil
-            errorMessage = "Enter a Hugging Face repo id like org/name."
+            errorMessage = tr("Enter a Hugging Face repo id like org/name.")
             return
         }
         if let existing = preparedRows.first(where: { $0.matches(option.hfModelID) }) {
@@ -566,7 +566,7 @@ struct ModelPickerOverlay: View, Equatable {
 
     private func addCustomModel(repoID: String) {
         guard let option = MTPLXModelOption.customHuggingFaceModel(repoID: repoID) else {
-            errorMessage = "Enter a Hugging Face repo id like org/name."
+            errorMessage = tr("Enter a Hugging Face repo id like org/name.")
             return
         }
         guard applyingModelID == nil, !isTransitioning else { return }
@@ -590,7 +590,7 @@ struct ModelPickerOverlay: View, Equatable {
                 print("MTPLX: add custom model failed: \(error)")
                 await MainActor.run {
                     applyingModelID = nil
-                    errorMessage = "Couldn't add that model. Check the repo and try again."
+                    errorMessage = tr("Couldn't add that model. Check the repo and try again.")
                 }
             }
         }
@@ -639,12 +639,12 @@ struct ModelPickerOverlay: View, Equatable {
 
     private var restartHint: String {
         if isTransitioning {
-            return "Wait for startup or shutdown to finish."
+            return tr("Wait for startup or shutdown to finish.")
         }
         if restartRequired {
-            return "Switching models restarts the model server."
+            return tr("Switching models restarts the model server.")
         }
-        return "This model loads next time you start."
+        return tr("This model loads next time you start.")
     }
 
     private var motionEnabled: Bool {
@@ -810,7 +810,7 @@ private struct ModelPickerPreparedOption: Equatable, Identifiable, Sendable {
 // other: a thin tinted full-width fill (Brand.accentChrome at 8%
 // opacity), a brighter title colour (Brand.typeHi vs typeBody), and a
 // filled blue checkmark on the trailing edge. Hover is an even
-// quieter Color.white opacity-0.04 stripe that the selection fill
+// quieter Brand.wash opacity-0.04 stripe that the selection fill
 // composites on top of, so hovering the selected row still reads as
 // "selected" but with a subtle lift.
 
@@ -862,7 +862,7 @@ private struct ModelRowView: View {
                         Brand.accentChrome.opacity(0.10)
                     }
                     if hovering {
-                        Color.white.opacity(0.05)
+                        Brand.wash.opacity(0.05)
                     }
                 }
             }
@@ -873,7 +873,7 @@ private struct ModelRowView: View {
         .offset(y: visible ? 0 : 8)
         .scaleEffect(hovering ? 1.015 : 1.0, anchor: .center)
         .shadow(
-            color: .black.opacity(hovering ? 0.32 : 0),
+            color: Brand.shade.opacity(hovering ? 0.32 : 0),
             radius: hovering ? 6 : 0,
             x: 0,
             y: hovering ? 3 : 0
@@ -917,7 +917,7 @@ private struct ModelRowView: View {
     @ViewBuilder
     private var statusBadge: some View {
         let tint = isInstalled ? Brand.accentChrome : Brand.warning
-        let label = isInstalled ? "Installed" : "HF"
+        let label = isInstalled ? tr("Installed") : tr("HF")
         Text(label)
             .font(.caption2.weight(.medium))
             .foregroundStyle(tint.opacity(0.9))

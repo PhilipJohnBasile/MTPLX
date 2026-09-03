@@ -3483,6 +3483,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override context window. Default reads the model/tokenizer config.",
     )
     serve_p.add_argument(
+        "--allow-swap",
+        action="store_true",
+        help=(
+            "Serve past this machine's memory fit: the default window is the "
+            "model's own maximum and prompts past the fit are admitted instead "
+            "of refused with 507. Expect swap and slow decode there. "
+            "MTPLX_ALLOW_SWAP=1 does the same for launchers without flags."
+        ),
+    )
+    serve_p.add_argument(
         "--default-temperature",
         "--temperature",
         dest="temperature",

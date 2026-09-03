@@ -46,7 +46,7 @@ public struct MTPLXCommandBuilder: Sendable {
     }
 
     public static func missingRuntimeMessage() -> String {
-        "MTPLX command-line runtime was not found. Install it with Homebrew: \(homebrewInstallCommand). Then relaunch MTPLX."
+        tr("MTPLX command-line runtime was not found. Install it with Homebrew: %@. Then relaunch MTPLX.", homebrewInstallCommand)
     }
 
     public static func expandedPATH(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {

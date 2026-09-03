@@ -111,6 +111,7 @@ struct ContentView: View {
     @StateObject private var backendProjection: ContentViewBackendProjection
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var languageStore: LanguageStore
 
     @MainActor
     init(backend: MTPLXBackendStore) {
@@ -127,7 +128,12 @@ struct ContentView: View {
                 OnboardingExperienceView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .completed:
+                // A new identity per language tears the shell down and
+                // rebuilds it, so every cached tr() string re-resolves at
+                // once. Onboarding is left out: its language step observes
+                // the store directly and the orchestrator must survive.
                 appShell
+                    .id(languageStore.language)
             }
         }
         // Allow the window to shrink to a thin bar. The dashboard reflows
@@ -148,6 +154,7 @@ struct ContentView: View {
         .sheet(isPresented: $router.aboutSheetPresented) {
             AboutSheet()
                 .environmentObject(backend)
+                .environmentObject(themeStore)
         }
         .sheet(isPresented: modelDownloadSheetPresented) {
             ModelDownloadSheet()
@@ -176,7 +183,7 @@ struct ContentView: View {
     private var appShell: some View {
         let snapshot = backendProjection.snapshot
         ZStack(alignment: .top) {
-            Brand.bgOuter
+            Brand.pianoRadial
                 .ignoresSafeArea()
 
             if router.benchmarkOverlayPresented {
@@ -396,7 +403,7 @@ struct DashboardSurface: View {
 
 private struct DashboardBackdropSurface: View {
     var body: some View {
-        Brand.bgOuter
+        Brand.pianoRadial
             .ignoresSafeArea()
             .accessibilityHidden(true)
     }
@@ -418,16 +425,17 @@ struct ModelDownloadSheet: View {
                 progressBlock
             }
             if let failure = backend.modelDownloadFailure {
-                failureBanner(failure, title: "Download failed")
+                failureBanner(failure, title: tr("Download failed"))
             }
             if let failure = backend.modelTuneFailure {
-                failureBanner(failure, title: "Tuning didn't finish")
+                failureBanner(failure, title: tr("Tuning didn't finish"))
             }
             actionRow
         }
         .padding(24)
         .frame(width: 520, alignment: .leading)
         .background(Brand.bgInner)
+        .appliesAppearance()
     }
 
     private var header: some View {
@@ -447,13 +455,13 @@ struct ModelDownloadSheet: View {
 
     private var details: some View {
         VStack(alignment: .leading, spacing: 10) {
-            detailRow(label: "Model", value: pendingTune?.repoID ?? request?.repoID ?? "Unknown")
-            detailRow(label: "Destination", value: pendingTune?.installedPath ?? progress?.destinationPath ?? request?.destinationPath ?? "")
+            detailRow(label: tr("Model"), value: pendingTune?.repoID ?? request?.repoID ?? "Unknown")
+            detailRow(label: tr("Destination"), value: pendingTune?.installedPath ?? progress?.destinationPath ?? request?.destinationPath ?? "")
             if let total = progress?.totalBytes ?? request?.totalBytes {
-                detailRow(label: "Size", value: formatBytesShort(total))
+                detailRow(label: tr("Size"), value: formatBytesShort(total))
             }
             if let pendingTune {
-                detailRow(label: "Candidates", value: pendingTune.candidates.map(\.displayLabel).joined(separator: ", "))
+                detailRow(label: tr("Candidates"), value: pendingTune.candidates.map(\.displayLabel).joined(separator: ", "))
             }
         }
         .padding(12)
@@ -495,8 +503,8 @@ struct ModelDownloadSheet: View {
         .frame(maxWidth: .infinity)
         .clipShape(Capsule())
         .clipped()
-        .accessibilityLabel("Download progress")
-        .accessibilityValue("\(Int(fraction * 100)) percent")
+        .accessibilityLabel(tr("Download progress"))
+        .accessibilityValue(tr("%lld percent", Int(fraction * 100)))
     }
 
     private var statusRow: some View {
@@ -509,7 +517,7 @@ struct ModelDownloadSheet: View {
                 .foregroundStyle(Brand.typeHi)
                 .monospacedDigit()
             if let total {
-                Text("of \(formatBytesShort(total))")
+                Text(tr("of %@", formatBytesShort(total)))
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(Brand.typeSecondary)
                     .monospacedDigit()
@@ -539,13 +547,13 @@ struct ModelDownloadSheet: View {
                 .foregroundStyle(rate > 50_000 ? Brand.typeSecondary : Brand.typeTertiary)
                 .monospacedDigit()
             if stalled == 0, let eta, eta > 0 {
-                Text("ETA \(formatDuration(eta))")
+                Text(tr("ETA %@", formatDuration(eta)))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.typeTertiary)
                     .monospacedDigit()
             }
             if stalled >= 30 {
-                Label("Stalled for \(stalled)s", systemImage: "exclamationmark.triangle.fill")
+                Label(tr("Stalled for %llds", stalled), systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(Brand.warning)
             }
@@ -565,7 +573,7 @@ struct ModelDownloadSheet: View {
                     candidateRow(for: candidate)
                 }
                 if !backend.isModelTuning && backend.modelTuneFailure == nil {
-                    Text("Run tuning now, or skip and use the default MTP setting.")
+                    Text(tr("Run tuning now, or skip and use the default MTP setting."))
                         .font(.system(size: 11.5))
                         .foregroundStyle(Brand.typeTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -629,7 +637,7 @@ struct ModelDownloadSheet: View {
                     .foregroundStyle(Brand.typeBody)
                     .monospacedDigit()
             } else if isRunning {
-                Text("running")
+                Text(tr("running"))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Brand.typeSecondary)
             } else {
@@ -656,7 +664,7 @@ struct ModelDownloadSheet: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Brand.success)
-                Text("\(savedCandidateLabel(for: result)) saved")
+                Text(tr("%@ saved", savedCandidateLabel(for: result)))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
                 Spacer()
@@ -725,7 +733,7 @@ struct ModelDownloadSheet: View {
                 }
             } label: {
                 Label(
-                    backend.isModelTuning ? "Stop" : "Cancel",
+                    backend.isModelTuning ? tr("Stop") : tr("Cancel"),
                     systemImage: backend.isModelTuning ? "stop.fill" : "xmark"
                 )
             }
@@ -748,7 +756,7 @@ struct ModelDownloadSheet: View {
                         backend.skipPendingModelTune()
                     } label: {
                         Label(
-                            backend.modelTuneFailure == nil ? "Skip" : "Skip and Use Default",
+                            backend.modelTuneFailure == nil ? tr("Skip") : tr("Skip and Use Default"),
                             systemImage: "forward.fill"
                         )
                     }
@@ -757,7 +765,7 @@ struct ModelDownloadSheet: View {
                     Button {
                         backend.runPendingModelTune()
                     } label: {
-                        Label(backend.modelTuneFailure == nil ? "Run Tuning" : "Retry", systemImage: "speedometer")
+                        Label(backend.modelTuneFailure == nil ? tr("Run Tuning") : tr("Retry"), systemImage: "speedometer")
                     }
                     .buttonStyle(ModelDownloadPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
@@ -827,24 +835,24 @@ struct ModelDownloadSheet: View {
     private var headerTitle: String {
         if let pendingTune {
             if backend.isModelTuning {
-                return "Tuning \(pendingTune.shortName)"
+                return tr("Tuning %@", pendingTune.shortName)
             }
             if backend.modelTuneResult != nil {
-                return "\(pendingTune.shortName) tuned"
+                return tr("%@ tuned", pendingTune.shortName)
             }
-            return "Tune \(pendingTune.shortName)?"
+            return tr("Tune %@?", pendingTune.shortName)
         }
-        return "Download \(request?.shortName ?? "model")?"
+        return tr("Download %@?", request?.shortName ?? tr("model"))
     }
 
     private var headerSubtitle: String {
         if pendingTune != nil {
             if backend.modelTuneResult != nil {
-                return "MTPLX saved the measured setting for this model."
+                return tr("MTPLX saved the measured setting for this model.")
             }
-            return "MTPLX can test this model on your Mac and save the fastest MTP setting. Fans may ramp for a few minutes."
+            return tr("MTPLX can test this model on your Mac and save the fastest MTP setting. Fans may ramp for a few minutes.")
         }
-        return "MTPLX found only a partial model folder. The full weights need to download before this model can start."
+        return tr("MTPLX found only a partial model folder. The full weights need to download before this model can start.")
     }
 
     private var headerIcon: String {
@@ -857,19 +865,19 @@ struct ModelDownloadSheet: View {
 
     private var primaryTitle: String {
         if backend.modelDownloadFailure != nil {
-            return "Retry"
+            return tr("Retry")
         }
         if progress?.isComplete == true {
-            return request?.launchAction == .restart ? "Restart" : "Start"
+            return request?.launchAction == .restart ? tr("Restart") : tr("Start")
         }
         if request?.launchAction == .restart {
-            return "Download & Restart"
+            return tr("Download & Restart")
         }
-        return "Download & Start"
+        return tr("Download & Start")
     }
 
     private var startTitle: String {
-        pendingTune?.launchAction == .restart ? "Restart" : "Start"
+        pendingTune?.launchAction == .restart ? tr("Restart") : tr("Start")
     }
 
     private func previousCandidatesDone(before candidate: TuneCandidate) -> Bool {
@@ -898,15 +906,15 @@ struct ModelDownloadSheet: View {
 
     private func formatBytesShort(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        if gib >= 1 { return String(format: "%.2f GB", gib) }
+        if gib >= 1 { return tr("%.2f GB", gib) }
         let mib = Double(bytes) / 1_048_576.0
-        return String(format: "%.0f MB", mib)
+        return tr("%.0f MB", mib)
     }
 
     private func formatRate(_ bytesPerSecond: Double) -> String {
         if bytesPerSecond < 1024 { return "—" }
         let mbps = bytesPerSecond / 1_048_576.0
-        return String(format: "%.1f MB/s", mbps)
+        return tr("%.1f MB/s", mbps)
     }
 
     private func formatDuration(_ seconds: Double) -> String {
@@ -914,14 +922,14 @@ struct ModelDownloadSheet: View {
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        if h > 0 { return tr("%lldh %lldm", h, m) }
+        if m > 0 { return tr("%lldm %llds", m, s) }
+        return tr("%llds", s)
     }
 
     private func formatTokS(_ value: Double) -> String {
         guard value > 0 else { return "—" }
-        return String(format: "%.1f tps", value)
+        return tr("%.1f tps", value)
     }
 }
 

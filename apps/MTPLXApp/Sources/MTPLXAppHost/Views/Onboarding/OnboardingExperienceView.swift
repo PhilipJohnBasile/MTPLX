@@ -27,9 +27,12 @@ struct OnboardingExperienceView: View {
 
     var body: some View {
         ZStack {
-            Brand.bgOuter.ignoresSafeArea()
+            Brand.pianoRadial.ignoresSafeArea()
             Group {
                 switch orchestrator.state.step {
+                case .language:
+                    LanguageStep(orchestrator: orchestrator)
+                        .transition(stepTransition)
                 case .welcome:
                     WelcomeStep(orchestrator: orchestrator)
                         .transition(stepTransition)
@@ -64,7 +67,7 @@ struct OnboardingExperienceView: View {
             // Esc steps backwards through the flow — never closes the
             // onboarding window since that would leave the app in an
             // unrecoverable "no model, no daemon" state.
-            if orchestrator.state.step != .welcome
+            if orchestrator.state.step != OnboardingStep.allCases.first
                 && !orchestrator.isRunningRuntimeSetup
                 && !orchestrator.isDownloading
                 && !orchestrator.isTuning

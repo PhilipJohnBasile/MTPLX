@@ -17,7 +17,9 @@ Env contract (all default-off):
 - ``MTPLX_FRSPEC_DRAFT=1`` enables the pruned draft head.
 - ``MTPLX_FRSPEC_VOCAB=<path>`` JSON carrying ``{"ids": [...]}`` ranked
   most-frequent-first (the Y-PC artifact loads unchanged — same tokenizer).
-- ``MTPLX_FRSPEC_N`` optional cap; takes the first N ids of the ranking.
+- ``MTPLX_FRSPEC_N`` optional cap for external ranked files. The built-in 64K
+  artifact is row-sorted for efficient gathering and therefore only accepts
+  its full size.
 """
 
 from __future__ import annotations
@@ -31,6 +33,42 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_BUILTIN_VOCABS = {
+    "qwen38-code-64k": Path(__file__).with_name("data")
+    / "qwen38_code_ranked_64k.npy",
+}
+
+
+def _full_vocab_head(head: Any, ids: Any, vocab_rows: int) -> Any:
+    """Return the pruned head with a full-vocabulary output domain."""
+
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    class _FullVocabDraftHead(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.head = head
+            object.__setattr__(self, "_ids", ids)
+            object.__setattr__(self, "_vocab_rows", int(vocab_rows))
+
+        def __call__(self, x: Any) -> Any:
+            subset = self.head(x)
+            output = mx.full(
+                (*subset.shape[:-1], self._vocab_rows),
+                -1.0e30,
+                dtype=subset.dtype,
+            )
+            index = mx.broadcast_to(
+                self._ids.reshape(
+                    (1,) * (subset.ndim - 1) + (int(self._ids.shape[0]),)
+                ),
+                subset.shape,
+            )
+            return mx.put_along_axis(output, index, subset, axis=-1)
+
+    return _FullVocabDraftHead()
+
 
 def frspec_enabled() -> bool:
     return (os.environ.get("MTPLX_FRSPEC_DRAFT", "").strip().lower()
@@ -41,6 +79,8 @@ def _vocab_path() -> Path | None:
     raw = (os.environ.get("MTPLX_FRSPEC_VOCAB") or "").strip()
     if not raw:
         return None
+    if raw.startswith("builtin:"):
+        return _BUILTIN_VOCABS.get(raw.removeprefix("builtin:"))
     path = Path(raw).expanduser()
     return path if path.exists() else None
 
@@ -51,11 +91,16 @@ def load_frspec_ids() -> list[int] | None:
         logger.warning("[frspec] MTPLX_FRSPEC_DRAFT set but MTPLX_FRSPEC_VOCAB missing/not found")
         return None
     try:
-        payload = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        if path.suffix == ".npy":
+            import numpy as np
+
+            ids = np.load(path, allow_pickle=False).reshape(-1).tolist()
+        else:
+            payload = json.loads(path.read_text())
+            ids = payload.get("ids") if isinstance(payload, dict) else payload
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         logger.warning("[frspec] failed to read %s: %s", path, exc)
         return None
-    ids = payload.get("ids") if isinstance(payload, dict) else payload
     if not isinstance(ids, list) or not ids:
         logger.warning("[frspec] %s carries no ids list", path)
         return None
@@ -64,27 +109,57 @@ def load_frspec_ids() -> list[int] | None:
         try:
             n = int(raw_n)
         except ValueError:
-            n = 0
-        if n > 0:
-            ids = ids[:n]
-    return [int(i) for i in ids]
+            logger.warning("[frspec] MTPLX_FRSPEC_N must be an integer")
+            return None
+        if n <= 0 or n > len(ids):
+            logger.warning("[frspec] MTPLX_FRSPEC_N must be in [1, %d]", len(ids))
+            return None
+        raw_vocab = (os.environ.get("MTPLX_FRSPEC_VOCAB") or "").strip()
+        if raw_vocab.startswith("builtin:") and n != len(ids):
+            logger.warning("[frspec] built-in vocabularies do not support truncation")
+            return None
+        ids = ids[:n]
+    resolved = [int(i) for i in ids]
+    if len(set(resolved)) != len(resolved):
+        logger.warning("[frspec] %s carries duplicate token ids", path)
+        return None
+    return resolved
 
 
 def install_frspec_draft_head(text: Any) -> dict[str, Any]:
-    """Swap ``text._mtplx_draft_lm_head`` for a row-pruned copy.
+    """Install a row-pruned proposal head at the model construction boundary.
 
-    Call AFTER the normal draft head install. Returns a report dict; on any
-    contract miss it leaves the full head in place (fail-open to correctness).
+    Call after the normal draft-head install. A contract miss returns an
+    uninstalled report; the explicitly enabled caller turns that into one
+    construction-time failure.
     """
     import mlx.core as mx
     import mlx.nn as nn
 
     started = time.perf_counter()
-    head = getattr(text, "_mtplx_draft_lm_head", None)
+    native_head = getattr(text, "_mtplx_native_mtp_draft_head", None)
+    head = native_head() if native_head is not None else None
+    source = "native_mtp_head" if head is not None else "configured_draft_head"
+    if head is None:
+        head = getattr(text, "_mtplx_draft_lm_head", None)
     if head is None:
         return {"installed": False, "reason": "no_draft_lm_head"}
     if not isinstance(head, nn.QuantizedLinear):
         return {"installed": False, "reason": f"head_type_{type(head).__name__}"}
+
+    bits = int(head.bits)
+    group_size = int(head.group_size)
+    mode = str(head.mode)
+    if source == "native_mtp_head" and (
+        bits != 8 or group_size != 64 or mode != "affine"
+    ):
+        return {
+            "installed": False,
+            "reason": "native_head_contract",
+            "bits": bits,
+            "group_size": group_size,
+            "mode": mode,
+        }
 
     ids = load_frspec_ids()
     if not ids:
@@ -98,8 +173,6 @@ def install_frspec_draft_head(text: Any) -> dict[str, Any]:
         return {"installed": False, "reason": "not_actually_pruned", "n": n}
 
     ids_arr = mx.array(ids, dtype=mx.int32)
-    group_size = int(getattr(head, "group_size", 64))
-    bits = int(getattr(head, "bits", 4))
     in_dims = int(head.scales.shape[1]) * group_size
 
     pruned = nn.QuantizedLinear(
@@ -108,6 +181,7 @@ def install_frspec_draft_head(text: Any) -> dict[str, Any]:
         bias="bias" in head,
         group_size=group_size,
         bits=bits,
+        mode=mode,
     )
     pruned.weight = mx.take(head.weight, ids_arr, axis=0)
     pruned.scales = mx.take(head.scales, ids_arr, axis=0)
@@ -117,28 +191,36 @@ def install_frspec_draft_head(text: Any) -> dict[str, Any]:
         pruned.bias = mx.take(head.bias, ids_arr, axis=0)
     mx.eval(pruned.parameters())
 
-    # Side-stamped only by default: the device draft core swaps this head in
-    # around its own trace window. The global _mtplx_draft_lm_head stays
-    # full-vocab so legacy draft paths (dense draft_q consumers index by real
-    # token id) keep their contract untouched.
-    text._mtplx_frspec_draft_head = pruned
+    full_head = _full_vocab_head(pruned, ids_arr, vocab_rows)
+    mx.eval(full_head.parameters())
+
+    # Keep the configured draft head unchanged for legacy consumers. Qwen4's
+    # native MTP route binds the full-domain wrapper once below and calls it
+    # directly without a per-token eligibility branch.
+    text._mtplx_frspec_draft_head = full_head
     text._mtplx_frspec_full_vocab = vocab_rows
     text._mtplx_frspec_ids = ids_arr
     legacy = frspec_legacy_enabled()
+    bind_draft_head = getattr(text, "_mtplx_bind_draft_lm_head", None)
+    if bind_draft_head is not None:
+        bind_draft_head(full_head)
     if legacy:
         # Legacy per-step lane (2026-08-25): the mtp forward projects through
         # _mtplx_draft_lm_head directly, so the swap is global here and
         # generate_mtpk remaps sampled local ids -> full ids at its single
         # draft convergence point (width-guarded).
         text._mtplx_frspec_saved_head = head
-        text._mtplx_draft_lm_head = pruned
+        text._mtplx_draft_lm_head = full_head
     report = {
         "installed": True,
         "n": n,
         "vocab_rows": vocab_rows,
         "bits": bits,
         "group_size": group_size,
+        "mode": mode,
         "bytes_ratio": round(n / vocab_rows, 4),
+        "source": source,
+        "output_mode": "full",
         "legacy_swap": bool(legacy),
         "elapsed_s": round(time.perf_counter() - started, 3),
     }
