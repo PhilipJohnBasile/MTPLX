@@ -13,6 +13,7 @@ TOP_K = 10
 THREADS = 256
 
 _KERNEL: Any | None = None
+_RESIDUAL_KERNEL: Any | None = None
 
 
 def source() -> str:
@@ -56,8 +57,37 @@ def source() -> str:
     """
 
 
+def residual_source() -> str:
+    """Return the exact combine tail with the decoder residual store fused."""
+
+    stock_store = (
+        "output[index] = bfloat(float(routed_value) + float(gated_shared));"
+    )
+    residual_store = """bfloat block_out = bfloat(
+            float(routed_value) + float(gated_shared));
+        for (uint stream = 0; stream < 4; ++stream) {
+            uint hidden_index =
+                (row * 4 + stream) * HIDDEN + column;
+            bfloat inject_value = inject[row * 4 + stream];
+            bfloat product = bfloat(
+                float(block_out) * float(inject_value));
+            output[hidden_index] = bfloat(
+                float(hyper[hidden_index]) + float(product));
+        }"""
+    fused = source().replace(stock_store, residual_store)
+    if fused == source():
+        raise RuntimeError("Qwen4 M4 residual-tail store substitution failed")
+    return fused
+
+
 def launch_geometry() -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     return ((ROWS * HIDDEN, 1, 1), (THREADS, 1, 1))
+
+
+def residual_launch_geometry() -> tuple[
+    tuple[int, int, int], tuple[int, int, int]
+]:
+    return launch_geometry()
 
 
 def bind() -> Callable[[Any, Any, Any, Any], mx.array]:
@@ -91,4 +121,60 @@ def bind() -> Callable[[Any, Any, Any, Any], mx.array]:
     return combine
 
 
-__all__ = ["bind", "launch_geometry", "source"]
+def bind_residual_tail() -> Callable[[Any, Any, Any, Any, Any, Any], mx.array]:
+    """Bind the physical-M4 combine plus exact BF16 decoder residual store."""
+
+    global _RESIDUAL_KERNEL
+    if _RESIDUAL_KERNEL is None:
+        _RESIDUAL_KERNEL = mx.fast.metal_kernel(
+            name="mtplx_qwen4_m4_combine_residual_tail",
+            input_names=[
+                "routed_down",
+                "shared_down",
+                "route_scores",
+                "shared_factor",
+                "hyper",
+                "inject",
+            ],
+            output_names=["output"],
+            source=residual_source(),
+            ensure_row_contiguous=True,
+        )
+    kernel = _RESIDUAL_KERNEL
+    grid, threadgroup = residual_launch_geometry()
+
+    def residual_tail(
+        routed_down,
+        shared_down,
+        route_scores,
+        shared_factor,
+        hyper,
+        inject,
+    ):
+        (output,) = kernel(
+            inputs=[
+                routed_down,
+                shared_down,
+                route_scores,
+                shared_factor,
+                hyper,
+                inject,
+            ],
+            grid=grid,
+            threadgroup=threadgroup,
+            output_shapes=[(ROWS, 4 * HIDDEN)],
+            output_dtypes=[mx.bfloat16],
+        )
+        return output.reshape(*hyper.shape)
+
+    return residual_tail
+
+
+__all__ = [
+    "bind",
+    "bind_residual_tail",
+    "launch_geometry",
+    "residual_launch_geometry",
+    "residual_source",
+    "source",
+]
