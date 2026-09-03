@@ -40,6 +40,7 @@ from mtplx.benchmarks.validators.basic import (
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.default_models import (
     OPTIMIZED_QUALITY_DESCRIPTION,
+    DefaultModelUnavailable,
     is_verified_default_model_ref,
     optimized_quality_model_ref,
     public_model_id_for_ref,
@@ -10768,11 +10769,25 @@ def _quickstart_heartbeat(
     return _QuickstartHeartbeat(label, interval_s=interval_s)
 
 
+def _select_default_model_or_exit():
+    """The verified default for this Mac, or a clean exit with the reason.
+
+    A Mac that cannot run any MTPLX model (an Intel processor, or less memory
+    than the smallest pack needs) gets the one-sentence message and exit
+    status 1: never a traceback, never a download it cannot use.
+    """
+
+    try:
+        return select_default_model()
+    except DefaultModelUnavailable as exc:
+        raise SystemExit(exc.message) from exc
+
+
 def _quickstart_current_model(args: Any) -> str:
     model = getattr(args, "model", None)
     explicit_model = bool(getattr(args, "_model_explicit", False))
     if not explicit_model and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        selection = _select_default_model_or_exit()
         args._mtplx_default_model_selection = selection.to_dict()
         return selection.model
     return str(model or DEFAULT_MODEL_ID)
@@ -10783,7 +10798,7 @@ def _quickstart_download_ref(model: str) -> str:
 
     if repo_id_from_model_ref(model):
         return model
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     default_local_refs = {
         DEFAULT_MODEL_ID,
         selection.model,
@@ -10817,7 +10832,7 @@ def _quickstart_choose_model(
         return model, download
 
     _quickstart_line(f"MTPLX {_start_command_name(args)}")
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     _quickstart_line("Choose a model:")
     _quickstart_line(f"  1. Use verified default for this Mac ({selection.label})")
     quality_ref = optimized_quality_model_ref()
@@ -14195,7 +14210,7 @@ def cmd_quickstart_public(args: Any) -> int:
                     "selected model" if download_model == model else "verified default"
                 )
             except ValueError:
-                download_model = select_default_model().hf_model
+                download_model = _select_default_model_or_exit().hf_model
                 label = "verified default"
             answer = (
                 input(
