@@ -340,7 +340,6 @@ def decode_payload_prefix(
     read_tensor: Callable[[str], bytes],
     *,
     cache_prefix_len: int,
-    mtp_history_prefix_len: int | None = None,
     boundary_prefix_len: int | None = None,
 ) -> DecodedPayload:
     """Decode only the SSD payload needed for a sub-prefix restore.
@@ -355,11 +354,6 @@ def decode_payload_prefix(
     """
 
     cache_prefix_len = max(0, int(cache_prefix_len))
-    mtp_prefix_len = (
-        None
-        if mtp_history_prefix_len is None
-        else max(0, int(mtp_history_prefix_len))
-    )
     selected_boundary = _gdn_boundary_spec_at_or_below(
         spec, boundary_prefix_len
     )
@@ -383,13 +377,14 @@ def decode_payload_prefix(
     mtp_spec = spec.get("mtp_history_snapshot")
     mtp_history_snapshot = None
     if mtp_spec is not None:
+        # MTP history is shifted relative to the target cache (it is built
+        # from prompt_ids[1:]) and can also be a trailing-window cache.  Its
+        # physical rows therefore cannot be addressed by the target-prefix
+        # token number.  Keep the complete snapshot and let SessionBank apply
+        # its existing delta trim after restore.
         mtp_history_snapshot = CacheSnapshot(
-            states=_decode_tree_prefix(
-                mtp_spec["states"],
-                read_tensor,
-                prefix_len=mtp_prefix_len,
-            ),
-            meta_states=_none_tree_like(mtp_spec["meta_states"]),
+            states=tuple(decode_tree(mtp_spec["states"], read_tensor)),
+            meta_states=tuple(decode_tree(mtp_spec["meta_states"], read_tensor)),
         )
     boundaries = ()
     if selected_boundary is not None:
@@ -423,7 +418,7 @@ def decode_payload_prefix(
         gdn_boundaries=boundaries,
         has_recurrent=bool(spec.get("has_recurrent", False)),
         cache_snapshot_prefix_len=cache_prefix_len,
-        mtp_history_snapshot_prefix_len=mtp_prefix_len,
+        mtp_history_snapshot_prefix_len=None,
     )
     _eval_decoded_arrays(decoded)
     return decoded
@@ -507,6 +502,54 @@ def _gdn_boundary_spec_at_or_below(
         if 0 < tokens <= limit and (best is None or tokens > int(best["tokens"])):
             best = record
     return best
+
+
+def payload_supports_prefix_decode(spec: dict[str, Any]) -> bool:
+    """Whether the target-cache representation can be safely block-sliced.
+
+    Most attention caches derive their offset from the restored K/V tensors.
+    A few cache layouts instead require coupled, model-specific metadata (or
+    physically rotate their backing rows).  Reconstructing only their first
+    tensor blocks is not equivalent to a trim, so those entries retain the
+    established full-decode restore path.
+    """
+
+    try:
+        meta_items = _spec_items(spec["cache_snapshot"]["meta_states"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    for meta_spec in meta_items:
+        values = _flat_string_sequence(meta_spec)
+        if values is None:
+            continue
+        # DeepSeek-V4's five fields include rolling-window and compressor
+        # counters which must stay coupled to its compressed tensor state.
+        if values and values[0] == "mtplx-deepseek-v4-cache-v1":
+            return False
+        # Gemma's rotating cache carries (keep, max_size, offset, write_idx).
+        # The persisted tensor order is ring-buffer order once full, so a
+        # token-prefix slice cannot faithfully reconstruct it.
+        if len(values) == 4 and all(_is_decimal_string(value) for value in values):
+            return False
+    return True
+
+
+def _flat_string_sequence(spec: Any) -> tuple[str, ...] | None:
+    kind = spec.get("kind") if isinstance(spec, dict) else None
+    if kind == "none":
+        return ()
+    if kind not in {"tuple", "list"}:
+        return None
+    values: list[str] = []
+    for item in spec.get("items") or []:
+        if not isinstance(item, dict) or item.get("kind") != "str":
+            return None
+        values.append(str(item.get("value", "")))
+    return tuple(values)
+
+
+def _is_decimal_string(value: str) -> bool:
+    return value.lstrip("-").isdigit()
 
 
 def _spec_items(spec: Any) -> list[Any]:

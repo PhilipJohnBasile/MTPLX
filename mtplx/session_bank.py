@@ -1828,7 +1828,18 @@ class SessionBank:
             # Overwrite recurrent (non-trimmable) states with the interior
             # boundary capture; trimmable entries are None in these snapshots.
             _overwrite_started = time.perf_counter()
-            restore_cache(cache, boundary_snapshot, restore_meta_state=False)
+            restore_cache(
+                cache,
+                boundary_snapshot,
+                # Prefix-decoded cold entries intentionally omitted the
+                # full-entry meta state.  Their recurrent metadata must come
+                # from the selected boundary together with its state.  A
+                # custom factory only changes how the target cache is made;
+                # it must not suppress this boundary-specific metadata.
+                restore_meta_state=(
+                    getattr(entry, "cache_snapshot_prefix_len", None) is not None
+                ),
+            )
             if _mnt is not None:
                 _mnt["recurrent_overwrite_s"] = (
                     time.perf_counter() - _overwrite_started

@@ -27,6 +27,7 @@ from .codec import (
     decode_payload,
     decode_payload_prefix,
     encode_payload,
+    payload_supports_prefix_decode,
 )
 
 
@@ -1995,30 +1996,40 @@ class SessionBankColdTier:
             boundary_prefix = _payload_boundary_at_or_below(
                 payload_spec, requested_prefix
             )
-            # Recurrent state is only valid at a captured boundary.  Do not
-            # fall back to hydrating the final multi-GB snapshot just to learn
-            # that SessionBank must reject this candidate later.
-            if has_recurrent and boundary_prefix is None:
-                self._set_last_miss("ssd_prefix_boundary_missing")
-                return None
-            restore_point = (
-                int(boundary_prefix)
-                if boundary_prefix is not None
-                else requested_prefix
-            )
-            # Non-boundary restores re-forward token N-1 for fresh logits;
-            # boundary restores resume directly at N.  MTP history always
-            # lands at the true restore boundary.
-            cache_prefix_len = (
-                restore_point if boundary_prefix is not None else restore_point - 1
-            )
-            decoded = decode_payload_prefix(
-                payload_spec,
-                read_tensor,
-                cache_prefix_len=max(0, cache_prefix_len),
-                mtp_history_prefix_len=restore_point,
-                boundary_prefix_len=boundary_prefix,
-            )
+            # Preserve the established tiny-gap behavior for hybrid entries
+            # without an interior capture.  SessionBank decides whether that
+            # full snapshot can serve the requested match; rejecting it here
+            # would turn tokenizer-boundary drift into an avoidable cold
+            # prefill.  Likewise, cache types whose metadata couples rolling
+            # state to their tensors must use the exact decoder plus trim.
+            if (
+                (has_recurrent and boundary_prefix is None)
+                or not payload_supports_prefix_decode(payload_spec)
+            ):
+                decoded = decode_payload(
+                    payload_spec,
+                    read_tensor,
+                    include_gdn_boundaries=include_gdn_boundaries,
+                )
+            else:
+                restore_point = (
+                    int(boundary_prefix)
+                    if boundary_prefix is not None
+                    else requested_prefix
+                )
+                # Non-boundary restores re-forward token N-1 for fresh
+                # logits; boundary restores resume directly at N.
+                cache_prefix_len = (
+                    restore_point
+                    if boundary_prefix is not None
+                    else restore_point - 1
+                )
+                decoded = decode_payload_prefix(
+                    payload_spec,
+                    read_tensor,
+                    cache_prefix_len=max(0, cache_prefix_len),
+                    boundary_prefix_len=boundary_prefix,
+                )
         else:
             # Exact-prefix restores never rewind below the stored boundary, so
             # the interior snapshots are decoded lazily as before.
