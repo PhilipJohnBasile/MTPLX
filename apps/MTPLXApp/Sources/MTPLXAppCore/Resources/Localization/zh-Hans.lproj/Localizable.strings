@@ -177,6 +177,7 @@
 "All" = "全部";
 "ALL-TIME MAX %@ TPS" = "历史最高 %@ TPS";
 "Allocation policy" = "分配策略";
+"Allow swap" = "允许交换内存";
 "Already MTPLX-branded — depth %lld verified. Install instead of rebuilding." = "已带有 MTPLX 标记，深度 %lld 已验证。请直接安装，无需重新构建。";
 "Already on your Mac" = "已在你的 Mac 上";
 "Always reasons before answering. Best quality, more tokens." = "回答前总是先推理。质量最佳，消耗词元更多。";
@@ -219,7 +220,7 @@
 "auto bf16" = "自动 bf16";
 "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap." = "“自动”会将模型加载后剩余内存的一半作为预算。超过上限后会逐出旧提示。";
 "auto fp16" = "自动 fp16";
-"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup." = "“自动”会根据你的使用方式选择最佳模式。在下方选择一种模式即可在所有场景中使用。基准测试运行保留其自有的单流设置。";
+"Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup." = "自动会为你正在使用的场景挑选最合适的模式。在下方选择一个模式即可全局使用。选择后立即保存。基准测试运行保留各自的单流设置。";
 "Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models." = "“自动”会为所选模型选择推荐的配置：27B 和 Flash-Next 模型使用 Turbo。";
 "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap." = "“自动”会根据你 Mac 的内存档位（16 GB 到 100 GB）进行调整。会逐出旧条目以保持在上限以下。";
 "Auto-approve on, tap to require approval" = "自动批准已开启，点按以要求批准";
@@ -497,12 +498,15 @@
 "Elapsed %@, %lld of %lld resolved, %@ %@" = "已用时间 %@，已解决 %lld / %lld，%@ %@";
 "Embedding and reranking served by this daemon." = "由此守护程序提供嵌入和重排服务。";
 "Embedding models" = "嵌入模型";
+"Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom." = "留空表示使用引擎自己的规划，约为这台 Mac 内存的四分之三。内存有余量时可调高，以服务更长的上下文。";
 "Enable thermal polling" = "启用温度轮询";
 "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only." = "在“设置”中启用温度轮询以在基准测试前验证风扇加速。未经验证风扇的主要指标仅供诊断参考。";
 "Enable web search for this conversation" = "为此对话启用网页搜索";
 "Endpoint" = "端点";
 "Endpoint name" = "端点名称";
 "ENDPOINTS" = "端点";
+"Engine plan: %@ usable of %@ memory, context window %lld tokens." = "引擎规划: %2$@ 内存中可用 %1$@，上下文窗口 %3$lld 个词元。";
+"Engine plan: %@ usable of %@ memory." = "引擎规划: %2$@ 内存中可用 %1$@。";
 "Engine Sessions" = "引擎会话";
 "Engine, fan control, and your command line — a one-time setup." = "引擎、风扇控制和命令行 — 一次性设置。";
 "Enter a Hugging Face repo id like org/name." = "输入 Hugging Face 仓库 ID，如 org/name。";
@@ -588,6 +592,7 @@
 "Gateway connected" = "网关已连接";
 "Gateway service loaded" = "网关服务已加载";
 "Gateway service not loaded" = "网关服务未加载";
+"GB" = "GB";
 "Gemma" = "Gemma";
 "Gemma assistant MTP" = "Gemma 助手 MTP";
 "Gemma sampler defaults" = "Gemma 采样器默认设置";
@@ -660,6 +665,7 @@
 "Homebrew was not found, so your terminal now uses the app's CLI (%@, was %@). Open a new terminal." = "未找到 Homebrew，因此你的终端现在使用应用的 CLI（%@，原为 %@）。请打开新终端。";
 "Host / Port" = "主机 / 端口";
 "How long the scheduler waits for peers before firing." = "调度器在触发前等待对等请求的时长。";
+"How much of this Mac the engine may plan with. Restart required." = "引擎可以规划使用这台 Mac 的多少资源。需要重启。";
 "HTTP %@: %@" = "HTTP %@：%@";
 "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror." = "用于模型下载的 Hugging Face 端点。你的 HF 令牌绝不会发送至镜像站。";
 "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar." = "Hugging Face 源。Forge 将转换为 MLX 并打包 MTP 边车文件。";
@@ -747,6 +753,7 @@
 "Memory" = "内存";
 "Memory Cache (RAM)" = "内存缓存 (RAM)";
 "Memory Detail" = "内存详情";
+"Memory limit" = "内存上限";
 "Memory pressure — engine shedding caches" = "内存压力 — 引擎正在释放缓存";
 "Memory running high" = "内存占用过高";
 "Memory snapshot unavailable." = "内存快照不可用。";
@@ -1161,6 +1168,7 @@
 "Running" = "运行中";
 "running" = "运行中";
 "Running and ready." = "正在运行并已就绪。";
+"Running now: %@ (%@ / %@)." = "当前运行: %@ (%@ / %@)。";
 "Running the first warmup tokens before chat opens." = "在聊天打开前运行首批预热词元。";
 "Running tool…" = "正在运行工具…";
 "Running your new model on this Mac to see how fast it actually is." = "在这台 Mac 上运行你的新模型以测试其实际速度。";
@@ -1195,6 +1203,7 @@
 "Searching: %@" = "正在搜索：%@";
 "Send" = "发送";
 "Send message" = "发送消息";
+"Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused." = "服务超出内存容量的上下文。macOS 会分页到 SSD，速度会大幅下降，但长会话不再被拒绝。";
 "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only." = "由此守护程序提供嵌入和重排服务。留空则保持 MTPLX 仅用于聊天。";
 "server %@" = "服务器 %@";
 "server cap" = "服务器上限";
@@ -1274,6 +1283,7 @@
 "Start MTPLX when the app opens" = "打开应用时启动 MTPLX";
 "Start serving" = "开始服务";
 "Start the daemon to see in-flight and recent requests." = "启动守护程序以查看进行中和最近的请求。";
+"Start the model to see the plan the engine computes for this Mac." = "启动模型即可查看引擎为这台 Mac 计算的规划。";
 "Start tuning" = "开始调优";
 "Starting" = "正在启动";
 "STARTING" = "正在启动";
