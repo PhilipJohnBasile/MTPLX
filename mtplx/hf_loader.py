@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib
 import json
 import os
@@ -39,12 +40,16 @@ MTP_SIDECAR_FALLBACKS = (
 )
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 SOURCE_MARKER_FILE = ".mtplx-source.json"
+#: Written for the duration of a pull: which blob each file is fetched from.
+TRANSFER_MARKER_FILE = ".mtplx-transfer.json"
 
 
 @dataclass(frozen=True)
 class RepoFile:
     path: str
     size_bytes: int | None
+    blob_id: str | None = None
+    sha256: str | None = None
 
 
 def _effective_model_revision(repo_id: str, revision: str | None) -> str | None:
@@ -151,8 +156,21 @@ def _query_repo_snapshot(
         blob_id = getattr(sibling, "blob_id", None)
         if isinstance(blob_id, str) and blob_id:
             entry["blob_id"] = blob_id
+        sha256 = _sibling_lfs_sha256(sibling)
+        if sha256:
+            entry["sha256"] = sha256
         files[name] = entry
     return (sha if isinstance(sha, str) and sha else None), (files or None)
+
+
+def _sibling_lfs_sha256(sibling: Any) -> str | None:
+    """The Hub's sha256 of an LFS blob, or None for a plain git file."""
+
+    lfs = getattr(sibling, "lfs", None)
+    if lfs is None:
+        return None
+    value = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _validate_pinned_laguna_files(destination: Path, repo_id: str) -> None:
@@ -636,9 +654,89 @@ def _repo_files_from_snapshot(
         RepoFile(
             path=name,
             size_bytes=entry.get("size") if isinstance(entry.get("size"), int) else None,
+            blob_id=entry.get("blob_id") if isinstance(entry.get("blob_id"), str) else None,
+            sha256=entry.get("sha256") if isinstance(entry.get("sha256"), str) else None,
         )
         for name, entry in remote_files.items()
     ]
+
+
+def _recorded_transfer_blobs(destination: Path, repo_id: str) -> dict[str, str]:
+    """Blob ids the transfer marker vouches for, by repo path."""
+
+    try:
+        recorded = json.loads((destination / TRANSFER_MARKER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(recorded, dict) or recorded.get("repo_id") != repo_id:
+        return {}
+    files = recorded.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return {
+        path: entry["blob_id"]
+        for path, entry in files.items()
+        if isinstance(entry, dict) and isinstance(entry.get("blob_id"), str) and entry["blob_id"]
+    }
+
+
+def _discard_superseded_transfers(
+    destination: Path, *, repo_id: str, repo_files: Iterable[RepoFile]
+) -> None:
+    """Drop the partial and landed files that do not belong to this snapshot.
+
+    A resumed download used to append the current commit's tail onto any
+    ``*.incomplete`` partial it found, whichever commit had written it, and
+    accept the result on size alone: a pack repaired in place upstream came
+    back as a corrupt file locally. The transfer marker records which blob
+    each file is being fetched from. A partial whose blob changed is
+    discarded, so is a partial nothing vouches for, and a landed file whose
+    recorded blob changed goes too (a head swap keeps the name and often the
+    size). Landed files without a record are kept; the size check covers
+    them. Idempotent, so it runs before the resume figure is computed and
+    again right before the first byte.
+    """
+
+    if not destination.is_dir():
+        return
+    recorded = _recorded_transfer_blobs(destination, repo_id)
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        partial = target.with_name(target.name + ".incomplete")
+        recorded_blob = recorded.get(repo_file.path)
+        same_blob = bool(recorded_blob) and recorded_blob == repo_file.blob_id
+        if partial.is_file() and not same_blob:
+            partial.unlink()
+        if target.is_file() and recorded_blob and repo_file.blob_id and not same_blob:
+            target.unlink()
+
+
+def _record_transfer(
+    destination: Path,
+    *,
+    repo_id: str,
+    revision: str | None,
+    repo_files: Iterable[RepoFile],
+) -> None:
+    """Write the transfer marker: which blob every file of this pull comes from.
+
+    Written once the download has created its destination, removed when the
+    pull completes, so it is only ever seen by a pull that resumes.
+    """
+
+    files = {
+        repo_file.path: {"blob_id": repo_file.blob_id}
+        for repo_file in repo_files
+        if repo_file.blob_id
+    }
+    (destination / TRANSFER_MARKER_FILE).write_text(
+        json.dumps({"repo_id": repo_id, "revision": revision, "files": files}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def stale_transient_bytes(destination: Path, repo_files: Iterable[RepoFile]) -> tuple[int, int]:
@@ -870,6 +968,23 @@ def _download_repo_file(
     if expected_size is not None and existing > expected_size:
         partial.unlink()
         existing = 0
+    # The Hub publishes the sha256 of every LFS blob. Hashing the bytes as
+    # they land (the resumed prefix first) turns the size-only acceptance
+    # into an exact one without a second pass over the file.
+    digest = hashlib.sha256() if repo_file.sha256 else None
+    if digest is not None and existing > 0:
+        with partial.open("rb") as handle:
+            for block in iter(lambda: handle.read(DOWNLOAD_CHUNK_SIZE), b""):
+                digest.update(block)
+
+    def _land(landed: Path) -> None:
+        if digest is not None and digest.hexdigest() != repo_file.sha256:
+            landed.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"corrupt download for {repo_file.path}: the bytes on disk do not "
+                "match the file on Hugging Face. The partial was discarded; run the pull again."
+            )
+        landed.replace(target)
 
     headers = build_hf_headers(token=hf_token_for_download())
     if existing > 0:
@@ -881,8 +996,10 @@ def _download_repo_file(
         if existing > 0 and status_code == 200:
             partial.unlink(missing_ok=True)
             existing = 0
+            if digest is not None:
+                digest = hashlib.sha256()
         elif existing > 0 and status_code == 416 and expected_size is not None and existing == expected_size:
-            partial.replace(target)
+            _land(partial)
             return _emit_current_download_size(
                 callback,
                 repo_id=repo_id,
@@ -896,11 +1013,13 @@ def _download_repo_file(
             )
         hf_raise_for_status(response)
         mode = "ab" if existing > 0 else "wb"
-        with partial.open(mode + "") as handle:
+        with partial.open(mode) as handle:
             for chunk in _iter_response_bytes(response):
                 if not chunk:
                     continue
                 handle.write(chunk)
+                if digest is not None:
+                    digest.update(chunk)
                 now = time.monotonic()
                 if now - last_emit_at >= progress_interval_s:
                     last_emit_at, last_emit_size = _emit_current_download_size(
@@ -919,7 +1038,7 @@ def _download_repo_file(
             f"incomplete download for {repo_file.path}: "
             f"expected {expected_size} bytes, got {partial.stat().st_size}"
         )
-    partial.replace(target)
+    _land(partial)
     return _emit_current_download_size(
         callback,
         repo_id=repo_id,
@@ -958,9 +1077,19 @@ def _download_snapshot_with_structured_progress(
         if not isinstance(name, str) or not name.strip():
             continue
         size = getattr(sibling, "size", None)
-        repo_files.append(RepoFile(path=name, size_bytes=size if isinstance(size, int) else None))
+        blob_id = getattr(sibling, "blob_id", None)
+        repo_files.append(
+            RepoFile(
+                path=name,
+                size_bytes=size if isinstance(size, int) else None,
+                blob_id=blob_id if isinstance(blob_id, str) and blob_id else None,
+                sha256=_sibling_lfs_sha256(sibling),
+            )
+        )
     if not repo_files:
         raise RuntimeError(f"Hugging Face repo {repo_id} did not return downloadable files.")
+    _discard_superseded_transfers(destination, repo_id=repo_id, repo_files=repo_files)
+    _record_transfer(destination, repo_id=repo_id, revision=revision, repo_files=repo_files)
 
     total_bytes = sum(
         repo_file.size_bytes
@@ -1142,6 +1271,9 @@ def pull_model(
         resolved = destination
         reused_existing = True
         resumed_existing = False
+        # A complete pack with a transfer marker finished its last file and
+        # then lost the marker cleanup; the marker means nothing now.
+        (resolved / TRANSFER_MARKER_FILE).unlink(missing_ok=True)
         validation = validate_mtplx_model_files(resolved)
         _validate_pinned_laguna_files(resolved, repo_id)
         if repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx") and not validation["ok"]:
@@ -1179,12 +1311,16 @@ def pull_model(
         # from the same snapshot even if the repo is pushed to mid-download.
         _resolve_remote_snapshot()
         manifest = _repo_files_from_snapshot(remote_files)
-        if manifest:
-            # Only what this download ships counts toward the resume/start
-            # decision, the disk headroom, and the progress the app shows.
-            started_size = manifest_bytes_on_disk(destination, manifest)
-        resumed_existing = destination.exists() and started_size > 0
         download_revision = revision if revision is not None else remote_sha
+        if manifest:
+            # Files from a superseded snapshot go first, so the resume figure
+            # counts only what this pull keeps. Then only what this download
+            # ships counts toward the resume/start decision, the disk
+            # headroom, and the progress the app shows.
+            _discard_superseded_transfers(destination, repo_id=repo_id, repo_files=manifest)
+            started_size = manifest_bytes_on_disk(destination, manifest)
+            started_disk_bytes = directory_size_bytes(destination)
+        resumed_existing = destination.exists() and started_size > 0
         if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
             total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES
         elif remote_files:
@@ -1288,6 +1424,7 @@ def pull_model(
             resolved_sha=remote_sha,
             files=remote_files,
         )
+        (resolved / TRANSFER_MARKER_FILE).unlink(missing_ok=True)
         final_size = _landed_bytes(resolved)
         model_bytes = final_size
         disk_bytes = directory_size_bytes(resolved)

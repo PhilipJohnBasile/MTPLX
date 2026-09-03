@@ -4428,6 +4428,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="hf-staging/Qwen3.6-27B-MTPLX-Optimized-Speed",
     )
     publish_check_p.add_argument("--repo-id")
+    publish_check_p.add_argument(
+        "--scrub",
+        action="store_true",
+        help="Rewrite staged JSON documents that carry local paths before upload",
+    )
     publish_check_p.set_defaults(func=cmd_model_public)
 
     config_p = sub.add_parser("config", help="Show or edit MTPLX user config")

@@ -75,6 +75,12 @@ class _FakeHubSession:
             chunks = [payload]
         else:
             chunks = payload
+        range_header = str((kwargs.get("headers") or {}).get("Range") or "")
+        if range_header.startswith("bytes=") and isinstance(payload, bytes):
+            offset = int(range_header[len("bytes="):].rstrip("-"))
+            if offset >= len(payload):
+                return _FakeHubResponse([], status_code=416)
+            return _FakeHubResponse([payload[offset:]], status_code=206)
         return _FakeHubResponse(chunks)
 
 
@@ -83,6 +89,8 @@ def _install_fake_hub(
     files: dict[str, bytes | list[bytes | tuple[bytes, float]]],
     *,
     captured: dict[str, object] | None = None,
+    blob_ids: dict[str, str] | None = None,
+    sha256: dict[str, str] | None = None,
 ) -> _FakeHubSession:
     captured = captured if captured is not None else {}
     session = _FakeHubSession(files)
@@ -94,7 +102,12 @@ def _install_fake_hub(
             captured["model_info_token"] = kwargs.get("token")
             return SimpleNamespace(
                 siblings=[
-                    SimpleNamespace(rfilename=name, size=sum(len(item[0] if isinstance(item, tuple) else item) for item in payload) if isinstance(payload, list) else len(payload))
+                    SimpleNamespace(
+                        rfilename=name,
+                        size=sum(len(item[0] if isinstance(item, tuple) else item) for item in payload) if isinstance(payload, list) else len(payload),
+                        blob_id=(blob_ids or {}).get(name),
+                        lfs={"sha256": sha256[name]} if sha256 and name in sha256 else None,
+                    )
                     for name, payload in files.items()
                 ]
             )
@@ -1035,3 +1048,103 @@ def test_pull_model_force_sync_skips_reuse(tmp_path: Path, monkeypatch):
 
     assert result["reused_existing"] is False
     assert captured["snapshot_revision"] == "commit-aaa"
+
+
+_SHARD = "model-00001-of-00001.safetensors"
+_INDEX = b'{"weight_map": {"lm_head.weight": "model-00001-of-00001.safetensors"}}\n'
+
+
+def _remote_pack(weights: bytes) -> dict[str, bytes]:
+    return {"config.json": b"{}\n", "model.safetensors.index.json": _INDEX, _SHARD: weights}
+
+
+def _shard_requests(session) -> list[dict]:
+    return [request for request in session.requests if request["url"].endswith(_SHARD)]
+
+
+def test_pull_model_discards_a_partial_from_a_superseded_blob(tmp_path: Path, monkeypatch):
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / f"{_SHARD}.incomplete").write_bytes(b"stale-")
+    (cached / ".mtplx-transfer.json").write_text(
+        json.dumps({"repo_id": "mtplx/example", "revision": "old", "files": {_SHARD: {"blob_id": "blob-old"}}}),
+        encoding="utf-8",
+    )
+    session = _install_fake_hub(
+        monkeypatch, _remote_pack(b"fresh-weights"), blob_ids={_SHARD: "blob-new"}
+    )
+    events: list[dict] = []
+
+    pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=events.append, progress_interval_s=0)
+
+    assert (cached / _SHARD).read_bytes() == b"fresh-weights"
+    assert "Range" not in (_shard_requests(session)[0].get("headers") or {})
+    assert events[0]["event"] == "start"
+    assert events[0]["size_bytes"] == 0
+    assert not (cached / ".mtplx-transfer.json").exists()
+
+
+def test_pull_model_resumes_a_partial_from_the_same_blob_and_verifies_it(tmp_path: Path, monkeypatch):
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / f"{_SHARD}.incomplete").write_bytes(b"fresh-")
+    (cached / ".mtplx-transfer.json").write_text(
+        json.dumps({"repo_id": "mtplx/example", "revision": None, "files": {_SHARD: {"blob_id": "blob-1"}}}),
+        encoding="utf-8",
+    )
+    session = _install_fake_hub(
+        monkeypatch,
+        _remote_pack(b"fresh-weights"),
+        blob_ids={_SHARD: "blob-1"},
+        sha256={_SHARD: hashlib.sha256(b"fresh-weights").hexdigest()},
+    )
+    events: list[dict] = []
+
+    result = pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=events.append, progress_interval_s=0)
+
+    assert result["resumed_existing"] is True
+    assert events[0]["event"] == "resume"
+    assert events[0]["size_bytes"] == len(b"fresh-")
+    assert (_shard_requests(session)[0]["headers"] or {}).get("Range") == "bytes=6-"
+    assert (cached / _SHARD).read_bytes() == b"fresh-weights"
+    assert not (cached / f"{_SHARD}.incomplete").exists()
+
+
+def test_pull_model_discards_a_partial_nothing_vouches_for(tmp_path: Path, monkeypatch):
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / f"{_SHARD}.incomplete").write_bytes(b"who-knows")
+    session = _install_fake_hub(monkeypatch, _remote_pack(b"fresh-weights"), blob_ids={_SHARD: "blob-1"})
+
+    pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=lambda _e: None, progress_interval_s=0)
+
+    assert "Range" not in (_shard_requests(session)[0].get("headers") or {})
+    assert (cached / _SHARD).read_bytes() == b"fresh-weights"
+
+
+def test_pull_model_replaces_a_landed_file_whose_blob_changed(tmp_path: Path, monkeypatch):
+    cached = tmp_path / "mtplx--example"
+    cached.mkdir()
+    (cached / _SHARD).write_bytes(b"old-weights!!")  # same size as the new blob
+    (cached / ".mtplx-transfer.json").write_text(
+        json.dumps({"repo_id": "mtplx/example", "revision": "old", "files": {_SHARD: {"blob_id": "blob-old"}}}),
+        encoding="utf-8",
+    )
+    _install_fake_hub(monkeypatch, _remote_pack(b"fresh-weights"), blob_ids={_SHARD: "blob-new"})
+
+    pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=lambda _e: None, progress_interval_s=0)
+
+    assert (cached / _SHARD).read_bytes() == b"fresh-weights"
+
+
+def test_pull_model_rejects_a_landed_file_whose_sha256_differs(tmp_path: Path, monkeypatch):
+    cached = tmp_path / "mtplx--example"
+    _install_fake_hub(
+        monkeypatch, _remote_pack(b"fresh-weights"), blob_ids={_SHARD: "blob-1"}, sha256={_SHARD: "0" * 64}
+    )
+
+    with pytest.raises(RuntimeError, match="corrupt download"):
+        pull_model("mtplx/example", cache_dir=tmp_path, progress_callback=lambda _e: None, progress_interval_s=0)
+
+    assert not (cached / _SHARD).exists()
+    assert not (cached / f"{_SHARD}.incomplete").exists()

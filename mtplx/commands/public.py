@@ -15277,9 +15277,23 @@ def cmd_model_public(args: Any) -> int:
         return _cmd_model_qa_architectures(args)
     if args.model_action != "publish-check":
         raise SystemExit(f"unknown model action: {args.model_action}")
+    from mtplx.metadata_scrub import scrub_json_documents
+
     staging = Path(args.staging_dir)
     manifest_path = staging / "MTPLX_PUBLISH_MANIFEST.json"
     runtime_contract_path = staging / "mtplx_runtime.json"
+    # A staging tree exists to be uploaded, so nothing in it may name this
+    # machine. Forge stamps the paths it read into the runtime contract;
+    # --scrub rewrites the leaking documents in place, otherwise they block.
+    leaking = scrub_json_documents(staging) if staging.exists() else []
+    scrubbed_in_place: list[str] = []
+    if leaking and bool(getattr(args, "scrub", False)):
+        for document in leaking:
+            tmp = staging / f".{document.name}.{os.getpid()}.tmp"
+            tmp.write_bytes(document.payload)
+            os.replace(tmp, staging / document.name)
+            scrubbed_in_place.append(document.name)
+        leaking = []
     symlinks = (
         [str(path) for path in staging.iterdir() if path.is_symlink()]
         if staging.exists()
@@ -15301,6 +15315,7 @@ def cmd_model_public(args: Any) -> int:
         "runtime_contract_exists": runtime_contract_path.exists(),
         "no_symlinks": not symlinks,
         "repo_id_explicit": bool(args.repo_id or (manifest or {}).get("repo_id")),
+        "no_local_paths": not leaking,
         "inspect_verified": bool(
             inspection
             and (inspection.get("compatibility") or {}).get("tier") == "verified"
@@ -15319,6 +15334,8 @@ def cmd_model_public(args: Any) -> int:
         "size_bytes": (manifest or {}).get("size_bytes"),
         "weight_size_bytes": (manifest or {}).get("weight_size_bytes"),
         "uploaded": (manifest or {}).get("upload_policy", {}).get("uploaded"),
+        "local_paths": {document.name: list(document.leaks) for document in leaking},
+        "scrubbed": scrubbed_in_place,
         "gates": gates,
         "passed": all(gates.values()),
     }
