@@ -22,7 +22,7 @@ struct HardwareScanStep: View {
         OnboardingStepContainer(
             title: tr("Your Mac"),
             subtitle: tr("Optimizing setup for your hardware."),
-            stepIndex: 1,
+            stepIndex: OnboardingStep.hardwareScan.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: { orchestrator.goBack() },
             primary: {

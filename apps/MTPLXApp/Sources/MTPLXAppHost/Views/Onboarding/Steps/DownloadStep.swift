@@ -23,7 +23,7 @@ struct DownloadStep: View {
         OnboardingStepContainer(
             title: title,
             subtitle: subtitle,
-            stepIndex: 4,
+            stepIndex: OnboardingStep.download.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: (orchestrator.isDownloading || showingAlreadyInstalledFlash) ? nil : { orchestrator.returnToModelPick() },
             primary: { primaryButton },

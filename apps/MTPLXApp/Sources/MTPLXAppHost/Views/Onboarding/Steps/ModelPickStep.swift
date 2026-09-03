@@ -25,7 +25,7 @@ struct ModelPickStep: View {
         OnboardingStepContainer(
             title: tr("Recommended models"),
             subtitle: subtitleForHardware,
-            stepIndex: 2,
+            stepIndex: OnboardingStep.modelPick.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: { orchestrator.goBack() },
             primary: {

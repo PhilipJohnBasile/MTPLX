@@ -27,7 +27,7 @@ struct RuntimeSetupStep: View {
         OnboardingStepContainer(
             title: tr("Setting up MTPLX"),
             subtitle: tr("Engine, fan control, and your command line — a one-time setup."),
-            stepIndex: 3,
+            stepIndex: OnboardingStep.runtimeSetup.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: orchestrator.isRunningRuntimeSetup ? nil : { orchestrator.goBack() },
             primary: { primaryButton },

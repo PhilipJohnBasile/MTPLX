@@ -22,7 +22,7 @@ struct TuneStep: View {
         OnboardingStepContainer(
             title: title,
             subtitle: subtitle,
-            stepIndex: 5,
+            stepIndex: OnboardingStep.tune.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: orchestrator.isTuning ? nil : { orchestrator.returnToModelPick() },
             primary: { primaryButton },

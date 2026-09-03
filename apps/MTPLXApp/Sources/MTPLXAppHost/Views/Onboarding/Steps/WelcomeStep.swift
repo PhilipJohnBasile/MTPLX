@@ -29,7 +29,7 @@ struct WelcomeStep: View {
 
     var body: some View {
         OnboardingStepContainer(
-            stepIndex: 0,
+            stepIndex: OnboardingStep.welcome.index,
             stepCount: OnboardingStep.allCases.count,
             centerPrimary: true,
             primary: {
