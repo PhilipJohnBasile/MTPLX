@@ -210,17 +210,24 @@ struct MTPLXApp: App {
                         }
                     )
                     backend.loadPersistedSettings()
-                    await backend.refreshRuntimeUpdateStatus()
                     // Onboarding gate: if the user has never finished
                     // the first-launch flow, the entire window takes
                     // over with `OnboardingExperienceView` and the
                     // daemon stays stopped — there's nothing useful to
-                    // do until they pick a model and download it.
+                    // do until they pick a model and download it. The
+                    // decision reads the persisted settings alone, so a
+                    // brand-new user never sees the dashboard shell
+                    // while a network check is pending.
                     if backend.configuration.onboardingCompletedAt == nil {
                         router.onboardingPhase = .onboarding
                     } else {
                         router.onboardingPhase = .completed
                     }
+                    // The runtime card (installed CLI version, published
+                    // manifest) is advisory: refresh it in the background
+                    // and never ahead of the onboarding decision or a
+                    // daemon launch.
+                    backend.scheduleRuntimeUpdateStatusRefresh()
                     // Daemon-ready handoff: launch targets with their own
                     // user surface should open only after the server is
                     // actually responding. Chat flips into the native

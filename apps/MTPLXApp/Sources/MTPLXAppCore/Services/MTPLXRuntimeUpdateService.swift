@@ -149,19 +149,41 @@ public enum MTPLXRuntimeUpdateError: Error, LocalizedError, Equatable, Sendable 
 public struct MTPLXRuntimeUpdateService: Sendable {
     public static let defaultManifestURL = URL(string: "https://mtplx.com/releases/latest.json")!
 
+    /// The published manifest is advisory (it feeds the runtime status
+    /// card), so its fetch is allowed a few seconds and no more. A Mac
+    /// behind a captive portal or firewall must see the card say
+    /// "couldn't check", not sit on a request for a minute.
+    public static let manifestRequestTimeout: TimeInterval = 3
+
+    /// Ephemeral session for the manifest: no cache, no cookies, and both
+    /// the per-request and whole-resource timeouts bounded to
+    /// `manifestRequestTimeout` so a silent or unroutable host gives up
+    /// on time. Shared across service values; a session is meant to be
+    /// reused, and every fetch is a one-shot GET of one small file.
+    public static let manifestSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = manifestRequestTimeout
+        configuration.timeoutIntervalForResource = manifestRequestTimeout
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
     public var manifestURL: URL
     public var environment: [String: String]
+    public var session: URLSession
 
     public init(
         manifestURL: URL = Self.defaultManifestURL,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: URLSession = Self.manifestSession
     ) {
         self.manifestURL = manifestURL
         self.environment = environment
+        self.session = session
     }
 
     public func fetchManifest() async throws -> MTPLXReleaseManifest {
-        let (data, response) = try await URLSession.shared.data(from: manifestURL)
+        let (data, response) = try await session.data(from: manifestURL)
         if let http = response as? HTTPURLResponse,
            !(200..<300).contains(http.statusCode) {
             throw URLError(.badServerResponse)
@@ -178,65 +200,18 @@ public struct MTPLXRuntimeUpdateService: Sendable {
         return snapshot(manifest: manifest)
     }
 
+    /// The runtime a daemon launch runs on, decided from local state only:
+    /// the wheel this bundle ships and the app-owned venv installed from
+    /// it (a fast no-op when they already match, a reinstall when the app
+    /// moved ahead of the venv, and the version-floor check for a
+    /// user-managed CLI when the bundle ships no wheel). The published
+    /// manifest is never consulted here — Play, Restart and first launch
+    /// must not wait on the network, and the runtime card refreshes from
+    /// the manifest in the background instead. Blocking work (version
+    /// probe, pip install) runs on the caller's non-main executor because
+    /// this is a nonisolated async function.
     public func prepareRuntimeForLaunch() async throws -> URL {
-        let manifest = try? await fetchManifest()
-        guard let manifest else {
-            return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-        }
-
-        if let existing = try? MTPLXCommandBuilder.resolveInstalledExecutable(environment: environment) {
-            let kind = Self.installKind(for: existing, environment: environment)
-            if kind == .appOwned {
-                // The app-owned venv tracks the bundled wheel, not the
-                // published manifest: installOrUpdate is a fast no-op when
-                // the venv already satisfies the app's version floor and
-                // reinstalls from the wheel when the app moved ahead of it
-                // (e.g. right after a Sparkle update).
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            }
-            // Whenever this bundle ships a wheel, the daemon runtime is
-            // the app-owned venv, full stop. A user-managed CLI on PATH
-            // that happens to satisfy the manifest (a stale dev pip
-            // install reporting the release version, as on the founder's
-            // Mac Mini) is the user's tool, not the engine — its Python
-            // and dependency state are unknown. installOrUpdate is a
-            // fast no-op once the venv matches the bundled wheel.
-            if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            }
-            let version = Self.runtimeVersion(executableURL: existing, environment: environment)
-            let action = Self.action(
-                version: version,
-                installKind: kind,
-                manifest: manifest,
-                hasHomebrew: MTPLXCommandBuilder.resolveHomebrewExecutable(environment: environment) != nil
-            )
-            switch action {
-            case .updateBundledRequired:
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            case .updateHomebrewRequired:
-                if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                    return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-                }
-                return try MTPLXRuntimeBootstrapper(environment: environment).upgradeHomebrewRuntime()
-            case .manualUpdateRequired(let command):
-                // A stale pip/source CLI on PATH must never block the app
-                // when the bundled wheel can install an app-owned runtime
-                // beside it instead.
-                if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                    return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-                }
-                throw MTPLXRuntimeUpdateError.manualUpdateRequired(command: command)
-            default:
-                return existing
-            }
-        }
-
-        if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) == nil,
-           MTPLXCommandBuilder.resolveHomebrewExecutable(environment: environment) == nil {
-            throw MTPLXRuntimeUpdateError.homebrewRequired
-        }
-        return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
+        try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
     }
 
     public static func snapshot(

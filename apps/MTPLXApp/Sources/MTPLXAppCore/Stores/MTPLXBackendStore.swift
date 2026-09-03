@@ -367,6 +367,9 @@ public final class MTPLXBackendStore: ObservableObject {
     private var modelDownloadTask: Task<Void, Never>?
     private var modelTuneTask: Task<Void, Never>?
     private var lateHealthRecoveryTask: Task<Void, Never>?
+    /// Background refresh of the runtime card; see
+    /// `scheduleRuntimeUpdateStatusRefresh`.
+    private var runtimeUpdateStatusRefreshTask: Task<Void, Never>?
     /// The slow part of stopping the daemon (fan restore + graceful
     /// SIGTERM/reap of the serve child) runs here, detached from the
     /// instant UI flip, so the Stop/Play control isn't frozen for the ~5s
@@ -1112,9 +1115,28 @@ public final class MTPLXBackendStore: ObservableObject {
         return String(describing: error)
     }
 
+    /// Explicit refresh of the runtime card (About sheet's Check button).
+    /// Reads the installed CLI and the published manifest; the manifest
+    /// fetch is bounded to a few seconds. Nothing on a daemon launch path
+    /// awaits this.
     public func refreshRuntimeUpdateStatus() async {
         runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
         runtimeUpdateFailure = nil
+    }
+
+    /// Background refresh of the runtime card. Used at app launch and after
+    /// every launch-path runtime decision so the card reflects the venv the
+    /// launch actually used, without Play, Restart or first launch waiting
+    /// on mtplx.com or on the `mtplx --version` probe. A newer request
+    /// supersedes an in-flight one, and a failure the launch path recorded
+    /// is left in place for the user to read.
+    public func scheduleRuntimeUpdateStatusRefresh() {
+        runtimeUpdateStatusRefreshTask?.cancel()
+        runtimeUpdateStatusRefreshTask = Task { [weak self, runtimeUpdateService] in
+            let snapshot = await runtimeUpdateService.refreshSnapshot()
+            guard !Task.isCancelled, let self else { return }
+            self.runtimeUpdateSnapshot = snapshot
+        }
     }
 
     public func updateRuntimeWithHomebrew() async {
@@ -1144,14 +1166,17 @@ public final class MTPLXBackendStore: ObservableObject {
         }
     }
 
+    /// Make sure a runtime exists before spawning the daemon. The decision
+    /// is local (bundled wheel, app-owned venv); the runtime card's
+    /// manifest comparison and version probe run afterwards in the
+    /// background rather than ahead of the launch.
     private func prepareRuntimeForDaemonStart() async throws {
         startupPhase = .launching
+        defer { scheduleRuntimeUpdateStatusRefresh() }
         do {
             _ = try await runtimeUpdateService.prepareRuntimeForLaunch()
-            runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
             runtimeUpdateFailure = nil
         } catch {
-            runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
             runtimeUpdateFailure = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
             throw error
