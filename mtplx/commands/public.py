@@ -40,6 +40,7 @@ from mtplx.benchmarks.validators.basic import (
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.default_models import (
     OPTIMIZED_QUALITY_DESCRIPTION,
+    DefaultModelUnavailable,
     is_verified_default_model_ref,
     optimized_quality_model_ref,
     public_model_id_for_ref,
@@ -47,6 +48,7 @@ from mtplx.default_models import (
 )
 from mtplx.env import collect_environment
 from mtplx.fan_mode import FAN_MODE_MAX, FAN_MODE_SMART, fan_mode_from_args
+from mtplx.jsonc import InvalidConfigFile
 from mtplx.kpi import (
     EXIT_EXACTNESS,
     EXIT_QUALITY,
@@ -10777,11 +10779,25 @@ def _quickstart_heartbeat(
     return _QuickstartHeartbeat(label, interval_s=interval_s)
 
 
+def _select_default_model_or_exit():
+    """The verified default for this Mac, or a clean exit with the reason.
+
+    A Mac that cannot run any MTPLX model (an Intel processor, or less memory
+    than the smallest pack needs) gets the one-sentence message and exit
+    status 1: never a traceback, never a download it cannot use.
+    """
+
+    try:
+        return select_default_model()
+    except DefaultModelUnavailable as exc:
+        raise SystemExit(exc.message) from exc
+
+
 def _quickstart_current_model(args: Any) -> str:
     model = getattr(args, "model", None)
     explicit_model = bool(getattr(args, "_model_explicit", False))
     if not explicit_model and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        selection = _select_default_model_or_exit()
         args._mtplx_default_model_selection = selection.to_dict()
         return selection.model
     return str(model or DEFAULT_MODEL_ID)
@@ -10792,7 +10808,7 @@ def _quickstart_download_ref(model: str) -> str:
 
     if repo_id_from_model_ref(model):
         return model
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     default_local_refs = {
         DEFAULT_MODEL_ID,
         selection.model,
@@ -10826,7 +10842,7 @@ def _quickstart_choose_model(
         return model, download
 
     _quickstart_line(f"MTPLX {_start_command_name(args)}")
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     _quickstart_line("Choose a model:")
     _quickstart_line(f"  1. Use verified default for this Mac ({selection.label})")
     quality_ref = optimized_quality_model_ref()
@@ -12102,15 +12118,26 @@ def _quickstart_pi_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_pi_models_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=api_key,
-            context_window=context_window,
-            vision=vision_enabled,
-        )
+        try:
+            payload["config_write"] = write_pi_models_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=api_key,
+                context_window=context_window,
+                vision=vision_enabled,
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("Pi", exc)) from exc
     return payload
+
+
+def _client_config_refusal(client: str, exc: Exception) -> str:
+    """Plain message for a client config MTPLX could not read: the file was
+    left exactly as it was and nothing was written."""
+
+    detail = str(exc).rstrip(".")
+    return f"{client} config left unchanged: {detail}. Fix or move that file, then try again."
 
 
 def _model_vision_enabled(model_ref: str) -> bool:
@@ -12348,19 +12375,22 @@ def _quickstart_opencode_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_opencode_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            context_window=context_window,
-            output_limit=output_limit,
-            enable_thinking=enable_thinking,
-            top_p=float(getattr(args, "top_p", 0.95)),
-            top_k=int(getattr(args, "top_k", 20)),
-            reasoning_effort=reasoning_effort,
-            reasoning_effort_levels=reasoning_effort_levels,
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                context_window=context_window,
+                output_limit=output_limit,
+                enable_thinking=enable_thinking,
+                top_p=float(getattr(args, "top_p", 0.95)),
+                top_k=int(getattr(args, "top_k", 20)),
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_levels=reasoning_effort_levels,
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     return payload
 
 
@@ -12546,7 +12576,7 @@ def _quickstart_print_pi_handoff(
     backup_path = config_write.get("backup_path")
     _quickstart_line(f"      Pi config: {config_path}")
     if backup_path:
-        _quickstart_line(f"      Backed up unreadable old Pi config: {backup_path}")
+        _quickstart_line(f"      Previous Pi config kept at: {backup_path}")
     _quickstart_line(f"      Pi model: {pi.get('model_ref')}")
     _quickstart_line(f"      Loading model: {runtime_model}")
     _quickstart_line("      Keep this terminal open for the MTPLX server.")
@@ -12588,9 +12618,7 @@ def _quickstart_print_opencode_handoff(
     _quickstart_line(f"      OpenCode config: {config_path}")
     _quickstart_line("      MTPLX client header: x-mtplx-client=opencode")
     if backup_path:
-        _quickstart_line(
-            f"      Backed up unreadable old OpenCode config: {backup_path}"
-        )
+        _quickstart_line(f"      Previous OpenCode config kept at: {backup_path}")
     _quickstart_line(f"      OpenCode model: {opencode.get('model_ref')}")
     _quickstart_line(f"      API base URL: {opencode.get('api_base_url')}")
     _quickstart_line(
@@ -14192,7 +14220,7 @@ def cmd_quickstart_public(args: Any) -> int:
                     "selected model" if download_model == model else "verified default"
                 )
             except ValueError:
-                download_model = select_default_model().hf_model
+                download_model = _select_default_model_or_exit().hf_model
                 label = "verified default"
             answer = (
                 input(
@@ -14518,6 +14546,7 @@ def cmd_integrate_public(args: Any) -> int:
     elif action == "opencode":
         from mtplx.opencode import (
             build_opencode_provider_config,
+            opencode_config_path,
             write_opencode_config,
         )
 
@@ -14529,7 +14558,7 @@ def cmd_integrate_public(args: Any) -> int:
             "base_url": api_base_url,
             "api_base_url": api_base_url,
             "model_id": model_id,
-            "config_path": "~/.config/opencode/opencode.json",
+            "config_path": str(opencode_config_path()),
             "server_command": (
                 f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 f"{api_key_suffix}--reasoning auto --no-stats-footer"
@@ -14563,19 +14592,22 @@ def cmd_integrate_public(args: Any) -> int:
         # and OpenCode failed with ProviderModelNotFoundError surfaced as
         # "Unexpected server error" (found live wiring Flash-Next, 2026-08-27).
         # Write through the same merge-preserving writer the app flow uses.
-        payload["config_write"] = write_opencode_config(
-            base_url=api_base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            enable_thinking=reasoning_policy.supported,
-            reasoning_effort=reasoning_policy.default_effort,
-            reasoning_effort_levels=(
-                tuple(reasoning_policy.effort_levels)
-                if reasoning_policy.supported
-                else None
-            ),
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=api_base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                enable_thinking=reasoning_policy.supported,
+                reasoning_effort=reasoning_policy.default_effort,
+                reasoning_effort_levels=(
+                    tuple(reasoning_policy.effort_levels)
+                    if reasoning_policy.supported
+                    else None
+                ),
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     elif action == "swival":
         from mtplx.swival import (
             build_swival_command,
@@ -14637,8 +14669,13 @@ def cmd_integrate_public(args: Any) -> int:
                 print("Docker:")
                 print(f"  {_shell_join(payload['docker_command_argv'])}")
         elif action == "opencode":
+            config_write = payload.get("config_write")
+            if not isinstance(config_write, dict):
+                config_write = {}
             print("OpenCode:")
-            print("  Config path: ~/.config/opencode/opencode.json")
+            print(f"  Config path: {config_write.get('config_path') or payload['config_path']}")
+            if config_write.get("backup_path"):
+                print(f"  Previous config kept at: {config_write['backup_path']}")
             print("  Provider: mtplx")
             print("  Reasoning: controlled by MTPLX server settings")
         elif action == "swival":

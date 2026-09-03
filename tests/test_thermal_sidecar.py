@@ -26,24 +26,46 @@ def _default_no_daemon_socket(monkeypatch):
     monkeypatch.setattr(thermal_sidecar, "_daemon_socket_send", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _scratch_home_and_verified_fans(monkeypatch, tmp_path):
+    """Keep the sidecar log under a scratch HOME (never the real ~/.mtplx) and
+    default fan verification to "fans report auto" so no test reads the real
+    fan controller. Tests about unverified restores override it."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(thermal_sidecar, "wait_for_auto_fans", lambda **k: True)
+
+
+def _sidecar_log(tmp_path) -> str:
+    path = tmp_path / ".mtplx" / "logs" / "thermal-sidecar.log"
+    return path.read_text() if path.exists() else ""
+
+
+def _socket_ok(*a, **k):
+    return {"ok": True, "response": "ok", "command": ["<sock>", "auto"]}
+
+
+class _FakeProc:
+    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = ""
+        self.stderr = stderr
+
+
 def test_parent_alive_returns_true_for_self():
     assert thermal_sidecar._parent_alive(os.getpid()) is True
 
 
 def test_restore_fans_prefers_daemon_socket(monkeypatch):
-    """When the daemon socket answers, restore through it and never shell out
-    to sudo (which needs a password and would run the app-killing CLI)."""
-    monkeypatch.setattr(
-        thermal_sidecar,
-        "_daemon_socket_send",
-        lambda *a, **k: {"ok": True, "response": "ok", "command": ["<sock>", "auto"]},
-    )
+    """When the daemon socket answers and the fans verify back on auto, restore
+    through it and never shell out to sudo (which needs a password and would
+    run the app-killing CLI)."""
+    monkeypatch.setattr(thermal_sidecar, "_daemon_socket_send", _socket_ok)
 
     def boom(*a, **k):
         raise AssertionError("must not shell out when the daemon socket handles it")
 
     monkeypatch.setattr(subprocess, "run", boom)
-    assert thermal_sidecar._restore_fans("/path/to/thermalforge") == 0
+    assert thermal_sidecar._restore_fans("/path/to/thermalforge") == (True, "daemon socket")
 
 
 def test_parent_alive_returns_false_for_dead_pid():
@@ -81,29 +103,30 @@ def test_restore_fans_runs_sudo_thermalforge_auto(monkeypatch):
 
     captured: list[list[str]] = []
 
-    class _FakeProc:
-        def __init__(self, returncode: int = 0) -> None:
-            self.returncode = returncode
-
-    def fake_run(cmd, *, stdin=None, stdout=None, stderr=None, timeout=None):
+    def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
+        assert kwargs.get("stdin") is subprocess.DEVNULL
+        assert kwargs.get("timeout"), "sudo -n must be bounded"
         return _FakeProc(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    rc = thermal_sidecar._restore_fans("/path/to/thermalforge")
+    verified, detail = thermal_sidecar._restore_fans("/path/to/thermalforge")
 
-    assert rc == 0
+    assert verified is True
+    assert detail == "sudo -n /path/to/thermalforge auto"
     assert captured == [["sudo", "-n", "/path/to/thermalforge", "auto"]]
 
 
-def test_restore_fans_swallows_subprocess_exceptions(monkeypatch):
+def test_restore_fans_reports_subprocess_exceptions_as_unverified(monkeypatch):
     def boom(*args, **kwargs):
         raise OSError("simulated")
 
     monkeypatch.setattr(subprocess, "run", boom)
-    rc = thermal_sidecar._restore_fans("/path/to/thermalforge")
-    assert rc == 1
+    verified, detail = thermal_sidecar._restore_fans("/path/to/thermalforge")
+    assert verified is False
+    assert "no daemon socket" in detail
+    assert "could not run: simulated" in detail
 
 
 def test_main_exits_immediately_when_parent_already_dead(monkeypatch, tmp_path):
@@ -119,9 +142,7 @@ def test_main_exits_immediately_when_parent_already_dead(monkeypatch, tmp_path):
 
     def fake_run(cmd, *args, **kwargs):
         captured.append(list(cmd))
-        class _P:
-            returncode = 0
-        return _P()
+        return _FakeProc(returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -141,6 +162,7 @@ def test_main_exits_immediately_when_parent_already_dead(monkeypatch, tmp_path):
     assert rc == 0
     assert captured == [["sudo", "-n", "/path/to/thermalforge", "auto"]]
     assert not marker.exists()  # marker cleared
+    assert "fans restored to auto via sudo -n /path/to/thermalforge auto" in _sidecar_log(tmp_path)
 
 
 def test_main_keeps_marker_when_restore_command_fails(monkeypatch, tmp_path):
@@ -151,9 +173,7 @@ def test_main_keeps_marker_when_restore_command_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(thermal_sidecar, "_parent_alive", lambda pid: False)
 
     def fake_run(cmd, *args, **kwargs):
-        class _P:
-            returncode = 1
-        return _P()
+        return _FakeProc(returncode=1, stderr="sudo: a password is required")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -172,6 +192,96 @@ def test_main_keeps_marker_when_restore_command_fails(monkeypatch, tmp_path):
 
     assert rc == 1
     assert marker.exists()
+    # The sidecar's stdio is /dev/null; the reason must land in the log file.
+    log = _sidecar_log(tmp_path)
+    assert "fan restore NOT verified, marker kept" in log
+    assert "exited 1: sudo: a password is required" in log
+
+
+# -- C-08: an unverified "ok" never clears the recovery marker -----------------
+
+
+def test_unverified_daemon_ok_does_not_clear_marker(monkeypatch, tmp_path):
+    """A wedged ThermalForge daemon can answer ok without touching the fans.
+    The sidecar used to return 0 on that reply and delete the marker, so the
+    next `mtplx start` found nothing to recover and fans stayed at maximum.
+    Now the reply is held to the fan rows, the CLI fallback runs and is held
+    to the same proof, and the marker survives an unverified restore."""
+    marker = tmp_path / "active.json"
+    marker.write_text(json.dumps({"pid": 1, "owner_token": "lease"}))
+    monkeypatch.setattr(thermal_sidecar, "_daemon_socket_send", _socket_ok)
+    monkeypatch.setattr(thermal_sidecar, "wait_for_auto_fans", lambda **k: False)
+    monkeypatch.setattr(thermal_sidecar, "_detach_from_terminal", lambda: None)
+    monkeypatch.setattr(thermal_sidecar, "_parent_alive", lambda pid: False)
+    ran: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        ran.append(list(cmd))
+        return _FakeProc(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    rc = thermal_sidecar.main(
+        [
+            "--parent-pid",
+            "1",
+            "--binary",
+            "/path/to/thermalforge",
+            "--marker",
+            str(marker),
+            "--owner-token",
+            "lease",
+            "--poll-seconds",
+            "0.1",
+        ]
+    )
+
+    assert rc == 1
+    assert marker.exists(), "an unverified restore must leave the marker for the next start"
+    assert json.loads(marker.read_text())["owner_token"] == "lease"
+    assert ran == [["sudo", "-n", "/path/to/thermalforge", "auto"]]
+    log = _sidecar_log(tmp_path)
+    assert "marker kept" in log
+    assert "daemon replied ok but the fans did not report auto" in log
+    assert "exited 0 but the fans did not report auto" in log
+
+
+def test_daemon_ok_unverified_falls_through_to_sudo_and_verified_restore_clears_marker(
+    monkeypatch, tmp_path
+):
+    marker = tmp_path / "active.json"
+    marker.write_text(json.dumps({"pid": 1, "owner_token": "lease"}))
+    monkeypatch.setattr(thermal_sidecar, "_daemon_socket_send", _socket_ok)
+    verdicts = iter([False, True])  # socket reply: not verified; after sudo: verified
+    monkeypatch.setattr(thermal_sidecar, "wait_for_auto_fans", lambda **k: next(verdicts))
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: ran.append(list(cmd)) or _FakeProc(0)
+    )
+
+    rc = thermal_sidecar._restore_owned_fans("/path/to/thermalforge", str(marker), "lease")
+
+    assert rc == 0
+    assert ran == [["sudo", "-n", "/path/to/thermalforge", "auto"]]
+    assert not marker.exists()
+    assert "fans restored to auto via sudo -n /path/to/thermalforge auto; marker cleared" in (
+        _sidecar_log(tmp_path)
+    )
+
+
+def test_verified_daemon_restore_clears_marker_and_logs(monkeypatch, tmp_path):
+    marker = tmp_path / "active.json"
+    marker.write_text(json.dumps({"pid": 1, "owner_token": "lease"}))
+    monkeypatch.setattr(thermal_sidecar, "_daemon_socket_send", _socket_ok)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: pytest.fail("no CLI fallback after a verified socket restore")
+    )
+
+    rc = thermal_sidecar._restore_owned_fans("/path/to/thermalforge", str(marker), "lease")
+
+    assert rc == 0
+    assert not marker.exists()
+    assert "fans restored to auto via daemon socket; marker cleared" in _sidecar_log(tmp_path)
 
 
 def test_old_sidecar_does_not_restore_newer_owner(monkeypatch, tmp_path):

@@ -9074,6 +9074,106 @@ def test_connect_opencode_actually_writes_the_config(tmp_path, monkeypatch, caps
     assert "unrelated" in written["provider"], "other providers must survive"
 
 
+def test_connect_opencode_refuses_an_unreadable_config_without_touching_it(
+    tmp_path, monkeypatch, capsys
+):
+    """C-12: `mtplx connect opencode` used to move an unparseable opencode.json
+    aside and replace it, and its output never mentioned the backup. Now the
+    file is left alone, nothing is written, and the command exits non-zero
+    with the path and the parse error."""
+    from mtplx.cli import _cmd_connect, build_parser
+
+    config_path = tmp_path / "opencode.json"
+    broken = '{\n  "provider": {"lmstudio": {"name": "LM Studio"}},\n  "model": \n}\n'
+    config_path.write_text(broken, encoding="utf-8")
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(config_path))
+    monkeypatch.setenv("MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(tmp_path / "default.dat"))
+    args = build_parser().parse_args(["connect", "opencode", "--port", "18099"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        _cmd_connect(args)
+
+    message = str(excinfo.value.code)
+    assert message.startswith("OpenCode config left unchanged: ")
+    assert str(config_path) in message
+    assert "line 4, column 1" in message
+    assert "Fix or move that file" in message
+    assert config_path.read_text(encoding="utf-8") == broken
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["opencode.json"]
+
+
+def test_connect_opencode_reads_jsonc_and_prints_where_the_previous_config_is_kept(
+    tmp_path, monkeypatch, capsys
+):
+    from mtplx.cli import _cmd_connect, build_parser
+
+    config_path = tmp_path / "opencode.json"
+    config_path.write_text(
+        '{\n  // providers\n  "provider": {"unrelated": {"models": {"keep-me": {},},},},\n}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(config_path))
+    monkeypatch.setenv("MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(tmp_path / "default.dat"))
+    args = build_parser().parse_args(
+        ["connect", "opencode", "--port", "18099", "--model-id", "new-model"]
+    )
+
+    assert _cmd_connect(args) == 0
+
+    out = capsys.readouterr().out
+    assert f"Config path: {config_path}" in out
+    backups = list(tmp_path.glob("opencode.json.before-mtplx-*.bak"))
+    assert len(backups) == 1
+    assert f"Previous config kept at: {backups[0]}" in out
+    written = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "keep-me" in written["provider"]["unrelated"]["models"]
+    assert "new-model" in written["provider"]["mtplx"]["models"]
+
+
+def test_pi_models_config_reads_jsonc_and_refuses_unreadable_files(tmp_path):
+    """Pi strips // comments and trailing commas from models.json; a file Pi
+    accepts is merged, a file nobody can read is left exactly as it was."""
+    from mtplx.jsonc import InvalidConfigFile
+    from mtplx.pi import write_pi_models_config
+
+    config_path = tmp_path / "models.json"
+    original = (
+        "{\n"
+        "  // other providers\n"
+        '  "providers": {"other": {"baseUrl": "https://example.invalid/v1", "models": [{"id": "o"},],},},\n'
+        "}\n"
+    )
+    config_path.write_text(original, encoding="utf-8")
+
+    result = write_pi_models_config(
+        base_url="http://127.0.0.1:18012/v1", model_id="mtplx-test-model", path=config_path
+    )
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["providers"]["other"]["models"][0]["id"] == "o"
+    assert payload["providers"]["mtplx"]["models"][0]["id"] == "mtplx-test-model"
+    assert result["written"] is True
+    assert result["backup_path"] and "before-mtplx" in result["backup_path"]
+    assert Path(result["backup_path"]).read_text(encoding="utf-8") == original
+
+    again = write_pi_models_config(
+        base_url="http://127.0.0.1:18012/v1", model_id="mtplx-test-model", path=config_path
+    )
+    assert again["written"] is False
+    assert again["backup_path"] is None
+
+    broken_path = tmp_path / "broken" / "models.json"
+    broken_path.parent.mkdir()
+    broken_path.write_text('{"providers": {"other": {}}, oops', encoding="utf-8")
+    with pytest.raises(InvalidConfigFile) as excinfo:
+        write_pi_models_config(
+            base_url="http://127.0.0.1:18012/v1", model_id="mtplx-test-model", path=broken_path
+        )
+    assert str(broken_path) in str(excinfo.value)
+    assert broken_path.read_text(encoding="utf-8") == '{"providers": {"other": {}}, oops'
+    assert sorted(p.name for p in broken_path.parent.iterdir()) == ["models.json"]
+
+
 def test_publish_check_blocks_local_paths_and_scrubs_on_request(tmp_path, capsys):
     import json as _json
 

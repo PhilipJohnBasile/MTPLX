@@ -116,6 +116,7 @@ def test_auto_default_uses_fp16_for_m1_m2(monkeypatch, generation):
         hardware={
             "chip": f"Apple {generation.upper()} Max",
             "apple_silicon_generation": generation,
+            "memory_gib": 64.0,
         }
     )
 
@@ -129,8 +130,8 @@ def test_auto_default_uses_fp16_for_m1_m2(monkeypatch, generation):
     assert selection.auto_selected is True
 
 
-@pytest.mark.parametrize("generation", ["m3", "m4", "m5", "unknown", "intel"])
-def test_auto_default_uses_q4_speed_for_newer_unknown_and_intel(monkeypatch, generation):
+@pytest.mark.parametrize("generation", ["m3", "m4", "m5", "unknown"])
+def test_auto_default_uses_q4_speed_for_newer_and_unknown(monkeypatch, generation):
     monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
     monkeypatch.setenv(SPEED_MODEL_ENV, "off")
 
@@ -138,6 +139,7 @@ def test_auto_default_uses_q4_speed_for_newer_unknown_and_intel(monkeypatch, gen
         hardware={
             "chip": "Apple M5 Max" if generation == "m5" else "",
             "apple_silicon_generation": generation,
+            "memory_gib": 64.0,
         }
     )
 
@@ -155,6 +157,7 @@ def test_default_model_variant_env_override_forces_fp16(monkeypatch):
         hardware={
             "chip": "Apple M5 Max",
             "apple_silicon_generation": "m5",
+            "memory_gib": 64.0,
         }
     )
 
@@ -171,6 +174,7 @@ def test_default_model_variant_env_override_legacy_bf16_alias_forces_speed(monke
         hardware={
             "chip": "Apple M1 Max",
             "apple_silicon_generation": "m1",
+            "memory_gib": 64.0,
         }
     )
 
@@ -188,12 +192,217 @@ def test_invalid_default_model_variant_env_falls_back_to_auto(monkeypatch):
         hardware={
             "chip": "Apple M2 Max",
             "apple_silicon_generation": "m2",
+            "memory_gib": 64.0,
         }
     )
 
     assert selection.variant == "fp16"
     assert selection.model == QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
     assert "ignored invalid" in selection.reason
+
+
+# -- C-10: first-run routing is decided by what fits -----------------------------
+
+
+def _fits(selection, memory_gib: float) -> bool:
+    from mtplx.memory_plan import GIB, plan_memory
+    from mtplx.model_catalog import catalog_model_matching
+
+    entry = catalog_model_matching(selection.hf_model)
+    assert entry is not None, selection.hf_model
+    plan = plan_memory(
+        total_ram_bytes=int(memory_gib * GIB), model_weights_bytes=entry.size_bytes
+    )
+    return plan.available and plan.model_fits
+
+
+@pytest.mark.parametrize(
+    ("memory_gib", "expected"),
+    [
+        (8.0, "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"),
+        (16.0, "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"),
+        (18.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"),
+        (24.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed"),
+        (32.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
+        (36.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
+        (48.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
+        (64.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
+        (128.0, QWEN38_OPTIMIZED_SPEED_HF_MODEL_ID),
+    ],
+)
+def test_modern_ram_ladder_picks_the_largest_pack_that_fits(monkeypatch, memory_gib, expected):
+    """8 and 16 GiB used to get the 9B (8.1 GiB of weights against an 8 or
+    12 GiB engine budget; memory_plan says it does not fit). Every pick on
+    the ladder must fit by the same solve the server runs at load."""
+    monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
+    monkeypatch.setenv(SPEED_MODEL_ENV, "off")
+    monkeypatch.setenv(QWEN38_OPTIMIZED_SPEED_MODEL_ENV, "off")
+
+    selection = select_default_model(
+        hardware={"chip": "Apple M4", "apple_silicon_generation": "m4", "memory_gib": memory_gib}
+    )
+
+    assert selection.hf_model == expected
+    assert selection.model == expected
+    assert selection.variant == "speed"
+    assert selection.memory_gib == memory_gib
+    assert _fits(selection, memory_gib)
+    if memory_gib < 32:
+        assert f"for {memory_gib:.0f} GiB unified memory" in selection.reason
+    if "4B" in expected:
+        assert selection.display_name == "Qwen3.5 4B Optimized Speed"
+        assert selection.precision == "Compact 4-bit model for the smallest Macs"
+
+
+@pytest.mark.parametrize(
+    ("memory_gib", "expected"),
+    [
+        (16.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16"),
+        (24.0, "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16"),
+        (32.0, QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID),
+        (64.0, QWEN38_OPTIMIZED_SPEED_FP16_HF_MODEL_ID),
+    ],
+)
+def test_legacy_ram_ladder_keeps_fp16_siblings(monkeypatch, memory_gib, expected):
+    monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
+    monkeypatch.setenv(SPEED_MODEL_ENV, "off")
+    monkeypatch.setattr(
+        default_models_module, "_QWEN38_OPTIMIZED_SPEED_FP16_LOCAL_CANDIDATES", ()
+    )
+
+    selection = select_default_model(
+        hardware={"chip": "Apple M1 Pro", "apple_silicon_generation": "m1", "memory_gib": memory_gib}
+    )
+
+    assert selection.hf_model == expected
+    assert selection.variant == "fp16"
+    assert _fits(selection, memory_gib)
+
+
+def test_legacy_mac_below_the_smallest_pack_is_refused_with_the_minimum():
+    """There is no FP16 4B build, so an 8 GB M1/M2 Mac has no pack that fits.
+    The refusal states the minimum in one plain sentence."""
+    from mtplx.default_models import DefaultModelUnavailable
+
+    with pytest.raises(DefaultModelUnavailable) as excinfo:
+        select_default_model(
+            hardware={"chip": "Apple M1", "apple_silicon_generation": "m1", "memory_gib": 8.0}
+        )
+
+    assert excinfo.value.message == (
+        "MTPLX needs at least 16 GB of memory to run its smallest model "
+        "(Qwen 3.5 9B Optimized Speed FP16) on this Mac, which has 8 GB."
+    )
+    assert excinfo.value.memory_gib == 8.0
+    assert excinfo.value.chip_generation == "m1"
+
+
+def test_minimum_memory_matches_plan_memory_boundary():
+    from mtplx.default_models import minimum_memory_gib_for_pack, pack_fits_memory
+    from mtplx.model_catalog import catalog_model_with_id
+
+    for catalog_id, expected in (
+        ("qwen35-4b-optimized-speed", 7),
+        ("qwen35-9b-optimized-speed", 17),
+        ("qwen35-9b-optimized-speed-fp16", 16),
+        ("qwen38-27b-optimized-speed", 32),
+    ):
+        pack = catalog_model_with_id(catalog_id)
+        assert pack is not None
+        minimum = minimum_memory_gib_for_pack(pack)
+        assert minimum == expected, catalog_id
+        assert pack_fits_memory(pack, float(minimum))
+        assert not pack_fits_memory(pack, float(minimum - 1))
+
+
+@pytest.mark.parametrize("memory_gib", [64.0, 8.0, None])
+def test_intel_mac_is_refused_without_a_download(monkeypatch, memory_gib):
+    """An Intel Mac used to be told "selected because this is not Apple
+    Silicon" and offered a 27B or 9B MLX pack it cannot run."""
+    from mtplx.default_models import DefaultModelUnavailable
+
+    monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
+    hardware = {"chip": "Intel Core i9", "apple_silicon_generation": "intel"}
+    if memory_gib is not None:
+        hardware["memory_gib"] = memory_gib
+
+    with pytest.raises(DefaultModelUnavailable) as excinfo:
+        select_default_model(hardware=hardware)
+
+    assert excinfo.value.message == (
+        "MTPLX runs on Apple Silicon Macs (M1 and later); this Mac has an Intel "
+        "processor, so there is no model to download."
+    )
+    assert excinfo.value.chip_generation == "intel"
+
+
+def test_intel_refusal_ignores_variant_overrides(monkeypatch):
+    from mtplx.default_models import DefaultModelUnavailable
+
+    monkeypatch.setenv(DEFAULT_MODEL_VARIANT_ENV, "fp16")
+    with pytest.raises(DefaultModelUnavailable):
+        select_default_model(
+            hardware={"chip": "Intel", "apple_silicon_generation": "intel", "memory_gib": 64.0}
+        )
+
+
+@pytest.mark.parametrize("memory_gib", [None, 0.0, -1.0, "lots", True])
+def test_unreadable_memory_selects_the_smallest_pack_and_says_so(monkeypatch, memory_gib):
+    """A failed hw.memsize read (0.0) used to route to the 27B."""
+    monkeypatch.delenv(DEFAULT_MODEL_VARIANT_ENV, raising=False)
+    monkeypatch.setenv(SPEED_MODEL_ENV, "off")
+    hardware = {"chip": "Apple M4", "apple_silicon_generation": "m4"}
+    if memory_gib is not None:
+        hardware["memory_gib"] = memory_gib
+
+    selection = select_default_model(hardware=hardware)
+
+    assert selection.hf_model == "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"
+    assert selection.memory_gib is None
+    assert "memory could not be read" in selection.reason
+    assert "--model" in selection.reason
+
+    legacy = select_default_model(
+        hardware={"chip": "Apple M1", "apple_silicon_generation": "m1"}
+    )
+    assert legacy.hf_model == "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16"
+    assert legacy.variant == "fp16"
+    assert "memory could not be read" in legacy.reason
+
+
+def test_first_run_callers_exit_cleanly_on_refusal(monkeypatch, capsys):
+    """Every first-run caller turns the refusal into a plain message and a
+    non-zero exit: no traceback, no download."""
+    from types import SimpleNamespace
+
+    from mtplx.commands import public
+    from mtplx.default_models import DefaultModelUnavailable
+    from mtplx.ui import onboarding
+
+    def refuse(**_kwargs):
+        raise DefaultModelUnavailable("This Mac cannot run MTPLX models.")
+
+    monkeypatch.setattr(public, "select_default_model", refuse)
+    monkeypatch.setattr(onboarding, "select_default_model", refuse)
+    monkeypatch.setattr(public, "is_verified_default_model_ref", lambda model: True)
+
+    args = SimpleNamespace(model=None, _model_explicit=False)
+    with pytest.raises(SystemExit) as current:
+        public._quickstart_current_model(args)
+    assert current.value.code == "This Mac cannot run MTPLX models."
+    assert not hasattr(args, "_mtplx_default_model_selection")
+
+    with pytest.raises(SystemExit) as download:
+        public._quickstart_download_ref("/tmp/some/local/model-folder")
+    assert download.value.code == "This Mac cannot run MTPLX models."
+
+    with pytest.raises(SystemExit) as wizard:
+        onboarding._verified_default_selection()
+    assert wizard.value.code == "This Mac cannot run MTPLX models."
+
+    with pytest.raises(SystemExit) as picker:
+        onboarding.screen_model(configured=None, installed=[], app_model=None)
+    assert picker.value.code == "This Mac cannot run MTPLX models."
 
 
 def test_verified_default_refs_include_speed_and_fp16():
@@ -223,6 +432,7 @@ def test_optimized_speed_prefers_complete_local_env_model(tmp_path, monkeypatch)
         hardware={
             "chip": "Apple M5 Max",
             "apple_silicon_generation": "m5",
+            "memory_gib": 64.0,
         }
     )
 

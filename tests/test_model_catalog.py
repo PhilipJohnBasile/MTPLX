@@ -418,14 +418,16 @@ def test_read_app_settings_degrades_to_none(tmp_path):
     assert settings.onboarding_completed is False
 
 
-def test_select_default_model_routes_small_macs_to_9b(monkeypatch):
+def test_select_default_model_routes_small_macs_to_packs_that_fit(monkeypatch):
     monkeypatch.delenv("MTPLX_DEFAULT_MODEL_VARIANT", raising=False)
 
+    # 24 GiB: the 9B fits (memory_plan: 8.1 GiB of weights in an 18 GiB
+    # engine budget); the 27B does not.
     small_modern = select_default_model(
         hardware={
             "chip": "Apple M4",
             "apple_silicon_generation": "m4",
-            "memory_gib": 16.0,
+            "memory_gib": 24.0,
         }
     )
     assert small_modern.model == QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
@@ -433,7 +435,20 @@ def test_select_default_model_routes_small_macs_to_9b(monkeypatch):
     assert small_modern.variant == "speed"
     assert "9B" in small_modern.reason
     assert small_modern.display_name == "Qwen3.5 9B Optimized Speed"
-    assert small_modern.memory_gib == 16.0
+    assert small_modern.memory_gib == 24.0
+
+    # 16 GiB: the 9B needs 12.3 GiB against a 12 GiB engine budget, so the
+    # default is the 4B (the 9B used to be offered here).
+    tiny_modern = select_default_model(
+        hardware={
+            "chip": "Apple M4",
+            "apple_silicon_generation": "m4",
+            "memory_gib": 16.0,
+        }
+    )
+    assert tiny_modern.model == "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"
+    assert "4B" in tiny_modern.reason
+    assert tiny_modern.display_name == "Qwen3.5 4B Optimized Speed"
 
     small_legacy = select_default_model(
         hardware={
@@ -478,6 +493,9 @@ def test_select_default_model_uses_public_v2_without_local_qwen38(monkeypatch):
 
 
 def test_select_default_model_without_memory_keeps_generation_policy(monkeypatch):
+    """Unreadable memory keeps the generation's precision lane but can no
+    longer pick the 27B: with nothing to say what fits, the smallest pack is
+    chosen and the reason says so."""
     monkeypatch.delenv("MTPLX_DEFAULT_MODEL_VARIANT", raising=False)
     monkeypatch.setenv("MTPLX_OPTIMIZED_SPEED_MODEL", "off")
 
@@ -487,5 +505,7 @@ def test_select_default_model_without_memory_keeps_generation_policy(monkeypatch
             "apple_silicon_generation": "m4",
         }
     )
-    assert selection.model == DEFAULT_HF_MODEL_ID
+    assert selection.variant == "speed"
+    assert selection.model == "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"
     assert selection.memory_gib is None
+    assert "memory could not be read" in selection.reason
