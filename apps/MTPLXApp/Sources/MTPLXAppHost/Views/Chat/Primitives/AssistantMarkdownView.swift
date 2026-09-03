@@ -1360,7 +1360,7 @@ struct StreamingCodeTextViewport: NSViewRepresentable {
                     string: "\n",
                     attributes: [
                         .font: MTPLXCodeHighlighter.codeFont,
-                        .foregroundColor: NSColor(calibratedWhite: 0.88, alpha: 1.0),
+                        .foregroundColor: MTPLXCodeHighlighter.Palette.adaptive.base,
                     ]
                 ))
             }
@@ -1800,7 +1800,7 @@ private struct CodeTextViewport: NSViewRepresentable {
         textView.isSelectable = false
         textView.isRichText = false
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        textView.textColor = NSColor(calibratedWhite: 0.88, alpha: 1.0)
+        textView.textColor = MTPLXCodeHighlighter.Palette.adaptive.base
         textView.textContainerInset = NSSize(width: 12, height: 10)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
