@@ -864,6 +864,20 @@ def _server_runtime_env_overrides(
                 "MTPLX_QWEN4_FIXED_M4_VERIFY",
                 "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
                 "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
+                # 2026-09-03 ports from PR #391 by davidtai, measured on the
+                # same geometry (outputs/hyper-review-20260903): the exact op
+                # diet in the compiled verifier, block verification in the
+                # accept loop, and the two prefill overlaps (PLE n-gram rows
+                # for chunk k+1 gathered under chunk k, the first chunk's
+                # rows gathered at request arrival). The session-bank pair
+                # keeps a re-rendered agent turn on its boundary snapshots
+                # instead of a cold re-prefill.
+                "MTPLX_QWEN4_OPDIET",
+                "MTPLX_QWEN4_BLOCK_VERIFY",
+                "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+                "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+                "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+                "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
             ]
             if _qwen4_port_opt_in(
                 overrides, "MTPLX_FUSED_GATE_UP"
@@ -874,6 +888,39 @@ def _server_runtime_env_overrides(
             for key in lane_defaults:
                 if os.environ.get(key) is None:
                     overrides.setdefault(key, "1")
+            # Value-carrying companions of the keys above; an explicit export
+            # of the companion wins on its own, and the master switch's =0
+            # leaves them inert.
+            if os.environ.get("MTPLX_NGRAM_PREWARM") is None:
+                overrides.setdefault("MTPLX_NGRAM_PREWARM", "auto")
+            # The stage-3 child routes are consumed at model load and raise
+            # unless stage 3 itself resolves on, so they are derived from the
+            # resolved parent, never stamped alone: the routed-down reduction,
+            # its residual-tail store, the paired routed GLU, and the two-kernel
+            # routing head (which additionally needs the paired GLU).
+            if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_M4_STAGE3"):
+                for key in (
+                    "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+                    "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+                    "MTPLX_QWEN4_M4_ROUTED_GLU",
+                ):
+                    if os.environ.get(key) is None:
+                        overrides.setdefault(key, "1")
+                if (
+                    _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_M4_ROUTED_GLU")
+                    and os.environ.get("MTPLX_QWEN4_ROUTE_KERNEL") is None
+                ):
+                    overrides.setdefault("MTPLX_QWEN4_ROUTE_KERNEL", "1")
+            # The fused QSA rope glue installs inside the fixed-M4 compiled
+            # verify body and is probed bit-exact there, so it follows that
+            # verifier's resolved state.
+            if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_FIXED_M4_VERIFY"):
+                if os.environ.get("MTPLX_QWEN4_VERIFY_GLUE") is None:
+                    overrides.setdefault("MTPLX_QWEN4_VERIFY_GLUE", "1")
+                if os.environ.get("MTPLX_QWEN4_VERIFY_GLUE_ITEMS") is None:
+                    overrides.setdefault(
+                        "MTPLX_QWEN4_VERIFY_GLUE_ITEMS", "qsa_rope,qsa_rope_idx"
+                    )
             # The fused K/V gather is read at cache promotion and raises
             # unless BOTH the fixed verifier and the rows-gather lane resolve
             # on (graphbank.from_qsa_cache; the first port's 249,670-token
@@ -900,6 +947,14 @@ def _server_runtime_env_overrides(
                     overrides.setdefault(
                         "MTPLX_FRSPEC_VOCAB", "builtin:qwen38-code-64k"
                     )
+                # The pre-scatter draft read serves K20 from the FR-Spec
+                # head's compact row and raises at install without that
+                # head, so it follows the resolved FR-Spec draft.
+                if (
+                    _qwen4_port_opt_in(overrides, "MTPLX_FRSPEC_DRAFT")
+                    and os.environ.get("MTPLX_QWEN4_DRAFT_K20_PRESCATTER") is None
+                ):
+                    overrides.setdefault("MTPLX_QWEN4_DRAFT_K20_PRESCATTER", "1")
         if _qwen4_port_opt_in(overrides, "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS"):
             # Fixed-M4 target distributions (PR #391 step 1 by davidtai, his
             # 2026-08-29 production A/B/A/B): batch all four temperature-1 /
@@ -979,6 +1034,21 @@ _QWEN4_PORT_KEYS = (
     "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
     "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
     "MTPLX_QSA_M4_FUSED_KV_GATHER",
+    # 2026-09-03 ports from PR #391 by davidtai (see the lane defaults).
+    "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+    "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+    "MTPLX_QWEN4_M4_ROUTED_GLU",
+    "MTPLX_QWEN4_ROUTE_KERNEL",
+    "MTPLX_QWEN4_OPDIET",
+    "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+    "MTPLX_QWEN4_BLOCK_VERIFY",
+    "MTPLX_QWEN4_VERIFY_GLUE",
+    "MTPLX_QWEN4_VERIFY_GLUE_ITEMS",
+    "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+    "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+    "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+    "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+    "MTPLX_NGRAM_PREWARM",
 )
 # Every key the fixed-M4 lane defaults may stamp; an explicit operator
 # export (any non-empty value) always beats a stamped value for these.

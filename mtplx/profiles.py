@@ -417,6 +417,21 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
         "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
         "MTPLX_QWEN4_M4_ROUTED_GLU",
+        # 2026-09-03 ports from PR #391 by davidtai, stamped by the Flash-Next
+        # lane defaults on the fixed-M4 geometry (mtplx/server/openai.py).
+        "MTPLX_QWEN4_ROUTE_KERNEL",
+        "MTPLX_QWEN4_ROUTE_KERNEL_VEC_LANES",
+        "MTPLX_QWEN4_OPDIET",
+        "MTPLX_QWEN4_OPDIET_ITEMS",
+        "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+        "MTPLX_QWEN4_BLOCK_VERIFY",
+        "MTPLX_QWEN4_VERIFY_GLUE",
+        "MTPLX_QWEN4_VERIFY_GLUE_ITEMS",
+        "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+        "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+        "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+        "MTPLX_NGRAM_PREWARM_ORDER",
+        "MTPLX_STRICT_CLAIMS",
         "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
         "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
         # FR-Spec row-pruned draft head (PR #391 port): the server stamps the

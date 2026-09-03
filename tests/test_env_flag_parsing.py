@@ -390,6 +390,26 @@ def test_flash_next_speed_lane_is_default_on_and_pack_gated(
     assert overrides["MTPLX_LAZY_TARGET_DISTRIBUTIONS"] == "0"
     assert overrides["MTPLX_QSA_GATHER_MAX_ROWS"] == "32"
     assert overrides["MTPLX_FRSPEC_VOCAB"] == "builtin:qwen38-code-64k"
+    # The 2026-09-03 ports from PR #391 (davidtai): the decode set, the two
+    # prefill overlaps, the session-bank pair and the n-gram pre-read, with
+    # the load-time children derived from their resolved parents.
+    for key in (
+        "MTPLX_QWEN4_OPDIET",
+        "MTPLX_QWEN4_BLOCK_VERIFY",
+        "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+        "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+        "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+        "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+        "MTPLX_QWEN4_M4_ROUTED_GLU",
+        "MTPLX_QWEN4_ROUTE_KERNEL",
+        "MTPLX_QWEN4_VERIFY_GLUE",
+        "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+    ):
+        assert overrides.get(key) == "1", key
+    assert overrides["MTPLX_QWEN4_VERIFY_GLUE_ITEMS"] == "qsa_rope,qsa_rope_idx"
+    assert overrides["MTPLX_NGRAM_PREWARM"] == "auto"
     assert normalize_runtime_env_overrides(overrides) == overrides
 
     # Bare-Speed shape (lm_head Q4/g64 over a flat Q4/g64 MoE): the two
@@ -403,6 +423,18 @@ def test_flash_next_speed_lane_is_default_on_and_pack_gated(
     assert "MTPLX_QWEN4_M4_STAGE3" not in overrides
     assert "MTPLX_FRSPEC_DRAFT" not in overrides
     assert "MTPLX_FRSPEC_VOCAB" not in overrides
+    # No stage 3: none of its children; no FR-Spec head: no pre-scatter read.
+    # The glue rides the fixed-M4 verifier, which this shape still runs.
+    for key in (
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+        "MTPLX_QWEN4_M4_ROUTED_GLU",
+        "MTPLX_QWEN4_ROUTE_KERNEL",
+        "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+    ):
+        assert key not in overrides, key
+    assert overrides["MTPLX_QWEN4_VERIFY_GLUE"] == "1"
+    assert overrides["MTPLX_QWEN4_BLOCK_VERIFY"] == "1"
     # A pack with no per-module entries resolves every module to the
     # pack-wide values, which can never satisfy the stage-3 contract.
     flat = _flash_next_fixed_m4_config()
@@ -442,7 +474,43 @@ def test_flash_next_speed_lane_is_default_on_and_pack_gated(
     overrides = _server_runtime_env_overrides(args, {})
     assert "MTPLX_FRSPEC_DRAFT" not in overrides
     assert "MTPLX_FRSPEC_VOCAB" not in overrides
+    assert "MTPLX_QWEN4_DRAFT_K20_PRESCATTER" not in overrides
     monkeypatch.delenv("MTPLX_FRSPEC_DRAFT")
+    # The stage-3 children follow their parent's kill switch, and the routing
+    # head follows the paired GLU; the verify glue follows the fixed verifier.
+    monkeypatch.setenv("MTPLX_QWEN4_M4_STAGE3", "0")
+    overrides = _server_runtime_env_overrides(args, {})
+    for key in (
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+        "MTPLX_QWEN4_M4_ROUTED_GLU",
+        "MTPLX_QWEN4_ROUTE_KERNEL",
+    ):
+        assert key not in overrides, key
+    monkeypatch.delenv("MTPLX_QWEN4_M4_STAGE3")
+    monkeypatch.setenv("MTPLX_QWEN4_M4_ROUTED_GLU", "0")
+    overrides = _server_runtime_env_overrides(args, {})
+    assert "MTPLX_QWEN4_ROUTE_KERNEL" not in overrides
+    assert overrides["MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE"] == "1"
+    monkeypatch.delenv("MTPLX_QWEN4_M4_ROUTED_GLU")
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_VERIFY", "0")
+    overrides = _server_runtime_env_overrides(args, {})
+    assert "MTPLX_QWEN4_VERIFY_GLUE" not in overrides
+    assert "MTPLX_QWEN4_VERIFY_GLUE_ITEMS" not in overrides
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_VERIFY")
+    for key in (
+        "MTPLX_QWEN4_OPDIET",
+        "MTPLX_QWEN4_BLOCK_VERIFY",
+        "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
+        "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+        "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+        "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+        "MTPLX_NGRAM_PREWARM",
+    ):
+        monkeypatch.setenv(key, "0" if key != "MTPLX_NGRAM_PREWARM" else "off")
+        overrides = _server_runtime_env_overrides(args, {})
+        assert key not in overrides, key
+        monkeypatch.delenv(key)
     # An operator's own ranked table or row width beats the stamped values.
     monkeypatch.setenv("MTPLX_FRSPEC_VOCAB", str(tmp_path / "ranked.npy"))
     monkeypatch.setenv("MTPLX_QSA_GATHER_MAX_ROWS", "8")
