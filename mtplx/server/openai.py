@@ -4643,6 +4643,72 @@ def _anthropic_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _anthropic_image_block_to_openai_part(block: Any) -> dict[str, Any] | None:
+    """Translate one Anthropic ``image`` block into an OpenAI ``image_url`` part.
+
+    Returns None for anything that is not a usable image (wrong type, missing
+    source, empty payload) so the caller keeps the historical text rendering
+    for it instead of dropping content.
+    """
+
+    if not isinstance(block, dict) or str(block.get("type") or "") != "image":
+        return None
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    source_type = str(source.get("type") or "")
+    if source_type == "base64":
+        data = source.get("data")
+        if not isinstance(data, str) or not data:
+            return None
+        media_type = str(source.get("media_type") or "image/png")
+        url = f"data:{media_type};base64,{data}"
+    elif source_type == "url":
+        url = source.get("url")
+        if not isinstance(url, str) or not url:
+            return None
+    else:
+        return None
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _anthropic_content_to_chat_content(content: Any) -> Any:
+    """Render Anthropic content as ``ChatMessage.content``.
+
+    Content without images renders to exactly the string
+    ``_anthropic_content_to_text`` produces, so the text-only bridge (and
+    its prefix-cache bytes) is untouched. Content carrying ``image`` blocks
+    renders to OpenAI content parts, text runs coalesced between images,
+    which the chat path already understands: ``_vision_extract_and_flatten``
+    lifts the ``image_url`` parts into the vision splice. Before this the
+    bridge fell through to ``json.dumps`` and the model read the base64
+    payload as prose (#441).
+    """
+
+    blocks = _anthropic_content_blocks(content)
+    parts: list[dict[str, Any]] = []
+    text_run: list[str] = []
+    saw_image = False
+
+    def _flush_text() -> None:
+        if text_run:
+            parts.append({"type": "text", "text": "".join(text_run)})
+            text_run.clear()
+
+    for block in blocks:
+        image_part = _anthropic_image_block_to_openai_part(block)
+        if image_part is None:
+            text_run.append(_anthropic_content_to_text([block]))
+            continue
+        saw_image = True
+        _flush_text()
+        parts.append(image_part)
+    if not saw_image:
+        return _anthropic_content_to_text(content)
+    _flush_text()
+    return parts
+
+
 _ANTHROPIC_SERVER_SIDE_TOOL_TYPE_PREFIXES = (
     "web_search_",
     "code_execution_",
@@ -4741,17 +4807,24 @@ def _anthropic_message_to_chat_messages(
         ]
     if role == "user":
         messages: list[ChatMessage] = []
-        text_parts: list[str] = []
+        # Blocks between tool results render together so an image keeps its
+        # place among the text around it (#441).
+        pending_blocks: list[Any] = []
         for block in _anthropic_content_blocks(message.content):
             if (
                 isinstance(block, dict)
                 and str(block.get("type") or "") == "tool_result"
             ):
-                if text_parts:
+                if pending_blocks:
                     messages.append(
-                        ChatMessage(role="user", content="".join(text_parts))
+                        ChatMessage(
+                            role="user",
+                            content=_anthropic_content_to_chat_content(
+                                pending_blocks
+                            ),
+                        )
                     )
-                    text_parts = []
+                    pending_blocks = []
                 tool_call_id = _anthropic_tool_result_id(block)
                 if not tool_call_id:
                     raise HTTPException(
@@ -4762,19 +4835,25 @@ def _anthropic_message_to_chat_messages(
                     ChatMessage(
                         role="tool",
                         tool_call_id=tool_call_id,
-                        content=_anthropic_content_to_text(block.get("content")),
+                        content=_anthropic_content_to_chat_content(
+                            block.get("content")
+                        ),
                     )
                 )
-            elif isinstance(block, dict):
-                text_parts.append(_anthropic_content_to_text([block]))
             else:
-                text_parts.append(str(block))
-        if text_parts or not messages:
-            messages.append(ChatMessage(role="user", content="".join(text_parts)))
+                pending_blocks.append(block)
+        if pending_blocks or not messages:
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=_anthropic_content_to_chat_content(pending_blocks),
+                )
+            )
         return messages
     return [
         ChatMessage(
-            role=role or "user", content=_anthropic_content_to_text(message.content)
+            role=role or "user",
+            content=_anthropic_content_to_chat_content(message.content),
         )
     ]
 
@@ -33253,9 +33332,17 @@ def create_app(state: ServerState) -> FastAPI:
             metadata=metadata,
             endpoint="count_tokens",
         )
+        # Image blocks become the vision placeholder here exactly as they do
+        # on the chat path, so the count covers what the prompt will carry.
+        try:
+            count_messages, _count_images = _vision_extract_and_flatten(
+                policy.messages_for_generation
+            )
+        except ValueError as vision_error:
+            raise HTTPException(status_code=400, detail=str(vision_error))
         prompt_ids = _encode_messages(
             state.runtime.tokenizer,
-            policy.messages_for_generation,
+            count_messages,
             enable_thinking=policy.thinking_enabled,
             reasoning_effort=policy.reasoning_effort,
             strip_assistant_reasoning_history=state.args.strip_assistant_reasoning_history,

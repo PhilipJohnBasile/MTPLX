@@ -26,6 +26,13 @@ All notable user-facing changes to MTPLX. The format is based on
 
 ### Fixed
 
+- **Anthropic `/v1/messages` image blocks reach the vision tower (#441).**
+  `image` blocks (base64 or URL, including ones nested inside a
+  `tool_result`) become image parts instead of base64 prose, so Claude
+  Code's pasted screenshots and its Read tool on image files are seen
+  instead of hallucinated at 13x to 52x the token cost. Text-only
+  requests render byte-identically; `count_tokens` counts the vision
+  placeholder the way the chat path does.
 - **Copy-lane streaming no longer pastes and freezes.** The server
   releases block-sized token batches piece by piece across the round
   (`MTPLX_STREAM_PACER`, default on; StreamScope copy-lane arm burst p95
