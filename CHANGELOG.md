@@ -43,6 +43,14 @@ All notable user-facing changes to MTPLX. The format is based on
   `/health` (`scheduler.ar_batch_unavailable_reason`), and serves
   concurrent requests one at a time on the solo lane instead. The 27B
   keeps batching. `MTPLX_AR_BATCH_CACHE_PROBE=0` skips the probe.
+- **A client-capped one-token answer is diagnosable from the serve log
+  (#436).** Pi caps `max_tokens` at its model `contextWindow` minus a
+  chars/4 estimate of the transcript, and sends `max_tokens=1` when the
+  estimate overflows; the answer then stops after one token, often inside
+  a tool call, and Pi reports a truncated response. The server now logs
+  one WARNING naming the client's cap, and the `mtplx_openai_generation`
+  trace line carries `max_tokens`, `effective_max_tokens` and
+  `finish_reason`.
 - **Anthropic `/v1/messages` image blocks reach the vision tower (#441).**
   `image` blocks (base64 or URL, including ones nested inside a
   `tool_result`) become image parts instead of base64 prose, so Claude
