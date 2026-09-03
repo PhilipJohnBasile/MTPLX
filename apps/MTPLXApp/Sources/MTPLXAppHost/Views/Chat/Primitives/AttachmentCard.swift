@@ -10,7 +10,9 @@ import MTPLXAppCore
 // (PDFKit thumbnail for .pdf, monochrome glyph for others), filename
 // + size to the right, and an × remove affordance on hover when an
 // `onRemove` handler is provided. A red dot replaces the badge when
-// `errorMessage` is non-nil (failed extraction).
+// `errorMessage` is non-nil (failed extraction); a spinner replaces it
+// while `isExtracting`, with `statusMessage` ("Extracting…", or a
+// truncation note once done) in the caption row.
 
 struct AttachmentCard: View {
     let filename: String
@@ -21,6 +23,10 @@ struct AttachmentCard: View {
     /// picture as the badge thumbnail.
     var imageData: Data? = nil
     var errorMessage: String? = nil
+    /// Quiet caption for a card that is fine: what it is doing or what
+    /// the extraction caps kept.
+    var statusMessage: String? = nil
+    var isExtracting: Bool = false
     var onTap: (() -> Void)? = nil
     var onRemove: (() -> Void)? = nil
 
@@ -51,6 +57,11 @@ struct AttachmentCard: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(Brand.warning)
                                 .lineLimit(1)
+                        } else if let statusMessage {
+                            Text(statusMessage)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Brand.typeTertiary)
+                                .lineLimit(1)
                         }
                     }
                 }
@@ -59,6 +70,9 @@ struct AttachmentCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .frame(width: 200, height: 56, alignment: .leading)
+            // The caption row is one line; the full reason or note is
+            // a hover away.
+            .help(errorMessage ?? statusMessage ?? filename)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Brand.wash.opacity(0.05))
@@ -95,7 +109,15 @@ struct AttachmentCard: View {
 
     @ViewBuilder
     private var badge: some View {
-        if let imageData, let thumb = NSImage(data: imageData) {
+        if isExtracting {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Brand.wash.opacity(0.06))
+                ProgressView()
+                    .controlSize(.small)
+            }
+            .frame(width: 32, height: 32)
+        } else if let imageData, let thumb = NSImage(data: imageData) {
             Image(nsImage: thumb)
                 .resizable()
                 .scaledToFill()

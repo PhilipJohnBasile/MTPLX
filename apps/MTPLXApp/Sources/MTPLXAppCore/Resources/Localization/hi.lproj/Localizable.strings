@@ -526,6 +526,8 @@
 "External Client" = "बाहरी क्लाइंट";
 "External terminal client launched by MTPLX." = "MTPLX द्वारा लॉन्च किया गया बाहरी टर्मिनल क्लाइंट।";
 "Extract MTP weights" = "MTP वज़न निकालें";
+"Extracting attachments…" = "अटैचमेंट निकाले जा रहे हैं…";
+"Extracting…" = "निकाला जा रहा है…";
 "Failed to start AIME run: %@" = "AIME रन शुरू करने में विफल: %@";
 "Failed: %@" = "विफल: %@";
 "FAN" = "फ़ैन";
@@ -900,6 +902,7 @@
 "no work yet" = "अभी तक कोई कार्य नहीं";
 "Non-localhost host: an API key is required." = "गैर-लोकलहोस्ट होस्ट: एक API कुंजी आवश्यक है।";
 "none loaded" = "कोई लोड नहीं हुआ";
+"not a readable image" = "पढ़ने योग्य छवि नहीं है";
 "not loaded — loads on first request" = "लोड नहीं हुआ — पहले अनुरोध पर लोड होता है";
 "Not running." = "चल नहीं रहा है।";
 "Not solved yet" = "अभी तक हल नहीं हुआ";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "कुल verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "प्रतिलेख";
+"Truncated to %@ of %@ characters" = "पहले %@ वर्ण रखे गए (कुल %@)";
+"Truncated to %lld of %lld pages" = "पहले %lld पृष्ठ रखे गए (कुल %lld)";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@ ट्यून करें?";

@@ -526,6 +526,8 @@
 "External Client" = "عميل خارجي";
 "External terminal client launched by MTPLX." = "عميل Terminal خارجي تم تشغيله بواسطة MTPLX.";
 "Extract MTP weights" = "استخراج أوزان MTP";
+"Extracting attachments…" = "جارٍ استخراج المرفقات…";
+"Extracting…" = "جارٍ الاستخراج…";
 "Failed to start AIME run: %@" = "فشل بدء تشغيل AIME: %@";
 "Failed: %@" = "فشل: %@";
 "FAN" = "المروحة";
@@ -900,6 +902,7 @@
 "no work yet" = "لا يوجد عمل بعد";
 "Non-localhost host: an API key is required." = "مضيف غير localhost: مطلوب مفتاح API.";
 "none loaded" = "لم يتم تحميل أي منها";
+"not a readable image" = "ليست صورة قابلة للقراءة";
 "not loaded — loads on first request" = "غير محمل — يتم التحميل عند أول طلب";
 "Not running." = "لا يعمل.";
 "Not solved yet" = "لم تُحل بعد";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "إجمالي verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "النص الكامل";
+"Truncated to %@ of %@ characters" = "تم الاحتفاظ بأول %@ حرف من أصل %@";
+"Truncated to %lld of %lld pages" = "تم الاحتفاظ بأول %lld صفحة من أصل %lld";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "هل تريد ضبط %@؟";

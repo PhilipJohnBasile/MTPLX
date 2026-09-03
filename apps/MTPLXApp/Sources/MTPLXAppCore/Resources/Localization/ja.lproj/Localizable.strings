@@ -526,6 +526,8 @@
 "External Client" = "外部クライアント";
 "External terminal client launched by MTPLX." = "MTPLXが起動した外部ターミナルクライアント。";
 "Extract MTP weights" = "MTPの重みを抽出";
+"Extracting attachments…" = "添付ファイルを抽出中…";
+"Extracting…" = "抽出中…";
 "Failed to start AIME run: %@" = "AIME実行を開始できませんでした: %@";
 "Failed: %@" = "失敗: %@";
 "FAN" = "ファン";
@@ -900,6 +902,7 @@
 "no work yet" = "作業はまだありません";
 "Non-localhost host: an API key is required." = "localhost以外のホスト: APIキーが必要です。";
 "none loaded" = "読み込みなし";
+"not a readable image" = "読み取り可能な画像ではありません";
 "not loaded — loads on first request" = "未読み込み — 最初のリクエスト時に読み込まれます";
 "Not running." = "実行されていません。";
 "Not solved yet" = "未解決";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "合計verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "トランスクリプト";
+"Truncated to %@ of %@ characters" = "先頭 %@ 文字に切り詰め（全 %@ 文字）";
+"Truncated to %lld of %lld pages" = "先頭 %lld ページに切り詰め（全 %lld ページ）";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@をチューニングしますか？";

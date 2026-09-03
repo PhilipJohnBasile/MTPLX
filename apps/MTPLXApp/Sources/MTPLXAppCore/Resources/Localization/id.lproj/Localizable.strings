@@ -526,6 +526,8 @@
 "External Client" = "Klien Eksternal";
 "External terminal client launched by MTPLX." = "Klien terminal eksternal diluncurkan oleh MTPLX.";
 "Extract MTP weights" = "Ekstrak bobot MTP";
+"Extracting attachments…" = "Mengekstrak lampiran…";
+"Extracting…" = "Mengekstrak…";
 "Failed to start AIME run: %@" = "Gagal memulai eksekusi AIME: %@";
 "Failed: %@" = "Gagal: %@";
 "FAN" = "KIPAS";
@@ -900,6 +902,7 @@
 "no work yet" = "belum ada pekerjaan";
 "Non-localhost host: an API key is required." = "Host non-localhost: kunci API diperlukan.";
 "none loaded" = "tidak ada yang dimuat";
+"not a readable image" = "bukan gambar yang dapat dibaca";
 "not loaded — loads on first request" = "tidak dimuat — dimuat pada permintaan pertama";
 "Not running." = "Tidak berjalan.";
 "Not solved yet" = "Belum terselesaikan";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "Total verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "Transkrip";
+"Truncated to %@ of %@ characters" = "Dipotong menjadi %@ dari %@ karakter";
+"Truncated to %lld of %lld pages" = "Dipotong menjadi %lld dari %lld halaman";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "Setel %@?";

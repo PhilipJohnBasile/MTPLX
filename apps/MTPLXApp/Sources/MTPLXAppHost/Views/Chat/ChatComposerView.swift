@@ -77,21 +77,53 @@ struct ChatComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(viewModel.pendingAttachments, id: \.id) { attachment in
+                    let presentation = Self.cardPresentation(
+                        for: attachment,
+                        state: viewModel.extractionState(for: attachment)
+                    )
                     AttachmentCard(
                         filename: attachment.filename,
                         fileExtension: extensionOf(attachment.filename),
                         sizeBytes: attachment.sizeBytes,
                         imageData: attachment.imageData,
-                        errorMessage:
-                            (attachment.imageData == nil
-                                && attachment.extractedText.isEmpty)
-                            ? tr("Could not read") : nil,
+                        errorMessage: presentation.errorMessage,
+                        statusMessage: presentation.statusMessage,
+                        isExtracting: presentation.isExtracting,
                         onRemove: { viewModel.removeAttachment(attachment) }
                     )
                 }
             }
             .padding(.horizontal, 2)
             .padding(.vertical, 2)
+        }
+    }
+
+    /// What the card says about a pending attachment: extracting,
+    /// failed (with the reason), truncated (with what was kept), or
+    /// unreadable when extraction produced nothing to send.
+    struct AttachmentCardPresentation: Equatable {
+        var errorMessage: String?
+        var statusMessage: String?
+        var isExtracting = false
+    }
+
+    static func cardPresentation(
+        for attachment: ChatAttachment,
+        state: ChatViewModel.AttachmentExtractionState?
+    ) -> AttachmentCardPresentation {
+        switch state {
+        case .extracting:
+            return AttachmentCardPresentation(statusMessage: tr("Extracting…"), isExtracting: true)
+        case .failed(let message):
+            return AttachmentCardPresentation(errorMessage: message)
+        case .ready(let truncation):
+            if attachment.imageData == nil && attachment.extractedText.isEmpty {
+                return AttachmentCardPresentation(errorMessage: tr("Could not read"))
+            }
+            return AttachmentCardPresentation(statusMessage: truncation?.summary)
+        case nil:
+            let unreadable = attachment.imageData == nil && attachment.extractedText.isEmpty
+            return AttachmentCardPresentation(errorMessage: unreadable ? tr("Could not read") : nil)
         }
     }
 
@@ -175,14 +207,23 @@ struct ChatComposerView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.isStreaming && !canSend)
         .onHover { sendButtonHovering = $0 }
-        .help(viewModel.isStreaming ? tr("Stop generating") : tr("Send"))
+        .help(sendButtonHelp)
         .accessibilityLabel(viewModel.isStreaming ? tr("Stop generating") : tr("Send message"))
         .animation(.smooth(duration: 0.18), value: viewModel.isStreaming)
         .animation(.smooth(duration: 0.18), value: sendButtonHovering)
     }
 
+    private var sendButtonHelp: String {
+        if viewModel.isStreaming { return tr("Stop generating") }
+        if viewModel.isExtractingAttachments { return tr("Extracting attachments…") }
+        return tr("Send")
+    }
+
     private var canSend: Bool {
         engineCanAcceptMessages
+            // Send waits for the strip to settle so a file still being
+            // read is never left behind for the next message.
+            && !viewModel.isExtractingAttachments
             && (
                 !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || viewModel.hasSendablePendingAttachments

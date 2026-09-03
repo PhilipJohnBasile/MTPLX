@@ -526,6 +526,8 @@
 "External Client" = "외부 클라이언트";
 "External terminal client launched by MTPLX." = "MTPLX에서 실행한 외부 터미널 클라이언트입니다.";
 "Extract MTP weights" = "MTP 가중치 추출";
+"Extracting attachments…" = "첨부 파일 추출 중…";
+"Extracting…" = "추출 중…";
 "Failed to start AIME run: %@" = "AIME 실행 시작 실패: %@";
 "Failed: %@" = "실패: %@";
 "FAN" = "팬";
@@ -900,6 +902,7 @@
 "no work yet" = "아직 작업 없음";
 "Non-localhost host: an API key is required." = "로컬호스트가 아닌 호스트: API 키가 필요합니다.";
 "none loaded" = "로드된 항목 없음";
+"not a readable image" = "읽을 수 있는 이미지가 아닙니다";
 "not loaded — loads on first request" = "로드되지 않음 — 첫 요청 시 로드됨";
 "Not running." = "실행 중이 아닙니다.";
 "Not solved yet" = "아직 해결되지 않음";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "총 verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "대화 기록";
+"Truncated to %@ of %@ characters" = "앞 %@자로 잘림 (전체 %@자)";
+"Truncated to %lld of %lld pages" = "앞 %lld페이지로 잘림 (전체 %lld페이지)";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "%@을(를) 튜닝하시겠습니까?";

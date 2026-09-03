@@ -193,6 +193,10 @@ public final class ChatViewModel: ObservableObject {
     /// the last one settles, whichever conversation owns it.
     private let onLiveTurnActivityChanged: @MainActor (Bool) -> Void
     private let maxToolRounds: Int
+    /// Turns a dropped file into attachment data, off the main actor.
+    /// Injectable so tests can pin where it runs and how the card
+    /// follows it.
+    private let attachmentExtractor: AttachmentExtractor
 
     private var context: ModelContext { container.mainContext }
     /// The in-flight turn of each conversation, keyed by conversation
@@ -248,7 +252,8 @@ public final class ChatViewModel: ObservableObject {
         reasoningEnabledProvider: @escaping @MainActor () -> Bool? = { nil },
         onDaemonUnreachable: @escaping @MainActor () -> Void = {},
         onLiveTurnActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
-        maxToolRounds: Int = 1
+        maxToolRounds: Int = 1,
+        attachmentExtractor: @escaping AttachmentExtractor = ChatViewModel.extractAttachment
     ) {
         self.container = container
         self.chatClientProvider = chatClientProvider
@@ -258,6 +263,7 @@ public final class ChatViewModel: ObservableObject {
         self.onDaemonUnreachable = onDaemonUnreachable
         self.onLiveTurnActivityChanged = onLiveTurnActivityChanged
         self.maxToolRounds = maxToolRounds
+        self.attachmentExtractor = attachmentExtractor
         refreshConversations()
         retitlePlaceholderConversations()
         if let first = conversations.first {
@@ -340,47 +346,129 @@ public final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Attachments
+    //
+    // Extraction (PDFKit page walk, a docx unzip that waits on a child
+    // process, image decoding) runs OFF the main actor. `attach` is a
+    // main-actor method, so it used to do that work inline and a large
+    // file froze the whole app — composer, transcript and any streaming
+    // reply — for seconds. Now every file gets its card at once, marked
+    // extracting, the work runs detached one file at a time, and each
+    // card settles to ready (with a truncation note when the caps cut
+    // something) or to a visible failure. The card is the surface for
+    // attachment problems; the transcript's error card (and its Retry)
+    // is for replies.
 
-    private static let imageAttachmentExtensions: Set<String> = [
+    /// Everything extraction produces for one file, as a value that can
+    /// cross back to the main actor (the `ChatAttachment` model object
+    /// is built there).
+    public struct ExtractedAttachment: Sendable, Equatable {
+        public var filename: String
+        public var mimeType: String
+        public var sizeBytes: Int
+        public var extractedText: String
+        public var imageData: Data?
+        public var truncation: ExtractionTruncation?
+
+        public init(
+            filename: String,
+            mimeType: String,
+            sizeBytes: Int,
+            extractedText: String,
+            imageData: Data? = nil,
+            truncation: ExtractionTruncation? = nil
+        ) {
+            self.filename = filename
+            self.mimeType = mimeType
+            self.sizeBytes = sizeBytes
+            self.extractedText = extractedText
+            self.imageData = imageData
+            self.truncation = truncation
+        }
+    }
+
+    /// Where a pending attachment is in its life on the composer strip.
+    public enum AttachmentExtractionState: Equatable, Sendable {
+        case extracting
+        case ready(truncation: ExtractionTruncation?)
+        case failed(message: String)
+    }
+
+    public typealias AttachmentExtractor = @Sendable (URL) throws -> ExtractedAttachment
+
+    @Published public private(set) var attachmentStates: [UUID: AttachmentExtractionState] = [:]
+
+    public var isExtractingAttachments: Bool {
+        attachmentStates.values.contains(.extracting)
+    }
+
+    public func extractionState(for attachment: ChatAttachment) -> AttachmentExtractionState? {
+        attachmentStates[attachment.id]
+    }
+
+    nonisolated private static let imageAttachmentExtensions: Set<String> = [
         "png", "jpg", "jpeg", "webp",
     ]
-    private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
-    private static let imageAttachmentMaxDimension = 2048
+    nonisolated private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
+    nonisolated private static let imageAttachmentMaxDimension = 2048
 
     public func attach(_ urls: [URL]) async {
-        var added: [ChatAttachment] = []
+        // Every file gets its card immediately, so the strip shows the
+        // whole drop while the work is still running.
+        var queued: [(attachment: ChatAttachment, url: URL)] = []
         for url in urls {
-            if Self.imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
-                do {
-                    added.append(try Self.imageAttachment(from: url))
-                } catch {
-                    lastError = .unknown(error.localizedDescription)
-                }
+            let placeholder = ChatAttachment(
+                filename: url.lastPathComponent,
+                mimeType: FileExtractor.mimeType(for: url.pathExtension),
+                sizeBytes: 0,
+                extractedText: ""
+            )
+            pendingAttachments.append(placeholder)
+            attachmentStates[placeholder.id] = .extracting
+            queued.append((placeholder, url))
+        }
+
+        let extractor = attachmentExtractor
+        for (attachment, url) in queued {
+            // Detached, not a child task: a child would inherit this
+            // method's main-actor isolation and run on the main thread.
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result { try extractor(url) }
+            }.value
+            // Removed from the strip while extracting: nothing to update.
+            guard pendingAttachments.contains(where: { $0.id == attachment.id }) else {
+                attachmentStates[attachment.id] = nil
                 continue
             }
-            do {
-                let extracted = try FileExtractor.extract(from: url)
-                let attachment = ChatAttachment(
-                    filename: extracted.filename,
-                    mimeType: extracted.mimeType,
-                    sizeBytes: extracted.sizeBytes,
-                    extractedText: extracted.combinedText
-                )
-                added.append(attachment)
-            } catch let error as FileExtractorError {
-                let placeholder = ChatAttachment(
-                    filename: url.lastPathComponent,
-                    mimeType: FileExtractor.mimeType(for: url.pathExtension),
-                    sizeBytes: 0,
-                    extractedText: ""
-                )
-                lastError = .unknown(error.localizedDescription)
-                added.append(placeholder)
-            } catch {
-                lastError = .unknown(error.localizedDescription)
+            objectWillChange.send()
+            switch outcome {
+            case .success(let extracted):
+                attachment.filename = extracted.filename
+                attachment.mimeType = extracted.mimeType
+                attachment.sizeBytes = extracted.sizeBytes
+                attachment.extractedText = extracted.extractedText
+                attachment.imageData = extracted.imageData
+                attachmentStates[attachment.id] = .ready(truncation: extracted.truncation)
+            case .failure(let error):
+                attachmentStates[attachment.id] = .failed(message: error.localizedDescription)
             }
         }
-        pendingAttachments.append(contentsOf: added)
+    }
+
+    /// The production extractor: images decode (and downscale) to
+    /// `imageData`; everything else goes through `FileExtractor`, whose
+    /// caps report what they cut.
+    nonisolated public static func extractAttachment(from url: URL) throws -> ExtractedAttachment {
+        if imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
+            return try imageAttachment(from: url)
+        }
+        let extracted = try FileExtractor.extract(from: url)
+        return ExtractedAttachment(
+            filename: extracted.filename,
+            mimeType: extracted.mimeType,
+            sizeBytes: extracted.sizeBytes,
+            extractedText: extracted.combinedText,
+            truncation: extracted.truncation
+        )
     }
 
     public var hasSendablePendingAttachments: Bool {
@@ -394,6 +482,7 @@ public final class ChatViewModel: ObservableObject {
 
     public func removeAttachment(_ attachment: ChatAttachment) {
         pendingAttachments.removeAll { $0.id == attachment.id }
+        attachmentStates[attachment.id] = nil
     }
 
     // MARK: - Send / cancel
@@ -402,10 +491,17 @@ public final class ChatViewModel: ObservableObject {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || hasSendablePendingAttachments else { return }
         guard !isStreaming else { return }
+        // A file still extracting would otherwise be left behind on the
+        // strip and ride along with the NEXT message; the composer
+        // disables Send for the same reason.
+        guard !isExtractingAttachments else { return }
 
         let conversation = current ?? createNewConversation()
         let attachments = pendingAttachments.filter(Self.isSendableAttachment)
         pendingAttachments.removeAll(where: Self.isSendableAttachment)
+        for attachment in attachments {
+            attachmentStates[attachment.id] = nil
+        }
 
         let fencedAttachmentText = Self.buildAttachmentContext(attachments: attachments)
         let visibleUserContent = text
@@ -1704,16 +1800,30 @@ public final class ChatViewModel: ObservableObject {
             || !attachment.extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private static func imageAttachment(from url: URL) throws -> ChatAttachment {
-        let data = try Data(contentsOf: url)
+    nonisolated private static func imageAttachment(from url: URL) throws -> ExtractedAttachment {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw FileExtractorError.unreadable(
+                filename: url.lastPathComponent,
+                reason: error.localizedDescription
+            )
+        }
         guard data.count <= imageAttachmentMaxBytes else {
             throw FileExtractorError.unreadable(
                 filename: url.lastPathComponent,
                 reason: tr("image exceeds the 20MB attachment limit")
             )
         }
+        guard CGImageSourceCreateWithData(data as CFData, nil).map({ CGImageSourceGetCount($0) > 0 }) == true else {
+            throw FileExtractorError.unreadable(
+                filename: url.lastPathComponent,
+                reason: tr("not a readable image")
+            )
+        }
         let downscaled = downscaledImageData(data)
-        return ChatAttachment(
+        return ExtractedAttachment(
             filename: url.lastPathComponent,
             mimeType: downscaled != nil
                 ? "image/png"
@@ -1726,7 +1836,7 @@ public final class ChatViewModel: ObservableObject {
 
     /// Returns PNG bytes capped at the max dimension, or nil when the
     /// original already fits (keep the original bytes and format).
-    private static func downscaledImageData(_ data: Data) -> Data? {
+    nonisolated private static func downscaledImageData(_ data: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any]

@@ -526,6 +526,8 @@
 "External Client" = "外部客户端";
 "External terminal client launched by MTPLX." = "由 MTPLX 启动的外部终端客户端。";
 "Extract MTP weights" = "提取 MTP 权重";
+"Extracting attachments…" = "正在提取附件…";
+"Extracting…" = "正在提取…";
 "Failed to start AIME run: %@" = "无法启动 AIME 运行：%@";
 "Failed: %@" = "失败：%@";
 "FAN" = "风扇";
@@ -900,6 +902,7 @@
 "no work yet" = "尚无工作";
 "Non-localhost host: an API key is required." = "非本地主机：需要 API 密钥。";
 "none loaded" = "未加载任何内容";
+"not a readable image" = "不是可读取的图片";
 "not loaded — loads on first request" = "未加载 — 将在首次请求时加载";
 "Not running." = "未在运行。";
 "Not solved yet" = "尚未解决";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "总验证时间（秒）：%@";
 "TPS" = "TPS";
 "Transcript" = "对话记录";
+"Truncated to %@ of %@ characters" = "仅保留前 %@ 个字符（共 %@ 个）";
+"Truncated to %lld of %lld pages" = "仅保留前 %lld 页（共 %lld 页）";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "调优 %@？";

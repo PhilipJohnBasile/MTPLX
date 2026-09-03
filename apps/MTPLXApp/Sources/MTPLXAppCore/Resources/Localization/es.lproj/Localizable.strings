@@ -524,6 +524,8 @@
 "External Client" = "Cliente externo";
 "External terminal client launched by MTPLX." = "Cliente de terminal externo lanzado por MTPLX.";
 "Extract MTP weights" = "Extraer pesos MTP";
+"Extracting attachments…" = "Extrayendo archivos adjuntos…";
+"Extracting…" = "Extrayendo…";
 "Failed to start AIME run: %@" = "No se pudo iniciar la ejecución de AIME: %@";
 "Failed: %@" = "Error: %@";
 "FAN" = "VENTILADOR";
@@ -894,6 +896,7 @@
 "no work yet" = "sin trabajo aún";
 "Non-localhost host: an API key is required." = "Host distinto de localhost: se requiere una clave de API.";
 "none loaded" = "ninguno cargado";
+"not a readable image" = "no es una imagen legible";
 "not loaded — loads on first request" = "no cargado: se carga en la primera solicitud";
 "Not running." = "No está en ejecución.";
 "Not solved yet" = "Aún sin resolver";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "verify_time_s total: %@";
 "TPS" = "TPS";
 "Transcript" = "Transcripción";
+"Truncated to %@ of %@ characters" = "Recortado a %@ de %@ caracteres";
+"Truncated to %lld of %lld pages" = "Recortado a %lld de %lld páginas";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "¿Ajustar %@?";

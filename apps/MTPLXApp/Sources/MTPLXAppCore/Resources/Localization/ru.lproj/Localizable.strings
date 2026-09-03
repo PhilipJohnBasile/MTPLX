@@ -524,6 +524,8 @@
 "External Client" = "Внешний клиент";
 "External terminal client launched by MTPLX." = "Внешний терминальный клиент, запущенный MTPLX.";
 "Extract MTP weights" = "Извлечь веса MTP";
+"Extracting attachments…" = "Извлечение вложений…";
+"Extracting…" = "Извлечение…";
 "Failed to start AIME run: %@" = "Не удалось запустить прогон AIME: %@";
 "Failed: %@" = "Ошибка: %@";
 "FAN" = "ВЕНТИЛЯТОР";
@@ -900,6 +902,7 @@
 "no work yet" = "пока нет работы";
 "Non-localhost host: an API key is required." = "Хост не localhost: требуется ключ API.";
 "none loaded" = "ничего не загружено";
+"not a readable image" = "изображение не читается";
 "not loaded — loads on first request" = "не загружено — загружается при первом запросе";
 "Not running." = "Не запущено.";
 "Not solved yet" = "Ещё не решено";
@@ -1413,6 +1416,8 @@
 "Total verify_time_s: %@" = "Общее verify_time_s: %@";
 "TPS" = "TPS";
 "Transcript" = "Стенограмма";
+"Truncated to %@ of %@ characters" = "Оставлено %@ из %@ символов";
+"Truncated to %lld of %lld pages" = "Оставлено %lld из %lld страниц";
 "TTFT" = "TTFT";
 "TTFT %@" = "TTFT %@";
 "Tune %@?" = "Выполнить автонастройку %@?";
