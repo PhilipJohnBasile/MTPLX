@@ -122,7 +122,7 @@ public struct ModelDownloader: Sendable {
                     ))
                 }
                 continuation.yield(.status(
-                    message: "MTPLX runtime ready",
+                    message: tr("MTPLX runtime ready"),
                     bytesOnDisk: Self.recursiveSize(of: destination),
                     totalBytes: totalBytes,
                     path: destination.path
@@ -195,7 +195,7 @@ public struct ModelDownloader: Sendable {
                 return
             }
             continuation.yield(.status(
-                message: "Resolving files",
+                message: tr("Resolving files"),
                 bytesOnDisk: Self.recursiveSize(of: destination),
                 totalBytes: totalBytes,
                 path: destination.path
@@ -322,10 +322,10 @@ public struct ModelDownloader: Sendable {
 
         switch event {
         case "resolving":
-            return [.status(message: "Resolving files", bytesOnDisk: bytes, totalBytes: total, path: path)]
+            return [.status(message: tr("Resolving files"), bytesOnDisk: bytes, totalBytes: total, path: path)]
         case "start", "resume":
             return [
-                .status(message: "Downloading", bytesOnDisk: bytes ?? 0, totalBytes: total, path: path),
+                .status(message: tr("Downloading"), bytesOnDisk: bytes ?? 0, totalBytes: total, path: path),
             ]
         case "progress":
             let rate = double(payload["rate_bps"]) ?? 0
@@ -350,7 +350,7 @@ public struct ModelDownloader: Sendable {
             }
             return events
         case "verifying":
-            return [.status(message: "Verifying model files", bytesOnDisk: bytes, totalBytes: total, path: path)]
+            return [.status(message: tr("Verifying model files"), bytesOnDisk: bytes, totalBytes: total, path: path)]
         case "complete":
             state.markTerminal()
             return [.complete(bytesOnDisk: bytes ?? Self.recursiveSize(of: destination), path: path)]
@@ -363,14 +363,14 @@ public struct ModelDownloader: Sendable {
             let message = (payload["message"] as? String)
                 ?? (payload["detail"] as? String)
                 ?? (payload["error"] as? String)
-                ?? "Download failed."
+                ?? tr("Download failed.")
             return [.failed(exitCode: nil, stderrTail: message)]
         case "failed", "error":
             state.markTerminal()
             let message = (payload["message"] as? String)
                 ?? (payload["detail"] as? String)
                 ?? (payload["error"] as? String)
-                ?? "Download failed."
+                ?? tr("Download failed.")
             return [.failed(exitCode: nil, stderrTail: message)]
         case "cancelled", "interrupted":
             state.markTerminal()

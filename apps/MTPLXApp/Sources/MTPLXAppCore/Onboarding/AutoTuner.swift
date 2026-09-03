@@ -269,7 +269,7 @@ public struct AutoTuner: Sendable {
                     // ramp. The CLI tune now degrades to auto fans on
                     // its own; surface the state and keep going.
                     continuation.yield(.installingFanControl(
-                        "Fan control unavailable; tuning with fans on auto"
+                        tr("Fan control unavailable; tuning with fans on auto")
                     ))
                 }
 
@@ -416,7 +416,7 @@ public struct AutoTuner: Sendable {
         if !trimmedStderr.isEmpty { return trimmedStderr }
         let trimmedStdout = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedStdout.isEmpty { return trimmedStdout }
-        return "Tuning failed before MTPLX could write results."
+        return tr("Tuning failed before MTPLX could write results.")
     }
 
     private static func candidateFailureMessage(tunePath: URL) -> String? {

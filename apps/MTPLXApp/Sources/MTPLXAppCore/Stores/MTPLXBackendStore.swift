@@ -80,11 +80,11 @@ public enum BenchmarkDaemonReadinessError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelDownloadRequired(let model):
-            return "Download \(model) before running the benchmark."
+            return tr("Download %@ before running the benchmark.", model)
         case .startupFailed(let reason):
-            return "Couldn't start MTPLX for the benchmark: \(reason)"
+            return tr("Couldn't start MTPLX for the benchmark: %@", reason)
         case .unreachable(let url):
-            return "Can't reach MTPLX at \(url.absoluteString)."
+            return tr("Can't reach MTPLX at %@.", url.absoluteString)
         }
     }
 }
@@ -102,19 +102,19 @@ public struct ClientHandoffNotice: Equatable, Sendable {
 
         switch result.action {
         case .unavailable:
-            status = "Needs OpenCode Desktop"
-            detail = "MTPLX is running, but OpenCode Desktop was not found at /Applications/OpenCode.app."
+            status = tr("Needs OpenCode Desktop")
+            detail = tr("MTPLX is running, but OpenCode Desktop was not found at /Applications/OpenCode.app.")
             isWarning = true
         case .opened:
-            status = "OpenCode opened"
+            status = tr("OpenCode opened")
             detail = result.detail
             isWarning = false
         case .relaunched:
-            status = "OpenCode reloaded"
+            status = tr("OpenCode reloaded")
             detail = result.detail
             isWarning = false
         case .focused:
-            status = "OpenCode focused"
+            status = tr("OpenCode focused")
             detail = result.detail
             isWarning = false
         }
@@ -133,10 +133,10 @@ public struct ClientHandoffNotice: Equatable, Sendable {
         }
         let detail = result.action == .unavailable
             ? result.detail
-            : "MTPLX opened Terminal, but no Pi agent process was detected. Install Pi, then pick Pi again."
+            : tr("MTPLX opened Terminal, but no Pi agent process was detected. Install Pi, then pick Pi again.")
         return ClientHandoffNotice(
             target: .pi,
-            status: result.action == .unavailable ? "Pi handoff unavailable" : "Pi not detected",
+            status: result.action == .unavailable ? tr("Pi handoff unavailable") : tr("Pi not detected"),
             detail: detail,
             isWarning: true
         )
@@ -888,11 +888,11 @@ public final class MTPLXBackendStore: ObservableObject {
                 await supervisor.terminateExternalDaemon(rootPID: pid_t(stalePID))
                 return
             }
-            occupantDescription = "an MTPLX server started outside the app"
+            occupantDescription = tr("an MTPLX server started outside the app")
         case .unauthorized:
-            occupantDescription = "a server requiring a different API key"
+            occupantDescription = tr("a server requiring a different API key")
         case .foreign:
-            occupantDescription = "another app"
+            occupantDescription = tr("another app")
         }
         let occupiedPort = configuration.port
         guard
@@ -909,7 +909,7 @@ public final class MTPLXBackendStore: ObservableObject {
         configuration = next
         try? settingsStore.save(next)
         portFallbackNotice =
-            "Port \(occupiedPort) was in use by \(occupantDescription). MTPLX now uses port \(freePort)."
+            tr("Port %@ was in use by %@. MTPLX now uses port %@.", String(occupiedPort), occupantDescription, String(freePort))
         await supervisor.logs.append(
             "port preflight: \(occupiedPort) occupied by \(occupantDescription); switched to \(freePort)",
             stream: .system
@@ -960,7 +960,7 @@ public final class MTPLXBackendStore: ObservableObject {
             configuration = next
             try? settingsStore.save(next)
             portFallbackNotice =
-                "Port \(occupiedPort) was busy. MTPLX now uses port \(freePort)."
+                tr("Port %@ was busy. MTPLX now uses port %@.", String(occupiedPort), String(freePort))
             await supervisor.logs.append(
                 "launch hit a port conflict on \(occupiedPort) the probe could not see; switched to \(freePort)",
                 stream: .system
@@ -1002,13 +1002,9 @@ public final class MTPLXBackendStore: ObservableObject {
     nonisolated static func humanizedStartFailure(_ error: Error, port: Int) -> String {
         if case DaemonSupervisorError.portOccupied(_, let launchID) = error {
             if launchID != nil {
-                return "Port \(port) is running another MTPLX server. "
-                    + "Stop it where it was started, or run `mtplx stop --port \(port)` "
-                    + "in Terminal, then press Play."
+                return tr("Port %@ is running another MTPLX server. Stop it where it was started, or run `mtplx stop --port %@` in Terminal, then press Play.", String(port), String(port))
             }
-            return "Port \(port) is held by an MTPLX server started outside the app. "
-                + "Press Ctrl-C in its terminal or run `mtplx stop --port \(port)`, "
-                + "then press Play."
+            return tr("Port %@ is held by an MTPLX server started outside the app. Press Ctrl-C in its terminal or run `mtplx stop --port %@`, then press Play.", String(port), String(port))
         }
         return String(describing: error)
     }
@@ -1270,7 +1266,7 @@ public final class MTPLXBackendStore: ObservableObject {
     public func updateModelPack(_ update: ModelUpdateInfo) {
         guard modelPackUpdatingRepoID == nil else { return }
         modelPackUpdatingRepoID = update.repoID
-        modelPackUpdateStatus = "Preparing…"
+        modelPackUpdateStatus = tr("Preparing…")
         let downloader = modelDownloader
         let startedBytes = update.path.map {
             Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
@@ -1295,16 +1291,16 @@ public final class MTPLXBackendStore: ObservableObject {
                     if let startedBytes, let total = update.updateBytes, total > 0 {
                         let done = max(0, bytesOnDisk - startedBytes)
                         let pct = min(100, Int((Double(done) / Double(total)) * 100))
-                        line = "\(pct)% · " + line
+                        line = tr("%lld%% · %@", pct, line)
                     }
                     self.modelPackUpdateStatus = line
                 case .stalled(let seconds):
-                    self.modelPackUpdateStatus = "Stalled for \(seconds)s — still trying"
+                    self.modelPackUpdateStatus = tr("Stalled for %llds — still trying", Int(seconds))
                 case .complete:
                     completed = true
                 case .failed(_, let stderrTail):
                     let tail = stderrTail.split(separator: "\n").last.map(String.init)
-                    self.modelPackUpdateStatus = tail ?? "Update failed"
+                    self.modelPackUpdateStatus = tail ?? tr("Update failed")
                 case .cancelled:
                     self.modelPackUpdateStatus = nil
                 }
@@ -1464,7 +1460,7 @@ public final class MTPLXBackendStore: ObservableObject {
             snapshot.bytesPerSecond = 0
             snapshot.etaSeconds = nil
             snapshot.stalledSeconds = 0
-            snapshot.statusMessage = "Paused"
+            snapshot.statusMessage = tr("Paused")
             modelDownloadProgress = snapshot
         }
     }
@@ -1598,7 +1594,7 @@ public final class MTPLXBackendStore: ObservableObject {
             guard isCurrent?() ?? true else { throw error }
             if markUnreachableOnTransportFailure {
                 markDaemonUnreachableIfNeeded(
-                    reason: "MTPLX lost contact with the model server. Start it again."
+                    reason: tr("MTPLX lost contact with the model server. Start it again.")
                 )
             }
             throw error
@@ -1612,7 +1608,7 @@ public final class MTPLXBackendStore: ObservableObject {
             throw MTPLXAPIClientError.invalidResponse
         } catch {
             markDaemonUnreachableIfNeeded(
-                reason: "MTPLX lost contact with live metrics. Start it again."
+                reason: tr("MTPLX lost contact with live metrics. Start it again.")
             )
             throw error
         }
@@ -2169,9 +2165,9 @@ public final class MTPLXBackendStore: ObservableObject {
                 lifecycleEpoch: snapshot.lifecycleEpoch,
                 terminalState: .crashed(status),
                 terminalStartupPhase: .failed(
-                    "MTPLX crashed repeatedly; automatic recovery stopped after \(attempts) attempts."
+                    tr("MTPLX crashed repeatedly; automatic recovery stopped after %lld attempts.", attempts)
                 ),
-                terminalConnectionState: .failed("Automatic restart circuit breaker is open.")
+                terminalConnectionState: .failed(tr("Automatic restart circuit breaker is open."))
             )
         case .idle:
             // Normal startup phases remain owned by the explicit start path.
@@ -2485,7 +2481,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 guard consecutiveMisses >= 2 else { continue }
                 guard self.daemonTransportGeneration == watchdogTransportGeneration else { return }
                 self.markDaemonUnreachableIfNeeded(
-                    reason: "MTPLX lost contact with the model server. Start it again."
+                    reason: tr("MTPLX lost contact with the model server. Start it again.")
                 )
                 return
             }
@@ -2632,7 +2628,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 snapshot.stalledSeconds = seconds
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
-                snapshot.statusMessage = "Waiting on Hugging Face"
+                snapshot.statusMessage = tr("Waiting on Hugging Face")
                 modelDownloadProgress = snapshot
             }
         case .complete(let bytes, let path):
@@ -2647,7 +2643,7 @@ public final class MTPLXBackendStore: ObservableObject {
                     isComplete: false,
                     statusMessage: "Incomplete"
                 )
-                modelDownloadFailure = "Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download."
+                modelDownloadFailure = tr("Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download.")
                 isModelDownloading = false
                 modelDownloadTask = nil
                 return
@@ -2690,7 +2686,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
                 snapshot.stalledSeconds = 0
-                snapshot.statusMessage = "Paused"
+                snapshot.statusMessage = tr("Paused")
                 modelDownloadProgress = snapshot
             }
         }
@@ -2701,7 +2697,7 @@ public final class MTPLXBackendStore: ObservableObject {
         modelTuneTask?.cancel()
         modelTuneFailure = nil
         modelTuneResult = nil
-        modelTuneStatusMessage = "Preparing max fans and loading model"
+        modelTuneStatusMessage = tr("Preparing max fans and loading model")
         modelTuneCandidatesLanded = [:]
         isModelTuning = true
         let tuner = autoTuner
@@ -2755,12 +2751,12 @@ public final class MTPLXBackendStore: ObservableObject {
         case .installingFanControl(let message):
             modelTuneStatusMessage = message
         case .started:
-            modelTuneStatusMessage = "Preparing max fans and loading model"
+            modelTuneStatusMessage = tr("Preparing max fans and loading model")
         case .candidateLanded(let result):
             modelTuneStatusMessage = nil
             modelTuneCandidatesLanded[result.candidate] = result
         case .completed(let result):
-            modelTuneStatusMessage = "Saved"
+            modelTuneStatusMessage = tr("Saved")
             modelTuneResult = result
             for entry in result.allCandidates {
                 modelTuneCandidatesLanded[entry.candidate] = entry
@@ -2779,7 +2775,7 @@ public final class MTPLXBackendStore: ObservableObject {
             }
         case .failed(_, let stderrTail):
             modelTuneStatusMessage = nil
-            modelTuneFailure = stderrTail.isEmpty ? "Tuning failed." : stderrTail
+            modelTuneFailure = stderrTail.isEmpty ? tr("Tuning failed.") : stderrTail
             isModelTuning = false
             modelTuneTask = nil
         case .cancelled:
@@ -2897,20 +2893,18 @@ public final class MTPLXBackendStore: ObservableObject {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.contains("401") || lower.contains("403") || lower.contains("gated") || lower.contains("private") {
-            return "This Hugging Face repo is private or gated. Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN, then try again."
+            return tr("This Hugging Face repo is private or gated. Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN, then try again.")
         }
         if lower.contains("no space left") || lower.contains("not enough free disk") {
-            return "There is not enough free disk space to finish this download."
+            return tr("There is not enough free disk space to finish this download.")
         }
         if lower.contains("timed out") || lower.contains("network") || lower.contains("connection") {
             if MTPLXAppConfiguration.hfMirrorEnvironment(configuration.hfEndpoint) == nil {
-                return "The download could not reach Hugging Face. Check the network connection and try again. "
-                    + "If huggingface.co is blocked on your network, set an HF download mirror in "
-                    + "Settings under Advanced, for example https://hf-mirror.com."
+                return tr("The download could not reach Hugging Face. Check the network connection and try again. If huggingface.co is blocked on your network, set an HF download mirror in Settings under Advanced, for example https://hf-mirror.com.")
             }
-            return "The download could not reach Hugging Face. Check the network connection and try again."
+            return tr("The download could not reach Hugging Face. Check the network connection and try again.")
         }
-        return trimmed.isEmpty ? "Download failed. Try again." : trimmed
+        return trimmed.isEmpty ? tr("Download failed. Try again.") : trimmed
     }
 
     private func fanMode(for configuration: MTPLXAppConfiguration) -> MTPLXFanMode {

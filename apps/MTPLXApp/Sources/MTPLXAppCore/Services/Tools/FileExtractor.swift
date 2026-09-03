@@ -52,9 +52,9 @@ public enum FileExtractorError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .unreadable(let name, let reason):
-            return "Could not read \(name): \(reason)"
+            return tr("Could not read %@: %@", name, reason)
         case .unsupported(let name, let ext):
-            return "Unsupported file type for \(name): .\(ext)"
+            return tr("Unsupported file type for %@: .%@", name, ext)
         }
     }
 }

@@ -10,21 +10,21 @@ public enum MTPLXRuntimeBootstrapperError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .homebrewNotFound:
-            return "Homebrew was not found, so MTPLX could not install its command-line runtime automatically. Install Homebrew from brew.sh, then press Retry."
+            return tr("Homebrew was not found, so MTPLX could not install its command-line runtime automatically. Install Homebrew from brew.sh, then press Retry.")
         case .pythonNotFound:
-            return "Python 3.11 or newer was not found, so MTPLX could not prepare its command-line runtime. Install Homebrew from brew.sh, then press Retry."
+            return tr("Python 3.11 or newer was not found, so MTPLX could not prepare its command-line runtime. Install Homebrew from brew.sh, then press Retry.")
         case .commandFailed(let command, let exitCode, let output):
             let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if detail.isEmpty {
-                return "\(command) failed with exit code \(exitCode)."
+                return tr("%@ failed with exit code %@.", command, String(exitCode))
             }
-            return "\(command) failed with exit code \(exitCode): \(detail)"
+            return tr("%@ failed with exit code %@: %@", command, String(exitCode), detail)
         case .runtimeStillMissing(let output):
             let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if detail.isEmpty {
-                return "Homebrew finished, but MTPLX still was not available on PATH."
+                return tr("Homebrew finished, but MTPLX still was not available on PATH.")
             }
-            return "Homebrew finished, but MTPLX still was not available on PATH: \(detail)"
+            return tr("Homebrew finished, but MTPLX still was not available on PATH: %@", detail)
         }
     }
 }

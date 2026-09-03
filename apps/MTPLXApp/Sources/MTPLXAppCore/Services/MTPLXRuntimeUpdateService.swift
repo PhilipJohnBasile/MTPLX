@@ -89,12 +89,12 @@ public enum MTPLXRuntimeInstallKind: String, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .appOwned: return "App-managed"
-        case .homebrew: return "Homebrew"
-        case .sourceCheckout: return "Source checkout"
-        case .pipLike: return "Python"
-        case .custom: return "Custom"
-        case .missing: return "Missing"
+        case .appOwned: return tr("App-managed")
+        case .homebrew: return tr("Homebrew")
+        case .sourceCheckout: return tr("Source checkout")
+        case .pipLike: return tr("Python")
+        case .custom: return tr("Custom")
+        case .missing: return tr("Missing")
         }
     }
 }
@@ -139,9 +139,9 @@ public enum MTPLXRuntimeUpdateError: Error, LocalizedError, Equatable, Sendable 
     public var errorDescription: String? {
         switch self {
         case .manualUpdateRequired(let command):
-            return "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: \(command)"
+            return tr("This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@", command)
         case .homebrewRequired:
-            return "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry."
+            return tr("MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry.")
         }
     }
 }
@@ -262,7 +262,7 @@ public struct MTPLXRuntimeUpdateService: Sendable {
                 minimumCLIVersion: manifest?.minimumCLIVersion,
                 recommendedCLIVersion: manifest?.recommendedCLIVersion,
                 action: action,
-                title: "Runtime missing",
+                title: tr("Runtime missing"),
                 detail: wheelAvailable
                     ? "MTPLX can install its bundled runtime automatically."
                     : (brewAvailable
@@ -408,13 +408,13 @@ public struct MTPLXRuntimeUpdateService: Sendable {
 
     private static func title(for action: MTPLXRuntimeUpdateAction) -> String {
         switch action {
-        case .useExisting: return "Runtime ready"
-        case .installHomebrew: return "Install runtime"
-        case .updateBundledRequired: return "Runtime update required"
-        case .updateHomebrewRequired: return "Runtime update required"
-        case .updateHomebrewRecommended: return "Runtime update available"
-        case .manualUpdateRequired: return "Manual runtime update required"
-        case .homebrewRequired: return "Homebrew required"
+        case .useExisting: return tr("Runtime ready")
+        case .installHomebrew: return tr("Install runtime")
+        case .updateBundledRequired: return tr("Runtime update required")
+        case .updateHomebrewRequired: return tr("Runtime update required")
+        case .updateHomebrewRecommended: return tr("Runtime update available")
+        case .manualUpdateRequired: return tr("Manual runtime update required")
+        case .homebrewRequired: return tr("Homebrew required")
         }
     }
 
@@ -426,21 +426,21 @@ public struct MTPLXRuntimeUpdateService: Sendable {
         switch action {
         case .useExisting:
             if manifest == nil {
-                return "Couldn't check the latest release, but the installed runtime is usable."
+                return tr("Couldn't check the latest release, but the installed runtime is usable.")
             }
-            return "App and runtime are compatible."
+            return tr("App and runtime are compatible.")
         case .installHomebrew:
-            return "MTPLX can install the command-line runtime with Homebrew."
+            return tr("MTPLX can install the command-line runtime with Homebrew.")
         case .updateBundledRequired:
-            return "MTPLX reinstalls its app-managed runtime from the bundled wheel automatically."
+            return tr("MTPLX reinstalls its app-managed runtime from the bundled wheel automatically.")
         case .updateHomebrewRequired:
-            return "The installed Homebrew runtime is below the compatibility floor."
+            return tr("The installed Homebrew runtime is below the compatibility floor.")
         case .updateHomebrewRecommended:
-            return "A newer Homebrew runtime is available."
+            return tr("A newer Homebrew runtime is available.")
         case .manualUpdateRequired(let command):
-            return "\(kind.displayName) runtime needs a manual update: \(command)"
+            return tr("%@ runtime needs a manual update: %@", kind.displayName, command)
         case .homebrewRequired:
-            return "Install Homebrew from brew.sh, then press Retry."
+            return tr("Install Homebrew from brew.sh, then press Retry.")
         }
     }
 

@@ -272,7 +272,7 @@ public struct OpenCodeIntegration: Sendable {
                 wasRunning: false,
                 didTerminateExistingInstance: false,
                 didOpen: false,
-                detail: "OpenCode.app not found at \(desktopApplicationURL.path)"
+                detail: tr("OpenCode.app not found at %@", desktopApplicationURL.path)
             )
         }
         guard isCurrent?() ?? true else { return staleDesktopHandoffResult() }
@@ -352,7 +352,7 @@ public struct OpenCodeIntegration: Sendable {
             wasRunning: false,
             didTerminateExistingInstance: false,
             didOpen: false,
-            detail: "AppKit is unavailable"
+            detail: tr("AppKit is unavailable")
         )
         #endif
     }
@@ -365,7 +365,7 @@ public struct OpenCodeIntegration: Sendable {
             wasRunning: false,
             didTerminateExistingInstance: false,
             didOpen: false,
-            detail: "OpenCode handoff cancelled because the daemon lifecycle changed.",
+            detail: tr("OpenCode handoff cancelled because the daemon lifecycle changed."),
             launchedProcessID: launchedDesktopIdentity?.processID,
             launchedDesktopIdentity: launchedDesktopIdentity
         )
