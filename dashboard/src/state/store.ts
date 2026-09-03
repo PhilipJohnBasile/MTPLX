@@ -38,6 +38,9 @@ export type DashboardStore = {
   contextWindow: number | null;
   machine: MachineInfo | null;
   uptimeS: number;
+  // Decode speed of the request generating right now, fed by progress
+  // events. null whenever nothing is in flight: a finished request's speed
+  // lives in `latest`, and must never be shown as current.
   liveTokS: number | null;
   liveProgressByRequest: Record<string, BusEvent>;
   // request_id -> active prefill state; entries removed on `completed`.
@@ -138,13 +141,14 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         };
       }
     });
-    set({
+    const inFlight = snapshot.in_flight ?? [];
+    set((state) => ({
       snapshot,
       latest: snapshot.latest,
       recent: snapshot.recent ?? [],
       rolling: snapshot.rolling,
       lifetime: snapshot.lifetime,
-      inFlight: snapshot.in_flight ?? [],
+      inFlight,
       sessionBank: snapshot.session_bank ?? null,
       sessions: snapshot.sessions ?? null,
       mem: snapshot.mem,
@@ -157,10 +161,12 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
       machine: snapshot.machine,
       uptimeS: snapshot.uptime_s,
       activePrefillByRequest,
-      liveTokS:
-        typeof snapshot.latest?.decode_tok_s === "number" ? snapshot.latest.decode_tok_s : null,
+      // A snapshot's `latest` is the last completed request, never the one
+      // decoding now; only progress events carry a current speed. Idle
+      // server, no live reading.
+      liveTokS: inFlight.length > 0 ? state.liveTokS : null,
       lastSnapshotAtMs: Date.now(),
-    });
+    }));
   },
 
   applyEvent: (event) => {
@@ -178,10 +184,12 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         break;
       }
       case "completed": {
-        const tokS = event.envelope?.decode_tok_s;
+        // The request is over: its speed now lives in `latest`, so the live
+        // reading clears. Generation is serialized; if another request is
+        // decoding, its next progress event restores the reading.
         set((state) => ({
           latest: event.envelope ?? state.latest,
-          liveTokS: typeof tokS === "number" && tokS > 0 ? tokS : state.liveTokS,
+          liveTokS: null,
         }));
         break;
       }
