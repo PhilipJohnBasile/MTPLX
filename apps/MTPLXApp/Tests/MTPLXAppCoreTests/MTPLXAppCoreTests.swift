@@ -6911,10 +6911,17 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleMessages.count, 1)
         XCTAssertEqual(viewModel.visibleMessages.last?.role, .user)
 
+        // Wait for the code line to reach the REVEALED document, not the
+        // arrival buffer: `streamingContent` concatenates the unrevealed
+        // buffer, and since the typewriter paces reveal over wall-clock
+        // arrival (2026-09-02) the buffer holds the whole chunk while the
+        // document is still one partial line. The old whole-chunk paste is
+        // exactly the burst the pacer removed.
         let streamingDeadline = Date().addingTimeInterval(5)
         var sawLiveCode = false
         while Date() < streamingDeadline {
-            if viewModel.isStreaming, viewModel.streamingContent.contains("print('ok')") {
+            if viewModel.isStreaming,
+               viewModel.streamingContentDocument.rawText.contains("print('ok')") {
                 sawLiveCode = true
                 break
             }
@@ -6928,6 +6935,8 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(viewModel.shouldRenderStreamingAssistant)
         XCTAssertFalse(viewModel.streamingReasoningDocument.isEmpty)
         XCTAssertFalse(viewModel.streamingContentDocument.isEmpty)
+        // "```python" is a finalized line block and print('ok') is at least
+        // the live tail, so the document holds two or more line blocks.
         XCTAssertGreaterThanOrEqual(viewModel.streamingContentDocument.blocks.count, 2)
         XCTAssertFalse(viewModel.streamingContentDocument.blocks.contains { block in
             if case .codeFence = block.kind {
