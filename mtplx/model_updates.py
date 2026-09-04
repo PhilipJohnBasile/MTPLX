@@ -31,6 +31,7 @@ from typing import Any
 
 from mtplx.hf_loader import (
     _query_repo_snapshot,
+    cached_model_is_complete,
     cached_model_path,
     model_cache_dir,
     pull_model,
@@ -44,6 +45,13 @@ DEFAULT_MANIFEST_URL = "https://mtplx.com/releases/models.json"
 MANIFEST_URL_ENV = "MTPLX_MODELS_MANIFEST_URL"
 MANIFEST_TIMEOUT_S = 5.0
 MANIFEST_SCHEMA = 1
+
+# A size-identical file whose blob changed is set aside under this suffix
+# (same directory, one atomic rename) while the pull fetches its replacement,
+# and removed only once the pull has finished and the pack is complete. An
+# interrupted update renames it back, so the installed pack never loses a
+# file it had.
+STALE_SUFFIX = ".stale"
 
 STATE_CURRENT = "current"
 STATE_UPDATE_AVAILABLE = "update-available"
@@ -336,8 +344,11 @@ def update_cached_model(
     """Sync one cached pack to its published revision via the pull path.
 
     Rides the ordinary delta download (size-identical files are skipped).
-    Size-identical files whose blob changed are unlinked first so the delta
-    stays exact even when a re-published file keeps its byte length.
+    Size-identical files whose blob changed are set aside as ``<name>.stale``
+    first so the delta stays exact even when a re-published file keeps its
+    byte length; the copies are removed only after the pull returned and the
+    pack verifies complete, and renamed back if anything goes wrong, so the
+    working install never loses a file before its replacement has landed.
     """
 
     repo_id = repo_id_from_model_ref(model_ref) or model_ref
@@ -357,9 +368,15 @@ def update_cached_model(
 
     cache_root = model_cache_dir(cache_dir).expanduser().resolve()
     if destination_path is not None:
-        destination = Path(destination_path).expanduser().absolute()
-        if destination.parent.resolve() != cache_root:
-            raise ValueError(f"update path must be a direct child of {cache_root}")
+        # Resolve the destination itself, not just its parent: files are
+        # renamed and removed inside it, so a symlink planted in the cache
+        # must not carry that work to wherever it points.
+        destination = Path(destination_path).expanduser().resolve()
+        if destination.parent != cache_root:
+            raise ValueError(
+                f"update path must be a directory directly inside {cache_root} "
+                f"(resolved to {destination})"
+            )
         if not destination.is_dir():
             raise FileNotFoundError(f"installed model path does not exist: {destination}")
         installed_repo = _cached_pack_repo_id(destination)
@@ -379,7 +396,10 @@ def update_cached_model(
             bare = cache_root / safe_model_name(repo_id).split("--")[-1]
             if bare.exists():
                 destination = bare
+    if destination.exists():
+        _recover_stale_copies(destination)
     marker = read_source_marker(destination) if destination.exists() else None
+    staged: list[tuple[Path, Path]] = []
     if destination.exists() and isinstance((marker or {}).get("files"), dict):
         remote_sha, remote_files = _query_repo_snapshot(repo_id, revision=target_revision)
         if remote_files:
@@ -395,18 +415,60 @@ def update_cached_model(
                     and isinstance(local_entry, dict)
                     and local_entry.get("size") == remote_entry.get("size")
                 ):
-                    stale.unlink()
+                    aside = stale.with_name(stale.name + STALE_SUFFIX)
+                    os.replace(stale, aside)
+                    staged.append((stale, aside))
 
-    return pull_model(
-        repo_id,
-        cache_dir=cache_dir,
-        revision=target_revision,
-        progress_callback=progress_callback,
-        progress_interval_s=progress_interval_s,
-        force_sync=True,
-        # The resolved dir (bare legacy layouts included) — otherwise
-        # pull_model recomputes the canonical owner--name path and a
-        # bare-layout pack gets a full re-download into a duplicate dir
-        # instead of a delta into the pack it was asked to update.
-        destination=destination if destination.exists() else None,
-    )
+    try:
+        result = pull_model(
+            repo_id,
+            cache_dir=cache_dir,
+            revision=target_revision,
+            progress_callback=progress_callback,
+            progress_interval_s=progress_interval_s,
+            force_sync=True,
+            # The resolved dir (bare legacy layouts included) — otherwise
+            # pull_model recomputes the canonical owner--name path and a
+            # bare-layout pack gets a full re-download into a duplicate dir
+            # instead of a delta into the pack it was asked to update.
+            destination=destination if destination.exists() else None,
+        )
+    except BaseException:
+        # Ctrl-C, a dropped connection, a full disk: put the files back so
+        # the installed pack is exactly what it was before the update.
+        _restore_stale_copies(staged)
+        raise
+    if staged:
+        if not cached_model_is_complete(destination):
+            _restore_stale_copies(staged)
+            raise RuntimeError(
+                f"{repo_id}: the update did not produce a complete model; "
+                "the previously installed files were restored"
+            )
+        for _original, aside in staged:
+            aside.unlink(missing_ok=True)
+    return result
+
+
+def _restore_stale_copies(staged: list[tuple[Path, Path]]) -> None:
+    for original, aside in staged:
+        if aside.exists():
+            os.replace(aside, original)
+
+
+def _recover_stale_copies(destination: Path) -> None:
+    """Undo the staging of an update that was killed before it could roll back.
+
+    A ``<name>.stale`` whose original is missing is that original (the kill
+    landed before the pull refetched it): rename it back. One whose original
+    is present again is superseded: remove it.
+    """
+
+    for aside in destination.rglob(f"*{STALE_SUFFIX}"):
+        if not aside.is_file():
+            continue
+        original = aside.with_name(aside.name[: -len(STALE_SUFFIX)])
+        if original.exists():
+            aside.unlink()
+        else:
+            os.replace(aside, original)

@@ -6,7 +6,7 @@ against a tiny FAKE runtime — deterministic per-row logits over a 64-token voc
 tiny MLX tensors, no model.  The fake is ROW-ISOLATED by construction, so any
 per-stream sha divergence between a batched run and the same stream run alone is
 a driver bug (cross-stream contamination), which is exactly the Phase-1
-correctness contract.  The real-model per-stream sha gate is fable-main's GPU
+correctness contract.  The real-model per-stream sha gate is PR #391-main's GPU
 window (``a3b_174_batched_decode_bench.py``); it validates batch-numerical
 invariance, which a CPU fake cannot.
 """

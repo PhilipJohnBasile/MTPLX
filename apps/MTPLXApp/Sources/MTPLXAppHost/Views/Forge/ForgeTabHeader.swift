@@ -41,7 +41,7 @@ struct ForgeTabHeader: View {
             Image(systemName: "hammer.fill")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Brand.typeBody)
-            Text("Forge")
+            Text(tr("Forge"))
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(Brand.typeHi)
         }
@@ -51,14 +51,14 @@ struct ForgeTabHeader: View {
 
     private var segmentedControl: some View {
         HStack(spacing: 2) {
-            segment(.create, label: "Create", icon: "wand.and.sparkles")
-            segment(.discover, label: "Discover", icon: "globe")
-            segment(.mine, label: "My Models", icon: "tray.full")
+            segment(.create, label: tr("Create"), icon: "wand.and.sparkles")
+            segment(.discover, label: tr("Discover"), icon: "globe")
+            segment(.mine, label: tr("My Models"), icon: "tray.full")
         }
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.white.opacity(0.03))
+                .fill(Brand.wash.opacity(0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)
@@ -119,7 +119,7 @@ struct ForgeTabHeader: View {
             HStack(spacing: 5) {
                 Image(systemName: isMidBuild ? "arrow.forward" : "plus")
                     .font(.system(size: 10.5, weight: .heavy))
-                Text(isMidBuild ? "Continue build" : "New build")
+                Text(isMidBuild ? tr("Continue build") : tr("New build"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .lineLimit(1)
             }
