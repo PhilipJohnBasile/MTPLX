@@ -80,7 +80,7 @@ final class AttachmentExtractionTests: XCTestCase {
             )
         }
 
-        await viewModel.attach([URL(fileURLWithPath: "/tmp/notes.md"), URL(fileURLWithPath: "/tmp/more.md")])
+        await viewModel.attach([URL(fileURLWithPath: "/tmp/notes.md"), URL(fileURLWithPath: "/tmp/more.md")], visionEnabled: true)
 
         XCTAssertEqual(observed.calls, 2)
         XCTAssertEqual(observed.mainThreadCalls, 0, "extraction must not run on the main thread")
@@ -136,7 +136,7 @@ final class AttachmentExtractionTests: XCTestCase {
         gap.max = 0
 
         let started = Date()
-        await viewModel.attach([pdfURL])
+        await viewModel.attach([pdfURL], visionEnabled: true)
         let elapsed = Date().timeIntervalSince(started)
         try await Task.sleep(for: .milliseconds(20))
         ticker.cancel()
@@ -176,7 +176,7 @@ final class AttachmentExtractionTests: XCTestCase {
             )
         }
 
-        let attaching = Task { await viewModel.attach([URL(fileURLWithPath: "/tmp/paper.pdf")]) }
+        let attaching = Task { await viewModel.attach([URL(fileURLWithPath: "/tmp/paper.pdf")], visionEnabled: true) }
         try await pollUntil("the card appears in the extracting state") {
             viewModel.pendingAttachments.count == 1
                 && viewModel.attachmentStates.values.first == .extracting
@@ -216,7 +216,7 @@ final class AttachmentExtractionTests: XCTestCase {
             )
         }
 
-        let attaching = Task { await viewModel.attach([URL(fileURLWithPath: "/tmp/a.txt")]) }
+        let attaching = Task { await viewModel.attach([URL(fileURLWithPath: "/tmp/a.txt")], visionEnabled: true) }
         try await pollUntil("the card appears") { viewModel.pendingAttachments.count == 1 }
         let attachment = try XCTUnwrap(viewModel.pendingAttachments.first)
         viewModel.removeAttachment(attachment)
@@ -237,7 +237,7 @@ final class AttachmentExtractionTests: XCTestCase {
             throw FileExtractorError.unreadable(filename: url.lastPathComponent, reason: "the file is encrypted")
         }
 
-        await viewModel.attach([URL(fileURLWithPath: "/tmp/locked.pdf")])
+        await viewModel.attach([URL(fileURLWithPath: "/tmp/locked.pdf")], visionEnabled: true)
 
         let attachment = try XCTUnwrap(viewModel.pendingAttachments.first, "a failed file stays on the strip")
         XCTAssertEqual(attachment.filename, "locked.pdf")
@@ -263,7 +263,7 @@ final class AttachmentExtractionTests: XCTestCase {
         try Data("not an image".utf8).write(to: brokenPNG)
 
         let viewModel = try makeViewModel(extractor: ChatViewModel.extractAttachment)
-        await viewModel.attach([mdURL, pngURL, brokenPNG])
+        await viewModel.attach([mdURL, pngURL, brokenPNG], visionEnabled: true)
 
         XCTAssertEqual(viewModel.pendingAttachments.map(\.filename), ["notes.md", "shot.png", "broken.png"])
         let notes = viewModel.pendingAttachments[0]

@@ -8,6 +8,9 @@ import MTPLXAppCore
 //   - Auto-growing height between `minHeight` and `maxHeight`
 //   - Enter → submit, Shift+Enter → newline
 //   - Drag-drop of file URLs (PDF/docx/txt/md) onto the text field
+//   - ⌘V of files copied in Finder (same path as drop) and of images
+//     (screenshots, browser/Preview copies) as attachments; text pastes
+//     as before
 //   - Brand-themed colours and SF Pro typography (re-themed from
 //     Aphanes V2's DMSans variant)
 //
@@ -22,7 +25,10 @@ struct ComposerInputTextView: NSViewRepresentable {
     let minHeight: CGFloat
     let maxHeight: CGFloat
     let onSubmit: () -> Void
+    /// Files dropped onto, or pasted into, the text view.
     let onFileDrop: ([URL]) -> Void
+    /// An image pasted from the clipboard, as PNG bytes.
+    let onImagePaste: (Data) -> Void
     var shouldFocus: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
@@ -84,6 +90,7 @@ struct ComposerInputTextView: NSViewRepresentable {
             coordinator.parent.text = committed
         }
         textView.onFileDrop = onFileDrop
+        textView.onImagePaste = onImagePaste
         textView.string = text
         textView.appearance = NSAppearance(named: appearanceName)
         textView.selectedTextAttributes = [
@@ -116,6 +123,7 @@ struct ComposerInputTextView: NSViewRepresentable {
             coordinator.parent.text = committed
         }
         textView.onFileDrop = onFileDrop
+        textView.onImagePaste = onImagePaste
         syncDocumentFrame(for: textView)
         // Never overwrite the text view while an IME composition is in flight:
         // doing so tears down the marked-text session and drops the in-progress
@@ -220,10 +228,14 @@ struct ComposerInputTextView: NSViewRepresentable {
 
 // MARK: - ComposerNSTextView
 
-private final class ComposerNSTextView: NSTextView {
+final class ComposerNSTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onSyncText: ((String) -> Void)?
     var onFileDrop: (([URL]) -> Void)?
+    var onImagePaste: ((Data) -> Void)?
+    /// What ⌘V reads. The general pasteboard in the app; tests point it at
+    /// a private one so they never touch the user's clipboard.
+    var pasteboard: NSPasteboard = .general
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -251,6 +263,57 @@ private final class ComposerNSTextView: NSTextView {
             return
         }
         super.doCommand(by: selector)
+    }
+
+    override func paste(_ sender: Any?) {
+        switch ComposerPasteClassifier.classify(Self.pasteboardContents(pasteboard)) {
+        case .files(let urls):
+            // Files copied in Finder ride the drop path.
+            onFileDrop?(urls)
+        case .image(let png):
+            onImagePaste?(png)
+        case .passthrough:
+            super.paste(sender)
+        }
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        // NSTextView disables Paste when the pasteboard holds nothing it
+        // can insert as text — with importsGraphics off, that is every
+        // image and every Finder copy — and a disabled Edit ▸ Paste
+        // swallows ⌘V before paste(_:) ever runs. Attachments are
+        // pasteable here, so say so; paste(_:) still falls through to
+        // AppKit for anything the classifier does not claim.
+        if item.action == #selector(paste(_:)), isEditable, Self.pasteboardMayHoldAttachment(pasteboard) {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    /// Every image format NSImage decodes, as pasteboard types. File URLs
+    /// are deliberately not among them: a copied image file is a file, and
+    /// decoding it here only to have the classifier prefer the URL would
+    /// stall ⌘V on a large photo.
+    private static let imageDataTypes = NSImage.imageTypes.map { NSPasteboard.PasteboardType($0) }
+
+    /// Cheap superset of what `pasteboardContents` would classify as an
+    /// attachment, for menu validation: types only, no bytes read.
+    static func pasteboardMayHoldAttachment(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+            || pasteboard.availableType(from: imageDataTypes) != nil
+    }
+
+    /// The thin AppKit read; `ComposerPasteClassifier` decides what it
+    /// means. PNG is preferred so a screenshot keeps its exact bytes,
+    /// then TIFF, then whatever else NSImage can decode (a JPEG, a PDF
+    /// rendition) as raw bytes for the classifier to normalize.
+    static func pasteboardContents(_ pasteboard: NSPasteboard) -> ComposerPasteClassifier.Contents {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self])?
+            .compactMap { $0 as? URL } ?? []
+        let imageData = pasteboard.data(forType: .png)
+            ?? pasteboard.data(forType: .tiff)
+            ?? pasteboard.availableType(from: imageDataTypes).flatMap { pasteboard.data(forType: $0) }
+        return ComposerPasteClassifier.Contents(urls: urls, imageData: imageData)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

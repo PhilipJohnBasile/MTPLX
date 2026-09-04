@@ -46,7 +46,16 @@ struct ChatComposerView: View {
                     maxHeight: maxHeight,
                     onSubmit: handleSubmit,
                     onFileDrop: { urls in
-                        Task { await viewModel.attach(urls) }
+                        Task { await viewModel.attach(urls, visionEnabled: visionEnabled) }
+                    },
+                    onImagePaste: { png in
+                        Task {
+                            await viewModel.attachPastedImage(
+                                png,
+                                filename: ComposerPasteClassifier.pastedImageFilename(),
+                                visionEnabled: visionEnabled
+                            )
+                        }
                     }
                 )
                 .frame(height: measuredHeight)
@@ -282,7 +291,7 @@ struct ChatComposerView: View {
             : tr("Attach files (PDF, docx, md, txt) to include their text in your message.")
         if panel.runModal() == .OK {
             let urls = panel.urls
-            Task { await viewModel.attach(urls) }
+            Task { await viewModel.attach(urls, visionEnabled: visionEnabled) }
         }
     }
 

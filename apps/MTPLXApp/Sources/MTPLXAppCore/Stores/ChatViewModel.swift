@@ -411,10 +411,33 @@ public final class ChatViewModel: ObservableObject {
     nonisolated private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
     nonisolated private static let imageAttachmentMaxDimension = 2048
 
-    public func attach(_ urls: [URL]) async {
+    /// Whether `url` would attach as an image (and so needs a model that
+    /// can see). One answer for the extractor and the vision gate.
+    nonisolated private static func isImageAttachment(_ url: URL) -> Bool {
+        imageAttachmentExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// Why an image stays off the message when the served model has no
+    /// vision tower. The card carries it, so the refusal is never silent.
+    private static var imagesUnsupportedMessage: String {
+        tr("This model can't see images.")
+    }
+
+    /// Attaches files from the file panel, a drop, or a Finder paste.
+    ///
+    /// `visionEnabled` is passed by the caller rather than read from a
+    /// store: the composer is the one place attachments enter, and it
+    /// already holds the served model's vision capability for the
+    /// paperclip's type filter. Passing the same value at the moment of
+    /// attaching keeps one fact in one place, with no second copy to keep
+    /// in sync and no new wiring at the view model's construction. An
+    /// image attached while the model cannot see gets a card that says so
+    /// instead of quietly riding along and being ignored by the server.
+    public func attach(_ urls: [URL], visionEnabled: Bool) async {
         // Every file gets its card immediately, so the strip shows the
         // whole drop while the work is still running.
-        var queued: [(attachment: ChatAttachment, url: URL)] = []
+        let extractor = attachmentExtractor
+        var queued: [PendingExtraction] = []
         for url in urls {
             let placeholder = ChatAttachment(
                 filename: url.lastPathComponent,
@@ -423,16 +446,59 @@ public final class ChatViewModel: ObservableObject {
                 extractedText: ""
             )
             pendingAttachments.append(placeholder)
+            if !visionEnabled, Self.isImageAttachment(url) {
+                attachmentStates[placeholder.id] = .failed(message: Self.imagesUnsupportedMessage)
+                continue
+            }
             attachmentStates[placeholder.id] = .extracting
-            queued.append((placeholder, url))
+            queued.append(PendingExtraction(attachment: placeholder) { try extractor(url) })
         }
+        await settle(queued)
+    }
 
-        let extractor = attachmentExtractor
-        for (attachment, url) in queued {
+    /// Attaches an image pasted from the clipboard. There is no file
+    /// behind it: the bytes go through the same cap, validity check and
+    /// downscale a dropped image file gets, and the card follows the
+    /// same life. `filename` is the caller's, since only it knows the
+    /// paste happened (`ComposerPasteClassifier.pastedImageFilename`).
+    public func attachPastedImage(_ data: Data, filename: String, visionEnabled: Bool) async {
+        let placeholder = ChatAttachment(
+            filename: filename,
+            mimeType: "image/png",
+            sizeBytes: 0,
+            extractedText: ""
+        )
+        pendingAttachments.append(placeholder)
+        guard visionEnabled else {
+            attachmentStates[placeholder.id] = .failed(message: Self.imagesUnsupportedMessage)
+            return
+        }
+        attachmentStates[placeholder.id] = .extracting
+        await settle([
+            PendingExtraction(attachment: placeholder) {
+                try Self.imageAttachment(data: data, filename: filename, originalMimeType: "image/png")
+            },
+        ])
+    }
+
+    /// A card already on the strip in the extracting state, and the work
+    /// that settles it.
+    private struct PendingExtraction {
+        let attachment: ChatAttachment
+        let extract: @Sendable () throws -> ExtractedAttachment
+    }
+
+    /// Runs each extraction off the main actor, one at a time, and
+    /// settles its card to ready or to a visible failure. Every attach
+    /// path ends here so the strip behaves the same whatever the source.
+    private func settle(_ queued: [PendingExtraction]) async {
+        for pending in queued {
+            let attachment = pending.attachment
+            let extract = pending.extract
             // Detached, not a child task: a child would inherit this
             // method's main-actor isolation and run on the main thread.
             let outcome = await Task.detached(priority: .userInitiated) {
-                Result { try extractor(url) }
+                Result { try extract() }
             }.value
             // Removed from the strip while extracting: nothing to update.
             guard pendingAttachments.contains(where: { $0.id == attachment.id }) else {
@@ -458,7 +524,7 @@ public final class ChatViewModel: ObservableObject {
     /// `imageData`; everything else goes through `FileExtractor`, whose
     /// caps report what they cut.
     nonisolated public static func extractAttachment(from url: URL) throws -> ExtractedAttachment {
-        if imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
+        if isImageAttachment(url) {
             return try imageAttachment(from: url)
         }
         let extracted = try FileExtractor.extract(from: url)
@@ -1810,24 +1876,38 @@ public final class ChatViewModel: ObservableObject {
                 reason: error.localizedDescription
             )
         }
+        return try imageAttachment(
+            data: data,
+            filename: url.lastPathComponent,
+            originalMimeType: FileExtractor.mimeType(for: url.pathExtension)
+        )
+    }
+
+    /// One implementation for an image file and for pasted image bytes:
+    /// the size cap, the decodability check and the downscale live here
+    /// only. `originalMimeType` describes `data` as given and is reported
+    /// when the original bytes are kept; a downscaled image is always PNG.
+    nonisolated private static func imageAttachment(
+        data: Data,
+        filename: String,
+        originalMimeType: String
+    ) throws -> ExtractedAttachment {
         guard data.count <= imageAttachmentMaxBytes else {
             throw FileExtractorError.unreadable(
-                filename: url.lastPathComponent,
+                filename: filename,
                 reason: tr("image exceeds the 20MB attachment limit")
             )
         }
         guard CGImageSourceCreateWithData(data as CFData, nil).map({ CGImageSourceGetCount($0) > 0 }) == true else {
             throw FileExtractorError.unreadable(
-                filename: url.lastPathComponent,
+                filename: filename,
                 reason: tr("not a readable image")
             )
         }
         let downscaled = downscaledImageData(data)
         return ExtractedAttachment(
-            filename: url.lastPathComponent,
-            mimeType: downscaled != nil
-                ? "image/png"
-                : FileExtractor.mimeType(for: url.pathExtension),
+            filename: filename,
+            mimeType: downscaled != nil ? "image/png" : originalMimeType,
             sizeBytes: (downscaled ?? data).count,
             extractedText: "",
             imageData: downscaled ?? data
