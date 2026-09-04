@@ -584,6 +584,93 @@ def _marathon_postcommit_wait_s() -> float:
     return value
 
 
+_DEFAULT_POSTCOMMIT_WAIT_STALL_S = 15.0
+_DEFAULT_POSTCOMMIT_WAIT_CEILING_S = 600.0
+
+
+def _postcommit_wait_stall_s() -> float:
+    """MTPLX_POSTCOMMIT_WAIT_STALL_S: heartbeat gap that means "wedged".
+
+    A postcommit prefill stamps the record at every chunk boundary; a 2048
+    token chunk is a few seconds even under memory pressure, so a job silent
+    for this long is not making progress and the waiter aborts it. Default
+    15 s. Values <= 0 disable the progress extension (the bounded wait then
+    aborts at its timeout exactly as before 2026-09-03).
+    """
+    raw = os.environ.get("MTPLX_POSTCOMMIT_WAIT_STALL_S")
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_POSTCOMMIT_WAIT_STALL_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_POSTCOMMIT_WAIT_STALL_S
+    if not math.isfinite(value):
+        return _DEFAULT_POSTCOMMIT_WAIT_STALL_S
+    return value if value > 0.0 else 0.0
+
+
+def _postcommit_wait_ceiling_s() -> float:
+    """MTPLX_POSTCOMMIT_WAIT_CEILING_S: absolute cap on a progress-extended wait."""
+    raw = os.environ.get("MTPLX_POSTCOMMIT_WAIT_CEILING_S")
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_POSTCOMMIT_WAIT_CEILING_S
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_POSTCOMMIT_WAIT_CEILING_S
+    if not math.isfinite(value) or value <= 0.0:
+        return _DEFAULT_POSTCOMMIT_WAIT_CEILING_S
+    return value
+
+
+def _wait_while_progressing(future: Any, record: Any, *, timeout_s: float) -> None:
+    """``future.result`` with a progress-gated extension past ``timeout_s``.
+
+    The bounded wait exists so a same-session request can pick up the
+    previous turn's committed state instead of re-prefilling it. When the
+    bound expires while the job is still prefilling, aborting is the worst
+    of both worlds: the partial prefill is thrown away and the request then
+    redoes the same tokens from scratch (2026-09-03 founder session: 30 s
+    waited, job aborted at ~75%, 38 s re-prefill on top -- 68 s of dead air
+    for a state the engine held in memory 120 ms earlier). The postcommit's
+    remaining work IS the request's own alternative, so a job that keeps
+    reaching chunk boundaries is waited for; only a job silent for
+    ``stall_s`` (or one that never started) is abandoned at the bound. The
+    absolute ceiling keeps a heartbeating-but-endless job from pinning a
+    request forever.
+
+    Raises TimeoutError when the wait is abandoned (same contract as
+    ``future.result(timeout=...)``), so the caller's abort path is unchanged.
+    """
+
+    stall_s = _postcommit_wait_stall_s()
+    ceiling_s = max(float(timeout_s), _postcommit_wait_ceiling_s())
+    deadline = time.monotonic() + float(timeout_s)
+    hard_deadline = time.monotonic() + ceiling_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.0:
+            raise TimeoutError("postcommit wait bound reached")
+        try:
+            future.result(timeout=remaining)
+            return
+        except TimeoutError:
+            pass
+        except BaseException:
+            raise
+        if stall_s <= 0.0:
+            raise TimeoutError("postcommit wait bound reached")
+        started = getattr(record, "started_at_s", None) is not None
+        progressing = getattr(record, "progressing", None)
+        if not started or not callable(progressing) or not progressing(stall_s=stall_s):
+            raise TimeoutError("postcommit wait bound reached; job not progressing")
+        if time.monotonic() >= hard_deadline:
+            raise TimeoutError("postcommit wait ceiling reached")
+        # Still prefilling: grant another slice, never longer than the stall
+        # window, so a job that stops mid-slice is caught within stall_s.
+        deadline = min(hard_deadline, time.monotonic() + stall_s)
+
+
 def _postcommit_wait_timeout_s() -> float:
     """Read MTPLX_POSTCOMMIT_WAIT_TIMEOUT_S from the environment.
 
@@ -673,10 +760,33 @@ class PendingPostcommit:
     finished_at_s: float | None = None
     last_outcome: dict[str, Any] | None = None
     last_abort_reason: str | None = None
+    #: Monotonic stamp of the job's last chunk boundary (its abort check
+    #: doubles as the heartbeat). A waiter reads it to tell a job that is
+    #: still prefilling from one that is wedged.
+    last_progress_mono_s: float | None = None
+    progress_ticks: int = 0
 
     def mark_started(self) -> None:
         if self.started_at_s is None:
             self.started_at_s = time.time()
+            self.last_progress_mono_s = time.monotonic()
+
+    def note_progress(self) -> None:
+        self.last_progress_mono_s = time.monotonic()
+        self.progress_ticks += 1
+
+    def progressing(self, *, stall_s: float) -> bool:
+        """Whether the job reached a chunk boundary within ``stall_s``.
+
+        The start stamp alone is not progress: a job that never reaches its
+        first chunk boundary inside the caller's bound is abandoned there
+        exactly as before, so a wedged render/tokenize phase cannot borrow
+        the stall window.
+        """
+        stamp = self.last_progress_mono_s
+        if stamp is None or self.progress_ticks <= 0:
+            return False
+        return (time.monotonic() - float(stamp)) <= float(stall_s)
 
     def mark_finished(self, outcome: dict[str, Any] | None = None) -> None:
         self.finished_at_s = time.time()
@@ -1018,14 +1128,18 @@ class EngineSession:
         # cache warmup, not a correctness dependency. Timeout is the most
         # common non-success outcome and is reported distinctly so operators
         # can spot a stuck postcommit lane.
+        progress_extended_s = 0.0
         try:
-            future.result(timeout=timeout_s)
+            _wait_while_progressing(future, record, timeout_s=timeout_s)
             outcome = {
                 "waited": True,
                 "elapsed_s": time.monotonic() - t0,
                 "outcome": "completed",
                 "timeout_s": timeout_s,
             }
+            progress_extended_s = max(0.0, outcome["elapsed_s"] - timeout_s)
+            if progress_extended_s > 0.0:
+                outcome["progress_extended_s"] = progress_extended_s
             # "completed" only means the future resolved — abandoned jobs
             # also complete (they return normally after logging their own
             # outcome). Surface the job's result so receipts distinguish a
@@ -1226,7 +1340,14 @@ class EngineSession:
         boundary_kind: str = "assistant_end",
         nbytes: int = 0,
     ) -> EngineSessionCommit:
-        if finish_reason not in {"stop", "length"}:
+        # "tool_calls" is the OpenAI label the bridge stamps on a turn that
+        # stopped naturally after complete tool calls; the KV boundary is as
+        # safe as "stop". Refusing it (as before 2026-09-03) left every agent
+        # tool round without a committed stream, so the committed-think and
+        # committed-body canonicalization never applied to the turns that
+        # need it most, and each tool result re-prefilled the whole previous
+        # assistant turn. Aborted/cancelled/error finishes stay refused.
+        if finish_reason not in {"stop", "length", "tool_calls"}:
             return EngineSessionCommit(False, f"unsafe_finish:{finish_reason}", self.prefix_len)
         tokens = tuple(int(token) for token in prompt_ids) + tuple(int(token) for token in generated_ids)
         self.committed_token_ids = tokens

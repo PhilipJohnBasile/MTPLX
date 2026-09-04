@@ -9600,8 +9600,35 @@ def test_tool_contract_honors_forced_function_choice():
         tool_choice={"type": "function", "function": {"name": "submit_answer"}},
     )
 
-    assert "requires the `submit_answer` tool call" in with_contract[0]["content"]
-    assert "instead of a normal text answer" in with_contract[0]["content"]
+    # The forced clause rides a transient trailing user turn, not msg0: a
+    # per-request tool_choice must not change the session's cached prefix
+    # (agent-session gate, 2026-09-03: one forced round re-prefilled 40k
+    # tokens twice). The system contract itself is tool_choice-invariant.
+    assert "requires the" not in with_contract[0]["content"]
+    assert [message["role"] for message in with_contract] == ["system", "user", "user"]
+    tail = with_contract[-1]["content"]
+    assert tail.startswith(openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD)
+    assert "requires the `submit_answer` tool call" in tail
+    assert "instead of a normal text answer" in tail
+    auto = openai._with_mtplx_tool_contract(
+        [{"role": "user", "content": "Solve it."}],
+        tools=[_named_tool_schema("submit_answer")],
+        tool_choice="auto",
+    )
+    assert auto[0]["content"] == with_contract[0]["content"]
+    assert [message["role"] for message in auto] == ["system", "user"]
+
+
+def test_forced_tool_choice_sentinel_is_a_registered_transient_suffix():
+    heads = [text[:48] for text in openai._transient_trailing_user_sentinel_texts()]
+    assert openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD[:48] in heads
+    forced = openai._mtplx_forced_tool_choice_text(
+        {"type": "function", "function": {"name": "write"}}
+    )
+    assert forced[:48] == openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD[:48]
+    assert openai._mtplx_forced_tool_choice_text("auto") == (
+        openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD
+    )
 
 
 def test_tool_contract_keeps_every_tool_name_when_over_budget():
@@ -10136,9 +10163,12 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
         "glob",
         "grep",
     ]
+    # The force-answer contract is a transient trailing turn; since
+    # 2026-09-03 the fingerprint carries no tail-contract flag at all (a
+    # transition round must reuse the session's banked prefix).
     assert (
-        "read_only_force_answer_contract=0"
-        in captured["generation_final_policy_fingerprint"]
+        "read_only_force_answer_contract"
+        not in captured["generation_final_policy_fingerprint"]
     )
     assert "tool_prompt_mode=compact" in captured["generation_final_policy_fingerprint"]
     assert (
@@ -10150,15 +10180,15 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
         not in captured["generation_final_policy_fingerprint"]
     )
     assert (
-        "read_only_force_answer_contract=0"
-        in captured["generation_session_policy_fingerprint"]
+        "read_only_force_answer_contract"
+        not in captured["generation_session_policy_fingerprint"]
     )
     assert (
         "read_only_force_answer:v1"
         not in captured["generation_session_policy_fingerprint"]
     )
     assert (
-        "read_only_force_answer_contract=0" in captured["scheduled_policy_fingerprint"]
+        "read_only_force_answer_contract" not in captured["scheduled_policy_fingerprint"]
     )
     assert "tool_prompt_mode=compact" in captured["scheduled_policy_fingerprint"]
     assert (

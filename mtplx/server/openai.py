@@ -7131,20 +7131,61 @@ def _tool_choice_policy_signature(tool_choice: Any) -> str:
     return type(tool_choice).__name__
 
 
+#: Fixed head of the forced-tool-choice sentinel: the transient-suffix
+#: registry keys on the first 48 chars, so the tool-specific tail may vary.
+_MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD = (
+    "MTPLX tool-choice instruction for this turn only (not part of the "
+    "conversation): "
+)
+
+
 def _forced_tool_contract_clause(tool_choice: Any) -> str:
     forced_name = _forced_tool_choice_name(tool_choice)
     if forced_name:
         return (
-            f" This request requires the `{forced_name}` tool call; reason "
+            f"This request requires the `{forced_name}` tool call; reason "
             "internally if needed, then emit that tool call instead of a "
             "normal text answer."
         )
     if _tool_choice_forces_tools(tool_choice):
         return (
-            " This request requires one declared tool call; reason internally "
+            "This request requires one declared tool call; reason internally "
             "if needed, then emit the tool call instead of a normal text answer."
         )
     return ""
+
+
+def _mtplx_forced_tool_choice_text(tool_choice: Any = None) -> str:
+    """Trailing user sentinel carrying a request's forced tool choice.
+
+    With no forced choice it returns the fixed head alone (the registry
+    entry the stable-prefix detector keys on); with one, head + clause.
+    """
+    clause = _forced_tool_contract_clause(tool_choice)
+    return _MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD + clause if clause else (
+        _MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD
+    )
+
+
+def _append_forced_tool_choice_sentinel(
+    messages: list[dict[str, Any]], *, tool_choice: Any
+) -> bool:
+    """Append the forced-choice instruction as the final user turn; True on append.
+
+    Trailing and never echoed back by any client, so the bytes before it are
+    the same stable prefix the next turn resends -- the session's cache
+    identity no longer depends on a per-request tool_choice.
+    """
+    if not messages or not _forced_tool_contract_clause(tool_choice):
+        return False
+    text = _mtplx_forced_tool_choice_text(tool_choice)
+    if any(
+        _MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD in str(message.get("content") or "")
+        for message in messages
+    ):
+        return False
+    messages.append({"role": "user", "content": text})
+    return True
 
 
 _DATE_LINE_IDLE_REFRESH_S = 15 * 60.0
@@ -7224,7 +7265,14 @@ def _mtplx_tool_contract_text(
                     parts.append(name)
                     size += 2 + len(name)
         allowed = "; ".join(parts)
-    forced_clause = _forced_tool_contract_clause(tool_choice)
+    # The forced-tool clause used to ride here. tool_choice varies per
+    # request while this text sits in msg0, so one `tool_choice: required` /
+    # `{"function": {"name": ...}}` turn changed the first bytes of the
+    # prompt and re-prefilled the WHOLE session cold (agent-session gate,
+    # 2026-09-03: 40,127 tokens re-prefilled twice, 41 s + 44 s, on a forced
+    # write round). It is now a transient trailing user sentinel, like every
+    # other per-request steering text (see _with_mtplx_tool_contract); the
+    # parameter stays for the callers, the text no longer depends on it.
     return (
         f"{_MTPLX_TOOL_CONTRACT_SENTINEL} {_current_date_line()} Your "
         "training data ends before today; treat tool results as more "
@@ -7247,7 +7295,6 @@ def _mtplx_tool_contract_text(
         "sentence of visible text. "
         "Never invent Agent/task/Explore or any undeclared tool. "
         "If no declared tool applies, answer normally."
-        f"{forced_clause}"
     )
 
 
@@ -7772,6 +7819,9 @@ def _with_mtplx_tool_contract(
     if _append_tool_result_continuation_hint(messages, tools=tools):
         if observability is not None:
             observability["tool_result_continuation_hint_injected"] = True
+    if _append_forced_tool_choice_sentinel(messages, tool_choice=tool_choice):
+        if observability is not None:
+            observability["forced_tool_choice_sentinel_injected"] = True
     first = messages[0]
     if first.get("role") == "system":
         content = str(first.get("content") or "")
@@ -12654,6 +12704,7 @@ def _message_to_template_dict(
             ).strip()
         )
     item: dict[str, Any] = {"role": message.role, "content": content}
+    committed_body_rendered = False
     if (
         include_reasoning_content
         and message.role == "assistant"
@@ -12682,11 +12733,20 @@ def _message_to_template_dict(
         committed = _message_extra(message, _COMMITTED_REASONING_FIELD)
         if committed:
             item["reasoning_content"] = str(committed)
+        committed_body = _message_extra(message, _COMMITTED_TURN_BODY_FIELD)
+        if committed_body and str(committed_body).strip():
+            # The committed post-think body already carries this turn's
+            # tool-call markup as generated; the template must render it as
+            # content and NOT append its own re-render of tool_calls, or the
+            # calls would appear twice. Same trim the template applies.
+            content = str(committed_body).strip()
+            item["content"] = content
+            committed_body_rendered = True
     if message.name:
         item["name"] = message.name
     if message.tool_call_id:
         item["tool_call_id"] = message.tool_call_id
-    if message.tool_calls:
+    if message.tool_calls and not committed_body_rendered:
         item["tool_calls"] = [_template_tool_call(call) for call in message.tool_calls]
     if content or message.role == "tool" or message.tool_calls:
         return item
@@ -12906,6 +12966,17 @@ def _qwen_assistant_generation_boundaries(rendered: str) -> list[int]:
 
 
 _COMMITTED_REASONING_FIELD = "_mtplx_committed_reasoning"
+#: Server-built companion of the reasoning field: the exact post-think body
+#: (visible text + tool-call markup, as generated) of a committed turn that
+#: made tool calls. The template renders it as the turn's content in place of
+#: re-rendering the parsed tool_calls, whose arguments are NOT byte-stable
+#: through parse -> client -> re-render (2026-09-03 receipt: the live parser
+#: strips parameter values, so a file whose content ended in "\n" came back
+#: one token short -- `271 "\n\n"` became `198 "\n"` -- and every write turn's
+#: generation-final snapshot was refused for a one-token seam 11 tokens before
+#: the end of a 2,337-token turn; the postcommit then re-prefilled the whole
+#: turn on the GPU with the next request waiting on it).
+_COMMITTED_TURN_BODY_FIELD = "_mtplx_committed_turn_body"
 _COMMITTED_TURN_OPEN = "<|im_start|>assistant\n"
 _COMMITTED_TURN_CLOSE = "<|im_end|>"
 _COMMITTED_THINK_OPEN = "<think>\n"
@@ -12923,6 +12994,21 @@ def _common_prefix_len(a: Sequence[int], b: Sequence[int]) -> int:
         if a[i] != b[i]:
             return i
     return n
+
+
+class _CommittedTurn(tuple):
+    """``(think_interior, gate, tool_markup)`` plus the exact post-think body.
+
+    A plain 3-tuple to every existing consumer (unpacking, indexing and
+    equality are tuple's); ``body`` carries the bytes the gate/markup split
+    discards -- the whitespace between the visible text and the first
+    ``<tool_call`` -- so a substituted turn can be re-rendered byte-exactly.
+    """
+
+    def __new__(cls, interior, gate, markup, body=""):
+        self = super().__new__(cls, (interior, gate, markup))
+        self.body = body
+        return self
 
 
 def _committed_assistant_turns(
@@ -12974,7 +13060,7 @@ def _committed_assistant_turns(
         else:
             gate = content_part.strip()
             tool_markup = ""
-        turns.append((think_interior, gate, tool_markup))
+        turns.append(_CommittedTurn(think_interior, gate, tool_markup, content_part))
         search_from = body_start if turn_end < 0 else turn_end
         if turn_end < 0:
             break
@@ -13157,12 +13243,22 @@ def _substitute_committed_reasoning_messages(
             substitution_open = False
             canon_messages.append(message)
             continue
-        if not interior:
+        fields: dict[str, Any] = {}
+        if interior:
+            fields[_COMMITTED_REASONING_FIELD] = interior
+        committed_body = getattr(committed_turns[ordinal], "body", "")
+        if tool_markup and committed_body and committed_body.strip():
+            # The gate has just proven this turn's calls ARE the committed
+            # calls, so its content is re-rendered from the committed bytes
+            # rather than from the parsed tool_calls: parameter values do
+            # not survive parse -> client -> re-render byte-exactly, and a
+            # one-token seam anywhere in the turn refuses the O(1)
+            # generation-final snapshot (2026-09-03 write-turn receipt).
+            fields[_COMMITTED_TURN_BODY_FIELD] = committed_body
+        if not fields:
             canon_messages.append(message)
             continue
-        canon_messages.append(
-            _copy_chat_message(message, **{_COMMITTED_REASONING_FIELD: interior})
-        )
+        canon_messages.append(_copy_chat_message(message, **fields))
         substituted += 1
     return canon_messages, substituted
 
@@ -13198,13 +13294,17 @@ def _scrub_inbound_committed_reasoning(message: ChatMessage) -> ChatMessage:
     """Drop a client-supplied canonicalization field so only server-built
     substitutions ever reach the template (deterministic vs today, where the
     preserve mode drops client reasoning fields entirely)."""
-    if _message_extra(message, _COMMITTED_REASONING_FIELD) is None:
+    if (
+        _message_extra(message, _COMMITTED_REASONING_FIELD) is None
+        and _message_extra(message, _COMMITTED_TURN_BODY_FIELD) is None
+    ):
         return message
     try:
         data = message.model_dump()
     except AttributeError:
         data = message.dict()
     data.pop(_COMMITTED_REASONING_FIELD, None)
+    data.pop(_COMMITTED_TURN_BODY_FIELD, None)
     return ChatMessage(**data)
 
 
@@ -13244,13 +13344,27 @@ def _maybe_canonicalize_committed_reasoning(
     reasoning. ``session_id`` accepts the endpoint's already-resolved id so
     resolution (and its prefix-scan side effects) runs once per request.
     """
+    def _declined(reason: str, **extra: Any) -> None:
+        # Every early exit leaves a receipt: a warm turn that re-prefilled
+        # its whole assistant turn is only diagnosable if the gate says WHY
+        # it stood aside (2026-09-03: three OpenCode turns carried no
+        # canonicalization record at all and the cause had to be inferred).
+        record = {"applied": False, "declined": reason, **extra}
+        if template_observability is not None:
+            template_observability["committed_reasoning_canonicalization"] = record
+        if request_observability is not None:
+            request_observability["committed_reasoning_canonicalization"] = record
+
     if not _committed_reasoning_canonicalization_enabled():
         return None
     if not thinking_enabled:
+        _declined("thinking_disabled")
         return None
     if getattr(state.args, "strip_assistant_reasoning_history", False):
+        _declined("reasoning_history_stripped")
         return None
     if _reasoning_history_scoped_active(state):
+        _declined("reasoning_history_scoped")
         return None
     # Prologue scrub (audit F11 P2): a client-planted committed-reasoning
     # field must never survive into any later encode, including when this
@@ -13259,7 +13373,7 @@ def _maybe_canonicalize_committed_reasoning(
     messages = [_scrub_inbound_committed_reasoning(message) for message in messages]
     sessions = getattr(state, "sessions", None)
     if sessions is None:
-        return None
+        return None  # inert: nothing to canonicalize against, no receipt
     try:
         if session_id is None:
             session_id, _source = sessions.resolve_session_id(
@@ -13273,12 +13387,17 @@ def _maybe_canonicalize_committed_reasoning(
         session = sessions.peek(session_id)
     except Exception:
         return None
+    if session is None:
+        return None  # inert (first turn / anonymous): no receipt by contract
     committed = tuple(getattr(session, "committed_token_ids", ()) or ())
     if not committed:
+        _declined("no_committed_stream", session_id=session_id)
         return None
     cp_raw = _common_prefix_len(prompt_ids, committed)
     if cp_raw >= min(len(committed), len(prompt_ids)):
-        return None  # already extends (or is contained in) the committed stream
+        # already extends (or is contained in) the committed stream: the
+        # healthy no-op, silent by contract (byte-identical resend test)
+        return None
 
     outcome: dict[str, Any] = {
         "applied": False,
@@ -13534,6 +13653,7 @@ def _transient_trailing_user_sentinel_texts() -> tuple[str, ...]:
         _mtplx_tool_result_continuation_hint_text(),
         _mtplx_read_only_force_answer_contract_text(),
         _mtplx_pi_convergence_contract_text(),
+        _mtplx_forced_tool_choice_text(),
     )
 
 
@@ -19662,21 +19782,26 @@ def _policy_fingerprint(
         _reasoning_history_fingerprint_component(state),
         f"openai_bridge={_OPENAI_BRIDGE_POLICY_VERSION}",
         f"tool_prompt_mode={effective_tool_prompt_mode}",
+        # Per-request steering that rides a TRANSIENT TRAILING user turn --
+        # forced tool_choice, the post-tool answer contract, the read-only
+        # force-answer contract, the Pi convergence contract -- is excluded
+        # from the cache identity on purpose. Their bytes sit after the stable
+        # prefix the next turn resends (see _transient_trailing_user_sentinel_
+        # texts), so the KV of that prefix is identical with or without them;
+        # keying the bank on them made every transition round (Pi's
+        # convergence flip, a forced write, a force-answer turn) miss the whole
+        # session and re-prefill it cold, one harness at a time (agent-session
+        # gate, 2026-09-03: forced write round at 41k = 41 s + 44 s cold).
+        # A bank entry is exact for its token ids; the fingerprint only has to
+        # carry what changes the KV or the MTP history WITHOUT changing the
+        # tokens (model, draft head, depth policy, history policy).
         "tool_contract="
         + _tool_prompt_policy_version_for_request(
             tools_active=tools_active,
             tool_prompt_mode=effective_tool_prompt_mode,
             no_tools_contract_active=no_tools_contract_active,
-            read_only_force_answer_contract_active=read_only_force_answer_contract_active,
-            pi_convergence_contract_active=pi_convergence_contract_active,
-            post_tool_answer_contract_active=post_tool_answer_contract_active,
         ),
-        f"tool_choice={_tool_choice_policy_signature(tool_choice)}",
         f"no_tools_contract={int(bool(no_tools_contract_active))}",
-        f"post_tool_answer_contract={int(bool(post_tool_answer_contract_active))}",
-        "read_only_force_answer_contract="
-        f"{int(bool(read_only_force_answer_contract_active))}",
-        f"pi_convergence_contract={int(bool(pi_convergence_contract_active))}",
         f"simple_chat_contract={int(bool(simple_chat_contract_active))}",
         f"opencode_prompt_contract={opencode_prompt_contract_profile or 'none'}",
         f"generation_mode={effective_mode}",
@@ -20610,14 +20735,12 @@ def _history_ids_for_postcommit(
                     committed_turns = [
                         (
                             session_turns[index]
-                            if not interior
+                            if not turn[0]
                             and index < len(session_turns)
                             and session_turns[index][0]
-                            else (interior, gate, markup)
+                            else turn
                         )
-                        for index, (interior, gate, markup) in enumerate(
-                            committed_turns
-                        )
+                        for index, turn in enumerate(committed_turns)
                     ]
             if any(interior for interior, _gate, _markup in committed_turns):
                 history_messages, _substituted = (
@@ -20797,6 +20920,14 @@ def _generation_final_postcommit_compatibility(
                 "history_suffix_tokens": len(history_ids) - len(final_token_ids),
             }
     reason = "retokenized_history_mismatch"
+    divergence = _first_divergence(final_token_ids, history_ids)
+    _dump_postcommit_mismatch(
+        state,
+        prompt_ids=prompt_ids,
+        final_token_ids=final_token_ids,
+        history_ids=history_ids,
+        divergence=divergence,
+    )
     if bool(state.args.strip_assistant_reasoning_history) and thinking_enabled:
         reason = "reasoning_history_stripping_mismatch"
     elif _reasoning_history_scoped_active(state) and thinking_enabled:
@@ -20813,7 +20944,75 @@ def _generation_final_postcommit_compatibility(
         "reason": reason,
         "history_tokens": len(history_ids),
         "generation_boundary_tokens": len(final_token_ids),
+        "divergence_token": divergence,
+        "divergence_offset_in_turn": (
+            divergence - len(prompt_ids) if divergence is not None else None
+        ),
     }
+
+
+def _first_divergence(left: Sequence[int], right: Sequence[int]) -> int | None:
+    """Index of the first differing token, or None when one is a prefix of the other."""
+    limit = min(len(left), len(right))
+    for index in range(limit):
+        if int(left[index]) != int(right[index]):
+            return index
+    return None
+
+
+def _dump_postcommit_mismatch(
+    state: ServerState,
+    *,
+    prompt_ids: Sequence[int],
+    final_token_ids: Sequence[int],
+    history_ids: Sequence[int],
+    divergence: int | None,
+) -> None:
+    """Write both token streams around the divergence when asked to.
+
+    MTPLX_DEBUG_POSTCOMMIT_MISMATCH_DIR=<dir> turns this on. A refused
+    generation-final snapshot is the single most expensive cache event an
+    agent turn can have (it routes to a GPU re-prefill of the whole assistant
+    turn), and without the two id lists side by side its cause -- a tool-call
+    re-serialisation, a stripped preamble, a BPE seam -- is a guess.
+    """
+
+    directory = (os.environ.get("MTPLX_DEBUG_POSTCOMMIT_MISMATCH_DIR") or "").strip()
+    if not directory:
+        return
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tokenizer = state.runtime.tokenizer
+        at = int(divergence) if divergence is not None else min(len(final_token_ids), len(history_ids))
+        lo, hi = max(0, at - 24), at + 24
+
+        def _window(ids: Sequence[int]) -> dict[str, Any]:
+            ids = [int(t) for t in ids[lo:hi]]
+            try:
+                text = tokenizer.decode(ids)
+            except Exception:
+                text = ""
+            return {"ids": ids, "text": text}
+
+        record = {
+            "ts": time.time(),
+            "prompt_tokens": len(prompt_ids),
+            "generation_boundary_tokens": len(final_token_ids),
+            "history_tokens": len(history_ids),
+            "divergence_token": divergence,
+            "divergence_offset_in_turn": (
+                divergence - len(prompt_ids) if divergence is not None else None
+            ),
+            "window": [lo, hi],
+            "generated": _window(final_token_ids),
+            "history": _window(history_ids),
+        }
+        path = os.path.join(directory, f"postcommit-mismatch-{int(time.time() * 1000)}.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=1)
+    except Exception:
+        # Diagnostics never fail a request.
+        pass
 
 
 def _store_generation_final_history_snapshot(
@@ -20862,12 +21061,24 @@ def _store_generation_final_history_snapshot(
         session=session,
     )
     if not bool(compatibility.get("safe")):
-        return {
+        outcome = {
             "stored": False,
             "mode": compatibility.get("mode", "unsafe"),
             "reason": compatibility.get("reason", "unsafe_history"),
             "elapsed_s": time.perf_counter() - started,
         }
+        for key in ("history_tokens", "generation_boundary_tokens"):
+            if key in compatibility:
+                outcome[key] = compatibility[key]
+        # The refusal is the expensive outcome -- it routes the turn to the
+        # retokenizing postcommit, a GPU re-prefill of the whole assistant
+        # turn racing the client's next request -- so it must be readable
+        # per turn. Before 2026-09-03 only the retokenizing job wrote a
+        # flight event; 83 of 83 postcommits in a day's flight log read
+        # "retokenized_history" with no record of WHY the O(1) snapshot
+        # was refused every time.
+        _flight(state).pc(session_id, {"action": "generation_final", **outcome})
+        return outcome
     final_state = generated["_final_state"]
     token_ids = [int(token) for token in compatibility["token_ids"]]
     acquired = state.lock.acquire(blocking=False)
@@ -20905,13 +21116,15 @@ def _store_generation_final_history_snapshot(
     finally:
         state.lock.release()
     if entry is None:
-        return {
+        outcome = {
             "stored": False,
             "mode": compatibility["mode"],
             "reason": "sessionbank_snapshot_skipped",
             "elapsed_s": time.perf_counter() - started,
         }
-    return {
+        _flight(state).pc(session_id, {"action": "generation_final", **outcome})
+        return outcome
+    outcome = {
         "stored": True,
         "mode": compatibility["mode"],
         "reason": compatibility["reason"],
@@ -20921,6 +21134,8 @@ def _store_generation_final_history_snapshot(
         "history_suffix_tokens": int(compatibility.get("history_suffix_tokens") or 0),
         "token_hash": entry.token_hash,
     }
+    _flight(state).pc(session_id, {"action": "generation_final", **outcome})
+    return outcome
 
 
 _IDLE_POSTCOMMIT_MAX_WAIT_S = 30.0
@@ -21107,6 +21322,16 @@ def _schedule_idle_postcommit_snapshot(
         return "postcommit_abort_requested"
 
     def _postcommit_abort_check() -> bool:
+        # Every call is a chunk boundary the prefill just reached: stamp it
+        # so a same-session request waiting on this job can tell "still
+        # prefilling" from "wedged" and keep waiting for work it would
+        # otherwise redo from scratch (progress-gated wait, 2026-09-03).
+        record = pending_record_holder.get("record")
+        if record is not None and hasattr(record, "note_progress"):
+            try:
+                record.note_progress()
+            except BaseException:
+                pass
         # The pressure arm (#393): a postcommit prefill replays the same
         # deep forward that wedged the machine, so it must yield too. The
         # aborted job re-arms on the idle band and retries once pressure
