@@ -429,7 +429,7 @@ struct ModelPickStep: View {
         return VStack(alignment: .leading, spacing: 10) {
             disclosureButton(
                 title: tr("Use a local model folder"),
-                detail: tr("Paste a complete MTPLX model directory on this Mac."),
+                detail: tr("Choose a complete MTPLX model folder on this Mac."),
                 icon: .localFolder,
                 isExpanded: isLocal
             ) {
@@ -474,6 +474,8 @@ struct ModelPickStep: View {
                     }
                 }
 
+                folderButton { chooseLocalFolder() }
+
                 checkButton(
                     title: tr("Check Folder"),
                     isBusy: false,
@@ -488,6 +490,30 @@ struct ModelPickStep: View {
                     .transition(.opacity.combined(with: .offset(y: -2)))
             }
         }
+    }
+
+    /// Native folder picker beside "Check Folder": the chosen folder fills
+    /// the field and is probed at once, so the user never types a path.
+    private func chooseLocalFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = tr("Use Folder")
+        panel.message = tr("Choose a complete MTPLX model folder on this Mac.")
+        if let typed = MTPLXModelOption.localFolderModel(path: localPathInput)?.hfModelID,
+           FileManager.default.fileExists(atPath: typed)
+        {
+            panel.directoryURL = URL(fileURLWithPath: typed, isDirectory: true)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Select before probing: selecting a new pick clears the previous
+        // verdict, and the field's onChange then re-selects the same pick,
+        // which is a no-op that leaves this probe in place.
+        orchestrator.select(.local(path: url.path))
+        orchestrator.probeLocal(path: url.path)
+        localPathInput = url.path
     }
 
     private func reveal(
@@ -600,6 +626,21 @@ struct ModelPickStep: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1.0 : 0.5)
+    }
+
+    /// Icon-only sibling of `checkButton`: same capsule and height, so the
+    /// field, the folder and the check read as one row.
+    private func folderButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "folder")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Brand.typeBody)
+                .frame(width: 30, height: 30)
+                .background(Capsule().stroke(Brand.separator, lineWidth: 0.5))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(tr("Choose a model folder"))
     }
 
     @ViewBuilder

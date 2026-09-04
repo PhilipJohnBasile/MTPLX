@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import MTPLXAppCore
@@ -59,6 +60,11 @@ struct ModelPickerOverlay: View, Equatable {
     @State private var errorMessage: String? = nil
     @State private var addRowExpanded: Bool = false
     @State private var customRepoInput: String = ""
+    /// The input the visible verdict (probe or error) was produced for.
+    /// Filling the field from the folder panel changes the input in the
+    /// same pass as the verdict; without this, the field's onChange would
+    /// clear that verdict as if the user had typed over it.
+    @State private var verdictInput: String = ""
     @State private var customProbe: OtherModelProbe? = nil
     @State private var checkingCustomRepo: Bool = false
     @State private var preparedRows: [ModelPickerPreparedOption] = []
@@ -347,10 +353,10 @@ struct ModelPickerOverlay: View, Equatable {
                                 .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                         )
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(tr("Add a model from Hugging Face"))
+                        Text(tr("Add a model"))
                             .font(.system(size: 13, weight: .semibold, design: .rounded))
                             .foregroundStyle(Brand.typeBody)
-                        Text(tr("Paste any org/repo. Added models stay in this list."))
+                        Text(tr("Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list."))
                             .font(.caption2)
                             .foregroundStyle(Brand.typeTertiary)
                             .lineLimit(2)
@@ -399,7 +405,7 @@ struct ModelPickerOverlay: View, Equatable {
             && !checkingCustomRepo
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                TextField("org/repo", text: $customRepoInput)
+                TextField("org/repo or /path/to/model-folder", text: $customRepoInput)
                     .textFieldStyle(.plain)
                     .focused($customRepoFocused)
                     .font(.system(size: 12, design: .monospaced))
@@ -424,11 +430,36 @@ struct ModelPickerOverlay: View, Equatable {
                                     )
                             )
                     )
-                    .onChange(of: customRepoInput) { _, _ in
+                    .onChange(of: customRepoInput) { _, newValue in
+                        guard newValue != verdictInput else { return }
                         customProbe = nil
                         errorMessage = nil
                     }
                     .onSubmit { checkAndAddCustomModel() }
+                // Same fill and radius as the field so the pair reads as
+                // one control: the field for typing, the folder for
+                // browsing. The panel result runs the same add path as
+                // a typed folder.
+                Button {
+                    chooseLocalFolder()
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Brand.typeBody)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Brand.bgOuter)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(Brand.separator, lineWidth: 0.5)
+                                )
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(checkingCustomRepo || applyingModelID != nil || isTransitioning)
+                .help(tr("Choose a model folder"))
                 Button {
                     checkAndAddCustomModel()
                 } label: {
@@ -533,6 +564,11 @@ struct ModelPickerOverlay: View, Equatable {
 
     private func checkAndAddCustomModel() {
         guard !checkingCustomRepo, applyingModelID == nil, !isTransitioning else { return }
+        // A path is checked on disk; anything else is a Hugging Face id.
+        if MTPLXModelOption.localFolderModel(path: customRepoInput) != nil {
+            addLocalFolderModel(input: customRepoInput)
+            return
+        }
         guard let option = MTPLXModelOption.customHuggingFaceModel(repoID: customRepoInput) else {
             customProbe = nil
             errorMessage = tr("Enter a Hugging Face repo id like org/name.")
@@ -594,6 +630,75 @@ struct ModelPickerOverlay: View, Equatable {
                 }
             }
         }
+    }
+
+    /// Local half of the add form. The folder is checked on disk with the
+    /// same completeness contract onboarding applies (never a network
+    /// probe), then remembered as a picker row and selected exactly like
+    /// a Hugging Face repo — so the next switch back to it is a click.
+    private func addLocalFolderModel(input: String) {
+        guard let option = MTPLXModelOption.localFolderModel(path: input) else { return }
+        guard applyingModelID == nil, !checkingCustomRepo, !isTransitioning else { return }
+        customProbe = nil
+        verdictInput = input
+        let folder = option.hfModelID
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            errorMessage = tr("That folder doesn't exist on this Mac.")
+            return
+        }
+        guard MTPLXModelOption.hasCompleteInstall(at: folder) else {
+            errorMessage = tr("That folder is not a complete MTPLX model yet.")
+            return
+        }
+        applyingModelID = option.id
+        errorMessage = nil
+        var next = backend.configuration
+        next.rememberLocalFolderModel(path: input)
+        next.model = option.resolvedReference
+        normalizeModelScopedDefaults(&next)
+        Task {
+            do {
+                try await backend.applyConfiguration(next, restartIfRunning: true)
+                await MainActor.run {
+                    applyingModelID = nil
+                    customRepoInput = ""
+                    customProbe = nil
+                    addRowExpanded = false
+                    presented = false
+                }
+            } catch {
+                print("MTPLX: add local model folder failed: \(error)")
+                await MainActor.run {
+                    applyingModelID = nil
+                    errorMessage = tr("Couldn't switch models. Try again.")
+                }
+            }
+        }
+    }
+
+    /// Native folder picker for the add form. The chosen path lands in
+    /// the field (so a rejected folder stays visible and editable) and
+    /// goes through `addLocalFolderModel` like a typed path.
+    private func chooseLocalFolder() {
+        guard !checkingCustomRepo, applyingModelID == nil, !isTransitioning else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = tr("Use Folder")
+        panel.message = tr("Choose a complete MTPLX model folder on this Mac.")
+        if let typed = MTPLXModelOption.localFolderModel(path: customRepoInput)?.hfModelID,
+           FileManager.default.fileExists(atPath: typed)
+        {
+            panel.directoryURL = URL(fileURLWithPath: typed, isDirectory: true)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        customRepoInput = url.path
+        addLocalFolderModel(input: url.path)
     }
 
     private func normalizeModelScopedDefaults(_ config: inout MTPLXAppConfiguration) {

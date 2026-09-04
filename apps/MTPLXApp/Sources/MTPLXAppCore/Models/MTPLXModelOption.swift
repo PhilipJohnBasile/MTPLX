@@ -119,6 +119,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         installedLocalPath ?? hfModelID
     }
 
+    /// A folder the user chose on this Mac (`localFolderModel(path:)`):
+    /// its only identity is its path, so the picker and the chrome label
+    /// treat it differently from a forged or Hugging Face entry.
+    public var isLocalFolder: Bool {
+        id.hasPrefix("local-")
+    }
+
     /// First `localCandidates` entry that is a **completely
     /// downloaded** MTPLX install on disk — has the metadata files,
     /// the MTP sidecar, AND every weight shard referenced by the
@@ -866,9 +873,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         for custom in customModels {
             appendCustom(custom, to: &rows)
         }
+        // The model settings.json points at always has a row, even when
+        // nothing remembers it yet: a pasted Hugging Face id, or a folder
+        // chosen before the app remembered folders. Without the row the
+        // user has to type the path again after every switch away.
         if let currentModel,
-           option(matching: currentModel) == nil,
            let current = customHuggingFaceModel(repoID: currentModel)
+               ?? localFolderModel(path: currentModel)
         {
             appendCustom(current, to: &rows)
         }
@@ -1084,11 +1095,75 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         )
     }
 
+    /// Factory for a model folder the user chose on this Mac. Like a
+    /// forged model the artifact lives only on disk, so `hfModelID`
+    /// carries the absolute path as the well-known identifier: `matches`
+    /// finds the row from a settings.json that points at the folder, and
+    /// selecting the row launches `--model <path>` exactly like
+    /// onboarding's local pick. `~` and `file://` input canonicalize to
+    /// one path so one folder is one entry. The folder's basename is the
+    /// only name it has; a folder carrying a catalog model's folder name
+    /// is folded into that catalog row by `pickerCatalog`. Returns nil
+    /// unless `path` names a filesystem location.
+    public static func localFolderModel(path rawPath: String) -> MTPLXModelOption? {
+        guard let folder = canonicalFolderPath(rawPath) else { return nil }
+        let name = (folder as NSString).lastPathComponent
+        guard !name.isEmpty, name != "/" else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-"))
+        let safeID = name.lowercased().unicodeScalars
+            .map { allowed.contains($0) ? String($0) : "-" }
+            .joined()
+        let typed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        var aliases = [typed]
+        if folder != typed {
+            aliases.append(folder)
+        }
+        return MTPLXModelOption(
+            id: "local-\(safeID)",
+            displayName: name,
+            shortName: name,
+            detail: tr("Local model folder on this Mac."),
+            hfModelID: folder,
+            localCandidates: [folder],
+            aliases: aliases
+        )
+    }
+
+    /// Canonical absolute form of a user-supplied folder: a `file://` URL
+    /// or `~` unwrapped, trailing slash dropped. Nil unless the input
+    /// names a filesystem location (`/…`, `~…`, `file://…`) — a Hugging
+    /// Face id is never a folder, so the two add-model parsers can never
+    /// both accept one input.
+    static func canonicalFolderPath(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("file://") {
+            guard let url = URL(string: value), url.isFileURL else { return nil }
+            value = url.path
+        }
+        guard value.hasPrefix("/") || value.hasPrefix("~") else { return nil }
+        value = expand(value)
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+
+    /// True when `path` (canonical, see `canonicalFolderPath`) is one of
+    /// this option's local candidate directories.
+    func hasLocalCandidate(at path: String) -> Bool {
+        localCandidates.contains { Self.canonicalFolderPath($0) == path }
+    }
+
     public static func normalizedHuggingFaceRepoID(_ rawValue: String) -> String? {
         var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "https://huggingface.co/"
         if value.lowercased().hasPrefix(prefix) {
             value = String(value.dropFirst(prefix.count))
+        }
+        // A filesystem path is never a repo id. Without this, "/Volumes/Foo"
+        // survived the slash trim below as the repo "Volumes/Foo".
+        if value.hasPrefix("/") || value.hasPrefix("~") {
+            return nil
         }
         if let queryIndex = value.firstIndex(where: { $0 == "?" || $0 == "#" }) {
             value = String(value[..<queryIndex])
@@ -1142,7 +1217,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static func displayName(for model: String, customModels: [MTPLXModelOption]) -> String {
-        if let custom = customModels.first(where: { $0.matches(model) }) {
+        // A chosen folder has no name beyond its basename, which is what
+        // `displayName(for:)` derives anyway — and when the folder carries
+        // a catalog model's name, that lookup answers with the catalog
+        // name, matching the row the picker shows for it.
+        if let custom = customModels.first(where: { $0.matches(model) }),
+           !custom.isLocalFolder
+        {
             return custom.displayName
         }
         return displayName(for: model)
@@ -1398,11 +1479,39 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     private static func appendCustom(_ custom: MTPLXModelOption, to rows: inout [MTPLXModelOption]) {
-        guard option(matching: custom.hfModelID) == nil else { return }
+        if let official = option(matching: custom.hfModelID) {
+            // A chosen folder that carries a catalog model's folder name is
+            // that model at a non-standard location (LM Studio's org/repo
+            // layout, an external drive). The catalog row learns the folder
+            // as an install location so selecting the row launches it: a
+            // second row would duplicate the model, and the row's HF id on
+            // its own is not cached on this Mac.
+            if custom.isLocalFolder {
+                adoptLocalFolder(custom, into: official, rows: &rows)
+            }
+            return
+        }
         guard !rows.contains(where: { existing in
             existing.matches(custom.hfModelID) || custom.matches(existing.hfModelID)
         }) else { return }
         rows.append(custom)
+    }
+
+    private static func adoptLocalFolder(
+        _ folder: MTPLXModelOption,
+        into official: MTPLXModelOption,
+        rows: inout [MTPLXModelOption]
+    ) {
+        let index = rows.firstIndex { $0.id == official.id }
+        var row = index.map { rows[$0] } ?? official
+        for path in folder.localCandidates where !row.localCandidates.contains(path) {
+            row.localCandidates.append(path)
+        }
+        if let index {
+            rows[index] = row
+        } else {
+            rows.append(row)
+        }
     }
 
     private static func normalized(_ value: String) -> String {

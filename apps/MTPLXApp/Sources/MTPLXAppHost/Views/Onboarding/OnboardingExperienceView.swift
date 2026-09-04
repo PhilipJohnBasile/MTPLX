@@ -159,6 +159,14 @@ struct OnboardingExperienceView: View {
             } else {
                 config.model = model.hfModelID
             }
+        } else if case .local(let path) = orchestrator.state.pick,
+                  let folder = MTPLXModelOption.localFolderModel(path: path)
+        {
+            // The chosen folder becomes a picker row, so switching back to
+            // it later is a click rather than the path again. The daemon
+            // gets the canonical absolute path (`--model <path>`).
+            config.model = folder.resolvedReference
+            config.rememberLocalFolderModel(path: path)
         } else if let repo = orchestrator.state.resolvedRepoID {
             config.model = repo
             config.rememberCustomModel(repoID: repo)
