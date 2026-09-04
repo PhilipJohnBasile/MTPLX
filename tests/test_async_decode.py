@@ -98,10 +98,15 @@ def test_async_armed_generates_identically(monkeypatch):
     assert tokens == [1, 1, 1, 1]
 
 
-def test_eval_audit_forces_synchronous(monkeypatch):
-    """Audit runs never go async even when armed."""
-    tokens = _run(monkeypatch, MTPLX_ASYNC_AR="1", MTPLX_EVAL_AUDIT="1")
+def test_eval_audit_forces_synchronous(monkeypatch, tmp_path):
+    """Audit runs never go async even when armed.
+
+    MTPLX_EVAL_AUDIT is a file path, so the test points it at tmp_path; a bare
+    "1" would leave a file literally named 1 in the working directory."""
+    audit = tmp_path / "eval-audit.jsonl"
+    tokens = _run(monkeypatch, MTPLX_ASYNC_AR="1", MTPLX_EVAL_AUDIT=str(audit))
     assert tokens == [1, 1, 1, 1]
+    assert audit.exists() and audit.read_text().count("\n") >= 1
 
 
 def test_pipeline_lane_gating_independent_of_async_flag(monkeypatch):

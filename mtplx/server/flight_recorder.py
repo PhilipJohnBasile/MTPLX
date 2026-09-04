@@ -377,12 +377,35 @@ class FlightRecorder:
 
         return publish
 
+    def emit_route(self, event: dict[str, Any]) -> None:
+        """Route Tape record (model-owner thread; enqueue only). The smallest
+        public wrapper over _emit so mtplx.route_tape never touches the queue."""
+        if not self.enabled:
+            return
+        self._emit(event)
+
     def pc(self, session_id: str | None, payload: dict[str, Any]) -> None:
         """Postcommit outcome event (model-owner thread; enqueue only)."""
         if not self.enabled:
             return
         event = {"ev": "pc", "ts": time.time(), "session_id": session_id}
-        for key in ("action", "stored", "mode", "reason", "elapsed_s", "retry_scheduled"):
+        for key in (
+            "action",
+            "stored",
+            "mode",
+            "reason",
+            "elapsed_s",
+            "retry_scheduled",
+            # generation_final receipts: how long the two renders were when
+            # the O(1) snapshot was refused, and the committed prefix when
+            # it was taken.
+            "history_tokens",
+            "generation_boundary_tokens",
+            "history_suffix_tokens",
+            "prefix_len",
+            "divergence_token",
+            "divergence_offset_in_turn",
+        ):
             if key in payload:
                 event[key] = payload[key]
         self._emit(event)

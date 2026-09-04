@@ -245,6 +245,13 @@ public enum ChatStreamEvent: Sendable {
         usage: ChatUsage?,
         stats: ChatStreamStats?
     )
+    /// The daemon failed the request mid-stream: a chunk with
+    /// `finish_reason: "error"` and a top-level `error` object
+    /// (memory guard, context overflow, tool-loop exception), followed
+    /// by `[DONE]`. Carries the server's message verbatim. Emitted
+    /// INSTEAD of `.finished`, so a failed reply is never mistaken for
+    /// a completed one.
+    case serverError(message: String)
 }
 
 public struct ChatProgressFrame: Sendable {
@@ -543,44 +550,81 @@ public struct MTPLXChatClient: Sendable {
         try? decoder.decode(ChatCompletionChunk.self, from: Data(payload.utf8))
     }
 
+    /// The events one decoded `data:` payload folds into, in emission
+    /// order, or nil when the payload is not a chat-completion chunk.
+    /// Internal (not private) so the chunk-shape contract can be pinned
+    /// by fixture tests without a socket.
+    func streamEvents(fromDataPayload payload: String) -> [ChatStreamEvent]? {
+        guard let chunk = decodeChunk(payload) else { return nil }
+        return events(from: chunk)
+    }
+
     private func emitEvents(
         from chunk: ChatCompletionChunk,
         onEvent: @escaping @Sendable (ChatStreamEvent) async -> Void
     ) async {
+        for event in events(from: chunk) {
+            await onEvent(event)
+        }
+    }
+
+    private func events(from chunk: ChatCompletionChunk) -> [ChatStreamEvent] {
+        var events: [ChatStreamEvent] = []
         let choice = chunk.choices?.first
         if let role = choice?.delta?.role {
-            await onEvent(.role(role))
+            events.append(.role(role))
         }
         if let reasoning = choice?.delta?.reasoningContent, !reasoning.isEmpty {
-            await onEvent(.reasoningDelta(reasoning))
+            events.append(.reasoningDelta(reasoning))
         }
         if let content = choice?.delta?.content, !content.isEmpty {
-            await onEvent(.contentDelta(content))
+            events.append(.contentDelta(content))
         }
         if let toolCalls = choice?.delta?.toolCalls, !toolCalls.isEmpty {
             for toolCall in toolCalls {
                 let idx = toolCall.index ?? 0
                 if let id = toolCall.id, let name = toolCall.function?.name, !name.isEmpty {
-                    await onEvent(.toolCallStart(index: idx, id: id, name: name))
+                    events.append(.toolCallStart(index: idx, id: id, name: name))
                 }
                 if let fragment = toolCall.function?.arguments, !fragment.isEmpty {
-                    await onEvent(.toolCallArgumentsDelta(index: idx, fragment: fragment))
+                    events.append(.toolCallArgumentsDelta(index: idx, fragment: fragment))
                 }
             }
         }
         if let progress = chunk.mtplxProgress {
-            await onEvent(.progress(progressFrame(from: progress)))
+            events.append(.progress(progressFrame(from: progress)))
         }
         if let finish = choice?.finishReason {
-            await onEvent(
-                .finished(
-                    finishReason: finish,
-                    usage: usage(from: chunk.usage),
-                    stats: stats(from: chunk.mtplxStats)
+            if finish == Self.errorFinishReason {
+                // The daemon's failure frame: the top-level `error`
+                // object carries the message users need to read. A
+                // frame that claims failure without one still fails
+                // the turn — a missing message must not turn a failed
+                // reply into a completed one.
+                let message = chunk.error?.message?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                events.append(
+                    .serverError(
+                        message: message.isEmpty
+                            ? tr("The model server reported an error.")
+                            : message
+                    )
                 )
-            )
+            } else {
+                events.append(
+                    .finished(
+                        finishReason: finish,
+                        usage: usage(from: chunk.usage),
+                        stats: stats(from: chunk.mtplxStats)
+                    )
+                )
+            }
         }
+        return events
     }
+
+    /// `finish_reason` value the daemon uses on its failure frame.
+    static let errorFinishReason = "error"
 
     private func progressFrame(from raw: DynamicObject) -> ChatProgressFrame {
         ChatProgressFrame(
@@ -626,12 +670,22 @@ private struct ChatCompletionChunk: Decodable {
     var usage: ChatCompletionUsage?
     var mtplxProgress: DynamicObject?
     var mtplxStats: DynamicObject?
+    /// Top-level OpenAI-shape error object the daemon attaches to its
+    /// `finish_reason: "error"` frame.
+    var error: ChatCompletionError?
 
     private enum CodingKeys: String, CodingKey {
-        case id, choices, usage
+        case id, choices, usage, error
         case mtplxProgress = "mtplx_progress"
         case mtplxStats = "mtplx_stats"
     }
+}
+
+/// Only `message` is read: `type`/`code` vary in shape across servers
+/// (string or number), and a field nobody consumes must never be able
+/// to fail the decode and drop the whole failure frame.
+private struct ChatCompletionError: Decodable {
+    var message: String?
 }
 
 private struct ChatCompletionChoice: Decodable {

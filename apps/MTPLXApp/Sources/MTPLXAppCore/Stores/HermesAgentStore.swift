@@ -102,13 +102,13 @@ public enum HermesGatewayClientError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .disconnected:
-            return "Hermes gateway disconnected."
+            return tr("Hermes gateway disconnected.")
         case .malformedResponse:
-            return "Hermes returned a malformed response."
+            return tr("Hermes returned a malformed response.")
         case .rpcError(let message):
             return message
         case .sendFailed(let message):
-            return "Hermes request could not be sent: \(message)"
+            return tr("Hermes request could not be sent: %@", message)
         }
     }
 }
@@ -205,7 +205,7 @@ private final class HermesGatewayClient {
             if let error = root["error"]?.objectValue {
                 continuation?.resume(
                     throwing: HermesGatewayClientError.rpcError(
-                        error["message"]?.stringValue ?? "Hermes RPC failed."
+                        error["message"]?.stringValue ?? tr("Hermes RPC failed.")
                     )
                 )
             } else {
@@ -384,7 +384,7 @@ public final class HermesAgentStore: ObservableObject {
             throw HermesGatewayClientError.malformedResponse
         }
         activeSessionID = sessionID
-        activeSessionTitle = "New Hermes Agent"
+        activeSessionTitle = tr("New Hermes Agent")
         messages = []
         toolTraces = []
         activeSessionKey = (try? await liveSessionKey(for: sessionID)) ?? sessionID
@@ -666,7 +666,7 @@ public final class HermesAgentStore: ObservableObject {
                 HermesToolTrace(
                     name: "Approval",
                     status: .approval,
-                    detail: "Auto-approved by MTPLX Hermes mode."
+                    detail: tr("Auto-approved by MTPLX Hermes mode.")
                 )
             )
             if let sessionID = activeSessionID {
@@ -693,7 +693,7 @@ public final class HermesAgentStore: ObservableObject {
             messages.append(
                 HermesTranscriptMessage(
                     role: .system,
-                    text: event.payload["message"]?.stringValue ?? "Hermes reported an error."
+                    text: event.payload["message"]?.stringValue ?? tr("Hermes reported an error.")
                 )
             )
             isStreaming = false
@@ -815,7 +815,7 @@ public final class HermesAgentStore: ObservableObject {
         payload["name"]?.stringValue
             ?? payload["tool"]?.stringValue
             ?? payload["command"]?.stringValue
-            ?? "Tool"
+            ?? tr("Tool")
     }
 
     private static func toolDetail(from payload: [String: JSONValue]) -> String {

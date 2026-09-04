@@ -1086,7 +1086,11 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     func testCommandBuilderEmitsServeArgsWithoutBrowserFlags() throws {
         let fake = try makeExecutable(named: "mtplx")
-        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let home = temporaryDirectory()
+        let builder = MTPLXCommandBuilder(environment: [
+            "PATH": fake.deletingLastPathComponent().path,
+            "HOME": home.path,
+        ])
         let command = try builder.buildServeCommand(
             configuration: MTPLXAppConfiguration(
                 executablePath: fake.path,
@@ -1111,7 +1115,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                 "--scheduler-mode", "serial",
                 "--batching-preset", "latency",
                 "--ssd-session-cache", "off",
-                "--api-key", "secret",
+                "--api-key-file",
+                home.appendingPathComponent("Library/Application Support/MTPLX/daemon-api-key").path,
                 "--enable-thermal-poll",
                 "--fan-mode", "smart",
                 "--unsafe-force-unverified",
@@ -4211,6 +4216,241 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(command.arguments.containsInOrder(["--ssd-session-cache-min-prefix-tokens", "512"]))
     }
 
+    // MARK: - Issue #398: the Performance mode must survive a model restart
+
+    /// The reporter picked a non-Auto mode, restarted the model, and the
+    /// daemon still came up `--scheduler-mode serial --batching-preset solo`
+    /// with the picker back on Auto. This is the whole round trip: the
+    /// selection lands in settings.json, comes back off disk unchanged, and
+    /// the very next serve command carries it into argv.
+    func testSchedulingPresetSurvivesSettingsRoundTripIntoTheNextLaunch() throws {
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        let fake = try makeExecutable(named: "mtplx")
+
+        var configuration = MTPLXAppConfiguration(
+            executablePath: fake.path,
+            model: "/models/qwen"
+        )
+        configuration.applySchedulingPreset("throughput")
+        try store.save(configuration)
+
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.schedulingPreset, "throughput")
+
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        // Chat is the target whose preset produced the reported serial/solo
+        // launch; the persisted selection has to outrank it.
+        let command = try builder.buildServeCommand(
+            configuration: reloaded,
+            target: .chat,
+            launchID: "restart-398"
+        )
+        XCTAssertTrue(command.arguments.containsInOrder(["--scheduler-mode", "ar_batch"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--batching-preset", "throughput"]))
+        XCTAssertFalse(command.arguments.containsInOrder(["--batching-preset", "solo"]))
+    }
+
+    /// An untouched picker still gets the target preset, so Auto launches
+    /// stay byte-identical to before the fix.
+    func testAutoSchedulingPresetStillYieldsTheChatTargetPreset() throws {
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        let fake = try makeExecutable(named: "mtplx")
+        try store.save(
+            MTPLXAppConfiguration(executablePath: fake.path, model: "/models/qwen")
+        )
+
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.schedulingPreset, "target-default")
+
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: reloaded,
+            target: .chat,
+            launchID: "auto-398"
+        )
+        XCTAssertTrue(command.arguments.containsInOrder(["--scheduler-mode", "serial"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--batching-preset", "solo"]))
+    }
+
+    /// The Settings picker and the persisted configuration must read a tag
+    /// through the same table, or the menu can show a mode the launch
+    /// resolver does not honor.
+    func testSchedulingPresetSelectionMatchesWhatApplyPersists() throws {
+        for (raw, expected) in [
+            ("target-default", "target-default"),
+            ("auto", "target-default"),
+            ("", "target-default"),
+            ("nonsense", "target-default"),
+            ("latency", "latency"),
+            ("serial-latency", "latency"),
+            ("throughput", "throughput"),
+            ("ar_batch_throughput", "throughput"),
+            ("AR-BATCH-AGENT", "agent"),
+            ("agent", "agent"),
+        ] {
+            XCTAssertEqual(
+                MTPLXAppConfiguration.schedulingPresetSelection(raw),
+                expected,
+                raw
+            )
+            var configuration = MTPLXAppConfiguration()
+            configuration.applySchedulingPreset(raw)
+            XCTAssertEqual(configuration.schedulingPreset, expected, raw)
+        }
+    }
+
+    /// The launch record the app writes to its diagnostics reads the flags
+    /// back out of the argv the daemon actually receives.
+    func testFlagValueReadsSchedulingFlagsBackOutOfTheBuiltArgv() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                schedulingPreset: "agent"
+            ),
+            target: .chat,
+            launchID: "record-398"
+        )
+
+        XCTAssertEqual(
+            MTPLXCommandBuilder.flagValue("--scheduler-mode", in: command.arguments),
+            "ar_batch"
+        )
+        XCTAssertEqual(
+            MTPLXCommandBuilder.flagValue("--batching-preset", in: command.arguments),
+            "agent"
+        )
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--not-a-flag", in: command.arguments))
+        // A flag whose value is missing must not report the next flag as one.
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--depth", in: ["--depth", "--profile"]))
+        XCTAssertNil(MTPLXCommandBuilder.flagValue("--depth", in: ["--depth"]))
+    }
+
+    // MARK: - Issues #431 / #427: Settings memory card
+
+    func testMemoryOverrideEnvironmentConvertsGigabytesToBytes() throws {
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(memoryLimitGB: 116, allowSwap: false),
+            ["MTPLX_MEMORY_LIMIT_BYTES": "124554051584"]
+        )
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(memoryLimitGB: 1, allowSwap: false),
+            ["MTPLX_MEMORY_LIMIT_BYTES": "1073741824"]
+        )
+    }
+
+    func testMemoryOverrideEnvironmentIsEmptyWhenTheCardIsUntouched() throws {
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: nil,
+                allowSwap: false
+            ).isEmpty
+        )
+        // Zero and negatives are not "no memory": they fall back to the
+        // engine's own plan rather than launching an unusable cap.
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: 0,
+                allowSwap: false
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: -8,
+                allowSwap: false
+            ).isEmpty
+        )
+    }
+
+    func testMemoryOverrideEnvironmentSetsAllowSwapOnlyWhenEnabled() throws {
+        XCTAssertEqual(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: nil,
+                allowSwap: true
+            ),
+            ["MTPLX_ALLOW_SWAP": "1"]
+        )
+        XCTAssertNil(
+            MTPLXAppConfiguration.memoryOverrideEnvironment(
+                memoryLimitGB: 64,
+                allowSwap: false
+            )["MTPLX_ALLOW_SWAP"]
+        )
+    }
+
+    func testMemoryLimitIsClampedAndRoundTripsThroughSettings() throws {
+        XCTAssertNil(MTPLXAppConfiguration.normalizedMemoryLimitGB(nil))
+        XCTAssertNil(MTPLXAppConfiguration.normalizedMemoryLimitGB(0))
+        XCTAssertEqual(MTPLXAppConfiguration.normalizedMemoryLimitGB(124), 124)
+        XCTAssertEqual(
+            MTPLXAppConfiguration.normalizedMemoryLimitGB(999_999),
+            MTPLXAppConfiguration.maximumMemoryLimitGB
+        )
+
+        let url = temporaryDirectory().appendingPathComponent("settings.json")
+        let store = MTPLXSettingsStore(settingsURL: url)
+        try store.save(
+            MTPLXAppConfiguration(model: "/models/qwen", memoryLimitGB: 116, allowSwap: true)
+        )
+        let reloaded = try store.load()
+        XCTAssertEqual(reloaded.memoryLimitGB, 116)
+        XCTAssertTrue(reloaded.allowSwap)
+
+        let raw = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+        )
+        XCTAssertEqual(raw["memory_limit_gb"] as? Int, 116)
+        XCTAssertEqual(raw["allow_swap"] as? Bool, true)
+    }
+
+    func testServeCommandCarriesTheMemoryCardIntoTheDaemonEnvironment() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                memoryLimitGB: 116,
+                allowSwap: true
+            ),
+            target: .chat,
+            launchID: "memory-431"
+        )
+
+        XCTAssertEqual(command.environment["MTPLX_MEMORY_LIMIT_BYTES"], "124554051584")
+        XCTAssertEqual(command.environment["MTPLX_ALLOW_SWAP"], "1")
+    }
+
+    func testServeCommandOmitsMemoryOverridesWhenTheCardIsUntouched() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(
+            environment: ["PATH": fake.deletingLastPathComponent().path]
+        )
+        let command = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen"
+            ),
+            target: .chat,
+            launchID: "memory-default"
+        )
+
+        XCTAssertNil(command.environment["MTPLX_MEMORY_LIMIT_BYTES"])
+        XCTAssertNil(command.environment["MTPLX_ALLOW_SWAP"])
+    }
+
     func testSettingsStoreRoundTripsConfiguration() throws {
         let url = temporaryDirectory().appendingPathComponent("settings.json")
         let store = MTPLXSettingsStore(settingsURL: url)
@@ -6912,10 +7152,17 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(viewModel.visibleMessages.count, 1)
         XCTAssertEqual(viewModel.visibleMessages.last?.role, .user)
 
+        // Wait for the code line to reach the REVEALED document, not the
+        // arrival buffer: `streamingContent` concatenates the unrevealed
+        // buffer, and since the typewriter paces reveal over wall-clock
+        // arrival (2026-09-02) the buffer holds the whole chunk while the
+        // document is still one partial line. The old whole-chunk paste is
+        // exactly the burst the pacer removed.
         let streamingDeadline = Date().addingTimeInterval(5)
         var sawLiveCode = false
         while Date() < streamingDeadline {
-            if viewModel.isStreaming, viewModel.streamingContent.contains("print('ok')") {
+            if viewModel.isStreaming,
+               viewModel.streamingContentDocument.rawText.contains("print('ok')") {
                 sawLiveCode = true
                 break
             }
@@ -6929,6 +7176,8 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(viewModel.shouldRenderStreamingAssistant)
         XCTAssertFalse(viewModel.streamingReasoningDocument.isEmpty)
         XCTAssertFalse(viewModel.streamingContentDocument.isEmpty)
+        // "```python" is a finalized line block and print('ok') is at least
+        // the live tail, so the document holds two or more line blocks.
         XCTAssertGreaterThanOrEqual(viewModel.streamingContentDocument.blocks.count, 2)
         XCTAssertFalse(viewModel.streamingContentDocument.blocks.contains { block in
             if case .codeFence = block.kind {
@@ -7762,7 +8011,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             modelName: { "mtplx-test-model" }
         )
 
-        await viewModel.attach([mdURL, emptyURL, docxURL, pdfURL])
+        await viewModel.attach([mdURL, emptyURL, docxURL, pdfURL], visionEnabled: true)
         XCTAssertEqual(viewModel.pendingAttachments.count, 4)
         XCTAssertTrue(viewModel.hasSendablePendingAttachments)
 
@@ -10591,6 +10840,27 @@ final class MTPLXAppCoreTests: XCTestCase {
         await logs.append("three", stream: .stderr)
         let snapshot = await logs.snapshot()
         XCTAssertEqual(snapshot.map(\.message), ["two", "three"])
+    }
+
+    func testModelDownloaderFallbackSizeSkipsHubCacheStagingTree() throws {
+        // Leftover `.cache/huggingface/download/*.incomplete` partials from
+        // an earlier pull are not download progress; the fallback poll
+        // must not report them.
+        let root = temporaryDirectory()
+        let model = root.appendingPathComponent("model", isDirectory: true)
+        let staging = model
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("huggingface", isDirectory: true)
+            .appendingPathComponent("download", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 100).write(to: model.appendingPathComponent("config.json"))
+        try Data(repeating: 2, count: 4_000).write(to: model.appendingPathComponent("model.safetensors"))
+        try Data(repeating: 3, count: 9_000).write(
+            to: staging.appendingPathComponent("abc.incomplete")
+        )
+
+        XCTAssertEqual(ModelDownloader.recursiveSize(of: model), 4_100)
+        XCTAssertEqual(ModelDownloader.recursiveSize(of: root.appendingPathComponent("missing")), 0)
     }
 
     func testModelDownloaderIgnoresBriefStructuredStallEvents() async throws {

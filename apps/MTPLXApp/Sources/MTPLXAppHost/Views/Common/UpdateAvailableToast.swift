@@ -1,4 +1,5 @@
 import SwiftUI
+import MTPLXAppCore
 
 // MARK: - UpdateAvailableToast
 //
@@ -16,11 +17,11 @@ struct UpdateAvailableToast: View {
     var body: some View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("UPDATE AVAILABLE")
+                Text(tr("UPDATE AVAILABLE"))
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
                     .tracking(3)
                     .foregroundStyle(Brand.typeSecondary)
-                Text("MTPLX \(update.version) (\(update.build))")
+                Text(tr("MTPLX %@ (%@)", update.version, update.build))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
             }
@@ -28,7 +29,7 @@ struct UpdateAvailableToast: View {
             Spacer(minLength: 18)
 
             Button(action: onLater) {
-                Text("Later")
+                Text(tr("Later"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Brand.typeSecondary)
                     .padding(.horizontal, 4)
@@ -36,12 +37,12 @@ struct UpdateAvailableToast: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remind me later")
+            .accessibilityLabel(tr("Remind me later"))
 
             Button(action: onInstall) {
-                Text("Install Now")
+                Text(tr("Install Now"))
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.black)
+                    .foregroundStyle(Brand.invertedType)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background {
@@ -51,7 +52,7 @@ struct UpdateAvailableToast: View {
                     .contentShape(Capsule(style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Install update now")
+            .accessibilityLabel(tr("Install update now"))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 13)
@@ -66,9 +67,9 @@ struct UpdateAvailableToast: View {
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: Brand.Radii.m, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: Brand.hairline)
+                        .strokeBorder(Brand.wash.opacity(0.12), lineWidth: Brand.hairline)
                 }
-                .shadow(color: .black.opacity(0.55), radius: 20, y: 8)
+                .shadow(color: Brand.shade.opacity(0.55), radius: 20, y: 8)
         }
         .frame(maxWidth: 440)
     }

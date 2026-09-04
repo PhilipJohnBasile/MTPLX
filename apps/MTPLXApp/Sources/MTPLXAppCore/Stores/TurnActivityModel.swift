@@ -91,9 +91,9 @@ public struct TurnActivityModel: Equatable {
         if hasReasoning || thoughtIsLive {
             let label: String
             if thoughtIsLive {
-                label = (phase == .generating && !hasReasoning) ? "Generating" : "Thinking"
+                label = (phase == .generating && !hasReasoning) ? tr("Generating") : "Thinking"
             } else {
-                label = "Thought"
+                label = tr("Thought")
             }
             chips.append(
                 Chip(kind: .thought, systemName: "brain", label: label, isLive: thoughtIsLive)
@@ -101,19 +101,22 @@ public struct TurnActivityModel: Equatable {
         }
 
         if !traces.isEmpty {
-            let searches = traces.filter { $0.name == "web_search" }.count
-            let fetches = traces.filter { $0.name == "fetch_url" }.count
             let searchIsLive = phase == .searching || phase == .reading
                 || traces.contains { $0.status == .pending }
             let label: String
             var caption: String?
             if searchIsLive {
-                label = phase == .reading ? "Reading" : "Searching"
+                label = phase == .reading ? tr("Reading") : "Searching"
             } else {
+                // Only calls that actually ran count as searches or
+                // pages read; failures are counted on their own so the
+                // chip never reports a failed search as "Searched".
                 (label, caption) = Self.settledSearchLabel(
-                    searchCount: searches,
-                    fetchedPageCount: fetches,
-                    hasOtherToolActivity: true
+                    searchCount: traces.filter { $0.name == "web_search" && $0.status == .success }.count,
+                    fetchedPageCount: traces.filter { $0.name == "fetch_url" && $0.status == .success }.count,
+                    hasOtherToolActivity: true,
+                    failedSearchCount: traces.filter { $0.name == "web_search" && $0.status == .failed }.count,
+                    failedFetchCount: traces.filter { $0.name == "fetch_url" && $0.status == .failed }.count
                 )
             }
             chips.append(
@@ -132,12 +135,17 @@ public struct TurnActivityModel: Equatable {
 
     // MARK: - Settled (persisted turn)
 
+    /// `searchCount` / `fetchedPageCount` are calls that ran; failed
+    /// calls arrive separately so they are labelled as failures rather
+    /// than counted as work done.
     public static func settled(
         hasThought: Bool,
         thinkingTimeMs: Int?,
         searchCount: Int,
         fetchedPageCount: Int,
-        hasOtherToolActivity: Bool
+        hasOtherToolActivity: Bool,
+        failedSearchCount: Int = 0,
+        failedFetchCount: Int = 0
     ) -> TurnActivityModel {
         var chips: [Chip] = []
         if hasThought {
@@ -145,16 +153,20 @@ public struct TurnActivityModel: Equatable {
                 Chip(
                     kind: .thought,
                     systemName: "brain",
-                    label: "Thought",
+                    label: tr("Thought"),
                     caption: thinkingTimeMs.map(Self.formatDuration)
                 )
             )
         }
-        if searchCount > 0 || fetchedPageCount > 0 || hasOtherToolActivity {
+        if searchCount > 0 || fetchedPageCount > 0 || hasOtherToolActivity
+            || failedSearchCount > 0 || failedFetchCount > 0
+        {
             let (label, caption) = Self.settledSearchLabel(
                 searchCount: searchCount,
                 fetchedPageCount: fetchedPageCount,
-                hasOtherToolActivity: hasOtherToolActivity
+                hasOtherToolActivity: hasOtherToolActivity,
+                failedSearchCount: failedSearchCount,
+                failedFetchCount: failedFetchCount
             )
             chips.append(
                 Chip(kind: .search, systemName: "globe", label: label, caption: caption)
@@ -166,18 +178,37 @@ public struct TurnActivityModel: Equatable {
     private static func settledSearchLabel(
         searchCount: Int,
         fetchedPageCount: Int,
-        hasOtherToolActivity: Bool
+        hasOtherToolActivity: Bool,
+        failedSearchCount: Int,
+        failedFetchCount: Int
     ) -> (label: String, caption: String?) {
+        let failedCount = failedSearchCount + failedFetchCount
         if searchCount > 0 {
-            return ("Searched", searchCount > 1 ? "×\(searchCount)" : nil)
+            return ("Searched", Self.countCaption(searchCount, failed: failedCount))
         }
         if fetchedPageCount > 0 {
             return (
-                fetchedPageCount == 1 ? "Read a page" : "Read pages",
-                fetchedPageCount > 1 ? "×\(fetchedPageCount)" : nil
+                fetchedPageCount == 1 ? tr("Read a page") : "Read pages",
+                Self.countCaption(fetchedPageCount, failed: failedCount)
             )
         }
+        // Nothing ran: the chip names the failure instead of "Searched".
+        if failedSearchCount > 0 {
+            return (tr("Search failed"), Self.countCaption(failedSearchCount, failed: failedFetchCount))
+        }
+        if failedFetchCount > 0 {
+            return (tr("Fetch failed"), Self.countCaption(failedFetchCount, failed: 0))
+        }
         return ("Used tools", nil)
+    }
+
+    /// "×3", "×3 · 1 failed", "1 failed", or nil when there is nothing
+    /// beyond the label to say.
+    private static func countCaption(_ count: Int, failed: Int) -> String? {
+        var parts: [String] = []
+        if count > 1 { parts.append("×\(count)") }
+        if failed > 0 { parts.append(tr("%lld failed", failed)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     // MARK: - Auto-follow

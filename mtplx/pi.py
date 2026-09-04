@@ -10,10 +10,13 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from mtplx.jsonc import load_config_file
 
 PI_PROVIDER_ID = "mtplx"
 PI_LOCAL_API_KEY = "mtplx-local"
@@ -271,14 +274,13 @@ def build_pi_provider_config(
     }
 
 
-def _backup_invalid_config(path: Path) -> Path:
+def _unique_backup(path: Path, reason: str) -> Path:
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.name}.invalid-{stamp}.bak")
+    backup = path.with_name(f"{path.name}.{reason}-{stamp}.bak")
     counter = 1
     while backup.exists():
-        backup = path.with_name(f"{path.name}.invalid-{stamp}-{counter}.bak")
+        backup = path.with_name(f"{path.name}.{reason}-{stamp}-{counter}.bak")
         counter += 1
-    path.replace(backup)
     return backup
 
 
@@ -435,12 +437,11 @@ def write_pi_models_config(
     backup_path: Path | None = None
     existing: dict[str, Any] | None = None
     if config_path.exists():
-        try:
-            parsed = json.loads(config_path.read_text(encoding="utf-8"))
-            existing = parsed if isinstance(parsed, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            backup_path = _backup_invalid_config(config_path)
-            existing = {}
+        # Pi strips // comments and trailing commas from models.json, so MTPLX
+        # reads it the same way. A file that still does not parse is the
+        # user's to fix: InvalidConfigFile propagates and nothing here is
+        # moved or written.
+        existing, _existing_text = load_config_file(config_path)
 
     provider_config = build_pi_provider_config(
         base_url=base_url,
@@ -457,7 +458,14 @@ def write_pi_models_config(
         provider_id=provider_id,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    # Unchanged content leaves the file exactly as the user wrote it. A
+    # rewrite keeps the previous file next to it and reports the copy's path.
+    written = existing is None or merged != existing
+    if written:
+        if existing is not None:
+            backup_path = _unique_backup(config_path, "before-mtplx")
+            shutil.copy2(config_path, backup_path)
+        config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     try:
         config_path.chmod(0o600)
     except OSError:
@@ -481,5 +489,5 @@ def write_pi_models_config(
         "no_hidden_max_tokens": max_tokens is None,
         "request_policy_extension_path": str(request_policy_extension_path),
         "uncapped_request_policy": max_tokens is None,
-        "written": True,
+        "written": written,
     }
