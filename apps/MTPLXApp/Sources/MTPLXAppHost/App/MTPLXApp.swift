@@ -230,6 +230,13 @@ struct MTPLXApp: App {
                         router.onboardingPhase = .onboarding
                     } else {
                         router.onboardingPhase = .completed
+                        // Installs that onboarded before the Language
+                        // step existed are asked once, here, so they
+                        // learn the app speaks their language and where
+                        // to change it. Stamped on dismiss (ContentView).
+                        if backend.configuration.shouldOfferLanguagePrompt {
+                            router.languagePromptPresented = true
+                        }
                     }
                     // The runtime card (installed CLI version, published
                     // manifest) is advisory: refresh it in the background
