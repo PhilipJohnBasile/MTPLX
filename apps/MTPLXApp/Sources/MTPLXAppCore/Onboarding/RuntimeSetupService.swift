@@ -144,7 +144,7 @@ public struct RuntimeSetupService: Sendable {
                 continuation.yield(.rows(rows.ordered()))
 
                 // Phase 1 — engine (blocking).
-                rows.update(.engine, .running, "Checking MTPLX runtime")
+                rows.update(.engine, .running, tr("Checking MTPLX runtime"))
                 continuation.yield(.rows(rows.ordered()))
                 let executable: URL
                 do {
@@ -177,7 +177,7 @@ public struct RuntimeSetupService: Sendable {
                     continuation.finish()
                     return
                 }
-                rows.update(.fanControl, .running, "Checking fan control")
+                rows.update(.fanControl, .running, tr("Checking fan control"))
                 continuation.yield(.rows(rows.ordered()))
                 let ensure: FanControlEnsurer = service.fanControlEnsurer ?? { executable, status in
                     FanControlInstaller(processEnvironment: service.processEnvironment)
@@ -188,7 +188,7 @@ public struct RuntimeSetupService: Sendable {
                     continuation.yield(.rows(rows.ordered()))
                 }
                 if fanControl.ok {
-                    rows.update(.fanControl, .done, "Fan control ready")
+                    rows.update(.fanControl, .done, tr("Fan control ready"))
                 } else {
                     rows.update(
                         .fanControl,
@@ -229,7 +229,7 @@ public struct RuntimeSetupService: Sendable {
         rows: RuntimeSetupRowsBox,
         publish: () -> Void
     ) {
-        rows.update(.globalCLI, .running, "Checking for an existing mtplx command")
+        rows.update(.globalCLI, .running, tr("Checking for an existing mtplx command"))
         publish()
 
         // Local-wrapper bundles are isolated QA/dev artifacts. Their engine
@@ -317,7 +317,11 @@ public struct RuntimeSetupService: Sendable {
 
         let latest = appVersion.flatMap(MTPLXSemanticVersion.init)
         guard let latest, version < latest else {
-            rows.update(.globalCLI, .done, "Up to date (\(version)) — \(kind.displayName)")
+            rows.update(
+                .globalCLI,
+                .done,
+                tr("Up to date (%@) — %@", String(describing: version), kind.displayName)
+            )
             publish()
             return
         }
@@ -335,7 +339,15 @@ public struct RuntimeSetupService: Sendable {
                 publish()
                 return
             }
-            rows.update(.globalCLI, .running, "Updating your Homebrew CLI (\(version) → \(latest))")
+            rows.update(
+                .globalCLI,
+                .running,
+                tr(
+                    "Updating your Homebrew CLI (%@ → %@)",
+                    String(describing: version),
+                    String(describing: latest)
+                )
+            )
             publish()
             do {
                 let upgraded = try upgrade()
@@ -343,7 +355,7 @@ public struct RuntimeSetupService: Sendable {
                     executableURL: upgraded,
                     environment: processEnvironment
                 ) ?? "\(latest)"
-                rows.update(.globalCLI, .done, "Homebrew CLI updated to \(upgradedVersion)")
+                rows.update(.globalCLI, .done, tr("Homebrew CLI updated to %@", upgradedVersion))
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription

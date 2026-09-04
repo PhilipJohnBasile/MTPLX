@@ -22,7 +22,7 @@
 "%.1f MB/s" = "%.1f MB/s";
 "%.1f ms" = "%.1f ms";
 "%.1f tok/s" = "%.1f tok/s";
-"%.1f tok/s · %.0f%% mean accept at D%d · verified on %@" = "%.1f tok/s · D%d에서 평균 수락률 %.0f%% · %@에서 검증됨";
+"%.1f tok/s · %.0f%% mean accept at D%d · verified on %@" = "%1$.1f tok/s · D%3$d에서 평균 수락률 %2$.0f%% · %4$@에서 검증됨";
 "%.1f tokens per second" = "초당 %.1f개 토큰";
 "%.1f tps" = "%.1f tps";
 "%.1fB" = "%.1fB";
@@ -136,6 +136,7 @@
 "100 GB" = "100 GB";
 "1000 ms (Performance Lock)" = "1000 ms (성능 고정)";
 "250 GB" = "250 GB";
+"2–3× faster" = "2–3× 더 빠름";
 "30 competition problems" = "30개 대회 문제";
 "4-bit dynamic quant. Great coding speeds and good quality. FP16 build for M1 and M2 Macs. Recommended." = "4비트 동적 양자화. 탁월한 코딩 속도와 우수한 품질. M1 및 M2 Mac용 FP16 빌드. 권장됨.";
 "4-bit dynamic quant. Great coding speeds and good quality. Recommended." = "4비트 동적 양자화. 탁월한 코딩 속도와 우수한 품질. 권장됨.";
@@ -163,6 +164,7 @@
 "Active (total in use)" = "활성 (총 사용 중)";
 "Active profile" = "활성 프로필";
 "Activity" = "활동";
+"Add a model" = "모델 추가";
 "Add a model from Hugging Face" = "Hugging Face에서 모델 추가";
 "Admission window" = "허용 윈도우";
 "Advanced" = "고급";
@@ -227,6 +229,7 @@
 "Auto-approve on, tap to require approval" = "자동 승인 켜짐, 탭하여 승인 요구로 전환";
 "Auto-approved by MTPLX Hermes mode." = "MTPLX Hermes 모드에 의해 자동 승인됨.";
 "Auto-scroll" = "자동 스크롤";
+"Auto-tuned" = "자동 튜닝";
 "automatic Hermes launch currently requires macOS Terminal" = "Hermes 자동 실행에는 현재 macOS Terminal이 필요합니다";
 "automatic Pi launch currently requires macOS Terminal" = "Pi 자동 실행에는 현재 macOS Terminal이 필요합니다";
 "Automatic recovery stopped after %lld attempts." = "%lld회 시도 후 자동 복구가 중단되었습니다.";
@@ -313,15 +316,20 @@
 "Check your connection and try again." = "연결을 확인하고 다시 시도하십시오.";
 "Checked" = "확인됨";
 "Checking" = "확인 중";
+"Checking fan control" = "팬 제어 확인 중";
+"Checking for an existing mtplx command" = "기존 mtplx 명령어 확인 중";
 "Checking Hermes" = "Hermes 확인 중";
 "Checking install" = "설치 확인 중";
+"Checking MTPLX runtime" = "MTPLX 런타임 확인 중";
 "Checking..." = "확인 중...";
 "Checking…" = "확인 중…";
 "Chip" = "칩";
+"Choose a complete MTPLX model folder on this Mac." = "이 Mac에서 완전한 MTPLX 모델 폴더를 선택하십시오.";
+"Choose a model folder" = "모델 폴더 선택";
 "Choose agent workspace" = "에이전트 작업 공간 선택";
 "Choose the project folder Hermes should use for terminal and file tools." = "Hermes가 터미널 및 파일 도구에 사용할 프로젝트 폴더를 선택하십시오.";
 "Choose your language" = "언어 선택";
-"Chosen for %@ with %.0f GB unified memory." = "%.0f GB 통합 메모리가 장착된 %@에 최적화됨.";
+"Chosen for %@ with %.0f GB unified memory." = "%2$.0f GB 통합 메모리가 장착된 %1$@에 최적화됨.";
 "Chosen for Apple Silicon and MTPLX speed." = "Apple Silicon 및 MTPLX 속도에 최적화됨.";
 "Chosen for this Mac with %.0f GB unified memory." = "%.0f GB 통합 메모리가 장착된 이 Mac에 최적화됨.";
 "Clear All" = "모두 지우기";
@@ -663,6 +671,7 @@
 "hit · snapshot restore" = "적중 · 스냅샷 복원";
 "hit · total %@ tok" = "적중 · 총 %@ tok";
 "Homebrew" = "Homebrew";
+"Homebrew CLI updated to %@" = "Homebrew CLI가 %@로 업데이트됨";
 "Homebrew didn't update (%@), so your terminal now uses the app's CLI (%@). Open a new terminal." = "Homebrew가 업데이트되지 않아(%@), 터미널에서 이제 앱 내 CLI(%@)를 사용합니다. 새 터미널을 여십시오.";
 "Homebrew finished, but MTPLX still was not available on PATH." = "Homebrew 작업이 완료되었으나 PATH에서 MTPLX를 여전히 찾을 수 없습니다.";
 "Homebrew finished, but MTPLX still was not available on PATH: %@" = "Homebrew 작업이 완료되었으나 PATH에서 MTPLX를 여전히 찾을 수 없습니다: %@";
@@ -695,10 +704,13 @@
 "Install update now" = "지금 업데이트 설치";
 "Installed" = "설치됨";
 "Installed the mtplx command — open a new terminal to use it." = "mtplx 명령어가 설치되었습니다 — 새 터미널을 열어 사용하십시오.";
+"Installing fan control" = "팬 제어 설치 중";
+"Installing MTPLX runtime" = "MTPLX 런타임 설치 중";
 "Insufficient disk — needs ~%.0f GB free" = "디스크 공간 부족 — 약 %.0f GB의 여유 공간 필요";
 "Insufficient memory — needs ~%.0f GB safely" = "메모리 부족 — 안전하게 실행하려면 약 %.0f GB 필요";
 "Interrupted reply" = "중단된 응답";
 "Keep BF16" = "BF16 유지";
+"Keeps %@ and closes this prompt." = "%@을(를) 유지하고 이 프롬프트를 닫습니다.";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "하나의 작은 RAM 항목만 유지하고 블록 접두사 복원을 비활성화합니다.";
 "KV QUANTIZATION" = "KV 양자화";
 "KV quantization" = "KV 양자화";
@@ -738,6 +750,7 @@
 "Loading the model — click to cancel" = "모델 로드 중 — 클릭하여 취소";
 "Loading the model…" = "모델 로드 중…";
 "Loading — tap to stop" = "로드 중 — 탭하여 중지";
+"Local model folder on this Mac." = "이 Mac의 로컬 모델 폴더.";
 "Lock" = "잠금";
 "Locked" = "잠김";
 "LOGS" = "로그";
@@ -835,6 +848,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "MTPLX 런타임이 누락되었으며 Homebrew를 찾을 수 없습니다. brew.sh에서 Homebrew를 설치한 후 재시도를 누르십시오.";
 "MTPLX runtime ready" = "MTPLX 런타임 준비 완료";
 "MTPLX saved the measured setting for this model." = "MTPLX가 이 모델에 대해 측정된 설정을 저장했습니다.";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX는 %lld개 언어를 지원합니다. 선택한 언어는 바로 적용되며, 언제든지 설정에서 변경할 수 있습니다.";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "MTPLX 시작 상태가 예상과 일치하지 않습니다. 예상값 %@, 실제값 %@.";
 "MTPLX stopped, tap to start" = "MTPLX 중지됨, 탭하여 시작";
 "MTPLX suffix locked" = "MTPLX 접미사 고정됨";
@@ -917,6 +931,7 @@
 "Official MTPLX pair bundle (target + draft). Install it instead of rebuilding." = "공식 MTPLX 페어 번들(타깃 + 드래프트)입니다. 다시 빌드하는 대신 설치하십시오.";
 "Offline" = "오프라인";
 "On" = "켜짐";
+"On-device" = "온디바이스";
 "One per line — a Hugging Face id or local path, optionally REF=served-id. Serves /v1/embeddings." = "한 줄에 하나씩 — Hugging Face ID 또는 로컬 경로(선택 사항으로 REF=served-id). /v1/embeddings를 제공합니다.";
 "Open %@ on huggingface.co" = "huggingface.co에서 %@ 열기";
 "Open a new Terminal" = "새 Terminal 열기";
@@ -957,11 +972,13 @@
 "parser off" = "파서 꺼짐";
 "Paste a complete MTPLX model directory on this Mac." = "이 Mac에 있는 완전한 MTPLX 모델 디렉터리를 붙여넣으십시오.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Hugging Face 링크를 붙여넣으십시오. 다운로드 전에 모델을 먼저 확인합니다.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Hugging Face org/repo를 붙여넣거나 이 Mac에서 모델 폴더를 선택하십시오. 추가된 모델은 이 목록에 유지됩니다.";
 "Paste a Hugging Face repo or link." = "Hugging Face 저장소 또는 링크를 붙여넣으십시오.";
 "Paste a local model folder first." = "먼저 로컬 모델 폴더를 붙여넣으십시오.";
 "Paste any org/repo with MTPLX weights." = "MTPLX 가중치가 있는 org/repo를 붙여넣으십시오.";
 "Paste any org/repo. Added models stay in this list." = "아무 org/repo나 붙여넣으십시오. 추가된 모델은 이 목록에 유지됩니다.";
 "Paste the original repo it was made from instead and Forge can convert it." = "대신 해당 모델이 생성된 원본 저장소를 붙여넣으면 Forge가 변환할 수 있습니다.";
+"Pasted image" = "붙여넣은 이미지";
 "Pause" = "일시 정지";
 "Pause failed: %@" = "일시 정지 실패: %@";
 "Paused" = "일시 정지됨";
@@ -1108,6 +1125,7 @@
 "Repair Gateway" = "게이트웨이 복구";
 "Repair result" = "복구 결과";
 "Repairing" = "복구 중";
+"Repairing MTPLX runtime" = "MTPLX 런타임 복구 중";
 "Replace" = "대체";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "%@의 읽을 수 없는 mtplx를 교체했습니다 — 업데이트된 명령어를 사용하려면 새 터미널을 여십시오.";
 "Reply failed: %@" = "응답 실패: %@";
@@ -1135,7 +1153,7 @@
 "Response cap" = "응답 상한";
 "Responses run until the model stops or fills its context. No length cap." = "모델이 중지되거나 컨텍스트가 채워질 때까지 응답이 실행됩니다. 길이 제한은 없습니다.";
 "Restart" = "재시작";
-"Restart %lld scheduled in %.1fs." = "%.1f초 후 %lld번째 재시작 예정.";
+"Restart %lld scheduled in %.1fs." = "%2$.1f초 후 %1$lld번째 재시작 예정.";
 "Restart MTPLX" = "MTPLX 재시작";
 "Restart MTPLX after crash" = "충돌 후 MTPLX 재시작";
 "Restart MTPLX to load the updated files." = "업데이트된 파일을 로드하려면 MTPLX를 재시작하십시오.";
@@ -1380,6 +1398,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "이 Mac이 메모리 압박을 받고 있습니다. 축출된 항목은 없습니다. 이 상태가 지속되면 스왑이 발생하기 전에 캐시가 SSD로 양보됩니다.";
 "this model" = "이 모델";
 "This model" = "이 모델";
+"This model can't see images." = "이 모델은 이미지를 볼 수 없습니다.";
 "This model loads next time you start." = "다음에 시작할 때 이 모델이 로드됩니다.";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "이 MTPLX 런타임은 너무 오래되었으나 Homebrew로 관리되지 않습니다. 수동으로 업데이트한 후 재시도를 누르십시오: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "이 모델은 %@에서 만들어졌습니다. 해당 저장소를 대신 붙여넣으면 Forge가 변환할 수 있습니다.";
@@ -1445,6 +1464,7 @@
 "Unsupported file type for %@: .%@" = "%@의 지원되지 않는 파일 유형: .%@";
 "Untitled Agent" = "무제 에이전트";
 "Unverified" = "검증되지 않음";
+"Up to date (%@) — %@" = "최신 상태 (%@) — %@";
 "Update" = "업데이트";
 "UPDATE AVAILABLE" = "업데이트 가능";
 "Update available: %@" = "업데이트 가능: %@";
@@ -1454,6 +1474,7 @@
 "Update Runtime" = "런타임 업데이트";
 "Updated the mtplx command to %@ (was %@). Open a new terminal to use it." = "mtplx 명령어를 %@(으)로 업데이트했습니다(이전: %@). 사용하려면 새 터미널을 여십시오.";
 "UPDATES" = "업데이트";
+"Updating your Homebrew CLI (%@ → %@)" = "Homebrew CLI 업데이트 중 (%@ → %@)";
 "uploaded" = "업로드됨";
 "uploading" = "업로드 중";
 "UPLOADING" = "업로드 중";
@@ -1461,6 +1482,7 @@
 "Use %@" = "%@ 사용";
 "Use a different model from Hugging Face" = "Hugging Face에서 다른 모델 사용";
 "Use a local model folder" = "로컬 모델 폴더 사용";
+"Use Folder" = "폴더 사용";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "MTPLX 기반의 Hermes Desktop을 사용하세요 — 터미널, 파일, 웹, 브라우저 및 메시징 도구 제공.";
 "Use OpenCode Desktop, powered by MTPLX." = "MTPLX 기반의 OpenCode Desktop을 사용하세요.";
 "Use Pi in the terminal." = "터미널에서 Pi를 사용하세요.";

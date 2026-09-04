@@ -316,7 +316,7 @@ struct MTPLXApp: App {
             // item would otherwise sit alongside ours (QA-124).
             CommandGroup(replacing: .appInfo) {
                 Button(tr("About MTPLX…")) { router.presentAbout() }
-                CheckForUpdatesCommand(updater: appUpdater)
+                CheckForUpdatesCommand(updater: appUpdater, languageStore: languageStore)
             }
 
             CommandGroup(after: .appInfo) {

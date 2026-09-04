@@ -21,11 +21,13 @@ struct WelcomeStep: View {
     @State private var pillsVisible = false
     @State private var ctaVisible = false
 
-    private let pills: [(symbol: String, text: String)] = [
-        ("bolt.fill", "2–3× faster"),
-        ("cpu.fill", "Auto-tuned"),
-        ("lock.shield.fill", "On-device"),
-    ]
+    private var pills: [(symbol: String, text: String)] {
+        [
+            ("bolt.fill", tr("2–3× faster")),
+            ("cpu.fill", tr("Auto-tuned")),
+            ("lock.shield.fill", tr("On-device")),
+        ]
+    }
 
     var body: some View {
         OnboardingStepContainer(

@@ -39,7 +39,7 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
     private let environment: [String: String]
 
     public func installOrUpdate(status: (@Sendable (String) -> Void)? = nil) throws -> URL {
-        status?("Checking MTPLX runtime")
+        status?(tr("Checking MTPLX runtime"))
         let minimumVersion = minimumRuntimeVersion()
         let bundledWheel = MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment)
         // When this bundle ships a wheel, the engine is always the
@@ -70,7 +70,7 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
                 return existing
             }
             if let wheel = bundledWheel {
-                status?("Repairing MTPLX runtime")
+                status?(tr("Repairing MTPLX runtime"))
                 return try installBundledRuntime(
                     wheel: URL(fileURLWithPath: wheel),
                     rebuildFromScratch: true
@@ -78,14 +78,14 @@ public struct MTPLXRuntimeBootstrapper: Sendable {
             }
         }
         if let wheel = bundledWheel {
-            status?("Installing MTPLX runtime")
+            status?(tr("Installing MTPLX runtime"))
             return try installBundledRuntime(wheel: URL(fileURLWithPath: wheel))
         }
         if let existing = try? MTPLXCommandBuilder.resolveInstalledExecutable(environment: environment),
            minimumVersion == nil {
             return existing
         }
-        status?("Installing MTPLX runtime")
+        status?(tr("Installing MTPLX runtime"))
         return try installHomebrewRuntime()
     }
 

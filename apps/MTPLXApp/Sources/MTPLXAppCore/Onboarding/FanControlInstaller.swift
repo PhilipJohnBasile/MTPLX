@@ -103,7 +103,7 @@ struct FanControlInstaller: Sendable {
         subprocess: SubprocessInterruptBox,
         status: (String) -> Void
     ) -> FanControlSetupResult {
-        status("Checking fan control")
+        status(tr("Checking fan control"))
 
         let statusCheck = runCommand(
             executable: executable,
@@ -116,12 +116,12 @@ struct FanControlInstaller: Sendable {
         ) == true
 
         if !hasDetectedTool {
-            status("Installing fan control")
+            status(tr("Installing fan control"))
             let install = install(executable: executable, subprocess: subprocess)
             guard install.ok else { return install }
         }
 
-        status("Fan control ready")
+        status(tr("Fan control ready"))
         return FanControlSetupResult(ok: true, exitCode: 0, message: tr("Fan control ready"))
     }
 

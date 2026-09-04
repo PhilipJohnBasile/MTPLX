@@ -117,9 +117,10 @@ extension MTPLXAppUpdater: SPUStandardUserDriverDelegate {
 
 struct CheckForUpdatesCommand: View {
     @ObservedObject var updater: MTPLXAppUpdater
+    @ObservedObject var languageStore: LanguageStore
 
     var body: some View {
-        Button(tr("Check for Updates...")) {
+        Button(L10n.string("Check for Updates...", language: languageStore.language)) {
             updater.checkForUpdates()
         }
         .disabled(!updater.canCheckForUpdates)

@@ -136,6 +136,7 @@
 "100 GB" = "100 GB";
 "1000 ms (Performance Lock)" = "1000 ms (Leistungssperre)";
 "250 GB" = "250 GB";
+"2–3× faster" = "2–3× schneller";
 "30 competition problems" = "30 Wettbewerbsaufgaben";
 "4-bit dynamic quant. Great coding speeds and good quality. FP16 build for M1 and M2 Macs. Recommended." = "Dynamische 4-Bit-Quantisierung. Sehr schnell beim Coden, gute Qualität. FP16-Build für M1- und M2-Macs. Empfohlen.";
 "4-bit dynamic quant. Great coding speeds and good quality. Recommended." = "Dynamische 4-Bit-Quantisierung. Sehr schnell beim Coden, gute Qualität. Empfohlen.";
@@ -163,6 +164,7 @@
 "Active (total in use)" = "Aktiv (insgesamt belegt)";
 "Active profile" = "Aktives Profil";
 "Activity" = "Aktivität";
+"Add a model" = "Modell hinzufügen";
 "Add a model from Hugging Face" = "Modell von Hugging Face hinzufügen";
 "Admission window" = "Zulassungsfenster";
 "Advanced" = "Erweitert";
@@ -227,6 +229,7 @@
 "Auto-approve on, tap to require approval" = "Automatische Genehmigung an, klicken, um eine Genehmigung zu verlangen";
 "Auto-approved by MTPLX Hermes mode." = "Automatisch genehmigt durch den MTPLX-Hermes-Modus.";
 "Auto-scroll" = "Automatisch scrollen";
+"Auto-tuned" = "Automatisch abgestimmt";
 "automatic Hermes launch currently requires macOS Terminal" = "der automatische Hermes-Start erfordert derzeit das macOS-Terminal";
 "automatic Pi launch currently requires macOS Terminal" = "der automatische Pi-Start erfordert derzeit das macOS-Terminal";
 "Automatic recovery stopped after %lld attempts." = "Automatische Wiederherstellung nach %lld Versuchen gestoppt.";
@@ -313,11 +316,16 @@
 "Check your connection and try again." = "Prüfe deine Verbindung und versuche es erneut.";
 "Checked" = "Geprüft";
 "Checking" = "Prüfung läuft";
+"Checking fan control" = "Lüftersteuerung wird geprüft";
+"Checking for an existing mtplx command" = "Suche nach vorhandenem mtplx-Befehl";
 "Checking Hermes" = "Hermes wird geprüft";
 "Checking install" = "Installation wird geprüft";
+"Checking MTPLX runtime" = "MTPLX-Runtime wird geprüft";
 "Checking..." = "Prüfung läuft...";
 "Checking…" = "Prüfung läuft…";
 "Chip" = "Chip";
+"Choose a complete MTPLX model folder on this Mac." = "Wähle einen vollständigen MTPLX-Modellordner auf diesem Mac.";
+"Choose a model folder" = "Modellordner auswählen";
 "Choose agent workspace" = "Agent-Arbeitsbereich auswählen";
 "Choose the project folder Hermes should use for terminal and file tools." = "Wähle den Projektordner, den Hermes für Terminal- und Datei-Tools verwenden soll.";
 "Choose your language" = "Wähle deine Sprache";
@@ -663,6 +671,7 @@
 "hit · snapshot restore" = "Treffer · Snapshot-Wiederherstellung";
 "hit · total %@ tok" = "Treffer · gesamt %@ tok";
 "Homebrew" = "Homebrew";
+"Homebrew CLI updated to %@" = "Homebrew-CLI auf %@ aktualisiert";
 "Homebrew didn't update (%@), so your terminal now uses the app's CLI (%@). Open a new terminal." = "Homebrew wurde nicht aktualisiert (%1$@), daher verwendet dein Terminal nun das CLI der App (%2$@). Öffne ein neues Terminal.";
 "Homebrew finished, but MTPLX still was not available on PATH." = "Homebrew wurde abgeschlossen, aber MTPLX war weiterhin nicht im PATH verfügbar.";
 "Homebrew finished, but MTPLX still was not available on PATH: %@" = "Homebrew wurde abgeschlossen, aber MTPLX war weiterhin nicht im PATH verfügbar: %@";
@@ -695,10 +704,13 @@
 "Install update now" = "Update jetzt installieren";
 "Installed" = "Installiert";
 "Installed the mtplx command — open a new terminal to use it." = "Befehl mtplx installiert — öffne ein neues Terminal, um ihn zu verwenden.";
+"Installing fan control" = "Lüftersteuerung wird installiert";
+"Installing MTPLX runtime" = "MTPLX-Runtime wird installiert";
 "Insufficient disk — needs ~%.0f GB free" = "Ungenügend Festplattenspeicher — benötigt ca. %.0f GB frei";
 "Insufficient memory — needs ~%.0f GB safely" = "Ungenügend Speicher — benötigt sicher ca. %.0f GB";
 "Interrupted reply" = "Unterbrochene Antwort";
 "Keep BF16" = "BF16 beibehalten";
+"Keeps %@ and closes this prompt." = "Behält %@ bei und schließt diesen Hinweis.";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "Behält einen winzigen RAM-Eintrag bei und deaktiviert die Block-Präfix-Wiederherstellung.";
 "KV QUANTIZATION" = "KV-QUANTISIERUNG";
 "KV quantization" = "KV-Quantisierung";
@@ -738,6 +750,7 @@
 "Loading the model — click to cancel" = "Modell wird geladen — zum Abbrechen klicken";
 "Loading the model…" = "Modell wird geladen …";
 "Loading — tap to stop" = "Wird geladen — zum Stoppen tippen";
+"Local model folder on this Mac." = "Lokaler Modellordner auf diesem Mac.";
 "Lock" = "Sperren";
 "Locked" = "Gesperrt";
 "LOGS" = "PROTOKOLLE";
@@ -835,6 +848,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "Die MTPLX-Runtime fehlt und Homebrew wurde nicht gefunden. Installiere Homebrew von brew.sh und klicke dann auf „Erneut versuchen“.";
 "MTPLX runtime ready" = "MTPLX-Runtime bereit";
 "MTPLX saved the measured setting for this model." = "MTPLX hat die gemessene Einstellung für dieses Modell gesichert.";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX spricht %lld Sprachen. Deine Auswahl gilt sofort, und du kannst sie jederzeit in den Einstellungen ändern.";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "Der MTPLX-Start entsprach nicht den Erwartungen. Erwartet wurde %1$@, erhalten %2$@.";
 "MTPLX stopped, tap to start" = "MTPLX gestoppt, zum Starten tippen";
 "MTPLX suffix locked" = "MTPLX-Suffix gesperrt";
@@ -917,6 +931,7 @@
 "Official MTPLX pair bundle (target + draft). Install it instead of rebuilding." = "Offizielles MTPLX-Paarbündel (Ziel + Entwurf). Installiere es, anstatt neu zu bauen.";
 "Offline" = "Offline";
 "On" = "Ein";
+"On-device" = "Auf dem Gerät";
 "One per line — a Hugging Face id or local path, optionally REF=served-id. Serves /v1/embeddings." = "Eines pro Zeile — eine Hugging Face-ID oder ein lokaler Pfad, optional REF=served-id. Stellt /v1/embeddings bereit.";
 "Open %@ on huggingface.co" = "%@ auf huggingface.co öffnen";
 "Open a new Terminal" = "Neues Terminal öffnen";
@@ -957,11 +972,13 @@
 "parser off" = "Parser aus";
 "Paste a complete MTPLX model directory on this Mac." = "Füge ein vollständiges MTPLX-Modellverzeichnis auf diesem Mac ein.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Füge einen Hugging Face-Link ein. Wir prüfen das Modell, bevor etwas heruntergeladen wird.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Füge ein Hugging Face org/repo ein oder wähle einen Modellordner auf diesem Mac. Hinzugefügte Modelle verbleiben in dieser Liste.";
 "Paste a Hugging Face repo or link." = "Füge ein Hugging Face-Repo oder einen Link ein.";
 "Paste a local model folder first." = "Füge zuerst einen lokalen Modellordner ein.";
 "Paste any org/repo with MTPLX weights." = "Füge ein beliebiges org/repo mit MTPLX-Gewichten ein.";
 "Paste any org/repo. Added models stay in this list." = "Füge ein beliebiges org/repo ein. Hinzugefügte Modelle verbleiben in dieser Liste.";
 "Paste the original repo it was made from instead and Forge can convert it." = "Füge stattdessen das ursprüngliche Quell-Repo ein, und Forge kann es konvertieren.";
+"Pasted image" = "Eingefügtes Bild";
 "Pause" = "Anhalten";
 "Pause failed: %@" = "Anhalten fehlgeschlagen: %@";
 "Paused" = "Angehalten";
@@ -1108,6 +1125,7 @@
 "Repair Gateway" = "Gateway reparieren";
 "Repair result" = "Reparaturergebnis";
 "Repairing" = "Reparatur läuft";
+"Repairing MTPLX runtime" = "MTPLX-Runtime wird repariert";
 "Replace" = "Ersetzen";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Unlesbares mtplx unter %@ wurde ersetzt — öffne ein neues Terminal, um den aktualisierten Befehl zu verwenden.";
 "Reply failed: %@" = "Antwort fehlgeschlagen: %@";
@@ -1380,6 +1398,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "Dieser Mac steht unter Speicherdruck. Nichts wurde verdrängt; Caches weichen vor einem Swap auf die SSD aus, falls es so bleibt.";
 "this model" = "dieses Modell";
 "This model" = "Dieses Modell";
+"This model can't see images." = "Dieses Modell kann keine Bilder sehen.";
 "This model loads next time you start." = "Dieses Modell wird beim nächsten Start geladen.";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "Diese MTPLX-Runtime ist zu alt, wird aber nicht von Homebrew verwaltet. Aktualisiere sie manuell und klicke dann auf „Erneut versuchen“: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "Dieses Modell wurde aus %@ erstellt. Füge stattdessen dieses Repo ein, und Forge kann es konvertieren.";
@@ -1445,6 +1464,7 @@
 "Unsupported file type for %@: .%@" = "Nicht unterstützter Dateityp für %@: .%@";
 "Untitled Agent" = "Unbenannter Agent";
 "Unverified" = "Nicht verifiziert";
+"Up to date (%@) — %@" = "Aktuell (%@) — %@";
 "Update" = "Aktualisieren";
 "UPDATE AVAILABLE" = "UPDATE VERFÜGBAR";
 "Update available: %@" = "Update verfügbar: %@";
@@ -1454,6 +1474,7 @@
 "Update Runtime" = "Runtime aktualisieren";
 "Updated the mtplx command to %@ (was %@). Open a new terminal to use it." = "Befehl mtplx auf %@ aktualisiert (war %@). Öffne ein neues Terminal, um ihn zu verwenden.";
 "UPDATES" = "UPDATES";
+"Updating your Homebrew CLI (%@ → %@)" = "Deine Homebrew-CLI wird aktualisiert (%@ → %@)";
 "uploaded" = "hochgeladen";
 "uploading" = "wird hochgeladen";
 "UPLOADING" = "WIRD HOCHGELADEN";
@@ -1461,6 +1482,7 @@
 "Use %@" = "%@ verwenden";
 "Use a different model from Hugging Face" = "Ein anderes Modell von Hugging Face verwenden";
 "Use a local model folder" = "Einen lokalen Modellordner verwenden";
+"Use Folder" = "Ordner verwenden";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "Verwende Hermes Desktop, powered by MTPLX — Terminal-, Datei-, Web-, Browser- und Messaging-Tools.";
 "Use OpenCode Desktop, powered by MTPLX." = "Verwende OpenCode Desktop, powered by MTPLX.";
 "Use Pi in the terminal." = "Verwende Pi im Terminal.";

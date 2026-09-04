@@ -244,7 +244,7 @@ public struct AutoTuner: Sendable {
                     executable = try self.resolveOrBootstrapMtplxExecutable { message in
                         continuation.yield(.installingFanControl(message))
                     }
-                    continuation.yield(.installingFanControl("MTPLX runtime ready"))
+                    continuation.yield(.installingFanControl(tr("MTPLX runtime ready")))
                 } catch {
                     let message = (error as? LocalizedError)?.errorDescription
                         ?? error.localizedDescription

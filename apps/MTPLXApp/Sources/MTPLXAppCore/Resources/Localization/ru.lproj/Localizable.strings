@@ -136,6 +136,7 @@
 "100 GB" = "100 ГБ";
 "1000 ms (Performance Lock)" = "1000 мс (Режим производительности)";
 "250 GB" = "250 ГБ";
+"2–3× faster" = "В 2–3 раза быстрее";
 "30 competition problems" = "30 олимпиадных задач";
 "4-bit dynamic quant. Great coding speeds and good quality. FP16 build for M1 and M2 Macs. Recommended." = "Динамическое 4-битное квантование. Отличная скорость в коде и хорошее качество. Сборка FP16 для Mac с M1 и M2. Рекомендуется.";
 "4-bit dynamic quant. Great coding speeds and good quality. Recommended." = "Динамическое 4-битное квантование. Отличная скорость в коде и хорошее качество. Рекомендуется.";
@@ -163,6 +164,7 @@
 "Active (total in use)" = "Активно (всего занято)";
 "Active profile" = "Активный профиль";
 "Activity" = "Активность";
+"Add a model" = "Добавить модель";
 "Add a model from Hugging Face" = "Добавить модель с Hugging Face";
 "Admission window" = "Окно допуска";
 "Advanced" = "Дополнительно";
@@ -227,6 +229,7 @@
 "Auto-approve on, tap to require approval" = "Автоподтверждение включено, нажмите, чтобы требовать подтверждение";
 "Auto-approved by MTPLX Hermes mode." = "Автоматически подтверждено режимом MTPLX Hermes.";
 "Auto-scroll" = "Автопрокрутка";
+"Auto-tuned" = "Автонастройка";
 "automatic Hermes launch currently requires macOS Terminal" = "для автоматического запуска Hermes пока требуется Terminal macOS";
 "automatic Pi launch currently requires macOS Terminal" = "для автоматического запуска Pi пока требуется Terminal macOS";
 "Automatic recovery stopped after %lld attempts." = "Автоматическое восстановление остановлено после %lld попыток.";
@@ -312,11 +315,16 @@
 "Check your connection and try again." = "Проверьте подключение и повторите попытку.";
 "Checked" = "Проверено";
 "Checking" = "Проверка";
+"Checking fan control" = "Проверка управления вентиляторами";
+"Checking for an existing mtplx command" = "Поиск существующей команды mtplx";
 "Checking Hermes" = "Проверка Hermes";
 "Checking install" = "Проверка установки";
+"Checking MTPLX runtime" = "Проверка среды выполнения MTPLX";
 "Checking..." = "Проверка...";
 "Checking…" = "Проверка…";
 "Chip" = "Чип";
+"Choose a complete MTPLX model folder on this Mac." = "Выберите полную папку модели MTPLX на этом Mac.";
+"Choose a model folder" = "Выбрать папку с моделью";
 "Choose agent workspace" = "Выберите рабочую папку агента";
 "Choose the project folder Hermes should use for terminal and file tools." = "Выберите папку проекта, которую Hermes будет использовать для инструментов терминала и файлов.";
 "Choose your language" = "Выберите язык";
@@ -663,6 +671,7 @@
 "hit · snapshot restore" = "попадание · восстановление из снимка";
 "hit · total %@ tok" = "попадание · всего %@ tok";
 "Homebrew" = "Homebrew";
+"Homebrew CLI updated to %@" = "CLI Homebrew обновлена до %@";
 "Homebrew didn't update (%@), so your terminal now uses the app's CLI (%@). Open a new terminal." = "Homebrew не обновился (%@), поэтому теперь ваш терминал использует CLI приложения (%@). Откройте новый терминал.";
 "Homebrew finished, but MTPLX still was not available on PATH." = "Homebrew завершил работу, но MTPLX по-прежнему недоступен в PATH.";
 "Homebrew finished, but MTPLX still was not available on PATH: %@" = "Homebrew завершил работу, но MTPLX по-прежнему недоступен в PATH: %@";
@@ -695,10 +704,13 @@
 "Install update now" = "Установить обновление сейчас";
 "Installed" = "Установлено";
 "Installed the mtplx command — open a new terminal to use it." = "Команда mtplx установлена — откройте новый терминал, чтобы использовать её.";
+"Installing fan control" = "Установка управления вентиляторами";
+"Installing MTPLX runtime" = "Установка среды выполнения MTPLX";
 "Insufficient disk — needs ~%.0f GB free" = "Недостаточно места на диске — требуется ~%.0f ГБ свободного места";
 "Insufficient memory — needs ~%.0f GB safely" = "Недостаточно памяти — для безопасной работы требуется ~%.0f ГБ";
 "Interrupted reply" = "Прерванный ответ";
 "Keep BF16" = "Оставить BF16";
+"Keeps %@ and closes this prompt." = "Сохраняет %@ и закрывает это окно.";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "Сохраняет одну небольшую запись в RAM и отключает восстановление префиксов блоков.";
 "KV QUANTIZATION" = "КВАНТОВАНИЕ KV";
 "KV quantization" = "Квантование KV";
@@ -738,6 +750,7 @@
 "Loading the model — click to cancel" = "Загрузка модели — нажмите, чтобы отменить";
 "Loading the model…" = "Загрузка модели…";
 "Loading — tap to stop" = "Загрузка — нажмите, чтобы остановить";
+"Local model folder on this Mac." = "Локальная папка с моделью на этом Mac.";
 "Lock" = "Блокировка";
 "Locked" = "Заблокировано";
 "LOGS" = "ЖУРНАЛ";
@@ -835,6 +848,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "Среда выполнения MTPLX отсутствует, и Homebrew не найден. Установите Homebrew с brew.sh, затем нажмите «Повторить».";
 "MTPLX runtime ready" = "Среда выполнения MTPLX готова";
 "MTPLX saved the measured setting for this model." = "MTPLX сохранил измеренную настройку для этой модели.";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX поддерживает %lld языков. Ваш выбор применяется сразу, и вы можете изменить его в любое время в Настройках.";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "Запуск MTPLX не соответствовал ожидаемому. Ожидалось %@, получено %@.";
 "MTPLX stopped, tap to start" = "MTPLX остановлен, нажмите для запуска";
 "MTPLX suffix locked" = "Суффикс MTPLX зафиксирован";
@@ -917,6 +931,7 @@
 "Official MTPLX pair bundle (target + draft). Install it instead of rebuilding." = "Официальный спаренный бандл MTPLX (целевая + черновая). Установите его вместо повторной сборки.";
 "Offline" = "Не в сети";
 "On" = "Вкл.";
+"On-device" = "На устройстве";
 "One per line — a Hugging Face id or local path, optionally REF=served-id. Serves /v1/embeddings." = "По одному на строку — идентификатор Hugging Face или локальный путь, опционально REF=served-id. Обслуживает /v1/embeddings.";
 "Open %@ on huggingface.co" = "Открыть %@ на huggingface.co";
 "Open a new Terminal" = "Открыть новый терминал";
@@ -957,11 +972,13 @@
 "parser off" = "парсер выкл.";
 "Paste a complete MTPLX model directory on this Mac." = "Вставьте полный путь к каталогу модели MTPLX на этом Mac.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Вставьте ссылку на Hugging Face. Мы проверим модель перед началом загрузки.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Вставьте org/repo с Hugging Face или выберите папку с моделью на этом Mac. Добавленные модели останутся в этом списке.";
 "Paste a Hugging Face repo or link." = "Вставьте ссылку или репозиторий Hugging Face.";
 "Paste a local model folder first." = "Сначала вставьте локальную папку с моделью.";
 "Paste any org/repo with MTPLX weights." = "Вставьте любой org/repo с весами MTPLX.";
 "Paste any org/repo. Added models stay in this list." = "Вставьте любой org/repo. Добавленные модели останутся в этом списке.";
 "Paste the original repo it was made from instead and Forge can convert it." = "Вставьте вместо этого исходный репозиторий, из которого она создана, и Forge сможет преобразовать её.";
+"Pasted image" = "Вставленное изображение";
 "Pause" = "Приостановить";
 "Pause failed: %@" = "Не удалось приостановить: %@";
 "Paused" = "Приостановлено";
@@ -1108,6 +1125,7 @@
 "Repair Gateway" = "Восстановить шлюз";
 "Repair result" = "Результат восстановления";
 "Repairing" = "Восстановление";
+"Repairing MTPLX runtime" = "Восстановление среды выполнения MTPLX";
 "Replace" = "Заменить";
 "Replaced an unreadable mtplx at %@ — open a new terminal to use the updated command." = "Заменён нечитаемый mtplx по пути %@ — откройте новый терминал, чтобы использовать обновлённую команду.";
 "Reply failed: %@" = "Не удалось получить ответ: %@";
@@ -1380,6 +1398,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "Этот Mac испытывает нагрузку на память. Ничего не вытеснено; кэши уступают место SSD перед любым свопом, если нагрузка сохранится.";
 "this model" = "эта модель";
 "This model" = "Эта модель";
+"This model can't see images." = "Эта модель не видит изображения.";
 "This model loads next time you start." = "Эта модель загрузится при следующем запуске.";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "Эта среда выполнения MTPLX устарела, но она не управляется через Homebrew. Обновите её вручную, затем нажмите «Повторить»: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "Она была создана из %@. Вставьте вместо этого тот репозиторий, и Forge сможет преобразовать её.";
@@ -1445,6 +1464,7 @@
 "Unsupported file type for %@: .%@" = "Неподдерживаемый тип файла для %@: .%@";
 "Untitled Agent" = "Безымянный агент";
 "Unverified" = "Не проверено";
+"Up to date (%@) — %@" = "Актуальная версия (%@) — %@";
 "Update" = "Обновить";
 "UPDATE AVAILABLE" = "ДОСТУПНО ОБНОВЛЕНИЕ";
 "Update available: %@" = "Доступно обновление: %@";
@@ -1454,6 +1474,7 @@
 "Update Runtime" = "Обновить среду выполнения";
 "Updated the mtplx command to %@ (was %@). Open a new terminal to use it." = "Команда mtplx обновлена до %@ (было %@). Откройте новый терминал, чтобы использовать её.";
 "UPDATES" = "ОБНОВЛЕНИЯ";
+"Updating your Homebrew CLI (%@ → %@)" = "Обновление вашей CLI Homebrew (%@ → %@)";
 "uploaded" = "загружено";
 "uploading" = "загрузка";
 "UPLOADING" = "ЗАГРУЗКА";
@@ -1461,6 +1482,7 @@
 "Use %@" = "Использовать %@";
 "Use a different model from Hugging Face" = "Использовать другую модель с Hugging Face";
 "Use a local model folder" = "Использовать локальную папку с моделью";
+"Use Folder" = "Использовать папку";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "Используйте Hermes Desktop на базе MTPLX — инструменты для терминала, файлов, веба, браузера и сообщений.";
 "Use OpenCode Desktop, powered by MTPLX." = "Используйте OpenCode Desktop на базе MTPLX.";
 "Use Pi in the terminal." = "Используйте Pi в терминале.";

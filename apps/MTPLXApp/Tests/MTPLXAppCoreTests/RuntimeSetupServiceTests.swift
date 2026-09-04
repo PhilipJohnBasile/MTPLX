@@ -284,6 +284,52 @@ final class RuntimeSetupServiceTests: XCTestCase {
         XCTAssertEqual(result.outcome?.engineReady, true)
     }
 
+    func testSetupProgressUsesTheActiveLanguage() async throws {
+        L10n.activate(.simplifiedChinese)
+        defer { L10n.activate(.english) }
+
+        let home = temporaryDirectory()
+        let engine = try makeFakeCLI(in: home.appendingPathComponent("engine"), version: "1.0.0")
+        let globalDir = home.appendingPathComponent("global-bin", isDirectory: true)
+        _ = try makeFakeCLI(in: globalDir, version: "0.3.7")
+        let upgraded = try makeFakeCLI(in: home.appendingPathComponent("brew-upgraded"), version: "1.0.0")
+
+        var environment = isolatedEnvironment(home: home, pathDir: globalDir)
+        environment["MTPLX_APP_FAKE_INSTALL_KIND"] = "homebrew"
+        let service = RuntimeSetupService(
+            processEnvironment: environment,
+            appVersion: "1.0.0",
+            engineInstaller: { status in
+                status(tr("Installing MTPLX runtime"))
+                return engine
+            },
+            fanControlEnsurer: { _, status in
+                status(tr("Checking fan control"))
+                return FanControlSetupResult(
+                    ok: true,
+                    exitCode: 0,
+                    message: tr("Fan control ready")
+                )
+            },
+            homebrewUpgrader: { upgraded }
+        )
+        let result = await run(service)
+        let details = result.snapshots.flatMap { $0.map(\.detail) }
+
+        for expected in [
+            "正在检查 MTPLX 运行时",
+            "正在安装 MTPLX 运行时",
+            "正在检查风扇控制",
+            "正在检查现有的 mtplx 命令",
+            "正在更新你的 Homebrew CLI（0.3.7 → 1.0.0）",
+        ] {
+            XCTAssertTrue(details.contains(expected), "\(expected) missing from \(details)")
+        }
+        XCTAssertEqual(result.row(.engine)?.detail, "MTPLX 1.0.0 就绪")
+        XCTAssertEqual(result.row(.fanControl)?.detail, "风扇控制就绪")
+        XCTAssertEqual(result.row(.globalCLI)?.detail, "Homebrew CLI 已更新至 1.0.0")
+    }
+
     func testHomebrewUpgradeFailureFallsBackToShim() async throws {
         struct BrewError: LocalizedError {
             var errorDescription: String? { "brew upgrade exited 1" }

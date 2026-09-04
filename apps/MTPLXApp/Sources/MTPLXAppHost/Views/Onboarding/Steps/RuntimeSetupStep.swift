@@ -161,11 +161,11 @@ private struct RuntimeSetupRowView: View {
 
     private var accessibilityState: String {
         switch row.state {
-        case .pending: return "pending"
+        case .pending: return tr("pending")
         case .running: return tr("in progress")
-        case .done: return "done"
-        case .warning: return "warning"
-        case .failed: return "failed"
+        case .done: return tr("Done")
+        case .warning: return tr("Warning")
+        case .failed: return tr("Error")
         }
     }
 

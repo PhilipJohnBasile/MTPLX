@@ -32,16 +32,38 @@ final class LocalizationTableTests: XCTestCase {
         return try XCTUnwrap(plist as? [String: String], "\(language.code) table must parse as key/value strings")
     }
 
+    private struct FormatArgument: Equatable {
+        let position: Int
+        let type: String
+    }
+
     private static let specifier = try! NSRegularExpression(
-        pattern: #"%(?:\d+\$)?[-+ #0]*\d*(?:\.\d+)?(lld|ld|d|@|lf|f|s|u|x|X|%)"#
+        pattern: #"%(?:(\d+)\$)?[-+ #0]*\d*(?:\.\d+)?(lld|ld|d|@|lf|f|s|u|x|X|%)"#
     )
 
-    private static func placeholders(_ s: String) -> [String] {
+    /// Normalizes both implicit and positional specifiers to source-argument
+    /// identity. Sorting types alone lets `%@, %.0f` and `%.0f, %@` compare
+    /// equal even though the latter reads each C vararg as the wrong type.
+    private static func placeholders(_ s: String) -> [FormatArgument] {
         let ns = s as NSString
+        var nextImplicitPosition = 1
         return specifier.matches(in: s, range: NSRange(location: 0, length: ns.length))
-            .map { ns.substring(with: $0.range(at: 1)) }
-            .filter { $0 != "%" }
-            .sorted()
+            .compactMap { match in
+                let type = ns.substring(with: match.range(at: 2))
+                guard type != "%" else { return nil }
+                let position: Int
+                if match.range(at: 1).location != NSNotFound {
+                    position = Int(ns.substring(with: match.range(at: 1)))!
+                } else {
+                    position = nextImplicitPosition
+                    nextImplicitPosition += 1
+                }
+                return FormatArgument(position: position, type: type)
+            }
+            .sorted {
+                if $0.position != $1.position { return $0.position < $1.position }
+                return $0.type < $1.type
+            }
     }
 
     override func setUp() {
@@ -91,7 +113,7 @@ final class LocalizationTableTests: XCTestCase {
                 guard english[key] != nil else { continue }
                 XCTAssertEqual(
                     Self.placeholders(value), Self.placeholders(key),
-                    "\(language.code): placeholder set differs for \(key.debugDescription) -> \(value.debugDescription)"
+                    "\(language.code): format-argument contract differs for \(key.debugDescription) -> \(value.debugDescription)"
                 )
                 XCTAssertFalse(value.trimmingCharacters(in: .whitespaces).isEmpty, "\(language.code): empty value for \(key.debugDescription)")
                 XCTAssertEqual(key.hasPrefix(" "), value.hasPrefix(" "), "\(language.code): leading space lost for \(key.debugDescription)")
@@ -112,29 +134,58 @@ final class LocalizationTableTests: XCTestCase {
         }
     }
 
+    func testPlaceholderIdentityDoesNotIgnoreImplicitReordering() {
+        let source = Self.placeholders("%@ %.0f")
+        XCTAssertEqual(source, Self.placeholders("%1$@ %2$.0f"))
+        XCTAssertEqual(source, Self.placeholders("%2$.0f %1$@"))
+        XCTAssertNotEqual(source, Self.placeholders("%.0f %@"))
+    }
+
+    func testChineseReorderedFormatArgumentsRenderCorrectly() {
+        XCTAssertEqual(
+            L10n.string(
+                "Chosen for %@ with %.0f GB unified memory.",
+                language: .simplifiedChinese,
+                arguments: ["M5 Max", 128.0]
+            ),
+            "已为配备 128 GB 统一内存的 M5 Max 选用。"
+        )
+        XCTAssertEqual(
+            L10n.string(
+                "Restart %lld scheduled in %.1fs.",
+                language: .simplifiedChinese,
+                arguments: [Int64(3), 1.5]
+            ),
+            "已安排在 1.5 秒后进行第 3 次重启。"
+        )
+    }
+
     // MARK: Source keys
 
     func testEverySourceKeyExistsInTheEnglishTable() throws {
         let english = try Self.table(.english)
         let sources = Self.packageRoot.appendingPathComponent("Sources")
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        let call = try NSRegularExpression(pattern: #"\btr\(\s*"((?:[^"\\]|\\.)*)""#)
+        let call = try NSRegularExpression(pattern: #"\b(?:tr|L10n\.string)\(\s*"((?:[^"\\]|\\.)*)""#)
         var scanned = 0
         var unknown: [String] = []
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-                let line = String(line)
-                if line.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
-                let ns = line as NSString
-                for match in call.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
-                    let key = Self.unescapeSwiftLiteral(ns.substring(with: match.range(at: 1)))
-                    scanned += 1
-                    if english[key] == nil { unknown.append(key) }
+            let searchable = text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line in
+                    let line = String(line)
+                    return line.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : line
                 }
+                .joined(separator: "\n")
+            let ns = searchable as NSString
+            for match in call.matches(in: searchable, range: NSRange(location: 0, length: ns.length)) {
+                let key = Self.unescapeSwiftLiteral(ns.substring(with: match.range(at: 1)))
+                scanned += 1
+                if english[key] == nil { unknown.append(key) }
             }
         }
-        XCTAssertGreaterThan(scanned, 1500, "expected the tr() call sites to be scanned")
+        XCTAssertGreaterThan(scanned, 1500, "expected localization call sites to be scanned")
         XCTAssertTrue(unknown.isEmpty, "keys used in code but missing from en.lproj: \(unknown.prefix(10))")
     }
 
@@ -166,8 +217,13 @@ final class LocalizationTableTests: XCTestCase {
         "Choose your language", "Search languages", "Get Started", "Your Mac", "Recommended models",
         "Setting up MTPLX", "Settings", "Performance", "Language", "Cancel", "Continue", "Back",
         "Start MTPLX", "Stop MTPLX", "Done", "Next", "Retry", "Restart", "Clear All",
+        "2–3× faster", "Auto-tuned", "On-device",
+        "Checking MTPLX runtime", "Checking fan control", "Checking for an existing mtplx command",
+        "Installing MTPLX runtime", "Installing fan control", "Repairing MTPLX runtime",
+        "Add a model", "Choose a model folder", "Use Folder", "Local model folder on this Mac.",
         "The fastest way to run local AI.", "Speed and batching. Needs a restart to apply.",
         "The language MTPLX uses across the app. Changes apply immediately.",
+        "MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings.",
     ]
 
     func testOnboardingAndSettingsKeysAreTranslated() throws {
