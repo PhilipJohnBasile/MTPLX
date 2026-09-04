@@ -38,6 +38,9 @@ export type DashboardStore = {
   contextWindow: number | null;
   machine: MachineInfo | null;
   uptimeS: number;
+  // Decode speed of the request generating right now, fed by progress
+  // events. null whenever nothing is in flight: a finished request's speed
+  // lives in `latest`, and must never be shown as current.
   liveTokS: number | null;
   liveProgressByRequest: Record<string, BusEvent>;
   // request_id -> active prefill state; entries removed on `completed`.
@@ -49,6 +52,10 @@ export type DashboardStore = {
   connection: ConnectionState;
   reconnectAttempts: number;
   lastSnapshotAtMs: number | null;
+  // The server answered 401: it runs with an API key and this browser has no
+  // valid session cookie. The page shows a sign-in state instead of
+  // reporting a lost connection.
+  authRequired: boolean;
 
   // ---- UI ----
   sessionFilter: string | null;
@@ -59,7 +66,11 @@ export type DashboardStore = {
   // ---- actions ----
   applySnapshot: (snapshot: DashboardSnapshot) => void;
   applyEvent: (event: BusEvent) => void;
+  // Adopt the mutable settings a settings write returned, ahead of the next
+  // snapshot, so the controls reflect the server's post-write values at once.
+  mergeSettings: (patch: Partial<MutableSettings>) => void;
   setConnection: (state: ConnectionState) => void;
+  setAuthRequired: (required: boolean) => void;
   setSessionFilter: (sessionId: string | null) => void;
   setTheme: (theme: ThemeName) => void;
   cycleTheme: () => void;
@@ -118,6 +129,7 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   connection: "idle",
   reconnectAttempts: 0,
   lastSnapshotAtMs: null,
+  authRequired: false,
 
   sessionFilter: null,
   theme: readPersistedTheme(),
@@ -138,13 +150,14 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         };
       }
     });
-    set({
+    const inFlight = snapshot.in_flight ?? [];
+    set((state) => ({
       snapshot,
       latest: snapshot.latest,
       recent: snapshot.recent ?? [],
       rolling: snapshot.rolling,
       lifetime: snapshot.lifetime,
-      inFlight: snapshot.in_flight ?? [],
+      inFlight,
       sessionBank: snapshot.session_bank ?? null,
       sessions: snapshot.sessions ?? null,
       mem: snapshot.mem,
@@ -157,10 +170,12 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
       machine: snapshot.machine,
       uptimeS: snapshot.uptime_s,
       activePrefillByRequest,
-      liveTokS:
-        typeof snapshot.latest?.decode_tok_s === "number" ? snapshot.latest.decode_tok_s : null,
+      // A snapshot's `latest` is the last completed request, never the one
+      // decoding now; only progress events carry a current speed. Idle
+      // server, no live reading.
+      liveTokS: inFlight.length > 0 ? state.liveTokS : null,
       lastSnapshotAtMs: Date.now(),
-    });
+    }));
   },
 
   applyEvent: (event) => {
@@ -178,10 +193,12 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
         break;
       }
       case "completed": {
-        const tokS = event.envelope?.decode_tok_s;
+        // The request is over: its speed now lives in `latest`, so the live
+        // reading clears. Generation is serialized; if another request is
+        // decoding, its next progress event restores the reading.
         set((state) => ({
           latest: event.envelope ?? state.latest,
-          liveTokS: typeof tokS === "number" && tokS > 0 ? tokS : state.liveTokS,
+          liveTokS: null,
         }));
         break;
       }
@@ -244,12 +261,17 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
     }
   },
 
+  mergeSettings: (patch) =>
+    set((state) => (state.settings ? { settings: { ...state.settings, ...patch } } : {})),
+
   setConnection: (state) => {
     set((prev) => ({
       connection: state,
       reconnectAttempts: state === "reconnecting" ? prev.reconnectAttempts + 1 : 0,
     }));
   },
+
+  setAuthRequired: (required) => set({ authRequired: required }),
 
   setSessionFilter: (sessionId) => set({ sessionFilter: sessionId }),
 

@@ -6,6 +6,7 @@ const COLORS: Record<string, string> = {
   connecting: "bg-amber-400 animate-pulse",
   reconnecting: "bg-amber-500 animate-pulse",
   failed: "bg-rose-500",
+  unauthorized: "bg-rose-500",
   idle: "bg-slate-500",
 };
 
@@ -14,6 +15,7 @@ const LABELS: Record<string, string> = {
   connecting: "connecting",
   reconnecting: "reconnecting",
   failed: "offline",
+  unauthorized: "sign-in required",
   idle: "idle",
 };
 

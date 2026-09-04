@@ -9,10 +9,13 @@ to spin loops or clock-anchor hacks.
 from __future__ import annotations
 
 import os
+import pwd
+import re
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -502,6 +505,37 @@ def _summary_indicates_auto(summary: dict[str, Any]) -> bool:
     return True
 
 
+# How long a restore may take to show up in the fan rows before the reply
+# that promised it is disbelieved (#201).
+FAN_RESTORE_VERIFY_TIMEOUT_S = 3.0
+
+
+def wait_for_auto_fans(
+    *,
+    timeout_s: float = FAN_RESTORE_VERIFY_TIMEOUT_S,
+    poll_interval_s: float = 0.5,
+) -> bool:
+    """Poll the fan rows until every one reports the automatic curve.
+
+    A daemon "ok" reply or a zero exit from ``thermalforge auto`` is a
+    promise, not proof: a wedged or stale daemon can acknowledge without
+    acting (#201). Only the fan rows say whether the restore happened. Returns
+    False once ``timeout_s`` passes without a verified reading. Shared by the
+    in-process restore path and the detached fan-restore sidecar.
+    """
+
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        try:
+            if _summary_indicates_auto(fan_summary()):
+                return True
+        except Exception:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(0.05, float(poll_interval_s)))
+
+
 def set_thermal_profile_verified(
     profile: str,
     *,
@@ -743,10 +777,17 @@ def open_thermalforge_app() -> dict[str, Any]:
 
 SUDOERS_FILE = "/etc/sudoers.d/mtplx-thermalforge"
 
+# The one privileged step, shared by the terminal (``sudo``) and GUI
+# (``security execute-with-privileges``) paths. It receives the finished,
+# already-validated rule line and writes it to a temporary name that sudo
+# ignores (sudoers.d skips file names containing a '.'), sets owner and
+# mode, re-checks the fragment with visudo as root, and only then renames it
+# into place. A rejected fragment is removed by the trap and never becomes
+# live, so a bad rule can never take every sudo on the machine down with it.
 _PRIVILEGED_SUDOERS_SCRIPT = r"""
 set -eu
 sudoers_file="$1"
-user_name="$2"
+rule_line="$2"
 binary_path="$3"
 
 case "$sudoers_file" in
@@ -768,7 +809,7 @@ tmp_file="${sudoers_file}.tmp.$$"
 trap 'rm -f "$tmp_file"' EXIT
 
 umask 077
-printf '%s ALL=(root) NOPASSWD: %s\n' "$user_name" "$binary_path" > "$tmp_file"
+printf '%s\n' "$rule_line" > "$tmp_file"
 chown root:wheel "$tmp_file"
 chmod 440 "$tmp_file"
 /usr/sbin/visudo -c -f "$tmp_file" >/dev/null
@@ -776,10 +817,148 @@ mv "$tmp_file" "$sudoers_file"
 trap - EXIT
 """
 
+# Inside a sudoers command path these characters are accepted only when
+# backslash-escaped, and the parser strips the backslash again, so escaping
+# them yields exactly the on-disk path (sudo: plugins/sudoers/toke.l PATH
+# token and toke_util.c SPECIAL()). An unescaped space is not a syntax
+# error: it ends the command and turns the rest of the path into an
+# argument, which visudo happily accepts.
+_SUDOERS_PATH_ESCAPE = frozenset(", :=#")
+# The escape character itself cannot appear in a path token; '*', '?', '[',
+# ']' are wildcards when sudo matches a command, so a rule containing them
+# would cover more than the one binary; quotes have no place in a binary
+# path. These are refused rather than escaped.
+_SUDOERS_PATH_REJECT = frozenset("\\*?[]\"'")
+_SUDOERS_USER_RE = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_.-]*")
+
+# Interactive sudo waits for a password; a non-interactive ``sudo -n`` either
+# succeeds on cached credentials or fails at once. Both are bounded so a
+# prompt nobody can see never wedges the caller.
+SUDO_PROMPT_TIMEOUT_S = 180.0
+SUDO_NONINTERACTIVE_TIMEOUT_S = 20.0
+
+
+def sudoers_rule_for(user: str, binary_path: str) -> str:
+    """Return the one-line sudoers rule granting ``user`` passwordless root for
+    exactly ``binary_path`` (no trailing newline).
+
+    Raises ``ValueError`` with a plain message when either value cannot be
+    written safely.
+    """
+
+    if not _SUDOERS_USER_RE.fullmatch(user or ""):
+        raise ValueError(f"the user name {user!r} cannot be written to a sudoers rule")
+    if not binary_path.startswith("/"):
+        raise ValueError("the thermalforge path must be absolute")
+    for ch in binary_path:
+        if ch in _SUDOERS_PATH_REJECT or not ch.isprintable() or (ch.isspace() and ch != " "):
+            raise ValueError(
+                f"the thermalforge path {binary_path!r} contains a character "
+                "that cannot be written to a sudoers rule"
+            )
+    escaped = "".join(f"\\{ch}" if ch in _SUDOERS_PATH_ESCAPE else ch for ch in binary_path)
+    return f"{user} ALL=(root) NOPASSWD: {escaped}"
+
+
+def _current_user() -> str:
+    for key in ("USER", "LOGNAME"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return ""
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _visudo_check_rule(rule_line: str) -> dict[str, Any]:
+    """Parse ``rule_line`` with ``visudo -c -f`` on a temporary file we own.
+
+    ``-f`` skips the owner and mode checks, so this needs no privilege and
+    runs before any password prompt. It catches syntax errors only; the
+    character rules in :func:`sudoers_rule_for` are what keep the command
+    path intact.
+    """
+
+    visudo = shutil.which("visudo") or "/usr/sbin/visudo"
+    fd, tmp_path = tempfile.mkstemp(prefix="mtplx-sudoers-", suffix=".check")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(rule_line + "\n")
+        result = _run_probe([visudo, "-c", "-f", tmp_path], timeout_s=10.0)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    result["step"] = "visudo_check"
+    return result
+
+
+def _install_sudoers_rule_with_sudo(
+    *,
+    rule_line: str,
+    binary_path: str,
+    interactive: bool,
+) -> dict[str, Any]:
+    """Run the privileged install script through ``sudo``.
+
+    With ``interactive`` false the call uses ``sudo -n`` and cannot prompt;
+    it either rides cached credentials or fails immediately.
+    """
+
+    command = ["sudo"]
+    if not interactive:
+        command.append("-n")
+    command += ["/bin/sh", "-c", _PRIVILEGED_SUDOERS_SCRIPT, "sh", SUDOERS_FILE, rule_line, binary_path]
+    timeout_s = SUDO_PROMPT_TIMEOUT_S if interactive else SUDO_NONINTERACTIVE_TIMEOUT_S
+    try:
+        proc = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "step": "sudo_install",
+            "command": ["sudo", *([] if interactive else ["-n"]), "/bin/sh", "-c", "..."],
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"sudo did not finish within {int(timeout_s)} seconds",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "step": "sudo_install",
+            "command": ["sudo", *([] if interactive else ["-n"]), "/bin/sh", "-c", "..."],
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": proc.returncode == 0,
+        "step": "sudo_install",
+        "command": ["sudo", *([] if interactive else ["-n"]), "/bin/sh", "-c", "..."],
+        "returncode": proc.returncode,
+        "stdout": (proc.stdout or "").strip(),
+        "stderr": (proc.stderr or "").strip(),
+    }
+
 
 def _install_sudoers_rule_with_security(
     *,
-    user: str,
+    rule_line: str,
     binary_path: str,
 ) -> dict[str, Any]:
     security = shutil.which("security")
@@ -800,7 +979,7 @@ def _install_sudoers_rule_with_security(
         _PRIVILEGED_SUDOERS_SCRIPT,
         "sh",
         SUDOERS_FILE,
-        user,
+        rule_line,
         binary_path,
     ]
     try:
@@ -852,93 +1031,103 @@ def install_passwordless_sudoers_rule(
     "Run with sudo." even with the daemon running. The sudoers rule scopes
     NOPASSWD to exactly the ``thermalforge`` binary, which is the minimum
     elevation needed for fan control.
+
+    The rule is built and character-checked in Python, parsed by visudo on a
+    temporary file we own, and only then handed to one privileged script
+    that installs it atomically (see ``_PRIVILEGED_SUDOERS_SCRIPT``). Nothing
+    unvalidated ever reaches ``/etc/sudoers.d``. ``streaming`` is accepted
+    for existing callers; sudo prompts on the terminal itself in both modes.
     """
 
-    runner = _run_streaming if streaming else _run_probe
-
+    # Grant exactly the binary the fan commands run. `mtplx max --grant-sudo`
+    # used to default to the PATH copy while fan control ran MTPLX's own
+    # ~/.mtplx/bin/thermalforge, so the grant never applied.
     if binary_path is None:
-        binary_path = shutil.which("thermalforge") or "/usr/local/bin/thermalforge"
-
-    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "_unknown"
-    rule = f"{user} ALL=(root) NOPASSWD: {binary_path}\n"
-
-    # `sudo tee` keeps terminal installs simple. In the GUI app there is no
-    # terminal for sudo to read from, so we fall back to macOS's admin
-    # authorization prompt below.
-    write_proc = subprocess.run(
-        ["sudo", "tee", SUDOERS_FILE],
-        input=rule,
-        text=True,
-        check=False,
-        capture_output=True,
-    )
-    if write_proc.returncode != 0:
-        security_result = _install_sudoers_rule_with_security(
-            user=user,
-            binary_path=binary_path,
-        )
-        if security_result.get("ok"):
-            probe = _run_probe(["sudo", "-n", binary_path, "status"], timeout_s=5.0)
+        binary_path = _find_thermalforge()
+        if binary_path is None:
             return {
-                "ok": probe.get("ok", False),
-                "step": "verify_passwordless",
-                "method": "security_execute_with_privileges",
-                "binary_path": binary_path,
-                "message": (
-                    "Passwordless sudo for thermalforge is configured."
-                    if probe.get("ok")
-                    else (
-                        "Admin authorization installed the sudoers rule, but "
-                        "`sudo -n thermalforge status` still failed: "
-                        + (probe.get("stderr") or "").strip()
-                    )
-                ),
-                "steps": [security_result, {**probe, "step": "verify"}],
+                "ok": False,
+                "step": "locate_thermalforge",
+                "message": "ThermalForge is not installed. Run `mtplx max --install` first.",
             }
+
+    user = _current_user()
+    try:
+        rule_line = sudoers_rule_for(user, binary_path)
+    except ValueError as exc:
         return {
             "ok": False,
-            "step": "sudo_tee",
-            "message": (
-                f"Could not write {SUDOERS_FILE}. sudo said: "
-                f"{(write_proc.stderr or '').strip()}. "
-                f"{security_result.get('message', '')}"
-            ),
-            "steps": [security_result],
+            "step": "build_rule",
+            "binary_path": binary_path,
+            "message": f"Passwordless sudo was not configured: {exc}.",
         }
 
-    chmod_result = runner(["sudo", "chmod", "440", SUDOERS_FILE])
-    chmod_result["step"] = "chmod"
-    validate_result = runner(["sudo", "visudo", "-c", "-f", SUDOERS_FILE])
-    validate_result["step"] = "visudo_check"
-    if not validate_result.get("ok"):
-        # If syntax is bad, remove the file so we don't leave the system
-        # with an unparseable sudoers fragment.
-        runner(["sudo", "rm", "-f", SUDOERS_FILE])
+    # Check the rule before anything privileged runs, on a file we own.
+    check = _visudo_check_rule(rule_line)
+    if not check.get("ok"):
         return {
             "ok": False,
             "step": "visudo_check",
+            "binary_path": binary_path,
+            "rule": rule_line,
             "message": (
-                "Sudoers rule was rejected by visudo and rolled back. "
-                f"Validation error: {validate_result.get('stderr', '').strip()}"
-            ),
-            "steps": [chmod_result, validate_result],
+                "Passwordless sudo was not configured: visudo rejected the rule, "
+                f"so nothing was installed. {(check.get('stderr') or '').strip()}"
+            ).strip(),
+            "steps": [check],
         }
 
-    # Final sanity: passwordless sudo should now work.
+    steps: list[dict[str, Any]] = [check]
+    interactive = _stdin_is_tty()
+    install = _install_sudoers_rule_with_sudo(
+        rule_line=rule_line, binary_path=binary_path, interactive=interactive
+    )
+    steps.append(install)
+    method = "sudo"
+    if not install.get("ok"):
+        # No terminal to type a password into (the GUI app, a piped or
+        # background `mtplx start`), or sudo refused: ask through macOS's
+        # admin authorization dialog instead of hanging on a prompt.
+        security_result = _install_sudoers_rule_with_security(
+            rule_line=rule_line, binary_path=binary_path
+        )
+        steps.append(security_result)
+        method = "security_execute_with_privileges"
+        if not security_result.get("ok"):
+            parts = [f"Could not write {SUDOERS_FILE}."]
+            sudo_said = (install.get("stderr") or "").strip()
+            if sudo_said:
+                parts.append(f"sudo said: {sudo_said}.")
+            if security_result.get("message"):
+                parts.append(str(security_result["message"]))
+            if not interactive:
+                parts.append("Run `mtplx max --grant-sudo` in a terminal to enter your password.")
+            return {
+                "ok": False,
+                "step": "sudo_install",
+                "binary_path": binary_path,
+                "message": " ".join(parts),
+                "steps": steps,
+            }
+
+    # Final sanity: passwordless sudo should now work for this exact binary.
     probe = _run_probe(["sudo", "-n", binary_path, "status"], timeout_s=5.0)
+    steps.append({**probe, "step": "verify"})
     return {
         "ok": probe.get("ok", False),
         "step": "verify_passwordless",
+        "method": method,
         "binary_path": binary_path,
+        "rule": rule_line,
         "message": (
             "Passwordless sudo for thermalforge is configured."
             if probe.get("ok")
             else (
-                "Sudoers rule installed but `sudo -n thermalforge status` "
+                "The sudoers rule was installed, but `sudo -n thermalforge status` "
                 "still failed: " + (probe.get("stderr") or "").strip()
             )
         ),
-        "steps": [chmod_result, validate_result, {**probe, "step": "verify"}],
+        "steps": steps,
     }
 
 
@@ -948,7 +1137,7 @@ def remove_passwordless_sudoers_rule(*, streaming: bool = True) -> dict[str, Any
     runner = _run_streaming if streaming else _run_probe
     if not os.path.exists(SUDOERS_FILE):
         return {"ok": True, "message": f"{SUDOERS_FILE} already absent"}
-    result = runner(["sudo", "rm", "-f", SUDOERS_FILE])
+    result = runner(["sudo", "rm", "-f", SUDOERS_FILE], timeout_s=SUDO_PROMPT_TIMEOUT_S)
     return {
         "ok": result.get("ok", False),
         "message": (
@@ -2045,18 +2234,7 @@ def set_thermal_profile(profile: str, *, dry_run: bool = False) -> dict[str, Any
         if reset is not None:
             attempts.append(reset)
             if reset["ok"]:
-                verify_deadline = time.monotonic() + 3.0
-                verified = False
-                while True:
-                    try:
-                        if _summary_indicates_auto(fan_summary()):
-                            verified = True
-                            break
-                    except Exception:
-                        pass
-                    if time.monotonic() >= verify_deadline:
-                        break
-                    time.sleep(0.5)
+                verified = wait_for_auto_fans()
                 reset["verified"] = verified
                 if verified:
                     return {
