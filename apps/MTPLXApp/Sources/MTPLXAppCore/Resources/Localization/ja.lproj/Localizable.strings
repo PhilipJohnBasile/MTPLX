@@ -163,6 +163,7 @@
 "Active (total in use)" = "アクティブ（使用中の合計）";
 "Active profile" = "アクティブなプロファイル";
 "Activity" = "アクティビティ";
+"Add a model" = "モデルを追加";
 "Add a model from Hugging Face" = "Hugging Faceからモデルを追加";
 "Admission window" = "受付ウインドウ";
 "Advanced" = "詳細";
@@ -318,6 +319,8 @@
 "Checking..." = "確認中...";
 "Checking…" = "確認中…";
 "Chip" = "チップ";
+"Choose a complete MTPLX model folder on this Mac." = "このMac上の完全なMTPLXモデルフォルダを選択してください。";
+"Choose a model folder" = "モデルフォルダを選択";
 "Choose agent workspace" = "エージェントワークスペースを選択";
 "Choose the project folder Hermes should use for terminal and file tools." = "Hermesがターミナルおよびファイルツールで使用するプロジェクトフォルダを選択してください。";
 "Choose your language" = "言語を選択";
@@ -699,6 +702,7 @@
 "Insufficient memory — needs ~%.0f GB safely" = "メモリ不足 — 安全のために約%.0f GBが必要です";
 "Interrupted reply" = "中断された返答";
 "Keep BF16" = "BF16を保持";
+"Keeps %@ and closes this prompt." = "%@を維持して、このプロンプトを閉じます。";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "極小のRAMエントリを1つ保持し、ブロックプレフィックスの復元を無効にします。";
 "KV QUANTIZATION" = "KV量子化";
 "KV quantization" = "KV量子化";
@@ -738,6 +742,7 @@
 "Loading the model — click to cancel" = "モデルを読み込み中 — クリックでキャンセル";
 "Loading the model…" = "モデルを読み込み中…";
 "Loading — tap to stop" = "読み込み中 — タップして停止";
+"Local model folder on this Mac." = "このMac上のローカルモデルフォルダ。";
 "Lock" = "ロック";
 "Locked" = "ロック済み";
 "LOGS" = "ログ";
@@ -835,6 +840,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "MTPLXランタイムが見つからず、Homebrewも見つかりませんでした。brew.shからHomebrewをインストールし、「再試行」を押してください。";
 "MTPLX runtime ready" = "MTPLXランタイムの準備完了";
 "MTPLX saved the measured setting for this model." = "MTPLXはこのモデルの測定設定を保存しました。";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLXは%lldの言語に対応しています。選択はすぐに反映され、いつでも設定で変更できます。";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "MTPLXの起動結果が想定と一致しませんでした。期待値: %@、実際: %@。";
 "MTPLX stopped, tap to start" = "MTPLXは停止しています。タップして開始";
 "MTPLX suffix locked" = "MTPLXサフィックス固定";
@@ -957,11 +963,13 @@
 "parser off" = "パーサーオフ";
 "Paste a complete MTPLX model directory on this Mac." = "このMac上の完全なMTPLXモデルディレクトリを貼り付けてください。";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Hugging Faceリンクを貼り付けてください。ダウンロード前にモデルを確認します。";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Hugging Faceのorg/repoを貼り付けるか、このMac上のモデルフォルダを選択してください。追加されたモデルはこのリストに残ります。";
 "Paste a Hugging Face repo or link." = "Hugging Faceリポジトリまたはリンクを貼り付けてください。";
 "Paste a local model folder first." = "最初にローカルモデルフォルダを貼り付けてください。";
 "Paste any org/repo with MTPLX weights." = "MTPLXの重みを含む任意のorg/repoを貼り付けてください。";
 "Paste any org/repo. Added models stay in this list." = "任意のorg/repoを貼り付けてください。追加されたモデルはこのリストに残ります。";
 "Paste the original repo it was made from instead and Forge can convert it." = "代わりに元の作成元リポジトリを貼り付ければ、Forgeが変換できます。";
+"Pasted image" = "貼り付け画像";
 "Pause" = "一時停止";
 "Pause failed: %@" = "一時停止に失敗しました: %@";
 "Paused" = "一時停止中";
@@ -1380,6 +1388,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "このMacはメモリ負荷下にあります。破棄されたものはありません。この状態が続く場合、スワップ前にキャッシュがSSDへ退避されます。";
 "this model" = "このモデル";
 "This model" = "このモデル";
+"This model can't see images." = "このモデルは画像を認識できません。";
 "This model loads next time you start." = "次回開始時にこのモデルが読み込まれます。";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "このMTPLXランタイムは古すぎますが、Homebrewで管理されていません。手動でアップデートしてから「再試行」を押してください: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "これは%@から作成されました。代わりにそのリポジトリを貼り付ければ、Forgeが変換できます。";
@@ -1461,6 +1470,7 @@
 "Use %@" = "%@を使用";
 "Use a different model from Hugging Face" = "Hugging Faceから別のモデルを使用";
 "Use a local model folder" = "ローカルモデルフォルダを使用";
+"Use Folder" = "フォルダを使用";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "MTPLX搭載のHermes Desktopを使用 — ターミナル、ファイル、Web、ブラウザ、メッセージングツール。";
 "Use OpenCode Desktop, powered by MTPLX." = "MTPLX搭載のOpenCode Desktopを使用。";
 "Use Pi in the terminal." = "ターミナルでPiを使用。";

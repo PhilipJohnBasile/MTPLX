@@ -163,6 +163,7 @@
 "Active (total in use)" = "活跃（使用中总量）";
 "Active profile" = "当前配置文件";
 "Activity" = "活动";
+"Add a model" = "添加模型";
 "Add a model from Hugging Face" = "从 Hugging Face 添加模型";
 "Admission window" = "准入窗口";
 "Advanced" = "高级";
@@ -318,6 +319,8 @@
 "Checking..." = "正在检查...";
 "Checking…" = "正在检查…";
 "Chip" = "芯片";
+"Choose a complete MTPLX model folder on this Mac." = "在此 Mac 上选择完整的 MTPLX 模型文件夹。";
+"Choose a model folder" = "选择模型文件夹";
 "Choose agent workspace" = "选择智能体工作区";
 "Choose the project folder Hermes should use for terminal and file tools." = "选择 Hermes 用于终端和文件工具的项目文件夹。";
 "Choose your language" = "选择你的语言";
@@ -699,6 +702,7 @@
 "Insufficient memory — needs ~%.0f GB safely" = "内存不足 — 安全运行需要约 %.0f GB";
 "Interrupted reply" = "已中断的回复";
 "Keep BF16" = "保留 BF16";
+"Keeps %@ and closes this prompt." = "保留 %@ 并关闭此提示。";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "保留一个微小的内存条目并禁用块前缀恢复。";
 "KV QUANTIZATION" = "KV 量化";
 "KV quantization" = "KV 量化";
@@ -738,6 +742,7 @@
 "Loading the model — click to cancel" = "正在加载模型 — 点击以取消";
 "Loading the model…" = "正在加载模型…";
 "Loading — tap to stop" = "正在加载 — 点按以停止";
+"Local model folder on this Mac." = "此 Mac 上的本地模型文件夹。";
 "Lock" = "锁定";
 "Locked" = "已锁定";
 "LOGS" = "日志";
@@ -835,6 +840,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "MTPLX 运行时缺失且未找到 Homebrew。请从 brew.sh 安装 Homebrew，然后按“重试”。";
 "MTPLX runtime ready" = "MTPLX 运行时已就绪";
 "MTPLX saved the measured setting for this model." = "MTPLX 已保存此模型的实测设置。";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX 支持 %lld 种语言。你的选择会立即生效，之后可随时在设置中更改。";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "MTPLX 启动结果与预期不符。预期为 %@，实际为 %@。";
 "MTPLX stopped, tap to start" = "MTPLX 已停止，点按以启动";
 "MTPLX suffix locked" = "MTPLX 后缀已锁定";
@@ -957,11 +963,13 @@
 "parser off" = "解析器已关闭";
 "Paste a complete MTPLX model directory on this Mac." = "粘贴此 Mac 上完整的 MTPLX 模型目录。";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "粘贴 Hugging Face 链接。在下载任何内容之前，我们将先检查该模型。";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "粘贴 Hugging Face 的 org/repo，或在此 Mac 上选择模型文件夹。添加的模型将保留在此列表中。";
 "Paste a Hugging Face repo or link." = "粘贴 Hugging Face 仓库或链接。";
 "Paste a local model folder first." = "请先粘贴本地模型文件夹。";
 "Paste any org/repo with MTPLX weights." = "粘贴包含 MTPLX 权重的任何 org/repo。";
 "Paste any org/repo. Added models stay in this list." = "粘贴任何 org/repo。添加的模型将保留在此列表中。";
 "Paste the original repo it was made from instead and Forge can convert it." = "请改为粘贴其来源的原始仓库，Forge 可以对其进行转换。";
+"Pasted image" = "粘贴的图片";
 "Pause" = "暂停";
 "Pause failed: %@" = "暂停失败：%@";
 "Paused" = "已暂停";
@@ -1380,6 +1388,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "这台 Mac 正承受内存压力。尚未逐出任何内容；若保持在此状态，缓存将在发生任何交换之前让位给 SSD。";
 "this model" = "此模型";
 "This model" = "此模型";
+"This model can't see images." = "此模型无法查看图片。";
 "This model loads next time you start." = "此模型将在下次启动时加载。";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "此 MTPLX 运行时过旧，但它不受 Homebrew 管理。请手动更新，然后按“重试”：%@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "此模型基于 %@ 构建。请改为粘贴该仓库，Forge 可以对其进行转换。";
@@ -1461,6 +1470,7 @@
 "Use %@" = "使用 %@";
 "Use a different model from Hugging Face" = "使用来自 Hugging Face 的不同模型";
 "Use a local model folder" = "使用本地模型文件夹";
+"Use Folder" = "使用文件夹";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "使用由 MTPLX 提供支持的 Hermes Desktop — 终端、文件、网页、浏览器和消息传递工具。";
 "Use OpenCode Desktop, powered by MTPLX." = "使用由 MTPLX 提供支持的 OpenCode Desktop。";
 "Use Pi in the terminal." = "在终端中使用 Pi。";

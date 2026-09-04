@@ -42,7 +42,26 @@ nothing beyond 2.10.2.
   Arabic, Brazilian Portuguese, French, Russian, Japanese, German, Korean,
   Indonesian); the same picker in Settings switches the app live, and
   Arabic lays the app out right-to-left. Every string goes through the
-  localization layer with English as the fallback.
+  localization layer with English as the fallback. Installs that finished
+  onboarding on an earlier version are asked once, on the first launch
+  after updating, so they learn the app speaks their language and where
+  to change it; the pick applies live and the prompt never returns.
+- **Paste images and files into chat.** ⌘V in the composer attaches
+  what is on the clipboard: a screenshot or an image copied from a
+  browser or Preview becomes an image attachment, a file copied in
+  Finder becomes a document attachment (PDF, docx, md, txt, or an image
+  file), exactly like the paperclip and drag-and-drop. Text still pastes
+  as text. On a model without vision, a pasted or dropped image shows a
+  card that says the model can't see images instead of riding along
+  silently.
+- **Choose a model folder.** The model picker's add row takes a local
+  folder as well as a Hugging Face `org/repo`: a native folder chooser
+  (or a typed path) is checked for a complete MTPLX install, remembered
+  as a row in the picker, and selected in one step, so switching between
+  models never means typing the directory again. The onboarding
+  local-folder step gets the same chooser, and a folder that carries a
+  catalog model's name is recognised as that model at a different
+  location.
 - **`--allow-swap` serves past the machine fit again (#427).** 2.10
   capped the default window at the memory plan's fit and refused prompts
   past it with a 507; operators who ran 2.9.x past the fit on purpose

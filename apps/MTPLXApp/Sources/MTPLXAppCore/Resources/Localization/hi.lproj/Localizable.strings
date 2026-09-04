@@ -163,6 +163,7 @@
 "Active (total in use)" = "सक्रिय (कुल उपयोग में)";
 "Active profile" = "सक्रिय प्रोफ़ाइल";
 "Activity" = "गतिविधि";
+"Add a model" = "एक मॉडल जोड़ें";
 "Add a model from Hugging Face" = "Hugging Face से एक मॉडल जोड़ें";
 "Admission window" = "एडमिशन विंडो";
 "Advanced" = "उन्नत";
@@ -318,6 +319,8 @@
 "Checking..." = "जांच की जा रही है...";
 "Checking…" = "जांच की जा रही है…";
 "Chip" = "चिप";
+"Choose a complete MTPLX model folder on this Mac." = "इस Mac पर एक पूर्ण MTPLX मॉडल फ़ोल्डर चुनें।";
+"Choose a model folder" = "मॉडल फ़ोल्डर चुनें";
 "Choose agent workspace" = "Agent वर्कस्पेस चुनें";
 "Choose the project folder Hermes should use for terminal and file tools." = "वह प्रोजेक्ट फ़ोल्डर चुनें जिसे Hermes को टर्मिनल और फ़ाइल टूल के लिए उपयोग करना चाहिए।";
 "Choose your language" = "अपनी भाषा चुनें";
@@ -699,6 +702,7 @@
 "Insufficient memory — needs ~%.0f GB safely" = "अपर्याप्त मेमोरी — सुरक्षित रूप से ~%.0f GB की आवश्यकता है";
 "Interrupted reply" = "बाधित उत्तर";
 "Keep BF16" = "BF16 रखें";
+"Keeps %@ and closes this prompt." = "%@ रखता है और इस प्रॉम्प्ट को बंद करता है।";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "एक छोटी RAM प्रविष्टि रखता है और ब्लॉक-प्रीफ़िक्स पुनर्स्थापना को अक्षम करता है।";
 "KV QUANTIZATION" = "KV क्वांटाइज़ेशन";
 "KV quantization" = "KV क्वांटाइज़ेशन";
@@ -738,6 +742,7 @@
 "Loading the model — click to cancel" = "मॉडल लोड हो रहा है — रद्द करने के लिए क्लिक करें";
 "Loading the model…" = "मॉडल लोड हो रहा है…";
 "Loading — tap to stop" = "लोड हो रहा है — रोकने के लिए टैप करें";
+"Local model folder on this Mac." = "इस Mac पर स्थानीय मॉडल फ़ोल्डर।";
 "Lock" = "लॉक";
 "Locked" = "लॉक किया गया";
 "LOGS" = "लॉग्स";
@@ -835,6 +840,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "MTPLX रनटाइम गायब है और Homebrew नहीं मिला। brew.sh से Homebrew स्थापित करें, फिर पुनः प्रयास दबाएं।";
 "MTPLX runtime ready" = "MTPLX रनटाइम तैयार है";
 "MTPLX saved the measured setting for this model." = "MTPLX ने इस मॉडल के लिए मापी गई सेटिंग सहेज ली है।";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX %lld भाषाएँ बोलता है। आपकी पसंद तुरंत लागू होती है, और आप इसे कभी भी सेटिंग्स में बदल सकते हैं।";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "MTPLX स्टार्टअप हमारी अपेक्षा से मेल नहीं खाता था। अपेक्षित %@, मिला %@।";
 "MTPLX stopped, tap to start" = "MTPLX रुक गया, शुरू करने के लिए टैप करें";
 "MTPLX suffix locked" = "MTPLX प्रत्यय लॉक किया गया";
@@ -957,11 +963,13 @@
 "parser off" = "पार्सर बंद";
 "Paste a complete MTPLX model directory on this Mac." = "इस Mac पर एक पूर्ण MTPLX मॉडल निर्देशिका पेस्ट करें।";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Hugging Face लिंक पेस्ट करें। कुछ भी डाउनलोड करने से पहले हम मॉडल की जांच करेंगे।";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Hugging Face org/repo पेस्ट करें या इस Mac पर एक मॉडल फ़ोल्डर चुनें। जोड़े गए मॉडल इस सूची में बने रहते हैं।";
 "Paste a Hugging Face repo or link." = "Hugging Face रेपो या लिंक पेस्ट करें।";
 "Paste a local model folder first." = "पहले एक स्थानीय मॉडल फ़ोल्डर पेस्ट करें।";
 "Paste any org/repo with MTPLX weights." = "MTPLX वज़न वाला कोई भी org/repo पेस्ट करें।";
 "Paste any org/repo. Added models stay in this list." = "कोई भी org/repo पेस्ट करें। जोड़े गए मॉडल इस सूची में बने रहते हैं।";
 "Paste the original repo it was made from instead and Forge can convert it." = "इसके बजाय मूल रेपो पेस्ट करें जिससे इसे बनाया गया था और Forge इसे कन्वर्ट कर सकता है।";
+"Pasted image" = "पेस्ट की गई छवि";
 "Pause" = "रोकें";
 "Pause failed: %@" = "रोकना विफल रहा: %@";
 "Paused" = "रोका गया";
@@ -1380,6 +1388,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "यह Mac मेमोरी दबाव में है। कुछ भी हटाया नहीं गया है; यदि यह यहां रहता है तो किसी भी स्वैप से पहले कैश SSD को स्थान देते हैं।";
 "this model" = "यह मॉडल";
 "This model" = "यह मॉडल";
+"This model can't see images." = "यह मॉडल छवियाँ नहीं देख सकता।";
 "This model loads next time you start." = "अगली बार जब आप शुरू करेंगे तो यह मॉडल लोड होगा।";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "यह MTPLX रनटाइम बहुत पुराना है, लेकिन यह Homebrew द्वारा प्रबंधित नहीं है। इसे मैन्युअल रूप से अपडेट करें, फिर पुनः प्रयास दबाएं: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "यह %@ से बनाया गया था। इसके बजाय उस रेपो को पेस्ट करें और Forge इसे कन्वर्ट कर सकता है।";
@@ -1461,6 +1470,7 @@
 "Use %@" = "%@ का उपयोग करें";
 "Use a different model from Hugging Face" = "Hugging Face से एक अलग मॉडल का उपयोग करें";
 "Use a local model folder" = "एक स्थानीय मॉडल फ़ोल्डर का उपयोग करें";
+"Use Folder" = "फ़ोल्डर उपयोग करें";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "MTPLX द्वारा संचालित Hermes Desktop का उपयोग करें — टर्मिनल, फ़ाइल, वेब, ब्राउज़र और मैसेजिंग टूल।";
 "Use OpenCode Desktop, powered by MTPLX." = "MTPLX द्वारा संचालित OpenCode Desktop का उपयोग करें।";
 "Use Pi in the terminal." = "टर्मिनल में Pi का उपयोग करें।";

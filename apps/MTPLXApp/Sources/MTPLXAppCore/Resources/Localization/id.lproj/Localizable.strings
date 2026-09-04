@@ -163,6 +163,7 @@
 "Active (total in use)" = "Aktif (total terpakai)";
 "Active profile" = "Profil aktif";
 "Activity" = "Aktivitas";
+"Add a model" = "Tambahkan model";
 "Add a model from Hugging Face" = "Tambahkan model dari Hugging Face";
 "Admission window" = "Jendela admisi";
 "Advanced" = "Lanjutan";
@@ -318,6 +319,8 @@
 "Checking..." = "Memeriksa...";
 "Checking…" = "Memeriksa…";
 "Chip" = "Chip";
+"Choose a complete MTPLX model folder on this Mac." = "Pilih folder model MTPLX lengkap di Mac ini.";
+"Choose a model folder" = "Pilih folder model";
 "Choose agent workspace" = "Pilih ruang kerja agen";
 "Choose the project folder Hermes should use for terminal and file tools." = "Pilih folder proyek yang akan digunakan Hermes untuk alat terminal dan file.";
 "Choose your language" = "Pilih bahasa Anda";
@@ -699,6 +702,7 @@
 "Insufficient memory — needs ~%.0f GB safely" = "Memori tidak cukup — membutuhkan ~%.0f GB agar aman";
 "Interrupted reply" = "Balasan terinterupsi";
 "Keep BF16" = "Pertahankan BF16";
+"Keeps %@ and closes this prompt." = "Mempertahankan %@ dan menutup dialog ini.";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "Menyimpan satu entri RAM kecil dan menonaktifkan pemulihan prefiks blok.";
 "KV QUANTIZATION" = "KUANTISASI KV";
 "KV quantization" = "Kuantisasi KV";
@@ -738,6 +742,7 @@
 "Loading the model — click to cancel" = "Memuat model — klik untuk membatalkan";
 "Loading the model…" = "Memuat model…";
 "Loading — tap to stop" = "Memuat — ketuk untuk menghentikan";
+"Local model folder on this Mac." = "Folder model lokal di Mac ini.";
 "Lock" = "Kunci";
 "Locked" = "Terkunci";
 "LOGS" = "LOG";
@@ -835,6 +840,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "Runtime MTPLX tidak ada dan Homebrew tidak ditemukan. Pasang Homebrew dari brew.sh, lalu tekan Coba Lagi.";
 "MTPLX runtime ready" = "Runtime MTPLX siap";
 "MTPLX saved the measured setting for this model." = "MTPLX menyimpan pengaturan terukur untuk model ini.";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX mendukung %lld bahasa. Pilihan Anda langsung diterapkan, dan Anda dapat mengubahnya kapan saja di Pengaturan.";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "Awal mula MTPLX tidak cocok dengan yang diharapkan. Diharapkan %@, diperoleh %@.";
 "MTPLX stopped, tap to start" = "MTPLX dihentikan, ketuk untuk memulai";
 "MTPLX suffix locked" = "Sufiks MTPLX dikunci";
@@ -957,11 +963,13 @@
 "parser off" = "parser nonaktif";
 "Paste a complete MTPLX model directory on this Mac." = "Tempel direktori model MTPLX lengkap di Mac ini.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Tempel tautan Hugging Face. Kami akan memeriksa model sebelum mengunduh apa pun.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Tempel org/repo Hugging Face atau pilih folder model di Mac ini. Model yang ditambahkan akan tetap ada di daftar ini.";
 "Paste a Hugging Face repo or link." = "Tempel repo atau tautan Hugging Face.";
 "Paste a local model folder first." = "Tempel folder model lokal terlebih dahulu.";
 "Paste any org/repo with MTPLX weights." = "Tempel org/repo mana pun yang berisi bobot MTPLX.";
 "Paste any org/repo. Added models stay in this list." = "Tempel org/repo mana pun. Model yang ditambahkan akan tetap ada di daftar ini.";
 "Paste the original repo it was made from instead and Forge can convert it." = "Tempel repo asli tempat model dibuat sebagai gantinya dan Forge dapat mengonversinya.";
+"Pasted image" = "Gambar ditempel";
 "Pause" = "Jeda";
 "Pause failed: %@" = "Jeda gagal: %@";
 "Paused" = "Dijeda";
@@ -1380,6 +1388,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "Mac ini berada di bawah tekanan memori. Belum ada yang dikeluarkan; cache beralih ke SSD sebelum swap jika tetap di sini.";
 "this model" = "model ini";
 "This model" = "Model ini";
+"This model can't see images." = "Model ini tidak dapat melihat gambar.";
 "This model loads next time you start." = "Model ini akan dimuat saat Anda memulai berikutnya.";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "Runtime MTPLX ini terlalu lama, tetapi tidak dikelola oleh Homebrew. Perbarui secara manual, lalu tekan Coba Lagi: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "Model ini dibuat dari %@. Tempel repo tersebut sebagai gantinya dan Forge dapat mengonversinya.";
@@ -1461,6 +1470,7 @@
 "Use %@" = "Gunakan %@";
 "Use a different model from Hugging Face" = "Gunakan model berbeda dari Hugging Face";
 "Use a local model folder" = "Gunakan folder model lokal";
+"Use Folder" = "Gunakan Folder";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "Gunakan Hermes Desktop, didukung oleh MTPLX — alat terminal, file, web, browser, dan perpesanan.";
 "Use OpenCode Desktop, powered by MTPLX." = "Gunakan OpenCode Desktop, didukung oleh MTPLX.";
 "Use Pi in the terminal." = "Gunakan Pi di terminal.";

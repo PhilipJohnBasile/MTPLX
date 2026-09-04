@@ -163,6 +163,7 @@
 "Active (total in use)" = "Активно (всего занято)";
 "Active profile" = "Активный профиль";
 "Activity" = "Активность";
+"Add a model" = "Добавить модель";
 "Add a model from Hugging Face" = "Добавить модель с Hugging Face";
 "Admission window" = "Окно допуска";
 "Advanced" = "Дополнительно";
@@ -317,6 +318,8 @@
 "Checking..." = "Проверка...";
 "Checking…" = "Проверка…";
 "Chip" = "Чип";
+"Choose a complete MTPLX model folder on this Mac." = "Выберите полную папку модели MTPLX на этом Mac.";
+"Choose a model folder" = "Выберите папку с моделью";
 "Choose agent workspace" = "Выберите рабочую папку агента";
 "Choose the project folder Hermes should use for terminal and file tools." = "Выберите папку проекта, которую Hermes будет использовать для инструментов терминала и файлов.";
 "Choose your language" = "Выберите язык";
@@ -699,6 +702,7 @@
 "Insufficient memory — needs ~%.0f GB safely" = "Недостаточно памяти — для безопасной работы требуется ~%.0f ГБ";
 "Interrupted reply" = "Прерванный ответ";
 "Keep BF16" = "Оставить BF16";
+"Keeps %@ and closes this prompt." = "Сохраняет %@ и закрывает это окно.";
 "Keeps one tiny RAM entry and disables block-prefix restore." = "Сохраняет одну небольшую запись в RAM и отключает восстановление префиксов блоков.";
 "KV QUANTIZATION" = "КВАНТОВАНИЕ KV";
 "KV quantization" = "Квантование KV";
@@ -738,6 +742,7 @@
 "Loading the model — click to cancel" = "Загрузка модели — нажмите, чтобы отменить";
 "Loading the model…" = "Загрузка модели…";
 "Loading — tap to stop" = "Загрузка — нажмите, чтобы остановить";
+"Local model folder on this Mac." = "Локальная папка с моделью на этом Mac.";
 "Lock" = "Блокировка";
 "Locked" = "Заблокировано";
 "LOGS" = "ЖУРНАЛ";
@@ -835,6 +840,7 @@
 "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry." = "Среда выполнения MTPLX отсутствует, и Homebrew не найден. Установите Homebrew с brew.sh, затем нажмите «Повторить».";
 "MTPLX runtime ready" = "Среда выполнения MTPLX готова";
 "MTPLX saved the measured setting for this model." = "MTPLX сохранил измеренную настройку для этой модели.";
+"MTPLX speaks %lld languages. Your pick applies right away, and you can change it anytime in Settings." = "MTPLX поддерживает %lld языков. Ваш выбор применяется сразу, и вы можете изменить его в любое время в Настройках.";
 "MTPLX startup didn't match what we expected. Expected %@, got %@." = "Запуск MTPLX не соответствовал ожидаемому. Ожидалось %@, получено %@.";
 "MTPLX stopped, tap to start" = "MTPLX остановлен, нажмите для запуска";
 "MTPLX suffix locked" = "Суффикс MTPLX зафиксирован";
@@ -957,11 +963,13 @@
 "parser off" = "парсер выкл.";
 "Paste a complete MTPLX model directory on this Mac." = "Вставьте полный путь к каталогу модели MTPLX на этом Mac.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Вставьте ссылку на Hugging Face. Мы проверим модель перед началом загрузки.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Вставьте org/repo с Hugging Face или выберите папку с моделью на этом Mac. Добавленные модели останутся в этом списке.";
 "Paste a Hugging Face repo or link." = "Вставьте ссылку или репозиторий Hugging Face.";
 "Paste a local model folder first." = "Сначала вставьте локальную папку с моделью.";
 "Paste any org/repo with MTPLX weights." = "Вставьте любой org/repo с весами MTPLX.";
 "Paste any org/repo. Added models stay in this list." = "Вставьте любой org/repo. Добавленные модели останутся в этом списке.";
 "Paste the original repo it was made from instead and Forge can convert it." = "Вставьте вместо этого исходный репозиторий, из которого она создана, и Forge сможет преобразовать её.";
+"Pasted image" = "Вставленное изображение";
 "Pause" = "Приостановить";
 "Pause failed: %@" = "Не удалось приостановить: %@";
 "Paused" = "Приостановлено";
@@ -1380,6 +1388,7 @@
 "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here." = "Этот Mac испытывает нагрузку на память. Ничего не вытеснено; кэши уступают место SSD перед любым свопом, если нагрузка сохранится.";
 "this model" = "эта модель";
 "This model" = "Эта модель";
+"This model can't see images." = "Эта модель не видит изображения.";
 "This model loads next time you start." = "Эта модель загрузится при следующем запуске.";
 "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@" = "Эта среда выполнения MTPLX устарела, но она не управляется через Homebrew. Обновите её вручную, затем нажмите «Повторить»: %@";
 "This one was made from %@. Paste that repo instead and Forge can convert it." = "Она была создана из %@. Вставьте вместо этого тот репозиторий, и Forge сможет преобразовать её.";
@@ -1461,6 +1470,7 @@
 "Use %@" = "Использовать %@";
 "Use a different model from Hugging Face" = "Использовать другую модель с Hugging Face";
 "Use a local model folder" = "Использовать локальную папку с моделью";
+"Use Folder" = "Использовать папку";
 "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools." = "Используйте Hermes Desktop на базе MTPLX — инструменты для терминала, файлов, веба, браузера и сообщений.";
 "Use OpenCode Desktop, powered by MTPLX." = "Используйте OpenCode Desktop на базе MTPLX.";
 "Use Pi in the terminal." = "Используйте Pi в терминале.";
