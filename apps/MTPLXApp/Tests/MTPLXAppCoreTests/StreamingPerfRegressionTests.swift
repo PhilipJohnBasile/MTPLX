@@ -185,26 +185,43 @@ final class StreamingPerfRegressionTests: XCTestCase {
     /// `chunk` characters land every `gap` seconds and the reveal ticks
     /// at 60 Hz. The stream end drains whatever is left, as finalize,
     /// cancel and the stream return do.
+    ///
+    /// `frames` > 1 delivers each chunk the way the engine's wire does —
+    /// one SSE frame per committed token, `frameGap` seconds apart — so a
+    /// round is a burst of small arrivals, not one big one.
+    /// `bigEvery`/`bigChunk` make every `bigEvery`-th round a context-copy
+    /// block of `bigChunk` characters.
     @MainActor
-    private func replayPacer(chunk: Int, gap: Double, chunks: Int) -> PacerRun {
+    private func replayPacer(
+        chunk: Int, gap: Double, chunks: Int, frames: Int = 1, frameGap: Double = 0,
+        bigEvery: Int = 0, bigChunk: Int = 0
+    ) -> PacerRun {
         var pacer = StreamTypewriterPacer()
         var run = PacerRun()
         var buffer = ""
         let tickSeconds = 1.0 / 60.0
         let totalTicks = Int((Double(chunks) * gap / tickSeconds).rounded(.up))
         var delivered = 0
+        var framesDelivered = 0
         for tick in 0..<totalTicks {
             let now = Double(tick) * tickSeconds
-            // Deliver every chunk due by this tick; the SSE task lands
+            // Deliver every frame due by this tick; the SSE task lands
             // ahead of the frame that reveals it.
-            while delivered < chunks, Double(delivered) * gap <= now + 1e-9 {
-                if delivered > 0 { run.backlogBeforeArrival.append(buffer.count) }
+            while delivered < chunks {
+                let frameIndex = framesDelivered % frames
+                let arrival = Double(delivered) * gap + Double(frameIndex) * frameGap
+                guard arrival <= now + 1e-9 else { break }
+                if delivered > 0, frameIndex == 0 { run.backlogBeforeArrival.append(buffer.count) }
                 let letter = Character(UnicodeScalar(UInt8(97 + delivered % 26)))
-                let text = String(repeating: letter, count: chunk)
+                let roundChars = (bigEvery > 0 && delivered % bigEvery == bigEvery - 1) ? bigChunk : chunk
+                let frameChars = roundChars / frames
+                let count = frameIndex == frames - 1 ? roundChars - frameChars * (frames - 1) : frameChars
+                let text = String(repeating: letter, count: count)
                 buffer += text
                 run.fed += text
-                pacer.recordArrival(chars: chunk, now: Double(delivered) * gap)
-                delivered += 1
+                pacer.recordArrival(chars: count, now: arrival)
+                framesDelivered += 1
+                if frameIndex == frames - 1 { delivered += 1 }
             }
             guard delivered > 0 else { continue }
             let pending = buffer.count
@@ -267,6 +284,73 @@ final class StreamingPerfRegressionTests: XCTestCase {
         }
         // (d) The end-of-stream drain reveals everything, in order.
         XCTAssertEqual(run.revealed, run.fed)
+    }
+
+    @MainActor
+    func testPacerTypesPerTokenFrameRoundsAcrossTheRoundGap() {
+        // The wire shape the engine actually sends (measured 2026-09-03 on a
+        // Flash-Next follow-up turn, 2,613 frames): a round every ~42 ms,
+        // landing as two per-token frames ~3 ms apart, ~14 characters. Fed
+        // to the old estimator, the 3 ms intra-round gaps pulled the
+        // expected gap to ~19 ms, so the drain deadline fell inside the
+        // next tick and each round revealed as 12, 2, 0 — a paste, an
+        // afterthought, an idle frame — at the raw round cadence. With
+        // rounds coalesced the estimate is ~39 ms and the same round types
+        // 7, 7, 7 (well, 7, 6, 6, 6 ...) on every display tick.
+        let chunk = 14
+        let run = replayPacer(chunk: chunk, gap: 0.042, chunks: 60, frames: 2, frameGap: 0.003)
+        let warm = run.ticks.filter { $0.estimatorWarm && $0.tick >= 12 }
+        XCTAssertFalse(warm.isEmpty)
+        // A 14-character round spans two and a half display ticks: no tick
+        // reveals more than ~60% of one. (Old estimator: 14 in one tick.)
+        for sample in warm {
+            XCTAssertLessThanOrEqual(sample.revealed, chunk * 6 / 10,
+                "tick \(sample.tick) revealed \(sample.revealed) of a \(chunk)-character round: a paste")
+        }
+        // The reveal flows on nearly every tick. (Old estimator: 61%.)
+        let flowing = warm.filter { $0.revealed > 0 }.count
+        XCTAssertGreaterThanOrEqual(flowing, warm.count * 9 / 10,
+            "the reveal must type through the round gap, not paste and idle")
+        XCTAssertEqual(run.revealed, run.fed)
+    }
+
+    @MainActor
+    func testPacerTypesACopyLaneBlockInsteadOfPastingIt() {
+        // Same wire shape, with every sixth round a context-copy block of
+        // ~100 characters (measured p99 88, max 114). The old estimator
+        // pasted 86 of the 100 in a single frame; coalesced, the block is
+        // typed across the following ticks (37, 37, 26).
+        let run = replayPacer(
+            chunk: 14, gap: 0.042, chunks: 60, frames: 2, frameGap: 0.003,
+            bigEvery: 6, bigChunk: 100
+        )
+        let warm = run.ticks.filter { $0.estimatorWarm && $0.tick >= 12 }
+        XCTAssertFalse(warm.isEmpty)
+        let biggest = warm.map(\.revealed).max() ?? 0
+        XCTAssertLessThan(biggest, 60,
+            "a copy block must be typed across several frames, not pasted (\(biggest) in one)")
+        // Bursts drain before they pile up: the block is gone within the
+        // next few rounds, so no arrival ever finds more than one block
+        // still unrevealed.
+        for backlog in run.backlogBeforeArrival.dropFirst(6) {
+            XCTAssertLessThanOrEqual(backlog, 100)
+        }
+        XCTAssertEqual(run.revealed, run.fed)
+    }
+
+    func testPacerIgnoresSubFrameArrivalsInTheGapEstimate() {
+        var pacer = StreamTypewriterPacer()
+        // Round 1: four frames 7 ms apart; round 2 lands 50 ms later.
+        pacer.recordArrival(chars: 13, now: 1.000)
+        pacer.recordArrival(chars: 13, now: 1.007)
+        pacer.recordArrival(chars: 13, now: 1.014)
+        pacer.recordArrival(chars: 13, now: 1.021)
+        XCTAssertEqual(pacer.expectedGapSeconds, 0, "frames of one round are not a gap sample")
+        pacer.recordArrival(chars: 13, now: 1.071)
+        XCTAssertEqual(pacer.expectedGapSeconds, 0.05, accuracy: 1e-9)
+        pacer.recordArrival(chars: 13, now: 1.078)
+        XCTAssertEqual(pacer.expectedGapSeconds, 0.05, accuracy: 1e-9,
+            "a 7 ms frame inside round 2 must not pull the estimate down")
     }
 
     @MainActor

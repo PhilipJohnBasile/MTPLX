@@ -132,6 +132,16 @@ final class ChatTurnStream {
 // typed across the gap instead of pasted, and a steady token-by-token
 // stream still reveals every tick with no added lag. The caller owns
 // the clock, so the schedule can be replayed tick by tick in a test.
+//
+// The gap that matters is the one between ROUNDS. The engine writes one
+// SSE frame per committed token, so a round lands as several frames a few
+// milliseconds apart (measured 2026-09-03 on the copy lane: p50 frame gap
+// 7 ms, round gap 40-60 ms). Feeding those sub-frame gaps into the
+// estimate dragged the expected gap to ~15 ms, the drain deadline then
+// fell inside the very next display tick, and every round was pasted
+// whole — the raw 16-20 Hz round cadence on screen instead of typing.
+// Arrivals closer together than a display frame are the same burst and
+// leave the estimate alone.
 struct StreamTypewriterPacer {
     /// Wall-clock span the arrival-rate window looks back over.
     static let rateWindowSeconds = 1.2
@@ -139,6 +149,11 @@ struct StreamTypewriterPacer {
     /// next burst over this span rather than crawling for seconds.
     static let maxPlannedGapSeconds = 1.0
     static let interArrivalSmoothing = 0.3
+    /// Arrivals closer than this belong to one round (per-token frames of
+    /// a single commit); only wider gaps update the inter-round estimate.
+    /// Three quarters of a 60 Hz frame: well above the few-millisecond
+    /// intra-round spacing, well below any real round gap.
+    static let burstCoalesceSeconds = 0.75 / 60.0
     /// Drain horizon as a multiple of the expected gap. Slightly past the
     /// next expected arrival, so a block's tail overlaps the next block
     /// instead of leaving idle frames when a round runs a little long;
@@ -160,11 +175,17 @@ struct StreamTypewriterPacer {
         guard chars > 0 else { return }
         arrivedCharsTotal += chars
         if arrivals > 0 {
-            let gap = min(Self.maxPlannedGapSeconds, max(0.005, now - lastArrivalUptime))
-            expectedGapSeconds = expectedGapSeconds <= 0
-                ? gap
-                : expectedGapSeconds * (1 - Self.interArrivalSmoothing)
-                    + gap * Self.interArrivalSmoothing
+            let sinceLast = now - lastArrivalUptime
+            // A frame within the same round: the burst grows, the
+            // inter-round estimate is untouched. The deadline anchor still
+            // moves to the newest frame so a round is drained from its end.
+            if sinceLast >= Self.burstCoalesceSeconds {
+                let gap = min(Self.maxPlannedGapSeconds, sinceLast)
+                expectedGapSeconds = expectedGapSeconds <= 0
+                    ? gap
+                    : expectedGapSeconds * (1 - Self.interArrivalSmoothing)
+                        + gap * Self.interArrivalSmoothing
+            }
         }
         lastArrivalUptime = now
         arrivals += 1

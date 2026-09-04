@@ -91,6 +91,30 @@ nothing beyond 2.10.2.
 
 ### Fixed
 
+- **A second of dead air before every reply after a short pause.** macOS
+  drops an idle process's GPU residency about 2.5 s after its last Metal
+  command and rebuilds it on the next one at ~9 ms per GiB, so on
+  Flash-Next (77 GiB of weights) the first prefill after any pause of a
+  few seconds — every chat turn, every agent tool-call round trip — paid
+  ~0.75-1.0 s before the first token (measured: a "hi" 1.17 s from the
+  app, 0.08 s back-to-back). The engine now keeps its working set
+  resident with a sub-millisecond kernel on the model queue once per
+  second while it is attentive (a request completed in the last 10
+  minutes, `MTPLX_GPU_KEEPALIVE_ATTENTIVE_S`), then parks. Same "hi"
+  after 3-90 s of quiet: server time-to-first-token 0.083 s, first text
+  on screen in the app 0.26 s (was 0.87 s). `/health` reports
+  `gpu_keepalive`; every request record carries whether it started warm.
+  `MTPLX_GPU_KEEPALIVE=0` disables it.
+- **Replies typed in lurches on Flash-Next follow-ups.** The engine writes
+  one stream frame per committed token, so a decode round lands as two
+  frames a few milliseconds apart every ~40 ms and a context-copy block
+  as a burst. The app's typewriter estimated the round gap from every
+  frame, the 3 ms intra-round gaps pulled it to ~19 ms, and each round
+  was then revealed on the next display tick and followed by idle frames
+  — text updated on 42% of frames, in chunks, at the raw round cadence.
+  Frames within one display frame now count as one arrival, the estimate
+  tracks the real round gap, and a round types across it (a 100-character
+  copy block over four frames instead of one).
 - **Any web page could drive the local model.** The server ran CORS with a
   wildcard origin and credentials, so on the default keyless localhost bind
   a page in any tab could POST to `/v1/*`, read the answers, list and clear
