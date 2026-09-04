@@ -538,6 +538,23 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         customModels.append(option)
     }
 
+    /// Persist a model folder the user chose into the picker, so switching
+    /// back to it later is a click instead of the path again. Dedup is by
+    /// path (an entry that already points at this folder — forged, Hugging
+    /// Face, or local — is already its row and stays) and by id (a newly
+    /// chosen folder wins over an older folder of the same name). A
+    /// catalog model's own install directory is never recorded: the
+    /// catalog row already launches it.
+    public mutating func rememberLocalFolderModel(path: String) {
+        guard let option = MTPLXModelOption.localFolderModel(path: path) else { return }
+        let folder = option.hfModelID
+        guard !MTPLXModelOption.officialCatalog.contains(where: { $0.hasLocalCandidate(at: folder) }),
+              !customModels.contains(where: { $0.hasLocalCandidate(at: folder) })
+        else { return }
+        customModels.removeAll { $0.id == option.id }
+        customModels.append(option)
+    }
+
     public mutating func applyForgeRuntimeDefaults(
         modelPath: String,
         verification: ForgeVerification,
