@@ -1,4 +1,5 @@
 import Foundation
+import MTPLXAppCore
 
 // MARK: - Number / Rate formatters
 
@@ -31,24 +32,24 @@ enum Format {
         guard let value, value >= 0 else { return "—" }
         if value < 1_000 { return String(value) }
         let thousands = Double(value) / 1_000.0
-        if value < 10_000 { return String(format: "%.1fK", thousands) }
-        if value < 1_000_000 { return String(format: "%.0fK", thousands) }
+        if value < 10_000 { return tr("%.1fK", thousands) }
+        if value < 1_000_000 { return tr("%.0fK", thousands) }
         let millions = Double(value) / 1_000_000.0
-        if value < 10_000_000 { return String(format: "%.1fM", millions) }
-        if value < 1_000_000_000 { return String(format: "%.0fM", millions) }
+        if value < 10_000_000 { return tr("%.1fM", millions) }
+        if value < 1_000_000_000 { return tr("%.0fM", millions) }
         let billions = Double(value) / 1_000_000_000.0
-        return String(format: "%.1fB", billions)
+        return tr("%.1fB", billions)
     }
 
     /// Percentage from a 0…1 value. Returns "—" for nil.
     static func percent(_ value: Double?, fractionDigits: Int = 1) -> String {
         guard let value, value.isFinite else { return "—" }
-        return String(format: "%.\(fractionDigits)f%%", value * 100)
+        return String(format: "%.\(fractionDigits)f%%", locale: L10n.language.locale, value * 100)
     }
 
     static func ratio(_ value: Double?, fractionDigits: Int = 2) -> String {
         guard let value, value.isFinite else { return "—" }
-        return String(format: "%.\(fractionDigits)f×", value)
+        return String(format: "%.\(fractionDigits)f×", locale: L10n.language.locale, value)
     }
 
     /// Byte count with binary units. Mirrors macOS Finder style.
@@ -64,14 +65,14 @@ enum Format {
     static func gigabytes(_ value: Int?) -> String {
         guard let value, value >= 0 else { return "—" }
         let gb = Double(value) / 1024.0 / 1024.0 / 1024.0
-        return String(format: "%.1f GB", gb)
+        return tr("%.1f GB", gb)
     }
 
     /// Duration in seconds, picks the most readable unit.
     static func duration(_ seconds: Double?) -> String {
         guard let seconds, seconds.isFinite, seconds >= 0 else { return "—" }
         if seconds < 1 {
-            return String(format: "%.0f ms", seconds * 1000)
+            return tr("%.0f ms", seconds * 1000)
         }
         if seconds < 60 {
             return String(format: "%.1fs", seconds)
@@ -79,16 +80,16 @@ enum Format {
         if seconds < 3600 {
             let m = Int(seconds) / 60
             let s = Int(seconds) % 60
-            return String(format: "%dm %02ds", m, s)
+            return tr("%dm %02ds", m, s)
         }
         let h = Int(seconds) / 3600
         let m = (Int(seconds) % 3600) / 60
-        return String(format: "%dh %02dm", h, m)
+        return tr("%dh %02dm", h, m)
     }
 
     static func milliseconds(_ seconds: Double?) -> String {
         guard let seconds, seconds.isFinite, seconds >= 0 else { return "—" }
-        return String(format: "%.1f ms", seconds * 1000)
+        return tr("%.1f ms", seconds * 1000)
     }
 
     /// "12:34:56" / "1:23" elapsed clock.
@@ -113,14 +114,14 @@ enum Format {
     static func relative(from age: Double?) -> String {
         guard let age, age.isFinite, age >= 0 else { return "—" }
         if age < 2 { return "now" }
-        if age < 60 { return "\(Int(age))s ago" }
-        if age < 3600 { return "\(Int(age / 60))m ago" }
-        return "\(Int(age / 3600))h ago"
+        if age < 60 { return tr("%llds ago", Int(age)) }
+        if age < 3600 { return tr("%lldm ago", Int(age / 60)) }
+        return tr("%lldh ago", Int(age / 3600))
     }
 
     /// Multiplier strings like "2.54× vs AR" for headline copy.
     static func multiplier(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
-        return String(format: "%.2f×", value)
+        return tr("%.2f×", value)
     }
 }

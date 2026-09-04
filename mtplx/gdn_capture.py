@@ -2568,6 +2568,17 @@ def _stock_gated_delta_capture(
     return mx.concatenate(outs, axis=1), mx.stack(states, axis=1)
 
 
+gdn_capture_fallback_counts: dict[str, int] = {}
+
+
+def _count_gdn_capture_fallback(reason: str) -> None:
+    """Per-backend counter for capture-lane degradations (Route Tape reads the
+    delta per round). Follows the nax_qlinear_fallback_counts pattern: these
+    paths must be loud in telemetry even though they stay silent in control
+    flow — a capture that degrades to stock still returns correct output."""
+    gdn_capture_fallback_counts[reason] = gdn_capture_fallback_counts.get(reason, 0) + 1
+
+
 def gdn_forward_with_capture(
     gdn: Any,
     inputs: mx.array,
@@ -2577,6 +2588,7 @@ def gdn_forward_with_capture(
     capture_backend: str | None = None,
 ):
     if getattr(gdn, "sharding_group", None) is not None:
+        _count_gdn_capture_fallback("sharding_group")
         return gdn(inputs, mask=mask, cache=cache), None
 
     from mlx_lm.models.gated_delta import compute_g
@@ -2596,6 +2608,8 @@ def gdn_forward_with_capture(
     conv_capture = None
     if _env_enabled("MTPLX_LINEAR_CONV1D_CAPTURE"):
         conv_capture = _linear_conv1d_capture(qkv, conv_state, gdn.conv1d.weight)
+        if conv_capture is None:
+            _count_gdn_capture_fallback("conv1d_capture_stock")
     if conv_capture is None:
         conv_capture = _stock_conv1d_capture(qkv, conv_state, gdn)
     conv_out, conv_states = conv_capture
@@ -2618,6 +2632,7 @@ def gdn_forward_with_capture(
             gdn,
         )
         if delta_result is None:
+            _count_gdn_capture_fallback(f"delta_none:{backend}")
             return gdn(inputs, mask=mask, cache=cache), None
         out, states = delta_result
     elif backend == "linear_gdn_from_conv_tape":
@@ -2631,6 +2646,7 @@ def gdn_forward_with_capture(
             gdn,
         )
         if delta_result is None:
+            _count_gdn_capture_fallback(f"delta_none:{backend}")
             return gdn(inputs, mask=mask, cache=cache), None
         out, final_state, tape = delta_result
         states = final_state[:, None, :, :, :]
@@ -2650,6 +2666,7 @@ def gdn_forward_with_capture(
             capture_start=capture_start,
         )
         if delta_result is None:
+            _count_gdn_capture_fallback(f"delta_none:{backend}")
             return gdn(inputs, mask=mask, cache=cache), None
         out, states = delta_result
     elif backend in {"linear_gdn", "linear_gdn_from_conv"}:
@@ -2681,6 +2698,7 @@ def gdn_forward_with_capture(
             k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
             delta_result = _linear_gated_delta_capture(q, k, v, g, beta, state)
         if delta_result is None:
+            _count_gdn_capture_fallback(f"delta_none:{backend}")
             return gdn(inputs, mask=mask, cache=cache), None
         out, states = delta_result
     elif backend == "linear_gdn_final":
@@ -2699,6 +2717,7 @@ def gdn_forward_with_capture(
         g = compute_g(gdn.A_log, a, gdn.dt_bias)
         delta_result = _linear_gated_delta_final(q, k, v, g, beta, state)
         if delta_result is None:
+            _count_gdn_capture_fallback(f"delta_none:{backend}")
             return gdn(inputs, mask=mask, cache=cache), None
         out, final_state = delta_result
         states = final_state[:, None, :, :, :]

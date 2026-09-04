@@ -94,6 +94,13 @@ class _WorkItem:
     coalesce_key: str | None = None
 
 
+class _KeepaliveTurn:
+    """Sentinel `_take_next` returns when the idle keepalive is due."""
+
+
+_KEEPALIVE = _KeepaliveTurn()
+
+
 def _batch_key_class(batch_key: str) -> str:
     """Stable telemetry class for a batch key: the prefix before the first ':'.
 
@@ -179,6 +186,18 @@ class ModelWorkScheduler:
         self._persistence_pump_budget = 0
         self._persistence_pumped = 0
         self._last_quiet_anchor_s = time.monotonic()
+        # Idle keepalive (GPU residency): see arm_idle_keepalive.
+        self._keepalive_fn: Callable[[], Any] | None = None
+        self._keepalive_interval_s = 0.0
+        self._keepalive_attentive_s = 0.0
+        self._keepalive_attentive_anchor_s = 0.0
+        self._last_owner_activity_s = time.monotonic()
+        self._keepalive_beats = 0
+        self._keepalive_errors = 0
+        self._keepalive_consecutive_errors = 0
+        self._keepalive_last_error: str | None = None
+        self._keepalive_last_beat_s: float | None = None
+        self._keepalive_last_duration_s: float | None = None
         self._sequence = 0
         self._shutdown = False
         self._park_on_exit = False
@@ -267,6 +286,125 @@ class ModelWorkScheduler:
                 or self._active_kind is not None
             )
 
+    # MARK: idle keepalive
+
+    def arm_idle_keepalive(
+        self,
+        fn: Callable[[], Any],
+        *,
+        interval_s: float,
+        attentive_s: float,
+    ) -> None:
+        """Run ``fn`` on the owner thread whenever it has been idle for
+        ``interval_s``, for ``attentive_s`` after the last foreground
+        completion (and after arming).
+
+        Purpose: keep the process's GPU working set resident between turns.
+        macOS drops an idle process's Metal residency ~2.5 s after its last
+        command buffer, and re-establishing it costs ~9 ms per GiB on the
+        next submit (measured 2026-09-03, M5 Max: 8 GiB set 15 -> 87 ms;
+        the 77 GiB Flash-Next weights ~0.75-1.0 s added to every prefill
+        that followed >2.5 s of quiet — every chat turn, every agent
+        tool-call round trip). A trivially small kernel on the model's queue
+        inside that window holds the residency set, so the next request's
+        prefill starts warm.
+
+        The beat runs strictly on the owner thread between items, so it can
+        never race model work; a foreground submission wakes the loop and
+        wins immediately (the beat itself is sub-millisecond). Outside the
+        attentive window the loop parks untimed as before — a daemon nobody
+        is talking to costs no wakeups.
+        """
+        with self._condition:
+            self._keepalive_fn = fn
+            self._keepalive_interval_s = max(0.05, float(interval_s))
+            self._keepalive_attentive_s = max(0.0, float(attentive_s))
+            now = time.monotonic()
+            self._keepalive_attentive_anchor_s = now
+            self._last_owner_activity_s = now
+            self._keepalive_consecutive_errors = 0
+            self._condition.notify_all()
+
+    def disarm_idle_keepalive(self) -> None:
+        with self._condition:
+            self._keepalive_fn = None
+            self._condition.notify_all()
+
+    def keepalive_state(self) -> dict[str, Any]:
+        """Telemetry envelope for /health and the request record."""
+        with self._condition:
+            return self._keepalive_state_locked(time.monotonic())
+
+    def _keepalive_state_locked(self, now: float) -> dict[str, Any]:
+        armed = self._keepalive_fn is not None
+        attentive = armed and (
+            now - self._keepalive_attentive_anchor_s <= self._keepalive_attentive_s
+        )
+        return {
+            "armed": armed,
+            "attentive": attentive,
+            "interval_s": self._keepalive_interval_s if armed else None,
+            "attentive_s": self._keepalive_attentive_s if armed else None,
+            "attentive_remaining_s": (
+                max(
+                    0.0,
+                    self._keepalive_attentive_anchor_s
+                    + self._keepalive_attentive_s
+                    - now,
+                )
+                if attentive
+                else 0.0
+            ),
+            "beats": self._keepalive_beats,
+            "errors": self._keepalive_errors,
+            "last_error": self._keepalive_last_error,
+            "last_beat_age_s": (
+                max(0.0, now - self._keepalive_last_beat_s)
+                if self._keepalive_last_beat_s is not None
+                else None
+            ),
+            "last_beat_duration_s": self._keepalive_last_duration_s,
+            # Whether the GPU working set should still be resident right
+            # now: the owner thread did something within one interval.
+            "warm": armed
+            and now - self._last_owner_activity_s <= self._keepalive_interval_s * 1.5,
+        }
+
+    def _keepalive_due_locked(self, now: float) -> float | None:
+        """Monotonic time of the next beat, or None when no beat is owed."""
+        if self._keepalive_fn is None or self._shutdown:
+            return None
+        if now - self._keepalive_attentive_anchor_s > self._keepalive_attentive_s:
+            return None
+        return self._last_owner_activity_s + self._keepalive_interval_s
+
+    def _run_keepalive(self) -> None:
+        fn = self._keepalive_fn
+        if fn is None:
+            return
+        started = time.monotonic()
+        error: str | None = None
+        try:
+            fn()
+        except BaseException as exc:  # never let a beat take the owner thread down
+            error = f"{type(exc).__name__}: {exc}"
+        finished = time.monotonic()
+        with self._condition:
+            self._last_owner_activity_s = finished
+            self._keepalive_last_beat_s = finished
+            self._keepalive_last_duration_s = finished - started
+            if error is None:
+                self._keepalive_beats += 1
+                self._keepalive_consecutive_errors = 0
+            else:
+                self._keepalive_errors += 1
+                self._keepalive_consecutive_errors += 1
+                self._keepalive_last_error = error
+                if self._keepalive_consecutive_errors >= 3:
+                    # A beat that keeps failing is not keeping anything
+                    # warm; stop paying for it rather than loop on errors.
+                    self._keepalive_fn = None
+
     def stats(self) -> dict[str, Any]:
         with self._condition:
             active_run_s = (
@@ -275,6 +413,7 @@ class ModelWorkScheduler:
                 else None
             )
             return {
+                "idle_keepalive": self._keepalive_state_locked(time.monotonic()),
                 "foreground_pending": len(self._foreground),
                 "idle_pending": len(self._idle),
                 "persistence_pending": len(self._persistence),
@@ -508,6 +647,9 @@ class ModelWorkScheduler:
             item = self._take_next()
             if item is None:
                 return
+            if item is _KEEPALIVE:
+                self._run_keepalive()
+                continue
             if not item.future.set_running_or_notify_cancel():
                 with self._condition:
                     self._cancelled_before_start += 1
@@ -549,6 +691,14 @@ class ModelWorkScheduler:
                         # polluted the histogram with phantom size-1 batches.
                         self._batch_histogram[1] += 1
                     self._run_duration_samples_s.append(run_duration_s)
+                    # Any owner work is GPU activity: the keepalive clock
+                    # restarts from here. Only a FOREGROUND completion
+                    # extends the attentive window — a background warm
+                    # rung or a postcommit snapshot is not a user talking
+                    # to the model.
+                    self._last_owner_activity_s = time.monotonic()
+                    if item.kind == "foreground":
+                        self._keepalive_attentive_anchor_s = self._last_owner_activity_s
                     if item.kind != "idle_persistence":
                         # Foreground AND postcommit completions re-arm the
                         # persistence quiet grace: cold work may only start
@@ -570,7 +720,7 @@ class ModelWorkScheduler:
                 # GB-scale snapshot views) across the entire idle period.
                 del item
 
-    def _take_next(self) -> _WorkItem | None:
+    def _take_next(self) -> _WorkItem | _KeepaliveTurn | None:
         with self._condition:
             while True:
                 if (
@@ -622,6 +772,15 @@ class ModelWorkScheduler:
                         wait_until = ready_at
                     else:
                         wait_until = min(wait_until, ready_at)
+                # Idle keepalive: with no runnable work, the owner thread
+                # beats once per interval while the engine is attentive.
+                keepalive_at = self._keepalive_due_locked(now)
+                if keepalive_at is not None:
+                    if now >= keepalive_at:
+                        return _KEEPALIVE
+                    wait_until = (
+                        keepalive_at if wait_until is None else min(wait_until, keepalive_at)
+                    )
                 if wait_until is not None:
                     self._condition.wait(timeout=max(0.0, wait_until - now))
                     continue

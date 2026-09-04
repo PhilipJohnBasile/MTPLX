@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import MTPLXAppCore
 
 // MARK: - AppTab
 //
@@ -30,11 +31,11 @@ enum AppTab: String, Hashable, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .live: return "Live"
-        case .activity: return "Activity"
-        case .system: return "System"
-        case .forge: return "Forge"
-        case .settings: return "Settings"
+        case .live: return tr("Live")
+        case .activity: return tr("Activity")
+        case .system: return tr("System")
+        case .forge: return tr("Forge")
+        case .settings: return tr("Settings")
         }
     }
 
@@ -72,8 +73,8 @@ enum AppExpandableSurface: String, Hashable, Sendable {
     var title: String {
         switch self {
         case .chat: return "chat"
-        case .hermes: return "Hermes"
-        case .benchmark: return "AIME"
+        case .hermes: return tr("Hermes")
+        case .benchmark: return tr("AIME")
         }
     }
 }
@@ -155,6 +156,12 @@ final class AppRouter: ObservableObject {
     /// flash. `MTPLXApp.swift`'s startup `.task` flips this to
     /// `.onboarding` synchronously after reading `onboardingCompletedAt`.
     @Published var onboardingPhase: OnboardingPhase = .completed
+    /// Whether the one-time language prompt sheet is showing. Raised by
+    /// the startup `.task` when `shouldOfferLanguagePrompt` says this
+    /// install finished onboarding before the Language step existed;
+    /// ContentView stamps the configuration on dismiss so it never
+    /// comes back.
+    @Published var languagePromptPresented: Bool = false
 
     init() {
         let raw = UserDefaults.standard.string(forKey: Self.defaultsKey) ?? AppTab.live.rawValue
