@@ -45,7 +45,6 @@ jobs:
             echo "FIXED $b $(git rev-parse HEAD)"
           }
 
-          # PR #386: preserve OMP while adopting upstream localization.
           b=codex/open-in-omp
           prepare "$b"
           python3 <<'PY'
@@ -69,38 +68,33 @@ jobs:
           s=p.read_text().replace('label: "Agent workspace",','label: tr("Agent workspace"),').replace('caption: "Pi, OMP, and Hermes terminal tools start in this folder."','caption: tr("Pi, OMP, and Hermes terminal tools start in this folder.")')
           p.write_text(s)
           PY
-          swift build --package-path apps/MTPLXApp --product MTPLXApp
           finish "$b"
 
-          # PR #365: source merge is additive; rebuild generated dashboard assets.
           b=feat/runtime-systems-dashboard
           prepare "$b"
           rm -rf mtplx/dashboard/_static
           (cd dashboard && npm ci && npm run build)
           finish "$b"
 
-          # PR #364: only generated dashboard assets conflict; rebuild from merged source.
           b=feat/native-operations-dashboard
           prepare "$b"
           rm -rf mtplx/dashboard/_static
           (cd dashboard && npm ci && npm run build)
           finish "$b"
 
-          # PR #355: preserve expert instrumentation plus upstream allocator cap propagation.
           b=feat/expert-locality-telemetry
           prepare "$b"
           python3 <<'PY'
           from pathlib import Path
           p=Path('mtplx/server/openai.py'); s=p.read_text()
           needle='            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'
-          block='''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        # Keep the runtime allocator ceiling aligned with the admission gate.\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
+          block='''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
           if needle not in s: raise SystemExit('expert-locality insertion point changed')
           p.write_text(s.replace(needle, block, 1))
           PY
           python3 -m py_compile mtplx/server/openai.py mtplx/expert_locality.py
           finish "$b"
 
-          # PR #350: retain semantic anchor boundaries and upstream PLE/Qwen4 planning inputs.
           b=feat/semantic-session-anchors
           prepare "$b"
           python3 <<'PY'
@@ -114,7 +108,6 @@ jobs:
           rep='    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
           if sig not in s: raise SystemExit('prefill restored suffix signature changed')
           s=s.replace(sig,rep,1)
-          # There are two call sites that need both semantic edges and the full planning token stream.
           target='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
           repl='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
           if target not in s: raise SystemExit('near-prefix call site changed')
