@@ -14,7 +14,9 @@ CPU-only (parity surface).
 """
 
 import mlx.core as mx
+import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from mtplx.cache_state import snapshot_untrimmable_cache_lazy
 from mtplx.models.qwen4_exp import (
@@ -56,12 +58,18 @@ def _tiny_args() -> TextArgs:
 
 @pytest.fixture()
 def tm():
+    import mlx_lm.models.cache as cache_module
+    import mtplx.models.qwen4_exp as qwen4_exp
+
     prev = mx.default_device()
+    previous_arrays_cache = qwen4_exp.ArraysCache
+    qwen4_exp.ArraysCache = cache_module.ArraysCache
     mx.set_default_device(mx.cpu)
     mx.random.seed(0)
     model = TextModel(_tiny_args())
     mx.eval(model.parameters())
     yield model
+    qwen4_exp.ArraysCache = previous_arrays_cache
     mx.set_default_device(prev)
 
 
@@ -70,9 +78,28 @@ def _ids(tokens: int, seed: int) -> mx.array:
     return mx.random.randint(0, 128, (1, tokens))
 
 
+def _host_ids(ids: mx.array) -> list[int]:
+    return [int(token) for token in np.asarray(ids).reshape(-1)]
+
+
 PREFILL = 12
 WINDOW = 4
 KEEP = 2
+
+
+class _FakeSidecar:
+    def __init__(self):
+        self.direct_inputs = []
+
+    def gather_np(self, flat):
+        flat = np.asarray(flat, dtype=np.int64)
+        self.direct_inputs.append(flat.copy())
+        rows = np.repeat(flat[:, None], 16, axis=1).astype(np.float32)
+        return mx.array(rows)
+
+    def __call__(self, ids, dim):
+        flat = np.asarray(ids.reshape(-1), dtype=np.int64)
+        return self.gather_np(flat).reshape(*ids.shape, dim)
 
 
 def _run(tm, chunks, cache):
@@ -173,3 +200,632 @@ def test_full_accept_needs_no_commit_and_next_round_overwrites_rows(tm):
     golden = _run(tm, [_ids(2, seed=12)], golden_cache)
 
     assert mx.allclose(out, golden, atol=2e-5, rtol=2e-5).item()
+
+
+def test_fixed_m4_capture_route_returns_family_commit_rows(tm):
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    report = install_qwen4_fixed_verify_route(runtime)
+    cache = tm.make_cache()
+    ids_pre = _ids(PREFILL, seed=18)
+    ids_verify = _ids(WINDOW, seed=19)
+    tm(ids_pre, cache=cache)
+
+    aux = runtime.prepare_compiled_verify_aux(ids_verify, cache)
+    logits, hidden, captures = runtime.forward_ar_capture(
+        ids_verify,
+        cache=cache,
+        return_hidden=True,
+        compiled_aux=aux,
+    )
+    mx.eval(logits, hidden)
+
+    linear = [i for i, layer in enumerate(tm.model.layers) if layer.is_linear]
+    ple_index = next(
+        i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
+    )
+    assert report == {"installed": True, "linear_layers": len(linear), "rows": 4}
+    assert all(
+        tuple(captures[i])[:6] == ("qkv", "q", "k", "v", "a", "b") for i in linear
+    )
+    assert {"ple_hidden", "ple_ids"}.issubset(captures[ple_index])
+
+    tm.model.clear_verify_capture(cache)
+    runtime.commit_compiled_verify_captures(cache, captures)
+    assert all(cache[i]._mtplx_verify_rows is not None for i in linear)
+    assert cache[ple_index]._mtplx_verify_ple is not None
+
+
+@pytest.mark.parametrize(
+    ("tokens", "previous"),
+    (
+        ((3, 4, 5, 6), None),
+        ((0, 4, 5, 6), None),
+        ((3, 0, 5, 6), None),
+        ((3, 4, 0, 6), None),
+        ((3, 4, 5, 0), None),
+        ((3, 4, 5, 6), (0, 9)),
+    ),
+)
+def test_fixed_m4_sidecar_aux_stages_exact_rows_without_mutating_history(
+    tm, tokens, previous
+):
+    from mtplx.qwen4_fixed_verify import (
+        _prepare_compiled_verify_aux,
+        install_qwen4_fixed_verify_route,
+    )
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    cache = tm.make_cache()
+    prefill = _ids(PREFILL, seed=28)
+    tm(prefill, cache=cache)
+    ple_index = next(
+        i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
+    )
+    ple = tm.model.layers[ple_index].ple
+    if previous is not None:
+        cache[ple_index][ple.NGRAM_IDX] = mx.array([previous], dtype=mx.int64)
+    sidecar = _FakeSidecar()
+    ple.ple_embedding.ngram_embedding._sidecar = sidecar
+    install_qwen4_fixed_verify_route(runtime)
+
+    prompt_ids = list(previous) if previous is not None else _host_ids(prefill)
+    prepare = runtime.build_fixed_m4_compiled_verify_aux(cache, prompt_ids)
+    ids = mx.array([tokens])
+    history_before = cache[ple_index][ple.NGRAM_IDX]
+    reference = _prepare_compiled_verify_aux(runtime, ids, cache)
+    candidate = prepare(ids, list(tokens), [int(tokens[0])], 0)
+    mx.eval(reference, candidate)
+
+    assert mx.array_equal(candidate, reference).item()
+    assert candidate.shape == (1, WINDOW, 64)
+    assert cache[ple_index][ple.NGRAM_IDX] is history_before
+    assert len(sidecar.direct_inputs) == 2
+    assert np.array_equal(sidecar.direct_inputs[0], sidecar.direct_inputs[1])
+
+    rebound_history = mx.array([[0, 11]])
+    cache[ple_index][ple.NGRAM_IDX] = rebound_history
+    second_ids = mx.array([[9, 8, 7, 6]])
+    second_reference = _prepare_compiled_verify_aux(runtime, second_ids, cache)
+    second_candidate = prepare(second_ids, [9, 8, 7, 6], [0, 11, 9], 2)
+    mx.eval(second_reference, second_candidate)
+
+    assert mx.array_equal(second_candidate, second_reference).item()
+    assert cache[ple_index][ple.NGRAM_IDX] is rebound_history
+    assert len(sidecar.direct_inputs) == 4
+    assert np.array_equal(sidecar.direct_inputs[2], sidecar.direct_inputs[3])
+
+
+def test_compiled_fixed_m4_route_preserves_family_prefix_commit(tm, monkeypatch):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+
+    cache = tm.make_cache()
+    ids_pre = _ids(PREFILL, seed=20)
+    ids_verify = _ids(WINDOW, seed=21)
+    tm(ids_pre, cache=cache)
+    snap = snapshot_untrimmable_cache_lazy(cache)
+    bank = graphbank.CompiledVerifyBank(
+        runtime,
+        max_verify_len=WINDOW,
+        request_max_tokens=16,
+    )
+
+    logits, hidden, captures = bank.forward_ar_capture(ids_verify, cache=cache)
+    mx.eval(logits, hidden)
+
+    assert bank.stats["fallback_calls"] == 0, bank.stats["fallback_reasons"]
+    assert bank.stats["compiled_calls"] == 1
+    assert captures
+    assert tm.model.commit_verified_window(
+        cache,
+        snap.states,
+        keep_tokens=KEEP,
+        verified_tokens=WINDOW,
+    )
+
+
+def test_installed_fixed_m4_replay_preserves_compiled_gdn_schedule(tm, monkeypatch):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+
+    cache = tm.make_cache()
+    prefill = _ids(PREFILL, seed=23)
+    tm(prefill, cache=cache)
+    tm.model._gdn_compiled_env = True
+
+    compiled_gdn_calls = []
+    original_compiled_gdn = tm.model._decode_layers_compiled
+
+    def observed_compiled_gdn(*args, **kwargs):
+        compiled_gdn_calls.append(True)
+        return original_compiled_gdn(*args, **kwargs)
+
+    monkeypatch.setattr(tm.model, "_decode_layers_compiled", observed_compiled_gdn)
+    bank = graphbank.CompiledVerifyBank(
+        runtime,
+        max_verify_len=WINDOW,
+        request_max_tokens=16,
+    )
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
+
+    def repeated_check(*_args, **_kwargs):
+        raise AssertionError("installed M4 replay re-entered generic dispatch")
+
+    monkeypatch.setattr(bank, "_fallback_reason", repeated_check)
+    monkeypatch.setattr(bank, "_resolve_bucket", repeated_check)
+    monkeypatch.setattr(bank, "_ensure_shadow", repeated_check)
+    monkeypatch.setattr(bank, "_paged_ineligibility", repeated_check)
+
+    completion_tokens = []
+    for seed in (24, 25):
+        snap = snapshot_untrimmable_cache_lazy(cache)
+        ids = _ids(WINDOW, seed=seed)
+        host_ids = _host_ids(ids)
+        completion_tokens.append(host_ids[0])
+        logits, hidden, captures = bank.forward_fixed_m4(
+            ids,
+            host_input_ids=host_ids,
+            completion_tokens=completion_tokens,
+            committed_count=len(completion_tokens) - 1,
+            cache=cache,
+        )
+        mx.eval(logits, hidden)
+        assert captures == {}
+        assert tm.model.commit_verified_window(
+            cache,
+            snap.states,
+            keep_tokens=KEEP,
+            verified_tokens=WINDOW,
+        )
+        completion_tokens.extend(host_ids[1:KEEP])
+
+    assert bank.stats["compiled_calls"] == 2
+    assert compiled_gdn_calls
+
+
+@pytest.mark.parametrize(
+    ("boundary", "staged_builds"),
+    (("both", 1), ("pre", 1), ("post", 0), ("none", 0)),
+)
+def test_fixed_m4_staged_aux_requires_pre_schedule(
+    tm, monkeypatch, boundary, staged_builds
+):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_BOUNDARY", boundary)
+    cache = tm.make_cache()
+    prefill = _ids(PREFILL, seed=30)
+    tm(prefill, cache=cache)
+    ple_index = next(
+        i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
+    )
+    tm.model.layers[
+        ple_index
+    ].ple.ple_embedding.ngram_embedding._sidecar = _FakeSidecar()
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    real_build = runtime.build_fixed_m4_compiled_verify_aux
+    builds = []
+
+    def build(_cache, prompt_ids):
+        builds.append(True)
+        return real_build(_cache, prompt_ids)
+
+    runtime.build_fixed_m4_compiled_verify_aux = build
+    bank = graphbank.CompiledVerifyBank(
+        runtime,
+        max_verify_len=WINDOW,
+        request_max_tokens=16,
+    )
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
+
+    ids = _ids(WINDOW, seed=31)
+    host_ids = _host_ids(ids)
+    logits, hidden, captures = bank.forward_fixed_m4(
+        ids,
+        host_input_ids=host_ids,
+        completion_tokens=[host_ids[0]],
+        committed_count=0,
+        cache=cache,
+    )
+    mx.eval(logits, hidden)
+
+    assert len(builds) == staged_builds
+    assert captures == {}
+    assert bank.stats["compiled_calls"] == 1
+
+
+def test_fixed_m4_staged_sidecar_matches_materialized_route_across_windows(
+    tm, monkeypatch
+):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    prefill = _ids(PREFILL, seed=32)
+    staged_cache = tm.make_cache()
+    materialized_cache = tm.make_cache()
+    tm(prefill, cache=staged_cache)
+    tm(prefill, cache=materialized_cache)
+    ple_index = next(
+        i for i, layer in enumerate(tm.model.layers) if getattr(layer, "ple", None)
+    )
+    ple = tm.model.layers[ple_index].ple
+    ple.ple_embedding.ngram_embedding._sidecar = _FakeSidecar()
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_BOUNDARY", "both")
+
+    staged_bank = graphbank.CompiledVerifyBank(
+        runtime, max_verify_len=WINDOW, request_max_tokens=16
+    )
+    prompt_ids = _host_ids(prefill)
+    staged_bank.install_fixed_m4(
+        staged_cache,
+        prompt_ids=prompt_ids,
+        hidden_variant=None,
+    )
+    materialized_bank = graphbank.CompiledVerifyBank(
+        runtime, max_verify_len=WINDOW, request_max_tokens=16
+    )
+    materialized_bank._build_fixed_m4_aux = None
+    materialized_bank.install_fixed_m4(
+        materialized_cache,
+        prompt_ids=prompt_ids,
+        hidden_variant=None,
+    )
+
+    completion_tokens = []
+    for seed in (33, 34):
+        ids = _ids(WINDOW, seed=seed)
+        host_ids = _host_ids(ids)
+        completion_tokens.append(host_ids[0])
+        staged_logits, staged_hidden, staged_captures = staged_bank.forward_fixed_m4(
+            ids,
+            host_input_ids=host_ids,
+            completion_tokens=completion_tokens,
+            committed_count=len(completion_tokens) - 1,
+            cache=staged_cache,
+        )
+        reference_logits, reference_hidden, reference_captures = (
+            materialized_bank.forward_fixed_m4(
+                ids,
+                host_input_ids=host_ids,
+                completion_tokens=completion_tokens,
+                committed_count=len(completion_tokens) - 1,
+                cache=materialized_cache,
+            )
+        )
+        mx.eval(staged_logits, staged_hidden, reference_logits, reference_hidden)
+
+        assert mx.array_equal(staged_logits, reference_logits).item()
+        assert mx.array_equal(staged_hidden, reference_hidden).item()
+        assert mx.array_equal(
+            staged_cache[ple_index][ple.NGRAM_IDX],
+            materialized_cache[ple_index][ple.NGRAM_IDX],
+        ).item()
+        assert staged_captures == reference_captures == {}
+        completion_tokens.extend(host_ids[1:])
+
+    assert staged_bank.stats["compiled_calls"] == 2
+    assert materialized_bank.stats["compiled_calls"] == 2
+
+
+def test_installed_fixed_m4_routes_shorter_windows_to_family_capture(tm, monkeypatch):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+
+    cache = tm.make_cache()
+    prefill = _ids(PREFILL, seed=26)
+    tm(prefill, cache=cache)
+    bank = graphbank.CompiledVerifyBank(
+        runtime,
+        max_verify_len=WINDOW,
+        request_max_tokens=16,
+    )
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
+
+    logits, hidden, captures = bank.forward_ar_capture(_ids(2, seed=27), cache=cache)
+    mx.eval(logits, hidden)
+
+    assert captures
+    assert bank.stats["compiled_calls"] == 0
+    assert bank.stats["fallback_calls"] == 0
+
+
+def _flash_next_fake_runtime(*, limit_bytes: int) -> SimpleNamespace:
+    """The production geometry's promotion inputs on a fake runtime."""
+
+    args = SimpleNamespace(
+        layer_types=["linear_attention"] * 3 + ["full_attention"],
+        num_key_value_heads=2,
+        head_dim=256,
+        indexer_head_dim=128,
+        indexer_compress_ratio=4,
+    )
+    args.layer_types = args.layer_types * 12
+    return SimpleNamespace(
+        qwen4_fixed_m4_compiled_verify=True,
+        model=SimpleNamespace(language_model=SimpleNamespace(args=args)),
+        metal_memory_limit_bytes=limit_bytes,
+    )
+
+
+def test_fixed_m4_bank_selection_is_not_limited_by_request_or_restore_size(
+    monkeypatch,
+):
+    import mtplx.generation as generation
+    from mtplx.generation import _qwen4_fixed_m4_compiled_verify_requested
+
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", raising=False)
+    monkeypatch.setattr(generation, "_mlx_live_memory_bytes", lambda: 0)
+    runtime = _flash_next_fake_runtime(limit_bytes=96 * 1024**3)
+    assert _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=64,
+    )
+    assert not _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="capture_commit",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=64,
+    )
+    assert _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=16384,
+        cached_tokens=0,
+        prompt_tokens=64,
+    )
+    assert _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=512,
+        prompt_tokens=64,
+    )
+
+
+def test_fixed_m4_lane_memory_gate_skips_requests_that_do_not_fit(monkeypatch):
+    """Per-request gate (2026-09-02 receipt: 250k on a 128 GB seat, the
+    lane's 7.1 GB promotion adder 507'd the turn while plain main ran): the
+    lane engages only when live allocator bytes plus the promotion adder
+    stay under 0.97 x the pinned Metal limit, and never past the operator
+    belt. A skipped request answers False at the construction gate, so no
+    bank and no promotion is ever built."""
+
+    import mtplx.generation as generation
+    from mtplx.generation import (
+        _qwen4_fixed_m4_compiled_verify_requested,
+        _qwen4_fixed_m4_lane_fits,
+        _qwen4_fixed_m4_promotion_bytes_per_token,
+    )
+
+    gib = 1024**3
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", raising=False)
+    monkeypatch.delenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", raising=False)
+    # The 128 GB seat's default cap (75% of RAM).
+    runtime = _flash_next_fake_runtime(limit_bytes=96 * gib)
+    assert _qwen4_fixed_m4_promotion_bytes_per_token(runtime) == 28_416
+    live = {"bytes": 80 * gib}
+    monkeypatch.setattr(generation, "_mlx_live_memory_bytes", lambda: live["bytes"])
+
+    # 100k at 80 GiB live: the 2.9 GB adder lands under the line.
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=100_000)
+    # 250k at 91 GiB live (the receipt's shape): the 7.1 GB adder crosses it.
+    live["bytes"] = 91 * gib
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    # Exact law: live + (prompt + 1024 reserve) x 28,416 <= int(0.97 x limit).
+    line = int(96 * gib * 0.97)
+    need = (250_000 + 1024) * 28_416
+    live["bytes"] = line - need
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    live["bytes"] = line - need + 1
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+
+    # Operator belt: over it the lane is skipped whatever memory says; 0
+    # hands the verdict back to the live gate.
+    live["bytes"] = 1 * gib
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", "212992")
+    assert not _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=212_992)
+    monkeypatch.setenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", "0")
+    assert _qwen4_fixed_m4_lane_fits(runtime, prompt_tokens=250_000)
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT")
+
+    # The construction gate carries the verdict (at 91 GiB live even 100k
+    # crosses the line; at 80 GiB it fits).
+    live["bytes"] = 91 * gib
+    assert not _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=250_000,
+    )
+    live["bytes"] = 80 * gib
+    assert _qwen4_fixed_m4_compiled_verify_requested(
+        runtime,
+        verify_strategy="batched",
+        compiled_mode="on",
+        max_tokens=1024,
+        cached_tokens=0,
+        prompt_tokens=100_000,
+    )
+    # A runtime that cannot price the promotion never installs the strict lane.
+    assert not _qwen4_fixed_m4_lane_fits(
+        SimpleNamespace(qwen4_fixed_m4_compiled_verify=True), prompt_tokens=64
+    )
+
+
+def test_fixed_m4_capacity_grows_without_leaving_the_installed_lane(
+    tm, monkeypatch
+):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", "4")
+    monkeypatch.setenv("MTPLX_QSA_GATHER", "1")
+    monkeypatch.setenv("MTPLX_QSA_GATHER_MIN_CONTEXT", "18")
+
+    cache = tm.make_cache()
+    prefill = _ids(PREFILL, seed=40)
+    tm(prefill, cache=cache)
+    bank = graphbank.CompiledVerifyBank(
+        runtime,
+        max_verify_len=WINDOW,
+        request_max_tokens=16_384,
+        restored_tokens=4096,
+    )
+    bank.install_fixed_m4(
+        cache,
+        prompt_ids=_host_ids(prefill),
+        hidden_variant=None,
+    )
+    assert bank._fixed_m4_dispatch["growth_tokens"] == 8
+    qsa_index, qsa = next(
+        (index, entry)
+        for index, entry in enumerate(cache)
+        if hasattr(entry, "raw_keys")
+    )
+    initial_capacity = int(qsa.raw_keys.shape[1])
+
+    completion_tokens = []
+    for ordinal, seed in enumerate((41, 42)):
+        ids = _ids(WINDOW, seed=seed)
+        host_ids = _host_ids(ids)
+        completion_tokens.append(host_ids[0])
+        snap = snapshot_untrimmable_cache_lazy(cache)
+        logits, hidden, captures = bank.forward_fixed_m4(
+            ids,
+            host_input_ids=host_ids,
+            completion_tokens=completion_tokens,
+            committed_count=ordinal * KEEP,
+            cache=cache,
+        )
+        mx.eval(logits, hidden)
+        assert captures == {}
+        assert tm.model.commit_verified_window(
+            cache,
+            snap.states,
+            keep_tokens=KEEP,
+            verified_tokens=WINDOW,
+        )
+        completion_tokens.extend(host_ids[1:KEEP])
+
+    assert int(qsa.raw_keys.shape[1]) > initial_capacity
+    assert bank.stats["fixed_m4_capacity_transitions"] == 1
+    assert bank._fixed_m4_dispatch["growth_tokens"] == 16
+    assert bank.stats["fixed_m4_route_transitions"] == 1
+    assert bank.stats["compiled_calls"] == 2
+    assert bank.stats["fallback_calls"] == 0
+    # Request-report receipts for the grown generation (port addition).
+    report = bank.to_dict()["fixed_m4"]
+    assert report["base_offset"] == PREFILL
+    assert report["capacity"] == int(qsa.raw_keys.shape[1])
+    assert report["growth_tokens"] == 16
+    assert report["kv_gather"] == "stock"
+
+    bank.demote(cache)
+    _keys, _values, raw, pooled = cache[qsa_index].state
+    logical_end = PREFILL + 2 * KEEP
+    assert int(raw.shape[1]) == logical_end
+    assert int(pooled.shape[1]) == logical_end // cache[qsa_index].ratio
+
+
+def test_fixed_m4_bank_fails_loud_instead_of_falling_back(tm, monkeypatch):
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+    bank = graphbank.CompiledVerifyBank(
+        runtime, max_verify_len=4, request_max_tokens=16
+    )
+    monkeypatch.setattr(bank, "_fallback_reason", lambda *args, **kwargs: "forced")
+
+    with pytest.raises(RuntimeError, match="fixed-M4 verifier refused: forced"):
+        bank.forward_ar_capture(_ids(WINDOW, seed=22), cache=tm.make_cache())

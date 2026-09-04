@@ -119,6 +119,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         installedLocalPath ?? hfModelID
     }
 
+    /// A folder the user chose on this Mac (`localFolderModel(path:)`):
+    /// its only identity is its path, so the picker and the chrome label
+    /// treat it differently from a forged or Hugging Face entry.
+    public var isLocalFolder: Bool {
+        id.hasPrefix("local-")
+    }
+
     /// First `localCandidates` entry that is a **completely
     /// downloaded** MTPLX install on disk — has the metadata files,
     /// the MTP sidecar, AND every weight shard referenced by the
@@ -355,7 +362,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen35-4b-optimized-speed",
             displayName: "Qwen 3.5 4B Optimized Speed",
             shortName: "Qwen 3.5 4B Optimized Speed",
-            detail: "4-bit quantization. Fastest fit for smaller Macs.",
+            detail: tr("4-bit quantization. Fastest fit for smaller Macs."),
             hfModelID: "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.5-4B-MTPLX-Optimized-Speed",
@@ -376,7 +383,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen35-4b-optimized-quality",
             displayName: "Qwen 3.5 4B Optimized Quality",
             shortName: "Qwen 3.5 4B Optimized Quality",
-            detail: "8-bit quantization. Highest-fidelity 4B; 2x MTP multiplier.",
+            detail: tr("8-bit quantization. Highest-fidelity 4B; 2x MTP multiplier."),
             hfModelID: "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Quality",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.5-4B-MTPLX-Optimized-Quality",
@@ -396,7 +403,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen35-9b-optimized-speed",
             displayName: "Qwen 3.5 9B Optimized Speed",
             shortName: "Qwen 3.5 9B Optimized Speed",
-            detail: "6-bit quantization. Strong small-Mac speed pick.",
+            detail: tr("6-bit quantization. Strong small-Mac speed pick."),
             hfModelID: "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen-Qwen3.5-9B-MTPLX-Speed-6bit-OfficialCLI",
@@ -420,7 +427,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen35-9b-optimized-speed-fp16",
             displayName: "Qwen 3.5 9B Optimized Speed FP16",
             shortName: "Qwen 3.5 9B Optimized Speed FP16",
-            detail: "FP16-friendly 9B speed artifact for M1 and M2 Macs.",
+            detail: tr("FP16-friendly 9B speed artifact for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.5-9B-MTPLX-Optimized-Speed-FP16",
@@ -439,7 +446,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-bare-speed",
             displayName: "Qwen 3.8 27B Bare Speed",
             shortName: "Qwen 3.8 27B Bare Speed",
-            detail: "Quickest burst chat speeds. Lower quality and slower on long coding tasks.",
+            detail: tr("Quickest burst chat speeds. Lower quality and slower on long coding tasks."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed",
@@ -462,7 +469,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-optimized-speed",
             displayName: "Qwen 3.8 27B Optimized Speed",
             shortName: "Qwen 3.8 27B Optimized Speed",
-            detail: "4-bit dynamic quant. Great coding speeds and good quality. Recommended.",
+            detail: tr("4-bit dynamic quant. Great coding speeds and good quality. Recommended."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed",
@@ -484,7 +491,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-optimized-quality",
             displayName: "Qwen 3.8 27B Optimized Quality",
             shortName: "Qwen 3.8 27B Optimized Quality",
-            detail: "8-bit dynamic quant. Good coding speeds and perfect quality.",
+            detail: tr("8-bit dynamic quant. Good coding speeds and perfect quality."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality",
@@ -512,7 +519,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-bare-speed-fp16",
             displayName: "Qwen 3.8 27B Bare Speed FP16",
             shortName: "Qwen 3.8 27B Bare Speed FP16",
-            detail: "Quickest burst chat speeds. Lower quality and slower on long coding tasks. FP16 build for M1 and M2 Macs.",
+            detail: tr("Quickest burst chat speeds. Lower quality and slower on long coding tasks. FP16 build for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Bare-Speed-FP16",
@@ -534,7 +541,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-optimized-speed-fp16",
             displayName: "Qwen 3.8 27B Optimized Speed FP16",
             shortName: "Qwen 3.8 27B Optimized Speed FP16",
-            detail: "4-bit dynamic quant. Great coding speeds and good quality. FP16 build for M1 and M2 Macs. Recommended.",
+            detail: tr("4-bit dynamic quant. Great coding speeds and good quality. FP16 build for M1 and M2 Macs. Recommended."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Speed-FP16",
@@ -555,7 +562,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen38-27b-optimized-quality-fp16",
             displayName: "Qwen 3.8 27B Optimized Quality FP16",
             shortName: "Qwen 3.8 27B Optimized Quality FP16",
-            detail: "8-bit dynamic quant. Good coding speeds and perfect quality. FP16 build for M1 and M2 Macs.",
+            detail: tr("8-bit dynamic quant. Good coding speeds and perfect quality. FP16 build for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-27B-MTPLX-Optimized-Quality-FP16",
@@ -582,7 +589,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "flash-next-bare-speed",
             displayName: "Qwen 3.8 Flash-Next Bare Speed",
             shortName: "Flash-Next Bare Speed",
-            detail: "Flat 4-bit quantization. Quickest Flash-Next speeds for chat and coding.",
+            detail: tr("Flat 4-bit quantization. Quickest Flash-Next speeds for chat and coding."),
             hfModelID: "Youssofal/Qwen3.8-Flash-Next-MTPLX-Bare-Speed",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-Flash-Next-MTPLX-Bare-Speed",
@@ -606,7 +613,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "flash-next-optimized-speed",
             displayName: "Qwen 3.8 Flash-Next Optimized Speed",
             shortName: "Flash-Next Optimized Speed",
-            detail: "Dynamic 4-bit quant with 8-bit attention. Higher quality and slightly slower. Recommended.",
+            detail: tr("Dynamic 4-bit quant with 8-bit attention. Higher quality and slightly slower. Recommended."),
             hfModelID: "Youssofal/Qwen3.8-Flash-Next-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.8-Flash-Next-MTPLX-Optimized-Speed",
@@ -630,7 +637,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "optimized-speed-v2",
             displayName: "Qwen 3.6 27B Optimized Speed V2",
             shortName: "Qwen 3.6 27B Optimized Speed V2",
-            detail: "Much higher quality for coding. Dynamic 4-bit hybrid quantization keeps hand-tuned sensitive parts at up to 16-bit. Faster on long agent tasks, slightly larger, and a little slower for short chats.",
+            detail: tr("Much higher quality for coding. Dynamic 4-bit hybrid quantization keeps hand-tuned sensitive parts at up to 16-bit. Faster on long agent tasks, slightly larger, and a little slower for short chats."),
             hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
             localCandidates: [
                 "~/.mtplx/models/Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed-V2",
@@ -650,7 +657,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "optimized-speed",
             displayName: "Qwen 3.6 27B Optimized Speed",
             shortName: "Qwen 3.6 27B Optimized Speed",
-            detail: "Smaller 4-bit model. A little faster for short chats.",
+            detail: tr("Smaller 4-bit model. A little faster for short chats."),
             hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Speed",
@@ -670,7 +677,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "optimized-speed-fp16",
             displayName: "Qwen 3.6 27B Optimized Speed FP16",
             shortName: "Qwen 3.6 27B Optimized Speed FP16",
-            detail: "FP16 speed artifact recommended for M1 and M2 Macs.",
+            detail: tr("FP16 speed artifact recommended for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Speed-FP16",
@@ -690,7 +697,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen36-35b-a3b-optimized-speed",
             displayName: "Qwen 3.6 35B-A3B Optimized Speed",
             shortName: "Qwen 3.6 35B-A3B Optimized Speed",
-            detail: "4-bit quantization. Blazingly fast and quite smart.",
+            detail: tr("4-bit quantization. Blazingly fast and quite smart."),
             hfModelID: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
@@ -714,7 +721,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen36-35b-a3b-optimized-speed-fp16",
             displayName: "Qwen 3.6 35B-A3B Optimized Speed FP16",
             shortName: "Qwen 3.6 35B-A3B Optimized Speed FP16",
-            detail: "FP16-friendly 35B speed artifact for M1 and M2 Macs.",
+            detail: tr("FP16-friendly 35B speed artifact for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed-FP16",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed-FP16",
@@ -733,7 +740,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen36-35b-a3b-optimized-balance",
             displayName: "Qwen 3.6 35B-A3B Optimized Balance",
             shortName: "Qwen 3.6 35B-A3B Optimized Balance",
-            detail: "6-bit quantization. Stronger balance of speed and quality.",
+            detail: tr("6-bit quantization. Stronger balance of speed and quality."),
             hfModelID: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
@@ -752,7 +759,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "qwen36-35b-a3b-optimized-balance-fp16",
             displayName: "Qwen 3.6 35B-A3B Optimized Balance FP16",
             shortName: "Qwen 3.6 35B-A3B Optimized Balance FP16",
-            detail: "FP16-friendly 35B balance artifact for M1 and M2 Macs.",
+            detail: tr("FP16-friendly 35B balance artifact for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance-FP16",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance-FP16",
@@ -771,7 +778,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "gemma4-optimized-speed",
             displayName: "Gemma 4 31B Optimized Speed",
             shortName: "Gemma 4 31B Optimized Speed",
-            detail: "High quality. Moderate speeds.",
+            detail: tr("High quality. Moderate speeds."),
             hfModelID: "Youssofal/Gemma4-MTPLX-Optimized-Speed",
             localCandidates: [
                 "~/Documents/MTPLX/models/hf-release/Gemma4-MTPLX-Optimized-Speed",
@@ -794,7 +801,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "optimized-quality",
             displayName: "Qwen 3.6 27B Optimized Quality",
             shortName: "Qwen 3.6 27B Optimized Quality",
-            detail: "Maximum quality. Moderate speeds.",
+            detail: tr("Maximum quality. Moderate speeds."),
             hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality",
             localCandidates: [
                 "~/Documents/MTPLX/models/Qwen3.6-27B-MTPLX-Optimized-Quality",
@@ -814,7 +821,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "optimized-quality-fp16",
             displayName: "Qwen 3.6 27B Optimized Quality FP16",
             shortName: "Qwen 3.6 27B Optimized Quality FP16",
-            detail: "FP16 quality artifact recommended for M1 and M2 Macs.",
+            detail: tr("FP16 quality artifact recommended for M1 and M2 Macs."),
             hfModelID: "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
             localCandidates: [
                 "~/Documents/MTPLX/hf-staging/Qwen3.6-27B-MTPLX-Optimized-Quality-FP16",
@@ -833,7 +840,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "laguna-s21-oq4e",
             displayName: "Laguna S-2.1 (community oQ4e)",
             shortName: "Laguna S-2.1",
-            detail: "Poolside coding model, mixed-precision 4-bit. AR-only (no MTP head yet).",
+            detail: tr("Poolside coding model, mixed-precision 4-bit. AR-only (no MTP head yet)."),
             hfModelID: "mlx-community/Laguna-S-2.1-oQ4e",
             localCandidates: [
                 "~/.mtplx/models/mlx-community--Laguna-S-2.1-oQ4e",
@@ -866,9 +873,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         for custom in customModels {
             appendCustom(custom, to: &rows)
         }
+        // The model settings.json points at always has a row, even when
+        // nothing remembers it yet: a pasted Hugging Face id, or a folder
+        // chosen before the app remembered folders. Without the row the
+        // user has to type the path again after every switch away.
         if let currentModel,
-           option(matching: currentModel) == nil,
            let current = customHuggingFaceModel(repoID: currentModel)
+               ?? localFolderModel(path: currentModel)
         {
             appendCustom(current, to: &rows)
         }
@@ -1038,7 +1049,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "custom-\(safeID)",
             displayName: repoName,
             shortName: repoName,
-            detail: "Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar.",
+            detail: tr("Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar."),
             hfModelID: repoID,
             localCandidates: [
                 "~/.mtplx/models/\(repoID.replacingOccurrences(of: "/", with: "--"))",
@@ -1075,7 +1086,7 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
             id: "forged-\(safeID)",
             displayName: trimmedName,
             shortName: trimmedName,
-            detail: "Forged locally with MTPLX Forge.",
+            detail: tr("Forged locally with MTPLX Forge."),
             hfModelID: trimmedName,
             localCandidates: [localPath],
             aliases: [trimmedName, localPath],
@@ -1084,11 +1095,75 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
         )
     }
 
+    /// Factory for a model folder the user chose on this Mac. Like a
+    /// forged model the artifact lives only on disk, so `hfModelID`
+    /// carries the absolute path as the well-known identifier: `matches`
+    /// finds the row from a settings.json that points at the folder, and
+    /// selecting the row launches `--model <path>` exactly like
+    /// onboarding's local pick. `~` and `file://` input canonicalize to
+    /// one path so one folder is one entry. The folder's basename is the
+    /// only name it has; a folder carrying a catalog model's folder name
+    /// is folded into that catalog row by `pickerCatalog`. Returns nil
+    /// unless `path` names a filesystem location.
+    public static func localFolderModel(path rawPath: String) -> MTPLXModelOption? {
+        guard let folder = canonicalFolderPath(rawPath) else { return nil }
+        let name = (folder as NSString).lastPathComponent
+        guard !name.isEmpty, name != "/" else { return nil }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-"))
+        let safeID = name.lowercased().unicodeScalars
+            .map { allowed.contains($0) ? String($0) : "-" }
+            .joined()
+        let typed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        var aliases = [typed]
+        if folder != typed {
+            aliases.append(folder)
+        }
+        return MTPLXModelOption(
+            id: "local-\(safeID)",
+            displayName: name,
+            shortName: name,
+            detail: tr("Local model folder on this Mac."),
+            hfModelID: folder,
+            localCandidates: [folder],
+            aliases: aliases
+        )
+    }
+
+    /// Canonical absolute form of a user-supplied folder: a `file://` URL
+    /// or `~` unwrapped, trailing slash dropped. Nil unless the input
+    /// names a filesystem location (`/…`, `~…`, `file://…`) — a Hugging
+    /// Face id is never a folder, so the two add-model parsers can never
+    /// both accept one input.
+    static func canonicalFolderPath(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("file://") {
+            guard let url = URL(string: value), url.isFileURL else { return nil }
+            value = url.path
+        }
+        guard value.hasPrefix("/") || value.hasPrefix("~") else { return nil }
+        value = expand(value)
+        while value.count > 1, value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+
+    /// True when `path` (canonical, see `canonicalFolderPath`) is one of
+    /// this option's local candidate directories.
+    func hasLocalCandidate(at path: String) -> Bool {
+        localCandidates.contains { Self.canonicalFolderPath($0) == path }
+    }
+
     public static func normalizedHuggingFaceRepoID(_ rawValue: String) -> String? {
         var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = "https://huggingface.co/"
         if value.lowercased().hasPrefix(prefix) {
             value = String(value.dropFirst(prefix.count))
+        }
+        // A filesystem path is never a repo id. Without this, "/Volumes/Foo"
+        // survived the slash trim below as the repo "Volumes/Foo".
+        if value.hasPrefix("/") || value.hasPrefix("~") {
+            return nil
         }
         if let queryIndex = value.firstIndex(where: { $0 == "?" || $0 == "#" }) {
             value = String(value[..<queryIndex])
@@ -1142,7 +1217,13 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     public static func displayName(for model: String, customModels: [MTPLXModelOption]) -> String {
-        if let custom = customModels.first(where: { $0.matches(model) }) {
+        // A chosen folder has no name beyond its basename, which is what
+        // `displayName(for:)` derives anyway — and when the folder carries
+        // a catalog model's name, that lookup answers with the catalog
+        // name, matching the row the picker shows for it.
+        if let custom = customModels.first(where: { $0.matches(model) }),
+           !custom.isLocalFolder
+        {
             return custom.displayName
         }
         return displayName(for: model)
@@ -1398,11 +1479,39 @@ public struct MTPLXModelOption: Codable, Equatable, Identifiable, Sendable {
     }
 
     private static func appendCustom(_ custom: MTPLXModelOption, to rows: inout [MTPLXModelOption]) {
-        guard option(matching: custom.hfModelID) == nil else { return }
+        if let official = option(matching: custom.hfModelID) {
+            // A chosen folder that carries a catalog model's folder name is
+            // that model at a non-standard location (LM Studio's org/repo
+            // layout, an external drive). The catalog row learns the folder
+            // as an install location so selecting the row launches it: a
+            // second row would duplicate the model, and the row's HF id on
+            // its own is not cached on this Mac.
+            if custom.isLocalFolder {
+                adoptLocalFolder(custom, into: official, rows: &rows)
+            }
+            return
+        }
         guard !rows.contains(where: { existing in
             existing.matches(custom.hfModelID) || custom.matches(existing.hfModelID)
         }) else { return }
         rows.append(custom)
+    }
+
+    private static func adoptLocalFolder(
+        _ folder: MTPLXModelOption,
+        into official: MTPLXModelOption,
+        rows: inout [MTPLXModelOption]
+    ) {
+        let index = rows.firstIndex { $0.id == official.id }
+        var row = index.map { rows[$0] } ?? official
+        for path in folder.localCandidates where !row.localCandidates.contains(path) {
+            row.localCandidates.append(path)
+        }
+        if let index {
+            rows[index] = row
+        } else {
+            rows.append(row)
+        }
     }
 
     private static func normalized(_ value: String) -> String {

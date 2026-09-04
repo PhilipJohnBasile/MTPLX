@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from mtplx.server.omlx_bridge import (
     ToolCallStreamFilter,
     extract_thinking,
@@ -518,3 +520,96 @@ def test_omlx_tool_parser_lfm_pythonic_call_inside_thinking_is_recovered():
     assert extraction.tool_calls is not None
     assert extraction.tool_calls[0]["function"]["name"] == "get_weather"
     assert "tool_call" not in extraction.cleaned_thinking
+
+
+def _stream_through_filter(text: str, chunk: int) -> tuple[str, str, ToolCallStreamFilter]:
+    stream = ToolCallStreamFilter()
+    streamed = ""
+    for index in range(0, len(text), chunk):
+        streamed += stream.feed(text[index : index + chunk])
+    return streamed, stream.finish(), stream
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 13, 500])
+def test_omlx_stream_filter_keeps_prose_that_quotes_the_bracket_marker(chunk):
+    # A literal "[Calling tool:" with no "]" used to put the filter into an
+    # unbounded hold (the bracket branch skipped the 128-char cap) and
+    # finish() then dropped the whole tail: the answer stopped mid-sentence
+    # with a normal finish and no error. Prose that merely quotes the marker
+    # is the answer's own words and streams through in full.
+    text = (
+        "MTPLX prints [Calling tool: read_file when it starts a tool. The marker "
+        "is followed by the tool name and a closing bracket once the call is "
+        "complete, so a log line like this one is not a call."
+    )
+
+    streamed, tail, stream = _stream_through_filter(text, chunk)
+
+    assert streamed + tail == text
+    assert stream.suppressed_markup is False
+
+
+def test_omlx_stream_filter_keeps_a_quoted_marker_split_at_the_prefix():
+    stream = ToolCallStreamFilter()
+    visible = stream.feed("Type [Calling to")
+    visible += stream.feed("ol: and then the tool name.")
+    visible += stream.finish()
+
+    assert visible == "Type [Calling tool: and then the tool name."
+    assert stream.suppressed_markup is False
+
+
+def test_omlx_stream_filter_sanitize_keeps_whole_text_that_quotes_the_marker():
+    from mtplx.server.omlx_bridge.tool_calling import sanitize_tool_call_markup
+
+    text = "The [Tool call: marker appears when a call starts; nothing else changes."
+
+    assert sanitize_tool_call_markup(text) == text
+
+
+@pytest.mark.parametrize("chunk", [1, 5, 9, 500])
+def test_omlx_stream_filter_still_suppresses_a_complete_bracket_call_split_across_chunks(chunk):
+    text = 'Let me check. [Calling tool: lookup({"q": "scene [1]"})] Done.'
+
+    streamed, tail, stream = _stream_through_filter(text, chunk)
+
+    assert streamed + tail == "Let me check.  Done."
+    assert stream.suppressed_markup is True
+
+
+def test_omlx_stream_filter_holds_long_multiline_json_arguments_until_the_call_closes():
+    # The hold is bounded by the call's grammar, not by a character count or
+    # the current line: a real call with a whole file body in its arguments
+    # is held until "]" and suppressed as one unit.
+    payload = {"input": "*** Begin Patch\n" + "\n".join(f"+line {i} => ({i});" for i in range(60)) + "\n*** End Patch"}
+    text = "Applying: [Calling tool: apply_patch(" + json.dumps(payload) + ")] Applied."
+    assert len(text) > 600
+
+    streamed, tail, stream = _stream_through_filter(text, 11)
+
+    assert streamed + tail == "Applying:  Applied."
+    assert "Begin Patch" not in streamed
+    assert stream.suppressed_markup is True
+
+
+def test_omlx_stream_filter_still_suppresses_an_unclosed_call_shaped_block():
+    # Same contract as the translator: a block that is structurally a call
+    # but never closes is markup, not prose, and stays out of the transcript.
+    text = 'And now: [Calling tool: apply_patch({"input": "never closed'
+
+    streamed, tail, stream = _stream_through_filter(text, 9)
+
+    assert streamed + tail == "And now: "
+    assert stream.suppressed_markup is True
+
+
+def test_omlx_stream_filter_releases_the_hold_once_a_block_can_no_longer_be_a_call():
+    # Name, then "(" with no "{": not the dialect, so the words flow.
+    text = "Call read_file(path) via [Calling tool: read_file(path) and see."
+    streamed, tail, _stream = _stream_through_filter(text, 6)
+    assert streamed + tail == text
+
+    # Balanced JSON followed by anything but ")]" is not a call either.
+    text = 'Use [Calling tool: lookup({"q": 1}) then go on.'
+    streamed, tail, _stream = _stream_through_filter(text, 6)
+    assert streamed + tail == text
