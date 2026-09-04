@@ -1773,13 +1773,20 @@ class SessionBank:
             return None
 
         actual_restore_mode = "clone"
-        # Committed MTP history is built from prompt_ids[1:], so a boundary at
-        # N retains N-1 history rows.  Legacy full snapshots retain the
-        # nominal entry prefix length and therefore preserve the established
-        # delta-trim behavior; prefix-decoded entries record their true span.
-        mtp_history_trim_tokens = max(
-            0, mtp_snapshot_prefix_len - max(0, restore_point - 1)
-        )
+        if mtp_prefix_recorded is None:
+            # Legacy full and live-reference snapshots are trimmed by the
+            # prompt-prefix gap.  Their physical MTP offset may be windowed,
+            # so it cannot be treated as an absolute token position.
+            mtp_history_trim_tokens = max(
+                0, int(entry.prefix_len) - restore_point
+            )
+        else:
+            # Prefix-decoded committed MTP history records its physical span.
+            # It is built from prompt_ids[1:], so a boundary at N retains N-1
+            # history rows and needs no further trim when decoded to that size.
+            mtp_history_trim_tokens = max(
+                0, mtp_snapshot_prefix_len - max(0, restore_point - 1)
+            )
         # Boundary restores land the KV at the full boundary (no seed forward
         # will run — it would advance recurrent state past the captured
         # boundary a second time). Non-boundary restores keep the seed-forward
@@ -1788,7 +1795,8 @@ class SessionBank:
             # The cold decoder supplied precisely the state this consumer
             # needs.  Calling the legacy trim here would remove valid KV rows
             # (or demand an absent long tail) after a partial hydration.
-            trim_to_target = lambda _cache: True
+            def trim_to_target(_cache: list[Any]) -> bool:
+                return True
         else:
             trim_to_target = (
                 (lambda c: _trim_cache_ref_to_tokens(c, restore_point))
