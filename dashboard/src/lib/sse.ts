@@ -1,3 +1,4 @@
+import { probeServer } from "./api";
 import type { BusEvent, ConnectionState, DashboardSnapshot } from "./types";
 
 const BACKOFF_SEQ_MS = [1000, 2000, 4000, 8000, 16000, 30000];
@@ -6,6 +7,10 @@ export type MetricsStreamHandlers = {
   onSnapshot: (snapshot: DashboardSnapshot) => void;
   onEvent: (event: BusEvent) => void;
   onConnectionChange?: (state: ConnectionState) => void;
+  // The server refused the stream with 401: the browser needs to sign in.
+  // Reconnecting would only repeat the refusal, so the stream stops until
+  // the page is reloaded after sign-in.
+  onUnauthorized?: () => void;
 };
 
 export type MetricsStreamHandle = {
@@ -92,10 +97,20 @@ export function startMetricsStream(handlers: MetricsStreamHandlers): MetricsStre
           // ignore
         }
         source = null;
-        if (attempt >= BACKOFF_SEQ_MS.length) {
-          setState("failed");
-        }
-        scheduleReconnect();
+        // EventSource hides the status code; a closed stream from a server
+        // that still answers is a refusal, not an outage. Ask /health which.
+        void probeServer().then((verdict) => {
+          if (closed) return;
+          if (verdict === "unauthorized") {
+            setState("unauthorized");
+            handlers.onUnauthorized?.();
+            return;
+          }
+          if (attempt >= BACKOFF_SEQ_MS.length) {
+            setState("failed");
+          }
+          scheduleReconnect();
+        });
       } else {
         setState("reconnecting");
       }

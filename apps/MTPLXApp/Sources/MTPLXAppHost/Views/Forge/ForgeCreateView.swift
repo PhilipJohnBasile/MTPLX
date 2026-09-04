@@ -256,7 +256,7 @@ struct ForgeStageShell<Content: View, Footer: View>: View {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 11, weight: .semibold))
-                        Text("Back")
+                        Text(tr("Back"))
                             .font(.system(size: 13, weight: .medium))
                     }
                     .foregroundStyle(Brand.typeSecondary)
@@ -265,7 +265,7 @@ struct ForgeStageShell<Content: View, Footer: View>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Back to previous step")
+                .accessibilityLabel(tr("Back to previous step"))
             }
             Spacer(minLength: 0)
             footer()
@@ -286,25 +286,25 @@ struct ForgeStageShell<Content: View, Footer: View>: View {
                     .animation(.spring(response: 0.45, dampingFraction: 0.85), value: stepIndex)
             }
             .accessibilityHidden(true)
-            Text("\(progressLabel(for: step))  ·  Step \(stepIndex + 1) of \(allCases.count)")
+            Text(tr("%@  ·  Step %lld of %lld", progressLabel(for: step), stepIndex + 1, allCases.count))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .tracking(0.6)
                 .foregroundStyle(Brand.typeTertiary)
                 .contentTransition(.numericText())
-                .accessibilityLabel("Step \(stepIndex + 1) of \(allCases.count)")
+                .accessibilityLabel(tr("Step %lld of %lld", stepIndex + 1, allCases.count))
         }
     }
 
     private func progressLabel(for step: ForgeStep) -> String {
         switch step {
-        case .source: return "Source"
-        case .plan: return "Plan"
-        case .convert: return "Convert"
-        case .calibrate: return "Calibrate"
-        case .verify: return "Verify"
-        case .brand: return "Brand"
-        case .registered: return "Done"
-        case .publishing: return "Publish"
+        case .source: return tr("Source")
+        case .plan: return tr("Plan")
+        case .convert: return tr("Convert")
+        case .calibrate: return tr("Calibrate")
+        case .verify: return tr("Verify")
+        case .brand: return tr("Brand")
+        case .registered: return tr("Done")
+        case .publishing: return tr("Publish")
         }
     }
 }
@@ -342,7 +342,7 @@ struct ForgePrimaryButton: View {
                     Image(systemName: icon)
                         .font(.system(size: 11, weight: .heavy))
                         .opacity(isEnabled ? 1 : 0.5)
-                        .offset(x: isHovering && isEnabled ? 3 : 0)
+                        .offset(towardsTrailing: isHovering && isEnabled ? 3 : 0)
                 }
             }
             .foregroundStyle(isEnabled ? Brand.bgOuter : Brand.typeSecondary)
@@ -353,7 +353,7 @@ struct ForgePrimaryButton: View {
                     .fill(
                         isEnabled
                             ? AnyShapeStyle(Brand.typeBody)
-                            : AnyShapeStyle(Color.white.opacity(0.06))
+                            : AnyShapeStyle(Brand.wash.opacity(0.06))
                     )
             )
             .overlay(
