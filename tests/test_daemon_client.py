@@ -5,9 +5,12 @@ import json
 import signal
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from mtplx import daemon_client
 from mtplx.commands import public
@@ -16,14 +19,17 @@ from mtplx.daemon_client import (
     PORT_FOREIGN,
     PORT_FREE,
     PORT_MTPLX_SERVER,
+    AttachChatError,
     AttachChatSession,
     PortOccupant,
+    RunningDaemon,
     classify_port_occupant,
     detect_attachable_daemon,
     fetch_daemon_health,
     find_free_port,
     port_busy_advice,
     probe_running_daemons,
+    wait_for_port_settle,
     run_attach_chat,
     stop_daemon,
 )
@@ -73,12 +79,19 @@ class _StubDaemonHandler(BaseHTTPRequestHandler):
         self.server.requests.append(  # type: ignore[attr-defined]
             {"path": self.path, "body": request_body, "headers": dict(self.headers)}
         )
+        config = self.server.config  # type: ignore[attr-defined]
+        release = self.server.release  # type: ignore[attr-defined]
+        if config.get("hang_before_headers"):
+            # A wedged daemon: the request is read and nothing ever comes back.
+            release.wait(30)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
 
         def sse(payload: dict) -> None:
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
+            self.wfile.flush()
 
         sse(
             {
@@ -87,6 +100,16 @@ class _StubDaemonHandler(BaseHTTPRequestHandler):
                 ]
             }
         )
+        if config.get("hang_after_first_chunk"):
+            sse(
+                {
+                    "choices": [
+                        {"index": 0, "delta": {"content": "Hello "}, "finish_reason": None}
+                    ]
+                }
+            )
+            release.wait(30)
+            return
         sse(
             {
                 "choices": [
@@ -130,11 +153,13 @@ def _stub_daemon(config: dict | None = None):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _StubDaemonHandler)
     server.config = dict(config or {})  # type: ignore[attr-defined]
     server.requests = []  # type: ignore[attr-defined]
+    server.release = threading.Event()  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         yield server
     finally:
+        server.release.set()  # type: ignore[attr-defined]
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -404,6 +429,110 @@ def test_run_attach_chat_repl_supports_stats_and_exit():
     assert reasoning == "thinking..."
 
 
+def test_attach_chat_gives_up_on_a_daemon_that_stops_mid_stream():
+    # The session used to open the connection with timeout=None and block in
+    # `for raw_line in response:` forever when the daemon stopped emitting
+    # frames: a blank answer until Ctrl-C. The socket now waits at most the
+    # inactivity deadline between frames and the turn fails with a plain line.
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_after_first_chunk": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        session = AttachChatSession(daemon, inactivity_timeout=0.3)
+        chunks: list[str] = []
+        started = time.monotonic()
+        with pytest.raises(AttachChatError) as excinfo:
+            session.run_turn("hi", on_content=chunks.append)
+        elapsed = time.monotonic() - started
+
+    assert "server stopped responding" in str(excinfo.value)
+    assert "0s" in str(excinfo.value)
+    assert chunks == ["Hello "]  # what did arrive was shown as it arrived
+    assert 0.2 < elapsed < 5.0
+    assert session.history == []  # a failed turn is not remembered as an exchange
+
+
+def test_attach_chat_gives_up_on_a_daemon_that_never_answers():
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_before_headers": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        session = AttachChatSession(daemon, inactivity_timeout=0.3)
+        with pytest.raises(AttachChatError, match="server stopped responding"):
+            session.run_turn("hi")
+
+
+def test_run_attach_chat_reports_a_stalled_daemon_and_exits_nonzero():
+    with _stub_daemon(
+        {"model": "mtplx-test-model", "pid": 1, "hang_after_first_chunk": True}
+    ) as server:
+        daemon = fetch_daemon_health("127.0.0.1", server.server_address[1])
+        assert daemon is not None
+        printer = _RecordingPrinter()
+        original = daemon_client.AttachChatSession
+
+        def short_deadline(*args, **kwargs):
+            kwargs.setdefault("inactivity_timeout", 0.3)
+            return original(*args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(daemon_client, "AttachChatSession", short_deadline)
+            code = run_attach_chat(daemon, prompt="hi", printer=printer)
+
+    assert code == 1
+    kinds = [kind for kind, _ in printer.events]
+    assert kinds.index("content") < kinds.index("end_assistant") < kinds.index("error")
+    errors = [str(text) for kind, text in printer.events if kind == "error"]
+    assert errors == ["server stopped responding (nothing received for 0s)"]
+
+
+def test_attach_chat_connect_and_inactivity_timeouts_are_wired(monkeypatch):
+    # The connect deadline is short and separate from the inactivity deadline
+    # that governs the wait for headers and every frame after them.
+    recorded: dict[str, object] = {}
+
+    class FakeSocket:
+        def settimeout(self, value):
+            recorded["socket_timeout"] = value
+
+    class FakeResponse:
+        status = 200
+
+        def __iter__(self):
+            yield b"data: [DONE]\n"
+
+    class FakeConnection:
+        def __init__(self, host, port, timeout=None):
+            recorded["connect_timeout"] = timeout
+            self.sock = None
+
+        def connect(self):
+            self.sock = FakeSocket()
+
+        def request(self, *_args, **_kwargs):
+            recorded["requested"] = True
+
+        def getresponse(self):
+            return FakeResponse()
+
+        def close(self):
+            recorded["closed"] = True
+
+    monkeypatch.setattr(daemon_client.http.client, "HTTPConnection", FakeConnection)
+    daemon = RunningDaemon(
+        host="127.0.0.1", port=1, model="m", model_path=None, launch_id=None,
+        pid=None, api_key_required=False, health={},
+    )
+
+    AttachChatSession(daemon).run_turn("hi")
+
+    assert recorded["connect_timeout"] == daemon_client.ATTACH_CHAT_CONNECT_TIMEOUT_S == 5.0
+    assert recorded["socket_timeout"] == daemon_client.ATTACH_CHAT_INACTIVITY_TIMEOUT_S == 120.0
+    assert recorded["requested"] and recorded["closed"]
+
+
 # ---------- public.py integration: guard + port auto-select -----------------
 
 
@@ -480,6 +609,15 @@ def test_terminal_chat_attach_guard_passes_through_without_daemon(monkeypatch):
 
 
 def test_quickstart_autoselect_busy_port_bumps_only_foreign(monkeypatch):
+    # #409: the sweep now settles a foreign reading before believing it, and
+    # treats the app's persisted port as user-configured. Both are stubbed
+    # here so this test keeps pinning the original bump contract (and so it
+    # never reads the developer's real app settings).
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda host, port, **_kw: daemon_client.classify_port_occupant(host, port),
+    )
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: None)
     monkeypatch.setattr(
         "mtplx.daemon_client.classify_port_occupant",
         lambda _host, _port: PortOccupant(kind=PORT_FOREIGN),
@@ -538,3 +676,171 @@ def test_daemon_runs_model_matches_path_and_public_id(tmp_path):
 
     other = SimpleNamespace(model="mtplx-other", model_path="/x")
     assert public._daemon_runs_model(other, str(tmp_path / "unrelated")) is False
+
+
+# ---------------------------------------------------------------------------
+# Issue #409 (reporter kmei3560): "Port XXXX was in use by another app. MTPLX
+# now uses port (XXXX+1)" on almost every stop/start, forcing him to configure
+# 1233 so the bump landed on the 1234 he actually wanted. Two defects: the
+# probe misreads our own DRAINING server as a foreign app (its listener
+# outlives its /health), and a port the user configured is moved silently.
+
+
+def test_wait_for_port_settle_returns_when_the_drain_finishes():
+    """A draining MTPLX reads foreign until its listener closes."""
+    readings = [
+        PortOccupant(kind=PORT_FOREIGN),
+        PortOccupant(kind=PORT_FOREIGN),
+        PortOccupant(kind=PORT_FREE),
+        PortOccupant(kind=PORT_FOREIGN),  # never reached
+    ]
+    calls: list[tuple[str, int]] = []
+
+    def fake_classify(host, port, *, api_key=None):
+        calls.append((host, port))
+        return readings[len(calls) - 1]
+
+    import mtplx.daemon_client as dc
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = fake_classify
+    try:
+        slept: list[float] = []
+        occupant = wait_for_port_settle(
+            "127.0.0.1",
+            1234,
+            timeout_s=5.0,
+            poll_s=0.25,
+            clock=lambda: 0.0,
+            sleep=slept.append,
+        )
+    finally:
+        dc.classify_port_occupant = original
+
+    assert occupant.kind == PORT_FREE
+    assert len(calls) == 3
+    assert slept == [0.25, 0.25]
+
+
+def test_wait_for_port_settle_gives_up_on_a_steady_foreign_listener():
+    """The window is bounded: a real stranger still resolves as foreign."""
+    import mtplx.daemon_client as dc
+
+    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    calls = {"n": 0}
+
+    def fake_classify(host, port, *, api_key=None):
+        calls["n"] += 1
+        return PortOccupant(kind=PORT_FOREIGN)
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = fake_classify
+    try:
+        occupant = wait_for_port_settle(
+            "127.0.0.1",
+            1234,
+            timeout_s=3.0,
+            poll_s=0.25,
+            clock=lambda: next(ticks),
+            sleep=lambda _s: None,
+        )
+    finally:
+        dc.classify_port_occupant = original
+
+    assert occupant.kind == PORT_FOREIGN
+    # Bounded, not a spin: the deadline is honored.
+    assert calls["n"] <= 6
+
+
+def test_wait_for_port_settle_short_circuits_on_a_healthy_daemon():
+    """A terminal classification returns at once and never sleeps."""
+
+    def _no_sleep(_seconds: float) -> None:
+        raise AssertionError("a terminal classification must not sleep")
+
+    import mtplx.daemon_client as dc
+
+    original = dc.classify_port_occupant
+    dc.classify_port_occupant = lambda _h, _p, **_kw: PortOccupant(
+        kind=PORT_APP_DAEMON
+    )
+    try:
+        occupant = wait_for_port_settle("127.0.0.1", 1234, sleep=_no_sleep)
+    finally:
+        dc.classify_port_occupant = original
+    assert occupant.kind == PORT_APP_DAEMON
+
+
+def test_quickstart_waits_out_our_own_drain_instead_of_bumping(monkeypatch):
+    """The reporter's stop/start cycle: foreign for a moment, then free.
+
+    The first classification still says foreign (the old server's listener
+    is draining); the settle window then sees it clear, so the launch keeps
+    the port instead of moving to +1.
+    """
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: None)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FREE),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port",
+        lambda _host, _start: (_ for _ in ()).throw(
+            AssertionError("must not look for another port")
+        ),
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=1234)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+    assert args.port == 1234
+
+
+def test_quickstart_never_moves_the_app_configured_port(monkeypatch):
+    """His exact seat: the port lives in app settings, not on the CLI."""
+    printed: list[str] = []
+    monkeypatch.setattr(public, "_quickstart_line", printed.append)
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: 1234)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port",
+        lambda _host, _start: (_ for _ in ()).throw(
+            AssertionError("a configured port is never relocated")
+        ),
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=1234)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+
+    assert args.port == 1234
+    joined = " ".join(printed)
+    assert "not MTPLX" in joined  # the actionable occupant copy
+    assert "Keeping the configured port 1234" in joined
+
+
+def test_quickstart_still_bumps_an_unconfigured_default_port(monkeypatch):
+    """Auto-pick survives for a port nobody chose."""
+    monkeypatch.setattr(public, "_quickstart_line", lambda _line: None)
+    monkeypatch.setattr("mtplx.daemon_client.app_configured_port", lambda: 1234)
+    monkeypatch.setattr(
+        "mtplx.daemon_client.classify_port_occupant",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.wait_for_port_settle",
+        lambda _host, _port, **_kw: PortOccupant(kind=PORT_FOREIGN),
+    )
+    monkeypatch.setattr(
+        "mtplx.daemon_client.find_free_port", lambda _host, _start: 8010
+    )
+    args = SimpleNamespace(host="127.0.0.1", port=8000)
+    public._quickstart_autoselect_busy_port(args, target="openwebui", cli_flags=set())
+    assert args.port == 8010

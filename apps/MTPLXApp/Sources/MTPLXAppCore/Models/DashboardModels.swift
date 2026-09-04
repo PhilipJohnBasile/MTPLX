@@ -676,7 +676,7 @@ public struct MetricsLatest: Codable, Equatable, Sendable {
                     : verifyCallsFallback
                 guard drafted > 0 else { return nil }
                 return AcceptanceCounterRow(
-                    label: "D\(idx + 1)",
+                    label: tr("D%lld", idx + 1),
                     accepted: acceptedCount,
                     drafted: drafted
                 )
@@ -690,7 +690,7 @@ public struct MetricsLatest: Codable, Equatable, Sendable {
 
         return [
             AcceptanceCounterRow(
-                label: "ALL",
+                label: tr("ALL"),
                 accepted: accepted,
                 drafted: drafted
             ),

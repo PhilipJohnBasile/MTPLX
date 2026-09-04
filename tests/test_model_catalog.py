@@ -418,14 +418,16 @@ def test_read_app_settings_degrades_to_none(tmp_path):
     assert settings.onboarding_completed is False
 
 
-def test_select_default_model_routes_small_macs_to_9b(monkeypatch):
+def test_select_default_model_routes_small_macs_to_packs_that_fit(monkeypatch):
     monkeypatch.delenv("MTPLX_DEFAULT_MODEL_VARIANT", raising=False)
 
+    # 24 GiB: the 9B (10 GiB measured peak) is what the picker lists first;
+    # the 27B does not fit.
     small_modern = select_default_model(
         hardware={
             "chip": "Apple M4",
             "apple_silicon_generation": "m4",
-            "memory_gib": 16.0,
+            "memory_gib": 24.0,
         }
     )
     assert small_modern.model == QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
@@ -433,7 +435,38 @@ def test_select_default_model_routes_small_macs_to_9b(monkeypatch):
     assert small_modern.variant == "speed"
     assert "9B" in small_modern.reason
     assert small_modern.display_name == "Qwen3.5 9B Optimized Speed"
-    assert small_modern.memory_gib == 16.0
+    assert small_modern.memory_gib == 24.0
+
+    # 16 GiB: the picker's 16-31 GiB tier leads with the 9B, so the CLI
+    # default matches it (the 4B pair leads only below 16 GiB).
+    sixteen_modern = select_default_model(
+        hardware={
+            "chip": "Apple M4",
+            "apple_silicon_generation": "m4",
+            "memory_gib": 16.0,
+        }
+    )
+    assert sixteen_modern.model == QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
+    assert "9B" in sixteen_modern.reason
+    assert recommended_models(memory_gib=16.0, chip_tier=MODERN_TIER)[0].hf_model_id == (
+        sixteen_modern.model
+    )
+
+    # 8 GiB: the 9B's 10 GiB peak does not fit, so the 4B leads, exactly as
+    # in the picker (the 9B used to be handed to every Mac under 32 GiB).
+    tiny_modern = select_default_model(
+        hardware={
+            "chip": "Apple M4",
+            "apple_silicon_generation": "m4",
+            "memory_gib": 8.0,
+        }
+    )
+    assert tiny_modern.model == "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"
+    assert "4B" in tiny_modern.reason
+    assert tiny_modern.display_name == "Qwen3.5 4B Optimized Speed"
+    assert recommended_models(memory_gib=8.0, chip_tier=MODERN_TIER)[0].hf_model_id == (
+        tiny_modern.model
+    )
 
     small_legacy = select_default_model(
         hardware={
@@ -478,6 +511,9 @@ def test_select_default_model_uses_public_v2_without_local_qwen38(monkeypatch):
 
 
 def test_select_default_model_without_memory_keeps_generation_policy(monkeypatch):
+    """Unreadable memory keeps the generation's precision lane but can no
+    longer pick the 27B: with nothing to say what fits, the smallest pack is
+    chosen and the reason says so."""
     monkeypatch.delenv("MTPLX_DEFAULT_MODEL_VARIANT", raising=False)
     monkeypatch.setenv("MTPLX_OPTIMIZED_SPEED_MODEL", "off")
 
@@ -487,5 +523,7 @@ def test_select_default_model_without_memory_keeps_generation_policy(monkeypatch
             "apple_silicon_generation": "m4",
         }
     )
-    assert selection.model == DEFAULT_HF_MODEL_ID
+    assert selection.variant == "speed"
+    assert selection.model == "Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed"
     assert selection.memory_gib is None
+    assert "memory could not be read" in selection.reason
