@@ -2468,6 +2468,113 @@ def _apply_metal_memory_caps(
     return applied
 
 
+# --- GPU residency keepalive -------------------------------------------------
+#
+# macOS drops an idle process's Metal residency about 2.5 s after its last
+# command buffer and re-establishes it lazily on the next submit, at ~9 ms per
+# GiB (2026-09-03, M5 Max 128 GB: an 8 GiB working set touched in 15 ms warm,
+# 85-95 ms after >=3 s idle; the 77 GiB Flash-Next weights turned every
+# prefill that followed >2.5 s of quiet into a ~0.75-1.0 s TTFT — the app's
+# "hi" measured 1.17 s on the server, 0.08 s back-to-back). That is every chat
+# turn and every agent tool-call round trip. A separate process keeping the
+# GPU busy does NOT help (the state is per-process); the process's own queue
+# must submit. With a wired limit set, MLX keeps the weights in a residency
+# set attached to the queue, and a trivially small kernel every second holds
+# the whole set resident (8 GiB test: 18.7 ms after 6 s idle with a beat vs
+# 87 ms without). Without a wired limit eviction is per-page and a small
+# kernel holds nothing, so the beat is only armed when the caps applied one.
+#
+# The scheduler owns the mechanism (owner-thread beat between items, only
+# while a foreground request completed within the attentive window); this
+# section is the policy: whether, how often, and for how long.
+
+_GPU_KEEPALIVE_INTERVAL_DEFAULT_S = 1.0
+_GPU_KEEPALIVE_ATTENTIVE_DEFAULT_S = 600.0
+
+
+def _gpu_keepalive_enabled() -> bool:
+    raw = str(os.environ.get("MTPLX_GPU_KEEPALIVE", "1")).strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _gpu_keepalive_interval_s() -> float:
+    raw = str(os.environ.get("MTPLX_GPU_KEEPALIVE_INTERVAL_S", "")).strip()
+    try:
+        value = float(raw) if raw else _GPU_KEEPALIVE_INTERVAL_DEFAULT_S
+    except ValueError:
+        value = _GPU_KEEPALIVE_INTERVAL_DEFAULT_S
+    # Below 2 s of quiet the residency survives; above ~2.5 s it does not.
+    return min(2.0, max(0.25, value))
+
+
+def _gpu_keepalive_attentive_s() -> float:
+    raw = str(os.environ.get("MTPLX_GPU_KEEPALIVE_ATTENTIVE_S", "")).strip()
+    try:
+        value = float(raw) if raw else _GPU_KEEPALIVE_ATTENTIVE_DEFAULT_S
+    except ValueError:
+        value = _GPU_KEEPALIVE_ATTENTIVE_DEFAULT_S
+    return max(0.0, value)
+
+
+def _make_gpu_residency_touch() -> Callable[[], None]:
+    """One tiny kernel on the model's (default GPU) stream: its only job is to
+    put a command buffer on the queue the residency set is attached to."""
+    import mlx.core as mx
+
+    probe = mx.ones((64, 64), dtype=mx.float32)
+    mx.eval(probe)
+
+    def touch() -> None:
+        mx.eval(mx.matmul(probe, probe))
+
+    return touch
+
+
+def _arm_gpu_keepalive(state: "ServerState") -> dict[str, Any]:
+    """Decide and arm the residency keepalive; the receipt rides /health."""
+    receipt: dict[str, Any] = {
+        "enabled": False,
+        "interval_s": _gpu_keepalive_interval_s(),
+        "attentive_s": _gpu_keepalive_attentive_s(),
+    }
+    if not _gpu_keepalive_enabled():
+        receipt["reason"] = "disabled_by_env"
+        return receipt
+    caps = getattr(state, "metal_memory_caps", None) or {}
+    wired = caps.get("wired_limit_bytes")
+    if not (caps.get("applied") and isinstance(wired, int) and wired > 0):
+        receipt["reason"] = "no_wired_limit"
+        return receipt
+    scheduler = getattr(state, "model_scheduler", None)
+    if scheduler is None or not hasattr(scheduler, "arm_idle_keepalive"):
+        receipt["reason"] = "scheduler_unsupported"
+        return receipt
+    try:
+        touch = _make_gpu_residency_touch()
+    except Exception as exc:
+        receipt["reason"] = f"touch_unavailable:{type(exc).__name__}"
+        return receipt
+    scheduler.arm_idle_keepalive(
+        touch,
+        interval_s=receipt["interval_s"],
+        attentive_s=receipt["attentive_s"],
+    )
+    receipt["enabled"] = True
+    receipt["wired_limit_bytes"] = int(wired)
+    return receipt
+
+
+def _gpu_keepalive_health(state: "ServerState") -> dict[str, Any]:
+    payload = dict(getattr(state, "gpu_keepalive", None) or {"enabled": False})
+    scheduler = getattr(state, "model_scheduler", None)
+    if scheduler is not None and hasattr(scheduler, "keepalive_state"):
+        try:
+            payload.update(scheduler.keepalive_state())
+        except Exception:
+            pass
+    return payload
+
+
 def _validate_backend_context_memory_budget(
     backend: BackendDescriptor,
     caps: dict[str, Any],
@@ -3296,6 +3403,20 @@ class ServerState:
             _startup_line(
                 "[5/6] Memory plan unavailable "
                 f"({self.memory_plan.unavailable_reason}); legacy budgets apply"
+            )
+        # Weights are mapped and the Metal caps (residency set) are in place:
+        # keep that working set resident between turns.
+        self.gpu_keepalive = _arm_gpu_keepalive(self)
+        if self.gpu_keepalive.get("enabled"):
+            _startup_line(
+                "[5/6] GPU residency keepalive: every "
+                f"{self.gpu_keepalive['interval_s']:g}s for "
+                f"{self.gpu_keepalive['attentive_s']:g}s after each request"
+            )
+        else:
+            _startup_line(
+                "[5/6] GPU residency keepalive off "
+                f"({self.gpu_keepalive.get('reason', 'unknown')})"
             )
         self.session_bank_cold_tier = _session_bank_cold_tier_from_args(args)
         self.sessions = EngineSessionManager(
@@ -23437,6 +23558,19 @@ def _run_generation(
         try:
             if cancel_event is not None and cancel_event.is_set():
                 raise _StreamCancelled("request cancelled before generation")
+            if request_observability is not None:
+                # Was the GPU working set resident when this prefill started?
+                # A cold `warm=false` is the ~9 ms/GiB residency rebuild
+                # inside prompt_eval_time_s; read it before blaming prefill.
+                _keepalive_scheduler = getattr(state, "model_scheduler", None)
+                if _keepalive_scheduler is not None and hasattr(
+                    _keepalive_scheduler, "keepalive_state"
+                ):
+                    _keepalive = _keepalive_scheduler.keepalive_state()
+                    request_observability["gpu_keepalive"] = {
+                        key: _keepalive.get(key)
+                        for key in ("armed", "attentive", "warm", "beats", "last_beat_age_s")
+                    }
             admission_shed = _prefill_admission_shed(
                 state,
                 prompt_ids=prompt_ids,
@@ -28229,6 +28363,7 @@ def create_app(state: ServerState) -> FastAPI:
                 if getattr(state, "last_request_at", 0.0) > 0
                 else None
             ),
+            "gpu_keepalive": _gpu_keepalive_health(state),
             "reasoning_parser": state.args.reasoning_parser,
             "load_time_s": getattr(state, "load_time_s", None),
             "draft_lm_head": state.draft_lm_head,
