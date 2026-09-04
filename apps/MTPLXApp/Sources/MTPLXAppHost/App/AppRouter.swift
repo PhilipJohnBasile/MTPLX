@@ -156,6 +156,12 @@ final class AppRouter: ObservableObject {
     /// flash. `MTPLXApp.swift`'s startup `.task` flips this to
     /// `.onboarding` synchronously after reading `onboardingCompletedAt`.
     @Published var onboardingPhase: OnboardingPhase = .completed
+    /// Whether the one-time language prompt sheet is showing. Raised by
+    /// the startup `.task` when `shouldOfferLanguagePrompt` says this
+    /// install finished onboarding before the Language step existed;
+    /// ContentView stamps the configuration on dismiss so it never
+    /// comes back.
+    @Published var languagePromptPresented: Bool = false
 
     init() {
         let raw = UserDefaults.standard.string(forKey: Self.defaultsKey) ?? AppTab.live.rawValue

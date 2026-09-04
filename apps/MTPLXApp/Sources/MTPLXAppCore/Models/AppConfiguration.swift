@@ -291,6 +291,13 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// experience instead. Set once at the end of `FinishStep` and
     /// never cleared by the runtime.
     public var onboardingCompletedAt: Date?
+    /// When the user was asked to pick the app language. Onboarding's
+    /// Language step stamps it for new installs; every install that
+    /// finished onboarding before that step existed (pre-2.11) is asked
+    /// once, on the first launch after the update, by the language
+    /// prompt sheet — and stamped no matter how the sheet was closed.
+    /// `nil` means "never asked". Never cleared by the runtime.
+    public var languagePromptCompletedAt: Date?
     /// Depth picked by onboarding or the most recent `mtplx tune` run
     /// on this Mac. Threaded into `mtplx serve --depth N` so every
     /// daemon launch honours the selected value. `nil` means the app
@@ -391,6 +398,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         lastHermesSessionID: String? = nil,
         lastHermesSessionTitle: String? = nil,
         onboardingCompletedAt: Date? = nil,
+        languagePromptCompletedAt: Date? = nil,
         lastTunedDepth: Int? = nil,
         lastTunedAt: Date? = nil,
         tunedControlRecord: TunedControlRecord? = nil,
@@ -464,6 +472,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.lastHermesSessionID = lastHermesSessionID
         self.lastHermesSessionTitle = lastHermesSessionTitle
         self.onboardingCompletedAt = onboardingCompletedAt
+        self.languagePromptCompletedAt = languagePromptCompletedAt
         self.lastTunedDepth = lastTunedDepth
         self.lastTunedAt = lastTunedAt
         self.tunedControlRecord = tunedControlRecord
@@ -473,6 +482,13 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.hfEndpoint = hfEndpoint
         self.memoryLimitGB = Self.normalizedMemoryLimitGB(memoryLimitGB)
         self.allowSwap = allowSwap
+    }
+
+    /// Whether this launch owes the user the one-time language prompt:
+    /// onboarding is done (a fresh install is still inside onboarding,
+    /// whose Language step is the prompt) and nobody has asked yet.
+    public var shouldOfferLanguagePrompt: Bool {
+        onboardingCompletedAt != nil && languagePromptCompletedAt == nil
     }
 
     /// Fresh installs must be portable. Installed local copies are discovered
@@ -656,6 +672,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case lastHermesSessionID = "last_hermes_session_id"
         case lastHermesSessionTitle = "last_hermes_session_title"
         case onboardingCompletedAt = "onboarding_completed_at"
+        case languagePromptCompletedAt = "language_prompt_completed_at"
         case lastTunedDepth = "last_tuned_depth"
         case lastTunedAt = "last_tuned_at"
         case tunedControlRecord = "tuned_control_record"
@@ -760,6 +777,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         lastHermesSessionID = field(String.self, .lastHermesSessionID)
         lastHermesSessionTitle = field(String.self, .lastHermesSessionTitle)
         onboardingCompletedAt = field(Date.self, .onboardingCompletedAt)
+        languagePromptCompletedAt = field(Date.self, .languagePromptCompletedAt)
         lastTunedDepth = field(Int.self, .lastTunedDepth)
         lastTunedAt = field(Date.self, .lastTunedAt)
         // A tune record with a missing or mistyped field carries nothing

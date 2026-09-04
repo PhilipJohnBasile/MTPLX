@@ -158,6 +158,14 @@ struct ContentView: View {
                 .environmentObject(backend)
                 .environmentObject(themeStore)
         }
+        .sheet(isPresented: $router.languagePromptPresented, onDismiss: markLanguagePromptCompleted) {
+            // Attached here, outside `appShell`'s language-keyed identity,
+            // so switching languages inside the sheet rebuilds the shell
+            // underneath without tearing the sheet itself down.
+            LanguagePromptSheet()
+                .environmentObject(languageStore)
+                .environmentObject(themeStore)
+        }
         .sheet(isPresented: modelDownloadSheetPresented) {
             ModelDownloadSheet()
                 .environmentObject(backend)
@@ -165,6 +173,16 @@ struct ContentView: View {
                 .interactiveDismissDisabled(backendProjection.snapshot.modelDownloadBusy)
         }
         .appliesBrand()
+    }
+
+    /// Every way out of the language prompt (Continue, Escape, the
+    /// window closing) lands here, so "only once" holds without the
+    /// sheet needing to know how it was closed.
+    private func markLanguagePromptCompleted() {
+        guard backend.configuration.languagePromptCompletedAt == nil else { return }
+        var config = backend.configuration
+        config.languagePromptCompletedAt = Date()
+        try? backend.saveSettings(config)
     }
 
     private var modelDownloadSheetPresented: Binding<Bool> {

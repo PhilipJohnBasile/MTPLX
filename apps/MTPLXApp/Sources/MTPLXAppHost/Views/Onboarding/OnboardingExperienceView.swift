@@ -110,6 +110,9 @@ struct OnboardingExperienceView: View {
     private func completeOnboarding() async {
         var config = backend.configuration
         config.onboardingCompletedAt = Date()
+        // The Language step was this install's language prompt; the
+        // post-update sheet (ContentView) must never ask a second time.
+        config.languagePromptCompletedAt = config.onboardingCompletedAt
         config.lastLaunchTarget = LaunchTarget.chat.rawValue
         if MTPLXAppConfiguration.hfMirrorEnvironment(orchestrator.hfMirrorEndpoint) != nil {
             config.hfEndpoint = orchestrator.hfMirrorEndpoint
