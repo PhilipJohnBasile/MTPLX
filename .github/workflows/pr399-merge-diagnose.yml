@@ -38,3 +38,5 @@ jobs:
           done < <(git diff --name-only --diff-filter=U)
           git merge --abort >/dev/null 2>&1 || true
           exit 0
+
+# retriggered 2026-09-04
