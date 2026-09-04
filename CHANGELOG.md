@@ -78,9 +78,151 @@ nothing beyond 2.10.2.
 - **`/health` carries `qwen4_install_reports`.** The stage-3 kernel report,
   the rope glue's per-item verdicts and the n-gram pre-read plan, so a
   default's engagement is readable without the serve log.
+- **`--cors-origin` / `MTPLX_CORS_ORIGINS`.** Browser pages MTPLX serves
+  itself are always allowed; a browser front-end on another origin now
+  needs its origin listed here (repeatable flag, or a comma-separated
+  env var the daemon inherits from `mtplx start`). `/admin` and the
+  sign-in routes stay same-origin only regardless. See the CORS entry
+  under Fixed.
+- **`mtplx doctor` reports the Hugging Face token `mtplx pull` will use**
+  (`hugging face token: from HF_TOKEN` / `` from `hf auth login` `` /
+  `none`), and the JSON report carries `token_source`, `token_used_by_pull`
+  and `token_policy`.
 
 ### Fixed
 
+- **Any web page could drive the local model.** The server ran CORS with a
+  wildcard origin and credentials, so on the default keyless localhost bind
+  a page in any tab could POST to `/v1/*`, read the answers, list and clear
+  sessions under `/admin/*`, and keep the GPU busy. Browser requests are
+  now same-origin by default (the page's `Origin` must match the `Host` it
+  used), allowlisted origins reach the API but never `/admin` or sign-in,
+  every other origin gets a 403 with no CORS headers, and requests without
+  an `Origin` header (the app, OpenCode, Pi, Claude Code, Cline, curl) are
+  untouched. The browser-auth cookie is `Secure` over https.
+- **The API key stays out of URLs, argv and the Logs pane.** Opening the
+  browser dashboard from the app used `/mtplx/browser-auth?mtplx_api_key=…`,
+  so the key landed in browser history; the app now asks the daemon for a
+  single-use 60 s ticket (`POST /mtplx/browser-auth/ticket`) and opens the
+  URL it returns, falling back to the old form only when a daemon predates
+  the route. The dashboard's own sign-in posts the key in a same-origin
+  body (`POST /mtplx/browser-auth`) and a 401 shows a sign-in prompt instead
+  of "Connection to MTPLX lost". The daemon reads its key from a user-only
+  (0600) file under Application Support instead of `--api-key <key>` on
+  argv, and the launched command line the app logs masks every `*-key`,
+  `*-token`, `*-secret` and `*-password` value.
+- **Play, Restart and first launch no longer wait on mtplx.com.** Every
+  daemon launch awaited the release manifest on a 60 s timeout; offline,
+  firewalled and captive-portal Macs sat in "Launching" for a minute per
+  Play. The runtime decision is local now, the manifest fetch is bounded to
+  3 s and refreshes the About card in the background, and first-run
+  onboarding is decided from the saved settings alone.
+- **The model-pack Update button no longer freezes the window** while it
+  resolves the runtime, walks the pack and spawns the CLI; that work runs
+  off the main actor.
+- **A settings file with one bad value keeps every other setting.** One
+  wrong-typed field in `settings.json` (a hand edit, a downgrade) used to
+  make the whole file undecodable, re-run onboarding, and overwrite custom
+  models, the API key and tuned records with defaults. Bad fields now fall
+  back individually (logged with their path), a malformed custom model or
+  tune record is skipped while its siblings load, and a file that cannot
+  be read at all is kept beside itself as `settings.json.unreadable-<stamp>`
+  with a banner and Reveal in Finder.
+- **An unopenable chat store is kept, not silently swapped for memory.**
+  `chats.store` and its `-wal`/`-shm` sidecars are renamed beside
+  themselves, a fresh store starts, and the sidebar says so with Reveal in
+  Finder; only if no store can be created does the session run in memory,
+  and then the sidebar says that too. The chat models carry a versioned
+  schema so the next model change has a migration path.
+- **Unsaved Settings edits survive switching tabs.** The draft lives above
+  the tab now; an "Unsaved changes" row offers Save / Apply + Restart and
+  Revert. Mode still saves on pick.
+- **A failed reply shows the server's error and offers Retry.** The
+  daemon's `finish_reason: "error"` frame (memory guard, context overflow,
+  tool-loop exception) was decoded as an ordinary finish, so the turn read
+  "Interrupted reply" or "No visible answer generated." with no message and
+  no Retry. The message is shown, persisted with the turn, and labels the
+  settled bubble "Failed: <message>".
+- **A reply the daemon never finished is filed as incomplete.** A stream
+  that ended without its terminal chunk (process death, dropped
+  connection) was persisted as a complete answer with `finish_reason:
+  "stop"`. It is now `"incomplete"`, shown as interrupted, with Retry.
+- **Chats are auto-titled in every language.** The title guard compared
+  against the English literal "New Chat", so non-English users kept the
+  placeholder forever; rows the old guard left untitled are named at
+  launch from their first message.
+- **A failed web search or fetch is recorded as a failure.** Offline or
+  blocked providers came back as an empty result set marked success, the
+  model was told "No results", and a failed fetch still added a source.
+  Failures are marked on the live strip and the persisted trace, the model
+  is told the tool failed, and no phantom source is added.
+- **Esc on the chat surface does one thing.** It stops a streaming reply,
+  otherwise closes the chat; Stop Generating in the menu moves to ⌘⇧. so
+  two Esc bindings no longer race.
+- **Attaching a file no longer freezes the app.** Extraction (PDF page
+  walk, docx unzip, image decode) runs off the main actor with a per-card
+  spinner; a file that cannot be read stays on the strip with the reason
+  instead of vanishing. New caps: 500 PDF pages and 200,000 characters per
+  attachment, noted on the card and in the text the model sees.
+- **A badly typed value in `~/.mtplx/config.toml` no longer bricks every
+  command.** `context_window = "64k"` made `status`, `list`, `config show`
+  and everything else exit with a traceback; that one key now falls back
+  with a one-line warning naming it, and `mtplx config set` refuses a bad
+  value plainly without writing.
+- **Ctrl-C at a prompt exits quietly** with status 130 instead of a
+  traceback.
+- **`mtplx bench` works from any directory.** Prompt suites resolve inside
+  the installed package; a bare `mtplx bench` lists its actions.
+- **Prose that quotes `[Calling tool:` no longer swallows the answer.** The
+  streaming filter held everything after the marker until a `]` arrived and
+  then dropped it at finish; the hold is now bounded by the call's own
+  grammar, so real calls (including multi-line JSON arguments) are still
+  hidden and ordinary text streams through.
+- **The attached terminal chat gives up on a daemon that stops
+  responding** (5 s to connect, 120 s with nothing on the wire) with a
+  plain error and exit 1 instead of hanging forever.
+- **One Hugging Face token policy.** `mtplx pull`, update checks, `inspect`
+  and `doctor` agree: `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`, then the token
+  stored by `hf auth login`, else anonymous; a stored token the Hub refuses
+  is retried anonymously so a stale login never breaks a public pull. Pulls
+  previously ignored the login token that `doctor` reported as present.
+- **Passwordless-sudo setup validates the rule before installing it.** The
+  rule is character-checked (an unescaped space silently turned the rest of
+  a path into an argument, and visudo accepted it), parsed by `visudo -c -f`
+  on a temp file, and installed by one privileged script that names the
+  `thermalforge` binary fan control actually runs (`~/.mtplx/bin`), not a
+  PATH copy; a missing binary is reported plainly; every sudo call is
+  bounded and a no-tty session says to run `mtplx max --grant-sudo` in a
+  terminal.
+- **The fan-restore sidecar clears its marker only after the fans verifiably
+  return to auto**, after the socket path and the sudo fallback alike, and
+  writes what it did to `~/.mtplx/logs/thermal-sidecar.log`.
+- **`mtplx models --update` never removes a live file before the new pack
+  is complete.** Changed files are set aside as `.stale`, removed only after
+  a complete download, and restored on any failure or interruption; a kill
+  mid-update is recovered on the next run.
+- **The curl installer no longer writes into Homebrew's bin.** It used to
+  `cp` over the `mtplx` symlink there, replacing the Cellar program. The
+  global launcher is opt-in (`MTPLX_GLOBAL_BIN`), a launcher this installer
+  did not create is never replaced, and the same rule covers the legacy
+  preview installer.
+- **An `opencode.json` or Pi `models.json` MTPLX cannot read is left
+  alone.** Both apps accept JSONC (comments, trailing commas), and MTPLX
+  now reads them the same way and merges; a file that still does not parse
+  is left untouched with a message naming the file and position instead of
+  being moved aside and replaced. A rewrite keeps the previous file as
+  `<name>.before-mtplx-<stamp>.bak` and `connect` prints where it wrote.
+- **First-run routing refuses what cannot run.** An Intel Mac was told
+  "selected because this is not Apple Silicon" and handed a 27B download;
+  a Mac whose memory could not be read got the 27B; every Mac under 32 GiB
+  got the 9B. Intel and too-small Macs now get one plain sentence and exit
+  1 before any download, unreadable memory selects the smallest pack and
+  says why, and under 32 GiB the CLI names the same pack the app's picker
+  lists first (the 9B from 16 GiB, the 4B below that).
+- **The browser dashboard:** the Speculative tab's hard-coded vLLM
+  comparison is gone; settings sliders send only the keys you moved and
+  follow the server otherwise; the live TPS gauge goes idle when the server
+  does instead of pinning the last request's speed.
 - **A resumed download can no longer splice a new commit's tail onto a
   stale partial.** `mtplx pull`, and the app's downloader behind it,
   range-resumed any `*.incomplete` partial next to the target whichever
