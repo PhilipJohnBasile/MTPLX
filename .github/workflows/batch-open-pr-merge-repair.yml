@@ -1,4 +1,4 @@
-name: Inspect remaining PR conflicts
+name: Repair additive PR conflicts
 
 on:
   push:
@@ -7,50 +7,123 @@ on:
       - .github/workflows/batch-open-pr-merge-repair.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  repair:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Show conflict hunks
+      - name: Resolve and push additive conflicts
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           git config user.name "Philip John Basile"
           git config user.email "PBasile@Basilecom.com"
           git remote add upstream https://github.com/youssofal/MTPLX.git || true
           git fetch upstream main
-          branches=(
-            codex/multiple-model-directories
-            codex/open-in-omp
-            codex/issue-374-remove-model
-            codex/repair-pr220-hermes-app-only
-            feat/runtime-systems-dashboard
-            feat/native-operations-dashboard
-            feat/expert-locality-telemetry
-            feat/semantic-session-anchors
-            codex/deepseek-v4-mlxserve-v26
-          )
-          for branch in "${branches[@]}"; do
-            echo "===== BRANCH $branch ====="
+
+          prepare() {
+            local b="$1"
             git reset --hard
             git clean -fd
-            git fetch origin "$branch"
-            git checkout -B "$branch" "origin/$branch"
-            set +e
-            git merge --no-commit --no-ff upstream/main >/tmp/merge.out 2>&1
-            rc=$?
-            set -e
-            cat /tmp/merge.out
-            if [ "$rc" -ne 0 ]; then
-              for f in $(git diff --name-only --diff-filter=U); do
-                echo "===== FILE $f ====="
-                git diff --cc --unified=3 -- "$f"
-              done
-              git merge --abort || true
+            git fetch origin "$b"
+            git checkout -B "$b" "origin/$b"
+            git merge --no-commit --no-ff -X ours upstream/main
+          }
+          finish() {
+            local b="$1"
+            if git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.swift' '*.py' '*.ts' '*.tsx'; then
+              echo "conflict markers remain in $b" >&2; exit 1
             fi
-          done
+            git diff --check
+            git add -A
+            git commit -m "Merge upstream main into $b"
+            git push origin "HEAD:$b"
+            echo "FIXED $b $(git rev-parse HEAD)"
+          }
+
+          # PR #386: preserve OMP while adopting upstream localization.
+          b=codex/open-in-omp
+          prepare "$b"
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/LaunchTarget.swift')
+          s=p.read_text()
+          for old,new in {
+            'case .chat: return "Chat"':'case .chat: return tr("Chat")',
+            'case .openWebUI: return "Web UI"':'case .openWebUI: return tr("Web UI")',
+            'case .pi: return "Pi"':'case .pi: return tr("Pi")',
+            'case .omp: return "OMP"':'case .omp: return tr("OMP")',
+            'case .openCode: return "OpenCode"':'case .openCode: return tr("OpenCode")',
+            'case .hermes: return "Hermes"':'case .hermes: return tr("Hermes")',
+            'case .benchmark: return "Benchmark"':'case .benchmark: return tr("Benchmark")',
+            'case .other: return "Other"':'case .other: return tr("Other")',
+            'return "Use Pi in the terminal."':'return tr("Use Pi in the terminal.")',
+            'return "Use Oh My Pi in the terminal."':'return tr("Use Oh My Pi in the terminal.")',
+          }.items(): s=s.replace(old,new)
+          p.write_text(s)
+          p=Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Tabs/SettingsTab.swift')
+          s=p.read_text().replace('label: "Agent workspace",','label: tr("Agent workspace"),').replace('caption: "Pi, OMP, and Hermes terminal tools start in this folder."','caption: tr("Pi, OMP, and Hermes terminal tools start in this folder.")')
+          p.write_text(s)
+          PY
+          swift build --package-path apps/MTPLXApp --product MTPLXApp
+          finish "$b"
+
+          # PR #365: source merge is additive; rebuild generated dashboard assets.
+          b=feat/runtime-systems-dashboard
+          prepare "$b"
+          rm -rf mtplx/dashboard/_static
+          (cd dashboard && npm ci && npm run build)
+          finish "$b"
+
+          # PR #364: only generated dashboard assets conflict; rebuild from merged source.
+          b=feat/native-operations-dashboard
+          prepare "$b"
+          rm -rf mtplx/dashboard/_static
+          (cd dashboard && npm ci && npm run build)
+          finish "$b"
+
+          # PR #355: preserve expert instrumentation plus upstream allocator cap propagation.
+          b=feat/expert-locality-telemetry
+          prepare "$b"
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('mtplx/server/openai.py'); s=p.read_text()
+          needle='            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'
+          block='''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        # Keep the runtime allocator ceiling aligned with the admission gate.\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
+          if needle not in s: raise SystemExit('expert-locality insertion point changed')
+          p.write_text(s.replace(needle, block, 1))
+          PY
+          python3 -m py_compile mtplx/server/openai.py mtplx/expert_locality.py
+          finish "$b"
+
+          # PR #350: retain semantic anchor boundaries and upstream PLE/Qwen4 planning inputs.
+          b=feat/semantic-session-anchors
+          prepare "$b"
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('mtplx/generation.py'); s=p.read_text()
+          old='from .runtime_options import block_prefix_restore_enabled, env_bool\nfrom .semantic_anchors import merge_mandatory_edges\n'
+          new='''from .runtime_options import (\n    block_prefix_restore_enabled,\n    env_bool,\n    qwen4_opdiet_enabled,\n)\nfrom .route_tape import RouteTape, counter_deltas\nfrom .semantic_anchors import merge_mandatory_edges\n'''
+          if old not in s: raise SystemExit('semantic import block changed')
+          s=s.replace(old,new,1)
+          sig='    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
+          rep='    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
+          if sig not in s: raise SystemExit('prefill restored suffix signature changed')
+          s=s.replace(sig,rep,1)
+          # There are two call sites that need both semantic edges and the full planning token stream.
+          target='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
+          repl='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
+          if target not in s: raise SystemExit('near-prefix call site changed')
+          s=s.replace(target,repl,1)
+          target='                        mandatory_prefix_edges=mandatory_prefix_edges,\n                    )'
+          repl='                        mandatory_prefix_edges=mandatory_prefix_edges,\n                        plan_ids=prompt_ids,\n                    )'
+          if target not in s: raise SystemExit('exact-restore call site changed')
+          s=s.replace(target,repl,1)
+          p.write_text(s)
+          PY
+          python3 -m py_compile mtplx/generation.py mtplx/semantic_anchors.py
+          finish "$b"
