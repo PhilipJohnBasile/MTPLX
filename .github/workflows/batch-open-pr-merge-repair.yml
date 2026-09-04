@@ -1,4 +1,4 @@
-name: Batch open PR merge repair
+name: Inspect remaining PR conflicts
 
 on:
   push:
@@ -7,16 +7,16 @@ on:
       - .github/workflows/batch-open-pr-merge-repair.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair:
+  inspect:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Merge current upstream main into open PR branches
+      - name: Show conflict hunks
         shell: bash
         run: |
           set -u
@@ -29,45 +29,28 @@ jobs:
             codex/open-in-omp
             codex/issue-374-remove-model
             codex/repair-pr220-hermes-app-only
-            codex/fix-swift-mainactor-helper
             feat/runtime-systems-dashboard
             feat/native-operations-dashboard
-            feat/replay-orchestrator
-            feat/runtime-systems-registry
-            feat/policy-hooks
-            feat/sessionbank-memory-governor
-            feat/privacy-safe-request-capture
             feat/expert-locality-telemetry
-            feat/otlp-http-export
-            feat/unified-memory-budgeting
-            feat/expert-residency
-            feat/deterministic-replay
             feat/semantic-session-anchors
             codex/deepseek-v4-mlxserve-v26
-            agent/issue-193-responses-api
           )
-          echo "=== BATCH MERGE REPAIR ==="
           for branch in "${branches[@]}"; do
-            echo "===== $branch ====="
+            echo "===== BRANCH $branch ====="
             git reset --hard
             git clean -fd
             git fetch origin "$branch"
             git checkout -B "$branch" "origin/$branch"
             set +e
-            git merge --no-commit --no-ff upstream/main
+            git merge --no-commit --no-ff upstream/main >/tmp/merge.out 2>&1
             rc=$?
             set -e
-            if [ "$rc" -eq 0 ]; then
-              if git diff --cached --quiet && git diff --quiet; then
-                echo "ALREADY_CURRENT $branch"
-              else
-                git commit -m "Merge upstream main into $branch"
-                git push origin "HEAD:$branch"
-                echo "MERGED $branch $(git rev-parse HEAD)"
-              fi
-            else
-              echo "CONFLICT $branch"
-              git diff --name-only --diff-filter=U | sed 's/^/  /'
+            cat /tmp/merge.out
+            if [ "$rc" -ne 0 ]; then
+              for f in $(git diff --name-only --diff-filter=U); do
+                echo "===== FILE $f ====="
+                git diff --cc --unified=3 -- "$f"
+              done
               git merge --abort || true
             fi
           done
