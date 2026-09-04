@@ -62,15 +62,19 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import logging
 import os
 import time
 from functools import lru_cache
 from typing import Any, Callable, Sequence
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "COUNTERS",
     "EARLY_ENV_FLAG",
     "ENV_FLAG",
+    "STRICT_ENV_FLAG",
     "EarlyFirstGather",
     "PrefillLookahead",
     "active_early_first_gather",
@@ -79,15 +83,30 @@ __all__ = [
     "early_enabled",
     "enabled",
     "first_gather_early_scope",
+    "inertness_verdict",
     "last_early_status",
     "last_scope_status",
     "prefill_lookahead_scope",
     "reject_unwired_prefill_loop",
     "reset_counters",
     "snapshot_counters",
+    "strict_enabled",
 ]
 
 ENV_FLAG = "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD"
+
+#: Measurement law vs serving contract.  The engagement verdict below exists so
+#: an A/B can never report the control under the candidate's label (the
+#: 2026-09-01 blind spot): an armed lane that quietly served zero chunks
+#: RAISES.  That is the right answer for a benchmark arm and the wrong one for
+#: a user: on 2026-09-03 the same raise reached a live serve as an SSE
+#: ``finish_reason: "error"`` after a 30 s cold prefill of a 31k-token prompt
+#: whose first chunk the sidecar declined (a low-entropy span hashes to few
+#: unique rows) -- the whole prefill paid, nothing served.  Serving therefore
+#: records the verdict (counter + ``last_scope_status()["engagement_incomplete"]``
+#: + one warning) and keeps generating; measurement arms export this flag and
+#: get the raise.
+STRICT_ENV_FLAG = "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD_STRICT"
 
 #: The first chunk's gather is the one the lookahead cannot hide: it has no
 #: previous chunk to run behind, so `prefill_lookahead_scope` submits it and
@@ -119,6 +138,7 @@ def snapshot_counters() -> dict[str, int]:
 def reset_counters() -> None:
     COUNTERS.clear()
     _LAST_EARLY.update(_EARLY_RECEIPT_ZERO)
+    _LAST_SCOPE.clear()
     _LAST_SCOPE.update(
         {
             "armed": None,
@@ -200,6 +220,40 @@ def enabled() -> bool:
     )
 
 
+@lru_cache(maxsize=1)
+def strict_enabled() -> bool:
+    """Resolve :data:`STRICT_ENV_FLAG` once.  Unparseable values raise."""
+
+    raw = (os.environ.get(STRICT_ENV_FLAG) or "").strip().lower()
+    if raw in _FALSE:
+        return False
+    if raw in _TRUE:
+        return True
+    accepted = sorted((_TRUE | _FALSE) - {""})
+    raise ValueError(
+        f"{STRICT_ENV_FLAG} must be one of {accepted}, "
+        f"got {os.environ.get(STRICT_ENV_FLAG)!r}"
+    )
+
+
+_WARNED: set[str] = set()
+
+
+def inertness_verdict(key: str, message: str) -> None:
+    """Deliver an inertness verdict: raise under strict, record when serving.
+
+    One warning per verdict class per process -- a serve that hits this on
+    every request must not turn its log into the receipt it failed to be.
+    """
+
+    if strict_enabled():
+        raise RuntimeError(message)
+    count(f"verdict_{key}")
+    if key not in _WARNED:
+        _WARNED.add(key)
+        logger.warning("%s (serving continues; export %s=1 to fail closed)", message, STRICT_ENV_FLAG)
+
+
 def reject_unwired_prefill_loop(loop: str) -> None:
     """Refuse to run an armed lane through a prefill loop it is not wired to.
 
@@ -208,14 +262,19 @@ def reject_unwired_prefill_loop(loop: str) -> None:
     the ordinary synchronous gather while the arm still called itself the
     candidate -- the 2026-09-01 failure, in a different disguise.  Every such
     loop calls this first, so "armed but inert" cannot be reached at all.
+
+    Under :data:`STRICT_ENV_FLAG` this raises; serving records the verdict
+    and runs the loop it was asked to run (the request is exact either way --
+    only the overlap is missing).
     """
 
     if not enabled():
         return
-    raise RuntimeError(
+    inertness_verdict(
+        "unwired_prefill_loop",
         f"{ENV_FLAG}=1 but this request takes the {loop!r} prefill loop, "
         "which the lookahead is not wired to; it would measure the control "
-        "under the candidate's label. Wire that loop or clear the flag."
+        "under the candidate's label. Wire that loop or clear the flag.",
     )
 
 
@@ -419,11 +478,20 @@ class EarlyFirstGather:
                 "never_needed" if self.needed_at_ms is None else "unused"
             )
         if not self.adopted:
+            # Cancel bites only while the gather is still queued.  A RUNNING
+            # gather is left to finish on the pool and its rows are dropped:
+            # the owner thread must never wait for work it will not consume.
+            # Before 2026-09-03 this was ``self._future.result()``, and on a
+            # warm session-bank turn -- where the whole span is already in
+            # KV and the gather is pure waste -- the owner sat here for as
+            # long as the sidecar preads took: 5-7.5 s per turn once memory
+            # pressure had evicted the table (the founder's 43k OpenCode
+            # session), charged to nothing in the prompt-state receipt and
+            # divided into decode_tok_s for every short tool turn.  The
+            # pool is process-wide and read-only over the memmaps, so an
+            # orphaned gather is harmless; ``_closed`` above also keeps its
+            # done-callback from queuing the rest-of-prompt page warm.
             self._future.cancel()
-            try:
-                self._future.result()
-            except Exception:
-                pass
         if self._rest_future is not None:
             # Never waited on: it exists to leave pages warm, and a prefill
             # that finished without it is simply a prefill that did not need
@@ -744,14 +812,23 @@ class PrefillLookahead:
         ]
         if not unserved:
             return
-        raise RuntimeError(
+        unserved_outcomes = [
+            (index, self._outcomes.get(index, "never_taken")) for index in unserved
+        ]
+        # Serving keeps the verdict readable per request: the scope status
+        # carries WHICH spans went unserved, the counter says how often.
+        _LAST_SCOPE["engagement_incomplete"] = {
+            "unserved": unserved_outcomes,
+            "engagement": self.engagement(),
+        }
+        inertness_verdict(
+            "engagement_incomplete",
             f"{ENV_FLAG}=1 did not engage on every prefill chunk: "
             f"{self.engagement()}; spans the worker was designed to serve "
-            f"but did not: "
-            f"{[(index, self._outcomes.get(index, 'never_taken')) for index in unserved]}"
+            f"but did not: {unserved_outcomes}"
             f", span sizes {self.span_tokens}. The lane is armed but (partly) "
             "inert; refusing to report a measurement that did not run the "
-            "candidate."
+            "candidate.",
         )
 
     def _discard(self, future) -> None:
@@ -789,6 +866,7 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
         # still raises, whatever the prompt length -- so what is skipped here
         # is only the worker, which would pay a thread handoff for zero
         # overlap and then report the hot-LRU decline as a non-engagement.
+        _LAST_SCOPE.pop("engagement_incomplete", None)
         _LAST_SCOPE.update(
             {
                 "armed": False,
@@ -802,6 +880,7 @@ def prefill_lookahead_scope(lookahead: "PrefillLookahead | None"):
         lookahead.close()
         yield None
         return
+    _LAST_SCOPE.pop("engagement_incomplete", None)
     _LAST_SCOPE.update(
         {
             "armed": True,

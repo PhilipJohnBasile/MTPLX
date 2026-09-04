@@ -376,7 +376,13 @@ def test_request_arrival_is_where_the_gather_starts():
     scope = GENERATION_TEXT.split("def _ple_first_gather_early_scope", 1)[1]
     scope = scope.split("\ndef ", 1)[0]
     assert 'hook = _resolve_ple_lookahead_hook(rt, "ple_first_gather_early")' in scope
-    assert "raise RuntimeError(" in scope
+    # An unservable architecture is a verdict, not a request failure: strict
+    # arms raise, serving records and declines the lane.
+    assert 'inertness_verdict(\n            "no_first_gather_hook"' in scope
+    # The gather is declined outright when a bank restore will move the
+    # prefill past the predicted span (the 2026-09-03 warm-turn storm).
+    assert "_bank_may_preempt_first_span(session_bank, prompt_ids, span)" in scope
+    assert '"bank_prefix_may_serve_first_span"' in scope
 
 
 def test_first_span_prediction_declines_rather_than_guessing():

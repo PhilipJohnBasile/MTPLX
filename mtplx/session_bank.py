@@ -1091,6 +1091,26 @@ class SessionBank:
         self._evict_if_needed(protected_tokens=tokens)
         return entry
 
+    def shares_ram_prefix(
+        self, token_ids: list[int] | tuple[int, ...], *, min_tokens: int
+    ) -> bool:
+        """Whether any RAM entry shares at least ``min_tokens`` of prefix.
+
+        The cheap question a request-arrival optimisation needs: will the
+        prefill start at token 0, or will a restore (exact, near, or block
+        prefix -- any of them begins by matching this many tokens) move its
+        start past the first chunk?  One tuple-slice compare per entry, no
+        cold-tier scan, no lookup side effects.
+        """
+        n = max(1, int(min_tokens))
+        if len(token_ids) < n:
+            return False
+        head = tuple(int(token) for token in token_ids[:n])
+        for prefix in self._entries:
+            if len(prefix) >= n and prefix[:n] == head:
+                return True
+        return False
+
     def longest_prefix(self, token_ids: list[int] | tuple[int, ...]) -> SessionBankEntry | None:
         tokens = tuple(int(token) for token in token_ids)
         best: SessionBankEntry | None = None
@@ -1284,6 +1304,19 @@ class SessionBank:
         # The bar deliberately ignores incompatible/lease-only RAM entries
         # (they cannot serve, so they must not shadow a valid cold row).
         ram_best_matched = int(serve_compatible_best_matched)
+        if floor > 0:
+            # The caller's own gate discards every near/block candidate with
+            # matched <= min_restore_tokens (its exact-prefix RAM entry
+            # already serves that much), so a cold row at or below the floor
+            # can never be served through this lane -- hydrating it is a
+            # multi-GB SSD decode on the request thread for a candidate the
+            # sort discards unread. Measured 0.59-0.66 s of unattributed
+            # prompt-state wall on EVERY warm agent turn (py-spy on the
+            # 2026-09-03 candidate daemon: the exact entry was skipped by
+            # the `_cand <= floor` guard above, so the bar read 0 and the
+            # same turn's own SSD twin hydrated each time). Strictly-better
+            # cold rows and cold-only recovery (floor 0) are unchanged.
+            ram_best_matched = max(ram_best_matched, floor + 1)
         cold_match = self._cold_near_prefix_candidate(
             tokens,
             max_token_gap=gap_limit,

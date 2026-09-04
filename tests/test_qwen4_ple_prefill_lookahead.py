@@ -49,10 +49,17 @@ def immediate_submit(fn, *args):
 
 
 @pytest.fixture(autouse=True)
-def _clean_counters():
+def _clean_counters(monkeypatch):
+    # This file states the MEASUREMENT law: an armed lane that did not run the
+    # candidate raises.  Since 2026-09-03 that is the strict mode a benchmark
+    # arm exports; serving records the same verdict without failing the
+    # request (tests/test_qwen4_ple_serving_verdicts.py covers that side).
+    monkeypatch.setenv(lookahead_mod.STRICT_ENV_FLAG, "1")
+    lookahead_mod.strict_enabled.cache_clear()
     lookahead_mod.reset_counters()
     yield
     lookahead_mod.reset_counters()
+    lookahead_mod.strict_enabled.cache_clear()
 
 
 def spans_for(total: int, chunk: int) -> list[tuple[int, int]]:
@@ -778,12 +785,14 @@ def test_hook_resolution_terminates_on_a_self_referential_wrapper():
     assert resolve(_Node(model=node)) is None
 
 
-def test_scope_raises_rather_than_running_an_armed_lane_it_cannot_serve():
+def test_scope_declares_a_verdict_rather_than_running_an_armed_lane_it_cannot_serve():
     scope_source = GENERATION_TEXT.split(
         "def _ple_prefill_lookahead_scope", 1
     )[1].split("\ndef ", 1)[0]
     assert "_resolve_ple_lookahead_hook(rt)" in scope_source
-    assert "raise RuntimeError" in scope_source
+    # Strict arms raise through the verdict; serving records it and yields
+    # the no-op scope (2026-09-03: a lane verdict must never fail a request).
+    assert 'inertness_verdict(\n                "no_lookahead_hook"' in scope_source
     assert "_lookahead_enabled()" in scope_source
     assert "_PREFILL_CHUNK_RECORDS.clear()" in scope_source
 

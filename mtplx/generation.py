@@ -729,10 +729,13 @@ def _ple_prefill_lookahead_scope(rt, body, spans):
         from mtplx.ple_prefill_lookahead import enabled as _lookahead_enabled
 
         if hook is None and body and _lookahead_enabled():
-            raise RuntimeError(
+            from mtplx.ple_prefill_lookahead import inertness_verdict
+
+            inertness_verdict(
+                "no_lookahead_hook",
                 "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD=1 but nothing under "
                 f"{type(getattr(rt, 'model', None)).__name__} exposes "
-                "ple_prefill_lookahead; this architecture cannot serve the lane"
+                "ple_prefill_lookahead; this architecture cannot serve the lane",
             )
         yield None
         return
@@ -799,6 +802,35 @@ def _predicted_first_prefill_span(
     return None
 
 
+def _bank_may_preempt_first_span(session_bank, prompt_ids, span) -> bool:
+    """Whether a session-bank restore can move the prefill past ``span``'s start.
+
+    Every restore lane (exact, near-prefix, block-prefix) begins by matching
+    at least the block-restore minimum of the prompt against a RAM entry, so
+    a RAM entry sharing that much prefix is the necessary condition for the
+    prefill to start anywhere but token 0.  Cheap by construction (one slice
+    compare per entry, no cold-tier scan) and duck-typed: banks without the
+    probe are treated as unable to preempt, which keeps the pre-2026-09-03
+    behaviour for them.
+    """
+
+    if session_bank is None or not prompt_ids:
+        return False
+    probe = getattr(session_bank, "shares_ram_prefix", None)
+    if not callable(probe):
+        return False
+    block_min_match = max(
+        1, _env_int("MTPLX_SESSION_BLOCK_PREFIX_MIN_MATCH_TOKENS", 512)
+    )
+    span_end = int(span[1]) if span is not None else block_min_match
+    try:
+        return bool(
+            probe(prompt_ids, min_tokens=min(block_min_match, max(1, span_end)))
+        )
+    except Exception:
+        return False
+
+
 def _with_ple_first_gather_early(fn):
     """Start the first prefill chunk's PLE gather at request arrival.
 
@@ -846,11 +878,17 @@ def _ple_first_gather_early_scope(
         return
     hook = _resolve_ple_lookahead_hook(rt, "ple_first_gather_early")
     if hook is None:
-        raise RuntimeError(
+        from mtplx.ple_prefill_lookahead import inertness_verdict
+
+        inertness_verdict(
+            "no_first_gather_hook",
             "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY=1 but nothing under "
             f"{type(getattr(rt, 'model', None)).__name__} exposes "
-            "ple_first_gather_early; this architecture cannot serve the lane"
+            "ple_first_gather_early; this architecture cannot serve the lane",
         )
+        with first_gather_early_scope(None, "no_first_gather_hook"):
+            yield None
+        return
     span = _predicted_first_prefill_span(
         prompt_ids,
         stable_prefix_len=stable_prefix_len,
@@ -859,6 +897,19 @@ def _ple_first_gather_early_scope(
     )
     if span is None:
         with first_gather_early_scope(None, "unpredictable_first_span"):
+            yield None
+        return
+    if _bank_may_preempt_first_span(session_bank, prompt_ids, span):
+        # The span is predicted from the prompt alone, but the prefill it
+        # feeds starts where the session bank's restore leaves off.  A RAM
+        # entry sharing the block-restore minimum of prefix means the first
+        # chunk is already KV and the prefill -- if any -- begins past it:
+        # gathering span 0's rows now is 32,768 preads of pure waste, the
+        # chained rest-of-prompt page warm is a 650k-row storm on the
+        # sidecar pool for the whole decode, and both compete with the
+        # decode's own gathers for the page cache under memory pressure.
+        # That was every warm turn of every agent session before 2026-09-03.
+        with first_gather_early_scope(None, "bank_prefix_may_serve_first_span"):
             yield None
         return
     early = hook(list(prompt_ids)[:-1], span)
