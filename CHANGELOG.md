@@ -12,6 +12,26 @@ nothing beyond 2.10.2.
 
 ### Added
 
+- **Agent-session release gate (`scripts/agent_session_gate.py`).** One
+  command drives the coding-agent turn loop every harness ends up sending
+  (OpenCode, Pi, Hermes, Claude Code, Cline share the OpenAI-compatible
+  shape): a long real-code prompt, short same-session turns, an auto tool
+  round and a forced-choice round with their tool results, judged from the
+  engine's own per-request receipts. It fails on warm-turn dead time over
+  1 s, a warm TTFT over 1.5 s on a small suffix, a bank restore under 90% of
+  the prompt, a postcommit wait over 2 s, a tool-call turn whose
+  generation-final snapshot was not banked in O(1), a decode drop past 20%
+  of the cold turn, or any stream error — every symptom of the 2026-09-03
+  OpenCode regressions, none of which a unit test or a single-request
+  benchmark could see. `release_macos_v1.sh` runs it after the pillar gate
+  against the same daemon (`MTPLX_RELEASE_AGENT_GATE_CONTEXT_TOKENS`,
+  default 40000). The daemon's final stream chunk already carries every
+  field it reads, so it works against any install with no log access.
+- **Cache-miss receipts.** The flight recorder records the outcome of every
+  generation-final snapshot attempt (mode, reason, both stream lengths, the
+  divergence token); the committed-reasoning canonicalizer records why it
+  stood aside; `MTPLX_DEBUG_POSTCOMMIT_MISMATCH_DIR=<dir>` dumps the
+  generated and re-rendered token windows around a refused snapshot.
 - **Light appearance for the app (#428).** A curated cream palette
   (cream ground, warm ink type, graphite chrome, matching code colors),
   not an inversion; every pair is gated on WCAG AA and the dark palette
@@ -91,6 +111,60 @@ nothing beyond 2.10.2.
 
 ### Fixed
 
+- **Agent sessions on Flash-Next slowed to ~20 tok/s and stalled 5-8 s before
+  every tool turn.** A 43k-token OpenCode session measured on the live daemon
+  lost 146 s of a 14-minute task to three engine defects, none of them decode
+  (the decode rounds ran at 65-70 tok/s throughout; the "21 tok/s" was dead
+  time divided into 200-token tool turns):
+  - Every request started the n-gram first-chunk gather at arrival
+    (`MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY`, on by default since the #391 port)
+    and chained a page-warm of the *rest of the prompt's* rows — on warm
+    bank turns whose prefill is 20-400 tokens, all of it waste (650k rows at
+    43k), and the owner thread then blocked on the gather at scope exit:
+    5-7.5 s per turn once memory pressure had evicted the table, charged to
+    nothing in the receipt. The gather is declined when a RAM bank entry can
+    already serve past the first chunk, and an unconsumed gather is never
+    waited for. Warm-turn dead time 5-7.5 s → 0.01 s; the memory-pressure
+    notices went with the page-warm storm.
+  - The bank hydrated its own SSD twin on every warm turn (0.6 s each): the
+    exact-prefix entry was excluded from the "RAM already serves this" bar,
+    so the bar read 0 and the cold row was decoded unread.
+  - The generation-final snapshot of a tool-call turn was refused on
+    every OpenCode turn in the daemon's life (83/83 went to the retokenizing
+    GPU re-prefill): tool arguments are not byte-stable through parse →
+    client → re-render (a file ending in `\n` came back one token short),
+    and a turn ending in `tool_calls` never advanced the session's committed
+    stream, so the committed-think substitution could not apply to the
+    turns that needed it. The committed post-think body (text + tool-call
+    markup as generated) is now substituted into the re-render when the
+    turn's calls match, and `tool_calls` finishes commit like `stop`. Tool
+    rounds bank in O(1) and the next turn restores the whole turn (measured:
+    write-turn follow-up 3,535 tokens re-prefilled / 3.7 s → 20 tokens /
+    0.12 s).
+  - A pending postcommit that was still prefilling when the 30 s bound
+    expired was aborted and the request re-prefilled the same tokens from
+    scratch (30 s waited + 38 s re-prefill after a 25k-token turn). The
+    wait now extends while the job heartbeats at chunk boundaries and
+    abandons only a silent job (`MTPLX_POSTCOMMIT_WAIT_STALL_S`, 15 s;
+    ceiling `MTPLX_POSTCOMMIT_WAIT_CEILING_S`, 600 s).
+  - A forced `tool_choice` rewrote the system contract and the bank
+    identity, so one forced round re-prefilled a 41k session cold twice
+    (41 s + 44 s). The clause now rides a transient trailing user turn like
+    every other per-request steering text, and the bank fingerprint no
+    longer carries tail-only contracts (forced choice, post-tool answer,
+    read-only force-answer, Pi convergence): a transition round keeps the
+    session's prefix. Forced round at 41k: 0.58 s.
+  - A cold prompt of ~30k+ tokens could end with `finish_reason: "error"`
+    after its whole prefill: the PLE lookahead's engagement verdict, a
+    benchmark-arm assertion, raised inside a user request when the sidecar
+    declined a low-entropy first chunk. Serving records the verdict
+    (counter, `last_scope_status`, one warning); `MTPLX_QWEN4_PLE_PREFILL_
+    LOOKAHEAD_STRICT=1` keeps the raise for measurement arms.
+  Receipts: `scripts/agent_session_gate.py` (new release gate, below) at 40k
+  passes end to end — warm turns 0.15 s TTFT / 0.01 s dead time / 66-84
+  tok/s, auto tool round banked in O(1), forced round warm. OpenCode CLI,
+  same task, bank on vs off: aggregate decode 87.1 vs 83.8 tok/s (the bank
+  does not touch decode), total TTFT 4.5 s vs 14.0 s over three turns.
 - **A second of dead air before every reply after a short pause.** macOS
   drops an idle process's GPU residency about 2.5 s after its last Metal
   command and rebuilds it on the next one at ~9 ms per GiB, so on
