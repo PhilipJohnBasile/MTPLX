@@ -433,6 +433,12 @@ class SessionBankEntry:
     # kvcache-v2: SSD-restored entries defer boundary decode (exact restores
     # never need them); the loader fills gdn_boundaries on first partial use.
     gdn_boundary_loader: Any = None
+    # SSD block-prefix restores may hydrate only the cache state required for
+    # the boundary they will serve.  ``prefix_len`` remains the full token
+    # identity used for candidate matching; these fields describe the actual
+    # materialized state spans.
+    cache_snapshot_prefix_len: int | None = None
+    mtp_history_snapshot_prefix_len: int | None = None
 
     @property
     def prefix_len(self) -> int:
@@ -1486,6 +1492,17 @@ class SessionBank:
             draft_head_identity=metadata.get("draft_head_identity"),
             policy_fingerprint=metadata.get("policy_fingerprint"),
             mtp_history_snapshot=_clone_tree(record.mtp_history_snapshot),
+            cache_snapshot_prefix_len=(
+                int(record.cache_snapshot_prefix_len)
+                if getattr(record, "cache_snapshot_prefix_len", None) is not None
+                else None
+            ),
+            mtp_history_snapshot_prefix_len=(
+                int(record.mtp_history_snapshot_prefix_len)
+                if getattr(record, "mtp_history_snapshot_prefix_len", None)
+                is not None
+                else None
+            ),
             snapshot_epoch=int(metadata.get("snapshot_epoch") or len(record.token_ids)),
             mtp_snapshot_epoch=(
                 int(metadata["mtp_snapshot_epoch"])
@@ -1726,17 +1743,66 @@ class SessionBank:
                     )
                     return None
 
+        # A cold block-prefix candidate can represent the long entry's token
+        # identity while only hydrating KV blocks through the safe restore
+        # point.  Never ask restore_cache to trim bytes that were purposely
+        # not read from SSD; a malformed partial record fails closed.
+        cache_snapshot_prefix_len = int(
+            getattr(entry, "cache_snapshot_prefix_len", None)
+            or entry.prefix_len
+        )
+        mtp_prefix_recorded = getattr(
+            entry, "mtp_history_snapshot_prefix_len", None
+        )
+        mtp_snapshot_prefix_len = (
+            int(mtp_prefix_recorded)
+            if mtp_prefix_recorded is not None
+            else int(entry.prefix_len)
+        )
+        required_cache_prefix_len = (
+            restore_point if boundary_snapshot is not None else restore_point - 1
+        )
+        if cache_snapshot_prefix_len < required_cache_prefix_len:
+            self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
+            return None
+        if (
+            entry.mtp_history_snapshot is not None
+            and mtp_snapshot_prefix_len < max(0, restore_point - 1)
+        ):
+            self.last_miss_reason = CacheMissReason.NO_SNAPSHOT_COVERAGE.value
+            return None
+
         actual_restore_mode = "clone"
-        mtp_history_trim_tokens = max(0, int(entry.prefix_len) - restore_point)
+        if mtp_prefix_recorded is None:
+            # Legacy full and live-reference snapshots are trimmed by the
+            # prompt-prefix gap.  Their physical MTP offset may be windowed,
+            # so it cannot be treated as an absolute token position.
+            mtp_history_trim_tokens = max(
+                0, int(entry.prefix_len) - restore_point
+            )
+        else:
+            # Prefix-decoded committed MTP history records its physical span.
+            # It is built from prompt_ids[1:], so a boundary at N retains N-1
+            # history rows and needs no further trim when decoded to that size.
+            mtp_history_trim_tokens = max(
+                0, mtp_snapshot_prefix_len - max(0, restore_point - 1)
+            )
         # Boundary restores land the KV at the full boundary (no seed forward
         # will run — it would advance recurrent state past the captured
         # boundary a second time). Non-boundary restores keep the seed-forward
         # slot semantics.
-        trim_to_target = (
-            (lambda c: _trim_cache_ref_to_tokens(c, restore_point))
-            if boundary_snapshot is not None
-            else (lambda c: _trim_cache_ref_to_prefix(c, restore_point))
-        )
+        if cache_snapshot_prefix_len == required_cache_prefix_len:
+            # The cold decoder supplied precisely the state this consumer
+            # needs.  Calling the legacy trim here would remove valid KV rows
+            # (or demand an absent long tail) after a partial hydration.
+            def trim_to_target(_cache: list[Any]) -> bool:
+                return True
+        else:
+            trim_to_target = (
+                (lambda c: _trim_cache_ref_to_tokens(c, restore_point))
+                if boundary_snapshot is not None
+                else (lambda c: _trim_cache_ref_to_prefix(c, restore_point))
+            )
         # Passive-probe maintenance splits: CPU-side perf_counter spans only,
         # written into the caller-owned served_out dict (request-local, same
         # non-shared contract as put's timing_out). No evaluation points are
@@ -1780,7 +1846,18 @@ class SessionBank:
             # Overwrite recurrent (non-trimmable) states with the interior
             # boundary capture; trimmable entries are None in these snapshots.
             _overwrite_started = time.perf_counter()
-            restore_cache(cache, boundary_snapshot, restore_meta_state=False)
+            restore_cache(
+                cache,
+                boundary_snapshot,
+                # Prefix-decoded cold entries intentionally omitted the
+                # full-entry meta state.  Their recurrent metadata must come
+                # from the selected boundary together with its state.  A
+                # custom factory only changes how the target cache is made;
+                # it must not suppress this boundary-specific metadata.
+                restore_meta_state=(
+                    getattr(entry, "cache_snapshot_prefix_len", None) is not None
+                ),
+            )
             if _mnt is not None:
                 _mnt["recurrent_overwrite_s"] = (
                     time.perf_counter() - _overwrite_started
