@@ -261,3 +261,67 @@ def test_duck_tier_without_capability_marker_gets_pre_shadow_call(tmp_path):
     # no retry) and RAM still serves.
     assert len(seen) == 1
     assert matches and matches[0][1] == 40
+
+
+def test_cold_row_at_or_below_the_exact_prefix_floor_is_not_hydrated(
+    tmp_path, monkeypatch
+):
+    """2026-09-03: every warm agent turn hydrated its own SSD twin.
+
+    The caller passes min_restore_tokens = the exact-prefix RAM entry's
+    length and rejects every near/block candidate with matched <= that, so
+    a cold row matching no more than the floor can never be served through
+    this lane. It was still hydrated (0.59-0.66 s of unattributed wall per
+    warm turn on the candidate daemon) because the `_cand <= floor` guard
+    kept the exact entry out of the RAM bar, which then read 0.
+    """
+    cold = _tier(tmp_path)
+    try:
+        bank = _bank(cold)
+        _put(bank, PREFIX)  # exact prefix of the prompt below, resident AND on SSD
+        assert cold.flush(timeout_s=5.0) is True
+        calls = _spy_restore_row(cold, monkeypatch)
+        prompt = tuple(PREFIX + [99, 98])  # PREFIX is an exact prefix: the warm-turn shape
+        matches = bank.near_prefix_candidates(
+            prompt,
+            min_matched_tokens=4,
+            block_size=8,
+            block_min_matched_tokens=8,
+            model_path=MODEL,
+            mtp_enabled=True,
+            min_restore_tokens=len(PREFIX),
+        )
+        assert calls == [], "a cold row the caller cannot serve must not hydrate"
+        assert cold.stats().get("prefix_lookups_not_better_than_ram") == 1
+        assert not any(getattr(m[0], "cache_source", None) == "ssd" for m in matches)
+    finally:
+        cold.close()
+
+
+def test_a_cold_row_strictly_past_the_floor_still_hydrates(tmp_path, monkeypatch):
+    """Cold-only recovery past the exact entry is untouched by the floor."""
+    cold = _tier(tmp_path)
+    try:
+        bank = _bank(cold)
+        longer = PREFIX + [99, 98, 97, 96, 95, 94, 93, 92, 91, 90]
+        _put(bank, longer)
+        assert cold.flush(timeout_s=5.0) is True
+        bank.clear()
+        bank.cold_tier = None
+        _put(bank, PREFIX[:20])  # the exact-prefix RAM entry the caller holds
+        bank.cold_tier = cold
+        calls = _spy_restore_row(cold, monkeypatch)
+        prompt = tuple(PREFIX + [99, 98, 97, 96, 95, 94, 93, 92, 1, 2])
+        matches = bank.near_prefix_candidates(
+            prompt,
+            min_matched_tokens=4,
+            block_size=8,
+            block_min_matched_tokens=8,
+            model_path=MODEL,
+            mtp_enabled=True,
+            min_restore_tokens=20,
+        )
+        assert calls == [1], "a strictly-better cold row must still hydrate"
+        assert any(getattr(m[0], "cache_source", None) == "ssd" for m in matches)
+    finally:
+        cold.close()

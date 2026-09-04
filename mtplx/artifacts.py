@@ -657,15 +657,21 @@ def _hf_download_json(
         from huggingface_hub import hf_hub_download
     except Exception as exc:
         return None, None, f"huggingface_hub is required for HF inspection: {exc}"
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback, hf_token_for_download
+
     try:
         cache_dir = _hf_download_cache_dir()
         kwargs = {"cache_dir": str(cache_dir)} if cache_dir else {}
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            repo_type="model",
-            revision=revision,
-            **kwargs,
+        path, _token = _call_hub_with_anonymous_fallback(
+            lambda token: hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="model",
+                revision=revision,
+                token=token,
+                **kwargs,
+            ),
+            hf_token_for_download(),
         )
     except Exception as exc:
         return None, None, str(exc)
@@ -714,17 +720,19 @@ def _hf_list_repo_files(
         from huggingface_hub import HfApi
     except Exception as exc:
         return set(), f"huggingface_hub is required for HF inspection: {exc}"
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback, hf_token_for_download
+
     try:
-        return (
-            set(
-                HfApi().list_repo_files(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    revision=revision,
-                )
+        files, _token = _call_hub_with_anonymous_fallback(
+            lambda token: HfApi().list_repo_files(
+                repo_id=repo_id,
+                repo_type="model",
+                revision=revision,
+                token=token,
             ),
-            None,
+            hf_token_for_download(),
         )
+        return set(files), None
     except Exception as exc:
         return set(), str(exc)
 
@@ -736,25 +744,26 @@ def _hf_url(repo_id: str, filename: str) -> str:
 
 
 def _hf_token() -> str | None:
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    if token:
-        return token
-    try:
-        from huggingface_hub import get_token
+    # One token policy for every Hub call MTPLX makes; see hf_token_for_download.
+    from mtplx.hf_loader import hf_token_for_download
 
-        return get_token()
-    except Exception:
-        return None
+    token = hf_token_for_download()
+    return token if isinstance(token, str) and token else None
 
 
 def _hf_fetch_prefix(repo_id: str, filename: str, *, end: int) -> bytes:
-    headers = {"Range": f"bytes=0-{end}", "User-Agent": "mtplx-inspect/0.1"}
-    token = _hf_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(_hf_url(repo_id, filename), headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read()
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback
+
+    def fetch(token: str | bool) -> bytes:
+        headers = {"Range": f"bytes=0-{end}", "User-Agent": "mtplx-inspect/0.1"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(_hf_url(repo_id, filename), headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+
+    data, _token = _call_hub_with_anonymous_fallback(fetch, _hf_token() or False)
+    return data
 
 
 def _remote_safetensors_keys(repo_id: str, filename: str) -> tuple[tuple[str, ...], str | None]:
