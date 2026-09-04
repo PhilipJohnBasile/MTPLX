@@ -39,8 +39,8 @@ struct ForgeDiscoverView: View {
 
         var label: String {
             switch self {
-            case .all: return "All"
-            case .mine: return "Verified"
+            case .all: return tr("All")
+            case .mine: return tr("Verified")
             }
         }
     }
@@ -94,7 +94,7 @@ struct ForgeDiscoverView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10.5, weight: .semibold))
-                    Text("Refresh")
+                    Text(tr("Refresh"))
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .foregroundStyle(Brand.typeBody)
@@ -122,7 +122,7 @@ struct ForgeDiscoverView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(Brand.typeTertiary)
-            TextField("Search models, creators…", text: $searchText)
+            TextField(tr("Search models, creators…"), text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.typeBody)
@@ -135,7 +135,7 @@ struct ForgeDiscoverView: View {
                         .foregroundStyle(Brand.typeTertiary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
+                .accessibilityLabel(tr("Clear search"))
             }
         }
         .padding(.horizontal, 10)
@@ -163,7 +163,7 @@ struct ForgeDiscoverView: View {
         .padding(2)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.03))
+                .fill(Brand.wash.opacity(0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)
@@ -201,7 +201,7 @@ struct ForgeDiscoverView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Show \(value.label.lowercased())")
+        .help(tr("Show %@", value.label.lowercased()))
     }
 
     // MARK: - States
@@ -210,7 +210,7 @@ struct ForgeDiscoverView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.regular)
-            Text("Loading models from Hugging Face…")
+            Text(tr("Loading models from Hugging Face…"))
                 .font(.caption)
                 .foregroundStyle(Brand.typeSecondary)
         }
@@ -226,14 +226,14 @@ struct ForgeDiscoverView: View {
         if filter == .mine && originalCount > 0 {
             EmptyStateView(
                 symbol: "checkmark.seal.fill",
-                title: "No verified models right now",
-                message: "Switch to All to browse community models."
+                title: tr("No verified models right now"),
+                message: tr("Switch to All to browse community models.")
             )
         } else {
             EmptyStateView(
                 symbol: "globe",
-                title: "No MTPLX models on Hugging Face yet",
-                message: "Be the first — head to Create and build one."
+                title: tr("No MTPLX models on Hugging Face yet"),
+                message: tr("Be the first — head to Create and build one.")
             )
         }
     }
@@ -244,24 +244,24 @@ struct ForgeDiscoverView: View {
         case .hfUnreachable:
             EmptyStateView(
                 symbol: "wifi.exclamationmark",
-                title: "Can't reach Hugging Face",
-                message: "Check your connection and try again.",
+                title: tr("Can't reach Hugging Face"),
+                message: tr("Check your connection and try again."),
                 action: { refresh() },
-                actionLabel: "Retry"
+                actionLabel: tr("Retry")
             )
         case .backendNotAvailable:
             EmptyStateView(
                 symbol: "hammer.fill",
-                title: "Forge isn't available",
-                message: "Update MTPLX to use Discover."
+                title: tr("Forge isn't available"),
+                message: tr("Update MTPLX to use Discover.")
             )
         case .malformedResponse(let detail), .subprocessFailed(_, let detail):
             EmptyStateView(
                 symbol: "exclamationmark.triangle.fill",
-                title: "Couldn't load models",
-                message: detail.isEmpty ? "Something went wrong. Try again." : detail,
+                title: tr("Couldn't load models"),
+                message: detail.isEmpty ? tr("Something went wrong. Try again.") : detail,
                 action: { refresh() },
-                actionLabel: "Retry"
+                actionLabel: tr("Retry")
             )
         }
     }

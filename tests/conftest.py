@@ -38,6 +38,15 @@ def _hermetic_mtplx_state(monkeypatch, tmp_path_factory):
         "MTPLX_APP_SETTINGS_PATH", str(isolated / "app-settings.json")
     )
     monkeypatch.setenv("MTPLX_MODEL_DIR", str(isolated / "models"))
+    # The suite must never touch the developer's real OpenCode config. On
+    # 2026-09-03 a full `pytest tests/` run rewrote
+    # ~/.config/opencode/opencode.json mid-run with a fixture model id
+    # (`mtplx-qwen38-27b-optimized-speed` as the only mtplx model), and every
+    # `opencode run -m mtplx/mtplx-flash-next-optimized-speed` on the machine
+    # failed with "Model not found" until the file was repaired by hand.
+    # Tests that exercise the config writer set their own path; everyone
+    # else writes into this scratch file.
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(isolated / "opencode.json"))
 
 
 @pytest.fixture

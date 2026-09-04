@@ -40,7 +40,7 @@ private struct MTPLXPillButtonBody: View {
         let isDanger = variant == .danger
         configuration.label
             .font(.system(size: 13, weight: .semibold, design: .rounded))
-            .foregroundStyle(isDanger ? Color.white : Brand.bgOuter)
+            .foregroundStyle(isDanger ? Brand.onAccent : Brand.bgOuter)
             .padding(.horizontal, Brand.Spacing.s4)
             .padding(.vertical, 9)
             .background {
@@ -50,7 +50,7 @@ private struct MTPLXPillButtonBody: View {
             .overlay {
                 Capsule(style: .continuous)
                     .strokeBorder(
-                        Color.white.opacity(0.06),
+                        Brand.wash.opacity(0.06),
                         lineWidth: Brand.hairline
                     )
             }

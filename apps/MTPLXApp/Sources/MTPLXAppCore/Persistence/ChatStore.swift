@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftData
 
 // MARK: - ChatStore
@@ -10,12 +11,50 @@ import SwiftData
 // other app that also uses SwiftData. The store lives under
 // `~/Library/Application Support/MTPLX/chats.store`.
 //
-// Each `ChatStore.makeContainer()` call creates a fresh container; the
-// app holds one instance for its lifetime (created in `MTPLXApp` and
-// passed down via environment). Tests can opt into an in-memory
-// container via `makeInMemoryContainer()` to avoid touching disk.
+// The app opens its one container through `ChatStore.open()`, which
+// also decides what to do when the store on disk will not open: the
+// files are kept beside themselves under a dated name and a fresh store
+// starts, or, if even that fails, the app runs on an in-memory store.
+// Either way the caller receives a notice to show, so a reset is never
+// silent. Tests can opt into an in-memory container via
+// `makeInMemoryContainer()` to avoid touching disk.
+
+/// What `ChatStore.open()` had to do to hand back a working container.
+public enum ChatStoreRecoveryNotice: Equatable, Sendable {
+    /// The store on disk would not open. It was renamed beside itself
+    /// (with its `-wal` and `-shm` siblings) and a fresh, empty store
+    /// was created in its place.
+    case recoveredFromUnreadableStore(preservedAt: URL)
+    /// Neither the existing store nor a fresh one could be opened, so
+    /// chats live in memory for this session and are not kept.
+    case inMemoryOnly(error: String)
+}
+
+/// The container to run on plus the recovery notice, if any.
+@MainActor
+public struct ChatStoreOpenResult {
+    public let container: ModelContainer
+    public let notice: ChatStoreRecoveryNotice?
+}
+
+/// Holds the launch-time recovery notice for the life of the app so the
+/// chat sidebar can show it until the user dismisses it.
+@MainActor
+public final class ChatStoreRecoveryState: ObservableObject {
+    @Published public var notice: ChatStoreRecoveryNotice?
+
+    public init(notice: ChatStoreRecoveryNotice? = nil) {
+        self.notice = notice
+    }
+}
 
 public enum ChatStore {
+    private static let log = Logger(subsystem: "com.mtplx.app", category: "ChatStore")
+
+    /// SQLite sidecars SwiftData keeps next to the store file. Moved
+    /// together with it so the preserved set stays openable as one
+    /// database.
+    static let sidecarSuffixes = ["-wal", "-shm"]
     /// Subfolder under `~/Library/Application Support/` where MTPLX
     /// persists user data. Reused for the SwiftData store and any
     /// future chat-related files (e.g. exported transcripts).
@@ -93,18 +132,108 @@ public enum ChatStore {
         return url
     }
 
-    /// Build a SwiftData `ModelContainer` for the chat domain.
+    /// The app's one entry point. Opens the persistent store at `url`
+    /// (the default location when nil). If the store will not open, its
+    /// files are kept beside it as `chats.store.unreadable-<yyyyMMdd-HHmmss>`
+    /// (plus `-wal`/`-shm`, never deleted) and a fresh store is created;
+    /// if that fails too, an in-memory container is returned. The notice
+    /// says which of those happened so the sidebar can tell the user.
+    @MainActor
+    public static func open(at url: URL? = nil, now: Date = Date()) -> ChatStoreOpenResult {
+        let storeURL: URL
+        do {
+            storeURL = try url ?? self.storeURL()
+        } catch {
+            log.error("chat store location unavailable: \(String(describing: error), privacy: .public)")
+            return inMemoryFallback(after: error)
+        }
+        let firstFailure: Error
+        do {
+            return ChatStoreOpenResult(container: try makeContainer(at: storeURL), notice: nil)
+        } catch {
+            firstFailure = error
+        }
+        log.error("chat store at \(storeURL.path, privacy: .public) would not open: \(String(describing: firstFailure), privacy: .public)")
+        let preservedAt: URL
+        do {
+            preservedAt = try setAsideStore(at: storeURL, now: now)
+        } catch {
+            log.error("chat store could not be moved aside: \(String(describing: error), privacy: .public)")
+            return inMemoryFallback(after: firstFailure)
+        }
+        do {
+            let container = try makeContainer(at: storeURL)
+            log.notice("chat store recovered: previous files kept as \(preservedAt.path, privacy: .public)")
+            return ChatStoreOpenResult(
+                container: container,
+                notice: .recoveredFromUnreadableStore(preservedAt: preservedAt)
+            )
+        } catch {
+            log.error("fresh chat store would not open either: \(String(describing: error), privacy: .public)")
+            return inMemoryFallback(after: error)
+        }
+    }
+
+    /// Chats for this session only. The one thing this cannot survive is
+    /// the in-memory container failing as well, which only a broken model
+    /// schema can cause; that is a build defect every test that builds a
+    /// container catches, not a user's disk state.
+    @MainActor
+    private static func inMemoryFallback(after error: Error) -> ChatStoreOpenResult {
+        let description = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        do {
+            return ChatStoreOpenResult(
+                container: try makeInMemoryContainer(),
+                notice: .inMemoryOnly(error: description)
+            )
+        } catch let inMemoryError {
+            preconditionFailure(
+                "The chat model schema cannot be loaded even in memory (\(inMemoryError)); "
+                    + "the persistent store had failed with: \(description)"
+            )
+        }
+    }
+
+    /// Rename `chats.store` and its sidecars to
+    /// `chats.store.unreadable-<stamp>` (+ `-wal`/`-shm`). Returns the new
+    /// store URL. A stamp that already exists gets a numeric suffix.
+    static func setAsideStore(at storeURL: URL, now: Date) throws -> URL {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let base = storeURL.path + ".unreadable-" + formatter.string(from: now)
+        var destination = URL(fileURLWithPath: base)
+        var attempt = 1
+        while FileManager.default.fileExists(atPath: destination.path) {
+            attempt += 1
+            destination = URL(fileURLWithPath: "\(base)-\(attempt)")
+        }
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: storeURL.path) {
+            try fileManager.moveItem(at: storeURL, to: destination)
+        }
+        for suffix in sidecarSuffixes {
+            let sidecar = URL(fileURLWithPath: storeURL.path + suffix)
+            guard fileManager.fileExists(atPath: sidecar.path) else { continue }
+            try fileManager.moveItem(at: sidecar, to: URL(fileURLWithPath: destination.path + suffix))
+        }
+        return destination
+    }
+
+    /// Build the persistent SwiftData `ModelContainer` at the default
+    /// location.
     /// - Throws: any FileManager / SwiftData error encountered while
     ///   creating the support directory or initializing the container.
     @MainActor
     public static func makeContainer() throws -> ModelContainer {
-        let url = try storeURL()
-        let schema = Schema([
-            ChatConversation.self,
-            ChatMessage.self,
-            ChatAttachment.self,
-            ToolTraceRecord.self,
-        ])
+        try makeContainer(at: storeURL())
+    }
+
+    /// Build the persistent container at `url` under the versioned schema
+    /// and migration plan.
+    @MainActor
+    public static func makeContainer(at url: URL) throws -> ModelContainer {
+        let schema = Schema(versionedSchema: ChatSchemaV1.self)
         let configuration = ModelConfiguration(
             "MTPLXChats",
             schema: schema,
@@ -112,18 +241,18 @@ public enum ChatStore {
             allowsSave: true,
             cloudKitDatabase: .none
         )
-        return try ModelContainer(for: schema, configurations: [configuration])
+        return try ModelContainer(
+            for: schema,
+            migrationPlan: ChatSchemaMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 
-    /// In-memory container for tests and previews. Does not touch disk.
+    /// In-memory container for tests, previews, and the last-resort
+    /// fallback. Does not touch disk.
     @MainActor
     public static func makeInMemoryContainer() throws -> ModelContainer {
-        let schema = Schema([
-            ChatConversation.self,
-            ChatMessage.self,
-            ChatAttachment.self,
-            ToolTraceRecord.self,
-        ])
+        let schema = Schema(versionedSchema: ChatSchemaV1.self)
         let configuration = ModelConfiguration(
             "MTPLXChatsInMemory",
             schema: schema,
@@ -131,6 +260,10 @@ public enum ChatStore {
             allowsSave: true,
             cloudKitDatabase: .none
         )
-        return try ModelContainer(for: schema, configurations: [configuration])
+        return try ModelContainer(
+            for: schema,
+            migrationPlan: ChatSchemaMigrationPlan.self,
+            configurations: [configuration]
+        )
     }
 }

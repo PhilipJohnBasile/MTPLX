@@ -23,6 +23,7 @@ from mtplx.hf_loader import (
     directory_size_bytes,
     hf_token_for_download,
     pull_model,
+    read_source_marker,
     repo_id_from_model_ref,
 )
 from mtplx.gemma4_pair import (
@@ -30,6 +31,7 @@ from mtplx.gemma4_pair import (
     is_gemma4_pair_repo_id,
     resolve_gemma4_pair_paths,
 )
+from mtplx.metadata_scrub import scrub_json_documents, scrub_text_value
 from mtplx.mtp_patch import MTPContract
 from mtplx.version import __version__
 
@@ -3276,6 +3278,32 @@ def _recommended_profile_stamp(model_path: Path, *, best_depth: int) -> str:
     return resolved_default_profile_name_for_ref(model_path)
 
 
+def _resolve_source_identity(source_repo: str, source_sha: str) -> tuple[str, str]:
+    """Name the trunk by its Hub repo id when ``source_repo`` is a local pull.
+
+    Forge is usually pointed at a directory under the model cache. Stamping
+    that directory as ``base_trunk`` and ``source_repo`` published the
+    maintainer's home directory with every pack. The pull marker inside the
+    directory records the repo id and commit it was synced from; a cache
+    directory without a marker still carries the repo id in its
+    ``owner--name`` layout. Anything else is returned untouched.
+    """
+
+    candidate = Path(source_repo).expanduser()
+    if not source_repo or not candidate.is_dir():
+        return source_repo, source_sha
+    marker = read_source_marker(candidate) or {}
+    repo_id = marker.get("repo_id")
+    if not (isinstance(repo_id, str) and repo_id.count("/") == 1):
+        repo_id = candidate.name.replace("--", "/") if candidate.name.count("--") == 1 else None
+    if not repo_id or repo_id.startswith("/") or repo_id.endswith("/"):
+        return source_repo, source_sha
+    resolved_sha = marker.get("resolved_sha")
+    if not source_sha and isinstance(resolved_sha, str) and resolved_sha:
+        source_sha = resolved_sha
+    return repo_id, source_sha
+
+
 def _stamp_runtime_metadata(
     model_path: Path,
     *,
@@ -3290,6 +3318,7 @@ def _stamp_runtime_metadata(
     existing: dict[str, Any] | None,
 ) -> dict[str, Any]:
     metadata = dict(existing or {})
+    source_repo, source_sha = _resolve_source_identity(source_repo, source_sha)
     if _runtime_evidence_has_launch_blocker(metadata.get("exactness_baseline")):
         metadata["exactness_baseline"] = {}
     config = _load_json(model_path / "config.json") if (model_path / "config.json").exists() else {}
@@ -3635,6 +3664,10 @@ def _cmd_publish(args: Any) -> int:
         finished=False,
     )
     started = time.monotonic()
+    # Local metadata keeps the paths forge read and wrote: useful on this
+    # machine, a home directory anywhere else. The folder goes up without the
+    # documents that carry them and scrubbed copies follow in their place.
+    scrubbed = scrub_json_documents(local)
     _err(f"[forge] uploading {local}")
     upload_result = api.upload_folder(
         folder_path=str(local),
@@ -3642,11 +3675,25 @@ def _cmd_publish(args: Any) -> int:
         repo_type="model",
         token=token,
         commit_message="Publish MTPLX forged model",
+        ignore_patterns=[document.name for document in scrubbed],
     )
     revision = _revision_from_upload_result(upload_result)
+    for document in scrubbed:
+        _err(f"[forge] {document.name}: {len(document.leaks)} local path(s) scrubbed before upload")
+        document_result = api.upload_file(
+            path_or_fileobj=document.payload,
+            path_in_repo=document.name,
+            repo_id=args.repo,
+            repo_type="model",
+            token=token,
+            commit_message=f"Publish {document.name} without local paths",
+        )
+        revision = _revision_from_upload_result(document_result) or revision
     if readme_path and readme_path.exists():
         readme_result = api.upload_file(
-            path_or_fileobj=str(readme_path),
+            path_or_fileobj=scrub_text_value(
+                readme_path.read_text(encoding="utf-8")
+            ).encode("utf-8"),
             path_in_repo="README.md",
             repo_id=args.repo,
             repo_type="model",

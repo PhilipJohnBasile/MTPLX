@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import json
 import re
@@ -11,6 +12,13 @@ from typing import Any, Mapping
 
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.hardware import classify_apple_silicon_generation, detect_apple_silicon
+from mtplx.model_catalog import (
+    LEGACY_TIER,
+    MODERN_TIER,
+    CatalogModel,
+    catalog_model_with_id,
+    recommended_models,
+)
 from mtplx.profiles import (
     DEFAULT_FP16_PUBLIC_MODEL_ID,
     DEFAULT_FP16_HF_MODEL_ID,
@@ -66,9 +74,19 @@ DEFAULT_MODEL_VARIANTS = frozenset({"auto", "speed", "q4", "bf16", "fp16"})
 _LEGACY_APPLE_FP16_GENERATIONS = frozenset({"m1", "m2"})
 _NEWER_APPLE_SPEED_GENERATIONS = frozenset({"m3", "m4", "m5"})
 # Below this much unified memory the 27B default cannot load safely, so the
-# default routes to the 9B artifact instead. Mirrors the app's <32 GiB
-# recommendation tier (model_catalog.recommended_catalog_ids).
+# default routes to the smaller pack the app's picker lists first (the 9B
+# from 16 GiB, the 4B below that; model_catalog.recommended_catalog_ids).
 SMALL_DEFAULT_MEMORY_FLOOR_GIB = 32.0
+# The smaller speed packs, largest first. Under the 27B floor the default is
+# the first of these the app's tiers offer this machine; with unreadable
+# memory it is the last one. There is no FP16 4B build, so M1/M2 Macs stop
+# at the 9B.
+_SMALL_SPEED_CATALOG_IDS = ("qwen35-9b-optimized-speed", "qwen35-4b-optimized-speed")
+_SMALL_FP16_CATALOG_IDS = ("qwen35-9b-optimized-speed-fp16",)
+INTEL_REFUSAL_MESSAGE = (
+    "MTPLX runs on Apple Silicon Macs (M1 and later); this Mac has an Intel "
+    "processor, so there is no model to download."
+)
 # V2 peaks at about 21.5 GiB, leaving practical headroom on a 32 GiB Mac.
 OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB = 32.0
 # Qwen 3.8 Bare Speed measured peak 17.0 GiB (installed app, 2026-08-14); the
@@ -79,6 +97,7 @@ QWEN38_BARE_SPEED_MEMORY_FLOOR_GIB = 32.0
 # (the app additionally hides any pick whose peak exceeds unified memory).
 QWEN38_OPTIMIZED_SPEED_MEMORY_FLOOR_GIB = 32.0
 QWEN35_9B_SPEED_DESCRIPTION = "Compact 6-bit model for smaller Macs"
+QWEN35_4B_SPEED_DESCRIPTION = "Compact 4-bit model for the smallest Macs"
 OPTIMIZED_SPEED_V1_LABEL = "Qwen 3.6 27B Optimized Speed"
 OPTIMIZED_SPEED_V1_DESCRIPTION = "Smaller 4-bit model that is a little faster for short chats"
 OPTIMIZED_SPEED_V2_LABEL = "Qwen 3.6 27B Optimized Speed V2"
@@ -174,6 +193,30 @@ _VERIFIED_DEFAULT_LOCAL_NAMES = frozenset(
 )
 
 
+class DefaultModelUnavailable(RuntimeError):
+    """No verified default model can run on this machine.
+
+    ``message`` is the one plain sentence to show the user. Raised instead of
+    returning a selection so that no caller can download or load a model
+    that was never chosen; first-run callers turn it into a clean non-zero
+    exit.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        chip_generation: str = "",
+        chip: str = "",
+        memory_gib: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.chip_generation = chip_generation
+        self.chip = chip
+        self.memory_gib = memory_gib
+
+
 @dataclass(frozen=True)
 class DefaultModelSelection:
     model: str
@@ -189,6 +232,8 @@ class DefaultModelSelection:
 
     @property
     def display_name(self) -> str:
+        if "4B" in self.hf_model:
+            return "Qwen3.5 4B Optimized Speed"
         if "9B" in self.hf_model:
             if self.variant == "fp16":
                 return "Qwen3.5 9B Optimized Speed FP16"
@@ -724,6 +769,53 @@ def _hardware_memory_gib(hardware: Mapping[str, Any]) -> float | None:
     return float(value) if value > 0 else None
 
 
+def pack_fits_memory(pack: CatalogModel, memory_gib: float) -> bool:
+    """Whether the app offers this pack on a Mac with ``memory_gib`` of
+    unified memory: its measured peak fits. This is the picker's own rule
+    (``shouldShowOfficialOption`` / ``recommended_models``), so the CLI
+    default and the app's recommendation can never name different packs
+    for the same machine."""
+
+    return memory_gib >= float(pack.peak_memory_gib)
+
+
+def minimum_memory_gib_for_pack(pack: CatalogModel) -> int:
+    """Smallest whole number of GiB at which ``pack_fits_memory`` holds."""
+
+    return int(math.ceil(float(pack.peak_memory_gib)))
+
+
+def _small_pack_ladder(variant: str) -> tuple[CatalogModel, ...]:
+    ids = _SMALL_FP16_CATALOG_IDS if variant == "fp16" else _SMALL_SPEED_CATALOG_IDS
+    ladder = tuple(catalog_model_with_id(model_id) for model_id in ids)
+    if any(pack is None for pack in ladder):
+        raise RuntimeError("the small-model ladder names a pack missing from the catalog")
+    return ladder  # type: ignore[return-value]
+
+
+def _small_pack_offered_first(variant: str, memory_gib: float) -> CatalogModel | None:
+    """The first small speed pack the app's picker would list for this Mac.
+
+    ``recommended_models`` is the catalog's RAM-tiered order with the
+    peak-memory filter applied (the 4B pair leads below 16 GiB, the 9B
+    leads 16-31 GiB; M1/M2 have only the FP16 9B), restricted here to the
+    speed ladder so the default is never a quality build.
+    """
+
+    ladder_ids = {pack.id for pack in _small_pack_ladder(variant)}
+    tier = LEGACY_TIER if variant == "fp16" else MODERN_TIER
+    for pack in recommended_models(memory_gib=memory_gib, chip_tier=tier):
+        if pack.id in ladder_ids:
+            return pack
+    return None
+
+
+def _small_pack_precision(pack: CatalogModel, variant: str) -> str:
+    if variant == "fp16":
+        return "FP16"
+    return QWEN35_4B_SPEED_DESCRIPTION if "4B" in pack.hf_model_id else QWEN35_9B_SPEED_DESCRIPTION
+
+
 def select_default_model(
     *,
     variant_override: str | None = None,
@@ -731,11 +823,18 @@ def select_default_model(
 ) -> DefaultModelSelection:
     """Select the verified default model for this machine.
 
-    Auto policy is intentionally simple and visible: M1/M2 -> FP16, under
-    32 GiB -> 9B, and modern Macs with at least 32 GiB -> Qwen 3.8 Optimized
-    Speed (the complete local build when installed, otherwise the published
-    Hub repo). An explicit legacy MTPLX_OPTIMIZED_SPEED_MODEL override keeps
-    the 3.6 Optimized Speed V2 lane it was written for.
+    Auto policy is intentionally simple and visible: M1/M2 -> FP16, modern
+    Macs with at least 32 GiB -> Qwen 3.8 Optimized Speed (the complete local
+    build when installed, otherwise the published Hub repo), under 32 GiB ->
+    the smaller pack the app's picker lists first for that much memory (the
+    9B from 16 GiB, the 4B below), and memory that could not be read -> the
+    smallest pack. An explicit legacy
+    MTPLX_OPTIMIZED_SPEED_MODEL override keeps the 3.6 Optimized Speed V2
+    lane it was written for.
+
+    Raises ``DefaultModelUnavailable`` (one plain sentence) on an Intel Mac,
+    which cannot run any MTPLX model, and on a Mac with less memory than the
+    smallest pack needs.
     """
 
     env_value = variant_override if variant_override is not None else os.environ.get(DEFAULT_MODEL_VARIANT_ENV)
@@ -744,6 +843,14 @@ def select_default_model(
     generation = _hardware_generation(hardware_info)
     chip = str(hardware_info.get("chip") or "").strip()
     memory_gib = _hardware_memory_gib(hardware_info)
+
+    if generation == "intel":
+        raise DefaultModelUnavailable(
+            INTEL_REFUSAL_MESSAGE,
+            chip_generation=generation,
+            chip=chip,
+            memory_gib=memory_gib,
+        )
 
     if requested_variant == "fp16":
         variant = "fp16"
@@ -765,17 +872,40 @@ def select_default_model(
         auto_selected = True
         if generation in _NEWER_APPLE_SPEED_GENERATIONS:
             reason = "selected for newer Apple Silicon"
-        elif generation == "intel":
-            reason = "selected because this is not Apple Silicon"
         else:
             reason = "selected because hardware is unknown"
 
     if invalid_override is not None and requested_variant == "auto":
         reason = f"{reason}; ignored invalid {DEFAULT_MODEL_VARIANT_ENV}={invalid_override}"
 
-    route_small = (
-        memory_gib is not None and memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB
-    )
+    # Memory routing. The variant override still controls precision; memory
+    # only changes the model size, mirroring the app's recommendation tiers.
+    small_pack: CatalogModel | None = None
+    if memory_gib is None:
+        # Unreadable memory used to route to the 27B. Nothing here can say
+        # what fits, so take the smallest pack and say why; --model overrides.
+        small_pack = _small_pack_ladder(variant)[-1]
+        reason = (
+            f"{reason}; selected the smallest model because this Mac's memory "
+            "could not be read (pass --model to choose another)"
+        )
+    elif memory_gib < SMALL_DEFAULT_MEMORY_FLOOR_GIB:
+        # The same tiers and peak-memory filter the app's picker uses, so
+        # `mtplx start` and first-run onboarding in the app name one pack.
+        small_pack = _small_pack_offered_first(variant, memory_gib)
+        if small_pack is None:
+            smallest = _small_pack_ladder(variant)[-1]
+            raise DefaultModelUnavailable(
+                f"MTPLX needs at least {minimum_memory_gib_for_pack(smallest)} GB of "
+                f"memory to run its smallest model ({smallest.display_name}) on this "
+                f"Mac, which has {memory_gib:.0f} GB.",
+                chip_generation=generation,
+                chip=chip,
+                memory_gib=memory_gib,
+            )
+        size_label = "4B" if "4B" in small_pack.hf_model_id else "9B"
+        reason = f"{reason}; routed to {size_label} for {memory_gib:.0f} GiB unified memory"
+
     qwen38_model = qwen38_optimized_speed_model_ref()
     legacy_speed_override = _legacy_speed_override_owns_default()
     use_qwen38 = (
@@ -795,20 +925,10 @@ def select_default_model(
             or memory_gib >= OPTIMIZED_SPEED_V2_MEMORY_FLOOR_GIB
         )
     )
-    if route_small:
-        # The variant override still controls precision; memory routing only
-        # changes the model size, mirroring the app's <32 GiB tier.
-        reason = (
-            f"{reason}; routed to 9B for {memory_gib:.0f} GiB unified memory"
-        )
-        if variant == "fp16":
-            model = QWEN35_9B_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
-            hf_model = QWEN35_9B_OPTIMIZED_SPEED_FP16_HF_MODEL_ID
-            precision = "FP16"
-        else:
-            model = QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
-            hf_model = QWEN35_9B_OPTIMIZED_SPEED_HF_MODEL_ID
-            precision = QWEN35_9B_SPEED_DESCRIPTION
+    if small_pack is not None:
+        model = small_pack.hf_model_id
+        hf_model = small_pack.hf_model_id
+        precision = _small_pack_precision(small_pack, variant)
     elif variant == "fp16":
         if legacy_speed_override:
             # An explicit 3.6-era speed override keeps its FP16 sibling.

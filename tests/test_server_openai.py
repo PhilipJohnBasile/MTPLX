@@ -890,12 +890,23 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
         verify_strategy="capture_commit",
         model=str(tmp_path),
     )
-    for key in (*_QWEN4_EXP_FAMILY_ENV_DEFAULTS, "MTPLX_NAX_VERIFY"):
+    for key in (
+        *_QWEN4_EXP_FAMILY_ENV_DEFAULTS,
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+        "MTPLX_NAX_VERIFY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
     overrides = openai._server_runtime_env_overrides(args, {})
     for key in _QWEN4_EXP_FAMILY_ENV_DEFAULTS:
         assert overrides.get(key) == "1", key
+    # The PR #391 lane (davidtai) is geometry-gated: a bare qwen4_exp config
+    # keeps turbo's lazy target-distribution defaults untouched, the one
+    # measured fixed-M4 geometry pins the batched pair by default (below).
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in overrides
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in overrides
     assert overrides.get("MTPLX_NAX_VERIFY") == "0"
 
     # Every emitted key must survive the boot-time validator — the 08-27
@@ -905,22 +916,45 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
 
     assert normalize_runtime_env_overrides(overrides) == overrides
 
+    # The opt-in gate pins the batched pair, from an operator export ...
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "1")
+    batched = openai._server_runtime_env_overrides(args, {})
+    assert batched.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert batched.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert normalize_runtime_env_overrides(batched) == batched
+    # ... or from the pack contract's runtime_env_overrides.
+    monkeypatch.delenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", raising=False)
+    from_pack = openai._server_runtime_env_overrides(
+        args, {"MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS": "1"}
+    )
+    assert from_pack.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert from_pack.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert normalize_runtime_env_overrides(from_pack) == from_pack
+
     # Operator env beats every family default (the launch-time export lane).
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "1")
     monkeypatch.setenv("MTPLX_FUSED_GDN_STEP", "0")
+    monkeypatch.setenv("MTPLX_BATCH_TARGET_ARRAYS", "0")
+    monkeypatch.setenv("MTPLX_LAZY_TARGET_DISTRIBUTIONS", "1")
     monkeypatch.setenv("MTPLX_NAX_VERIFY", "1")
     monkeypatch.setenv("MTPLX_QSA_GATHER", "0")
     pinned = openai._server_runtime_env_overrides(args, {})
     assert "MTPLX_FUSED_GDN_STEP" not in pinned
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in pinned
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in pinned
     assert "MTPLX_NAX_VERIFY" not in pinned
     assert "MTPLX_QSA_GATHER" not in pinned
 
-    # Non-family models get neither the octet nor the neutralize.
+    # Non-family models get neither the octet nor the neutralize, and the
+    # opt-in gate (still exported here) pins nothing outside the family.
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "config.json").write_text(
         json.dumps({"model_type": "qwen3_next"}), encoding="utf-8"
     )
     monkeypatch.delenv("MTPLX_FUSED_GDN_STEP", raising=False)
+    monkeypatch.delenv("MTPLX_BATCH_TARGET_ARRAYS", raising=False)
+    monkeypatch.delenv("MTPLX_LAZY_TARGET_DISTRIBUTIONS", raising=False)
     monkeypatch.delenv("MTPLX_NAX_VERIFY", raising=False)
     other = openai._server_runtime_env_overrides(
         SimpleNamespace(
@@ -930,8 +964,68 @@ def test_qwen4_exp_family_defaults_octet_and_nax_neutralize(tmp_path, monkeypatc
         ),
         {},
     )
-    for key in (*_QWEN4_EXP_FAMILY_ENV_DEFAULTS, "MTPLX_NAX_VERIFY"):
+    for key in (
+        *_QWEN4_EXP_FAMILY_ENV_DEFAULTS,
+        "MTPLX_BATCH_TARGET_ARRAYS",
+        "MTPLX_LAZY_TARGET_DISTRIBUTIONS",
+        "MTPLX_NAX_VERIFY",
+    ):
         assert key not in other, key
+
+    # The measured fixed-M4 geometry (Flash-Next) pins the batched pair by
+    # default (2026-09-02 lane flip); an explicit =0 export still wins.
+    monkeypatch.delenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", raising=False)
+    flash_next = tmp_path / "flash-next"
+    flash_next.mkdir()
+    (flash_next / "config.json").write_text(
+        json.dumps(_flash_next_fixed_m4_config()), encoding="utf-8"
+    )
+    geometry_args = SimpleNamespace(
+        generation_mode="mtp",
+        verify_strategy="batched",
+        model=str(flash_next),
+    )
+    lane = openai._server_runtime_env_overrides(geometry_args, {})
+    assert lane.get("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS") == "1"
+    assert lane.get("MTPLX_BATCH_TARGET_ARRAYS") == "1"
+    assert lane.get("MTPLX_LAZY_TARGET_DISTRIBUTIONS") == "0"
+    assert lane.get("MTPLX_NAX_VERIFY") == "0"
+    assert normalize_runtime_env_overrides(lane) == lane
+    monkeypatch.setenv("MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS", "0")
+    dark = openai._server_runtime_env_overrides(geometry_args, {})
+    assert "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS" not in dark
+    assert "MTPLX_BATCH_TARGET_ARRAYS" not in dark
+    assert "MTPLX_LAZY_TARGET_DISTRIBUTIONS" not in dark
+
+
+def _flash_next_fixed_m4_config() -> dict:
+    """The one measured Flash-Next geometry (qwen4_fixed_verify predicate)."""
+
+    return {
+        "model_type": "qwen4_exp",
+        "text_config": {
+            "model_type": "qwen4_exp_text",
+            "hidden_size": 2560,
+            "num_hidden_layers": 48,
+            "hc_count": 4,
+            "hc_lowrank": 320,
+            "indexer_compress_ratio": 4,
+            "linear_num_key_heads": 16,
+            "linear_num_value_heads": 48,
+            "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128,
+            "ple_layer_ids": [2],
+            "ngram_size": 3,
+            "ngram_vocab_size_base": 20_000_000,
+            "heads_per_ngram": 8,
+            "ple_embed_dim": 2560,
+            "ngram_sidecar": True,
+            "num_experts": 512,
+            "num_experts_per_tok": 10,
+            "moe_intermediate_size": 640,
+            "vocab_size": 248_320,
+        },
+    }
 
 
 def test_server_parser_accepts_tool_prompt_and_template_profile():
@@ -9507,8 +9601,35 @@ def test_tool_contract_honors_forced_function_choice():
         tool_choice={"type": "function", "function": {"name": "submit_answer"}},
     )
 
-    assert "requires the `submit_answer` tool call" in with_contract[0]["content"]
-    assert "instead of a normal text answer" in with_contract[0]["content"]
+    # The forced clause rides a transient trailing user turn, not msg0: a
+    # per-request tool_choice must not change the session's cached prefix
+    # (agent-session gate, 2026-09-03: one forced round re-prefilled 40k
+    # tokens twice). The system contract itself is tool_choice-invariant.
+    assert "requires the" not in with_contract[0]["content"]
+    assert [message["role"] for message in with_contract] == ["system", "user", "user"]
+    tail = with_contract[-1]["content"]
+    assert tail.startswith(openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD)
+    assert "requires the `submit_answer` tool call" in tail
+    assert "instead of a normal text answer" in tail
+    auto = openai._with_mtplx_tool_contract(
+        [{"role": "user", "content": "Solve it."}],
+        tools=[_named_tool_schema("submit_answer")],
+        tool_choice="auto",
+    )
+    assert auto[0]["content"] == with_contract[0]["content"]
+    assert [message["role"] for message in auto] == ["system", "user"]
+
+
+def test_forced_tool_choice_sentinel_is_a_registered_transient_suffix():
+    heads = [text[:48] for text in openai._transient_trailing_user_sentinel_texts()]
+    assert openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD[:48] in heads
+    forced = openai._mtplx_forced_tool_choice_text(
+        {"type": "function", "function": {"name": "write"}}
+    )
+    assert forced[:48] == openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD[:48]
+    assert openai._mtplx_forced_tool_choice_text("auto") == (
+        openai._MTPLX_FORCED_TOOL_CHOICE_SENTINEL_HEAD
+    )
 
 
 def test_tool_contract_keeps_every_tool_name_when_over_budget():
@@ -10043,9 +10164,12 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
         "glob",
         "grep",
     ]
+    # The force-answer contract is a transient trailing turn; since
+    # 2026-09-03 the fingerprint carries no tail-contract flag at all (a
+    # transition round must reuse the session's banked prefix).
     assert (
-        "read_only_force_answer_contract=0"
-        in captured["generation_final_policy_fingerprint"]
+        "read_only_force_answer_contract"
+        not in captured["generation_final_policy_fingerprint"]
     )
     assert "tool_prompt_mode=compact" in captured["generation_final_policy_fingerprint"]
     assert (
@@ -10057,15 +10181,15 @@ def test_read_only_force_answer_stream_postcommit_uses_client_history(monkeypatc
         not in captured["generation_final_policy_fingerprint"]
     )
     assert (
-        "read_only_force_answer_contract=0"
-        in captured["generation_session_policy_fingerprint"]
+        "read_only_force_answer_contract"
+        not in captured["generation_session_policy_fingerprint"]
     )
     assert (
         "read_only_force_answer:v1"
         not in captured["generation_session_policy_fingerprint"]
     )
     assert (
-        "read_only_force_answer_contract=0" in captured["scheduled_policy_fingerprint"]
+        "read_only_force_answer_contract" not in captured["scheduled_policy_fingerprint"]
     )
     assert "tool_prompt_mode=compact" in captured["scheduled_policy_fingerprint"]
     assert (
