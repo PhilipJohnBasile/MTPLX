@@ -1,0 +1,73 @@
+name: Batch open PR merge repair
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/batch-open-pr-merge-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge current upstream main into open PR branches
+        shell: bash
+        run: |
+          set -u
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git || true
+          git fetch upstream main
+          branches=(
+            codex/multiple-model-directories
+            codex/open-in-omp
+            codex/issue-374-remove-model
+            codex/repair-pr220-hermes-app-only
+            codex/fix-swift-mainactor-helper
+            feat/runtime-systems-dashboard
+            feat/native-operations-dashboard
+            feat/replay-orchestrator
+            feat/runtime-systems-registry
+            feat/policy-hooks
+            feat/sessionbank-memory-governor
+            feat/privacy-safe-request-capture
+            feat/expert-locality-telemetry
+            feat/otlp-http-export
+            feat/unified-memory-budgeting
+            feat/expert-residency
+            feat/deterministic-replay
+            feat/semantic-session-anchors
+            codex/deepseek-v4-mlxserve-v26
+            agent/issue-193-responses-api
+          )
+          echo "=== BATCH MERGE REPAIR ==="
+          for branch in "${branches[@]}"; do
+            echo "===== $branch ====="
+            git reset --hard
+            git clean -fd
+            git fetch origin "$branch"
+            git checkout -B "$branch" "origin/$branch"
+            set +e
+            git merge --no-commit --no-ff upstream/main
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              if git diff --cached --quiet && git diff --quiet; then
+                echo "ALREADY_CURRENT $branch"
+              else
+                git commit -m "Merge upstream main into $branch"
+                git push origin "HEAD:$branch"
+                echo "MERGED $branch $(git rev-parse HEAD)"
+              fi
+            else
+              echo "CONFLICT $branch"
+              git diff --name-only --diff-filter=U | sed 's/^/  /'
+              git merge --abort || true
+            fi
+          done
