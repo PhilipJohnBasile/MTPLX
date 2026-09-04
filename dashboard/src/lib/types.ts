@@ -338,7 +338,8 @@ export type ConnectionState =
   | "connecting"
   | "open"
   | "reconnecting"
-  | "failed";
+  | "failed"
+  | "unauthorized";
 
 export type PrefillRow = {
   t: number;

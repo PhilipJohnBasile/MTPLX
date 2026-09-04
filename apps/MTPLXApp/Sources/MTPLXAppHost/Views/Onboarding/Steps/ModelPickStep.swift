@@ -23,13 +23,13 @@ struct ModelPickStep: View {
 
     var body: some View {
         OnboardingStepContainer(
-            title: "Recommended models",
+            title: tr("Recommended models"),
             subtitle: subtitleForHardware,
-            stepIndex: 2,
+            stepIndex: OnboardingStep.modelPick.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: { orchestrator.goBack() },
             primary: {
-                OnboardingPrimaryButton("Next", isEnabled: orchestrator.state.canAdvance) {
+                OnboardingPrimaryButton(tr("Next"), isEnabled: orchestrator.state.canAdvance) {
                     orchestrator.goNext()
                 }
             },
@@ -69,17 +69,17 @@ struct ModelPickStep: View {
 
     private var subtitleForHardware: String {
         guard let hardware = orchestrator.state.hardware else {
-            return "Chosen for Apple Silicon and MTPLX speed."
+            return tr("Chosen for Apple Silicon and MTPLX speed.")
         }
         switch hardware.tier {
         case .legacyApple:
-            return String(format: "Chosen for %@ with %.0f GB unified memory.", hardware.chipName, hardware.unifiedMemoryGiB)
+            return tr("Chosen for %@ with %.0f GB unified memory.", hardware.chipName, hardware.unifiedMemoryGiB)
         case .modernApple:
-            return String(format: "Chosen for %@ with %.0f GB unified memory.", hardware.chipName, hardware.unifiedMemoryGiB)
+            return tr("Chosen for %@ with %.0f GB unified memory.", hardware.chipName, hardware.unifiedMemoryGiB)
         case .intel:
-            return "MTPLX is built for Apple Silicon. Use a local folder if you want to experiment."
+            return tr("MTPLX is built for Apple Silicon. Use a local folder if you want to experiment.")
         case .unknown:
-            return String(format: "Chosen for this Mac with %.0f GB unified memory.", hardware.unifiedMemoryGiB)
+            return tr("Chosen for this Mac with %.0f GB unified memory.", hardware.unifiedMemoryGiB)
         }
     }
 
@@ -90,7 +90,7 @@ struct ModelPickStep: View {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.72)
-            Text("Preparing recommendations")
+            Text(tr("Preparing recommendations"))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Brand.typeSecondary)
         }
@@ -281,7 +281,7 @@ struct ModelPickStep: View {
             )
             .scaleEffect(hovering ? 1.012 : 1.0)
             .shadow(
-                color: .black.opacity(hovering ? 0.22 : 0),
+                color: Brand.shade.opacity(hovering ? 0.22 : 0),
                 radius: hovering ? 7 : 0,
                 x: 0,
                 y: hovering ? 4 : 0
@@ -318,9 +318,9 @@ struct ModelPickStep: View {
     ) -> some View {
         HStack(spacing: 8) {
             if model != nil, isInstalled {
-                badge("Installed", color: Brand.success)
+                badge(tr("Installed"), color: Brand.success)
             } else if selected, let verdict, case .recommended = verdict {
-                badge("Recommended", color: Brand.accentChrome)
+                badge(tr("Recommended"), color: Brand.accentChrome)
             }
             if let model {
                 badge(Self.formatBytes(model.sizeBytes), color: Brand.typeTertiary)
@@ -332,15 +332,15 @@ struct ModelPickStep: View {
     private func verdictMessage(_ verdict: ModelFeasibilityVerdict) -> some View {
         switch verdict {
         case .tightFit:
-            Text("Will run, but memory will be tight on long chats.")
+            Text(tr("Will run, but memory will be tight on long chats."))
                 .font(.caption2)
                 .foregroundStyle(Brand.warning)
         case .insufficientMemory(let needs):
-            Text(String(format: "Needs at least %.0f GB of memory.", needs))
+            Text(tr("Needs at least %.0f GB of memory.", needs))
                 .font(.caption2)
                 .foregroundStyle(Brand.danger)
         case .insufficientDisk(let needs):
-            Text(String(format: "Needs at least %.0f GB of free disk space.", needs))
+            Text(tr("Needs at least %.0f GB of free disk space.", needs))
                 .font(.caption2)
                 .foregroundStyle(Brand.danger)
         case .recommended:
@@ -357,8 +357,8 @@ struct ModelPickStep: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             disclosureButton(
-                title: "Use a different model from Hugging Face",
-                detail: "Paste any org/repo with MTPLX weights.",
+                title: tr("Use a different model from Hugging Face"),
+                detail: tr("Paste any org/repo with MTPLX weights."),
                 icon: .huggingFace,
                 isExpanded: isOther
             ) {
@@ -404,7 +404,7 @@ struct ModelPickStep: View {
                 }
 
                 checkButton(
-                    title: orchestrator.isProbingOther ? "Checking..." : "Check Model",
+                    title: orchestrator.isProbingOther ? tr("Checking...") : tr("Check Model"),
                     isBusy: orchestrator.isProbingOther,
                     isEnabled: !otherInput.isEmpty && !orchestrator.isProbingOther
                 ) {
@@ -428,8 +428,8 @@ struct ModelPickStep: View {
 
         return VStack(alignment: .leading, spacing: 10) {
             disclosureButton(
-                title: "Use a local model folder",
-                detail: "Paste a complete MTPLX model directory on this Mac.",
+                title: tr("Use a local model folder"),
+                detail: tr("Choose a complete MTPLX model folder on this Mac."),
                 icon: .localFolder,
                 isExpanded: isLocal
             ) {
@@ -474,8 +474,10 @@ struct ModelPickStep: View {
                     }
                 }
 
+                folderButton { chooseLocalFolder() }
+
                 checkButton(
-                    title: "Check Folder",
+                    title: tr("Check Folder"),
                     isBusy: false,
                     isEnabled: !localPathInput.isEmpty
                 ) {
@@ -488,6 +490,30 @@ struct ModelPickStep: View {
                     .transition(.opacity.combined(with: .offset(y: -2)))
             }
         }
+    }
+
+    /// Native folder picker beside "Check Folder": the chosen folder fills
+    /// the field and is probed at once, so the user never types a path.
+    private func chooseLocalFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = tr("Use Folder")
+        panel.message = tr("Choose a complete MTPLX model folder on this Mac.")
+        if let typed = MTPLXModelOption.localFolderModel(path: localPathInput)?.hfModelID,
+           FileManager.default.fileExists(atPath: typed)
+        {
+            panel.directoryURL = URL(fileURLWithPath: typed, isDirectory: true)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Select before probing: selecting a new pick clears the previous
+        // verdict, and the field's onChange then re-selects the same pick,
+        // which is a no-op that leaves this probe in place.
+        orchestrator.select(.local(path: url.path))
+        orchestrator.probeLocal(path: url.path)
+        localPathInput = url.path
     }
 
     private func reveal(
@@ -602,6 +628,21 @@ struct ModelPickStep: View {
         .opacity(isEnabled ? 1.0 : 0.5)
     }
 
+    /// Icon-only sibling of `checkButton`: same capsule and height, so the
+    /// field, the folder and the check read as one row.
+    private func folderButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "folder")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Brand.typeBody)
+                .frame(width: 30, height: 30)
+                .background(Capsule().stroke(Brand.separator, lineWidth: 0.5))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(tr("Choose a model folder"))
+    }
+
     @ViewBuilder
     private func probeResultRow(_ probe: OtherModelProbe) -> some View {
         let (symbol, color) = probeIcon(for: probe.verdict)
@@ -700,7 +741,7 @@ struct ModelPickStep: View {
         // Decimal GB, matching the CLI catalog: the 106 GB pack must not
         // read 99 GB here and 106 GB in `mtplx models`.
         let gb = Double(bytes) / 1_000_000_000.0
-        return String(format: "%.0f GB", gb.rounded())
+        return tr("%.0f GB", gb.rounded())
     }
 
     private func badge(_ text: String, color: Color) -> some View {
@@ -801,7 +842,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen35-9b-optimized-speed",
         logo: .qwen,
         title: "Qwen 3.5 9B Optimized Speed",
-        detail: "6-bit quantization. Strong small-Mac speed pick."
+        detail: tr("6-bit quantization. Strong small-Mac speed pick.")
     )
 
     static let qwen27Speed = RecommendedModelRow(
@@ -809,7 +850,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "optimized-speed",
         logo: .qwen,
         title: "Qwen 3.6 27B Optimized Speed",
-        detail: "Smaller 4-bit model. A little faster for short chats."
+        detail: tr("Smaller 4-bit model. A little faster for short chats.")
     )
 
     static let qwen38OptimizedSpeed = RecommendedModelRow(
@@ -817,7 +858,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen38-27b-optimized-speed",
         logo: .qwen,
         title: "Qwen 3.8 27B Optimized Speed",
-        detail: "4-bit dynamic quant. Great coding speeds and good quality. Recommended."
+        detail: tr("4-bit dynamic quant. Great coding speeds and good quality. Recommended.")
     )
 
     static let qwen38BareSpeed = RecommendedModelRow(
@@ -825,7 +866,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen38-27b-bare-speed",
         logo: .qwen,
         title: "Qwen 3.8 27B Bare Speed",
-        detail: "Quickest burst chat speeds. Lower quality and slower on long coding tasks."
+        detail: tr("Quickest burst chat speeds. Lower quality and slower on long coding tasks.")
     )
 
     static let qwen38OptimizedQuality = RecommendedModelRow(
@@ -833,7 +874,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen38-27b-optimized-quality",
         logo: .qwen,
         title: "Qwen 3.8 27B Optimized Quality",
-        detail: "8-bit dynamic quant. Good coding speeds and perfect quality."
+        detail: tr("8-bit dynamic quant. Good coding speeds and perfect quality.")
     )
 
     static let flashNextBareSpeed = RecommendedModelRow(
@@ -841,7 +882,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "flash-next-bare-speed",
         logo: .qwen,
         title: "Qwen 3.8 Flash-Next Bare Speed",
-        detail: "Flat 4-bit quantization. Quickest Flash-Next speeds for chat and coding."
+        detail: tr("Flat 4-bit quantization. Quickest Flash-Next speeds for chat and coding.")
     )
 
     static let flashNextOptimizedSpeed = RecommendedModelRow(
@@ -849,7 +890,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "flash-next-optimized-speed",
         logo: .qwen,
         title: "Qwen 3.8 Flash-Next Optimized Speed",
-        detail: "Dynamic 4-bit quant with 8-bit attention. Higher quality and slightly slower. Recommended."
+        detail: tr("Dynamic 4-bit quant with 8-bit attention. Higher quality and slightly slower. Recommended.")
     )
 
     static let qwen27SpeedV2 = RecommendedModelRow(
@@ -857,7 +898,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "optimized-speed-v2",
         logo: .qwen,
         title: "Qwen 3.6 27B Optimized Speed V2",
-        detail: "Much higher quality for coding. Dynamic 4-bit hybrid quantization keeps hand-tuned sensitive parts at up to 16-bit. Faster on long agent tasks, slightly larger, and a little slower for short chats."
+        detail: tr("Much higher quality for coding. Dynamic 4-bit hybrid quantization keeps hand-tuned sensitive parts at up to 16-bit. Faster on long agent tasks, slightly larger, and a little slower for short chats.")
     )
 
     static let qwen35Speed = RecommendedModelRow(
@@ -865,7 +906,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen36-35b-a3b-optimized-speed",
         logo: .qwen,
         title: "Qwen 3.6 35B-A3B Optimized Speed",
-        detail: "4-bit quantization. Blazingly fast and quite smart."
+        detail: tr("4-bit quantization. Blazingly fast and quite smart.")
     )
 
     static let qwen35Balance = RecommendedModelRow(
@@ -873,7 +914,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "qwen36-35b-a3b-optimized-balance",
         logo: .qwen,
         title: "Qwen 3.6 35B-A3B Optimized Balance",
-        detail: "6-bit quantization. Stronger balance of speed and quality."
+        detail: tr("6-bit quantization. Stronger balance of speed and quality.")
     )
 
     static let qwen27Quality = RecommendedModelRow(
@@ -881,7 +922,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "optimized-quality",
         logo: .qwen,
         title: "Qwen 3.6 27B Optimized Quality",
-        detail: "Maximum quality. Moderate speeds."
+        detail: tr("Maximum quality. Moderate speeds.")
     )
 
     static let gemma31 = RecommendedModelRow(
@@ -889,7 +930,7 @@ private struct RecommendedModelRow: Identifiable, Sendable {
         modelID: "gemma4-optimized-speed",
         logo: .google,
         title: "Gemma 4 31B Optimized Speed",
-        detail: "High quality. Moderate speeds."
+        detail: tr("High quality. Moderate speeds.")
     )
 }
 
@@ -984,6 +1025,9 @@ private struct ProviderLogoMark: View {
                 .offset(x: 8, y: -3)
         }
         .frame(width: 19, height: 19)
+        // A drawn glyph, not text: keep its strokes where they were
+        // composed regardless of the app's layout direction.
+        .environment(\.layoutDirection, .leftToRight)
     }
 
     private static let cachedQwenIcon: NSImage? = {

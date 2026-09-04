@@ -69,7 +69,7 @@ struct DecodeChart: View {
                             .foregroundStyle(Brand.textHighlight.opacity(0.45))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                             .annotation(position: .top, alignment: .leading) {
-                                Text("average \(Format.tps(mean)) TPS")
+                                Text(tr("average %@ TPS", Format.tps(mean)))
                                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                                     .foregroundStyle(Brand.textHighlight.opacity(0.65))
                                     .padding(.leading, 4)
@@ -107,13 +107,13 @@ struct DecodeChart: View {
     @ViewBuilder
     private func header(rolling: RollingMetrics?) -> some View {
         HStack(spacing: 8) {
-            Text("DECODE TPS · LAST 5 MIN")
+            Text(tr("DECODE TPS · LAST 5 MIN"))
                 .font(.system(size: 11, weight: .heavy, design: .monospaced))
                 .tracking(3)
                 .foregroundStyle(Brand.textHighlight)
             Spacer()
             if let r = rolling {
-                Text("\(r.count) samples")
+                Text(tr("%lld samples", r.count))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.textHighlight.opacity(0.55))
             }
@@ -153,7 +153,7 @@ struct DecodeChart: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        Text("Your decode speed history will show here.")
+        Text(tr("Your decode speed history will show here."))
             .font(.callout)
             .foregroundStyle(Brand.textHighlight.opacity(0.6))
             .frame(maxWidth: .infinity, minHeight: 160, alignment: .leading)
