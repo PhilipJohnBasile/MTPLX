@@ -342,7 +342,7 @@ extension InFlightRequest {
 
     var promptDigest: String {
         let trimmed = promptPreview.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "(empty prompt)" }
+        if trimmed.isEmpty { return tr("(empty prompt)") }
         if trimmed.count <= 64 { return trimmed }
         return String(trimmed.prefix(60)) + "…"
     }
@@ -371,13 +371,13 @@ enum DaemonStateKind: String {
 
     var label: String {
         switch self {
-        case .stopped: "Stopped"
-        case .starting: "Starting"
-        case .warming: "Warming"
-        case .running: "Running"
-        case .degraded: "Degraded"
-        case .stopping: "Stopping"
-        case .crashed: "Crashed"
+        case .stopped: tr("Stopped")
+        case .starting: tr("Starting")
+        case .warming: tr("Warming")
+        case .running: tr("Running")
+        case .degraded: tr("Degraded")
+        case .stopping: tr("Stopping")
+        case .crashed: tr("Crashed")
         }
     }
 
@@ -410,7 +410,7 @@ extension DaemonState {
     var detail: String? {
         switch self {
         case .degraded(let message): message
-        case .crashed(let status?): "exit \(status)"
+        case .crashed(let status?): tr("exit %@", String(status))
         default: nil
         }
     }

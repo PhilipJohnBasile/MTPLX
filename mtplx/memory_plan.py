@@ -341,6 +341,9 @@ class MemoryPlan:
     bank_steady_bytes: int = BANK_FLOOR_BYTES
 
     headroom_bytes: int = 0
+    # "formula" (the 75% envelope on the planning RAM) or "metal_limit"
+    # (the Metal cap the server configured decided the engine budget).
+    usable_source: str = "formula"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
@@ -396,6 +399,7 @@ def plan_memory(
     ngram_table_streamed_bytes: int = 0,
     aux_bytes_per_token: int = 0,
     prefill_transient_bytes_per_token: int = 0,
+    usable_bytes_explicit: bool = False,
 ) -> MemoryPlan:
     """Solve the machine's memory geometry.
 
@@ -404,7 +408,9 @@ def plan_memory(
     the whole stack down, and the way a 128 GB dev box tests a 48 GB
     seat. ``usable_bytes_override`` lets the server pass the Metal memory
     limit it actually configured instead of this module's mirror of the
-    default formula.
+    default formula; with ``usable_bytes_explicit`` (the operator set
+    MTPLX_MEMORY_LIMIT_BYTES) that limit is the engine budget both ways,
+    bounded by the machine (#443: a 96 GB seat serving a 69 GiB pack).
     """
     if total_ram_bytes is None or int(total_ram_bytes) <= 0:
         return _unavailable("total_ram_unknown")
@@ -422,12 +428,25 @@ def plan_memory(
     else:
         planning_ram = total_ram
         budget = None
+    usable_source = "formula"
     if usable_bytes_override is not None and int(usable_bytes_override) > 0:
-        # The override is the Metal limit the server actually configured —
+        # The override is the Metal limit the server actually configured,
         # computed from the REAL machine. Under a tighter --memory-budget
         # the formula on the planning RAM must still win, or a simulated
-        # 48G seat would inherit the 128G box's 96G envelope.
-        usable = min(int(usable_bytes_override), usable_engine_bytes(planning_ram))
+        # 48G seat would inherit the 128G box's 96G envelope. An operator's
+        # explicit limit (MTPLX_MEMORY_LIMIT_BYTES) is the engine budget in
+        # both directions, bounded by the machine: issue #443's 96 GB seat
+        # runs a 69.2 GiB pack under an 80G limit that the 72G formula
+        # refused as "does not fit".
+        override = int(usable_bytes_override)
+        if usable_bytes_explicit and planning_ram >= total_ram:
+            usable = min(override, total_ram)
+        else:
+            usable = min(override, usable_engine_bytes(planning_ram))
+        if usable == override and (
+            usable_bytes_explicit or override < usable_engine_bytes(planning_ram)
+        ):
+            usable_source = "metal_limit"
     else:
         usable = usable_engine_bytes(planning_ram)
 
@@ -451,6 +470,12 @@ def plan_memory(
             "model does not fit: weights + minimum runtime need "
             f"{(weights + RUNTIME_TRANSIENTS_BYTES + BANK_FLOOR_BYTES + kv_effective * CONTEXT_FLOOR_TOKENS) / GIB:.1f}"
             f" GiB but the engine budget is {usable / GIB:.1f} GiB"
+            + (
+                ""
+                if usable_source == "metal_limit"
+                else "; MTPLX_MEMORY_LIMIT_BYTES sets the engine budget past the"
+                " default envelope (swap past the fit is then yours)"
+            )
         )
         fit_raw = CONTEXT_FLOOR_TOKENS
 
@@ -517,6 +542,7 @@ def plan_memory(
         bank_idle_max_bytes=bank_idle,
         bank_steady_bytes=bank_steady,
         headroom_bytes=headroom,
+        usable_source=usable_source,
         notes=tuple(notes),
     )
 
@@ -603,7 +629,9 @@ def describe_plan(plan: MemoryPlan) -> str:
     )
     line = (
         f"{ram:.0f}G Mac{budget}: engine budget "
-        f"{plan.usable_bytes / GIB:.1f}G, weights "
+        f"{plan.usable_bytes / GIB:.1f}G"
+        + (" (Metal limit)" if plan.usable_source == "metal_limit" else "")
+        + ", weights "
         f"{plan.model_weights_bytes / GIB:.1f}G, context "
         f"{plan.context_window_resolved}"
         + (" (machine-bound)" if plan.context_machine_bound else "")

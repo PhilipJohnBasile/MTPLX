@@ -78,9 +78,9 @@ struct BenchSummaryCard: View {
 
     private var metaBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            metaRow(label: "DURATION", value: formattedElapsed)
-            metaRow(label: "MODEL", value: modelShort)
-            metaRow(label: "STATE", value: state.rawValue.uppercased())
+            metaRow(label: tr("DURATION"), value: formattedElapsed)
+            metaRow(label: tr("MODEL"), value: modelShort)
+            metaRow(label: tr("STATE"), value: state.rawValue.uppercased())
         }
         .frame(width: 240, alignment: .leading)
     }
@@ -91,7 +91,7 @@ struct BenchSummaryCard: View {
                 HStack(spacing: 7) {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 11, weight: .heavy))
-                    Text("Quick Check")
+                    Text(tr("Quick Check"))
                 }
             }
             .buttonStyle(.mtplxPrimary)
@@ -100,13 +100,13 @@ struct BenchSummaryCard: View {
                 HStack(spacing: 7) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .heavy))
-                    Text("Run AIME 2026")
+                    Text(tr("Run AIME 2026"))
                 }
             }
             .buttonStyle(.mtplxGhost)
 
             Button(action: onClear) {
-                Text("Clear run")
+                Text(tr("Clear run"))
             }
             .buttonStyle(.mtplxGhost)
         }
@@ -135,10 +135,10 @@ struct BenchSummaryCard: View {
 
     private var stateLabel: String {
         switch state {
-        case .done where isPerfectRun: return "PERFECT RUN"
-        case .done: return "RUN COMPLETE"
-        case .cancelled: return "CANCELLED"
-        case .error: return "ERRORED"
+        case .done where isPerfectRun: return tr("PERFECT RUN")
+        case .done: return tr("RUN COMPLETE")
+        case .cancelled: return tr("CANCELLED")
+        case .error: return tr("ERRORED")
         default: return "—"
         }
     }
@@ -169,9 +169,9 @@ struct BenchSummaryCard: View {
             let missed = max(0, resolved - score)
             let remaining = max(0, total - resolved)
             if missed > 0 {
-                return "\(score) correct · \(missed) missed · \(remaining) left"
+                return tr("%lld correct · %lld missed · %lld left", score, missed, remaining)
             }
-            return "\(score) correct · \(remaining) left"
+            return tr("%lld correct · %lld left", score, remaining)
         }
         guard let accuracy else { return "—" }
         return Self.percentFormatter.string(from: NSNumber(value: accuracy)) ?? "—"

@@ -40,6 +40,7 @@ from mtplx.benchmarks.validators.basic import (
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.default_models import (
     OPTIMIZED_QUALITY_DESCRIPTION,
+    DefaultModelUnavailable,
     is_verified_default_model_ref,
     optimized_quality_model_ref,
     public_model_id_for_ref,
@@ -47,6 +48,7 @@ from mtplx.default_models import (
 )
 from mtplx.env import collect_environment
 from mtplx.fan_mode import FAN_MODE_MAX, FAN_MODE_SMART, fan_mode_from_args
+from mtplx.jsonc import InvalidConfigFile
 from mtplx.kpi import (
     EXIT_EXACTNESS,
     EXIT_QUALITY,
@@ -2535,6 +2537,16 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
         print(f"project: {env_info.get('project_root') or os.getcwd()}")
         print(f"model cache: {hf.get('cache_dir') or 'default'}")
         print(f"cached models: {hf.get('cached_models', 'unknown')}")
+        token_source = hf.get("token_source")
+        if token_source == "environment":
+            print("hugging face token: from HF_TOKEN (used by mtplx pull)")
+        elif token_source == "login":
+            print("hugging face token: from `hf auth login` (used by mtplx pull)")
+        else:
+            print(
+                "hugging face token: none (public models need none; for gated "
+                "models run `hf auth login` or export HF_TOKEN)"
+            )
         print(
             "thermal: "
             f"{'available' if thermal.get('available') else 'not configured'}"
@@ -5747,6 +5759,13 @@ def cmd_pull_public(args: Any) -> int:
         print(f"model: {result.get('repo_id')}")
         print(f"path: {result.get('path')}")
         print(f"size: {_format_bytes(result.get('size_bytes'))}")
+        stale_bytes = result.get("stale_bytes")
+        if isinstance(stale_bytes, int) and stale_bytes > 0:
+            print(
+                f"leftovers: {_format_bytes(stale_bytes)} in "
+                f"{result.get('stale_files')} partial file(s) from earlier downloads "
+                "(under .cache or *.incomplete); not part of the model, safe to remove"
+            )
         print(
             f"runtime contract: {str(bool(result.get('has_runtime_contract'))).lower()}"
         )
@@ -6725,7 +6744,9 @@ def _bench_suite_model(args: Any) -> str:
     model = getattr(args, "model", None) or DEFAULT_CHAMPION
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     if "model" not in cli_flags and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        # Same refusal as `mtplx start`: a Mac with no runnable default
+        # (Intel, or too little memory) gets the sentence, not a traceback.
+        selection = _select_default_model_or_exit()
         to_dict = getattr(selection, "to_dict", None)
         args._mtplx_default_model_selection = (
             to_dict() if callable(to_dict) else dict(vars(selection))
@@ -9594,6 +9615,8 @@ def cmd_serve_public(args: Any) -> int:
     context_window = getattr(args, "context_window", None)
     if context_window is not None:
         cmd.extend(["--context-window", str(context_window)])
+    if bool(getattr(args, "allow_swap", False)):
+        cmd.append("--allow-swap")
     mtp_adapter = getattr(args, "mtp_adapter", None)
     if mtp_adapter:
         cmd.extend(["--mtp-adapter", str(mtp_adapter)])
@@ -9743,6 +9766,14 @@ def cmd_serve_public(args: Any) -> int:
         cmd.append("--stock-ar")
     elif getattr(args, "load_mtp", True) is False:
         cmd.append("--no-load-mtp")
+    # Tri-state: only an explicit choice is forwarded, so the child's own
+    # MTPLX_NGRAM_PREWARM (and the on-by-default) still decide otherwise.
+    ngram_prewarm = getattr(args, "ngram_prewarm", None)
+    if ngram_prewarm is not None:
+        cmd.extend(["--ngram-prewarm", str(ngram_prewarm)])
+    ngram_prewarm_order = getattr(args, "ngram_prewarm_order", None)
+    if ngram_prewarm_order:
+        cmd.extend(["--ngram-prewarm-order", str(ngram_prewarm_order)])
     api_key_source = str(getattr(args, "api_key_source", "none") or "none")
     api_key_file = getattr(args, "api_key_file", None)
     if api_key and api_key_source == "flag":
@@ -10750,11 +10781,25 @@ def _quickstart_heartbeat(
     return _QuickstartHeartbeat(label, interval_s=interval_s)
 
 
+def _select_default_model_or_exit():
+    """The verified default for this Mac, or a clean exit with the reason.
+
+    A Mac that cannot run any MTPLX model (an Intel processor, or less memory
+    than the smallest pack needs) gets the one-sentence message and exit
+    status 1: never a traceback, never a download it cannot use.
+    """
+
+    try:
+        return select_default_model()
+    except DefaultModelUnavailable as exc:
+        raise SystemExit(exc.message) from exc
+
+
 def _quickstart_current_model(args: Any) -> str:
     model = getattr(args, "model", None)
     explicit_model = bool(getattr(args, "_model_explicit", False))
     if not explicit_model and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        selection = _select_default_model_or_exit()
         args._mtplx_default_model_selection = selection.to_dict()
         return selection.model
     return str(model or DEFAULT_MODEL_ID)
@@ -10765,7 +10810,7 @@ def _quickstart_download_ref(model: str) -> str:
 
     if repo_id_from_model_ref(model):
         return model
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     default_local_refs = {
         DEFAULT_MODEL_ID,
         selection.model,
@@ -10799,7 +10844,7 @@ def _quickstart_choose_model(
         return model, download
 
     _quickstart_line(f"MTPLX {_start_command_name(args)}")
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     _quickstart_line("Choose a model:")
     _quickstart_line(f"  1. Use verified default for this Mac ({selection.label})")
     quality_ref = optimized_quality_model_ref()
@@ -12075,15 +12120,26 @@ def _quickstart_pi_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_pi_models_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=api_key,
-            context_window=context_window,
-            vision=vision_enabled,
-        )
+        try:
+            payload["config_write"] = write_pi_models_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=api_key,
+                context_window=context_window,
+                vision=vision_enabled,
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("Pi", exc)) from exc
     return payload
+
+
+def _client_config_refusal(client: str, exc: Exception) -> str:
+    """Plain message for a client config MTPLX could not read: the file was
+    left exactly as it was and nothing was written."""
+
+    detail = str(exc).rstrip(".")
+    return f"{client} config left unchanged: {detail}. Fix or move that file, then try again."
 
 
 def _model_vision_enabled(model_ref: str) -> bool:
@@ -12321,19 +12377,22 @@ def _quickstart_opencode_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_opencode_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            context_window=context_window,
-            output_limit=output_limit,
-            enable_thinking=enable_thinking,
-            top_p=float(getattr(args, "top_p", 0.95)),
-            top_k=int(getattr(args, "top_k", 20)),
-            reasoning_effort=reasoning_effort,
-            reasoning_effort_levels=reasoning_effort_levels,
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                context_window=context_window,
+                output_limit=output_limit,
+                enable_thinking=enable_thinking,
+                top_p=float(getattr(args, "top_p", 0.95)),
+                top_k=int(getattr(args, "top_k", 20)),
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_levels=reasoning_effort_levels,
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     return payload
 
 
@@ -12519,7 +12578,7 @@ def _quickstart_print_pi_handoff(
     backup_path = config_write.get("backup_path")
     _quickstart_line(f"      Pi config: {config_path}")
     if backup_path:
-        _quickstart_line(f"      Backed up unreadable old Pi config: {backup_path}")
+        _quickstart_line(f"      Previous Pi config kept at: {backup_path}")
     _quickstart_line(f"      Pi model: {pi.get('model_ref')}")
     _quickstart_line(f"      Loading model: {runtime_model}")
     _quickstart_line("      Keep this terminal open for the MTPLX server.")
@@ -12561,9 +12620,7 @@ def _quickstart_print_opencode_handoff(
     _quickstart_line(f"      OpenCode config: {config_path}")
     _quickstart_line("      MTPLX client header: x-mtplx-client=opencode")
     if backup_path:
-        _quickstart_line(
-            f"      Backed up unreadable old OpenCode config: {backup_path}"
-        )
+        _quickstart_line(f"      Previous OpenCode config kept at: {backup_path}")
     _quickstart_line(f"      OpenCode model: {opencode.get('model_ref')}")
     _quickstart_line(f"      API base URL: {opencode.get('api_base_url')}")
     _quickstart_line(
@@ -12779,6 +12836,11 @@ def _with_server_policy_args(target: Any, source: Any) -> Any:
         ("default_presence_penalty", 0.0),
         ("default_frequency_penalty", 0.0),
         ("paged_kv_quantization", "off"),
+        # None = "the flag was not given", so the child falls back to
+        # MTPLX_NGRAM_PREWARM / the default. Forwarding it as True here would
+        # make every `mtplx start` overrule a shell-set value.
+        ("ngram_prewarm", None),
+        ("ngram_prewarm_order", None),
         ("tool_prompt_mode", "hybrid"),
         ("chat_template_profile", "local_qwen36"),
         ("chat_template_path", None),
@@ -13233,25 +13295,52 @@ def _quickstart_autoselect_busy_port(
 ) -> None:
     """Auto-bump a default port held by a non-MTPLX app.
 
-    Only fires for spawning targets when the user did not pass ``--port``.
-    A healthy MTPLX daemon on the port is left alone: the downstream
-    "MTPLX is already running" reuse path attaches to it instead of
-    spawning a duplicate.
+    Only fires for spawning targets, and only for a port the user did not
+    choose. A healthy MTPLX daemon on the port is left alone: the
+    downstream "MTPLX is already running" reuse path attaches to it
+    instead of spawning a duplicate.
+
+    Issue #409 (reporter kmei3560) closed two holes here:
+
+    1. A STOPPING MTPLX server keeps its listener while it drains but
+       stops answering /health first, so the probe read our own process
+       as another app and bumped. Every stop/start cycle moved the port.
+       Fixed by settling the classification over a bounded window before
+       believing "foreign".
+    2. A port the user CONFIGURED must never be silently relocated. The
+       CLI already honored that for --port; the app's persisted port now
+       counts as configured too, so an app user who pinned 1234 keeps
+       1234 and gets actionable copy instead of a silent 1235.
     """
 
-    if target not in _QUICKSTART_SPAWNING_TARGETS or "port" in cli_flags:
+    if target not in _QUICKSTART_SPAWNING_TARGETS:
         return
     host = str(getattr(args, "host", "127.0.0.1"))
     port = int(getattr(args, "port", 8000))
     try:
         from mtplx.daemon_client import (
             PORT_FOREIGN,
+            app_configured_port,
             classify_port_occupant,
             find_free_port,
+            port_busy_advice,
+            wait_for_port_settle,
         )
 
+        configured = "port" in cli_flags or port == app_configured_port()
         occupant = classify_port_occupant(host, port)
+        if occupant.kind == PORT_FOREIGN:
+            # Give our own drain the few seconds it needs before treating
+            # the listener as a stranger's.
+            occupant = wait_for_port_settle(host, port)
         if occupant.kind != PORT_FOREIGN:
+            return
+        if configured:
+            for line in port_busy_advice(occupant, port=port):
+                _quickstart_line(line)
+            _quickstart_line(
+                f"Keeping the configured port {port} (never moved silently)."
+            )
             return
         free_port = find_free_port(host, port + 1)
     except Exception:
@@ -14133,7 +14222,7 @@ def cmd_quickstart_public(args: Any) -> int:
                     "selected model" if download_model == model else "verified default"
                 )
             except ValueError:
-                download_model = select_default_model().hf_model
+                download_model = _select_default_model_or_exit().hf_model
                 label = "verified default"
             answer = (
                 input(
@@ -14459,6 +14548,7 @@ def cmd_integrate_public(args: Any) -> int:
     elif action == "opencode":
         from mtplx.opencode import (
             build_opencode_provider_config,
+            opencode_config_path,
             write_opencode_config,
         )
 
@@ -14470,7 +14560,7 @@ def cmd_integrate_public(args: Any) -> int:
             "base_url": api_base_url,
             "api_base_url": api_base_url,
             "model_id": model_id,
-            "config_path": "~/.config/opencode/opencode.json",
+            "config_path": str(opencode_config_path()),
             "server_command": (
                 f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 f"{api_key_suffix}--reasoning auto --no-stats-footer"
@@ -14504,19 +14594,22 @@ def cmd_integrate_public(args: Any) -> int:
         # and OpenCode failed with ProviderModelNotFoundError surfaced as
         # "Unexpected server error" (found live wiring Flash-Next, 2026-08-27).
         # Write through the same merge-preserving writer the app flow uses.
-        payload["config_write"] = write_opencode_config(
-            base_url=api_base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            enable_thinking=reasoning_policy.supported,
-            reasoning_effort=reasoning_policy.default_effort,
-            reasoning_effort_levels=(
-                tuple(reasoning_policy.effort_levels)
-                if reasoning_policy.supported
-                else None
-            ),
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=api_base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                enable_thinking=reasoning_policy.supported,
+                reasoning_effort=reasoning_policy.default_effort,
+                reasoning_effort_levels=(
+                    tuple(reasoning_policy.effort_levels)
+                    if reasoning_policy.supported
+                    else None
+                ),
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     elif action == "swival":
         from mtplx.swival import (
             build_swival_command,
@@ -14578,8 +14671,13 @@ def cmd_integrate_public(args: Any) -> int:
                 print("Docker:")
                 print(f"  {_shell_join(payload['docker_command_argv'])}")
         elif action == "opencode":
+            config_write = payload.get("config_write")
+            if not isinstance(config_write, dict):
+                config_write = {}
             print("OpenCode:")
-            print("  Config path: ~/.config/opencode/opencode.json")
+            print(f"  Config path: {config_write.get('config_path') or payload['config_path']}")
+            if config_write.get("backup_path"):
+                print(f"  Previous config kept at: {config_write['backup_path']}")
             print("  Provider: mtplx")
             print("  Reasoning: controlled by MTPLX server settings")
         elif action == "swival":
@@ -15228,9 +15326,23 @@ def cmd_model_public(args: Any) -> int:
         return _cmd_model_qa_architectures(args)
     if args.model_action != "publish-check":
         raise SystemExit(f"unknown model action: {args.model_action}")
+    from mtplx.metadata_scrub import scrub_json_documents
+
     staging = Path(args.staging_dir)
     manifest_path = staging / "MTPLX_PUBLISH_MANIFEST.json"
     runtime_contract_path = staging / "mtplx_runtime.json"
+    # A staging tree exists to be uploaded, so nothing in it may name this
+    # machine. Forge stamps the paths it read into the runtime contract;
+    # --scrub rewrites the leaking documents in place, otherwise they block.
+    leaking = scrub_json_documents(staging) if staging.exists() else []
+    scrubbed_in_place: list[str] = []
+    if leaking and bool(getattr(args, "scrub", False)):
+        for document in leaking:
+            tmp = staging / f".{document.name}.{os.getpid()}.tmp"
+            tmp.write_bytes(document.payload)
+            os.replace(tmp, staging / document.name)
+            scrubbed_in_place.append(document.name)
+        leaking = []
     symlinks = (
         [str(path) for path in staging.iterdir() if path.is_symlink()]
         if staging.exists()
@@ -15252,6 +15364,7 @@ def cmd_model_public(args: Any) -> int:
         "runtime_contract_exists": runtime_contract_path.exists(),
         "no_symlinks": not symlinks,
         "repo_id_explicit": bool(args.repo_id or (manifest or {}).get("repo_id")),
+        "no_local_paths": not leaking,
         "inspect_verified": bool(
             inspection
             and (inspection.get("compatibility") or {}).get("tier") == "verified"
@@ -15270,6 +15383,8 @@ def cmd_model_public(args: Any) -> int:
         "size_bytes": (manifest or {}).get("size_bytes"),
         "weight_size_bytes": (manifest or {}).get("weight_size_bytes"),
         "uploaded": (manifest or {}).get("upload_policy", {}).get("uploaded"),
+        "local_paths": {document.name: list(document.leaks) for document in leaking},
+        "scrubbed": scrubbed_in_place,
         "gates": gates,
         "passed": all(gates.values()),
     }
@@ -15300,12 +15415,22 @@ def cmd_config_public(args: Any) -> int:
             "config set key must be one of: " + ", ".join(CONFIG_VALUE_KEYS)
         )
     value = str(args.value).strip()
+    # Every conversion below rejects a bad value with one plain line. A value
+    # that gets past here is written verbatim and re-read on every later
+    # command, so a traceback here would also mean a config file the rest of
+    # the CLI has to degrade around.
     if key == "profile":
-        value = resolve_profile_name(value)
+        try:
+            value = resolve_profile_name(value)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     if key == "thermal_control" and value not in {"auto", "none"}:
         raise SystemExit("thermal_control must be auto or none")
     if key == "paged_kv_quantization":
-        value = normalize_paged_kv_quantization(value)
+        try:
+            value = normalize_paged_kv_quantization(value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
     if key == "scheduler_mode":
         # Single source of truth: the SchedulerMode enum (also feeds the CLI
         # choices), so `mtplx config set` can never trail a new server mode.
@@ -15348,11 +15473,17 @@ def cmd_config_public(args: Any) -> int:
         "context_window",
         "top_k",
     }:
-        value = int(value)
+        try:
+            value = int(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a whole number, got {value!r}") from None
         if value < 1:
             raise SystemExit(f"{key} must be >= 1")
     if key in {"batch_wait_ms", "temperature", "top_p"}:
-        value = float(value)
+        try:
+            value = float(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a number, got {value!r}") from None
     if key in {"experimental_mtp_cohorts", "ram_session_block_prefix_restore"}:
         value = _parse_config_bool(value, key=key)
     values[key] = value

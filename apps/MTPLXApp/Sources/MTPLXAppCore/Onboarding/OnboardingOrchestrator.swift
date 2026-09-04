@@ -160,7 +160,7 @@ public final class OnboardingOrchestrator: ObservableObject {
             state.record(LocalModelProbe(
                 verdict: .notFound,
                 path: path,
-                message: "Paste a local model folder first."
+                message: tr("Paste a local model folder first.")
             ))
             return
         }
@@ -173,7 +173,7 @@ public final class OnboardingOrchestrator: ObservableObject {
             state.record(LocalModelProbe(
                 verdict: .notFound,
                 path: trimmed,
-                message: "That folder doesn't exist on this Mac.",
+                message: tr("That folder doesn't exist on this Mac."),
                 diagnostic: expanded
             ))
             return
@@ -183,7 +183,7 @@ public final class OnboardingOrchestrator: ObservableObject {
             state.record(LocalModelProbe(
                 verdict: .incomplete,
                 path: trimmed,
-                message: "That folder is not a complete MTPLX model yet.",
+                message: tr("That folder is not a complete MTPLX model yet."),
                 diagnostic: "Need config/tokenizer/runtime metadata, full model weights, and an MTP sidecar."
             ))
             return
@@ -193,7 +193,7 @@ public final class OnboardingOrchestrator: ObservableObject {
         state.record(LocalModelProbe(
             verdict: .ready,
             path: trimmed,
-            message: "\(Self.modelFamilyLabel(family)) model ready from this folder.",
+            message: tr("%@ model ready from this folder.", Self.modelFamilyLabel(family)),
             diagnostic: expanded
         ))
     }
@@ -375,7 +375,7 @@ public final class OnboardingOrchestrator: ObservableObject {
             snapshot.bytesPerSecond = 0
             snapshot.etaSeconds = nil
             snapshot.stalledSeconds = 0
-            snapshot.statusMessage = "Paused"
+            snapshot.statusMessage = tr("Paused")
             downloadProgress = snapshot
         }
     }
@@ -384,7 +384,7 @@ public final class OnboardingOrchestrator: ObservableObject {
     /// mirror field rendered directly under the banner; everything else
     /// passes through untouched.
     nonisolated static func downloadFailureMessage(stderrTail: String, mirrorActive: Bool) -> String {
-        let base = stderrTail.isEmpty ? "Download failed." : stderrTail
+        let base = stderrTail.isEmpty ? tr("Download failed.") : stderrTail
         let lower = base.lowercased()
         let networkShaped = lower.contains("timed out")
             || lower.contains("connection")
@@ -445,7 +445,7 @@ public final class OnboardingOrchestrator: ObservableObject {
                 snapshot.stalledSeconds = seconds
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
-                snapshot.statusMessage = "Waiting on Hugging Face"
+                snapshot.statusMessage = tr("Waiting on Hugging Face")
                 downloadProgress = snapshot
             }
         case .complete(let bytes, let path):
@@ -460,7 +460,7 @@ public final class OnboardingOrchestrator: ObservableObject {
                     isComplete: false,
                     statusMessage: "Incomplete"
                 )
-                downloadFailure = "Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download."
+                downloadFailure = tr("Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download.")
                 isDownloading = false
                 return
             }
@@ -492,7 +492,7 @@ public final class OnboardingOrchestrator: ObservableObject {
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
                 snapshot.stalledSeconds = 0
-                snapshot.statusMessage = "Paused"
+                snapshot.statusMessage = tr("Paused")
                 downloadProgress = snapshot
             }
         }
@@ -518,7 +518,7 @@ public final class OnboardingOrchestrator: ObservableObject {
         }
         let modelPath = resolvedTuneModelPath()
         guard let modelPath else {
-            tuneFailure = "No model selected to tune."
+            tuneFailure = tr("No model selected to tune.")
             return
         }
         isTuning = true
@@ -598,7 +598,7 @@ public final class OnboardingOrchestrator: ObservableObject {
             isTuning = false
         case .failed(_, let stderrTail):
             tuneStatusMessage = nil
-            tuneFailure = stderrTail.isEmpty ? "Tuning failed." : stderrTail
+            tuneFailure = stderrTail.isEmpty ? tr("Tuning failed.") : stderrTail
             isTuning = false
         case .cancelled:
             tuneStatusMessage = nil

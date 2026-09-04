@@ -54,7 +54,7 @@ struct BenchQuestionDetail: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Problem \(result.idx) of \(displayTotal)")
+                Text(tr("Problem %lld of %lld", result.idx, displayTotal))
                     .font(.system(size: 15, weight: .heavy, design: .rounded))
                     .foregroundStyle(Brand.typeBody)
                 Text("\(result.problem.set) #\(result.problem.index)")
@@ -76,7 +76,7 @@ struct BenchQuestionDetail: View {
                     }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close")
+            .accessibilityLabel(tr("Close"))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -107,10 +107,10 @@ struct BenchQuestionDetail: View {
                     .font(.system(size: 20, weight: .heavy, design: .rounded))
                     .foregroundStyle(accent)
                 HStack(alignment: .top, spacing: 10) {
-                    answerChip(label: "ANSWER", value: result.extracted.map(String.init) ?? "—", tint: accent)
-                    answerChip(label: "EXPECTED", value: String(result.problem.answer), tint: Brand.typeSecondary)
+                    answerChip(label: tr("ANSWER"), value: result.extracted.map(String.init) ?? "—", tint: accent)
+                    answerChip(label: tr("EXPECTED"), value: String(result.problem.answer), tint: Brand.typeSecondary)
                     if let ms = result.durationMs {
-                        answerChip(label: "TIME", value: formattedDuration(ms), tint: Brand.typeSecondary)
+                        answerChip(label: tr("TIME"), value: formattedDuration(ms), tint: Brand.typeSecondary)
                     }
                 }
             }
@@ -150,7 +150,7 @@ struct BenchQuestionDetail: View {
 
     private var problemBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("PROBLEM")
+            sectionLabel(tr("PROBLEM"))
             MathProblemRender(text: cleanedProblem, expanded: true)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -168,9 +168,9 @@ struct BenchQuestionDetail: View {
 
     private var reasoningBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("REASONING")
+            sectionLabel(tr("REASONING"))
             if result.reasoning.isEmpty {
-                Text("The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working.")
+                Text(tr("The reasoning for this problem wasn't saved — reopen a problem you solved in this session to read its full working."))
                     .font(.system(size: 12, weight: .regular))
                     .foregroundStyle(Brand.typeTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,16 +219,16 @@ struct BenchQuestionDetail: View {
 
     private var verdictTitle: String {
         switch result.status {
-        case .correct: return "Correct"
-        case .wrong: return "Wrong"
-        case .abstain: return "No answer"
-        case .pending: return "Not solved yet"
+        case .correct: return tr("Correct")
+        case .wrong: return tr("Wrong")
+        case .abstain: return tr("No answer")
+        case .pending: return tr("Not solved yet")
         }
     }
 
     private var accessibilitySummary: String {
-        let answer = result.extracted.map(String.init) ?? "no answer"
-        return "\(verdictTitle). Answer \(answer), expected \(result.problem.answer)."
+        let answer = result.extracted.map(String.init) ?? tr("no answer")
+        return tr("%@. Answer %@, expected %lld.", verdictTitle, answer, result.problem.answer)
     }
 
     /// Strips `[asy]...[/asy]` figure source so the math renderer never tries
@@ -248,6 +248,6 @@ struct BenchQuestionDetail: View {
         if seconds < 60 { return String(format: "%.0fs", seconds) }
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
-        return "\(m)m \(s)s"
+        return tr("%lldm %llds", m, s)
     }
 }

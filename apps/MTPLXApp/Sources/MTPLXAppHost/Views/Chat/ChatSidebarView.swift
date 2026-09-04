@@ -11,6 +11,9 @@ import MTPLXAppCore
 struct ChatSidebarView: View {
     @ObservedObject var viewModel: ChatViewModel
     @Binding var collapsed: Bool
+    /// Launch-time chat store recovery (kept-aside store or memory-only
+    /// session), injected at the app root; shown here until dismissed.
+    @EnvironmentObject private var chatStoreRecovery: ChatStoreRecoveryState
     @State private var searchQuery: String = ""
     @State private var confirmingDelete: ChatConversation?
 
@@ -29,6 +32,11 @@ struct ChatSidebarView: View {
     private var content: some View {
         VStack(spacing: 0) {
             header
+            if let notice = chatStoreRecovery.notice {
+                ChatStoreRecoveryBanner(notice: notice) {
+                    chatStoreRecovery.notice = nil
+                }
+            }
             searchField
             Divider()
                 .frame(height: 0.5)
@@ -48,7 +56,7 @@ struct ChatSidebarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Chats")
+            Text(tr("Chats"))
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .tracking(1.5)
                 .foregroundStyle(Brand.typeTertiary)
@@ -62,13 +70,13 @@ struct ChatSidebarView: View {
                     .frame(width: 24, height: 24)
                     .background(
                         Circle()
-                            .fill(Color.white.opacity(0.04))
+                            .fill(Brand.wash.opacity(0.04))
                             .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                     )
             }
             .buttonStyle(.plain)
-            .help("New chat (⌘N)")
-            .accessibilityLabel("New chat")
+            .help(tr("New chat (⌘N)"))
+            .accessibilityLabel(tr("New chat"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -79,7 +87,7 @@ struct ChatSidebarView: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 11))
                 .foregroundStyle(Brand.typeTertiary)
-            TextField("Search", text: $searchQuery)
+            TextField(tr("Search"), text: $searchQuery)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .foregroundStyle(Brand.typeHi)
@@ -88,7 +96,7 @@ struct ChatSidebarView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Brand.wash.opacity(0.04))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)
@@ -130,7 +138,7 @@ struct ChatSidebarView: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isSelected ? Color.white.opacity(0.06) : Color.clear)
+                    .fill(isSelected ? Brand.wash.opacity(0.06) : Color.clear)
             )
             .contentShape(Rectangle())
         }
@@ -139,11 +147,11 @@ struct ChatSidebarView: View {
             Button(role: .destructive) {
                 confirmingDelete = conversation
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label(tr("Delete"), systemImage: "trash")
             }
         }
         .alert(
-            "Delete this chat?",
+            tr("Delete this chat?"),
             isPresented: Binding(
                 get: { confirmingDelete?.id == conversation.id },
                 set: { newValue in
@@ -151,12 +159,12 @@ struct ChatSidebarView: View {
                 }
             )
         ) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
+            Button(tr("Cancel"), role: .cancel) {}
+            Button(tr("Delete"), role: .destructive) {
                 Task { await viewModel.delete(conversation) }
             }
         } message: {
-            Text("This will remove \"\(conversation.title)\" and its messages.")
+            Text(tr("This will remove \"%@\" and its messages.", conversation.title))
         }
     }
 
@@ -178,5 +186,66 @@ struct ChatSidebarView: View {
     @MainActor
     private static func relativeDate(_ date: Date) -> String {
         relativeDateFormatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - ChatStoreRecoveryBanner
+
+/// Persistent, dismissable card at the top of the rail: the chat store
+/// on disk would not open at launch. Either the old files were kept
+/// beside the new store (Reveal in Finder shows them) or, when no store
+/// could be created at all, chats are living in memory for this session.
+private struct ChatStoreRecoveryBanner: View {
+    let notice: ChatStoreRecoveryNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.mtplxWarning)
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Brand.typeHi)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                if case .recoveredFromUnreadableStore(let preservedAt) = notice {
+                    Button(tr("Reveal in Finder")) {
+                        NSWorkspace.shared.activateFileViewerSelecting([preservedAt])
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Spacer(minLength: 0)
+                Button(tr("Dismiss"), action: onDismiss)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.mtplxWarning.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.mtplxWarning.opacity(0.28), lineWidth: 0.5)
+                )
+        )
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+    }
+
+    private var message: String {
+        switch notice {
+        case .recoveredFromUnreadableStore(let preservedAt):
+            return tr(
+                "Your earlier chats could not be opened. They were kept as %@ and a new chat history was started.",
+                preservedAt.lastPathComponent
+            )
+        case .inMemoryOnly:
+            return tr("Chats cannot be saved right now, so this session's chats will not be kept.")
+        }
     }
 }

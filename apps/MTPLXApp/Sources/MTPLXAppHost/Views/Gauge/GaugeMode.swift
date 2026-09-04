@@ -1,4 +1,5 @@
 import SwiftUI
+import MTPLXAppCore
 
 // MARK: - GaugeMode
 //
@@ -147,12 +148,12 @@ enum GaugeMode: Equatable {
     /// self-explanatory and the text reads as clutter at hero scale.
     var subtitle: String {
         switch self {
-        case .tps: return "TPS"
+        case .tps: return tr("TPS")
         case let .prefill(_, livePrefillTPS, _, _):
-            return livePrefillTPS == nil ? "PREFILL" : "PREFILL TPS"
+            return livePrefillTPS == nil ? tr("PREFILL") : tr("PREFILL TPS")
         case .dim: return ""
         case .loading: return ""
-        case .degraded: return "DEGRADED"
+        case .degraded: return tr("DEGRADED")
         }
     }
 
@@ -164,11 +165,11 @@ enum GaugeMode: Equatable {
         case .tps: return "decode"
         case let .prefill(progress, _, eta, _):
             let percent = "\(Int((progress * 100).rounded()))%"
-            if let eta { return "ETA \(Format.duration(eta)) · \(percent)" }
-            return "prefilling · \(percent)"
+            if let eta { return tr("ETA %@ · %@", Format.duration(eta), percent) }
+            return tr("prefilling · %@", percent)
         case .dim: return nil
         case .loading: return nil
-        case .degraded: return "startup failed"
+        case .degraded: return tr("startup failed")
         }
     }
 
@@ -235,11 +236,11 @@ public enum LoadingPhase: String, Equatable, Sendable {
 
     public var label: String {
         switch self {
-        case .starting: return "STARTING"
-        case .waitingForServer: return "WAITING FOR MODEL"
-        case .rampingFans: return "RAMPING FANS"
-        case .warming: return "LOADING MODEL"
-        case .stopping: return "STOPPING"
+        case .starting: return tr("STARTING")
+        case .waitingForServer: return tr("WAITING FOR MODEL")
+        case .rampingFans: return tr("RAMPING FANS")
+        case .warming: return tr("LOADING MODEL")
+        case .stopping: return tr("STOPPING")
         }
     }
 }
