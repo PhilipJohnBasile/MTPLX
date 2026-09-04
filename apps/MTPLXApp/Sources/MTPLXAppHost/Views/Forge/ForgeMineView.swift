@@ -25,8 +25,8 @@ struct ForgeMineView: View {
             if entries.isEmpty {
                 EmptyStateView(
                     symbol: "tray.full",
-                    title: "No forged models yet",
-                    message: "Run a Forge build under the Create tab and your models will land here for re-verification, publishing, and inspection."
+                    title: tr("No forged models yet"),
+                    message: tr("Run a Forge build under the Create tab and your models will land here for re-verification, publishing, and inspection.")
                 )
             } else {
                 splitView
@@ -34,19 +34,19 @@ struct ForgeMineView: View {
         }
         .onAppear { reload() }
         .confirmationDialog(
-            "Remove this model from MTPLX?",
+            tr("Remove this model from MTPLX?"),
             isPresented: removePresented,
             titleVisibility: .visible
         ) {
-            Button("Remove from picker", role: .destructive) {
+            Button(tr("Remove from picker"), role: .destructive) {
                 if let id = pendingRemoveID { removeFromPicker(entryID: id) }
                 pendingRemoveID = nil
             }
-            Button("Cancel", role: .cancel) {
+            Button(tr("Cancel"), role: .cancel) {
                 pendingRemoveID = nil
             }
         } message: {
-            Text("This unregisters the model from the picker only — the files on disk stay intact. Delete the folder from Finder if you want to free the space.")
+            Text(tr("This unregisters the model from the picker only — the files on disk stay intact. Delete the folder from Finder if you want to free the space."))
         }
     }
 
@@ -101,16 +101,16 @@ struct ForgeMineView: View {
             }
             HStack(spacing: 5) {
                 if let depth = entry.depth, depth > 0 {
-                    chip(text: "D\(depth)")
+                    chip(text: tr("D%lld", depth))
                 }
                 if let multiplier = entry.verificationMultiplier, multiplier > 1 {
-                    chip(text: String(format: "%.2f× baseline", multiplier))
+                    chip(text: tr("%.2f× baseline", multiplier))
                 }
                 if entry.sizeOnDisk > 0 {
                     chip(text: formatGiB(entry.sizeOnDisk))
                 }
                 if entry.publishedToHF {
-                    chip(text: "published", systemImage: "checkmark.seal")
+                    chip(text: tr("published"), systemImage: "checkmark.seal")
                 }
             }
         }
@@ -137,7 +137,7 @@ struct ForgeMineView: View {
                     if let metadata = entry.metadata {
                         metadataCard(metadata: metadata)
                     } else {
-                        Text("mtplx_runtime.json missing or unreadable.")
+                        Text(tr("mtplx_runtime.json missing or unreadable."))
                             .font(.caption)
                             .foregroundStyle(Brand.typeTertiary)
                     }
@@ -158,7 +158,7 @@ struct ForgeMineView: View {
                 .font(.system(.title2, design: .rounded).weight(.semibold))
                 .foregroundStyle(Brand.typeHi)
             if let forgedAt = entry.forgedAt {
-                Text("Forged \(Self.dateFormatter.string(from: forgedAt))")
+                Text(tr("Forged %@", Self.dateFormatter.string(from: forgedAt)))
                     .font(.caption)
                     .foregroundStyle(Brand.typeSecondary)
             }
@@ -172,14 +172,14 @@ struct ForgeMineView: View {
 
     private func actionRow(entry: ForgeLocalEntry) -> some View {
         HStack(spacing: 10) {
-            actionButton("Use", icon: "play.fill", emphasis: true) { useNow(entry) }
-            actionButton("Open in Finder", icon: "folder") {
+            actionButton(tr("Use"), icon: "play.fill", emphasis: true) { useNow(entry) }
+            actionButton(tr("Open in Finder"), icon: "folder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.localPath)])
             }
-            actionButton(entry.publishedToHF ? "Re-publish" : "Publish to HF", icon: "arrow.up.circle.fill") {
+            actionButton(entry.publishedToHF ? tr("Re-publish") : tr("Publish to HF"), icon: "arrow.up.circle.fill") {
                 publish(entry)
             }
-            actionButton("Remove", icon: "trash", emphasis: false, destructive: true) {
+            actionButton(tr("Remove"), icon: "trash", emphasis: false, destructive: true) {
                 pendingRemoveID = entry.id
             }
             Spacer(minLength: 0)
@@ -269,10 +269,10 @@ struct ForgeMineView: View {
 
     private func formatGiB(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        if gib >= 1 { return String(format: "%.1f GB", gib) }
+        if gib >= 1 { return tr("%.1f GB", gib) }
         let mib = Double(bytes) / 1_048_576.0
-        if mib > 0, mib < 1 { return "<1 MB" }
-        return String(format: "%.0f MB", mib)
+        if mib > 0, mib < 1 { return tr("<1 MB") }
+        return tr("%.0f MB", mib)
     }
 
     // MARK: - Actions

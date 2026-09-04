@@ -27,9 +27,12 @@ struct OnboardingExperienceView: View {
 
     var body: some View {
         ZStack {
-            Brand.bgOuter.ignoresSafeArea()
+            Brand.pianoRadial.ignoresSafeArea()
             Group {
                 switch orchestrator.state.step {
+                case .language:
+                    LanguageStep(orchestrator: orchestrator)
+                        .transition(stepTransition)
                 case .welcome:
                     WelcomeStep(orchestrator: orchestrator)
                         .transition(stepTransition)
@@ -64,7 +67,7 @@ struct OnboardingExperienceView: View {
             // Esc steps backwards through the flow — never closes the
             // onboarding window since that would leave the app in an
             // unrecoverable "no model, no daemon" state.
-            if orchestrator.state.step != .welcome
+            if orchestrator.state.step != OnboardingStep.allCases.first
                 && !orchestrator.isRunningRuntimeSetup
                 && !orchestrator.isDownloading
                 && !orchestrator.isTuning
@@ -107,6 +110,9 @@ struct OnboardingExperienceView: View {
     private func completeOnboarding() async {
         var config = backend.configuration
         config.onboardingCompletedAt = Date()
+        // The Language step was this install's language prompt; the
+        // post-update sheet (ContentView) must never ask a second time.
+        config.languagePromptCompletedAt = config.onboardingCompletedAt
         config.lastLaunchTarget = LaunchTarget.chat.rawValue
         if MTPLXAppConfiguration.hfMirrorEnvironment(orchestrator.hfMirrorEndpoint) != nil {
             config.hfEndpoint = orchestrator.hfMirrorEndpoint
@@ -153,6 +159,14 @@ struct OnboardingExperienceView: View {
             } else {
                 config.model = model.hfModelID
             }
+        } else if case .local(let path) = orchestrator.state.pick,
+                  let folder = MTPLXModelOption.localFolderModel(path: path)
+        {
+            // The chosen folder becomes a picker row, so switching back to
+            // it later is a click rather than the path again. The daemon
+            // gets the canonical absolute path (`--model <path>`).
+            config.model = folder.resolvedReference
+            config.rememberLocalFolderModel(path: path)
         } else if let repo = orchestrator.state.resolvedRepoID {
             config.model = repo
             config.rememberCustomModel(repoID: repo)

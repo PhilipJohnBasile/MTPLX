@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -240,10 +241,49 @@ def test_merge_opencode_config_canonicalizes_stale_session_headers_entries():
     ]
 
 
-def test_write_opencode_config_backs_up_invalid_json(tmp_path, monkeypatch):
+def test_write_opencode_config_refuses_unreadable_json_and_leaves_it_alone(tmp_path, monkeypatch):
+    """C-12: an opencode.json that does not parse used to be moved to a
+    .invalid-<stamp>.bak and replaced with an MTPLX-only config, so the
+    user's other providers, agents and keybinds vanished from the live file.
+    Now nothing is moved or written and the caller gets the path and error."""
+    from mtplx.jsonc import InvalidConfigFile
+
     path = tmp_path / "opencode.json"
     settings_store = tmp_path / "default.dat"
-    path.write_text("{bad json", encoding="utf-8")
+    path.write_text('{"provider": {"lmstudio": {}}, bad json', encoding="utf-8")
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(path))
+    monkeypatch.setenv("MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(settings_store))
+
+    with pytest.raises(InvalidConfigFile) as excinfo:
+        write_opencode_config(
+            base_url="http://127.0.0.1:18083/v1",
+            model_id="mtplx-qwen36-27b-optimized-quality",
+            api_key="1234",
+        )
+
+    assert str(path) in str(excinfo.value)
+    assert "line 1, column 32" in str(excinfo.value)
+    assert path.read_text(encoding="utf-8") == '{"provider": {"lmstudio": {}}, bad json'
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["opencode.json"], "nothing else written"
+    assert not settings_store.exists()
+
+
+def test_write_opencode_config_merges_a_jsonc_config_instead_of_replacing_it(
+    tmp_path, monkeypatch
+):
+    """OpenCode reads opencode.json as JSONC (jsonc-parser, allowTrailingComma).
+    A config with comments and trailing commas is a working config; MTPLX must
+    merge into it, and keep the user's original text next to the rewrite."""
+    path = tmp_path / "opencode.json"
+    settings_store = tmp_path / "default.dat"
+    original = (
+        "{\n"
+        "  // my providers\n"
+        '  "provider": {"lmstudio": {"name": "LM Studio",},},\n'
+        '  "keybinds": {"leader": "ctrl+x",}, /* keep */\n'
+        "}\n"
+    )
+    path.write_text(original, encoding="utf-8")
     monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(path))
     monkeypatch.setenv("MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(settings_store))
 
@@ -254,12 +294,54 @@ def test_write_opencode_config_backs_up_invalid_json(tmp_path, monkeypatch):
     )
 
     assert result["written"] is True
-    assert result["backup_path"]
-    assert path.exists()
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["provider"]["lmstudio"] == {"name": "LM Studio"}
+    assert payload["keybinds"] == {"leader": "ctrl+x"}
     assert payload["provider"]["mtplx"]["options"]["baseURL"] == "http://127.0.0.1:18083/v1"
-    assert result["reasoning_visibility"]["status"] == "enabled"
-    assert settings_store.exists()
+    assert not list(tmp_path.glob("*.invalid-*")), "a readable config is never treated as invalid"
+    backup = Path(result["backup_path"])
+    assert backup.parent == tmp_path
+    assert "before-mtplx" in backup.name
+    assert backup.read_text(encoding="utf-8") == original
+
+
+def test_write_opencode_config_leaves_an_up_to_date_file_untouched(tmp_path, monkeypatch):
+    path = tmp_path / "opencode.json"
+    settings_store = tmp_path / "default.dat"
+    monkeypatch.setenv("MTPLX_OPENCODE_CONFIG", str(path))
+    monkeypatch.setenv("MTPLX_OPENCODE_DESKTOP_SETTINGS_STORE", str(settings_store))
+    kwargs = dict(
+        base_url="http://127.0.0.1:18083/v1",
+        model_id="mtplx-qwen36-27b-optimized-quality",
+        api_key="1234",
+    )
+
+    first = write_opencode_config(**kwargs)
+    assert first["written"] is True
+    assert first["backup_path"] is None  # nothing existed to keep
+    # The user adds a comment; the content MTPLX cares about is unchanged.
+    commented = "// mine\n" + path.read_text(encoding="utf-8")
+    path.write_text(commented, encoding="utf-8")
+
+    second = write_opencode_config(**kwargs)
+
+    assert second["written"] is False
+    assert second["backup_path"] is None
+    assert path.read_text(encoding="utf-8") == commented
+    assert not list(tmp_path.glob("*.bak"))
+
+
+def test_ensure_opencode_reasoning_summaries_visible_leaves_unreadable_store_alone(tmp_path):
+    store = tmp_path / "default.dat"
+    store.write_text("{not json", encoding="utf-8")
+
+    result = ensure_opencode_reasoning_summaries_visible(store)
+
+    assert result["status"] == "unreadable_store"
+    assert result["did_change"] is False
+    assert result["backup_path"] is None
+    assert store.read_text(encoding="utf-8") == "{not json"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["default.dat"]
 
 
 def test_write_opencode_config_installs_session_headers_plugin(tmp_path, monkeypatch):

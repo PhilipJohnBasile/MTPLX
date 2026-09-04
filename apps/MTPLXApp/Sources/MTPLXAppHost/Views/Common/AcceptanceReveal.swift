@@ -65,7 +65,7 @@ public struct AcceptanceRevealData: Equatable, Sendable {
         var rows: [Row] = []
         rows.append(Row(
             id: "ar",
-            label: "Base",
+            label: tr("Base"),
             tokS: verification.arTokS,
             meanAcceptance: 1.0,
             isWinner: verification.bestDepth == 0
@@ -79,7 +79,7 @@ public struct AcceptanceRevealData: Equatable, Sendable {
                 : acceptances.reduce(0, +) / Double(acceptances.count)
             rows.append(Row(
                 id: "d\(depth)",
-                label: "D\(depth)",
+                label: tr("D%lld", depth),
                 tokS: tokS,
                 meanAcceptance: mean,
                 isWinner: depth == verification.bestDepth
@@ -87,9 +87,9 @@ public struct AcceptanceRevealData: Equatable, Sendable {
         }
         let headline: String
         if verification.bestDepth == 0 {
-            headline = "Baseline is fastest on this Mac."
+            headline = tr("Baseline is fastest on this Mac.")
         } else {
-            headline = "Depth \(verification.bestDepth) is fastest on this Mac."
+            headline = tr("Depth %lld is fastest on this Mac.", verification.bestDepth)
         }
         let bestTokS = verification.bestDepth == 0
             ? verification.arTokS
@@ -140,7 +140,7 @@ public struct AcceptanceRevealTPSPanel: View {
                         .font(.system(size: 32, weight: .heavy, design: .rounded))
                         .foregroundStyle(Brand.typeHi)
                         .monospacedDigit()
-                    Text("tok/s")
+                    Text(tr("tok/s"))
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(Brand.typeSecondary)
                 }
@@ -153,7 +153,7 @@ public struct AcceptanceRevealTPSPanel: View {
 
     private var beforeColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("BEFORE")
+            Text(tr("BEFORE"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.2)
                 .foregroundStyle(Brand.typeTertiary)
@@ -173,7 +173,7 @@ public struct AcceptanceRevealTPSPanel: View {
 
     private var afterColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("NOW")
+            Text(tr("NOW"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.2)
                 .foregroundStyle(Brand.typeBody)
@@ -187,11 +187,11 @@ public struct AcceptanceRevealTPSPanel: View {
 
     private var multiplierColumn: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            Text(String(format: "%.2f×", data.multiplierVsAr))
+            Text(tr("%.2f×", data.multiplierVsAr))
                 .font(.system(size: 28, weight: .heavy, design: .rounded))
                 .foregroundStyle(Brand.typeHi)
                 .contentTransition(.numericText())
-            Text("FASTER")
+            Text(tr("FASTER"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(Brand.typeSecondary)
@@ -205,7 +205,7 @@ public struct AcceptanceRevealTPSPanel: View {
                 data.arTokS, data.bestTokS, data.multiplierVsAr
             )
         }
-        return String(format: "%.1f tokens per second", data.bestTokS)
+        return tr("%.1f tokens per second", data.bestTokS)
     }
 }
 
@@ -233,7 +233,7 @@ public struct AcceptanceBarGrid: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MTP ACCEPTANCE")
+            Text(tr("MTP ACCEPTANCE"))
                 .font(.system(size: 9, weight: .heavy, design: .monospaced))
                 .tracking(1.2)
                 .foregroundStyle(Brand.typeTertiary)
@@ -259,11 +259,11 @@ private struct ARBaselineRow: View {
                 .font(.system(size: 10, weight: .heavy, design: .monospaced))
                 .foregroundStyle(Brand.typeTertiary)
                 .frame(width: 24, alignment: .leading)
-            Text("baseline — no MTP predictions")
+            Text(tr("baseline — no MTP predictions"))
                 .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(Brand.typeTertiary)
             Spacer(minLength: 4)
-            Text(String(format: "%.1f tok/s", row.tokS))
+            Text(tr("%.1f tok/s", row.tokS))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(Brand.typeTertiary)
                 .monospacedDigit()
@@ -295,7 +295,7 @@ private struct AcceptanceBarRow: View {
                 .foregroundStyle(Brand.typeTertiary)
                 .monospacedDigit()
                 .frame(width: 36, alignment: .trailing)
-            Text(String(format: "%.1f tok/s", row.tokS))
+            Text(tr("%.1f tok/s", row.tokS))
                 .font(.system(size: 11, weight: row.isWinner ? .semibold : .medium, design: .monospaced))
                 .foregroundStyle(row.isWinner ? Brand.typeHi : Brand.typeSecondary)
                 .monospacedDigit()

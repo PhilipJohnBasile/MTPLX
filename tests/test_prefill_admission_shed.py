@@ -57,6 +57,20 @@ class _Bank:
                 best = entry
         return best
 
+    def longest_shared_prefix_tokens(self, token_ids, *, session_id=None):
+        tokens = tuple(int(t) for t in token_ids)
+        best = 0
+        for entry in self.entries:
+            if session_id is not None and entry.session_id != session_id:
+                continue
+            matched = 0
+            for left, right in zip(tokens, entry.token_ids):
+                if left != right:
+                    break
+                matched += 1
+            best = max(best, matched)
+        return best
+
     def clear(self, *, session_id=None):
         victims = [e for e in self.entries if e.session_id == session_id]
         self.entries = [e for e in self.entries if e.session_id != session_id]
@@ -224,3 +238,92 @@ class TestIncidentShape:
         assert receipt is not None
         assert receipt["cache_cleared"] is True
         assert "bank_error" in receipt
+
+
+class TestBlockPrefixRestorableEntries:
+    """The 2.11 release-gate failure (tool_result_forced, 128 GB Flash-Next).
+
+    The forced tool round banks prompt + transient sentinel + completion; the
+    next prompt shares 41k tokens with that entry but the entry is not an
+    exact prefix of it. The restore path serves it by block prefix. The shed
+    must estimate reuse the same way, or it evicts the session's only entry
+    as "superseded" and the turn re-prefills cold (54 s measured).
+    """
+
+    def test_block_restorable_follow_up_leaves_the_guard_inert(self, monkeypatch):
+        _pin_live_stats(monkeypatch, active=95 * GIB, cache=1 * GIB)
+        shared = list(range(41_000))
+        banked = shared + [999_001, 999_002] + list(range(70_000, 70_020))
+        prompt = shared + list(range(80_000, 80_900))
+        entry = _Entry(banked, "gate", 2 * GIB)
+        bank = _Bank([entry])
+        # The gate's exact shape: 41k shared, a 900-token tail. Under the
+        # old exact-only estimate this read as a 41,900-token miss and the
+        # entry was cleared; the block-aware miss is 940 tokens, under the
+        # guard's own floor, so it does not act at all.
+        assert _shed(_state(), prompt, bank, "gate") is None
+        assert bank.cleared_sessions == []
+        assert bank.shrink_calls == []
+        assert entry in bank.entries
+
+    def test_block_restorable_entry_is_pinned_not_cleared(self, monkeypatch):
+        _pin_live_stats(monkeypatch, active=95 * GIB, cache=1 * GIB)
+        shared = list(range(41_000))
+        banked = shared + [999_001, 999_002] + list(range(70_000, 70_020))
+        # A 5,000-token tail (a large tool result) is a real miss: the guard
+        # acts, but on the block estimate, and it pins the entry.
+        prompt = shared + list(range(80_000, 85_000))
+        bank = _Bank([_Entry(banked, "gate", 2 * GIB)])
+        receipt = _shed(_state(), prompt, bank, "gate")
+        assert receipt is not None
+        # 41,000 shared tokens rewound to the 256-token block edge.
+        assert receipt["reusable_prefix_tokens"] == 40_960
+        assert receipt["reusable_prefix_mode"] == "block_prefix"
+        assert receipt["miss_tokens"] == len(prompt) - 40_960
+        assert bank.cleared_sessions == []
+        assert bank.touched == ["gate"]
+        assert "superseded_session_entries_evicted" not in receipt
+        assert all(protect for _t, _r, protect in bank.shrink_calls)
+
+    def test_exact_prefix_still_wins_over_block_estimate(self, monkeypatch):
+        _pin_live_stats(monkeypatch, active=95 * GIB, cache=1 * GIB)
+        prompt = list(range(40_000))
+        exact = _Entry(prompt[:8_200], "pi", 3 * GIB)
+        bank = _Bank([exact])
+        receipt = _shed(_state(), prompt, bank, "pi")
+        assert receipt is not None
+        # 8,200 exact beats the 8,192 block-aligned figure.
+        assert receipt["reusable_prefix_tokens"] == 8_200
+        assert receipt["reusable_prefix_mode"] == "exact"
+
+    def test_overlap_under_the_restore_floor_is_still_superseded(
+        self, monkeypatch
+    ):
+        _pin_live_stats(monkeypatch, active=95 * GIB, cache=1 * GIB)
+        prompt = list(range(40_000))
+        # A compaction that kept only the first 300 tokens (system prompt)
+        # shares less than a restorable block: the entry is superseded.
+        stale = _Entry(prompt[:300] + list(range(90_000, 91_000)), "pi", 6 * GIB)
+        bank = _Bank([stale])
+        receipt = _shed(_state(), prompt, bank, "pi")
+        assert receipt is not None
+        assert receipt["reusable_prefix_tokens"] == 0
+        assert receipt["reusable_prefix_mode"] == "none"
+        assert bank.cleared_sessions == ["pi"]
+
+    def test_bank_without_the_shared_prefix_probe_keeps_the_exact_estimate(
+        self, monkeypatch
+    ):
+        _pin_live_stats(monkeypatch, active=95 * GIB, cache=1 * GIB)
+
+        class _ExactOnlyBank(_Bank):
+            longest_shared_prefix_tokens = None
+
+        shared = list(range(41_000))
+        banked = shared + [999_001]
+        prompt = shared + list(range(80_000, 80_900))
+        bank = _ExactOnlyBank([_Entry(banked, "gate", 2 * GIB)])
+        receipt = _shed(_state(), prompt, bank, "gate")
+        assert receipt is not None
+        assert receipt["reusable_prefix_tokens"] == 0
+        assert bank.cleared_sessions == ["gate"]

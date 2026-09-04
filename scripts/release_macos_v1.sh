@@ -120,6 +120,18 @@ if [[ "${MTPLX_RELEASE_SKIP_PILLAR_QA:-0}" != "1" ]]; then
   "$ROOT/.venv/bin/python" "$ROOT/scripts/pillar_gate_qa.py" \
     --base-url "$MTPLX_RELEASE_PILLAR_QA_URL" \
     --fan-rpm-verified "${MTPLX_RELEASE_PILLAR_QA_FAN_RPM:-0}"
+  # Agent-session gate: the coding-agent turn loop every harness drives
+  # (OpenCode, Pi, Hermes, Claude Code, Cline), judged from the engine's own
+  # receipts -- warm-turn dead time, bank hits after tool calls, hidden
+  # postcommit waits, O(1) generation-final snapshots, decode floor, stream
+  # errors. 2026-09-03: three engine defects cost a 14-minute OpenCode task
+  # 146 s and read as "decode 21 tok/s"; none was visible to a unit test or a
+  # single-request benchmark, all fail this gate.
+  echo "Release gate: agent-session QA (warm-turn dead time / bank hits / postcommit / decode floor)"
+  "$ROOT/.venv/bin/python" "$ROOT/scripts/agent_session_gate.py" \
+    --base-url "$MTPLX_RELEASE_PILLAR_QA_URL" \
+    --context-tokens "${MTPLX_RELEASE_AGENT_GATE_CONTEXT_TOKENS:-40000}" \
+    --fan-rpm-verified "${MTPLX_RELEASE_PILLAR_QA_FAN_RPM:-0}"
 else
   echo "warning: MTPLX_RELEASE_SKIP_PILLAR_QA=1 — pillar gate skipped; this artifact is not release-ready" >&2
 fi

@@ -26,7 +26,7 @@ struct HoverElevate: ViewModifier {
         content
             .offset(y: liftOffset)
             .shadow(
-                color: Color.black.opacity(shadowOpacity),
+                color: Brand.shade.opacity(shadowOpacity),
                 radius: Motion.controlHoverShadowRadius,
                 x: 0,
                 y: Motion.controlHoverShadowYOffset
