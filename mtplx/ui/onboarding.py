@@ -29,6 +29,7 @@ from mtplx.constants import (
 )
 from mtplx.default_models import (
     DefaultModelSelection,
+    DefaultModelUnavailable,
     OPTIMIZED_QUALITY_DESCRIPTION,
     OPTIMIZED_QUALITY_LABEL,
     QWEN38_BARE_SPEED_DESCRIPTION,
@@ -129,7 +130,17 @@ def _pretty_path(value: str | Path | None) -> str:
 
 
 def _verified_default_selection() -> DefaultModelSelection:
-    return select_default_model()
+    """The verified default for this Mac, or a clean exit with the reason.
+
+    A Mac that cannot run any MTPLX model (an Intel processor, or less
+    memory than the smallest pack needs) gets the one-sentence message and
+    exit status 1 before any screen offers it a download.
+    """
+
+    try:
+        return select_default_model()
+    except DefaultModelUnavailable as exc:
+        raise SystemExit(exc.message) from exc
 
 
 def _verified_default_model() -> str:

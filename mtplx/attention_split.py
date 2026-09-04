@@ -390,11 +390,58 @@ def _install_split_attention_hook(attn: Any) -> bool:
             )
 
             output = None
+            # MTPLX_NAX_FLASH_ROUTE (2026-09-01 hyper K2): TensorOps
+            # flash-decoding kernel (in-threadgroup key split, no V staging)
+            # for every packed-eligible window. Walk bench 72.7k QL4:
+            # 1.08 ms/layer vs packed 1.42 (-24%) at half the power. Bails
+            # fall through to the scalar routes unchanged.
+            if _env_enabled("MTPLX_NAX_FLASH_ROUTE") and int(queries.shape[2]) >= 2:
+                from .kernels.sdpa_nax_flash import sdpa_nax_flash
+                from .kernels.sdpa_nax_flash_dsplit import sdpa_nax_flash_dsplit
+
+                # Variant B (head-dim split, 64 accumulators/thread, no spills) owns the
+                # M<=32 windows (QL<=5 at GQA 6): 0.917 vs 1.015 ms/layer at 72.7k, 0.257 vs
+                # 0.306 at 16k. Variant A covers the wider windows (QL 6-10). Both bail to
+                # the scalar routes on any contract miss.
+                output = sdpa_nax_flash_dsplit(
+                    queries=queries,
+                    keys=cache.keys,
+                    values=cache.values,
+                    offset=cache.offset,
+                    scale=self.scale,
+                )
+                if output is None:
+                    output = sdpa_nax_flash(
+                        queries=queries,
+                        keys=cache.keys,
+                        values=cache.values,
+                        offset=cache.offset,
+                        scale=self.scale,
+                    )
+                if output is not None:
+                    self._mtplx_nax_flash_calls = (
+                        int(getattr(self, "_mtplx_nax_flash_calls", 0)) + 1
+                    )
+                    if _env_enabled("MTPLX_GQA_PACKED_SDPA_TRACE") and (
+                        self._mtplx_nax_flash_calls <= 2
+                    ):
+                        import sys as _sys
+
+                        print(
+                            "mtplx_nax_flash_route engaged "
+                            f"layer={getattr(self, '_mtplx_full_attention_index', -1)} "
+                            f"q_len={int(queries.shape[2])} "
+                            f"capacity={int(cache.keys.shape[2])}",
+                            file=_sys.stderr,
+                            flush=True,
+                        )
+            if output is not None:
+                pass
             # MTPLX_NAX_TILE_ROUTE (2026-08-26 hyper): TensorOps wide-M tile
             # kernel for q_len >= 6 — the M-curve regime where the scalar
             # kernels pay (Battery A + spot receipts: QL9 +34%/+45% at
             # 71k/128k). Bails fall through to the scalar routes unchanged.
-            if _env_enabled("MTPLX_NAX_TILE_ROUTE") and int(queries.shape[2]) >= 6:
+            elif _env_enabled("MTPLX_NAX_TILE_ROUTE") and int(queries.shape[2]) >= 6:
                 from .kernels.sdpa_nax_tile import sdpa_nax_tile
 
                 output = sdpa_nax_tile(

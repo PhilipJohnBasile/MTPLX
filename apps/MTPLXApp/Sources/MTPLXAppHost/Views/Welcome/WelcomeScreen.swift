@@ -34,7 +34,7 @@ struct WelcomeScreen: View {
                     Task { await backend.startDaemon() }
                 }
 
-                Text("RUNS ON YOUR MAC · 127.0.0.1:\(String(backend.configuration.port))")
+                Text(tr("RUNS ON YOUR MAC · 127.0.0.1:%@", String(backend.configuration.port)))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .tracking(4)
                     .foregroundStyle(Brand.textHighlight.opacity(0.55))
@@ -43,7 +43,7 @@ struct WelcomeScreen: View {
             .padding(.horizontal, 48)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Welcome to MTPLX")
+        .accessibilityLabel(tr("Welcome to MTPLX"))
     }
 }
 
@@ -69,7 +69,7 @@ struct WarmingScreen: View {
 
                 VStack(spacing: 12) {
                     Rectangle()
-                        .fill(Color.white.opacity(0.10))
+                        .fill(Brand.wash.opacity(0.10))
                         .frame(width: 320, height: 1)
                     Text(progressLabel)
                         .font(BrandFont.subtitle())
@@ -101,15 +101,15 @@ struct WarmingScreen: View {
             .padding(.horizontal, 48)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("MTPLX is loading")
+        .accessibilityLabel(tr("MTPLX is loading"))
     }
 
     private var progressLabel: String {
         switch backend.daemonState.kind {
-        case .starting: return "STARTING…"
-        case .warming: return "LOADING MODEL…"
-        case .stopping: return "STOPPING…"
-        default: return "PLEASE WAIT…"
+        case .starting: return tr("STARTING…")
+        case .warming: return tr("LOADING MODEL…")
+        case .stopping: return tr("STOPPING…")
+        default: return tr("PLEASE WAIT…")
         }
     }
 }
@@ -258,12 +258,12 @@ struct StartButton: View {
 
     private var accessibilityLabel: String {
         switch daemonState {
-        case .stopped: return "Start MTPLX"
-        case .crashed: return "Restart MTPLX after crash"
-        case .degraded: return "Restart MTPLX"
-        case .starting: return "Starting MTPLX"
-        case .warming: return "Loading model"
-        case .running, .stopping: return "Stop MTPLX"
+        case .stopped: return tr("Start MTPLX")
+        case .crashed: return tr("Restart MTPLX after crash")
+        case .degraded: return tr("Restart MTPLX")
+        case .starting: return tr("Starting MTPLX")
+        case .warming: return tr("Loading model")
+        case .running, .stopping: return tr("Stop MTPLX")
         }
     }
 

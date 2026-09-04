@@ -353,6 +353,11 @@ def _install_draft_lm_head(rt: Any, *, bits: int, group_size: int, mode: str) ->
     if frspec_enabled():
         report = dict(report)
         report["frspec"] = install_frspec_draft_head(text)
+        if not report["frspec"].get("installed"):
+            raise RuntimeError(
+                "FR-Spec draft head installation failed: "
+                f"{report['frspec'].get('reason', 'unknown reason')}"
+            )
         print(f"[frspec] install report: {report['frspec']}", file=sys.stderr, flush=True)
     else:
         print(

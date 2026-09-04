@@ -37,13 +37,13 @@ struct VerifyWaterfallExpander: View {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Brand.textHighlight.opacity(0.6))
-                    Text("VERIFY WATERFALL")
+                    Text(tr("VERIFY WATERFALL"))
                         .font(.system(size: 11, weight: .heavy, design: .monospaced))
                         .tracking(3)
                         .foregroundStyle(Brand.textHighlight)
                     Spacer()
                     if let calls = latest?.verifyCalls, let total = latest?.verifyTimeS, total > 0, calls > 0 {
-                        Text("\(Format.milliseconds(total / Double(calls))) / call")
+                        Text(tr("%@ / call", Format.milliseconds(total / Double(calls))))
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(Brand.textHighlight.opacity(0.65))
                     }
@@ -77,7 +77,7 @@ struct VerifyWaterfallExpander: View {
             VStack(alignment: .leading, spacing: 10) {
                 StackedBar(segments: segments, total: total)
                 HStack {
-                    Label("Total verify_time_s: \(Format.duration(total))",
+                    Label(tr("Total verify_time_s: %@", Format.duration(total)),
                           systemImage: "stopwatch")
                         .font(.caption)
                         .foregroundStyle(Brand.textHighlight.opacity(0.65))
@@ -85,7 +85,7 @@ struct VerifyWaterfallExpander: View {
                 }
             }
         } else {
-            Text("Detailed timing will show here once a model is running.")
+            Text(tr("Detailed timing will show here once a model is running."))
                 .font(.callout)
                 .foregroundStyle(Brand.textHighlight.opacity(0.6))
         }

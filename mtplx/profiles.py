@@ -42,6 +42,10 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # able to force it off/on per launch for A/B work.
         "MTPLX_GQA_PACKED_SDPA",
         "MTPLX_GQA_PACKED_SDPA_THRESHOLD",
+        # K2 flash-decoding verify route inside the packed-GQA lane
+        # (2026-09-02 default): same per-launch A/B requirement, and
+        # MTPLX_NAX_FLASH_ROUTE=0 must be an honest kill switch.
+        "MTPLX_NAX_FLASH_ROUTE",
         # Dense-decode context ceiling (2026-08-26): past it the auto layout
         # repages decode and the packed lane is structurally excluded — the
         # 147.4k decode cliff. Operators must be able to sweep it per launch.
@@ -54,6 +58,10 @@ PROFILE_ENV_USER_OVERRIDE_KEYS = frozenset(
         # A/Bs (2026-07-17 the sweep needed a site-packages patch because the
         # profile stomped the env). Same precedent as DONATION above.
         "MTPLX_COMPILED_VERIFY_MAX_CONTEXT",
+        # Dense fixed-verify capacity ceiling: operators benchmark bounded
+        # generation sizes against graph-reinstall costs. Resolve once when
+        # the bank is constructed; never reread it in the verify hot path.
+        "MTPLX_COMPILED_VERIFY_GROWTH_RESERVE",
         # Compiled-verify mode switch: parity/parity2 exactness gates must be
         # launchable against the turbo profile itself (Gate A on the exact
         # config being shipped), not only on profiles that leave the env
@@ -296,6 +304,7 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_AR_PIPELINE",
         "MTPLX_COMPILED_GDN",
         "MTPLX_QWEN4EXP_COMPILE",
+        "MTPLX_COMPILED_VERIFY_GROWTH_RESERVE",
         "MTPLX_DEFER_REPAIR_EVAL",
         "MTPLX_FAMILY_CAPTURE_COMMIT",
         "MTPLX_NGRAM_RESIDENT",
@@ -322,12 +331,25 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_QSA_PREFILL_MIN_CONTEXT",
         "MTPLX_QSA_PREFILL_FLASH_MIN_CONTEXT",
         "MTPLX_QSA_PREFILL_SCORE_MB",
+        # Vendored Steel sparse-GQA consumer of the same block selections
+        # (native_extensions/qsa_kernels, oMLX PR #3244). Default on wherever
+        # the native module is built and ABI-probed; "0" kills only this
+        # consumer. MTPLX_QSA_PREFILL=0 still kills the whole lane. It is the
+        # only fast consumer M3-class GPUs can reach, so it also participates
+        # in the producer auto-gate.
+        "MTPLX_QSA_PREFILL_DIRECT",
+        "MTPLX_QSA_PREFILL_DIRECT_MIN_CONTEXT",
+        "MTPLX_QSA_PREFILL_DIRECT_VALIDATE",
         # Portable gathered-attention tier for the flash_prefill contract:
         # the universal (non-NAX) consumer of the same block selections.
         "MTPLX_QSA_PREFILL_GATHER",
         "MTPLX_QSA_PREFILL_GATHER_TILE",
         # Engagement-receipt atexit print for lane A/Bs (counters law).
         "MTPLX_QSA_PREFILL_DEBUG",
+        # Worker-thread preparation of the NEXT prefill chunk's PLE n-gram
+        # rows during this chunk's forward.  Default off; the gathers it
+        # overlaps are 8 host-late stalls totalling 2,313 ms in the census.
+        "MTPLX_QWEN4_PLE_PREFILL_LOOKAHEAD",
         # Capture only one canonical chunk width so arbitrary final/restored
         # suffix sizes cannot grow the mx.compile graph bank without bound.
         "MTPLX_QSA_PREFILL_COMPILE_ROWS",
@@ -352,6 +374,9 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # Registered ahead of any default flip per the boot-trap law.
         "MTPLX_QSA_GATHER_MIN_CONTEXT",
         "MTPLX_QSA_GATHER_MAX_ROWS",
+        # Fixed-M4 QSA rows-gather candidate: read each token index once and
+        # materialize selected K and V in one prebound Metal dispatch.
+        "MTPLX_QSA_M4_FUSED_KV_GATHER",
         # QSA block-sparse flash-skip attention (2026-08-27 candidate):
         # selected blocks iterated inside the kernel, no staging/copies.
         "MTPLX_QSA_FLASH",
@@ -359,6 +384,13 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         # (2026-08-28, default 1024; 0 disables) — registered ahead per the
         # boot-trap law so packs/profiles may stamp it.
         "MTPLX_NGRAM_HOT_MB",
+        # Sequential pre-read of the streamed n-gram table at model load
+        # (default ON; 0 opts out). `mtplx serve --ngram-prewarm /
+        # --no-ngram-prewarm` stamps this key, so the CLI wins over a
+        # shell-set value. Cold sidecar rows are demand faults at 1.40 GiB/s
+        # against 12.9 for the read itself: ~2.5 s at load buys 56 -> 68.8
+        # tok/s decode and removes the 1.9 s vs 4.4 s first-chunk bimodality.
+        "MTPLX_NGRAM_PREWARM",
         # Family-scoped NAX neutralize (2026-08-27): qwen4_exp holds the 27B
         # NAX verify patch OFF under turbo until it earns a family receipt.
         "MTPLX_NAX_VERIFY",
@@ -374,6 +406,44 @@ MODEL_RUNTIME_ENV_OVERRIDE_KEYS = frozenset(
         "MTPLX_COMPILED_VERIFY",
         "MTPLX_COMPILED_VERIFY_MAX_LEN",
         "MTPLX_COMPILED_TARGET_PREFIX",
+        # PR #391 Flash-Next ports (davidtai): each key is the gate for one
+        # ported step, default ON for the measured fixed-M4 geometry since
+        # 2026-09-02 (server family block) and registered so operator A/B
+        # launches and pack contracts pass the boot-time runtime-env
+        # validator (the MTPLX_FUSED_GDN_STEP boot-trap lesson).
+        "MTPLX_QWEN4_BATCHED_TARGET_DISTRIBUTIONS",
+        "MTPLX_QWEN4_FIXED_M4_VERIFY",
+        "MTPLX_QWEN4_M4_STAGE3",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE",
+        "MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL",
+        "MTPLX_QWEN4_M4_ROUTED_GLU",
+        # 2026-09-03 ports from PR #391 by davidtai, stamped by the Flash-Next
+        # lane defaults on the fixed-M4 geometry (mtplx/server/openai.py).
+        "MTPLX_QWEN4_ROUTE_KERNEL",
+        "MTPLX_QWEN4_ROUTE_KERNEL_VEC_LANES",
+        "MTPLX_QWEN4_OPDIET",
+        "MTPLX_QWEN4_OPDIET_ITEMS",
+        "MTPLX_QWEN4_DRAFT_K20_PRESCATTER",
+        "MTPLX_QWEN4_BLOCK_VERIFY",
+        "MTPLX_QWEN4_VERIFY_GLUE",
+        "MTPLX_QWEN4_VERIFY_GLUE_ITEMS",
+        "MTPLX_QWEN4_PLE_FIRST_GATHER_EARLY",
+        "MTPLX_SESSION_BANK_SHED_BOUNDARIES",
+        "MTPLX_SESSION_BANK_PROTECTED_TERMINAL",
+        "MTPLX_NGRAM_PREWARM_ORDER",
+        "MTPLX_STRICT_CLAIMS",
+        "MTPLX_QWEN4_COMPILED_MTP_PREPARE",
+        "MTPLX_QWEN4_RELAXED_DRAFT_TIES",
+        # FR-Spec row-pruned draft head (PR #391 port): the server stamps the
+        # pair on fixed-M4 packs whose native lm_head is Q8/g64 affine (the
+        # layout the builtin ranked table was cut for); any other head fails
+        # the model load, so the pack predicate owns the default.
+        "MTPLX_FRSPEC_DRAFT",
+        "MTPLX_FRSPEC_VOCAB",
+        # Fixed-M4 lane operator belt (2026-09-02): prompt-token ceiling for
+        # the per-request memory gate in generation; 0 or unset leaves the
+        # live allocator gate alone in charge.
+        "MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT",
         "MTPLX_FUSE_GDN_POST_CONV",
         "MTPLX_A3B_GDN_POSTCONV_IMPL",
         "MTPLX_LINEAR_GDN_FROM_CONV_TGY",
@@ -758,6 +828,18 @@ TURBO_PROFILE = RuntimeProfile(
             # any contract miss.
             "MTPLX_GQA_PACKED_SDPA": "1",
             "MTPLX_GQA_PACKED_SDPA_THRESHOLD": "8192",
+            # K2 TensorOps flash-decoding verify walk (hyper window
+            # 2026-09-01, default 2026-09-02): inside every packed-eligible
+            # window the dim-split kernel serves M<=32 and the key-split
+            # kernel the wider rows, both with no V staging. Kernel walk at
+            # 72.7k QL4: 0.917 (dsplit) / 1.015 (flash) vs packed 1.421
+            # ms/layer at half the power; live band-to-band +15-20% at 88k,
+            # +7-10% at 16k, nothing below the packed threshold. Contract
+            # gates (batch 1, head_dim 256, bf16/fp16, M<=64, q_len<=10)
+            # bail to the scalar routes unchanged; kill switches
+            # MTPLX_NAX_FLASH_ROUTE=0 (whole route), MTPLX_NAX_FLASH=0 and
+            # MTPLX_NAX_FLASH_DSPLIT=0 (one kernel each).
+            "MTPLX_NAX_FLASH_ROUTE": "1",
             # Background warmup ladder (F6, 2026-08-16; retrenched 2026-08-17
             # field regression fix). F6 shipped the full pow2 walk up to the
             # 32768 router fence in the PRODUCT profile so benchmark rows
