@@ -972,7 +972,7 @@
 "parser off" = "analyseur désactivé";
 "Paste a complete MTPLX model directory on this Mac." = "Collez un répertoire complet de modèle MTPLX sur ce Mac.";
 "Paste a Hugging Face link. We'll check the model before downloading anything." = "Collez un lien Hugging Face. Nous vérifierons le modèle avant tout téléchargement.";
-"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Collez un org/dépôt Hugging Face ou choisissez un dossier de modèle sur ce Mac. Les modèles ajoutés restent dans cette liste.";
+"Paste a Hugging Face org/repo or choose a model folder on this Mac. Added models stay in this list." = "Collez un org/repo Hugging Face ou choisissez un dossier de modèle sur ce Mac. Les modèles ajoutés restent dans cette liste.";
 "Paste a Hugging Face repo or link." = "Collez un dépôt ou un lien Hugging Face.";
 "Paste a local model folder first." = "Collez d'abord un dossier de modèle local.";
 "Paste any org/repo with MTPLX weights." = "Collez un org/dépôt avec les poids MTPLX.";
