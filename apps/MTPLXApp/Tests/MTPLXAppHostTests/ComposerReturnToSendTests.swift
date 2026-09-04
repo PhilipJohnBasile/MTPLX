@@ -34,7 +34,8 @@ final class ComposerReturnToSendTests: XCTestCase {
                 box.submitted += 1
                 box.textAtSubmit.append(box.text)
             },
-            onFileDrop: { _ in }
+            onFileDrop: { _ in },
+            onImagePaste: { _ in }
         )
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 420, height: 64)

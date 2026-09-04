@@ -8010,7 +8010,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             modelName: { "mtplx-test-model" }
         )
 
-        await viewModel.attach([mdURL, emptyURL, docxURL, pdfURL])
+        await viewModel.attach([mdURL, emptyURL, docxURL, pdfURL], visionEnabled: true)
         XCTAssertEqual(viewModel.pendingAttachments.count, 4)
         XCTAssertTrue(viewModel.hasSendablePendingAttachments)
 
