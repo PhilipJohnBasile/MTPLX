@@ -1111,6 +1111,33 @@ class SessionBank:
                 return True
         return False
 
+    def longest_shared_prefix_tokens(
+        self,
+        token_ids: list[int] | tuple[int, ...],
+        *,
+        session_id: str | None = None,
+    ) -> int:
+        """Longest common prefix, in tokens, between ``token_ids`` and any RAM
+        entry (optionally only this session's entries).
+
+        The restore path serves prompts that no entry is an exact prefix of:
+        a block-prefix restore rewinds to the last safe boundary under the
+        common prefix and re-prefills the tail (an agent follow-up after a
+        forced tool round, a retokenized tail). A memory estimate that asks
+        only ``longest_prefix`` (exact containment) reads 0 for such prompts
+        and calls the session compacted. One compare per entry, no cold-tier
+        scan, no lookup side effects.
+        """
+        tokens = tuple(int(token) for token in token_ids)
+        best = 0
+        for prefix, entry in self._entries.items():
+            if session_id is not None and entry.session_id != session_id:
+                continue
+            matched = common_prefix_len(tokens, prefix)
+            if matched > best:
+                best = matched
+        return best
+
     def longest_prefix(self, token_ids: list[int] | tuple[int, ...]) -> SessionBankEntry | None:
         tokens = tuple(int(token) for token in token_ids)
         best: SessionBankEntry | None = None

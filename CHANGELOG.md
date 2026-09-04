@@ -130,6 +130,18 @@ nothing beyond 2.10.2.
 
 ### Fixed
 
+- **The pre-prefill memory guard no longer evicts a session's own
+  restorable entry.** The 2.10.2 guard (#415) estimated a prompt's
+  reusable prefix by exact match only. A follow-up turn the session bank
+  serves by block prefix, such as the turn after a forced tool call, read
+  as a full miss near the memory line and the guard cleared the session as
+  superseded before the restore ran: on a 128 GB Mac serving Flash-Next, a
+  41,901-token turn re-prefilled cold in 54 s with a 41,391-token restore
+  available. The guard now asks the bank the same question the restore
+  does (`SessionBank.longest_shared_prefix_tokens`, block-aligned) and pins
+  such entries; its receipt carries `reusable_prefix_mode`. Found by the
+  release script's agent-session gate.
+
 - **Agent sessions on Flash-Next slowed to ~20 tok/s and stalled 5-8 s before
   every tool turn.** A 43k-token OpenCode session measured on the live daemon
   lost 146 s of a 14-minute task to three engine defects, none of them decode

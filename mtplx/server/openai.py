@@ -17440,6 +17440,25 @@ def _prefill_admission_min_miss_tokens() -> int:
 _PREFILL_ADMISSION_PRESSURE_FRACTION = 0.97
 
 
+def _block_restorable_prefix_tokens(matched_tokens: int) -> int:
+    """Tokens a block-prefix restore serves from a ``matched_tokens`` common
+    prefix: rewound to the block edge, zero under the restore floor. Mirrors
+    the block path of ``SessionBank.near_prefix_candidates`` (conservative
+    for kvcache-v2 entries, which restore at any token)."""
+    from mtplx.session_bank import (
+        DEFAULT_BLOCK_PREFIX_MIN_MATCH_TOKENS,
+        DEFAULT_PREFIX_BLOCK_SIZE,
+        block_aligned_prefix_len,
+    )
+
+    aligned = block_aligned_prefix_len(
+        max(0, int(matched_tokens)), block_size=DEFAULT_PREFIX_BLOCK_SIZE
+    )
+    if aligned < DEFAULT_BLOCK_PREFIX_MIN_MATCH_TOKENS:
+        return 0
+    return int(aligned)
+
+
 def _prefill_admission_shed(
     state: "ServerState",
     *,
@@ -17507,6 +17526,7 @@ def _prefill_admission_shed(
         if active + cache + prompt_tokens * per_token + transients <= threshold:
             return None
         reused_tokens = 0
+        reused_mode = "none"
         if session_bank is not None:
             try:
                 entry = session_bank.longest_prefix(prompt_ids)
@@ -17514,6 +17534,27 @@ def _prefill_admission_shed(
                 entry = None
             if entry is not None:
                 reused_tokens = len(entry.token_ids)
+                reused_mode = "exact"
+            # The restore path also serves prompts no entry is an exact
+            # prefix of: a block-prefix restore rewinds to the last safe
+            # boundary under the common prefix (the turn after a forced
+            # tool round, whose banked entry ends in the transient
+            # sentinel; a retokenized tail). Ask the bank the question the
+            # restore asks, or the estimate reads 0 here and the session's
+            # own restorable entry is evicted below as "superseded" (2.11
+            # release gate, tool_result_forced: 41,901 tokens re-prefilled
+            # cold, 54 s, with a 41,391-token block restore available).
+            shared_fn = getattr(session_bank, "longest_shared_prefix_tokens", None)
+            if callable(shared_fn):
+                try:
+                    block_tokens = _block_restorable_prefix_tokens(
+                        shared_fn(prompt_ids)
+                    )
+                except Exception:
+                    block_tokens = 0
+                if block_tokens > reused_tokens:
+                    reused_tokens = block_tokens
+                    reused_mode = "block_prefix"
         miss_tokens = max(0, prompt_tokens - reused_tokens)
         if miss_tokens < _prefill_admission_min_miss_tokens():
             return None
@@ -17524,6 +17565,7 @@ def _prefill_admission_shed(
             "action": "prefill_admission_shed",
             "prompt_tokens": int(prompt_tokens),
             "reusable_prefix_tokens": int(reused_tokens),
+            "reusable_prefix_mode": reused_mode,
             "miss_tokens": int(miss_tokens),
             "active_bytes": int(active),
             "cache_bytes": int(cache),
@@ -17537,9 +17579,10 @@ def _prefill_admission_shed(
                 bank_bytes_before = int(session_bank.total_nbytes)
                 receipt["bank_bytes_before"] = bank_bytes_before
                 if session_id and reused_tokens == 0:
-                    # The client rewrote this session's prefix (agent
-                    # compaction): its banked snapshots are superseded and
-                    # can never be restored by this lineage again.
+                    # Nothing restorable, exact or by block prefix: the
+                    # client rewrote this session's prefix (agent
+                    # compaction), so its banked snapshots are superseded
+                    # and can never be restored by this lineage again.
                     receipt["superseded_session_entries_evicted"] = int(
                         session_bank.clear(session_id=session_id)
                     )
