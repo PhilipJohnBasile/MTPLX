@@ -28,17 +28,22 @@ public enum ChatError: LocalizedError, Equatable {
     case http(Int, String)
     case malformedRequest
     case daemonStopped
+    /// The daemon failed the request mid-stream and said why (its
+    /// `finish_reason: "error"` frame). The message is the server's
+    /// own, shown verbatim.
+    case server(String)
     case unknown(String)
 
     public var errorDescription: String? {
         switch self {
-        case .streamLost: return "Connection dropped mid-reply. Try again."
-        case .unauthorized: return "The model rejected the request. Set an API key in Settings."
+        case .streamLost: return tr("Connection dropped mid-reply. Try again.")
+        case .unauthorized: return tr("The model rejected the request. Set an API key in Settings.")
         case .http(let code, let body):
             let truncated = body.prefix(160)
-            return "HTTP \(code): \(truncated)"
-        case .malformedRequest: return "Couldn't send the message."
-        case .daemonStopped: return "MTPLX isn't running. Hit the play button to start a model."
+            return tr("HTTP %@: %@", String(code), String(truncated))
+        case .malformedRequest: return tr("Couldn't send the message.")
+        case .daemonStopped: return tr("MTPLX isn't running. Hit the play button to start a model.")
+        case .server(let message): return tr("Reply failed: %@", message)
         case .unknown(let detail): return detail
         }
     }
@@ -184,7 +189,14 @@ public final class ChatViewModel: ObservableObject {
     private let modelName: () -> String?
     private let reasoningEnabledProvider: @MainActor () -> Bool?
     private let onDaemonUnreachable: @MainActor () -> Void
+    /// Fires with `true` when the first turn goes live and `false` when
+    /// the last one settles, whichever conversation owns it.
+    private let onLiveTurnActivityChanged: @MainActor (Bool) -> Void
     private let maxToolRounds: Int
+    /// Turns a dropped file into attachment data, off the main actor.
+    /// Injectable so tests can pin where it runs and how the card
+    /// follows it.
+    private let attachmentExtractor: AttachmentExtractor
 
     private var context: ModelContext { container.mainContext }
     /// The in-flight turn of each conversation, keyed by conversation
@@ -239,7 +251,9 @@ public final class ChatViewModel: ObservableObject {
         modelName: @escaping () -> String? = { nil },
         reasoningEnabledProvider: @escaping @MainActor () -> Bool? = { nil },
         onDaemonUnreachable: @escaping @MainActor () -> Void = {},
-        maxToolRounds: Int = 1
+        onLiveTurnActivityChanged: @escaping @MainActor (Bool) -> Void = { _ in },
+        maxToolRounds: Int = 1,
+        attachmentExtractor: @escaping AttachmentExtractor = ChatViewModel.extractAttachment
     ) {
         self.container = container
         self.chatClientProvider = chatClientProvider
@@ -247,8 +261,11 @@ public final class ChatViewModel: ObservableObject {
         self.modelName = modelName
         self.reasoningEnabledProvider = reasoningEnabledProvider
         self.onDaemonUnreachable = onDaemonUnreachable
+        self.onLiveTurnActivityChanged = onLiveTurnActivityChanged
         self.maxToolRounds = maxToolRounds
+        self.attachmentExtractor = attachmentExtractor
         refreshConversations()
+        retitlePlaceholderConversations()
         if let first = conversations.first {
             select(first)
         }
@@ -265,12 +282,35 @@ public final class ChatViewModel: ObservableObject {
 
     @discardableResult
     public func createNewConversation() -> ChatConversation {
-        let convo = ChatConversation(title: "New Chat")
+        let convo = ChatConversation(title: ChatConversationTitle.placeholder)
         context.insert(convo)
         saveContext()
         refreshConversations()
         select(convo)
         return convo
+    }
+
+    /// Gives a name to every conversation that already has a first
+    /// message but still carries a placeholder title. Those rows exist
+    /// because the auto-title guard compared against the English
+    /// literal and never fired in other languages; one pass at launch
+    /// makes an existing user's sidebar (and its title search) usable
+    /// without waiting for the next message in each chat.
+    private func retitlePlaceholderConversations() {
+        var changed = false
+        for conversation in conversations where conversation.titleIsPlaceholder {
+            guard let firstUserMessage = conversation.messages
+                .filter({ $0.role == .user })
+                .min(by: { $0.createdAt < $1.createdAt })
+            else { continue }
+            let derived = ChatConversationTitle.derived(from: firstUserMessage.visibleContent)
+            guard !ChatConversationTitle.isPlaceholder(derived) else { continue }
+            conversation.title = derived
+            changed = true
+        }
+        if changed {
+            saveContext()
+        }
     }
 
     public func select(_ conversation: ChatConversation) {
@@ -306,47 +346,195 @@ public final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Attachments
+    //
+    // Extraction (PDFKit page walk, a docx unzip that waits on a child
+    // process, image decoding) runs OFF the main actor. `attach` is a
+    // main-actor method, so it used to do that work inline and a large
+    // file froze the whole app — composer, transcript and any streaming
+    // reply — for seconds. Now every file gets its card at once, marked
+    // extracting, the work runs detached one file at a time, and each
+    // card settles to ready (with a truncation note when the caps cut
+    // something) or to a visible failure. The card is the surface for
+    // attachment problems; the transcript's error card (and its Retry)
+    // is for replies.
 
-    private static let imageAttachmentExtensions: Set<String> = [
+    /// Everything extraction produces for one file, as a value that can
+    /// cross back to the main actor (the `ChatAttachment` model object
+    /// is built there).
+    public struct ExtractedAttachment: Sendable, Equatable {
+        public var filename: String
+        public var mimeType: String
+        public var sizeBytes: Int
+        public var extractedText: String
+        public var imageData: Data?
+        public var truncation: ExtractionTruncation?
+
+        public init(
+            filename: String,
+            mimeType: String,
+            sizeBytes: Int,
+            extractedText: String,
+            imageData: Data? = nil,
+            truncation: ExtractionTruncation? = nil
+        ) {
+            self.filename = filename
+            self.mimeType = mimeType
+            self.sizeBytes = sizeBytes
+            self.extractedText = extractedText
+            self.imageData = imageData
+            self.truncation = truncation
+        }
+    }
+
+    /// Where a pending attachment is in its life on the composer strip.
+    public enum AttachmentExtractionState: Equatable, Sendable {
+        case extracting
+        case ready(truncation: ExtractionTruncation?)
+        case failed(message: String)
+    }
+
+    public typealias AttachmentExtractor = @Sendable (URL) throws -> ExtractedAttachment
+
+    @Published public private(set) var attachmentStates: [UUID: AttachmentExtractionState] = [:]
+
+    public var isExtractingAttachments: Bool {
+        attachmentStates.values.contains(.extracting)
+    }
+
+    public func extractionState(for attachment: ChatAttachment) -> AttachmentExtractionState? {
+        attachmentStates[attachment.id]
+    }
+
+    nonisolated private static let imageAttachmentExtensions: Set<String> = [
         "png", "jpg", "jpeg", "webp",
     ]
-    private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
-    private static let imageAttachmentMaxDimension = 2048
+    nonisolated private static let imageAttachmentMaxBytes = 20 * 1024 * 1024
+    nonisolated private static let imageAttachmentMaxDimension = 2048
 
-    public func attach(_ urls: [URL]) async {
-        var added: [ChatAttachment] = []
+    /// Whether `url` would attach as an image (and so needs a model that
+    /// can see). One answer for the extractor and the vision gate.
+    nonisolated private static func isImageAttachment(_ url: URL) -> Bool {
+        imageAttachmentExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// Why an image stays off the message when the served model has no
+    /// vision tower. The card carries it, so the refusal is never silent.
+    private static var imagesUnsupportedMessage: String {
+        tr("This model can't see images.")
+    }
+
+    /// Attaches files from the file panel, a drop, or a Finder paste.
+    ///
+    /// `visionEnabled` is passed by the caller rather than read from a
+    /// store: the composer is the one place attachments enter, and it
+    /// already holds the served model's vision capability for the
+    /// paperclip's type filter. Passing the same value at the moment of
+    /// attaching keeps one fact in one place, with no second copy to keep
+    /// in sync and no new wiring at the view model's construction. An
+    /// image attached while the model cannot see gets a card that says so
+    /// instead of quietly riding along and being ignored by the server.
+    public func attach(_ urls: [URL], visionEnabled: Bool) async {
+        // Every file gets its card immediately, so the strip shows the
+        // whole drop while the work is still running.
+        let extractor = attachmentExtractor
+        var queued: [PendingExtraction] = []
         for url in urls {
-            if Self.imageAttachmentExtensions.contains(url.pathExtension.lowercased()) {
-                do {
-                    added.append(try Self.imageAttachment(from: url))
-                } catch {
-                    lastError = .unknown(error.localizedDescription)
-                }
+            let placeholder = ChatAttachment(
+                filename: url.lastPathComponent,
+                mimeType: FileExtractor.mimeType(for: url.pathExtension),
+                sizeBytes: 0,
+                extractedText: ""
+            )
+            pendingAttachments.append(placeholder)
+            if !visionEnabled, Self.isImageAttachment(url) {
+                attachmentStates[placeholder.id] = .failed(message: Self.imagesUnsupportedMessage)
                 continue
             }
-            do {
-                let extracted = try FileExtractor.extract(from: url)
-                let attachment = ChatAttachment(
-                    filename: extracted.filename,
-                    mimeType: extracted.mimeType,
-                    sizeBytes: extracted.sizeBytes,
-                    extractedText: extracted.combinedText
-                )
-                added.append(attachment)
-            } catch let error as FileExtractorError {
-                let placeholder = ChatAttachment(
-                    filename: url.lastPathComponent,
-                    mimeType: FileExtractor.mimeType(for: url.pathExtension),
-                    sizeBytes: 0,
-                    extractedText: ""
-                )
-                lastError = .unknown(error.localizedDescription)
-                added.append(placeholder)
-            } catch {
-                lastError = .unknown(error.localizedDescription)
+            attachmentStates[placeholder.id] = .extracting
+            queued.append(PendingExtraction(attachment: placeholder) { try extractor(url) })
+        }
+        await settle(queued)
+    }
+
+    /// Attaches an image pasted from the clipboard. There is no file
+    /// behind it: the bytes go through the same cap, validity check and
+    /// downscale a dropped image file gets, and the card follows the
+    /// same life. `filename` is the caller's, since only it knows the
+    /// paste happened (`ComposerPasteClassifier.pastedImageFilename`).
+    public func attachPastedImage(_ data: Data, filename: String, visionEnabled: Bool) async {
+        let placeholder = ChatAttachment(
+            filename: filename,
+            mimeType: "image/png",
+            sizeBytes: 0,
+            extractedText: ""
+        )
+        pendingAttachments.append(placeholder)
+        guard visionEnabled else {
+            attachmentStates[placeholder.id] = .failed(message: Self.imagesUnsupportedMessage)
+            return
+        }
+        attachmentStates[placeholder.id] = .extracting
+        await settle([
+            PendingExtraction(attachment: placeholder) {
+                try Self.imageAttachment(data: data, filename: filename, originalMimeType: "image/png")
+            },
+        ])
+    }
+
+    /// A card already on the strip in the extracting state, and the work
+    /// that settles it.
+    private struct PendingExtraction {
+        let attachment: ChatAttachment
+        let extract: @Sendable () throws -> ExtractedAttachment
+    }
+
+    /// Runs each extraction off the main actor, one at a time, and
+    /// settles its card to ready or to a visible failure. Every attach
+    /// path ends here so the strip behaves the same whatever the source.
+    private func settle(_ queued: [PendingExtraction]) async {
+        for pending in queued {
+            let attachment = pending.attachment
+            let extract = pending.extract
+            // Detached, not a child task: a child would inherit this
+            // method's main-actor isolation and run on the main thread.
+            let outcome = await Task.detached(priority: .userInitiated) {
+                Result { try extract() }
+            }.value
+            // Removed from the strip while extracting: nothing to update.
+            guard pendingAttachments.contains(where: { $0.id == attachment.id }) else {
+                attachmentStates[attachment.id] = nil
+                continue
+            }
+            objectWillChange.send()
+            switch outcome {
+            case .success(let extracted):
+                attachment.filename = extracted.filename
+                attachment.mimeType = extracted.mimeType
+                attachment.sizeBytes = extracted.sizeBytes
+                attachment.extractedText = extracted.extractedText
+                attachment.imageData = extracted.imageData
+                attachmentStates[attachment.id] = .ready(truncation: extracted.truncation)
+            case .failure(let error):
+                attachmentStates[attachment.id] = .failed(message: error.localizedDescription)
             }
         }
-        pendingAttachments.append(contentsOf: added)
+    }
+
+    /// The production extractor: images decode (and downscale) to
+    /// `imageData`; everything else goes through `FileExtractor`, whose
+    /// caps report what they cut.
+    nonisolated public static func extractAttachment(from url: URL) throws -> ExtractedAttachment {
+        if isImageAttachment(url) {
+            return try imageAttachment(from: url)
+        }
+        let extracted = try FileExtractor.extract(from: url)
+        return ExtractedAttachment(
+            filename: extracted.filename,
+            mimeType: extracted.mimeType,
+            sizeBytes: extracted.sizeBytes,
+            extractedText: extracted.combinedText,
+            truncation: extracted.truncation
+        )
     }
 
     public var hasSendablePendingAttachments: Bool {
@@ -360,6 +548,7 @@ public final class ChatViewModel: ObservableObject {
 
     public func removeAttachment(_ attachment: ChatAttachment) {
         pendingAttachments.removeAll { $0.id == attachment.id }
+        attachmentStates[attachment.id] = nil
     }
 
     // MARK: - Send / cancel
@@ -368,10 +557,17 @@ public final class ChatViewModel: ObservableObject {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || hasSendablePendingAttachments else { return }
         guard !isStreaming else { return }
+        // A file still extracting would otherwise be left behind on the
+        // strip and ride along with the NEXT message; the composer
+        // disables Send for the same reason.
+        guard !isExtractingAttachments else { return }
 
         let conversation = current ?? createNewConversation()
         let attachments = pendingAttachments.filter(Self.isSendableAttachment)
         pendingAttachments.removeAll(where: Self.isSendableAttachment)
+        for attachment in attachments {
+            attachmentStates[attachment.id] = nil
+        }
 
         let fencedAttachmentText = Self.buildAttachmentContext(attachments: attachments)
         let visibleUserContent = text
@@ -395,8 +591,8 @@ public final class ChatViewModel: ObservableObject {
         context.insert(userMessage)
         conversation.messages.append(userMessage)
         conversation.updatedAt = userMessage.createdAt
-        if conversation.title == "New Chat", !visibleUserContent.isEmpty {
-            conversation.title = Self.firstNWords(visibleUserContent, n: 5)
+        if conversation.titleIsPlaceholder, !visibleUserContent.isEmpty {
+            conversation.title = ChatConversationTitle.derived(from: visibleUserContent)
         }
         saveContext()
         publishVisibleMessages(for: conversation, ensuring: userMessage)
@@ -548,9 +744,10 @@ public final class ChatViewModel: ObservableObject {
                 toolChoice: toolChoice
             )
             stream.roundToolCalls.removeAll(keepingCapacity: true)
-            stream.roundFinishReason = "stop"
+            stream.roundFinishReason = nil
             stream.roundUsage = nil
             stream.roundStats = nil
+            stream.roundServerError = nil
             var streamError: Error?
             do {
                 try await client.stream(
@@ -594,8 +791,27 @@ public final class ChatViewModel: ObservableObject {
                 return
             }
 
+            // The daemon failed the request and said why (memory guard,
+            // context overflow, tool-loop exception). Whatever partial
+            // text arrived is kept, but the turn is a failure: Retry
+            // card now, "Failed: <message>" on the settled bubble.
+            if let serverMessage = stream.roundServerError {
+                handleServerFailure(serverMessage, stream: stream)
+                return
+            }
+
+            // The bytes stopped without a terminal chunk: the daemon
+            // died or the connection was cut mid-reply. URLSession ends
+            // the byte stream normally in both cases (a clean close and
+            // a chunked body cut before its last chunk alike), so the
+            // absence of the finish frame is the only evidence — and a
+            // half answer must never be filed as a finished one.
+            guard let finishReason = stream.roundFinishReason else {
+                handleStreamLost(stream: stream)
+                return
+            }
+
             let accumulatedToolCalls = stream.roundToolCalls
-            let finishReason = stream.roundFinishReason
             let finalUsage = stream.roundUsage
             let finalStats = stream.roundStats
 
@@ -645,27 +861,37 @@ public final class ChatViewModel: ObservableObject {
                         )
                     )
                     stream.phase = Self.streamingPhase(forTool: call.name)
-                    let result = await toolFactory.dispatch(
+                    let outcome = await toolFactory.dispatch(
                         name: call.name,
                         argumentsJSON: call.arguments
                     )
+                    // A failed call is recorded as a failure everywhere
+                    // it shows: the live strip, the persisted trace,
+                    // and (through resultJSON) the model's tool result.
+                    let result = outcome.resultJSON
+                    let status: ToolTraceStatus = outcome.succeeded ? .success : .failed
                     updatePendingTrace(of: stream, id: traceId) { trace in
-                        trace.status = .success
-                        trace.detail = Self.shortResultDetail(for: call.name, json: result)
+                        trace.status = status
+                        trace.detail = outcome.failure.map(Self.failureDetail)
+                            ?? Self.shortResultDetail(for: call.name, json: result)
                     }
-                    accumulateTurnSources(
-                        into: stream,
-                        toolName: call.name,
-                        argumentsJSON: call.arguments,
-                        resultJSON: result
-                    )
+                    // A failed fetch has a URL in its arguments but no
+                    // page was read: it is not a source.
+                    if outcome.succeeded {
+                        accumulateTurnSources(
+                            into: stream,
+                            toolName: call.name,
+                            argumentsJSON: call.arguments,
+                            resultJSON: result
+                        )
+                    }
                     persistToolTrace(
                         on: assistantMessage,
                         id: call.id,
                         name: call.name,
                         argumentsJSON: call.arguments,
                         resultJSON: result,
-                        status: .success
+                        status: status
                     )
                     let requestResult = Self.compactToolResultContent(result)
                     messages.append(
@@ -841,6 +1067,8 @@ public final class ChatViewModel: ObservableObject {
             stream.roundFinishReason = reason
             stream.roundUsage = usage
             stream.roundStats = stats
+        case .serverError(let message):
+            stream.roundServerError = message
         }
     }
 
@@ -876,7 +1104,10 @@ public final class ChatViewModel: ObservableObject {
         guard !fragment.isEmpty else { return }
         let wasEmpty = !stream.hasContent
         stream.contentBuffer.append(fragment)
-        stream.contentArrivedCharsTotal += fragment.count
+        stream.typewriterPacer.recordArrival(
+            chars: fragment.count,
+            now: ProcessInfo.processInfo.systemUptime
+        )
         if !wasEmpty, stream.contentBuffer.count > Self.streamBufferFlushBackstop {
             flushStreamingBuffers(of: stream, drainCompletely: false)
         }
@@ -893,7 +1124,10 @@ public final class ChatViewModel: ObservableObject {
             stream.phase = .answering
         }
         if wasEmpty {
-            flushStreamingBuffers(of: stream)
+            // Paced, not a whole drain: a context-copy round can open
+            // the answer with a two-line block, and pasting it would be
+            // the very burst the typewriter exists to smooth.
+            flushStreamingBuffers(of: stream, drainCompletely: false)
         }
     }
 
@@ -904,9 +1138,31 @@ public final class ChatViewModel: ObservableObject {
         guard stream.decodeReading == .absent
             || now.timeIntervalSince(stream.lastLiveDecodeUpdateAt) >= Self.liveDecodeUpdateInterval
         else { return }
-        publishTurnState(stream)
+        let next = HeadlineDecodeReading.live(value)
+        // Publish only when the chip's displayed reading changes. The
+        // header latches on its own 0.5 s poll and renders whole tok/s,
+        // so a publish on every 200 ms frame re-evaluated the whole
+        // transcript, sidebar and composer five times a second for a
+        // number nobody could see change.
+        if !Self.sameDisplayedReading(stream.decodeReading, next) {
+            publishTurnState(stream)
+        }
         stream.lastLiveDecodeUpdateAt = now
-        stream.decodeReading = .live(value)
+        stream.decodeReading = next
+    }
+
+    /// Two readings the header chip would render identically: the same
+    /// lifecycle phase and, while live, the same whole tok/s.
+    private static func sameDisplayedReading(
+        _ lhs: HeadlineDecodeReading,
+        _ rhs: HeadlineDecodeReading
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (.live(let a), .live(let b)):
+            return Int(a.rounded()) == Int(b.rounded())
+        default:
+            return lhs == rhs
+        }
     }
 
     // MARK: Live decode window (2026-07-31 founder: "it says 50 but it
@@ -1064,6 +1320,7 @@ public final class ChatViewModel: ObservableObject {
     /// turn, stopped when the last one settles.
     private func ensureStreamFlushLoop() {
         guard streamDisplayLink == nil, streamFlushTask == nil else { return }
+        onLiveTurnActivityChanged(true)
         // Reveal on the DISPLAY clock, not a dispatch timer. The 32 ms
         // Task.sleep loop this replaces was measured slipping 4-9 frame
         // multiples under decode load (flush-gap p95 140 ms / max 315 ms
@@ -1106,11 +1363,13 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func stopStreamFlushLoop() {
+        let wasLive = streamDisplayLink != nil || streamFlushTask != nil
         streamDisplayLink?.invalidate()
         streamDisplayLink = nil
         streamDisplayLinkTarget.onTick = {}
         streamFlushTask?.cancel()
         streamFlushTask = nil
+        if wasLive { onLiveTurnActivityChanged(false) }
     }
 
     private func stopStreamFlushLoopIfIdle() {
@@ -1155,36 +1414,17 @@ public final class ChatViewModel: ObservableObject {
     /// steady-state streams reveal only a few characters per tick.
     private static let typewriterMaxRevealCharacters = 256
 
-    // Rate-based reveal (streamwar 2026-08-19): the reveal budget tracks
-    // the ARRIVAL rate, not the backlog size. The old quarter-of-backlog
-    // cut made catch-up speed proportional to how far behind the UI was —
-    // after any stall the first ticks pasted up to 256 chars while the
-    // last ticks crawled, which reads as burst-then-crawl rather than
-    // typing. An EMA of arrival chars/s sets the per-tick budget; a
-    // bounded 2x ramp engages only while a real backlog exists, so
-    // recovery looks like the same typing, just briefly faster.
-    // (Counters live on each ChatTurnStream so concurrent turns pace
-    // independently.)
-    private func typewriterTickBudget(of stream: ChatTurnStream) -> Int {
-        let now = ProcessInfo.processInfo.systemUptime
-        let dt = stream.lastRevealTickUptime > 0
-            ? now - stream.lastRevealTickUptime
-            : 0.032
-        stream.lastRevealTickUptime = now
-        let arrived = stream.contentArrivedCharsTotal - stream.lastArrivedCharsTotal
-        stream.lastArrivedCharsTotal = stream.contentArrivedCharsTotal
-        if arrived > 0, dt > 0 {
-            let instantaneous = Double(arrived) / dt
-            stream.revealRateCharsPerSecond = stream.revealRateCharsPerSecond <= 0
-                ? instantaneous
-                : stream.revealRateCharsPerSecond * 0.8 + instantaneous * 0.2
-        }
-        // Clamp the tick span so a main-thread stall doesn't grant one
-        // giant budget; the backlog ramp below does the catching up.
-        let perTick = stream.revealRateCharsPerSecond * min(dt, 0.1)
-        let backlog = Double(stream.contentBuffer.count)
-        let catchUp = backlog > perTick * 4 ? 2.0 : 1.0
-        return Int((perTick * catchUp).rounded(.up))
+    // Rate-based reveal (streamwar 2026-08-19, re-estimated 2026-09-02):
+    // the budget tracks the ARRIVAL rate, not the backlog size, so
+    // recovery from a stall looks like the same typing, just briefly
+    // faster. The estimate itself lives in `StreamTypewriterPacer`: it is
+    // taken over wall-clock time including idle frames and paired with a
+    // drain-to-next-arrival deadline, because sampling only on frames
+    // that received bytes read a context-copy block (about 110
+    // characters in one frame) as thousands of characters per second
+    // and pasted it whole: "two lines, freeze, two lines".
+    private func typewriterTickBudget(of stream: ChatTurnStream, now: Double) -> Int {
+        stream.typewriterPacer.tickBudget(backlog: stream.contentBuffer.count, now: now)
     }
 
     // Internal (not private) so the regression test can pin the reveal
@@ -1227,7 +1467,10 @@ public final class ChatViewModel: ObservableObject {
             if paced {
                 let cut = Self.pacedCut(
                     stream.contentBuffer,
-                    budget: typewriterTickBudget(of: stream)
+                    budget: typewriterTickBudget(
+                        of: stream,
+                        now: ProcessInfo.processInfo.systemUptime
+                    )
                 )
                 delta = cut.reveal
                 stream.contentBuffer = cut.rest
@@ -1237,6 +1480,8 @@ public final class ChatViewModel: ObservableObject {
             }
             drainedBytes += delta.utf8.count
             stream.contentDocument.append(delta)
+        } else if paced {
+            stream.typewriterPacer.noteIdleTick(now: ProcessInfo.processInfo.systemUptime)
         }
         if probeEnabled, drainedBytes > 0 {
             let applyMs = (ProcessInfo.processInfo.systemUptime - applyStarted) * 1000
@@ -1389,7 +1634,14 @@ public final class ChatViewModel: ObservableObject {
         stream.task = nil
     }
 
-    private func finalizePartialAssistantTurn(of stream: ChatTurnStream, reason: String) {
+    /// Persists whatever the interrupted turn produced. `failure` is
+    /// the daemon's own message for a server-reported error; it rides
+    /// in `statsJSON` so the settled bubble can read "Failed: <message>".
+    private func finalizePartialAssistantTurn(
+        of stream: ChatTurnStream,
+        reason: String,
+        failure: ChatTurnFailure? = nil
+    ) {
         let conversation = stream.conversation
         flushLeakedThinkingSplitter(of: stream)
         flushStreamingBuffers(of: stream)
@@ -1406,6 +1658,7 @@ public final class ChatViewModel: ObservableObject {
                 role: .assistant,
                 visibleContent: content,
                 reasoningContent: roundReasoning,
+                statsJSON: ChatTurnFailure.statsJSON(stats: nil, failure: failure),
                 finishReason: reason,
                 turnGroupID: stream.turnID,
                 sourcesJSON: SourceRecord.encodeJSON(stream.liveTurnSources),
@@ -1442,6 +1695,10 @@ public final class ChatViewModel: ObservableObject {
             case .bodyEncodingFailed: reportedError = .malformedRequest
             case .invalidResponse: reportedError = .streamLost
             }
+        case let urlError as URLError where urlError.code == .networkConnectionLost:
+            // The transport reported the cut itself (the other way a
+            // dying daemon shows up); same outcome as a silent end.
+            reportedError = .streamLost
         default:
             reportedError = .unknown(error.localizedDescription)
         }
@@ -1453,7 +1710,40 @@ public final class ChatViewModel: ObservableObject {
         if stream.conversationID == current?.id {
             lastError = reportedError
         }
-        finalizePartialAssistantTurn(of: stream, reason: "error")
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: reportedError == .streamLost ? Self.streamLostFinishReason : "error"
+        )
+    }
+
+    /// Finish reason persisted for a reply the daemon never finished:
+    /// the bytes stopped with no terminal chunk. Distinct from "error"
+    /// (the daemon said why) and "cancelled" (the user stopped it).
+    nonisolated public static let streamLostFinishReason = "incomplete"
+
+    /// The byte stream ended with no terminal chunk and no transport
+    /// error. Keep the partial, persist it as incomplete, and offer
+    /// Retry — never file it as a completed answer.
+    private func handleStreamLost(stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .streamLost
+        }
+        finalizePartialAssistantTurn(of: stream, reason: Self.streamLostFinishReason)
+    }
+
+    /// The daemon's own failure frame (`finish_reason: "error"`). Same
+    /// surface rules as a transport error — banner only for the visible
+    /// conversation, partial persisted with finishReason "error" — plus
+    /// the server's message, persisted so the transcript can show it.
+    private func handleServerFailure(_ message: String, stream: ChatTurnStream) {
+        if stream.conversationID == current?.id {
+            lastError = .server(message)
+        }
+        finalizePartialAssistantTurn(
+            of: stream,
+            reason: "error",
+            failure: ChatTurnFailure(errorMessage: message)
+        )
     }
 
     // MARK: - Glue
@@ -1576,20 +1866,48 @@ public final class ChatViewModel: ObservableObject {
             || !attachment.extractedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private static func imageAttachment(from url: URL) throws -> ChatAttachment {
-        let data = try Data(contentsOf: url)
-        guard data.count <= imageAttachmentMaxBytes else {
+    nonisolated private static func imageAttachment(from url: URL) throws -> ExtractedAttachment {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
             throw FileExtractorError.unreadable(
                 filename: url.lastPathComponent,
-                reason: "image exceeds the 20MB attachment limit"
+                reason: error.localizedDescription
+            )
+        }
+        return try imageAttachment(
+            data: data,
+            filename: url.lastPathComponent,
+            originalMimeType: FileExtractor.mimeType(for: url.pathExtension)
+        )
+    }
+
+    /// One implementation for an image file and for pasted image bytes:
+    /// the size cap, the decodability check and the downscale live here
+    /// only. `originalMimeType` describes `data` as given and is reported
+    /// when the original bytes are kept; a downscaled image is always PNG.
+    nonisolated private static func imageAttachment(
+        data: Data,
+        filename: String,
+        originalMimeType: String
+    ) throws -> ExtractedAttachment {
+        guard data.count <= imageAttachmentMaxBytes else {
+            throw FileExtractorError.unreadable(
+                filename: filename,
+                reason: tr("image exceeds the 20MB attachment limit")
+            )
+        }
+        guard CGImageSourceCreateWithData(data as CFData, nil).map({ CGImageSourceGetCount($0) > 0 }) == true else {
+            throw FileExtractorError.unreadable(
+                filename: filename,
+                reason: tr("not a readable image")
             )
         }
         let downscaled = downscaledImageData(data)
-        return ChatAttachment(
-            filename: url.lastPathComponent,
-            mimeType: downscaled != nil
-                ? "image/png"
-                : FileExtractor.mimeType(for: url.pathExtension),
+        return ExtractedAttachment(
+            filename: filename,
+            mimeType: downscaled != nil ? "image/png" : originalMimeType,
             sizeBytes: (downscaled ?? data).count,
             extractedText: "",
             imageData: downscaled ?? data
@@ -1598,7 +1916,7 @@ public final class ChatViewModel: ObservableObject {
 
     /// Returns PNG bytes capped at the max dimension, or nil when the
     /// original already fits (keep the original bytes and format).
-    private static func downscaledImageData(_ data: Data) -> Data? {
+    nonisolated private static func downscaledImageData(_ data: Data) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any]
@@ -1638,16 +1956,6 @@ public final class ChatViewModel: ObservableObject {
                 return "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
             }
         return urls.isEmpty ? nil : urls
-    }
-
-    private static func firstNWords(_ text: String, n: Int) -> String {
-        let words = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
-            .prefix(n)
-            .map { String($0) }
-        let joined = words.joined(separator: " ")
-        return joined.isEmpty ? "New Chat" : joined
     }
 
     static func buildRequestMessages(
@@ -1971,9 +2279,9 @@ public final class ChatViewModel: ObservableObject {
                 let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let query = dict["query"] as? String, !query.isEmpty
             {
-                return "Searching: \(query)"
+                return tr("Searching: %@", query)
             }
-            return "Searching"
+            return tr("Searching")
         case "fetch_url":
             if let data = call.arguments.data(using: .utf8),
                 let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1981,7 +2289,7 @@ public final class ChatViewModel: ObservableObject {
             {
                 return url
             }
-            return "Reading URL"
+            return tr("Reading URL")
         default:
             return call.name.replacingOccurrences(of: "_", with: " ")
         }
@@ -1989,9 +2297,9 @@ public final class ChatViewModel: ObservableObject {
 
     private static func liveDetail(for toolName: String) -> String {
         switch toolName {
-        case "web_search": return "Querying DuckDuckGo + Brave…"
-        case "fetch_url": return "Fetching page content…"
-        default: return "Running tool…"
+        case "web_search": return tr("Querying DuckDuckGo + Brave…")
+        case "fetch_url": return tr("Fetching page content…")
+        default: return tr("Running tool…")
         }
     }
 
@@ -2020,12 +2328,25 @@ public final class ChatViewModel: ObservableObject {
         return text
     }
 
+    /// Activity-strip caption for a failed call: a localised label for
+    /// what failed, then the reason as the tool reported it.
+    static func failureDetail(_ failure: ChatToolFailure) -> String {
+        switch failure.kind {
+        case .searchFailed, .emptyQuery:
+            return tr("Search failed: %@", failure.detail)
+        case .fetchFailed, .invalidURL:
+            return tr("Fetch failed: %@", failure.detail)
+        case .unknownTool:
+            return tr("Tool failed: %@", failure.detail)
+        }
+    }
+
     private static func shortResultDetail(for toolName: String, json: String) -> String {
         guard let data = json.data(using: .utf8),
             let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "Done" }
+        else { return tr("Done") }
         if let error = dict["error"] as? String {
-            return "Error: \(error)"
+            return tr("Error: %@", error)
         }
         switch toolName {
         case "web_search":
@@ -2033,16 +2354,16 @@ public final class ChatViewModel: ObservableObject {
                 let titles = results.prefix(3)
                     .compactMap { $0["title"] as? String }
                     .joined(separator: " · ")
-                return "Found \(results.count) results — \(titles)"
+                return tr("Found %lld results — %@", results.count, titles)
             }
-            return "Done"
+            return tr("Done")
         case "fetch_url":
             if let title = dict["title"] as? String, !title.isEmpty {
-                return "Read: \(title)"
+                return tr("Read: %@", title)
             }
-            return "Read"
+            return tr("Read")
         default:
-            return "Done"
+            return tr("Done")
         }
     }
 }

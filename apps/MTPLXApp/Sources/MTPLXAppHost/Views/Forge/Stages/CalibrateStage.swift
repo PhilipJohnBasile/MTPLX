@@ -21,8 +21,8 @@ struct CalibrateStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Calibrating",
-            subtitle: "Packing the speed-prediction head. We'll measure the real speed up next.",
+            title: tr("Calibrating"),
+            subtitle: tr("Packing the speed-prediction head. We'll measure the real speed up next."),
             step: .calibrate,
             symbol: "slider.horizontal.3",
             symbolTint: Brand.accentChrome
@@ -37,7 +37,7 @@ struct CalibrateStage: View {
             }
         } footer: {
             ForgePrimaryButton(
-                "Cancel build",
+                tr("Cancel build"),
                 icon: "xmark",
                 isEnabled: orchestrator.isBuilding
             ) {
@@ -54,15 +54,15 @@ struct CalibrateStage: View {
             heading: "Calibrate pipeline",
             rows: [
                 ForgePhaseRow(
-                    label: "Extract MTP weights",
+                    label: tr("Extract MTP weights"),
                     state: rowState(phase: phase, matchingLabel: "extract_mtp", anyProgress: true)
                 ),
                 ForgePhaseRow(
-                    label: "Requantise MTP body",
+                    label: tr("Requantise MTP body"),
                     state: rowState(phase: phase, matchingLabel: "requantize_mtp", anyProgress: false)
                 ),
                 ForgePhaseRow(
-                    label: "Pack sidecar",
+                    label: tr("Pack sidecar"),
                     state: rowState(phase: phase, matchingLabel: "pack_sidecar", anyProgress: false)
                 )
             ]
@@ -97,9 +97,9 @@ struct CalibrateStage: View {
         {
             ForgePhaseCard {
                 HStack(spacing: 18) {
-                    metricCell(label: "Progress", value: percent(phase.progress))
+                    metricCell(label: tr("Progress"), value: percent(phase.progress))
                     if let label = phase.label, !label.isEmpty {
-                        metricCell(label: "Phase", value: humanizeLabel(label))
+                        metricCell(label: tr("Phase"), value: humanizeLabel(label))
                     }
                     Spacer(minLength: 0)
                 }

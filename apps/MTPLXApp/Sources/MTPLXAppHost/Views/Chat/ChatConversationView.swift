@@ -28,6 +28,8 @@ final class ChatConversationScrollState {
     var deferredScrollTask: Task<Void, Never>?
     var finishScrollRepairTask: Task<Void, Never>?
     var lastAutoScrollAt: ContinuousClock.Instant?
+    /// When the frame-change pin last glued the bottom.
+    var lastSynchronousPinAt: ContinuousClock.Instant?
 
     func cancelTasks() {
         autoScrollTask?.cancel()
@@ -208,9 +210,15 @@ struct ChatConversationView: View {
         guard viewModel.isStreaming,
               scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
         if scrollDriver.scrollToBottom(animated: false) {
+            scroll.lastSynchronousPinAt = ContinuousClock.now
             viewModel.uiPerfProbe.scrollPinned()
         }
     }
+
+    /// A synchronous pin younger than this (the previous frame, at 30 Hz
+    /// or 60 Hz) proves the layout-pass pin is live, so the cadenced
+    /// safety net below would only wake up to find the bottom glued.
+    private static let synchronousPinFreshness: Duration = .milliseconds(40)
 
     private func scrollToBottom(force: Bool = false) {
         guard force || scroll.policy.shouldAutoScrollForStreamingUpdate else { return }
@@ -222,6 +230,11 @@ struct ChatConversationView: View {
         }
 
         guard scroll.autoScrollTask == nil else { return }
+        if viewModel.isStreaming,
+           let pinnedAt = scroll.lastSynchronousPinAt,
+           ContinuousClock.now - pinnedAt < Self.synchronousPinFreshness {
+            return
+        }
 
         let minimumCadence: Duration
         if viewModel.isStreaming {
@@ -368,19 +381,19 @@ struct ChatConversationView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(Brand.warning)
             VStack(alignment: .leading, spacing: 4) {
-                Text(error.errorDescription ?? "Something went wrong.")
+                Text(error.errorDescription ?? tr("Something went wrong."))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Brand.typeHi)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if case .daemonStopped = error {
-                    Text("Hit the play button to start a model, then send again.")
+                    Text(tr("Hit the play button to start a model, then send again."))
                         .font(.system(size: 11))
                         .foregroundStyle(Brand.typeSecondary)
                 }
             }
             if offersRetry(for: error) {
                 Button(action: { viewModel.retryLastUserMessage() }) {
-                    Label("Retry", systemImage: "arrow.clockwise")
+                    Label(tr("Retry"), systemImage: "arrow.clockwise")
                         .font(.system(size: 11, weight: .semibold))
                         .labelStyle(.titleAndIcon)
                         .padding(.horizontal, 9)
@@ -397,8 +410,8 @@ struct ChatConversationView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Brand.typeHi)
                 .disabled(!viewModel.canRetryLastUserMessage)
-                .help("Retry the last message")
-                .accessibilityLabel("Retry last message")
+                .help(tr("Retry the last message"))
+                .accessibilityLabel(tr("Retry last message"))
             }
         }
         .padding(12)
@@ -443,8 +456,8 @@ private struct ChatConversationEmptyStateView: View {
             )
         case .stopping:
             return ChatStartupStatusView.State(
-                title: "Stopping MTPLX",
-                detail: "The app is closing the model server and restoring fans."
+                title: tr("Stopping MTPLX"),
+                detail: tr("The app is closing the model server and restoring fans.")
             )
         default:
             return nil
@@ -454,38 +467,38 @@ private struct ChatConversationEmptyStateView: View {
     private var startupTitle: String {
         switch startupPhase {
         case .launching:
-            return "Starting \(selectedModelName)"
+            return tr("Starting %@", selectedModelName)
         case .waitingForOwnedHealth:
-            return "Loading \(selectedModelName)"
+            return tr("Loading %@", selectedModelName)
         case .rampingFans:
-            return "Preparing cooling"
+            return tr("Preparing cooling")
         case .warming:
-            return "Warming up \(selectedModelName)"
+            return tr("Warming up %@", selectedModelName)
         case .ready:
-            return "\(selectedModelName) is ready"
+            return tr("%@ is ready", selectedModelName)
         case .failed:
-            return "Startup failed"
+            return tr("Startup failed")
         case .idle:
-            return "Starting \(selectedModelName)"
+            return tr("Starting %@", selectedModelName)
         }
     }
 
     private var startupDetail: String {
         switch startupPhase {
         case .launching:
-            return "Starting the local model…"
+            return tr("Starting the local model…")
         case .waitingForOwnedHealth:
-            return "Mapping weights and building the draft head. Large Step loads can take a minute or two cold."
+            return tr("Mapping weights and building the draft head. Large Step loads can take a minute or two cold.")
         case .rampingFans:
-            return "Waiting for the requested fan profile."
+            return tr("Waiting for the requested fan profile.")
         case .warming:
-            return "Running the first warmup tokens before chat opens."
+            return tr("Running the first warmup tokens before chat opens.")
         case .failed(let message):
             return message
         case .ready:
-            return "You can send now."
+            return tr("You can send now.")
         case .idle:
-            return "Preparing the local engine."
+            return tr("Preparing the local engine.")
         }
     }
 
@@ -631,22 +644,22 @@ private struct HiddenTranscriptSummaryView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Brand.typeTertiary)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Earlier heavy history hidden")
+                Text(tr("Earlier heavy history hidden"))
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
                     .tracking(0.6)
                     .foregroundStyle(Brand.typeSecondary)
-                Text("\(summary.messageCount) messages · \(Self.formatCount(summary.characterCount))")
+                Text(tr("%lld messages · %@", summary.messageCount, Self.formatCount(summary.characterCount)))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Brand.typeTertiary)
             }
             Spacer(minLength: 8)
             Button(action: onShow) {
-                Label("Show", systemImage: "arrow.down.right.and.arrow.up.left")
+                Label(tr("Show"), systemImage: "arrow.down.right.and.arrow.up.left")
                     .font(.system(size: 10, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(Brand.typeSecondary)
-            .help("Show older messages")
+            .help(tr("Show older messages"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -663,9 +676,9 @@ private struct HiddenTranscriptSummaryView: View {
 
     private static func formatCount(_ value: Int) -> String {
         if value >= 1000 {
-            return String(format: "%.1fk chars", Double(value) / 1000.0)
+            return tr("%.1fk chars", Double(value) / 1000.0)
         }
-        return "\(value) chars"
+        return tr("%lld chars", value)
     }
 }
 
