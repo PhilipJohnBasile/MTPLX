@@ -23,12 +23,20 @@ struct AssistantBubbleView: View {
     private let message: ChatMessage
     private let combinedReasoning: String
     private let sources: [SourceRecord]
-    private let searchQueries: [String]
+    private let searchReceipts: [AssistantTurnGroup.SearchReceipt]
+    private let successfulSearchCount: Int
+    private let failedSearchCount: Int
     private let fetchedPageCount: Int
+    private let failedFetchCount: Int
     private let thinkingTimeMs: Int?
     private let metricItems: [MetricItem]
     private let replyCopyText: String
     private let isInterruptedReply: Bool
+    /// The daemon's own failure message when the turn ended on its
+    /// `finish_reason: "error"` frame (read from `statsJSON`). Nil for
+    /// completed turns, user stops, and failures recorded before the
+    /// message was persisted.
+    private let failure: ChatTurnFailure?
     private let longReplyPreviewText: String?
     @State private var isHovered: Bool = false
     @State private var expandedLongReply: Bool = false
@@ -40,13 +48,20 @@ struct AssistantBubbleView: View {
         self.message = finalMessage
         self.combinedReasoning = group.combinedReasoning
         self.sources = group.sources
-        self.searchQueries = group.searchQueries
+        self.searchReceipts = group.searchReceipts
+        self.successfulSearchCount = group.successfulSearchCount
+        self.failedSearchCount = group.failedSearchCount
         self.fetchedPageCount = group.fetchedPageCount
+        self.failedFetchCount = group.failedFetchCount
         self.thinkingTimeMs = group.thinkingTimeMs
         self.metricItems = Self.formattedMetrics(from: finalMessage.statsJSON)
         self.replyCopyText = finalMessage.visibleContent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         self.isInterruptedReply = Self.isInterruptedFinishReason(finalMessage.finishReason)
+        self.failure = Self.failure(
+            finishReason: finalMessage.finishReason,
+            statsJSON: finalMessage.statsJSON
+        )
         self.longReplyPreviewText = Self.longReplyPreview(for: self.replyCopyText)
     }
 
@@ -54,25 +69,34 @@ struct AssistantBubbleView: View {
         self.init(group: AssistantTurnGroup(id: message.id, members: [message]))
     }
 
+    /// Caption over an interrupted reply's preview: the daemon's message
+    /// for a server failure, the plain interruption label otherwise.
+    private var interruptedReplyTitle: String {
+        Self.interruptedReplyTitle(failure: failure)
+    }
+
     private var activityModel: TurnActivityModel {
         TurnActivityModel.settled(
             hasThought: !combinedReasoning.isEmpty,
             thinkingTimeMs: thinkingTimeMs,
-            searchCount: searchQueries.count,
+            searchCount: successfulSearchCount,
             fetchedPageCount: fetchedPageCount,
-            hasOtherToolActivity: !group.traces.isEmpty
+            hasOtherToolActivity: !group.traces.isEmpty,
+            failedSearchCount: failedSearchCount,
+            failedFetchCount: failedFetchCount
         )
     }
 
-    /// Search-well receipt rows: one per query, plus a page-read
-    /// summary line when the turn fetched pages.
+    /// Search-well receipt rows: one per query (a failed search is
+    /// marked as such, not listed as one that ran), a page-read summary
+    /// line when the turn fetched pages, and a line for failed fetches.
     private var settledActivityRows: [ThinkingActivityRow] {
-        var rows = searchQueries.enumerated().map { index, query in
+        var rows = searchReceipts.enumerated().map { index, receipt in
             ThinkingActivityRow(
                 id: "query-\(index)",
-                systemName: "magnifyingglass",
-                text: query,
-                detail: "",
+                systemName: receipt.failed ? "exclamationmark.triangle" : "magnifyingglass",
+                text: receipt.query,
+                detail: receipt.failed ? tr("Search failed") : "",
                 isLive: false
             )
         }
@@ -82,9 +106,20 @@ struct AssistantBubbleView: View {
                     id: "fetched-pages",
                     systemName: "doc.text",
                     text: fetchedPageCount == 1
-                        ? "Read 1 page"
-                        : "Read \(fetchedPageCount) pages",
+                        ? tr("Read 1 page")
+                        : tr("Read %lld pages", fetchedPageCount),
                     detail: "",
+                    isLive: false
+                )
+            )
+        }
+        if failedFetchCount > 0 {
+            rows.append(
+                ThinkingActivityRow(
+                    id: "failed-fetches",
+                    systemName: "exclamationmark.triangle",
+                    text: tr("Fetch failed"),
+                    detail: failedFetchCount > 1 ? "×\(failedFetchCount)" : "",
                     isLive: false
                 )
             )
@@ -117,7 +152,7 @@ struct AssistantBubbleView: View {
                     Group {
                         if isInterruptedReply && !expandedLongReply {
                             LongAssistantReplyPreview(
-                                title: "Interrupted reply",
+                                title: interruptedReplyTitle,
                                 previewText: longReplyPreviewText ?? replyCopyText,
                                 characterCount: message.visibleContent.count,
                                 onCopy: { copyToPasteboard(replyCopyText) },
@@ -156,36 +191,13 @@ struct AssistantBubbleView: View {
                         )
                     Spacer(minLength: 60)
                 }
+            } else if failure != nil {
+                // The daemon failed before any answer text: the failure
+                // IS the reply, so the transcript says so instead of
+                // reading as an empty or complete turn.
+                noticeBubble(interruptedReplyTitle, tint: Brand.warning)
             } else if !hasReasoning && !hasTrace && !hasToolCalls {
-                HStack(alignment: .top, spacing: 0) {
-                    Text("No visible answer generated.")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Brand.typeSecondary)
-                        .frame(maxWidth: 576, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .background(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 14,
-                                bottomLeadingRadius: 4,
-                                bottomTrailingRadius: 14,
-                                topTrailingRadius: 14,
-                                style: .continuous
-                            )
-                            .fill(Brand.cardSurface)
-                            .overlay(
-                                UnevenRoundedRectangle(
-                                    topLeadingRadius: 14,
-                                    bottomLeadingRadius: 4,
-                                    bottomTrailingRadius: 14,
-                                    topTrailingRadius: 14,
-                                    style: .continuous
-                                )
-                                .stroke(Brand.separator, lineWidth: 1)
-                            )
-                        )
-                    Spacer(minLength: 60)
-                }
+                noticeBubble(tr("No visible answer generated."), tint: Brand.typeSecondary)
             }
             // Where the turn's web sources live — one quiet pill row,
             // not a card per fetched page.
@@ -241,18 +253,72 @@ struct AssistantBubbleView: View {
         }
     }
 
-    private struct MetricItem {
+    /// Equatable so SwiftUI can skip a settled bubble's body when the
+    /// parent re-evaluates for an unrelated reason.
+    private struct MetricItem: Equatable {
         let label: String
         let value: String
     }
 
-    private static func isInterruptedFinishReason(_ reason: String?) -> Bool {
+    /// One-line stand-in for the answer bubble (same chrome), used when
+    /// the turn has no answer text to show.
+    private func noticeBubble(_ text: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .textSelection(.enabled)
+                .frame(maxWidth: 576, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 14,
+                        bottomLeadingRadius: 4,
+                        bottomTrailingRadius: 14,
+                        topTrailingRadius: 14,
+                        style: .continuous
+                    )
+                    .fill(Brand.cardSurface)
+                    .overlay(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: 14,
+                            bottomLeadingRadius: 4,
+                            bottomTrailingRadius: 14,
+                            topTrailingRadius: 14,
+                            style: .continuous
+                        )
+                        .stroke(Brand.separator, lineWidth: 1)
+                    )
+                )
+            Spacer(minLength: 60)
+        }
+    }
+
+    /// User stop, daemon-reported failure, or a reply the daemon never
+    /// finished (bytes stopped without a terminal chunk).
+    static func isInterruptedFinishReason(_ reason: String?) -> Bool {
         switch reason?.lowercased() {
-        case "cancelled", "error":
+        case "cancelled", "error", ChatViewModel.streamLostFinishReason:
             return true
         default:
             return false
         }
+    }
+
+    /// Persisted failure for a turn that ended on the daemon's error
+    /// frame. Only an "error" finish carries one; other finish reasons
+    /// ignore any stale key.
+    static func failure(finishReason: String?, statsJSON: String?) -> ChatTurnFailure? {
+        guard finishReason?.lowercased() == "error" else { return nil }
+        return ChatTurnFailure.decode(fromStatsJSON: statsJSON)
+    }
+
+    static func interruptedReplyTitle(failure: ChatTurnFailure?) -> String {
+        if let failure {
+            return tr("Failed: %@", failure.errorMessage)
+        }
+        return tr("Interrupted reply")
     }
 
     private static func longReplyPreview(for text: String) -> String? {
@@ -275,19 +341,19 @@ struct AssistantBubbleView: View {
         else { return [] }
         var items: [MetricItem] = []
         if let tps = stats.rawDecodeTokS ?? stats.displayDecodeTokS, tps > 0 {
-            items.append(MetricItem(label: "tok/s", value: String(format: "%.1f", tps)))
+            items.append(MetricItem(label: tr("tok/s"), value: String(format: "%.1f", tps)))
         }
         if let completion = stats.completionTokens, completion > 0 {
-            items.append(MetricItem(label: "out", value: Self.formatCount(completion)))
+            items.append(MetricItem(label: tr("out"), value: Self.formatCount(completion)))
         }
         if let prompt = stats.promptTokens, prompt > 0 {
-            items.append(MetricItem(label: "in", value: Self.formatCount(prompt)))
+            items.append(MetricItem(label: tr("in"), value: Self.formatCount(prompt)))
         }
         if let ttft = stats.ttftS, ttft > 0 {
-            items.append(MetricItem(label: "TTFT", value: Self.formatSeconds(ttft)))
+            items.append(MetricItem(label: tr("TTFT"), value: Self.formatSeconds(ttft)))
         }
         if let verifyCalls = stats.verifyCalls, verifyCalls > 0 {
-            items.append(MetricItem(label: "verify", value: "\(verifyCalls)"))
+            items.append(MetricItem(label: tr("verify"), value: "\(verifyCalls)"))
         }
         return items
     }
@@ -313,7 +379,7 @@ struct AssistantBubbleView: View {
             HStack(spacing: 4) {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 9, weight: .semibold))
-                Text("copy")
+                Text(tr("copy"))
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(0.6)
             }
@@ -321,7 +387,7 @@ struct AssistantBubbleView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Copy reply to clipboard")
+        .help(tr("Copy reply to clipboard"))
     }
 
     private func copyToPasteboard(_ text: String) {
@@ -352,19 +418,19 @@ struct AssistantBubbleView: View {
                         .foregroundStyle(Brand.typeTertiary)
                     Spacer(minLength: 8)
                     Button(action: onCopy) {
-                        Label("Copy", systemImage: "doc.on.doc")
+                        Label(tr("Copy"), systemImage: "doc.on.doc")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Brand.typeSecondary)
-                    .help("Copy full reply")
+                    .help(tr("Copy full reply"))
                     Button(action: onExpand) {
-                        Label("Show", systemImage: "arrow.down.right.and.arrow.up.left")
+                        Label(tr("Show"), systemImage: "arrow.down.right.and.arrow.up.left")
                             .font(.system(size: 10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Brand.typeSecondary)
-                    .help("Show full reply")
+                    .help(tr("Show full reply"))
                 }
 
                 AssistantReplyPreviewViewport(text: previewText)
@@ -375,9 +441,9 @@ struct AssistantBubbleView: View {
 
         private static func formatCount(_ value: Int) -> String {
             if value >= 1000 {
-                return String(format: "%.1fk chars", Double(value) / 1000.0)
+                return tr("%.1fk chars", Double(value) / 1000.0)
             }
-            return "\(value) chars"
+            return tr("%lld chars", value)
         }
     }
 
@@ -398,7 +464,7 @@ struct AssistantBubbleView: View {
             textView.isSelectable = true
             textView.isRichText = false
             textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-            textView.textColor = NSColor(calibratedWhite: 0.88, alpha: 1.0)
+            textView.textColor = MTPLXCodeHighlighter.Palette.adaptive.base
             textView.textContainerInset = NSSize(width: 0, height: 0)
             textView.textContainer?.lineFragmentPadding = 0
             textView.textContainer?.widthTracksTextView = true

@@ -1,5 +1,137 @@
 import Foundation
 
+// MARK: - Lenient settings decoding
+
+/// One stored settings value that could not be decoded and fell back to
+/// its default: `path` is the JSON location (`port`,
+/// `custom_models[1]`, `tuned_control_records_by_model.<model>`), `reason`
+/// the decoder's complaint.
+public struct SettingsDecodeIssue: Equatable, Sendable, CustomStringConvertible {
+    public let path: String
+    public let reason: String
+
+    public init(path: String, reason: String) {
+        self.path = path
+        self.reason = reason
+    }
+
+    public var description: String { "\(path): \(reason)" }
+
+    static func path(_ codingPath: [any CodingKey]) -> String {
+        var text = ""
+        for key in codingPath {
+            if let index = key.intValue {
+                text += "[\(index)]"
+            } else {
+                text += text.isEmpty ? key.stringValue : ".\(key.stringValue)"
+            }
+        }
+        return text
+    }
+
+    /// A short, log-friendly rendering of a decoding failure.
+    static func describe(_ error: Error) -> String {
+        switch error as? DecodingError {
+        case .typeMismatch(let type, let context)?:
+            return "expected \(type)" + (context.debugDescription.isEmpty ? "" : " (\(context.debugDescription))")
+        case .valueNotFound(let type, _)?:
+            return "expected \(type), found null"
+        case .keyNotFound(let key, _)?:
+            return "missing \(key.stringValue)"
+        case .dataCorrupted(let context)?:
+            return context.debugDescription.isEmpty ? "malformed value" : context.debugDescription
+        default:
+            return String(describing: error)
+        }
+    }
+}
+
+/// Collects the fields a settings decode had to degrade. Installed in
+/// `Decoder.userInfo` by the settings store so the configuration decoder
+/// and the per-element wrappers can report without changing the
+/// `Codable` surface; a decode without a collector still degrades
+/// leniently and simply has nowhere to report.
+public final class SettingsDecodeIssues: @unchecked Sendable {
+    public static let userInfoKey = CodingUserInfoKey(rawValue: "com.mtplx.app.settingsDecodeIssues")!
+
+    private let lock = NSLock()
+    private var issues: [SettingsDecodeIssue] = []
+
+    public init() {}
+
+    public func record(path: [any CodingKey], error: Error) {
+        let issue = SettingsDecodeIssue(
+            path: SettingsDecodeIssue.path(path),
+            reason: SettingsDecodeIssue.describe(error)
+        )
+        lock.withLock { issues.append(issue) }
+    }
+
+    public var all: [SettingsDecodeIssue] {
+        lock.withLock { issues }
+    }
+
+    static func installed(in decoder: any Decoder) -> SettingsDecodeIssues? {
+        decoder.userInfo[userInfoKey] as? SettingsDecodeIssues
+    }
+}
+
+/// Decodes one element of a collection, or records the failure and yields
+/// nil, so one malformed custom model or tuned record never sinks the rest
+/// of its collection.
+struct LenientElement<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: any Decoder) {
+        do {
+            value = try Value(from: decoder)
+        } catch {
+            value = nil
+            SettingsDecodeIssues.installed(in: decoder)?.record(path: decoder.codingPath, error: error)
+        }
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// `decodeIfPresent` that treats a wrong-typed or malformed value like
+    /// a missing one: the field falls back to its default and the failure
+    /// is recorded with its coding path instead of failing the whole file.
+    func lenientDecodeIfPresent<Value: Decodable>(
+        _ type: Value.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> Value? {
+        do {
+            return try decodeIfPresent(type, forKey: key)
+        } catch {
+            issues?.record(path: codingPath + [key], error: error)
+            return nil
+        }
+    }
+
+    /// Lenient array decode: a wrong-typed array falls back to nil, and a
+    /// malformed element is skipped while its siblings load.
+    func lenientDecodeArrayIfPresent<Element: Decodable>(
+        of type: Element.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> [Element]? {
+        lenientDecodeIfPresent([LenientElement<Element>].self, forKey: key, issues: issues)?
+            .compactMap(\.value)
+    }
+
+    /// Lenient string-keyed dictionary decode with the same per-entry
+    /// tolerance as the array form.
+    func lenientDecodeDictionaryIfPresent<Value: Decodable>(
+        of type: Value.Type,
+        forKey key: Key,
+        issues: SettingsDecodeIssues?
+    ) -> [String: Value]? {
+        lenientDecodeIfPresent([String: LenientElement<Value>].self, forKey: key, issues: issues)?
+            .compactMapValues(\.value)
+    }
+}
+
 public struct TunedControlRecord: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var modelID: String
@@ -159,6 +291,13 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// experience instead. Set once at the end of `FinishStep` and
     /// never cleared by the runtime.
     public var onboardingCompletedAt: Date?
+    /// When the user was asked to pick the app language. Onboarding's
+    /// Language step stamps it for new installs; every install that
+    /// finished onboarding before that step existed (pre-2.11) is asked
+    /// once, on the first launch after the update, by the language
+    /// prompt sheet — and stamped no matter how the sheet was closed.
+    /// `nil` means "never asked". Never cleared by the runtime.
+    public var languagePromptCompletedAt: Date?
     /// Depth picked by onboarding or the most recent `mtplx tune` run
     /// on this Mac. Threaded into `mtplx serve --depth N` so every
     /// daemon launch honours the selected value. `nil` means the app
@@ -190,6 +329,17 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// to daemon and pull subprocesses as HF_ENDPOINT; the stored HF
     /// token never travels to a non-official endpoint.
     public var hfEndpoint: String?
+    /// Optional hard memory cap for the daemon, in whole GB (issue #431).
+    /// `nil` leaves the engine's own plan in charge (75% of RAM, bounded);
+    /// a value is passed down as MTPLX_MEMORY_LIMIT_BYTES so the launched
+    /// daemon sizes its allocator caps and its context fit against the
+    /// number the user can see in Settings.
+    public var memoryLimitGB: Int?
+    /// "I know what I'm doing" swap opt-in (issue #427). On, the daemon
+    /// launches with MTPLX_ALLOW_SWAP=1, which drops the machine-fit clamp
+    /// on the context window and accepts paging instead of refusing the
+    /// request. Off is the shipped default: the fit clamp stays.
+    public var allowSwap: Bool
 
     public init(
         executablePath: String? = nil,
@@ -248,13 +398,16 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         lastHermesSessionID: String? = nil,
         lastHermesSessionTitle: String? = nil,
         onboardingCompletedAt: Date? = nil,
+        languagePromptCompletedAt: Date? = nil,
         lastTunedDepth: Int? = nil,
         lastTunedAt: Date? = nil,
         tunedControlRecord: TunedControlRecord? = nil,
         tunedControlRecordsByModel: [String: TunedControlRecord] = [:],
         customModels: [MTPLXModelOption] = [],
         huggingFaceHandle: String? = nil,
-        hfEndpoint: String? = nil
+        hfEndpoint: String? = nil,
+        memoryLimitGB: Int? = nil,
+        allowSwap: Bool = false
     ) {
         self.executablePath = executablePath
         self.model = model
@@ -319,6 +472,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.lastHermesSessionID = lastHermesSessionID
         self.lastHermesSessionTitle = lastHermesSessionTitle
         self.onboardingCompletedAt = onboardingCompletedAt
+        self.languagePromptCompletedAt = languagePromptCompletedAt
         self.lastTunedDepth = lastTunedDepth
         self.lastTunedAt = lastTunedAt
         self.tunedControlRecord = tunedControlRecord
@@ -326,6 +480,15 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         self.customModels = customModels
         self.huggingFaceHandle = huggingFaceHandle
         self.hfEndpoint = hfEndpoint
+        self.memoryLimitGB = Self.normalizedMemoryLimitGB(memoryLimitGB)
+        self.allowSwap = allowSwap
+    }
+
+    /// Whether this launch owes the user the one-time language prompt:
+    /// onboarding is done (a fresh install is still inside onboarding,
+    /// whose Language step is the prompt) and nobody has asked yet.
+    public var shouldOfferLanguagePrompt: Bool {
+        onboardingCompletedAt != nil && languagePromptCompletedAt == nil
     }
 
     /// Fresh installs must be portable. Installed local copies are discovered
@@ -388,6 +551,23 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         customModels.removeAll { existing in
             existing.id == option.id || existing.localCandidates.contains(localPath)
         }
+        customModels.append(option)
+    }
+
+    /// Persist a model folder the user chose into the picker, so switching
+    /// back to it later is a click instead of the path again. Dedup is by
+    /// path (an entry that already points at this folder — forged, Hugging
+    /// Face, or local — is already its row and stays) and by id (a newly
+    /// chosen folder wins over an older folder of the same name). A
+    /// catalog model's own install directory is never recorded: the
+    /// catalog row already launches it.
+    public mutating func rememberLocalFolderModel(path: String) {
+        guard let option = MTPLXModelOption.localFolderModel(path: path) else { return }
+        let folder = option.hfModelID
+        guard !MTPLXModelOption.officialCatalog.contains(where: { $0.hasLocalCandidate(at: folder) }),
+              !customModels.contains(where: { $0.hasLocalCandidate(at: folder) })
+        else { return }
+        customModels.removeAll { $0.id == option.id }
         customModels.append(option)
     }
 
@@ -509,6 +689,7 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case lastHermesSessionID = "last_hermes_session_id"
         case lastHermesSessionTitle = "last_hermes_session_title"
         case onboardingCompletedAt = "onboarding_completed_at"
+        case languagePromptCompletedAt = "language_prompt_completed_at"
         case lastTunedDepth = "last_tuned_depth"
         case lastTunedAt = "last_tuned_at"
         case tunedControlRecord = "tuned_control_record"
@@ -516,73 +697,86 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         case customModels = "custom_models"
         case huggingFaceHandle = "hugging_face_handle"
         case hfEndpoint = "hf_endpoint"
+        case memoryLimitGB = "memory_limit_gb"
+        case allowSwap = "allow_swap"
     }
 
+    /// Field-lenient decoder. A missing key falls back to the default, and
+    /// so does a wrong-typed or malformed value: one bad field (a hand edit,
+    /// a downgrade after a newer build changed a type, a future record
+    /// schema bump) must never make the whole file unreadable, because an
+    /// unreadable file used to send the user back through onboarding and
+    /// then overwrite their custom models, API key, tuned records and
+    /// mirror settings with defaults. Each degraded field is reported to the
+    /// `SettingsDecodeIssues` collector when the decoder carries one. The
+    /// only failures that still throw are structural — the document is not
+    /// a JSON object at all — and the settings store treats those as an
+    /// unreadable file to be set aside, not decoded.
     public init(from decoder: Decoder) throws {
         let defaults = MTPLXAppConfiguration()
+        let issues = SettingsDecodeIssues.installed(in: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
-        model = try container.decodeIfPresent(String.self, forKey: .model) ?? defaults.model
-        profile = try container.decodeIfPresent(String.self, forKey: .profile) ?? defaults.profile
-        host = try container.decodeIfPresent(String.self, forKey: .host) ?? defaults.host
-        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
-        generationMode = try container.decodeIfPresent(String.self, forKey: .generationMode) ?? defaults.generationMode
-        loadMTP = try container.decodeIfPresent(Bool.self, forKey: .loadMTP) ?? defaults.loadMTP
-        schedulerMode = try container.decodeIfPresent(String.self, forKey: .schedulerMode) ?? defaults.schedulerMode
-        batchingPreset = try container.decodeIfPresent(String.self, forKey: .batchingPreset) ?? defaults.batchingPreset
-        let decodedSchedulingPreset = try container.decodeIfPresent(String.self, forKey: .schedulingPreset)
+        func field<Value: Decodable>(_ type: Value.Type, _ key: CodingKeys) -> Value? {
+            container.lenientDecodeIfPresent(type, forKey: key, issues: issues)
+        }
+        executablePath = field(String.self, .executablePath)
+        model = field(String.self, .model) ?? defaults.model
+        profile = field(String.self, .profile) ?? defaults.profile
+        host = field(String.self, .host) ?? defaults.host
+        port = field(Int.self, .port) ?? defaults.port
+        generationMode = field(String.self, .generationMode) ?? defaults.generationMode
+        loadMTP = field(Bool.self, .loadMTP) ?? defaults.loadMTP
+        schedulerMode = field(String.self, .schedulerMode) ?? defaults.schedulerMode
+        batchingPreset = field(String.self, .batchingPreset) ?? defaults.batchingPreset
+        let decodedSchedulingPreset = field(String.self, .schedulingPreset)
         schedulingPreset = Self.normalizedSchedulingPreset(
             decodedSchedulingPreset ?? defaults.schedulingPreset,
             schedulerMode: schedulerMode,
             batchingPreset: batchingPreset,
             inferLegacyModePair: false
         )
-        maxActiveRequests = try container.decodeIfPresent(Int.self, forKey: .maxActiveRequests)
-        decodeBatchMax = try container.decodeIfPresent(Int.self, forKey: .decodeBatchMax)
-        batchWaitMs = try container.decodeIfPresent(Double.self, forKey: .batchWaitMs)
-        prefillChunkTokens = try container.decodeIfPresent(Int.self, forKey: .prefillChunkTokens)
-        experimentalMTPCohorts = try container.decodeIfPresent(Bool.self, forKey: .experimentalMTPCohorts) ?? defaults.experimentalMTPCohorts
-        embeddingModels = try container.decodeIfPresent([String].self, forKey: .embeddingModels) ?? defaults.embeddingModels
-        rerankerModels = try container.decodeIfPresent([String].self, forKey: .rerankerModels) ?? defaults.rerankerModels
-        retrievalMaxResident = try container.decodeIfPresent(Int.self, forKey: .retrievalMaxResident) ?? defaults.retrievalMaxResident
-        retrievalIdleTimeout = try container.decodeIfPresent(Double.self, forKey: .retrievalIdleTimeout) ?? defaults.retrievalIdleTimeout
-        ramSessionCachePolicy = try container.decodeIfPresent(String.self, forKey: .ramSessionCachePolicy) ?? defaults.ramSessionCachePolicy
-        ramSessionBlockPrefixRestore = try container.decodeIfPresent(Bool.self, forKey: .ramSessionBlockPrefixRestore) ?? defaults.ramSessionBlockPrefixRestore
-        ramSessionCacheMaxEntries = try container.decodeIfPresent(Int.self, forKey: .ramSessionCacheMaxEntries) ?? defaults.ramSessionCacheMaxEntries
-        ramSessionCacheMaxSize = try container.decodeIfPresent(String.self, forKey: .ramSessionCacheMaxSize) ?? defaults.ramSessionCacheMaxSize
-        ramSessionCachePerSessionMaxSize = try container.decodeIfPresent(String.self, forKey: .ramSessionCachePerSessionMaxSize) ?? defaults.ramSessionCachePerSessionMaxSize
-        pagedKVQuantization = try container.decodeIfPresent(String.self, forKey: .pagedKVQuantization) ?? defaults.pagedKVQuantization
-        ssdSessionCache = try container.decodeIfPresent(String.self, forKey: .ssdSessionCache) ?? defaults.ssdSessionCache
-        ssdSessionCacheDir = try container.decodeIfPresent(String.self, forKey: .ssdSessionCacheDir)
-        ssdSessionCacheMaxSize = try container.decodeIfPresent(String.self, forKey: .ssdSessionCacheMaxSize) ?? defaults.ssdSessionCacheMaxSize
-        ssdSessionCacheMinPrefixTokens = try container.decodeIfPresent(Int.self, forKey: .ssdSessionCacheMinPrefixTokens) ?? defaults.ssdSessionCacheMinPrefixTokens
-        contextWindow = try container.decodeIfPresent(Int.self, forKey: .contextWindow)
-        contextWindowModelFamily = try container.decodeIfPresent(String.self, forKey: .contextWindowModelFamily)
-        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature)
-        topP = try container.decodeIfPresent(Double.self, forKey: .topP)
-        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
-        samplerLegacyTripleMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .samplerLegacyTripleMigrated
-        ) ?? false
-        profileLegacyDefaultMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .profileLegacyDefaultMigrated
-        ) ?? false
-        streamCadenceMigrated = try container.decodeIfPresent(
-            Bool.self, forKey: .streamCadenceMigrated
-        ) ?? false
-        presencePenalty = try container.decodeIfPresent(Double.self, forKey: .presencePenalty)
-        reasoning = try container.decodeIfPresent(String.self, forKey: .reasoning)
-        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
-        liveSettingsModelFamily = try container.decodeIfPresent(String.self, forKey: .liveSettingsModelFamily)
-        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
-        enableThermalPolling = try container.decodeIfPresent(Bool.self, forKey: .enableThermalPolling) ?? defaults.enableThermalPolling
-        streamSnapshotIntervalMs = try container.decodeIfPresent(Int.self, forKey: .streamSnapshotIntervalMs) ?? defaults.streamSnapshotIntervalMs
-        performanceLock = try container.decodeIfPresent(Bool.self, forKey: .performanceLock) ?? defaults.performanceLock
-        launchDaemonOnOpen = try container.decodeIfPresent(Bool.self, forKey: .launchDaemonOnOpen) ?? defaults.launchDaemonOnOpen
-        automaticDaemonRestart = try container.decodeIfPresent(Bool.self, forKey: .automaticDaemonRestart) ?? defaults.automaticDaemonRestart
-        hermesAutoApprove = try container.decodeIfPresent(Bool.self, forKey: .hermesAutoApprove) ?? defaults.hermesAutoApprove
-        let decodedFanMode = try container.decodeIfPresent(String.self, forKey: .fanMode)
-        let legacyPin = try container.decodeIfPresent(Bool.self, forKey: .pinFansAtMaxOnStart)
+        maxActiveRequests = field(Int.self, .maxActiveRequests)
+        decodeBatchMax = field(Int.self, .decodeBatchMax)
+        batchWaitMs = field(Double.self, .batchWaitMs)
+        prefillChunkTokens = field(Int.self, .prefillChunkTokens)
+        experimentalMTPCohorts = field(Bool.self, .experimentalMTPCohorts) ?? defaults.experimentalMTPCohorts
+        embeddingModels = container.lenientDecodeArrayIfPresent(of: String.self, forKey: .embeddingModels, issues: issues)
+            ?? defaults.embeddingModels
+        rerankerModels = container.lenientDecodeArrayIfPresent(of: String.self, forKey: .rerankerModels, issues: issues)
+            ?? defaults.rerankerModels
+        retrievalMaxResident = field(Int.self, .retrievalMaxResident) ?? defaults.retrievalMaxResident
+        retrievalIdleTimeout = field(Double.self, .retrievalIdleTimeout) ?? defaults.retrievalIdleTimeout
+        ramSessionCachePolicy = field(String.self, .ramSessionCachePolicy) ?? defaults.ramSessionCachePolicy
+        ramSessionBlockPrefixRestore = field(Bool.self, .ramSessionBlockPrefixRestore) ?? defaults.ramSessionBlockPrefixRestore
+        ramSessionCacheMaxEntries = field(Int.self, .ramSessionCacheMaxEntries) ?? defaults.ramSessionCacheMaxEntries
+        ramSessionCacheMaxSize = field(String.self, .ramSessionCacheMaxSize) ?? defaults.ramSessionCacheMaxSize
+        ramSessionCachePerSessionMaxSize = field(String.self, .ramSessionCachePerSessionMaxSize) ?? defaults.ramSessionCachePerSessionMaxSize
+        pagedKVQuantization = field(String.self, .pagedKVQuantization) ?? defaults.pagedKVQuantization
+        ssdSessionCache = field(String.self, .ssdSessionCache) ?? defaults.ssdSessionCache
+        ssdSessionCacheDir = field(String.self, .ssdSessionCacheDir)
+        ssdSessionCacheMaxSize = field(String.self, .ssdSessionCacheMaxSize) ?? defaults.ssdSessionCacheMaxSize
+        ssdSessionCacheMinPrefixTokens = field(Int.self, .ssdSessionCacheMinPrefixTokens) ?? defaults.ssdSessionCacheMinPrefixTokens
+        contextWindow = field(Int.self, .contextWindow)
+        contextWindowModelFamily = field(String.self, .contextWindowModelFamily)
+        temperature = field(Double.self, .temperature)
+        topP = field(Double.self, .topP)
+        topK = field(Int.self, .topK)
+        samplerLegacyTripleMigrated = field(Bool.self, .samplerLegacyTripleMigrated) ?? false
+        profileLegacyDefaultMigrated = field(Bool.self, .profileLegacyDefaultMigrated) ?? false
+        streamCadenceMigrated = field(Bool.self, .streamCadenceMigrated) ?? false
+        presencePenalty = field(Double.self, .presencePenalty)
+        reasoning = field(String.self, .reasoning)
+        reasoningEffort = field(String.self, .reasoningEffort)
+        liveSettingsModelFamily = field(String.self, .liveSettingsModelFamily)
+        apiKey = field(String.self, .apiKey)
+        enableThermalPolling = field(Bool.self, .enableThermalPolling) ?? defaults.enableThermalPolling
+        streamSnapshotIntervalMs = field(Int.self, .streamSnapshotIntervalMs) ?? defaults.streamSnapshotIntervalMs
+        performanceLock = field(Bool.self, .performanceLock) ?? defaults.performanceLock
+        launchDaemonOnOpen = field(Bool.self, .launchDaemonOnOpen) ?? defaults.launchDaemonOnOpen
+        automaticDaemonRestart = field(Bool.self, .automaticDaemonRestart) ?? defaults.automaticDaemonRestart
+        hermesAutoApprove = field(Bool.self, .hermesAutoApprove) ?? defaults.hermesAutoApprove
+        let decodedFanMode = field(String.self, .fanMode)
+        let legacyPin = field(Bool.self, .pinFansAtMaxOnStart)
         let legacyFallback: String
         if let legacyPin {
             legacyFallback = legacyPin ? MTPLXFanMode.max.rawValue : MTPLXFanMode.default.rawValue
@@ -592,25 +786,32 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
         let resolvedFanMode = MTPLXFanMode.normalized(decodedFanMode ?? legacyFallback)
         fanMode = resolvedFanMode.rawValue
         pinFansAtMaxOnStart = resolvedFanMode == .max
-        lastLaunchTarget = try container.decodeIfPresent(String.self, forKey: .lastLaunchTarget) ?? defaults.lastLaunchTarget
+        lastLaunchTarget = field(String.self, .lastLaunchTarget) ?? defaults.lastLaunchTarget
         hermesWorkspacePath = Self.normalizedHermesWorkspacePath(
-            try container.decodeIfPresent(String.self, forKey: .hermesWorkspacePath)
-                ?? defaults.hermesWorkspacePath
+            field(String.self, .hermesWorkspacePath) ?? defaults.hermesWorkspacePath
         )
-        lastHermesProfile = try container.decodeIfPresent(String.self, forKey: .lastHermesProfile)
-        lastHermesSessionID = try container.decodeIfPresent(String.self, forKey: .lastHermesSessionID)
-        lastHermesSessionTitle = try container.decodeIfPresent(String.self, forKey: .lastHermesSessionTitle)
-        onboardingCompletedAt = try container.decodeIfPresent(Date.self, forKey: .onboardingCompletedAt)
-        lastTunedDepth = try container.decodeIfPresent(Int.self, forKey: .lastTunedDepth)
-        lastTunedAt = try container.decodeIfPresent(Date.self, forKey: .lastTunedAt)
-        tunedControlRecord = try container.decodeIfPresent(TunedControlRecord.self, forKey: .tunedControlRecord)
-        tunedControlRecordsByModel = try container.decodeIfPresent(
-            [String: TunedControlRecord].self,
-            forKey: .tunedControlRecordsByModel
+        lastHermesProfile = field(String.self, .lastHermesProfile)
+        lastHermesSessionID = field(String.self, .lastHermesSessionID)
+        lastHermesSessionTitle = field(String.self, .lastHermesSessionTitle)
+        onboardingCompletedAt = field(Date.self, .onboardingCompletedAt)
+        languagePromptCompletedAt = field(Date.self, .languagePromptCompletedAt)
+        lastTunedDepth = field(Int.self, .lastTunedDepth)
+        lastTunedAt = field(Date.self, .lastTunedAt)
+        // A tune record with a missing or mistyped field carries nothing
+        // usable, so the record is skipped as a whole and its siblings
+        // load; the legacy single record follows the same rule.
+        tunedControlRecord = field(TunedControlRecord.self, .tunedControlRecord)
+        tunedControlRecordsByModel = container.lenientDecodeDictionaryIfPresent(
+            of: TunedControlRecord.self,
+            forKey: .tunedControlRecordsByModel,
+            issues: issues
         ) ?? defaults.tunedControlRecordsByModel
-        customModels = try container.decodeIfPresent([MTPLXModelOption].self, forKey: .customModels) ?? defaults.customModels
-        huggingFaceHandle = try container.decodeIfPresent(String.self, forKey: .huggingFaceHandle)
-        hfEndpoint = try container.decodeIfPresent(String.self, forKey: .hfEndpoint)
+        customModels = container.lenientDecodeArrayIfPresent(of: MTPLXModelOption.self, forKey: .customModels, issues: issues)
+            ?? defaults.customModels
+        huggingFaceHandle = field(String.self, .huggingFaceHandle)
+        hfEndpoint = field(String.self, .hfEndpoint)
+        memoryLimitGB = Self.normalizedMemoryLimitGB(field(Int.self, .memoryLimitGB))
+        allowSwap = field(Bool.self, .allowSwap) ?? defaults.allowSwap
         sanitizeLaunchCriticalFields()
     }
 
@@ -655,6 +856,62 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
     /// overridden to empty alongside any non-official endpoint. Returns
     /// nil when no valid mirror is configured (including the official
     /// host, where nothing should change).
+    /// Largest memory cap the picker accepts, in GB. Well past the 512 GB
+    /// M3 Ultra so no real Mac is clamped, small enough that a typo cannot
+    /// overflow the byte conversion.
+    public static let maximumMemoryLimitGB = 2048
+
+    /// Clamp a user-entered memory cap. Zero, negatives, and nonsense fall
+    /// back to `nil` (engine default) rather than launching a daemon with a
+    /// cap it cannot honor. 1 GB is the floor: below that no model loads.
+    public static func normalizedMemoryLimitGB(_ raw: Int?) -> Int? {
+        guard let raw, raw > 0 else { return nil }
+        return min(max(raw, 1), maximumMemoryLimitGB)
+    }
+
+    /// Daemon environment for the Settings memory card (issues #431, #427).
+    ///
+    /// The engine reads both of these from its own process environment
+    /// (`MTPLX_MEMORY_LIMIT_BYTES` sizes the Metal allocator caps, and
+    /// `MTPLX_ALLOW_SWAP` drops the machine-fit context clamp), which is the
+    /// only override channel a GUI launcher has: `mtplx serve` exposes no
+    /// flag for either. An unset limit and a swap toggle left off contribute
+    /// nothing, so an untouched card launches a byte-identical daemon.
+    public static func memoryOverrideEnvironment(
+        memoryLimitGB: Int?,
+        allowSwap: Bool
+    ) -> [String: String] {
+        var environment: [String: String] = [:]
+        if let gigabytes = normalizedMemoryLimitGB(memoryLimitGB) {
+            environment["MTPLX_MEMORY_LIMIT_BYTES"] = String(Int64(gigabytes) * 1024 * 1024 * 1024)
+        }
+        if allowSwap {
+            environment["MTPLX_ALLOW_SWAP"] = "1"
+        }
+        return environment
+    }
+
+    /// Picker-level normalization of the Performance mode selection. The
+    /// Settings picker, the persisted `scheduling_preset`, and the launch
+    /// resolver all read the choice through this one function so a tag can
+    /// never drift away from what gets saved (2026-09-03, issue #398).
+    public static func schedulingPresetSelection(_ raw: String) -> String {
+        switch raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        {
+        case "latency", "serial-latency":
+            return "latency"
+        case "throughput", "ar-batch-throughput":
+            return "throughput"
+        case "agent", "ar-batch-agent":
+            return "agent"
+        default:
+            return "target-default"
+        }
+    }
+
     public static func hfMirrorEnvironment(_ rawEndpoint: String?) -> [String: String]? {
         guard let rawEndpoint else { return nil }
         let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -999,14 +1256,10 @@ public struct MTPLXAppConfiguration: Codable, Equatable, Sendable {
             // pair as target-default unless the new explicit preset says
             // otherwise.
             return "target-default"
-        case "serial-latency", "latency":
-            return "latency"
-        case "ar-batch-throughput", "throughput":
-            return "throughput"
-        case "ar-batch-agent", "agent":
-            return "agent"
         default:
-            return "target-default"
+            // One table for the concrete tags, shared with the Settings
+            // picker so a menu label can never drift from what is saved.
+            return schedulingPresetSelection(normalized)
         }
     }
 }
@@ -1024,5 +1277,70 @@ public struct DaemonCommand: Equatable, Sendable {
         self.executableURL = executableURL
         self.arguments = arguments
         self.environment = environment
+    }
+}
+
+// MARK: - Secret redaction for logged or exported argv
+
+extension DaemonCommand {
+    /// Stand-in for a secret value in any logged or exported command line.
+    public static let redactedValue = "<redacted>"
+
+    /// Flag-name suffixes whose following value is a secret. `--api-key`
+    /// is the one the daemon takes today; the suffix rule covers every
+    /// future `*-key`, `*-token`, `*-secret` and `*-password` flag without
+    /// another edit here. `--api-key-file` ends in `-file` and is a path,
+    /// so it is deliberately not matched.
+    private static let secretFlagSuffixes = ["-key", "-token", "-secret", "-password"]
+
+    /// True when `argument` is a flag whose value must never be logged.
+    /// Accepts both `--flag` and `--flag=value` spellings.
+    public static func isSecretFlag(_ argument: String) -> Bool {
+        guard argument.hasPrefix("-") else { return false }
+        var name = argument.drop { $0 == "-" }.lowercased()
+        if let equals = name.firstIndex(of: "=") {
+            name = String(name[..<equals])
+        }
+        guard !name.isEmpty else { return false }
+        return secretFlagSuffixes.contains { name.hasSuffix($0) }
+    }
+
+    /// `arguments` with every secret flag value replaced by
+    /// `redactedValue`. Every other argument is returned unchanged, in
+    /// order, so the result still reads as the command that ran.
+    public static func redactingSecrets(in arguments: [String]) -> [String] {
+        var redacted: [String] = []
+        redacted.reserveCapacity(arguments.count)
+        var maskNext = false
+        for argument in arguments {
+            if maskNext {
+                redacted.append(redactedValue)
+                maskNext = false
+                continue
+            }
+            guard isSecretFlag(argument) else {
+                redacted.append(argument)
+                continue
+            }
+            if let equals = argument.firstIndex(of: "=") {
+                redacted.append(String(argument[...equals]) + redactedValue)
+            } else {
+                redacted.append(argument)
+                maskNext = true
+            }
+        }
+        return redacted
+    }
+
+    /// The arguments as they may appear in logs, diagnostics, or bug
+    /// reports.
+    public var redactedArguments: [String] {
+        Self.redactingSecrets(in: arguments)
+    }
+
+    /// The full command line with secrets masked. This is the only form
+    /// of the command that may be written to a log store or exported.
+    public var redactedCommandLine: String {
+        ([executableURL.path] + redactedArguments).joined(separator: " ")
     }
 }

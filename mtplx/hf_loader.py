@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib
 import json
 import os
@@ -12,7 +13,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from mtplx.artifacts import _hf_repo_id_from_ref
 from mtplx.models.laguna_config import (
@@ -39,12 +40,16 @@ MTP_SIDECAR_FALLBACKS = (
 )
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 SOURCE_MARKER_FILE = ".mtplx-source.json"
+#: Written for the duration of a pull: which blob each file is fetched from.
+TRANSFER_MARKER_FILE = ".mtplx-transfer.json"
 
 
 @dataclass(frozen=True)
 class RepoFile:
     path: str
     size_bytes: int | None
+    blob_id: str | None = None
+    sha256: str | None = None
 
 
 def _effective_model_revision(repo_id: str, revision: str | None) -> str | None:
@@ -130,11 +135,8 @@ def _query_repo_snapshot(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        info, _token = _model_info_with_anonymous_fallback(
+            HfApi(), repo_id=repo_id, revision=revision
         )
     except Exception:
         return None, None
@@ -151,8 +153,21 @@ def _query_repo_snapshot(
         blob_id = getattr(sibling, "blob_id", None)
         if isinstance(blob_id, str) and blob_id:
             entry["blob_id"] = blob_id
+        sha256 = _sibling_lfs_sha256(sibling)
+        if sha256:
+            entry["sha256"] = sha256
         files[name] = entry
     return (sha if isinstance(sha, str) and sha else None), (files or None)
+
+
+def _sibling_lfs_sha256(sibling: Any) -> str | None:
+    """The Hub's sha256 of an LFS blob, or None for a plain git file."""
+
+    lfs = getattr(sibling, "lfs", None)
+    if lfs is None:
+        return None
+    value = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _validate_pinned_laguna_files(destination: Path, repo_id: str) -> None:
@@ -215,11 +230,8 @@ def _query_repo_files(repo_id: str, *, revision: str | None = None) -> list[Repo
     except Exception:
         return []
     try:
-        info = api.model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        info, _token = _model_info_with_anonymous_fallback(
+            api, repo_id=repo_id, revision=revision
         )
     except Exception:
         return []
@@ -296,9 +308,81 @@ def cached_model_path(repo_id: str, *, cache_dir: str | Path | None = None) -> P
 
 
 def hf_token_for_download() -> str | bool:
-    """Use explicit env auth only; public pulls should never need HF login."""
+    """The Hugging Face token every MTPLX Hub call sends; ``False`` is anonymous.
 
-    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or False
+    One policy for pull, update checks, and inspect, and it is the library's
+    own: ``HF_TOKEN`` / ``HUGGING_FACE_HUB_TOKEN`` first, then the token
+    stored by ``hf auth login``. ``mtplx doctor`` reports the same resolution
+    through :func:`hf_token_source`, so what it says is what pull does.
+    Public repos never need a token, and a stored token the Hub rejects is
+    retried anonymously (see :func:`_call_hub_with_anonymous_fallback`), so a
+    stale login can never break a public pull.
+    """
+
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        from huggingface_hub import get_token
+    except Exception:
+        return False
+    try:
+        return get_token() or False
+    except Exception:
+        return False
+
+
+def hf_token_source() -> str | None:
+    """Where :func:`hf_token_for_download` found its token: ``"environment"``,
+    ``"login"`` (``hf auth login``), or ``None`` when pulls are anonymous."""
+
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+        return "environment"
+    return "login" if hf_token_for_download() else None
+
+
+def _hub_status_code(exc: BaseException) -> int | None:
+    # huggingface_hub errors carry a requests response; urllib's HTTPError
+    # carries the status as ``code``.
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code is None:
+        code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _call_hub_with_anonymous_fallback(
+    call: Callable[[str | bool], Any], token: str | bool
+) -> tuple[Any, str | bool]:
+    """Run ``call(token)``; if the Hub refuses a stored token, try anonymously.
+
+    A revoked or expired login token makes the Hub answer 401 even for public
+    repos, which must not turn a public pull into "access denied". Returns the
+    result with the token that actually worked, so every later request of the
+    same operation sends the same credential. When the anonymous attempt fails
+    too the repo really is gated or private and the original refusal is what
+    the user needs to see.
+    """
+
+    try:
+        return call(token), token
+    except Exception as exc:
+        if not (token and _hub_status_code(exc) in {401, 403}):
+            raise
+        try:
+            return call(False), False
+        except Exception:
+            raise exc from None
+
+
+def _model_info_with_anonymous_fallback(
+    api: Any, *, repo_id: str, revision: str | None
+) -> tuple[Any, str | bool]:
+    return _call_hub_with_anonymous_fallback(
+        lambda token: api.model_info(
+            repo_id=repo_id, revision=revision, files_metadata=True, token=token
+        ),
+        hf_token_for_download(),
+    )
 
 
 def _complete_indexed_weights(path: Path, index_name: str) -> bool:
@@ -332,18 +416,59 @@ def _complete_indexed_weights(path: Path, index_name: str) -> bool:
 _SHARD_FILENAME_RE = re.compile(r"-\d+-of-\d+", re.IGNORECASE)
 
 
-def _has_incomplete_transfers(path: Path) -> bool:
-    """``snapshot_download`` stages in-flight files as ``*.incomplete``.
+def _indexed_weight_files(path: Path) -> set[str] | None:
+    """Relative names of the files the weight index needs, or None when the
+    checkpoint has no index."""
 
-    Markers inside the hub's ``.cache`` bookkeeping tree are ignored: they
-    can outlive a successful resume, and the weight checks verify the final
-    files directly. A marker next to the weights, however, means the final
-    file never landed.
+    for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        index = path / index_name
+        if not index.is_file():
+            continue
+        try:
+            data = json.loads(index.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        weight_map = data.get("weight_map") if isinstance(data, dict) else None
+        names = {
+            name
+            for name in (weight_map.values() if isinstance(weight_map, dict) else [])
+            if isinstance(name, str) and name.strip()
+        }
+        names.add(index_name)
+        return names
+    return None
+
+
+def _has_incomplete_transfers(path: Path) -> bool:
+    """An interrupted transfer of a file the model needs.
+
+    Downloads stage in-flight files as ``*.incomplete``. A partial blocks
+    only when its final file has not landed and the checkpoint needs it:
+    markers inside the hub's ``.cache`` bookkeeping tree, partials next to
+    a landed final file (an older attempt's leftover; the downloader
+    replaces its partial into the final atomically and unlinks a stale
+    final before refetching) and partials of files the current weight
+    index does not list (an earlier revision's shard names) are not
+    transfers. Treating every stray marker as "partial" kept a
+    byte-complete folder on an endless Retry.
     """
 
+    needed = _indexed_weight_files(path)
     try:
         for marker in path.rglob("*.incomplete"):
-            if ".cache" in marker.relative_to(path).parts:
+            relative = marker.relative_to(path)
+            if ".cache" in relative.parts:
+                continue
+            final = marker.with_name(marker.name[: -len(".incomplete")])
+            try:
+                if final.is_file() and final.stat().st_size > 0:
+                    continue
+            except OSError:
+                continue
+            if needed is None:
+                if _complete_unindexed_weights(path):
+                    continue
+            elif str(final.relative_to(path)) not in needed:
                 continue
             return True
     except OSError:
@@ -546,6 +671,193 @@ def directory_size_bytes(path: Path) -> int:
     return total
 
 
+def manifest_bytes_on_disk(destination: Path, repo_files: Iterable[RepoFile]) -> int:
+    """Bytes already landed for the files this download ships.
+
+    Download progress used to be the byte count of the whole destination
+    folder, so anything the folder held beyond the current manifest (shards
+    from a superseded revision, staging leftovers from an interrupted hub
+    transfer) counted as downloaded: the app showed more bytes than the repo
+    has, at 100 percent, while still downloading. Only manifest files count
+    here. A landed file counts when its size matches the Hub's (a mismatch is
+    a stale copy the download discards and refetches), an in-flight
+    ``*.incomplete`` partial counts up to its expected size, nothing else.
+    """
+
+    total = 0
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        expected = (
+            repo_file.size_bytes
+            if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes >= 0
+            else None
+        )
+        try:
+            if target.is_file():
+                size = target.stat().st_size
+                if expected is not None and size != expected:
+                    size = 0
+            else:
+                partial = target.with_name(target.name + ".incomplete")
+                size = partial.stat().st_size if partial.is_file() else 0
+                if expected is not None:
+                    size = min(size, expected)
+        except OSError:
+            continue
+        total += size
+    return total
+
+
+def _repo_files_from_snapshot(
+    remote_files: dict[str, dict[str, Any]] | None,
+) -> list[RepoFile]:
+    if not remote_files:
+        return []
+    return [
+        RepoFile(
+            path=name,
+            size_bytes=entry.get("size") if isinstance(entry.get("size"), int) else None,
+            blob_id=entry.get("blob_id") if isinstance(entry.get("blob_id"), str) else None,
+            sha256=entry.get("sha256") if isinstance(entry.get("sha256"), str) else None,
+        )
+        for name, entry in remote_files.items()
+    ]
+
+
+def _recorded_transfer_blobs(destination: Path, repo_id: str) -> dict[str, str]:
+    """Blob ids the transfer marker vouches for, by repo path."""
+
+    try:
+        recorded = json.loads((destination / TRANSFER_MARKER_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(recorded, dict) or recorded.get("repo_id") != repo_id:
+        return {}
+    files = recorded.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return {
+        path: entry["blob_id"]
+        for path, entry in files.items()
+        if isinstance(entry, dict) and isinstance(entry.get("blob_id"), str) and entry["blob_id"]
+    }
+
+
+def _discard_superseded_transfers(
+    destination: Path, *, repo_id: str, repo_files: Iterable[RepoFile]
+) -> None:
+    """Drop the partial and landed files that do not belong to this snapshot.
+
+    A resumed download used to append the current commit's tail onto any
+    ``*.incomplete`` partial it found, whichever commit had written it, and
+    accept the result on size alone: a pack repaired in place upstream came
+    back as a corrupt file locally. The transfer marker records which blob
+    each file is being fetched from. A partial whose blob changed is
+    discarded, so is a partial nothing vouches for, and a landed file whose
+    recorded blob changed goes too (a head swap keeps the name and often the
+    size). Landed files without a record are kept; the size check covers
+    them. Idempotent, so it runs before the resume figure is computed and
+    again right before the first byte.
+    """
+
+    if not destination.is_dir():
+        return
+    recorded = _recorded_transfer_blobs(destination, repo_id)
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        partial = target.with_name(target.name + ".incomplete")
+        recorded_blob = recorded.get(repo_file.path)
+        same_blob = bool(recorded_blob) and recorded_blob == repo_file.blob_id
+        if partial.is_file() and not same_blob:
+            partial.unlink()
+        if target.is_file() and recorded_blob and repo_file.blob_id and not same_blob:
+            target.unlink()
+
+
+def _record_transfer(
+    destination: Path,
+    *,
+    repo_id: str,
+    revision: str | None,
+    repo_files: Iterable[RepoFile],
+) -> None:
+    """Write the transfer marker: which blob every file of this pull comes from.
+
+    Written once the download has created its destination, removed when the
+    pull completes, so it is only ever seen by a pull that resumes.
+    """
+
+    files = {
+        repo_file.path: {"blob_id": repo_file.blob_id}
+        for repo_file in repo_files
+        if repo_file.blob_id
+    }
+    (destination / TRANSFER_MARKER_FILE).write_text(
+        json.dumps({"repo_id": repo_id, "revision": revision, "files": files}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def stale_transient_bytes(destination: Path, repo_files: Iterable[RepoFile]) -> tuple[int, int]:
+    """Leftover transients under ``destination`` as (bytes, file count).
+
+    ``*.incomplete`` partials that belong to no manifest file, and anything
+    under the hub cache's ``.cache`` staging tree. They are what inflated the
+    download panel; they are reported so the user knows the folder holds
+    them, never removed here.
+    """
+
+    if not destination.is_dir():
+        return 0, 0
+    manifest: set[Path] = set()
+    for repo_file in repo_files:
+        try:
+            target = _safe_destination_for_repo_file(destination, repo_file)
+        except RuntimeError:
+            continue
+        manifest.add(target)
+        manifest.add(target.with_name(target.name + ".incomplete"))
+    total = 0
+    count = 0
+    for child in destination.rglob("*"):
+        try:
+            if not child.is_file() or child in manifest:
+                continue
+            parts = child.relative_to(destination).parts
+            if child.suffix != ".incomplete" and ".cache" not in parts:
+                continue
+            total += child.stat().st_size
+            count += 1
+        except OSError:
+            continue
+    return total, count
+
+
+def _model_bytes_without_transients(path: Path) -> int:
+    """The folder's bytes minus the ``.cache`` staging tree and partials, for
+    caches whose manifest is unknown (pulls older than the 2.9 marker)."""
+
+    if not path.exists():
+        return 0
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if ".cache" in child.relative_to(path).parts:
+                continue
+            if child.is_file() and child.suffix != ".incomplete":
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
 def _emit_download_progress(callback: DownloadProgressCallback | None, payload: dict[str, Any]) -> None:
     if callback is None:
         return
@@ -632,11 +944,13 @@ def _emit_current_download_size(
     last_emit_at: float,
     last_emit_size: int,
     file_path: str | None = None,
+    measure: Callable[[], int] | None = None,
 ) -> tuple[float, int]:
     now = time.monotonic()
-    current_size = directory_size_bytes(destination)
+    current_size = measure() if measure is not None else directory_size_bytes(destination)
     interval = max(0.001, now - last_emit_at)
     delta = current_size - last_emit_size
+    reported_size = min(current_size, total_bytes) if total_bytes else current_size
     _emit_download_progress(
         callback,
         {
@@ -644,7 +958,7 @@ def _emit_current_download_size(
             "repo_id": repo_id,
             "path": str(destination),
             "file": file_path,
-            "size_bytes": current_size,
+            "size_bytes": reported_size,
             "total_bytes": total_bytes,
             "delta_bytes": delta,
             "rate_bps": float(max(0, delta)) / interval,
@@ -698,7 +1012,11 @@ def _download_repo_file(
     progress_interval_s: float,
     last_emit_at: float,
     last_emit_size: int,
+    measure: Callable[[], int] | None = None,
+    token: str | bool | None = None,
 ) -> tuple[float, int]:
+    if token is None:
+        token = hf_token_for_download()
     target = _safe_destination_for_repo_file(destination, repo_file)
     target.parent.mkdir(parents=True, exist_ok=True)
     expected_size = repo_file.size_bytes
@@ -719,8 +1037,25 @@ def _download_repo_file(
     if expected_size is not None and existing > expected_size:
         partial.unlink()
         existing = 0
+    # The Hub publishes the sha256 of every LFS blob. Hashing the bytes as
+    # they land (the resumed prefix first) turns the size-only acceptance
+    # into an exact one without a second pass over the file.
+    digest = hashlib.sha256() if repo_file.sha256 else None
+    if digest is not None and existing > 0:
+        with partial.open("rb") as handle:
+            for block in iter(lambda: handle.read(DOWNLOAD_CHUNK_SIZE), b""):
+                digest.update(block)
 
-    headers = build_hf_headers(token=hf_token_for_download())
+    def _land(landed: Path) -> None:
+        if digest is not None and digest.hexdigest() != repo_file.sha256:
+            landed.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"corrupt download for {repo_file.path}: the bytes on disk do not "
+                "match the file on Hugging Face. The partial was discarded; run the pull again."
+            )
+        landed.replace(target)
+
+    headers = build_hf_headers(token=token)
     if existing > 0:
         headers["Range"] = f"bytes={existing}-"
     url = hf_hub_url(repo_id=repo_id, filename=repo_file.path, revision=revision)
@@ -730,8 +1065,10 @@ def _download_repo_file(
         if existing > 0 and status_code == 200:
             partial.unlink(missing_ok=True)
             existing = 0
+            if digest is not None:
+                digest = hashlib.sha256()
         elif existing > 0 and status_code == 416 and expected_size is not None and existing == expected_size:
-            partial.replace(target)
+            _land(partial)
             return _emit_current_download_size(
                 callback,
                 repo_id=repo_id,
@@ -741,14 +1078,17 @@ def _download_repo_file(
                 last_emit_at=last_emit_at,
                 last_emit_size=last_emit_size,
                 file_path=repo_file.path,
+                measure=measure,
             )
         hf_raise_for_status(response)
         mode = "ab" if existing > 0 else "wb"
-        with partial.open(mode + "") as handle:
+        with partial.open(mode) as handle:
             for chunk in _iter_response_bytes(response):
                 if not chunk:
                     continue
                 handle.write(chunk)
+                if digest is not None:
+                    digest.update(chunk)
                 now = time.monotonic()
                 if now - last_emit_at >= progress_interval_s:
                     last_emit_at, last_emit_size = _emit_current_download_size(
@@ -760,13 +1100,14 @@ def _download_repo_file(
                         last_emit_at=last_emit_at,
                         last_emit_size=last_emit_size,
                         file_path=repo_file.path,
+                        measure=measure,
                     )
     if expected_size is not None and partial.stat().st_size != expected_size:
         raise RuntimeError(
             f"incomplete download for {repo_file.path}: "
             f"expected {expected_size} bytes, got {partial.stat().st_size}"
         )
-    partial.replace(target)
+    _land(partial)
     return _emit_current_download_size(
         callback,
         repo_id=repo_id,
@@ -776,6 +1117,7 @@ def _download_repo_file(
         last_emit_at=last_emit_at,
         last_emit_size=last_emit_size,
         file_path=repo_file.path,
+        measure=measure,
     )
 
 
@@ -789,11 +1131,11 @@ def _download_snapshot_with_structured_progress(
 ) -> tuple[Path, int | None]:
     HfApi, hf_hub_url, get_session, build_hf_headers, hf_raise_for_status = _hub_runtime()
     try:
-        info = HfApi().model_info(
-            repo_id=repo_id,
-            revision=revision,
-            files_metadata=True,
-            token=hf_token_for_download(),
+        # The metadata call settles which credential this pull uses (the
+        # resolved token, or anonymous after a rejected stored token); every
+        # file below sends the same one.
+        info, token = _model_info_with_anonymous_fallback(
+            HfApi(), repo_id=repo_id, revision=revision
         )
     except Exception as exc:
         raise RuntimeError(_classify_pull_error(exc, repo_id)) from exc
@@ -804,9 +1146,19 @@ def _download_snapshot_with_structured_progress(
         if not isinstance(name, str) or not name.strip():
             continue
         size = getattr(sibling, "size", None)
-        repo_files.append(RepoFile(path=name, size_bytes=size if isinstance(size, int) else None))
+        blob_id = getattr(sibling, "blob_id", None)
+        repo_files.append(
+            RepoFile(
+                path=name,
+                size_bytes=size if isinstance(size, int) else None,
+                blob_id=blob_id if isinstance(blob_id, str) and blob_id else None,
+                sha256=_sibling_lfs_sha256(sibling),
+            )
+        )
     if not repo_files:
         raise RuntimeError(f"Hugging Face repo {repo_id} did not return downloadable files.")
+    _discard_superseded_transfers(destination, repo_id=repo_id, repo_files=repo_files)
+    _record_transfer(destination, repo_id=repo_id, revision=revision, repo_files=repo_files)
 
     total_bytes = sum(
         repo_file.size_bytes
@@ -814,9 +1166,13 @@ def _download_snapshot_with_structured_progress(
         if isinstance(repo_file.size_bytes, int) and repo_file.size_bytes > 0
     ) or None
     session = get_session()
+
+    def measure() -> int:
+        return manifest_bytes_on_disk(destination, repo_files)
+
     started_at = time.monotonic()
     last_emit_at = started_at
-    last_emit_size = directory_size_bytes(destination)
+    last_emit_size = measure()
     for repo_file in repo_files:
         try:
             last_emit_at, last_emit_size = _download_repo_file(
@@ -828,12 +1184,14 @@ def _download_snapshot_with_structured_progress(
                 hf_hub_url=hf_hub_url,
                 build_hf_headers=build_hf_headers,
                 hf_raise_for_status=hf_raise_for_status,
+                token=token,
                 callback=progress_callback,
                 total_bytes=total_bytes,
                 started_at=started_at,
                 progress_interval_s=max(0.1, progress_interval_s),
                 last_emit_at=last_emit_at,
                 last_emit_size=last_emit_size,
+                measure=measure,
             )
         except Exception as exc:
             raise RuntimeError(_classify_pull_error(exc, repo_id)) from exc
@@ -914,10 +1272,14 @@ def _local_matches_remote_index(
     try:
         from huggingface_hub import hf_hub_download
 
-        remote = hf_hub_download(
-            repo_id,
-            "model.safetensors.index.json",
-            revision=revision,
+        remote, _token = _call_hub_with_anonymous_fallback(
+            lambda token: hf_hub_download(
+                repo_id,
+                "model.safetensors.index.json",
+                revision=revision,
+                token=token,
+            ),
+            hf_token_for_download(),
         )
         return Path(remote).read_bytes() == local_index.read_bytes()
     except Exception:
@@ -944,6 +1306,7 @@ def pull_model(
         destination = cached_model_path(repo_id, cache_dir=root)
 
     started_size = directory_size_bytes(destination)
+    started_disk_bytes = started_size
     marker = read_source_marker(destination)
     remote_sha: str | None = None
     remote_files: dict[str, dict[str, Any]] | None = None
@@ -982,6 +1345,9 @@ def pull_model(
         resolved = destination
         reused_existing = True
         resumed_existing = False
+        # A complete pack with a transfer marker finished its last file and
+        # then lost the marker cleanup; the marker means nothing now.
+        (resolved / TRANSFER_MARKER_FILE).unlink(missing_ok=True)
         validation = validate_mtplx_model_files(resolved)
         _validate_pinned_laguna_files(resolved, repo_id)
         if repo_id.lower().startswith("youssofal/qwen3.6-27b-mtplx") and not validation["ok"]:
@@ -989,25 +1355,46 @@ def pull_model(
                 "cached MTPLX model is incomplete: "
                 + ", ".join(validation["missing_files"] or [str(validation.get("contract_error"))])
             )
+        reuse_manifest = _repo_files_from_snapshot((marker or {}).get("files"))
+        model_bytes = (
+            manifest_bytes_on_disk(resolved, reuse_manifest)
+            if reuse_manifest
+            else _model_bytes_without_transients(resolved)
+        )
+        started_size = model_bytes
+        disk_bytes = directory_size_bytes(resolved)
+        stale_bytes, stale_files = stale_transient_bytes(resolved, reuse_manifest)
         _emit_download_progress(
             progress_callback,
             {
                 "event": "complete",
                 "repo_id": repo_id,
                 "path": str(resolved),
-                "size_bytes": directory_size_bytes(resolved),
-                "total_bytes": directory_size_bytes(resolved),
+                "size_bytes": model_bytes,
+                "total_bytes": model_bytes,
+                "disk_bytes": disk_bytes,
+                "stale_bytes": stale_bytes,
+                "stale_files": stale_files,
                 "delta_bytes": 0,
                 "reused_existing": True,
             },
         )
     else:
         reused_existing = False
-        resumed_existing = destination.exists() and started_size > 0
         # Pin the whole download to one resolved commit so every file comes
         # from the same snapshot even if the repo is pushed to mid-download.
         _resolve_remote_snapshot()
+        manifest = _repo_files_from_snapshot(remote_files)
         download_revision = revision if revision is not None else remote_sha
+        if manifest:
+            # Files from a superseded snapshot go first, so the resume figure
+            # counts only what this pull keeps. Then only what this download
+            # ships counts toward the resume/start decision, the disk
+            # headroom, and the progress the app shows.
+            _discard_superseded_transfers(destination, repo_id=repo_id, repo_files=manifest)
+            started_size = manifest_bytes_on_disk(destination, manifest)
+            started_disk_bytes = directory_size_bytes(destination)
+        resumed_existing = destination.exists() and started_size > 0
         if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():
             total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES
         elif remote_files:
@@ -1028,6 +1415,13 @@ def pull_model(
             total_bytes=total_bytes,
             started_size_bytes=started_size,
         )
+
+        def _landed_bytes(path: Path) -> int:
+            if not manifest:
+                return directory_size_bytes(path)
+            landed = manifest_bytes_on_disk(path, manifest)
+            return min(landed, total_bytes) if total_bytes else landed
+
         destination.mkdir(parents=True, exist_ok=True)
         _emit_download_progress(
             progress_callback,
@@ -1037,6 +1431,9 @@ def pull_model(
                 "path": str(destination),
                 "size_bytes": started_size,
                 "total_bytes": total_bytes,
+                "disk_bytes": started_disk_bytes,
+                "stale_bytes": stale_transient_bytes(destination, manifest)[0],
+                "stale_files": stale_transient_bytes(destination, manifest)[1],
             },
         )
         progress_suppression = (
@@ -1062,12 +1459,15 @@ def pull_model(
                     raise RuntimeError(
                         f"huggingface_hub is required for mtplx pull: {exc}"
                     ) from exc
-                path = snapshot_download(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    revision=download_revision,
-                    local_dir=str(destination),
-                    token=hf_token_for_download(),
+                path, _token = _call_hub_with_anonymous_fallback(
+                    lambda token: snapshot_download(
+                        repo_id=repo_id,
+                        repo_type="model",
+                        revision=download_revision,
+                        local_dir=str(destination),
+                        token=token,
+                    ),
+                    hf_token_for_download(),
                 )
                 resolved = Path(path)
         _emit_download_progress(
@@ -1076,7 +1476,7 @@ def pull_model(
                 "event": "verifying",
                 "repo_id": repo_id,
                 "path": str(resolved),
-                "size_bytes": directory_size_bytes(resolved),
+                "size_bytes": _landed_bytes(resolved),
                 "total_bytes": total_bytes,
             },
         )
@@ -1101,7 +1501,11 @@ def pull_model(
             resolved_sha=remote_sha,
             files=remote_files,
         )
-        final_size = directory_size_bytes(resolved)
+        (resolved / TRANSFER_MARKER_FILE).unlink(missing_ok=True)
+        final_size = _landed_bytes(resolved)
+        model_bytes = final_size
+        disk_bytes = directory_size_bytes(resolved)
+        stale_bytes, stale_files = stale_transient_bytes(resolved, manifest)
         _emit_download_progress(
             progress_callback,
             {
@@ -1110,6 +1514,9 @@ def pull_model(
                 "path": str(resolved),
                 "size_bytes": final_size,
                 "total_bytes": total_bytes if total_bytes else final_size,
+                "disk_bytes": disk_bytes,
+                "stale_bytes": stale_bytes,
+                "stale_files": stale_files,
                 "delta_bytes": final_size - started_size,
             },
         )
@@ -1124,7 +1531,10 @@ def pull_model(
         "reused_existing": reused_existing,
         "resumed_existing": resumed_existing,
         "started_size_bytes": started_size,
-        "size_bytes": directory_size_bytes(resolved),
+        "size_bytes": model_bytes,
+        "disk_bytes": disk_bytes,
+        "stale_bytes": stale_bytes,
+        "stale_files": stale_files,
         "has_runtime_contract": (resolved / "mtplx_runtime.json").exists(),
         "has_config": (resolved / "config.json").exists(),
         "validation": _pull_validation(resolved, repo_id),
@@ -1181,16 +1591,10 @@ def remove_cached_model(model_ref: str, *, cache_dir: str | Path | None = None) 
 
 def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
     root = model_cache_dir(cache_dir)
-    token_present = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
-    token_source = "environment" if token_present else None
-    if not token_present:
-        try:
-            from huggingface_hub import get_token
-
-            token_present = bool(get_token())
-            token_source = "huggingface_hub" if token_present else None
-        except Exception:
-            token_present = False
+    # The same resolver pull uses, so doctor can never report a token that
+    # pull then ignores (or the other way round).
+    token_source = hf_token_source()
+    token_present = token_source is not None
     try:
         usage = shutil.disk_usage(root if root.exists() else root.parent)
         free_bytes: int | None = usage.free
@@ -1205,4 +1609,9 @@ def hf_cache_report(*, cache_dir: str | Path | None = None) -> dict[str, Any]:
         "cached_models": len(list_cached_models(cache_dir=root)),
         "token_present": token_present,
         "token_source": token_source,
+        "token_used_by_pull": token_present,
+        "token_policy": (
+            "mtplx pull sends the HF_TOKEN / HUGGING_FACE_HUB_TOKEN token, else the "
+            "`hf auth login` token, else nothing; public models never need one"
+        ),
     }

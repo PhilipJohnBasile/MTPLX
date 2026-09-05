@@ -9,6 +9,36 @@ public enum PendingModelDownloadLaunchAction: String, Equatable, Sendable {
     case restart
 }
 
+/// What the last app-launched daemon actually got on its command line for
+/// scheduling, plus the Settings selection that produced it.
+///
+/// Issue #398: the app logged only `app_stop_all_invoked` around a restart,
+/// so "my pick never reached the daemon" and "my pick ran and the UI forgot
+/// it" were indistinguishable from the outside. Recording the flags read
+/// back out of the built argv makes the answer readable in the app's own
+/// log pane and in the AIME diagnostics file, and it gives Settings a true
+/// "running now" value to compare the picker against.
+public struct DaemonLaunchScheduling: Equatable, Sendable {
+    public var schedulerMode: String
+    public var batchingPreset: String
+    /// Normalized Performance picker selection at launch time.
+    public var selectedPreset: String
+    /// `mtplx start <target>` surface, or "none" for a bare serve.
+    public var target: String
+
+    public init(
+        schedulerMode: String,
+        batchingPreset: String,
+        selectedPreset: String,
+        target: String
+    ) {
+        self.schedulerMode = schedulerMode
+        self.batchingPreset = batchingPreset
+        self.selectedPreset = selectedPreset
+        self.target = target
+    }
+}
+
 public struct PendingModelDownload: Identifiable, Equatable, Sendable {
     public var id: String
     public var repoID: String
@@ -80,11 +110,11 @@ public enum BenchmarkDaemonReadinessError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .modelDownloadRequired(let model):
-            return "Download \(model) before running the benchmark."
+            return tr("Download %@ before running the benchmark.", model)
         case .startupFailed(let reason):
-            return "Couldn't start MTPLX for the benchmark: \(reason)"
+            return tr("Couldn't start MTPLX for the benchmark: %@", reason)
         case .unreachable(let url):
-            return "Can't reach MTPLX at \(url.absoluteString)."
+            return tr("Can't reach MTPLX at %@.", url.absoluteString)
         }
     }
 }
@@ -119,19 +149,19 @@ public struct ClientHandoffNotice: Equatable, Sendable {
 
         switch result.action {
         case .unavailable:
-            status = "Needs OpenCode Desktop"
-            detail = "MTPLX is running, but OpenCode Desktop was not found at /Applications/OpenCode.app."
+            status = tr("Needs OpenCode Desktop")
+            detail = tr("MTPLX is running, but OpenCode Desktop was not found at /Applications/OpenCode.app.")
             isWarning = true
         case .opened:
-            status = "OpenCode opened"
+            status = tr("OpenCode opened")
             detail = result.detail
             isWarning = false
         case .relaunched:
-            status = "OpenCode reloaded"
+            status = tr("OpenCode reloaded")
             detail = result.detail
             isWarning = false
         case .focused:
-            status = "OpenCode focused"
+            status = tr("OpenCode focused")
             detail = result.detail
             isWarning = false
         }
@@ -150,10 +180,10 @@ public struct ClientHandoffNotice: Equatable, Sendable {
         }
         let detail = result.action == .unavailable
             ? result.detail
-            : "MTPLX opened Terminal, but no Pi agent process was detected. Install Pi, then pick Pi again."
+            : tr("MTPLX opened Terminal, but no Pi agent process was detected. Install Pi, then pick Pi again.")
         return ClientHandoffNotice(
             target: .pi,
-            status: result.action == .unavailable ? "Pi handoff unavailable" : "Pi not detected",
+            status: result.action == .unavailable ? tr("Pi handoff unavailable") : tr("Pi not detected"),
             detail: detail,
             isWarning: true
         )
@@ -196,6 +226,9 @@ public final class MTPLXBackendStore: ObservableObject {
     /// nil until a source-aware (2.10+) daemon reports.
     @Published public private(set) var memoryPressureSource: String?
     @Published public private(set) var memoryPlan: MemoryPlanStatus?
+    /// Scheduling flags the most recent app-owned daemon launch carried
+    /// (issue #398). nil until this app session has launched a daemon.
+    @Published public private(set) var lastLaunchScheduling: DaemonLaunchScheduling?
     /// True when the guard's event ring shows caches actually shed within
     /// the recency window — the banner's "shedding" claim keys off this,
     /// never off the pressure level alone (a warning-level tick during a
@@ -240,6 +273,9 @@ public final class MTPLXBackendStore: ObservableObject {
     /// One-line banner shown after the configured port was occupied and the
     /// daemon moved to the next free port (persisted to settings).
     @Published public private(set) var portFallbackNotice: String?
+    /// One-line, dismissable banner shown when `settings.json` could not be
+    /// read at launch and was set aside (see `loadPersistedSettings`).
+    @Published public private(set) var settingsRecoveryNotice: SettingsRecoveryNotice?
     @Published public private(set) var pendingModelDownload: PendingModelDownload?
     @Published public private(set) var modelDownloadProgress: DownloadProgressSnapshot?
     @Published public private(set) var modelDownloadFailure: String?
@@ -322,6 +358,8 @@ public final class MTPLXBackendStore: ObservableObject {
     private let settingsStore: MTPLXSettingsStore
     private let commandBuilder: MTPLXCommandBuilder
     private let supervisor: DaemonSupervisor
+    /// See `init(browserAuthSession:)`; nil in production.
+    private let browserAuthSession: URLSession?
     private let openCodeIntegration: OpenCodeIntegration
     private let piIntegration: PiIntegration
     private let hermesIntegration: HermesIntegration
@@ -351,6 +389,9 @@ public final class MTPLXBackendStore: ObservableObject {
     private var modelDownloadTask: Task<Void, Never>?
     private var modelTuneTask: Task<Void, Never>?
     private var lateHealthRecoveryTask: Task<Void, Never>?
+    /// Background refresh of the runtime card; see
+    /// `scheduleRuntimeUpdateStatusRefresh`.
+    private var runtimeUpdateStatusRefreshTask: Task<Void, Never>?
     /// The slow part of stopping the daemon (fan restore + graceful
     /// SIGTERM/reap of the serve child) runs here, detached from the
     /// instant UI flip, so the Stop/Play control isn't frozen for the ~5s
@@ -388,10 +429,14 @@ public final class MTPLXBackendStore: ObservableObject {
         beforeThermalStatusRefresh: (@Sendable () async -> Void)? = nil,
         beforeClientHandoffLaunch: (@Sendable (LaunchTarget) async -> Void)? = nil,
         openCodeDesktopCanceller: ((MTPLXDesktopHandoffIdentity) -> Bool)? = nil,
-        modelUpdateChecker: (@Sendable () async throws -> [ModelUpdateInfo])? = nil
+        modelUpdateChecker: (@Sendable () async throws -> [ModelUpdateInfo])? = nil,
+        // Test seam for the browser sign-in ticket request. Production
+        // uses a fresh short-timeout session per hand-off.
+        browserAuthSession: URLSession? = nil
     ) {
         self.configuration = configuration
         self.settingsStore = settingsStore
+        self.browserAuthSession = browserAuthSession
         self.commandBuilder = commandBuilder
         self.supervisor = supervisor
         self.openCodeIntegration = openCodeIntegration
@@ -425,16 +470,50 @@ public final class MTPLXBackendStore: ObservableObject {
         }
     }
 
+    /// Load `settings.json`. A file with some bad fields loads with those
+    /// fields at their defaults (each one logged); a file that cannot be
+    /// read at all is set aside beside itself and the app starts from
+    /// defaults with `settingsRecoveryNotice` naming the preserved file, so
+    /// the reset is visible and the user's original bytes survive the next
+    /// save.
     public func loadPersistedSettings() {
-        if var loaded = try? settingsStore.load() {
-            if shouldPromoteStaleOpenCodeTarget(loaded) {
-                loaded.lastLaunchTarget = LaunchTarget.openCode.rawValue
-                try? settingsStore.save(loaded)
-            }
-            configuration = loaded
-            seedLiveSettingsFromConfiguration(loaded)
-            supervisor.setAutomaticRestartEnabled(loaded.automaticDaemonRestart)
+        let result = settingsStore.loadWithRecovery()
+        var loaded = result.configuration
+        if shouldPromoteStaleOpenCodeTarget(loaded) {
+            loaded.lastLaunchTarget = LaunchTarget.openCode.rawValue
+            try? settingsStore.save(loaded)
         }
+        configuration = loaded
+        seedLiveSettingsFromConfiguration(loaded)
+        supervisor.setAutomaticRestartEnabled(loaded.automaticDaemonRestart)
+        settingsRecoveryNotice = result.recovery
+        var lines = result.degradedFields.map { issue in
+            "settings: \(issue.path) could not be read (\(issue.reason)); using the default"
+        }
+        switch result.recovery {
+        case .unreadableFileKept(let preservedAt, let reason)?:
+            lines.append(
+                "settings: \(settingsStore.settingsURL.path) could not be read (\(reason)); "
+                    + "kept as \(preservedAt.path) and started from defaults"
+            )
+        case .unreadableFileLeftInPlace(let url, let reason, let moveFailure)?:
+            lines.append(
+                "settings: \(url.path) could not be read (\(reason)) and could not be moved aside "
+                    + "(\(moveFailure)); started from defaults"
+            )
+        case nil:
+            break
+        }
+        guard !lines.isEmpty else { return }
+        Task { [supervisor] in
+            for line in lines {
+                await supervisor.logs.append(line, stream: .system)
+            }
+        }
+    }
+
+    public func dismissSettingsRecoveryNotice() {
+        settingsRecoveryNotice = nil
     }
 
     public func saveSettings(_ next: MTPLXAppConfiguration) throws {
@@ -482,6 +561,64 @@ public final class MTPLXBackendStore: ObservableObject {
             modelPackUpdateNeedsRestart = nil
         }
         return result
+    }
+
+    /// Commit a Performance mode pick straight to settings.json.
+    ///
+    /// Issue #398: Mode used to live in the Settings draft behind a Save
+    /// button in a different card, and the tab's `@State` dies whenever the
+    /// user navigates away, so "pick a mode, go start the model" silently
+    /// threw the pick away and the picker was back on Auto. Mode is one
+    /// discrete global, like Appearance and Language, so it saves on
+    /// selection and the next daemon launch reads it from disk. It stays
+    /// restart-required: the running daemon is not touched here.
+    public func applySchedulingPresetSelection(_ raw: String) throws {
+        var next = configuration
+        next.applySchedulingPreset(MTPLXAppConfiguration.schedulingPresetSelection(raw))
+        guard next != configuration else { return }
+        try saveSettings(next)
+    }
+
+    /// Record the scheduling flags a launch is about to hand the daemon
+    /// (issue #398). Read back out of the built argv so the record is what
+    /// actually ran, never what the resolver meant to run.
+    private func recordLaunchScheduling(
+        command: DaemonCommand,
+        configuration: MTPLXAppConfiguration,
+        target: LaunchTarget?,
+        launchID: String
+    ) async {
+        let scheduling = DaemonLaunchScheduling(
+            schedulerMode: MTPLXCommandBuilder.flagValue("--scheduler-mode", in: command.arguments)
+                ?? "unset",
+            batchingPreset: MTPLXCommandBuilder.flagValue("--batching-preset", in: command.arguments)
+                ?? "unset",
+            selectedPreset: MTPLXAppConfiguration.schedulingPresetSelection(
+                configuration.schedulingPreset
+            ),
+            target: target?.rawValue ?? "none"
+        )
+        lastLaunchScheduling = scheduling
+        AIMEDiagnostics.record(
+            "daemon_launch_scheduling",
+            fields: [
+                "scheduler_mode": .string(scheduling.schedulerMode),
+                "batching_preset": .string(scheduling.batchingPreset),
+                "scheduling_preset": .string(scheduling.selectedPreset),
+                "launch_target": .string(scheduling.target),
+                "launch_id": .string(launchID),
+                "memory_limit_gb": .int(configuration.memoryLimitGB ?? 0),
+                "allow_swap": .bool(configuration.allowSwap)
+            ],
+            flushImmediately: true,
+            force: true
+        )
+        await supervisor.logs.append(
+            "launch scheduling: --scheduler-mode \(scheduling.schedulerMode) "
+                + "--batching-preset \(scheduling.batchingPreset) "
+                + "(Settings mode \(scheduling.selectedPreset), target \(scheduling.target))",
+            stream: .system
+        )
     }
 
     public func applyConfiguration(
@@ -573,6 +710,12 @@ public final class MTPLXBackendStore: ObservableObject {
                 clearLiveMetricsState()
             }
             let command = try commandBuilder.buildServeCommand(
+                configuration: next,
+                target: target,
+                launchID: launchID
+            )
+            await recordLaunchScheduling(
+                command: command,
                 configuration: next,
                 target: target,
                 launchID: launchID
@@ -793,6 +936,12 @@ public final class MTPLXBackendStore: ObservableObject {
                 target: target,
                 launchID: launchID
             )
+            await recordLaunchScheduling(
+                command: command,
+                configuration: configuration,
+                target: target,
+                launchID: launchID
+            )
             daemonState = .starting
             startupPhase = .launching
             activeLaunchID = launchID
@@ -945,11 +1094,11 @@ public final class MTPLXBackendStore: ObservableObject {
                 await supervisor.terminateExternalDaemon(rootPID: pid_t(stalePID))
                 return
             }
-            occupantDescription = "an MTPLX server started outside the app"
+            occupantDescription = tr("an MTPLX server started outside the app")
         case .unauthorized:
-            occupantDescription = "a server requiring a different API key"
+            occupantDescription = tr("a server requiring a different API key")
         case .foreign:
-            occupantDescription = "another app"
+            occupantDescription = tr("another app")
         }
         let occupiedPort = configuration.port
         guard
@@ -966,7 +1115,7 @@ public final class MTPLXBackendStore: ObservableObject {
         configuration = next
         try? settingsStore.save(next)
         portFallbackNotice =
-            "Port \(occupiedPort) was in use by \(occupantDescription). MTPLX now uses port \(freePort)."
+            tr("Port %@ was in use by %@. MTPLX now uses port %@.", String(occupiedPort), occupantDescription, String(freePort))
         await supervisor.logs.append(
             "port preflight: \(occupiedPort) occupied by \(occupantDescription); switched to \(freePort)",
             stream: .system
@@ -1017,7 +1166,7 @@ public final class MTPLXBackendStore: ObservableObject {
             configuration = next
             try? settingsStore.save(next)
             portFallbackNotice =
-                "Port \(occupiedPort) was busy. MTPLX now uses port \(freePort)."
+                tr("Port %@ was busy. MTPLX now uses port %@.", String(occupiedPort), String(freePort))
             await supervisor.logs.append(
                 "launch hit a port conflict on \(occupiedPort) the probe could not see; switched to \(freePort)",
                 stream: .system
@@ -1059,20 +1208,35 @@ public final class MTPLXBackendStore: ObservableObject {
     nonisolated static func humanizedStartFailure(_ error: Error, port: Int) -> String {
         if case DaemonSupervisorError.portOccupied(_, let launchID) = error {
             if launchID != nil {
-                return "Port \(port) is running another MTPLX server. "
-                    + "Stop it where it was started, or run `mtplx stop --port \(port)` "
-                    + "in Terminal, then press Play."
+                return tr("Port %@ is running another MTPLX server. Stop it where it was started, or run `mtplx stop --port %@` in Terminal, then press Play.", String(port), String(port))
             }
-            return "Port \(port) is held by an MTPLX server started outside the app. "
-                + "Press Ctrl-C in its terminal or run `mtplx stop --port \(port)`, "
-                + "then press Play."
+            return tr("Port %@ is held by an MTPLX server started outside the app. Press Ctrl-C in its terminal or run `mtplx stop --port %@`, then press Play.", String(port), String(port))
         }
         return String(describing: error)
     }
 
+    /// Explicit refresh of the runtime card (About sheet's Check button).
+    /// Reads the installed CLI and the published manifest; the manifest
+    /// fetch is bounded to a few seconds. Nothing on a daemon launch path
+    /// awaits this.
     public func refreshRuntimeUpdateStatus() async {
         runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
         runtimeUpdateFailure = nil
+    }
+
+    /// Background refresh of the runtime card. Used at app launch and after
+    /// every launch-path runtime decision so the card reflects the venv the
+    /// launch actually used, without Play, Restart or first launch waiting
+    /// on mtplx.com or on the `mtplx --version` probe. A newer request
+    /// supersedes an in-flight one, and a failure the launch path recorded
+    /// is left in place for the user to read.
+    public func scheduleRuntimeUpdateStatusRefresh() {
+        runtimeUpdateStatusRefreshTask?.cancel()
+        runtimeUpdateStatusRefreshTask = Task { [weak self, runtimeUpdateService] in
+            let snapshot = await runtimeUpdateService.refreshSnapshot()
+            guard !Task.isCancelled, let self else { return }
+            self.runtimeUpdateSnapshot = snapshot
+        }
     }
 
     public func updateRuntimeWithHomebrew() async {
@@ -1102,14 +1266,17 @@ public final class MTPLXBackendStore: ObservableObject {
         }
     }
 
+    /// Make sure a runtime exists before spawning the daemon. The decision
+    /// is local (bundled wheel, app-owned venv); the runtime card's
+    /// manifest comparison and version probe run afterwards in the
+    /// background rather than ahead of the launch.
     private func prepareRuntimeForDaemonStart() async throws {
         startupPhase = .launching
+        defer { scheduleRuntimeUpdateStatusRefresh() }
         do {
             _ = try await runtimeUpdateService.prepareRuntimeForLaunch()
-            runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
             runtimeUpdateFailure = nil
         } catch {
-            runtimeUpdateSnapshot = await runtimeUpdateService.refreshSnapshot()
             runtimeUpdateFailure = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
             throw error
@@ -1129,6 +1296,9 @@ public final class MTPLXBackendStore: ObservableObject {
         )
     }
 
+    /// The key-in-query sign-in URL. This is the fallback only: it lands
+    /// the API key in browser history, so the open path below asks the
+    /// daemon for a one-time ticket first and uses this when it cannot.
     private func authenticatedBrowserURL(nextPath: String, fallback: URL) -> URL {
         guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
             return fallback
@@ -1146,19 +1316,57 @@ public final class MTPLXBackendStore: ObservableObject {
         return components.url ?? fallback
     }
 
+    /// The URL to hand the browser for `nextPath`. With no key configured
+    /// the plain page URL; with a key, a one-time ticket URL minted by the
+    /// daemon (`POST /mtplx/browser-auth/ticket`, bounded to a few seconds,
+    /// off the main actor) so the key never appears in a URL. If the
+    /// ticket cannot be minted for any reason — an older daemon answering
+    /// 404, a network failure, a timeout — the key-in-query URL is used so
+    /// the button never goes dead.
+    func browserURL(nextPath: String, plain: URL) async -> URL {
+        let fallback = authenticatedBrowserURL(nextPath: nextPath, fallback: plain)
+        guard let apiKey = configuration.apiKey, !apiKey.isEmpty else {
+            return plain
+        }
+        let client = browserAuthSession.map { MTPLXAPIClient(baseURL: baseURL, apiKey: apiKey, session: $0) }
+            ?? MTPLXAPIClient.browserAuthClient(baseURL: baseURL, apiKey: apiKey)
+        do {
+            return try await client.browserAuthTicket(next: nextPath).url
+        } catch {
+            await supervisor.logs.append(
+                "browser sign-in ticket unavailable (\(error)); opening with the key in the URL instead",
+                stream: .system
+            )
+            return fallback
+        }
+    }
+
     /// Open the old browser chat surface in the user's default browser.
     public func openWebChat() {
-        #if canImport(AppKit)
-        AppKit.NSWorkspace.shared.open(webChatURL)
-        #endif
+        Task { [weak self] in
+            guard let self else { return }
+            let url = await self.browserURL(nextPath: "/", plain: self.baseURL)
+            Self.openInBrowser(url)
+        }
     }
 
     /// Open the React live dashboard in the user's default browser.
     /// Exposed for users who explicitly ask for the browser dashboard
     /// (menu bar / About sheet) — no longer wired to a LaunchTarget.
     public func openBrowserDashboard() {
+        Task { [weak self] in
+            guard let self else { return }
+            let url = await self.browserURL(
+                nextPath: "/dashboard/",
+                plain: self.baseURL.appendingPathComponent("dashboard")
+            )
+            Self.openInBrowser(url)
+        }
+    }
+
+    private static func openInBrowser(_ url: URL) {
         #if canImport(AppKit)
-        AppKit.NSWorkspace.shared.open(browserDashboardURL)
+        AppKit.NSWorkspace.shared.open(url)
         #endif
     }
 
@@ -1327,12 +1535,19 @@ public final class MTPLXBackendStore: ObservableObject {
     public func updateModelPack(_ update: ModelUpdateInfo) {
         guard modelPackUpdatingRepoID == nil else { return }
         modelPackUpdatingRepoID = update.repoID
-        modelPackUpdateStatus = "Preparing…"
+        modelPackUpdateStatus = tr("Preparing…")
         let downloader = modelDownloader
-        let startedBytes = update.path.map {
-            Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
-        }
-        modelPackUpdateTask = Task { @MainActor [weak self] in
+        // Detached, like every other consumer of `stream`: the baseline
+        // walk stats every file in the pack, and building the stream
+        // resolves the runtime (version probe, wheel fingerprint, a
+        // possible reinstall) and spawns the CLI synchronously inside
+        // AsyncStream's build closure. On the main actor that froze the
+        // window for the Python cold start, or for minutes when the
+        // app-owned venv needed its post-update reinstall.
+        modelPackUpdateTask = Task.detached(priority: .userInitiated) { [weak self, downloader, update] in
+            let startedBytes = update.path.map {
+                Self.directorySizeForUpdateProgress(URL(fileURLWithPath: $0))
+            }
             let stream = downloader.stream(
                 repo: update.repoID,
                 totalBytes: nil,
@@ -1341,52 +1556,79 @@ public final class MTPLXBackendStore: ObservableObject {
             )
             var completed = false
             for await event in stream {
-                guard let self, self.modelPackUpdatingRepoID == update.repoID else { return }
-                switch event {
-                case .started, .status:
+                guard let self else { return }
+                switch await self.handleModelPackUpdateEvent(event, update: update, startedBytes: startedBytes) {
+                case .proceed:
                     break
-                case .progress(let bytesOnDisk, _, let speed, _):
-                    var line = speed > 1024
-                        ? "\(Self.formatUpdateBytes(Int64(speed)))/s"
-                        : "Syncing…"
-                    if let startedBytes, let total = update.updateBytes, total > 0 {
-                        let done = max(0, bytesOnDisk - startedBytes)
-                        let pct = min(100, Int((Double(done) / Double(total)) * 100))
-                        line = "\(pct)% · " + line
-                    }
-                    self.modelPackUpdateStatus = line
-                case .stalled(let seconds):
-                    self.modelPackUpdateStatus = "Stalled for \(seconds)s — still trying"
-                case .complete:
+                case .completed:
                     completed = true
-                case .failed(_, let stderrTail):
-                    let tail = stderrTail.split(separator: "\n").last.map(String.init)
-                    self.modelPackUpdateStatus = tail ?? "Update failed"
-                case .cancelled:
-                    self.modelPackUpdateStatus = nil
+                case .abandoned:
+                    return
                 }
             }
-            guard let self else { return }
-            self.modelPackUpdatingRepoID = nil
-            if completed {
-                self.modelPackUpdateStatus = nil
-                // The running daemon has the old tensors mapped; flag the
-                // restart affordance when the updated pack is the one it
-                // serves (matched on the served model path).
-                let daemonIsLive: Bool
-                switch self.daemonState {
-                case .running, .warming: daemonIsLive = true
-                default: daemonIsLive = false
-                }
-                if daemonIsLive,
-                   let servedPath = self.health?.modelPath,
-                   let updatedPath = update.path,
-                   servedPath == updatedPath || servedPath.hasPrefix(updatedPath + "/") {
-                    self.modelPackUpdateNeedsRestart = update
-                }
-                await self.refreshModelUpdates(force: true)
-            }
+            await self?.finishModelPackUpdate(update, completed: completed)
         }
+    }
+
+    private enum ModelPackUpdateEventOutcome {
+        case proceed
+        case completed
+        /// The update was cancelled or replaced while the stream was live;
+        /// its state is no longer this task's to touch.
+        case abandoned
+    }
+
+    private func handleModelPackUpdateEvent(
+        _ event: DownloadEvent,
+        update: ModelUpdateInfo,
+        startedBytes: Int64?
+    ) -> ModelPackUpdateEventOutcome {
+        guard modelPackUpdatingRepoID == update.repoID else { return .abandoned }
+        switch event {
+        case .started, .status:
+            break
+        case .progress(let bytesOnDisk, _, let speed, _):
+            var line = speed > 1024
+                ? "\(Self.formatUpdateBytes(Int64(speed)))/s"
+                : "Syncing…"
+            if let startedBytes, let total = update.updateBytes, total > 0 {
+                let done = max(0, bytesOnDisk - startedBytes)
+                let pct = min(100, Int((Double(done) / Double(total)) * 100))
+                line = tr("%lld%% · %@", pct, line)
+            }
+            modelPackUpdateStatus = line
+        case .stalled(let seconds):
+            modelPackUpdateStatus = tr("Stalled for %llds — still trying", Int(seconds))
+        case .complete:
+            return .completed
+        case .failed(_, let stderrTail):
+            let tail = stderrTail.split(separator: "\n").last.map(String.init)
+            modelPackUpdateStatus = tail ?? tr("Update failed")
+        case .cancelled:
+            modelPackUpdateStatus = nil
+        }
+        return .proceed
+    }
+
+    private func finishModelPackUpdate(_ update: ModelUpdateInfo, completed: Bool) async {
+        modelPackUpdatingRepoID = nil
+        guard completed else { return }
+        modelPackUpdateStatus = nil
+        // The running daemon has the old tensors mapped; flag the
+        // restart affordance when the updated pack is the one it
+        // serves (matched on the served model path).
+        let daemonIsLive: Bool
+        switch daemonState {
+        case .running, .warming: daemonIsLive = true
+        default: daemonIsLive = false
+        }
+        if daemonIsLive,
+           let servedPath = health?.modelPath,
+           let updatedPath = update.path,
+           servedPath == updatedPath || servedPath.hasPrefix(updatedPath + "/") {
+            modelPackUpdateNeedsRestart = update
+        }
+        await refreshModelUpdates(force: true)
     }
 
     /// Restart the running daemon so an updated pack's tensors are loaded.
@@ -1401,7 +1643,10 @@ public final class MTPLXBackendStore: ObservableObject {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private static func directorySizeForUpdateProgress(_ url: URL) -> Int64 {
+    /// Baseline byte count for the pack-update progress line. Walks every
+    /// file in the pack, so it is `nonisolated` and only ever called from
+    /// the detached update task.
+    nonisolated private static func directorySizeForUpdateProgress(_ url: URL) -> Int64 {
         (try? FileManager.default.subpathsOfDirectory(atPath: url.path))
             .map { subpaths in
                 subpaths.reduce(Int64(0)) { sum, subpath in
@@ -1521,7 +1766,7 @@ public final class MTPLXBackendStore: ObservableObject {
             snapshot.bytesPerSecond = 0
             snapshot.etaSeconds = nil
             snapshot.stalledSeconds = 0
-            snapshot.statusMessage = "Paused"
+            snapshot.statusMessage = tr("Paused")
             modelDownloadProgress = snapshot
         }
     }
@@ -1655,7 +1900,7 @@ public final class MTPLXBackendStore: ObservableObject {
             guard isCurrent?() ?? true else { throw error }
             if markUnreachableOnTransportFailure {
                 markDaemonUnreachableIfNeeded(
-                    reason: "MTPLX lost contact with the model server. Start it again."
+                    reason: tr("MTPLX lost contact with the model server. Start it again.")
                 )
             }
             throw error
@@ -1669,7 +1914,7 @@ public final class MTPLXBackendStore: ObservableObject {
             throw MTPLXAPIClientError.invalidResponse
         } catch {
             markDaemonUnreachableIfNeeded(
-                reason: "MTPLX lost contact with live metrics. Start it again."
+                reason: tr("MTPLX lost contact with live metrics. Start it again.")
             )
             throw error
         }
@@ -2120,18 +2365,54 @@ public final class MTPLXBackendStore: ObservableObject {
         self.sessions = try await apiClient.sessions()
     }
 
-    public func startMetricsStream() {
+    /// Snapshot cadence floor while a chat turn streams. Every snapshot
+    /// is built inside the serving process and fanned out to each
+    /// dashboard observer on the main actor, while the chat surface reads
+    /// its own progress frames; the README's native 500 ms is plenty
+    /// under a live turn.
+    private static let chatStreamingSnapshotIntervalMs = 500
+    private var chatTurnStreaming = false
+
+    private var metricsSnapshotIntervalMs: Int {
+        if configuration.performanceLock { return 1000 }
+        let configured = configuration.streamSnapshotIntervalMs
+        return chatTurnStreaming
+            ? max(configured, Self.chatStreamingSnapshotIntervalMs)
+            : configured
+    }
+
+    /// Chat turn lifecycle hook. Reopens the metrics stream at the
+    /// slower cadence while a turn streams and at the configured cadence
+    /// once it settles; only an open stream is reopened, and it keeps
+    /// `.open` throughout so the status dot never blinks for it.
+    public func setChatTurnStreaming(_ streaming: Bool) {
+        guard chatTurnStreaming != streaming else { return }
+        let previousInterval = metricsSnapshotIntervalMs
+        chatTurnStreaming = streaming
+        guard streamTask != nil,
+              connectionState == .open,
+              metricsSnapshotIntervalMs != previousInterval
+        else { return }
+        startMetricsStream(retainingOpenState: true)
+    }
+
+    public func startMetricsStream(retainingOpenState: Bool = false) {
         streamTask?.cancel()
         daemonTransportGeneration &+= 1
         let transportGeneration = daemonTransportGeneration
         let client = MetricsStreamClient(apiClient: apiClient)
-        let interval = configuration.performanceLock ? 1000 : configuration.streamSnapshotIntervalMs
+        let interval = metricsSnapshotIntervalMs
+        // A cadence-only reopen of a healthy stream must not report
+        // `.connecting`: the chrome would flip to "Connecting" and pulse
+        // for a reconnect the user never saw fail.
+        let keepOpen = retainingOpenState && connectionState == .open
         streamTask = Task { [weak self] in
             await client.connect(
                 snapshotIntervalMs: interval,
                 onState: { state in
                     await MainActor.run {
                         guard self?.daemonTransportGeneration == transportGeneration else { return }
+                        if keepOpen, state == .connecting { return }
                         self?.connectionState = state
                     }
                 },
@@ -2190,9 +2471,9 @@ public final class MTPLXBackendStore: ObservableObject {
                 lifecycleEpoch: snapshot.lifecycleEpoch,
                 terminalState: .crashed(status),
                 terminalStartupPhase: .failed(
-                    "MTPLX crashed repeatedly; automatic recovery stopped after \(attempts) attempts."
+                    tr("MTPLX crashed repeatedly; automatic recovery stopped after %lld attempts.", attempts)
                 ),
-                terminalConnectionState: .failed("Automatic restart circuit breaker is open.")
+                terminalConnectionState: .failed(tr("Automatic restart circuit breaker is open."))
             )
         case .idle:
             // Normal startup phases remain owned by the explicit start path.
@@ -2506,7 +2787,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 guard consecutiveMisses >= 2 else { continue }
                 guard self.daemonTransportGeneration == watchdogTransportGeneration else { return }
                 self.markDaemonUnreachableIfNeeded(
-                    reason: "MTPLX lost contact with the model server. Start it again."
+                    reason: tr("MTPLX lost contact with the model server. Start it again.")
                 )
                 return
             }
@@ -2653,7 +2934,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 snapshot.stalledSeconds = seconds
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
-                snapshot.statusMessage = "Waiting on Hugging Face"
+                snapshot.statusMessage = tr("Waiting on Hugging Face")
                 modelDownloadProgress = snapshot
             }
         case .complete(let bytes, let path):
@@ -2668,7 +2949,7 @@ public final class MTPLXBackendStore: ObservableObject {
                     isComplete: false,
                     statusMessage: "Incomplete"
                 )
-                modelDownloadFailure = "Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download."
+                modelDownloadFailure = tr("Download finished, but files the source repo ships are still missing from the model folder. Press Retry to resume the Hugging Face download.")
                 isModelDownloading = false
                 modelDownloadTask = nil
                 return
@@ -2711,7 +2992,7 @@ public final class MTPLXBackendStore: ObservableObject {
                 snapshot.bytesPerSecond = 0
                 snapshot.etaSeconds = nil
                 snapshot.stalledSeconds = 0
-                snapshot.statusMessage = "Paused"
+                snapshot.statusMessage = tr("Paused")
                 modelDownloadProgress = snapshot
             }
         }
@@ -2722,7 +3003,7 @@ public final class MTPLXBackendStore: ObservableObject {
         modelTuneTask?.cancel()
         modelTuneFailure = nil
         modelTuneResult = nil
-        modelTuneStatusMessage = "Preparing max fans and loading model"
+        modelTuneStatusMessage = tr("Preparing max fans and loading model")
         modelTuneCandidatesLanded = [:]
         isModelTuning = true
         let tuner = autoTuner
@@ -2776,12 +3057,12 @@ public final class MTPLXBackendStore: ObservableObject {
         case .installingFanControl(let message):
             modelTuneStatusMessage = message
         case .started:
-            modelTuneStatusMessage = "Preparing max fans and loading model"
+            modelTuneStatusMessage = tr("Preparing max fans and loading model")
         case .candidateLanded(let result):
             modelTuneStatusMessage = nil
             modelTuneCandidatesLanded[result.candidate] = result
         case .completed(let result):
-            modelTuneStatusMessage = "Saved"
+            modelTuneStatusMessage = tr("Saved")
             modelTuneResult = result
             for entry in result.allCandidates {
                 modelTuneCandidatesLanded[entry.candidate] = entry
@@ -2800,7 +3081,7 @@ public final class MTPLXBackendStore: ObservableObject {
             }
         case .failed(_, let stderrTail):
             modelTuneStatusMessage = nil
-            modelTuneFailure = stderrTail.isEmpty ? "Tuning failed." : stderrTail
+            modelTuneFailure = stderrTail.isEmpty ? tr("Tuning failed.") : stderrTail
             isModelTuning = false
             modelTuneTask = nil
         case .cancelled:
@@ -2918,20 +3199,18 @@ public final class MTPLXBackendStore: ObservableObject {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.contains("401") || lower.contains("403") || lower.contains("gated") || lower.contains("private") {
-            return "This Hugging Face repo is private or gated. Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN, then try again."
+            return tr("This Hugging Face repo is private or gated. Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN, then try again.")
         }
         if lower.contains("no space left") || lower.contains("not enough free disk") {
-            return "There is not enough free disk space to finish this download."
+            return tr("There is not enough free disk space to finish this download.")
         }
         if lower.contains("timed out") || lower.contains("network") || lower.contains("connection") {
             if MTPLXAppConfiguration.hfMirrorEnvironment(configuration.hfEndpoint) == nil {
-                return "The download could not reach Hugging Face. Check the network connection and try again. "
-                    + "If huggingface.co is blocked on your network, set an HF download mirror in "
-                    + "Settings under Advanced, for example https://hf-mirror.com."
+                return tr("The download could not reach Hugging Face. Check the network connection and try again. If huggingface.co is blocked on your network, set an HF download mirror in Settings under Advanced, for example https://hf-mirror.com.")
             }
-            return "The download could not reach Hugging Face. Check the network connection and try again."
+            return tr("The download could not reach Hugging Face. Check the network connection and try again.")
         }
-        return trimmed.isEmpty ? "Download failed. Try again." : trimmed
+        return trimmed.isEmpty ? tr("Download failed. Try again.") : trimmed
     }
 
     private func fanMode(for configuration: MTPLXAppConfiguration) -> MTPLXFanMode {

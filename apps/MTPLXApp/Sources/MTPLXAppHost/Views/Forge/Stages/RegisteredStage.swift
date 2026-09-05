@@ -70,16 +70,16 @@ struct RegisteredStage: View {
 
     private var title: String {
         if let verification = orchestrator.state.verification, orchestrator.state.hasSpeedWinningVerification {
-            return String(format: "Forged — %.2f× faster than baseline", verification.multiplierVsAr)
+            return tr("Forged — %.2f× faster than baseline", verification.multiplierVsAr)
         }
-        return "Forged"
+        return tr("Forged")
     }
 
     private var subtitle: String? {
         guard let path = orchestrator.completedLocalPath else {
-            return "Your model is ready and stamped with MTPLX."
+            return tr("Your model is ready and stamped with MTPLX.")
         }
-        return "Saved to \(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))."
+        return tr("Saved to %@.", path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
     }
 
     // MARK: - Celebration card
@@ -122,7 +122,7 @@ struct RegisteredStage: View {
 
     private func verificationLine(_ v: ForgeVerification) -> String {
         let best = v.tokSByDepth[v.bestDepth] ?? 0
-        return String(format: "%.1f tok/s · %.0f%% mean accept at D%d · verified on %@",
+        return tr("%.1f tok/s · %.0f%% mean accept at D%d · verified on %@",
                       best,
                       avgAcceptance(v) * 100,
                       v.bestDepth,
@@ -143,10 +143,10 @@ struct RegisteredStage: View {
             ForgePrimaryButton("Use it now", icon: "play.fill", isEnabled: !isLaunching && orchestrator.state.hasSpeedWinningVerification) {
                 useItNow()
             }
-            secondaryButton("Publish to HF", icon: "arrow.up.circle.fill") {
+            secondaryButton(tr("Publish to HF"), icon: "arrow.up.circle.fill") {
                 orchestrator.openPublishStage()
             }
-            secondaryButton("Build another", icon: "plus") {
+            secondaryButton(tr("Build another"), icon: "plus") {
                 orchestrator.resetWizard()
             }
             Spacer(minLength: 0)
@@ -197,8 +197,8 @@ struct RegisteredStage: View {
                         .foregroundStyle(Brand.typeSecondary)
                 }
                 .buttonStyle(.plain)
-                .help("Reveal in Finder")
-                .accessibilityLabel("Reveal in Finder")
+                .help(tr("Reveal in Finder"))
+                .accessibilityLabel(tr("Reveal in Finder"))
                 Spacer(minLength: 0)
             }
         }

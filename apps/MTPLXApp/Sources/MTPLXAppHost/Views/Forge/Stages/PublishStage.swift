@@ -38,8 +38,8 @@ struct PublishStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Publish to Hugging Face",
-            subtitle: "Share your build with the world. Your token stays in the macOS Keychain — never on disk.",
+            title: tr("Publish to Hugging Face"),
+            subtitle: tr("Share your build with the world. Your token stays in the macOS Keychain — never on disk."),
             step: .publishing,
             symbol: "arrow.up.right.circle.fill",
             symbolTint: Brand.accentChrome,
@@ -62,7 +62,7 @@ struct PublishStage: View {
             .onAppear { loadFromState() }
         } footer: {
             ForgePrimaryButton(
-                orchestrator.isPublishing ? "Cancel upload" : "Publish",
+                orchestrator.isPublishing ? tr("Cancel upload") : tr("Publish"),
                 icon: orchestrator.isPublishing ? "xmark" : "arrow.up.circle.fill",
                 isEnabled: canPublishOrCancel
             ) {
@@ -80,20 +80,20 @@ struct PublishStage: View {
     @ViewBuilder
     private var identitySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("IDENTITY")
+            sectionHeader(tr("IDENTITY"))
             if hasSavedToken && token.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.shield.fill")
                         .foregroundStyle(Brand.success)
-                    Text("Using saved Hugging Face token")
+                    Text(tr("Using saved Hugging Face token"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Brand.typeBody)
                     Spacer(minLength: 0)
-                    Button("Replace") { hasSavedToken = false }
+                    Button(tr("Replace")) { hasSavedToken = false }
                         .font(.caption2)
                         .buttonStyle(.plain)
                         .foregroundStyle(Brand.accentChrome)
-                    Button("Delete") {
+                    Button(tr("Delete")) {
                         orchestrator.deleteHFToken()
                         hasSavedToken = false
                     }
@@ -109,11 +109,11 @@ struct PublishStage: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
                     .background(textFieldBackground(focused: !token.isEmpty))
-                Text("Need a token? Get one at huggingface.co/settings/tokens (with write access).")
+                Text(tr("Need a token? Get one at huggingface.co/settings/tokens (with write access)."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
             }
-            TextField("HF handle (e.g. youssofal)", text: $handle)
+            TextField(tr("HF handle (e.g. youssofal)"), text: $handle)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Brand.typeHi)
@@ -127,7 +127,7 @@ struct PublishStage: View {
     @ViewBuilder
     private var destinationSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("DESTINATION")
+            sectionHeader(tr("DESTINATION"))
             TextField("owner/repository", text: $repoName)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
@@ -164,7 +164,7 @@ struct PublishStage: View {
     }
 
     private var licensePicker: some View {
-        Picker("License", selection: $license) {
+        Picker(tr("License"), selection: $license) {
             ForEach(licenses, id: \.spdx) { entry in
                 Text(entry.label).tag(entry.spdx)
             }
@@ -177,9 +177,9 @@ struct PublishStage: View {
     private var readmeSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                sectionHeader("README.MD PREVIEW")
+                sectionHeader(tr("README.MD PREVIEW"))
                 Spacer()
-                Button(readmeEditing ? "Preview" : "Edit") {
+                Button(readmeEditing ? tr("Preview") : tr("Edit")) {
                     readmeEditing.toggle()
                 }
                 .font(.caption2)
@@ -220,7 +220,7 @@ struct PublishStage: View {
         ForgePhaseCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("UPLOADING")
+                    Text(tr("UPLOADING"))
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(Brand.typeTertiary)
