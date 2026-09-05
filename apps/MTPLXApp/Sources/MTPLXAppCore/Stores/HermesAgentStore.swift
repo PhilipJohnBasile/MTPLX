@@ -428,7 +428,7 @@ public final class HermesAgentStore: ObservableObject {
             throw CancellationError()
         }
         activeSessionID = sessionID
-        activeSessionTitle = "New Hermes Agent"
+        activeSessionTitle = tr("New Hermes Agent")
         messages = []
         toolTraces = []
         endStreaming()
@@ -1696,7 +1696,7 @@ public final class HermesAgentStore: ObservableObject {
         payload["name"]?.stringValue
             ?? payload["tool"]?.stringValue
             ?? payload["command"]?.stringValue
-            ?? "Tool"
+            ?? tr("Tool")
     }
 
     private static func choices(from payload: [String: JSONValue]) -> [String] {

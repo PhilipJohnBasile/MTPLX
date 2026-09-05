@@ -39,7 +39,7 @@ repair re-forward of ``[x0, x1]`` is bit-identical to the verify it replaces
 (same tokens, same prefix, same weights, deterministic forward), so a rejecting
 neighbour never perturbs an accepting stream.  **That determinism is the Phase-1
 correctness contract** (proved on CPU with a fake runtime; the per-stream sha
-gate on the real model is fable-main's GPU window).
+gate on the real model is PR #391-main's GPU window).
 
 Phase-1 SCOPE HONESTY: the uniform full-B repair is CORRECT but pays the full
 ``[B,2]`` weight read again whenever ANY stream rejects — with independent

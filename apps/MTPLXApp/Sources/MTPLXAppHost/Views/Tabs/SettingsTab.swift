@@ -8,26 +8,49 @@ struct SettingsTab: View {
     @EnvironmentObject private var backend: MTPLXBackendStore
     @EnvironmentObject private var hermes: HermesAgentStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var languageStore: LanguageStore
+    @State private var languagePopoverPresented = false
 
     // Working copy of the persisted configuration. Saved on demand.
     // Live-mutable sampling/depth/reasoning knobs live in the
     // chrome-strip Inference popover — they aren't duplicated here.
-    @State private var draftConfig: MTPLXAppConfiguration = MTPLXAppConfiguration()
-    @State private var lastSyncedConfig: MTPLXAppConfiguration = MTPLXAppConfiguration()
-    @State private var isApplying = false
-    @State private var lastSaveError: String? = nil
+    // The draft is owned above this tab (`SettingsDraftStore`, injected
+    // at the app root): the dashboard rebuilds the tab on every
+    // selection, so a draft kept in `@State` here died — with every
+    // pending edit — the moment the user looked at another tab.
+    @EnvironmentObject private var drafts: SettingsDraftStore
     @State private var pendingClearAll = false
     @State private var clearingCache = false
 
     @EnvironmentObject private var router: AppRouter
 
+    private var draftConfig: MTPLXAppConfiguration {
+        get { drafts.draft }
+        nonmutating set { drafts.draft = newValue }
+    }
+
+    private var isApplying: Bool {
+        get { drafts.isApplying }
+        nonmutating set { drafts.isApplying = newValue }
+    }
+
+    private var lastSaveError: String? {
+        get { drafts.lastSaveError }
+        nonmutating set { drafts.lastSaveError = newValue }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if settingsDirty {
+                    unsavedChangesRow
+                }
                 appearanceCard
+                languageCard
                 performanceCard
                 ramCacheCard
                 kvQuantCard
+                memoryCard
                 ssdCacheCard
                 retrievalCard
                 restartRequiredCard
@@ -36,7 +59,7 @@ struct SettingsTab: View {
                 adminCard
                 aboutAndLogsCard
                 if let error = lastSaveError {
-                    Card("Last save error") {
+                    Card(tr("Last save error")) {
                         Text(error)
                             .font(.callout)
                             .foregroundStyle(Color.mtplxDanger)
@@ -46,55 +69,150 @@ struct SettingsTab: View {
             .padding(20)
         }
         .onAppear {
-            syncDrafts()
+            // Pending edits survive a tab switch; only an unedited draft
+            // follows the persisted configuration.
+            drafts.adoptIfUnedited(backend.configuration)
             Task { await hermes.prepare(configuration: backend.configuration) }
         }
         .onChange(of: backend.configuration) { _, newConfiguration in
-            syncDraftsIfUnedited(newConfiguration)
+            drafts.adoptIfUnedited(newConfiguration)
         }
         .confirmationDialog(
-            "Clear all SessionBank entries?",
+            tr("Clear all SessionBank entries?"),
             isPresented: $pendingClearAll
         ) {
-            Button("Clear All", role: .destructive) {
+            Button(tr("Clear All"), role: .destructive) {
                 clearingCache = true
                 Task {
                     defer { Task { @MainActor in clearingCache = false } }
                     try? await backend.clearCache()
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(tr("Cancel"), role: .cancel) {}
         } message: {
-            Text("Clears every saved prompt cache. Anything mid-flight keeps running.")
+            Text(tr("Clears every saved prompt cache. Anything mid-flight keeps running."))
         }
     }
 
-    private func syncDrafts() {
-        draftConfig = backend.configuration
-        lastSyncedConfig = backend.configuration
+    /// Shown at the top of the tab while the draft differs from what is
+    /// saved, so a user coming back from another tab can see that the
+    /// values on screen are pending edits, and act on them without
+    /// scrolling to the restart-required card.
+    private var unsavedChangesRow: some View {
+        let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
+        return HStack(spacing: 10) {
+            PillBadge(text: tr("Unsaved changes"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+            Text(tr("Your edits are kept while you use other tabs. Save them to apply, or revert to the saved values."))
+                .font(.caption)
+                .foregroundStyle(Brand.typeSecondary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button {
+                saveAndMaybeRestart(restart: running)
+            } label: {
+                if isApplying {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Label(running ? tr("Apply + Restart") : tr("Save"),
+                          systemImage: running ? "arrow.clockwise" : "checkmark.circle")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(isApplying)
+            Button(tr("Revert")) { revertDraft() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isApplying)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.mtplxWarning.opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.mtplxWarning.opacity(0.28), lineWidth: Brand.hairline)
+                )
+        )
     }
 
-    private func syncDraftsIfUnedited(_ newConfiguration: MTPLXAppConfiguration) {
-        if draftConfig == newConfiguration {
-            lastSyncedConfig = newConfiguration
-        } else if draftConfig == lastSyncedConfig {
-            draftConfig = newConfiguration
-            lastSyncedConfig = newConfiguration
-        }
+    private func revertDraft() {
+        drafts.reset(to: backend.configuration)
     }
 
     // MARK: - Appearance
 
     @ViewBuilder
     private var appearanceCard: some View {
-        Card("Behavior",
-             subtitle: "App preferences saved on your Mac.") {
+        Card(tr("Behavior"),
+             subtitle: tr("App preferences saved on your Mac.")) {
             VStack(alignment: .leading, spacing: 8) {
+                FormRow(
+                    label: "Appearance",
+                    caption: "Jet black, warm cream, or follow macOS."
+                ) {
+                    Picker("Appearance", selection: $themeStore.appearance) {
+                        ForEach(AppAppearance.allCases) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                }
+
+                Divider().overlay(Brand.separator)
+
                 FormToggleRow(
-                    label: "Sound on new speed record",
-                    caption: "Plays a soft chime when your Mac hits a new top speed.",
+                    label: tr("Sound on new speed record"),
+                    caption: tr("Plays a soft chime when your Mac hits a new top speed."),
                     isOn: $themeStore.soundEnabled
                 )
+            }
+        }
+    }
+
+    // MARK: - Language
+
+    /// Same searchable picker as the onboarding step, in a popover so the
+    /// card stays one row tall. Picking applies immediately: the store
+    /// activates the language and the app shell re-renders.
+    @ViewBuilder
+    private var languageCard: some View {
+        let language = languageStore.language
+        Card(tr("Language"),
+             subtitle: tr("The language MTPLX uses across the app. Changes apply immediately.")) {
+            HStack(spacing: 12) {
+                Text(language.flag)
+                    .font(.system(size: 22))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(language.nativeName)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(Brand.typeHi)
+                    Text(language.englishName)
+                        .font(.caption)
+                        .foregroundStyle(Brand.typeTertiary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(tr("Current language: %@", language.nativeName))
+                Spacer(minLength: 0)
+                Button(tr("Change…")) {
+                    languagePopoverPresented = true
+                }
+                .buttonStyle(MTPLXGhostButton())
+                .popover(isPresented: $languagePopoverPresented, arrowEdge: .bottom) {
+                    // The popover is its own window on macOS, so it applies the
+                    // appearance preference itself; without this it follows the
+                    // macOS setting and renders dark inside a light app.
+                    LanguagePickerList(onPick: { _ in languagePopoverPresented = false })
+                        .frame(width: 320, height: 400)
+                        .padding(12)
+                        .environmentObject(languageStore)
+                        .environmentObject(themeStore)
+                        .appliesAppearance()
+                }
             }
         }
     }
@@ -117,36 +235,51 @@ struct SettingsTab: View {
         // it reads "restart to apply" until the user hits Apply + Restart.
         let dirty = settingsDirty
         let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
-        Card("Performance",
-             subtitle: "Speed and batching. Needs a restart to apply.") {
-            if dirty && running {
-                PillBadge(text: "restart to apply", systemImage: "arrow.clockwise.circle.fill", tint: .mtplxWarning, emphasized: true)
+        Card(tr("Performance"),
+             subtitle: tr("Speed and batching. Needs a restart to apply.")) {
+            if (dirty || schedulingRestartPending) && running {
+                PillBadge(text: tr("restart to apply"), systemImage: "arrow.clockwise.circle.fill", tint: .mtplxWarning, emphasized: true)
             }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
-                    label: "Mode",
-                    caption: "Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Benchmark runs keep their own single-stream setup."
+                    label: tr("Mode"),
+                    caption: tr("Auto picks the best mode for what you're using. Pick a mode below to use it everywhere. Saved as soon as you pick it. Benchmark runs keep their own single-stream setup.")
                 ) {
-                    Picker("Mode", selection: schedulerPresetBinding) {
-                        Text("Auto").tag("target-default")
-                        Text("Fastest response").tag("latency")
-                        Text("Handle multiple at once").tag("throughput")
-                        Text("Long agent tasks").tag("agent")
+                    Picker(tr("Mode"), selection: schedulerPresetBinding) {
+                        Text(tr("Auto")).tag("target-default")
+                        Text(tr("Fastest response")).tag("latency")
+                        Text(tr("Handle multiple at once")).tag("throughput")
+                        Text(tr("Long agent tasks")).tag("agent")
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .frame(maxWidth: 280, alignment: .leading)
                 }
 
+                // The picker says what the next launch will use; this says
+                // what the daemon in front of you actually launched with.
+                // Issue #398 could not tell those two apart at all.
+                if running, let launched = backend.lastLaunchScheduling {
+                    Text(tr(
+                        "Running now: %@ (%@ / %@).",
+                        schedulingPresetLabel(launched.selectedPreset),
+                        launched.schedulerMode,
+                        launched.batchingPreset
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(Brand.typeSecondary)
+                    .textSelection(.enabled)
+                }
+
                 Divider().overlay(Brand.separator)
 
                 FormRow(
-                    label: "Concurrency cap",
-                    caption: "Max parallel completions in flight."
+                    label: tr("Concurrency cap"),
+                    caption: tr("Max parallel completions in flight.")
                 ) {
                     optionalIntStepper(
-                        value: $draftConfig.maxActiveRequests,
+                        value: $drafts.draft.maxActiveRequests,
                         defaultValue: defaultMaxActiveRequests,
                         range: 1...16
                     )
@@ -155,31 +288,31 @@ struct SettingsTab: View {
                 Divider().overlay(Brand.separator)
 
                 FormToggleRow(
-                    label: "Experimental MTP cohorts",
-                    caption: "Batch MTP verify steps across requests. Off = solo MTP (exactness preserved), on = experimental cohort batching.",
-                    isOn: $draftConfig.experimentalMTPCohorts
+                    label: tr("Experimental MTP cohorts"),
+                    caption: tr("Batch MTP verify steps across requests. Off = solo MTP (exactness preserved), on = experimental cohort batching."),
+                    isOn: $drafts.draft.experimentalMTPCohorts
                 )
 
                 DisclosureGroup(isExpanded: $performanceAdvancedExpanded) {
                     VStack(alignment: .leading, spacing: 6) {
                         Divider().overlay(Brand.separator).padding(.top, 6)
                         FormRow(
-                            label: "Decode batch max",
-                            caption: "Requests in a single decode step."
+                            label: tr("Decode batch max"),
+                            caption: tr("Requests in a single decode step.")
                         ) {
                             optionalIntStepper(
-                                value: $draftConfig.decodeBatchMax,
+                                value: $drafts.draft.decodeBatchMax,
                                 defaultValue: defaultDecodeBatchMax,
                                 range: 1...16
                             )
                         }
                         Divider().overlay(Brand.separator)
                         FormRow(
-                            label: "Admission window",
-                            caption: "How long the scheduler waits for peers before firing."
+                            label: tr("Admission window"),
+                            caption: tr("How long the scheduler waits for peers before firing.")
                         ) {
                             optionalDoubleStepper(
-                                value: $draftConfig.batchWaitMs,
+                                value: $drafts.draft.batchWaitMs,
                                 defaultValue: defaultBatchWaitMs,
                                 range: 0...500,
                                 step: 10,
@@ -189,8 +322,8 @@ struct SettingsTab: View {
                         }
                         Divider().overlay(Brand.separator)
                         FormRow(
-                            label: "HF download mirror",
-                            caption: "Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror."
+                            label: tr("HF download mirror"),
+                            caption: tr("Hugging Face endpoint for model downloads. Your HF token is never sent to a mirror.")
                         ) {
                             TextField(
                                 "https://hf-mirror.com",
@@ -204,7 +337,7 @@ struct SettingsTab: View {
                         }
                     }
                 } label: {
-                    Text("Advanced")
+                    Text(tr("Advanced"))
                         .font(.callout)
                         .foregroundStyle(Brand.typeSecondary)
                 }
@@ -213,32 +346,60 @@ struct SettingsTab: View {
         }
     }
 
+    /// Mode saves the moment it is picked (issue #398). It was first made
+    /// to do so because the tab's draft died on every tab switch and a
+    /// draft-only Mode was silently discarded by the very navigation the
+    /// user needs to make to restart the model. The draft now survives tab
+    /// switches (`SettingsDraftStore`), but Mode stays save-on-pick on
+    /// purpose: it is one discrete global, like Appearance and Language,
+    /// which also commit on selection, and the card's caption promises it.
     private var schedulerPresetBinding: Binding<String> {
         Binding(
             get: {
                 normalizedSchedulingPreset(draftConfig.schedulingPreset)
             },
             set: { preset in
-                draftConfig.applySchedulingPreset(normalizedSchedulingPreset(preset))
+                commitSchedulingPreset(normalizedSchedulingPreset(preset))
             }
         )
     }
 
-    private func normalizedSchedulingPreset(_ raw: String) -> String {
-        switch raw
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-        {
-        case "latency", "serial-latency":
-            return "latency"
-        case "throughput", "ar-batch-throughput":
-            return "throughput"
-        case "agent", "ar-batch-agent":
-            return "agent"
-        default:
-            return "target-default"
+    private func commitSchedulingPreset(_ preset: String) {
+        // Applied to both halves of the draft store so the pick never
+        // reads as an unsaved edit: it is persisted right below.
+        drafts.draft.applySchedulingPreset(preset)
+        drafts.lastSynced.applySchedulingPreset(preset)
+        do {
+            try backend.applySchedulingPresetSelection(preset)
+            lastSaveError = nil
+        } catch {
+            lastSaveError = tr("Apply failed: %@", String(describing: error))
         }
+    }
+
+    private func normalizedSchedulingPreset(_ raw: String) -> String {
+        MTPLXAppConfiguration.schedulingPresetSelection(raw)
+    }
+
+    private func schedulingPresetLabel(_ raw: String) -> String {
+        switch normalizedSchedulingPreset(raw) {
+        case "latency":
+            return tr("Fastest response")
+        case "throughput":
+            return tr("Handle multiple at once")
+        case "agent":
+            return tr("Long agent tasks")
+        default:
+            return tr("Auto")
+        }
+    }
+
+    /// True when the running daemon launched under a different Mode than
+    /// the one now saved. This is what makes "restart to apply" honest for
+    /// a control that no longer goes through the draft/dirty path.
+    private var schedulingRestartPending: Bool {
+        guard let launched = backend.lastLaunchScheduling else { return false }
+        return launched.selectedPreset != normalizedSchedulingPreset(draftConfig.schedulingPreset)
     }
 
     private var defaultMaxActiveRequests: Int {
@@ -330,10 +491,10 @@ struct SettingsTab: View {
     ) -> some View {
         HStack(spacing: 8) {
             if value.wrappedValue == nil {
-                Text("Preset default")
+                Text(tr("Preset default"))
                     .font(.system(.body, design: .rounded).weight(.semibold))
                     .foregroundStyle(Brand.typeSecondary)
-                Button("Override") {
+                Button(tr("Override")) {
                     value.wrappedValue = defaultValue
                 }
                 .buttonStyle(.bordered)
@@ -357,8 +518,8 @@ struct SettingsTab: View {
                     Image(systemName: "arrow.uturn.backward")
                 }
                 .buttonStyle(.borderless)
-                .help("Use the preset default")
-                .accessibilityLabel("Reset to preset default")
+                .help(tr("Use the preset default"))
+                .accessibilityLabel(tr("Reset to preset default"))
             }
         }
     }
@@ -373,10 +534,10 @@ struct SettingsTab: View {
     ) -> some View {
         HStack(spacing: 8) {
             if value.wrappedValue == nil {
-                Text("Preset default")
+                Text(tr("Preset default"))
                     .font(.system(.body, design: .rounded).weight(.semibold))
                     .foregroundStyle(Brand.typeSecondary)
-                Button("Override") {
+                Button(tr("Override")) {
                     value.wrappedValue = defaultValue
                 }
                 .buttonStyle(.bordered)
@@ -401,8 +562,8 @@ struct SettingsTab: View {
                     Image(systemName: "arrow.uturn.backward")
                 }
                 .buttonStyle(.borderless)
-                .help("Use the preset default")
-                .accessibilityLabel("Reset to preset default")
+                .help(tr("Use the preset default"))
+                .accessibilityLabel(tr("Reset to preset default"))
             }
         }
     }
@@ -411,19 +572,19 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var ramCacheCard: some View {
-        Card("Memory Cache (RAM)",
-             subtitle: "Warm prompt restore and bounded SessionBank allocation. Restart required.") {
+        Card(tr("Memory Cache (RAM)"),
+             subtitle: tr("Warm prompt restore and bounded SessionBank allocation. Restart required.")) {
             EmptyView()
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
-                    label: "Allocation policy",
-                    caption: "Target default budgets half the RAM left after the model loads; bounded uses the limits below."
+                    label: tr("Allocation policy"),
+                    caption: tr("Target default budgets half the RAM left after the model loads; bounded uses the limits below.")
                 ) {
-                    Picker("Allocation policy", selection: $draftConfig.ramSessionCachePolicy) {
-                        Text("Target default").tag("target-default")
-                        Text("Bounded").tag("bounded")
-                        Text("Minimal").tag("minimal")
+                    Picker(tr("Allocation policy"), selection: $drafts.draft.ramSessionCachePolicy) {
+                        Text(tr("Target default")).tag("target-default")
+                        Text(tr("Bounded")).tag("bounded")
+                        Text(tr("Minimal")).tag("minimal")
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -435,28 +596,28 @@ struct SettingsTab: View {
 
                     if draftConfig.ramSessionCachePolicy == "minimal" {
                         FormRow(
-                            label: "Effective cap",
-                            caption: "Keeps one tiny RAM entry and disables block-prefix restore."
+                            label: tr("Effective cap"),
+                            caption: tr("Keeps one tiny RAM entry and disables block-prefix restore.")
                         ) {
-                            Text("1 entry / 1 GB")
+                            Text(tr("1 entry / 1 GB"))
                                 .font(.system(.body, design: .rounded).weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(Brand.typeBody)
                         }
                     } else {
                         FormToggleRow(
-                            label: "Block-prefix restore",
-                            caption: "Restore a shared prompt prefix and prefill only the changed suffix.",
-                            isOn: $draftConfig.ramSessionBlockPrefixRestore
+                            label: tr("Block-prefix restore"),
+                            caption: tr("Restore a shared prompt prefix and prefill only the changed suffix."),
+                            isOn: $drafts.draft.ramSessionBlockPrefixRestore
                         )
 
                         Divider().overlay(Brand.separator)
                         FormRow(
-                            label: "Max entries",
-                            caption: "Number of warm prefixes allowed to stay in RAM."
+                            label: tr("Max entries"),
+                            caption: tr("Number of warm prefixes allowed to stay in RAM.")
                         ) {
                             Stepper(
-                                value: $draftConfig.ramSessionCacheMaxEntries,
+                                value: $drafts.draft.ramSessionCacheMaxEntries,
                                 in: 1...64
                             ) {
                                 Text("\(draftConfig.ramSessionCacheMaxEntries)")
@@ -468,22 +629,22 @@ struct SettingsTab: View {
 
                         Divider().overlay(Brand.separator)
                         FormRow(
-                            label: "Total RAM cap",
-                            caption: "Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap."
+                            label: tr("Total RAM cap"),
+                            caption: tr("Auto budgets half the RAM left after the model loads. Old prompts are evicted past the cap.")
                         ) {
                             cacheSizePicker(
-                                selection: $draftConfig.ramSessionCacheMaxSize,
+                                selection: $drafts.draft.ramSessionCacheMaxSize,
                                 values: ["auto", "1G", "2G", "4G", "8G", "16G", "24G", "32G", "48G"]
                             )
                         }
 
                         Divider().overlay(Brand.separator)
                         FormRow(
-                            label: "Per-session cap",
-                            caption: "Maximum RAM cache held by one conversation. Auto keeps it at 2/3 of the total cap."
+                            label: tr("Per-session cap"),
+                            caption: tr("Maximum RAM cache held by one conversation. Auto keeps it at 2/3 of the total cap.")
                         ) {
                             cacheSizePicker(
-                                selection: $draftConfig.ramSessionCachePerSessionMaxSize,
+                                selection: $drafts.draft.ramSessionCachePerSessionMaxSize,
                                 values: ["auto", "1G", "2G", "4G", "8G", "16G", "24G", "32G"]
                             )
                         }
@@ -507,20 +668,20 @@ struct SettingsTab: View {
         let supported = settingsKVQuantSupported(policy)
         let kvDirty = normalizedDraftConfigurationForSave().pagedKVQuantization
             != normalizedConfigurationForSave(backend.configuration).pagedKVQuantization
-        Card("KV Quantization",
-             subtitle: "Paged-attention KV cache precision. Restart required.") {
+        Card(tr("KV Quantization"),
+             subtitle: tr("Paged-attention KV cache precision. Restart required.")) {
             if kvDirty {
-                PillBadge(text: "unsaved", systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+                PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
             }
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
-                    label: "Quantization",
+                    label: tr("Quantization"),
                     caption: supported
                         ? "Off is the speed path. q8 saves memory when the selected model supports it; q4 is experimental."
-                        : policy.disabledReason ?? "KV quantization is not supported for this model."
+                        : policy.disabledReason ?? tr("KV quantization is not supported for this model.")
                 ) {
-                    Picker("Quantization", selection: kvQuantSelectionBinding(policy)) {
+                    Picker(tr("Quantization"), selection: kvQuantSelectionBinding(policy)) {
                         ForEach(modes, id: \.self) { mode in
                             Text(Self.kvQuantDisplayLabel(mode)).tag(mode)
                         }
@@ -545,23 +706,114 @@ struct SettingsTab: View {
         }
     }
 
+    // MARK: - Memory (limit + swap)
+    //
+    // Issue #431: a 128 GB Mac hit "reached memory limit" long before its
+    // real ceiling, because the engine plans against 75% of RAM and the app
+    // exposed no way past it. The reporter had to launch the bundle by hand
+    // with MTPLX_MEMORY_LIMIT_BYTES to get their model served. Issue #427:
+    // a 32 GB Mac that used to run 60-70k contexts under 2.9.x was clamped
+    // to 40960 by the same fit calculation, and asked for an "I know what
+    // I'm doing" escape hatch. Both are engine env-only knobs, so the card
+    // writes them into the daemon's launch environment.
+
+    @ViewBuilder
+    private var memoryCard: some View {
+        let memoryDirty = draftConfig.memoryLimitGB != backend.configuration.memoryLimitGB
+            || draftConfig.allowSwap != backend.configuration.allowSwap
+        Card(tr("Memory"),
+             subtitle: tr("How much of this Mac the engine may plan with. Restart required.")) {
+            if memoryDirty {
+                PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+            }
+        } content: {
+            VStack(alignment: .leading, spacing: 6) {
+                FormRow(
+                    label: tr("Memory limit"),
+                    caption: tr("Empty uses the engine's own plan, about three quarters of this Mac's memory. Raise it to serve longer contexts on a Mac with headroom.")
+                ) {
+                    HStack(spacing: 6) {
+                        TextField("", text: memoryLimitBinding)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                            .frame(maxWidth: 90)
+                        Text(tr("GB"))
+                            .font(.callout)
+                            .foregroundStyle(Brand.typeSecondary)
+                    }
+                }
+
+                Divider().overlay(Brand.separator)
+
+                FormToggleRow(
+                    label: tr("Allow swap"),
+                    caption: tr("Serve contexts larger than what fits in memory. macOS pages to SSD, so speed drops sharply, but long sessions stop being refused."),
+                    isOn: $drafts.draft.allowSwap
+                )
+
+                Divider().overlay(Brand.separator)
+
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "memorychip")
+                        .foregroundStyle(Brand.typeSecondary)
+                    Text(memoryPlanCaption)
+                        .font(.caption)
+                        .foregroundStyle(Brand.typeSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private var memoryLimitBinding: Binding<String> {
+        Binding(
+            get: { draftConfig.memoryLimitGB.map(String.init) ?? "" },
+            set: { raw in
+                let digits = raw.filter(\.isNumber)
+                draftConfig.memoryLimitGB = MTPLXAppConfiguration.normalizedMemoryLimitGB(
+                    Int(digits)
+                )
+            }
+        )
+    }
+
+    /// What the running engine actually planned, so the number in the field
+    /// can be compared against a measured effect instead of a guess.
+    private var memoryPlanCaption: String {
+        guard let plan = backend.memoryPlan, plan.available else {
+            return tr("Start the model to see the plan the engine computes for this Mac.")
+        }
+        let ram = Format.bytes(plan.totalRamBytes)
+        let usable = Format.bytes(plan.usableBytes)
+        guard let window = plan.contextWindowResolved, window > 0 else {
+            return tr("Engine plan: %@ usable of %@ memory.", usable, ram)
+        }
+        return tr(
+            "Engine plan: %@ usable of %@ memory, context window %lld tokens.",
+            usable,
+            ram,
+            window
+        )
+    }
+
     private var kvQuantCaption: String {
         let policy = settingsKVQuantPolicy
         guard settingsKVQuantSupported(policy) else {
-            return policy.disabledReason ?? "KV quantization is not supported for this model."
+            return policy.disabledReason ?? tr("KV quantization is not supported for this model.")
         }
         switch kvQuantSelectionBinding(policy).wrappedValue {
         case "q8":
-            return "Stores KV in int8 with per-token scales. Use it when memory matters more than 20k decode speed."
+            return tr("Stores KV in int8 with per-token scales. Use it when memory matters more than 20k decode speed.")
         case "q4":
-            return "Packs KV into 4-bit nibbles with per-token scales; keep as an experiment until measured."
+            return tr("Packs KV into 4-bit nibbles with per-token scales; keep as an experiment until measured.")
         default:
-            return "Uses the model's native KV dtype."
+            return tr("Uses the model's native KV dtype.")
         }
     }
 
     private func cacheSizePicker(selection: Binding<String>, values: [String]) -> some View {
-        Picker("Cache size", selection: selection) {
+        Picker(tr("Cache size"), selection: selection) {
             ForEach(values, id: \.self) { value in
                 Text(Self.cacheSizeDisplayLabel(value)).tag(value)
             }
@@ -574,7 +826,7 @@ struct SettingsTab: View {
     static func cacheSizeDisplayLabel(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespaces)
         if trimmed.lowercased() == "auto" {
-            return "Auto"
+            return tr("Auto")
         }
         for (suffix, unit) in [("GB", "GB"), ("TB", "TB"), ("G", "GB"), ("T", "TB")] {
             if trimmed.uppercased().hasSuffix(suffix) {
@@ -592,7 +844,7 @@ struct SettingsTab: View {
             Image(systemName: "memorychip")
                 .foregroundStyle(Brand.typeSecondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Current RAM cache")
+                Text(tr("Current RAM cache"))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
                 HStack(spacing: 6) {
@@ -601,11 +853,11 @@ struct SettingsTab: View {
                         .monospacedDigit()
                         .foregroundStyle(Brand.typeBody)
                     let entries = bank.entries ?? bank.prefixes?.count ?? 0
-                    Text("· \(entries) entr\(entries == 1 ? "y" : "ies")")
+                    Text(entries == 1 ? tr("· 1 entry") : tr("· %lld entries", entries))
                         .font(.caption)
                         .foregroundStyle(Brand.typeSecondary)
                     if let maxBytes = bank.maxBytes {
-                        Text("· cap \(Format.bytes(maxBytes))")
+                        Text(tr("· cap %@", Format.bytes(maxBytes)))
                             .font(.caption)
                             .foregroundStyle(Brand.typeSecondary)
                     }
@@ -620,20 +872,20 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var ssdCacheCard: some View {
-        Card("Persistent Cache (SSD)",
-             subtitle: "Cached prompts survive an engine restart. Restart required after changes.") {
+        Card(tr("Persistent Cache (SSD)"),
+             subtitle: tr("Cached prompts survive an engine restart. Restart required after changes.")) {
             EmptyView()
         } content: {
             VStack(alignment: .leading, spacing: 6) {
                 FormRow(
-                    label: "Policy",
+                    label: tr("Policy"),
                     caption: ssdPolicyCaption
                 ) {
-                    Picker("Policy", selection: $draftConfig.ssdSessionCache) {
-                        Text("Target default").tag("target-default")
-                        Text("Off").tag("off")
-                        Text("Read + write").tag("on")
-                        Text("Write-only").tag("write-only")
+                    Picker(tr("Policy"), selection: $drafts.draft.ssdSessionCache) {
+                        Text(tr("Target default")).tag("target-default")
+                        Text(tr("Off")).tag("off")
+                        Text(tr("Read + write")).tag("on")
+                        Text(tr("Write-only")).tag("write-only")
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -644,7 +896,7 @@ struct SettingsTab: View {
                     Divider().overlay(Brand.separator)
                     HStack(spacing: 8) {
                         PillBadge(
-                            text: "unsaved",
+                            text: tr("unsaved"),
                             systemImage: "circle.fill",
                             tint: .mtplxWarning,
                             emphasized: true
@@ -656,7 +908,7 @@ struct SettingsTab: View {
                             if isApplying {
                                 ProgressView().controlSize(.mini)
                             } else {
-                                Label(daemonRunning ? "Apply + Restart" : "Save",
+                                Label(daemonRunning ? tr("Apply + Restart") : tr("Save"),
                                       systemImage: daemonRunning ? "arrow.clockwise" : "checkmark.circle")
                             }
                         }
@@ -669,8 +921,8 @@ struct SettingsTab: View {
                 if effectiveSSDSessionCache != "off" {
                     Divider().overlay(Brand.separator)
                     FormRow(
-                        label: "Folder",
-                        caption: "Defaults to ~/.mtplx/session-bank when blank."
+                        label: tr("Folder"),
+                        caption: tr("Defaults to ~/.mtplx/session-bank when blank.")
                     ) {
                         HStack(spacing: 6) {
                             TextField("",
@@ -685,25 +937,25 @@ struct SettingsTab: View {
                                     NSWorkspace.shared.open(URL(fileURLWithPath: dir))
                                 } label: { Image(systemName: "folder") }
                                     .buttonStyle(.borderless)
-                                    .help("Open folder in Finder")
-                                    .accessibilityLabel("Reveal in Finder")
+                                    .help(tr("Open folder in Finder"))
+                                    .accessibilityLabel(tr("Reveal in Finder"))
                             }
                         }
                     }
 
                     Divider().overlay(Brand.separator)
                     FormRow(
-                        label: "Max size",
-                        caption: "Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap."
+                        label: tr("Max size"),
+                        caption: tr("Auto scales with your Mac's RAM tier (16 GB to 100 GB). Old entries are evicted to stay under the cap.")
                     ) {
-                        Picker("Max size", selection: $draftConfig.ssdSessionCacheMaxSize) {
-                            Text("Auto").tag("auto")
-                            Text("10 GB").tag("10GB")
-                            Text("50 GB").tag("50GB")
-                            Text("100 GB").tag("100GB")
-                            Text("250 GB").tag("250GB")
-                            Text("500 GB").tag("500GB")
-                            Text("1 TB").tag("1TB")
+                        Picker(tr("Max size"), selection: $drafts.draft.ssdSessionCacheMaxSize) {
+                            Text(tr("Auto")).tag("auto")
+                            Text(tr("10 GB")).tag("10GB")
+                            Text(tr("50 GB")).tag("50GB")
+                            Text(tr("100 GB")).tag("100GB")
+                            Text(tr("250 GB")).tag("250GB")
+                            Text(tr("500 GB")).tag("500GB")
+                            Text(tr("1 TB")).tag("1TB")
                         }
                         .pickerStyle(.menu)
                         .labelsHidden()
@@ -712,15 +964,15 @@ struct SettingsTab: View {
 
                     Divider().overlay(Brand.separator)
                     FormRow(
-                        label: "Save prompts \u{2265}",
-                        caption: "Shorter prompts aren't worth the write churn."
+                        label: tr("Save prompts ≥"),
+                        caption: tr("Shorter prompts aren't worth the write churn.")
                     ) {
                         Stepper(
-                            value: $draftConfig.ssdSessionCacheMinPrefixTokens,
+                            value: $drafts.draft.ssdSessionCacheMinPrefixTokens,
                             in: 128...8192,
                             step: 128
                         ) {
-                            Text("\(draftConfig.ssdSessionCacheMinPrefixTokens) tok")
+                            Text(tr("%lld tok", draftConfig.ssdSessionCacheMinPrefixTokens))
                                 .font(.system(.body, design: .rounded).weight(.semibold))
                                 .monospacedDigit()
                                 .frame(width: 96, alignment: .leading)
@@ -737,12 +989,12 @@ struct SettingsTab: View {
     }
 
     private var ssdPolicyCaption: String {
-        let target = draftLaunchTarget?.title ?? "this target"
+        let target = draftLaunchTarget?.title ?? tr("this target")
         let targetDefault = defaultSSDSessionCache(for: LaunchTarget(rawValue: draftConfig.lastLaunchTarget))
         let targetDefaultLabel = targetDefault == "off"
             ? "off"
             : (targetDefault == "write-only" ? "write-only" : "read + write")
-        return "Target default is \(targetDefaultLabel) for \(target). Explicit choices override every launch target."
+        return tr("Target default is %@ for %@. Explicit choices override every launch target.", targetDefaultLabel, target)
     }
 
     private var ssdCacheDirty: Bool {
@@ -789,50 +1041,50 @@ struct SettingsTab: View {
             Image(systemName: "internaldrive")
                 .foregroundStyle(Brand.typeSecondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Current usage")
+                Text(tr("Current usage"))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
                 FlowLayout(spacing: 6) {
-                    Text("disk \(Format.bytes(diskBytes))")
+                    Text(tr("disk %@", Format.bytes(diskBytes)))
                         .font(.system(.callout, design: .rounded).weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Brand.typeBody)
                     if let maxBytes {
-                        Text("/ cap \(Format.bytes(maxBytes))")
+                        Text(tr("/ cap %@", Format.bytes(maxBytes)))
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     if livePhysicalBytes != diskBytes {
-                        Text("\u{00B7} live \(Format.bytes(livePhysicalBytes))")
+                        Text(tr("· live %@", Format.bytes(livePhysicalBytes)))
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     if untrackedBytes > 0 {
-                        Text("\u{00B7} untracked \(Format.bytes(untrackedBytes))")
+                        Text(tr("· untracked %@", Format.bytes(untrackedBytes)))
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(Brand.warning)
                     }
                     if scanPending {
-                        Text("\u{00B7} scanning")
+                        Text(tr("\u{00B7} scanning"))
                             .font(.caption)
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     if let logicalBytes, logicalBytes != livePhysicalBytes {
-                        Text("\u{00B7} logical \(Format.bytes(logicalBytes))")
+                        Text(tr("· logical %@", Format.bytes(logicalBytes)))
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     if let entries = cold.entries {
-                        Text("\u{00B7} \(entries) entr\(entries == 1 ? "y" : "ies")")
+                        Text(entries == 1 ? tr("· 1 entry") : tr("· %lld entries", entries))
                             .font(.caption)
                             .foregroundStyle(Brand.typeSecondary)
                     }
                     if let ratio = cold.dedupeRatio, ratio > 0 {
-                        Text("\u{00B7} \(Int((ratio * 100).rounded()))% deduped")
+                        Text(tr("· %lld%% deduped", Int((ratio * 100).rounded())))
                             .font(.caption)
                             .foregroundStyle(Brand.typeSecondary)
                     }
@@ -841,7 +1093,7 @@ struct SettingsTab: View {
             Spacer()
             if cold.restorable == true {
                 PillBadge(
-                    text: "restorable",
+                    text: tr("restorable"),
                     systemImage: "checkmark.seal",
                     tint: Brand.success
                 )
@@ -881,13 +1133,13 @@ struct SettingsTab: View {
     @ViewBuilder
     private var retrievalCard: some View {
         Card(
-            "Retrieval endpoints",
-            subtitle: "Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only."
+            tr("Retrieval endpoints"),
+            subtitle: tr("Serve embeddings and reranking from this daemon. Leave empty to keep MTPLX chat-only.")
         ) {
             VStack(alignment: .leading, spacing: 10) {
                 FormRow(
-                    label: "Embedding models",
-                    caption: "One per line — a Hugging Face id or local path, optionally REF=served-id. Serves /v1/embeddings."
+                    label: tr("Embedding models"),
+                    caption: tr("One per line — a Hugging Face id or local path, optionally REF=served-id. Serves /v1/embeddings.")
                 ) {
                     TextField(
                         "mlx-community/Qwen3-Embedding-8B-4bit-DWQ",
@@ -902,8 +1154,8 @@ struct SettingsTab: View {
                 Divider().overlay(Brand.separator)
 
                 FormRow(
-                    label: "Reranker models",
-                    caption: "Serves /v1/rerank. Listing the same reference here and above loads one copy of the weights for both roles."
+                    label: tr("Reranker models"),
+                    caption: tr("Serves /v1/rerank. Listing the same reference here and above loads one copy of the weights for both roles.")
                 ) {
                     TextField(
                         "vserifsaglam/Qwen3-Reranker-4B-4bit-MLX",
@@ -918,8 +1170,8 @@ struct SettingsTab: View {
                 Divider().overlay(Brand.separator)
 
                 FormRow(
-                    label: "Release when idle",
-                    caption: "Minutes of inactivity before retrieval weights are unloaded. 0 keeps them resident; they reload on the next request."
+                    label: tr("Release when idle"),
+                    caption: tr("Minutes of inactivity before retrieval weights are unloaded. 0 keeps them resident; they reload on the next request.")
                 ) {
                     TextField(
                         "0",
@@ -936,11 +1188,11 @@ struct SettingsTab: View {
                 Divider().overlay(Brand.separator)
 
                 FormRow(
-                    label: "Models kept resident",
-                    caption: "Retrieval models load on first request. Beyond this count the least recently used one is unloaded."
+                    label: tr("Models kept resident"),
+                    caption: tr("Retrieval models load on first request. Beyond this count the least recently used one is unloaded.")
                 ) {
                     Stepper(
-                        value: $draftConfig.retrievalMaxResident,
+                        value: $drafts.draft.retrievalMaxResident,
                         in: 1...8
                     ) {
                         Text("\(draftConfig.retrievalMaxResident)")
@@ -957,11 +1209,11 @@ struct SettingsTab: View {
         let dirty = settingsDirty
         let running = backend.daemonState.kind == .running || backend.daemonState.kind == .warming
 
-        Card("Restart-Required Settings",
-             subtitle: "Changing these restarts the engine. Changes are saved to \(settingsFilePathHint).") {
+        Card(tr("Restart-Required Settings"),
+             subtitle: tr("Changing these restarts the engine. Changes are saved to %@.", settingsFilePathHint)) {
             HStack(spacing: 8) {
                 if dirty {
-                    PillBadge(text: "unsaved", systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
+                    PillBadge(text: tr("unsaved"), systemImage: "circle.fill", tint: .mtplxWarning, emphasized: true)
                 }
                 Button {
                     saveAndMaybeRestart(restart: running)
@@ -969,14 +1221,14 @@ struct SettingsTab: View {
                     if isApplying {
                         ProgressView().controlSize(.mini)
                     } else {
-                        Label(running ? "Apply + Restart" : "Save",
+                        Label(running ? tr("Apply + Restart") : tr("Save"),
                               systemImage: running ? "arrow.clockwise" : "checkmark.circle")
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(!dirty || isApplying)
-                Button("Revert") { draftConfig = backend.configuration }
+                Button(tr("Revert")) { revertDraft() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(!dirty)
@@ -991,27 +1243,26 @@ struct SettingsTab: View {
             // row now uses `FormRow` / `FormToggleRow` so the label
             // column is the same 200pt across every card in the tab.
             VStack(alignment: .leading, spacing: 4) {
-                FormRow(label: "Model") {
-                    TextField("", text: $draftConfig.model)
+                FormRow(label: tr("Model")) {
+                    TextField("", text: $drafts.draft.model)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
                 }
 
                 FormRow(
-                    label: "Profile",
-                    caption: "Auto picks the recommended profile for the "
-                        + "selected model — Turbo for the 27B and Flash-Next models."
+                    label: tr("Profile"),
+                    caption: tr("Auto picks the recommended profile for the selected model — Turbo for the 27B and Flash-Next models.")
                 ) {
                     // Only persistable profiles may appear here; a stray
                     // tag value persists into config and kills serve at
                     // argparse ("auto" is resolved to a concrete engine
                     // profile before launch). Max fans is the Fan mode
                     // row, not a profile.
-                    Picker("Profile", selection: $draftConfig.profile) {
-                        Text("Auto (recommended)").tag("auto")
-                        Text("Turbo").tag("turbo")
-                        Text("Sustained").tag("sustained")
-                        Text("Performance Cold (Burst)").tag("performance-cold")
+                    Picker(tr("Profile"), selection: $drafts.draft.profile) {
+                        Text(tr("Auto (recommended)")).tag("auto")
+                        Text(tr("Turbo")).tag("turbo")
+                        Text(tr("Sustained")).tag("sustained")
+                        Text(tr("Performance Cold (Burst)")).tag("performance-cold")
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
@@ -1019,8 +1270,8 @@ struct SettingsTab: View {
                 }
 
                 FormRow(
-                    label: "Executable path",
-                    caption: "Defaults to mtplx in PATH if blank."
+                    label: tr("Executable path"),
+                    caption: tr("Defaults to mtplx in PATH if blank.")
                 ) {
                     TextField(
                         "mtplx (in PATH)",
@@ -1033,17 +1284,17 @@ struct SettingsTab: View {
                     .font(.system(.callout, design: .monospaced))
                 }
 
-                FormRow(label: "Host / Port") {
+                FormRow(label: tr("Host / Port")) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
-                            TextField("127.0.0.1", text: $draftConfig.host)
+                            TextField("127.0.0.1", text: $drafts.draft.host)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 160)
                             Text(":")
                                 .foregroundStyle(Brand.typeTertiary)
                             TextField(
                                 "8000",
-                                value: $draftConfig.port,
+                                value: $drafts.draft.port,
                                 format: .number.grouping(.never)
                             )
                             .textFieldStyle(.roundedBorder)
@@ -1053,7 +1304,7 @@ struct SettingsTab: View {
                             Text(
                                 MTPLXServerURLs.isWildcardBind(draftConfig.host)
                                     ? "Serves on every interface (LAN). An API key is required."
-                                    : "Non-localhost host: an API key is required."
+                                    : tr("Non-localhost host: an API key is required.")
                             )
                             .font(.caption)
                             .foregroundStyle(
@@ -1065,17 +1316,17 @@ struct SettingsTab: View {
                     }
                 }
 
-                FormRow(label: "Generation mode") {
-                    Picker("Mode", selection: $draftConfig.generationMode) {
-                        Text("MTP").tag("mtp")
-                        Text("Baseline").tag("ar")
+                FormRow(label: tr("Generation mode")) {
+                    Picker(tr("Mode"), selection: $drafts.draft.generationMode) {
+                        Text(tr("MTP")).tag("mtp")
+                        Text(tr("Baseline")).tag("ar")
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .frame(maxWidth: 160, alignment: .leading)
                 }
 
-                FormRow(label: "Context window") {
+                FormRow(label: tr("Context window")) {
                     HStack(spacing: 8) {
                         TextField(
                             "auto",
@@ -1084,16 +1335,16 @@ struct SettingsTab: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 120)
-                        Text("tokens")
+                        Text(tr("tokens"))
                             .font(.caption)
                             .foregroundStyle(Brand.typeTertiary)
-                        Text("max \(Self.formatTokens(settingsModelMaxContext))")
+                        Text(tr("max %@", Self.formatTokens(settingsModelMaxContext)))
                             .font(.caption)
                             .foregroundStyle(Brand.typeTertiary)
                     }
                 }
 
-                FormRow(label: "API key (optional)") {
+                FormRow(label: tr("API key (optional)")) {
                     SecureField(
                         "none",
                         text: Binding(
@@ -1106,13 +1357,13 @@ struct SettingsTab: View {
                 }
 
                 FormRow(
-                    label: "Agent workspace",
-                    caption: "Pi and Hermes terminal tools start in this folder."
+                    label: tr("Agent workspace"),
+                    caption: tr("Pi and Hermes terminal tools start in this folder.")
                 ) {
                     HStack(spacing: 8) {
                         TextField(
                             MTPLXAppConfiguration.defaultHermesWorkspacePath(),
-                            text: $draftConfig.hermesWorkspacePath
+                            text: $drafts.draft.hermesWorkspacePath
                         )
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
@@ -1126,35 +1377,35 @@ struct SettingsTab: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .help("Choose agent workspace")
-                        .accessibilityLabel("Choose agent workspace")
+                        .help(tr("Choose agent workspace"))
+                        .accessibilityLabel(tr("Choose agent workspace"))
                     }
                 }
 
                 Divider().overlay(Brand.separator).padding(.vertical, 4)
 
                 FormToggleRow(
-                    label: "Load MTP head",
-                    caption: "Disable to fall back to baseline (no speculation).",
-                    isOn: $draftConfig.loadMTP
+                    label: tr("Load MTP head"),
+                    caption: tr("Disable to fall back to baseline (no speculation)."),
+                    isOn: $drafts.draft.loadMTP
                 )
 
                 FormToggleRow(
-                    label: "Enable thermal polling",
-                    caption: "Required to verify fan ramp before benchmarks.",
-                    isOn: $draftConfig.enableThermalPolling
+                    label: tr("Enable thermal polling"),
+                    caption: tr("Required to verify fan ramp before benchmarks."),
+                    isOn: $drafts.draft.enableThermalPolling
                 )
 
                 FormToggleRow(
-                    label: "Start MTPLX when the app opens",
-                    caption: "Otherwise you start MTPLX from the toolbar manually.",
-                    isOn: $draftConfig.launchDaemonOnOpen
+                    label: tr("Start MTPLX when the app opens"),
+                    caption: tr("Otherwise you start MTPLX from the toolbar manually."),
+                    isOn: $drafts.draft.launchDaemonOnOpen
                 )
 
                 FormToggleRow(
-                    label: "Restart this session's MTPLX after a crash",
-                    caption: "Applies to daemons launched after enabling this setting. Retries up to three times with backoff; Stop cancels pending retries.",
-                    isOn: $draftConfig.automaticDaemonRestart
+                    label: tr("Restart this session's MTPLX after a crash"),
+                    caption: tr("Applies to daemons launched after enabling this setting. Retries up to three times with backoff; Stop cancels pending retries."),
+                    isOn: $drafts.draft.automaticDaemonRestart
                 )
                 if let restartStatusText {
                     Text(restartStatusText)
@@ -1180,20 +1431,20 @@ struct SettingsTab: View {
             guard draftConfig.automaticDaemonRestart else { return nil }
             switch backend.daemonRestartEligibility {
             case .adoptedPriorSession:
-                return "This adopted prior-session daemon is not protected. Start a fresh daemon."
+                return tr("This adopted prior-session daemon is not protected. Start a fresh daemon.")
             case .currentSessionUnprotected:
-                return "This daemon was launched before restart protection was enabled. Start a fresh daemon."
+                return tr("This daemon was launched before restart protection was enabled. Start a fresh daemon.")
             case .noDaemon, .currentSessionProtected:
                 return nil
             }
         case .scheduled(let attempt, let delay):
-            return "Restart \(attempt) scheduled in \(String(format: "%.1f", delay))s."
+            return tr("Restart %lld scheduled in %.1fs.", attempt, delay)
         case .restarting(let attempt):
-            return "Restarting MTPLX (attempt \(attempt))."
+            return tr("Restarting MTPLX (attempt %lld).", attempt)
         case .runningAfterRestart(let attempt):
-            return "Recovered automatically on restart \(attempt)."
+            return tr("Recovered automatically on restart %lld.", attempt)
         case .exhausted(let attempts, _):
-            return "Automatic recovery stopped after \(attempts) attempts."
+            return tr("Automatic recovery stopped after %lld attempts.", attempts)
         }
     }
 
@@ -1204,8 +1455,8 @@ struct SettingsTab: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
-        panel.prompt = "Use"
-        panel.message = "Choose the project folder Hermes should use for terminal and file tools."
+        panel.prompt = tr("Use")
+        panel.message = tr("Choose the project folder Hermes should use for terminal and file tools.")
         let current = MTPLXAppConfiguration.normalizedHermesWorkspacePath(
             draftConfig.hermesWorkspacePath
         )
@@ -1225,15 +1476,15 @@ struct SettingsTab: View {
         let maxMs = bounds?.maxMs ?? 5000
         let perfLockMs = bounds?.performanceLockMs ?? 1000
         FormRow(
-            label: "Stream cadence",
-            caption: "Performance Lock overrides this to \(perfLockMs) ms."
+            label: tr("Stream cadence"),
+            caption: tr("Performance Lock overrides this to %lld ms.", perfLockMs)
         ) {
             Stepper(
-                value: $draftConfig.streamSnapshotIntervalMs,
+                value: $drafts.draft.streamSnapshotIntervalMs,
                 in: minMs...maxMs,
                 step: 50
             ) {
-                Text("\(draftConfig.streamSnapshotIntervalMs) ms")
+                Text(tr("%lld ms", draftConfig.streamSnapshotIntervalMs))
                     .font(.system(.body, design: .rounded).weight(.medium))
                     .monospacedDigit()
                     .frame(minWidth: 72, alignment: .leading)
@@ -1245,17 +1496,17 @@ struct SettingsTab: View {
         isApplying = true
         lastSaveError = nil
         let config = normalizedDraftConfigurationForSave()
+        // The draft store outlives this view, so a save that finishes
+        // after the user has moved to another tab still lands.
+        let drafts = self.drafts
         Task {
             do {
                 try await backend.applyConfiguration(config, restartIfRunning: restart)
-                await MainActor.run {
-                    draftConfig = config
-                    lastSyncedConfig = config
-                }
+                drafts.reset(to: config)
             } catch {
-                lastSaveError = "Apply failed: \(error)"
+                drafts.lastSaveError = tr("Apply failed: %@", String(describing: error))
             }
-            await MainActor.run { isApplying = false }
+            drafts.isApplying = false
         }
     }
 
@@ -1311,7 +1562,7 @@ struct SettingsTab: View {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_supported",
-                disabledReason: "KV quantization is not supported for Gemma."
+                disabledReason: tr("KV quantization is not supported for Gemma.")
             )
         case "step":
             return KVQuantPolicy(
@@ -1319,7 +1570,7 @@ struct SettingsTab: View {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_supported",
-                disabledReason: "KV quantization is not supported for Step."
+                disabledReason: tr("KV quantization is not supported for Step.")
             )
         case "qwen4_exp":
             // Mirrors QWEN4_EXP_KV_QUANT_POLICY in backends/descriptors.py:
@@ -1330,7 +1581,7 @@ struct SettingsTab: View {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_supported",
-                disabledReason: "Flash-Next keeps KV on 12 of 48 layers (~24 KB/token), and its QSA attention has no validated quantized-cache lane yet."
+                disabledReason: tr("Flash-Next keeps KV on 12 of 48 layers (~24 KB/token), and its QSA attention has no validated quantized-cache lane yet.")
             )
         default:
             return KVQuantPolicy(
@@ -1338,7 +1589,7 @@ struct SettingsTab: View {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_supported",
-                disabledReason: "KV quantization is not supported for this model."
+                disabledReason: tr("KV quantization is not supported for this model.")
             )
         }
     }
@@ -1375,7 +1626,7 @@ struct SettingsTab: View {
     }
 
     private static func kvQuantDisplayLabel(_ mode: String) -> String {
-        mode == "off" ? "Off" : mode
+        mode == "off" ? tr("Off") : mode
     }
 
     private var settingsModelMaxContext: Int {
@@ -1456,7 +1707,7 @@ struct SettingsTab: View {
 
     private static func formatTokens(_ value: Int) -> String {
         if value >= 1_000_000 {
-            return String(format: "%.1fM", Double(value) / 1_000_000.0)
+            return tr("%.1fM", Double(value) / 1_000_000.0)
         }
         if value >= 1_000 {
             return "\(value / 1_000)K"
@@ -1468,12 +1719,12 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var hermesToolTruthCard: some View {
-        Card("Hermes", subtitle: "Agent handoff, tools, and gateway state.") {
+        Card("Hermes", subtitle: tr("Agent handoff, tools, and gateway state.")) {
             HStack(spacing: 8) {
                 Button {
                     Task { await hermes.prepare(configuration: backend.configuration) }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label(tr("Refresh"), systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -1533,30 +1784,30 @@ struct SettingsTab: View {
                 Divider().overlay(Brand.separator)
 
                 if let status = hermes.installStatus {
-                    FormRow(label: "Tools") {
+                    FormRow(label: tr("Tools")) {
                         statusText(status.enabledToolsets.joined(separator: ", "))
                     }
                     if let version = status.versionSummary {
-                        FormRow(label: "Version") { statusText(version) }
+                        FormRow(label: tr("Version")) { statusText(version) }
                     }
                     if let update = status.updateSummary {
-                        FormRow(label: "Update") { statusText(update, color: Brand.warning) }
+                        FormRow(label: tr("Update")) { statusText(update, color: Brand.warning) }
                     }
                     if let updateCommand = status.updateCommand, status.updateSummary != nil {
-                        FormRow(label: "Command") { statusText(updateCommand) }
+                        FormRow(label: tr("Command")) { statusText(updateCommand) }
                     }
                     if let gateway = status.gatewaySummary {
-                        FormRow(label: "Gateway") {
+                        FormRow(label: tr("Gateway")) {
                             statusText(gateway, color: hermesGatewayColor(for: status.gatewayHealth))
                         }
                     }
                     if status.gatewayNeedsRepair {
-                        FormRow(label: "Repair") {
+                        FormRow(label: tr("Repair")) {
                             Button {
                                 Task { await hermes.repairGateway() }
                             } label: {
                                 Label(
-                                    hermes.gatewayRepairInFlight ? "Repairing" : "Repair Gateway",
+                                    hermes.gatewayRepairInFlight ? tr("Repairing") : tr("Repair Gateway"),
                                     systemImage: "arrow.triangle.2.circlepath"
                                 )
                             }
@@ -1566,24 +1817,24 @@ struct SettingsTab: View {
                         }
                     }
                     if let repairMessage = hermes.gatewayRepairMessage {
-                        FormRow(label: "Repair result") {
+                        FormRow(label: tr("Repair result")) {
                             statusText(repairMessage)
                         }
                     }
                     ForEach(status.integrationSummaries.prefix(3), id: \.self) { item in
-                        FormRow(label: "Messaging") { statusText(item) }
+                        FormRow(label: tr("Messaging")) { statusText(item) }
                     }
                     ForEach(status.warnings.prefix(2), id: \.self) { warning in
-                        FormRow(label: "Warning") { statusText(warning, color: Brand.warning) }
+                        FormRow(label: tr("Warning")) { statusText(warning, color: Brand.warning) }
                     }
-                    FormRow(label: "Capability") {
+                    FormRow(label: tr("Capability")) {
                         statusText(status.capabilitySummary)
                     }
                 } else {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Checking Hermes")
+                        Text(tr("Checking Hermes"))
                             .font(.callout)
                             .foregroundStyle(Brand.typeSecondary)
                     }
@@ -1711,16 +1962,16 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var thermalCard: some View {
-        Card("Thermal",
-             subtitle: "Smart boosts fans only during generation; Max stays available for sustained benchmark runs.") {
+        Card(tr("Thermal"),
+             subtitle: tr("Smart boosts fans only during generation; Max stays available for sustained benchmark runs.")) {
             FanModeToggle()
         } content: {
             VStack(alignment: .leading, spacing: 10) {
                 FormRow(
-                    label: "Fan Mode",
-                    caption: "Default uses Apple's curve. Smart boosts during requests. Max pins verified fans."
+                    label: tr("Fan Mode"),
+                    caption: tr("Default uses Apple's curve. Smart boosts during requests. Max pins verified fans.")
                 ) {
-                    Picker("Fan Mode", selection: fanModeSelectionBinding) {
+                    Picker(tr("Fan Mode"), selection: fanModeSelectionBinding) {
                         ForEach(MTPLXFanMode.allCases, id: \.self) { mode in
                             Text(mode.title).tag(mode.rawValue)
                         }
@@ -1734,14 +1985,14 @@ struct SettingsTab: View {
                     if let max = thermal.maxRpm, !fanRpms.isEmpty {
                         let verified = fanRpms.allSatisfy { Double($0) >= Double(max) * 0.9 }
                         PillBadge(
-                            text: verified ? "fan ramp verified" : "fan ramp pending",
+                            text: verified ? tr("fan ramp verified") : tr("fan ramp pending"),
                             systemImage: verified ? "checkmark.seal.fill" : "clock",
                             tint: verified ? Brand.success : Brand.warning,
                             emphasized: !verified
                         )
                     }
                 } else if !backend.configuration.enableThermalPolling {
-                    Text("Turn on Thermal Polling above to confirm fan state.")
+                    Text(tr("Turn on Thermal Polling above to confirm fan state."))
                         .font(.caption)
                         .foregroundStyle(Brand.textHighlight.opacity(0.65))
                 }
@@ -1753,13 +2004,13 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var adminCard: some View {
-        Card("Reset", subtitle: "Can't be undone.") {
+        Card(tr("Reset"), subtitle: tr("Can't be undone.")) {
             VStack(alignment: .leading, spacing: 10) {
                 Button {
                     pendingClearAll = true
                 } label: {
                     HStack {
-                        Label("Clear prompt cache", systemImage: "trash")
+                        Label(tr("Clear prompt cache"), systemImage: "trash")
                         Spacer()
                         if clearingCache {
                             ProgressView().controlSize(.mini)
@@ -1768,7 +2019,7 @@ struct SettingsTab: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
-                Text("To stop or restart the model, use the play button in the top bar.")
+                Text(tr("To stop or restart the model, use the play button in the top bar."))
                     .font(.caption2)
                     .foregroundStyle(Brand.textHighlight.opacity(0.55))
             }
@@ -1779,13 +2030,13 @@ struct SettingsTab: View {
 
     @ViewBuilder
     private var aboutAndLogsCard: some View {
-        Card("Info") {
+        Card(tr("Info")) {
             VStack(alignment: .leading, spacing: 10) {
                 Button {
                     router.presentAbout()
                 } label: {
                     HStack {
-                        Label("About MTPLX", systemImage: "info.circle")
+                        Label(tr("About MTPLX"), systemImage: "info.circle")
                         Spacer()
                         Image(systemName: "chevron.right")
                             .font(.caption)
@@ -1799,7 +2050,7 @@ struct SettingsTab: View {
                     router.presentLogs()
                 } label: {
                     HStack {
-                        Label("Open Logs (Cmd-Shift-L)", systemImage: "doc.text")
+                        Label(tr("Open Logs (Cmd-Shift-L)"), systemImage: "doc.text")
                         Spacer()
                         Image(systemName: "chevron.right")
                             .font(.caption)
