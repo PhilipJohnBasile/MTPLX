@@ -1,4 +1,4 @@
-name: Repair additive PR conflicts
+name: Repair remaining bounded PR conflicts
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve and push additive conflicts
+      - name: Resolve and push bounded conflicts
         shell: bash
         run: |
           set -euo pipefail
@@ -31,92 +31,162 @@ jobs:
             git clean -fd
             git fetch origin "$b"
             git checkout -B "$b" "origin/$b"
+            set +e
             git merge --no-commit --no-ff -X ours upstream/main
+            local rc=$?
+            set -e
+            echo "merge rc=$rc for $b"
           }
+
           finish() {
             local b="$1"
-            if git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.swift' '*.py' '*.ts' '*.tsx'; then
-              echo "conflict markers remain in $b" >&2; exit 1
-            fi
-            git diff --check
             git add -A
+            local unresolved
+            unresolved="$(git diff --name-only --diff-filter=U)"
+            if [ -n "$unresolved" ]; then
+              echo "unresolved paths in $b:" >&2
+              echo "$unresolved" >&2
+              exit 1
+            fi
+            if git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.swift' '*.py' '*.ts' '*.tsx'; then
+              echo "conflict markers remain in $b" >&2
+              exit 1
+            fi
+            git diff --check --cached
             git commit -m "Merge upstream main into $b"
             git push origin "HEAD:$b"
             echo "FIXED $b $(git rev-parse HEAD)"
           }
 
-          b=codex/open-in-omp
-          prepare "$b"
-          python3 <<'PY'
-          from pathlib import Path
-          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/LaunchTarget.swift')
-          s=p.read_text()
-          for old,new in {
-            'case .chat: return "Chat"':'case .chat: return tr("Chat")',
-            'case .openWebUI: return "Web UI"':'case .openWebUI: return tr("Web UI")',
-            'case .pi: return "Pi"':'case .pi: return tr("Pi")',
-            'case .omp: return "OMP"':'case .omp: return tr("OMP")',
-            'case .openCode: return "OpenCode"':'case .openCode: return tr("OpenCode")',
-            'case .hermes: return "Hermes"':'case .hermes: return tr("Hermes")',
-            'case .benchmark: return "Benchmark"':'case .benchmark: return tr("Benchmark")',
-            'case .other: return "Other"':'case .other: return tr("Other")',
-            'return "Use Pi in the terminal."':'return tr("Use Pi in the terminal.")',
-            'return "Use Oh My Pi in the terminal."':'return tr("Use Oh My Pi in the terminal.")',
-          }.items(): s=s.replace(old,new)
-          p.write_text(s)
-          p=Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Tabs/SettingsTab.swift')
-          s=p.read_text().replace('label: "Agent workspace",','label: tr("Agent workspace"),').replace('caption: "Pi, OMP, and Hermes terminal tools start in this folder."','caption: tr("Pi, OMP, and Hermes terminal tools start in this folder.")')
-          p.write_text(s)
-          PY
-          finish "$b"
-
+          # PR #365: keep current dashboard auth/settings behavior, add Systems API,
+          # then regenerate bundled static assets from the merged source.
           b=feat/runtime-systems-dashboard
           prepare "$b"
+          git show upstream/main:dashboard/src/lib/api.ts > /tmp/api.ts
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/api.ts')
+          s = p.read_text()
+          if 'RuntimeSystemsPayload,' not in s:
+              s = s.replace('  PrefillHistoryPayload,\n', '  PrefillHistoryPayload,\n  RuntimeSystemsPayload,\n', 1)
+          needle = '  getSnapshot: () => getJson<DashboardSnapshot>("/v1/mtplx/snapshot"),\n'
+          if 'getSystems:' not in s:
+              if needle not in s:
+                  raise SystemExit('dashboard getSnapshot anchor changed')
+              s = s.replace(needle, needle + '  getSystems: () => getJson<RuntimeSystemsPayload>("/v1/mtplx/systems"),\n', 1)
+          Path('dashboard/src/lib/api.ts').write_text(s)
+          PY
           rm -rf mtplx/dashboard/_static
+          git add -A mtplx/dashboard/_static dashboard/src/lib/api.ts
           (cd dashboard && npm ci && npm run build)
           finish "$b"
 
+          # PR #364: only generated dashboard output conflicts; merged source is authoritative.
           b=feat/native-operations-dashboard
           prepare "$b"
           rm -rf mtplx/dashboard/_static
+          git add -A mtplx/dashboard/_static
           (cd dashboard && npm ci && npm run build)
           finish "$b"
 
+          # PR #355: preserve expert-locality instrumentation and upstream allocator cap propagation.
           b=feat/expert-locality-telemetry
           prepare "$b"
           python3 <<'PY'
           from pathlib import Path
-          p=Path('mtplx/server/openai.py'); s=p.read_text()
-          needle='            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'
-          block='''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
-          if needle not in s: raise SystemExit('expert-locality insertion point changed')
-          p.write_text(s.replace(needle, block, 1))
+          p = Path('mtplx/server/openai.py')
+          s = p.read_text()
+          if 'self.runtime.metal_memory_limit_bytes = int(pinned_limit)' not in s:
+              needle = '            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'
+              block = '''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
+              if needle not in s:
+                  raise SystemExit('expert-locality insertion point changed')
+              s = s.replace(needle, block, 1)
+          p.write_text(s)
           PY
           python3 -m py_compile mtplx/server/openai.py mtplx/expert_locality.py
           finish "$b"
 
+          # PR #350: keep semantic message-boundary anchors plus current PLE/Qwen4 restore inputs.
           b=feat/semantic-session-anchors
           prepare "$b"
           python3 <<'PY'
           from pathlib import Path
-          p=Path('mtplx/generation.py'); s=p.read_text()
-          old='from .runtime_options import block_prefix_restore_enabled, env_bool\nfrom .semantic_anchors import merge_mandatory_edges\n'
-          new='''from .runtime_options import (\n    block_prefix_restore_enabled,\n    env_bool,\n    qwen4_opdiet_enabled,\n)\nfrom .route_tape import RouteTape, counter_deltas\nfrom .semantic_anchors import merge_mandatory_edges\n'''
-          if old not in s: raise SystemExit('semantic import block changed')
-          s=s.replace(old,new,1)
-          sig='    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
-          rep='    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
-          if sig not in s: raise SystemExit('prefill restored suffix signature changed')
-          s=s.replace(sig,rep,1)
-          target='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
-          repl='                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
-          if target not in s: raise SystemExit('near-prefix call site changed')
-          s=s.replace(target,repl,1)
-          target='                        mandatory_prefix_edges=mandatory_prefix_edges,\n                    )'
-          repl='                        mandatory_prefix_edges=mandatory_prefix_edges,\n                        plan_ids=prompt_ids,\n                    )'
-          if target not in s: raise SystemExit('exact-restore call site changed')
-          s=s.replace(target,repl,1)
+          p = Path('mtplx/generation.py')
+          s = p.read_text()
+          old = 'from .runtime_options import block_prefix_restore_enabled, env_bool\nfrom .semantic_anchors import merge_mandatory_edges\n'
+          new = '''from .runtime_options import (\n    block_prefix_restore_enabled,\n    env_bool,\n    qwen4_opdiet_enabled,\n)\nfrom .route_tape import RouteTape, counter_deltas\nfrom .semantic_anchors import merge_mandatory_edges\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif 'from .semantic_anchors import merge_mandatory_edges' not in s:
+              raise SystemExit('semantic import block changed')
+
+          sig = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
+          rep = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
+          if sig in s:
+              s = s.replace(sig, rep, 1)
+          elif 'mandatory_prefix_edges: Sequence[int] | None = None' not in s or 'plan_ids: Sequence[int] | None = None' not in s:
+              raise SystemExit('prefill restored suffix signature changed')
+
+          target = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
+          repl = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
+          if target in s:
+              s = s.replace(target, repl, 1)
+
+          target = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                    )'
+          repl = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                        plan_ids=prompt_ids,\n                    )'
+          if target in s:
+              s = s.replace(target, repl, 1)
+
           p.write_text(s)
           PY
           python3 -m py_compile mtplx/generation.py mtplx/semantic_anchors.py
+          finish "$b"
+
+          # PR #377: keep safe model removal while retaining upstream scheduling state and row styling.
+          b=codex/issue-374-remove-model
+          prepare "$b"
+          python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = 'apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
+          p = Path(path)
+          s = p.read_text()
+          if 'applySchedulingPresetSelection' not in s:
+              upstream = subprocess.check_output(['git', 'show', f'upstream/main:{path}'], text=True)
+              start = upstream.index('    /// Commit a Performance mode pick')
+              end = upstream.index('    public func applyConfiguration(', start)
+              block = upstream[start:end]
+              anchor = '    public func applyConfiguration('
+              if anchor not in s:
+                  raise SystemExit('BackendStore applyConfiguration anchor changed')
+              s = s.replace(anchor, block + anchor, 1)
+          p.write_text(s)
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Models/ModelPickerOverlay.swift')
+          s = p.read_text().replace('Color.white.opacity(0.05)', 'Brand.wash.opacity(0.05)')
+          p.write_text(s)
+          PY
+          finish "$b"
+
+          # PR #373: the PR intentionally provides the native Hermes session path;
+          # retain it while adopting current localization where the hunks overlap.
+          b=codex/repair-pr220-hermes-app-only
+          prepare "$b"
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Hermes/HermesOverlay.swift')
+          s = p.read_text()
+          replacements = {
+              '.help("New Agent")': '.help(tr("New Agent"))',
+              'localError = "MTPLX is not ready yet."': 'localError = tr("MTPLX is not ready yet.")',
+              'Text("New Agent")': 'Text(tr("New Agent"))',
+              '.accessibilityLabel("Create a new Hermes agent")': '.accessibilityLabel(tr("Create a new Hermes agent"))',
+              'Text(hermes.selectedProfile == nil ? "Select a Hermes Profile" : "Start a Hermes Agent")': 'Text(hermes.selectedProfile == nil ? tr("Select a Hermes Profile") : tr("Start a Hermes Agent"))',
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
           finish "$b"
