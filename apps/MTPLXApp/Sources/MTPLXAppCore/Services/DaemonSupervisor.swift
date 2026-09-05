@@ -21,21 +21,21 @@ public enum DaemonSupervisorError: Error, Equatable, CustomStringConvertible, Lo
     public var description: String {
         switch self {
         case .alreadyRunning:
-            return "MTPLX is already running."
+            return tr("MTPLX is already running.")
         case .launchFailed(let detail):
-            return "MTPLX couldn't start: \(detail)"
+            return tr("MTPLX couldn't start: %@", detail)
         case .healthTimeout:
-            return "MTPLX took too long to start up."
+            return tr("MTPLX took too long to start up.")
         case .portOccupied(let pid, let launchID):
-            let pidText = pid.map { "pid \($0)" } ?? "unknown pid"
+            let pidText = pid.map { tr("pid %@", String($0)) } ?? tr("unknown pid")
             if let launchID {
-                return "Port is already used by MTPLX (\(pidText), launch \(launchID))."
+                return tr("Port is already used by MTPLX (%@, launch %@).", pidText, String(describing: launchID))
             }
-            return "Port is already used by another local app (\(pidText))."
+            return tr("Port is already used by another local app (%@).", pidText)
         case .launchIdentityMismatch(let expected, let observed):
-            return "MTPLX startup didn't match what we expected. Expected \(expected), got \(observed ?? "nothing")."
+            return tr("MTPLX startup didn't match what we expected. Expected %@, got %@.", expected, observed ?? tr("nothing"))
         case .fanRampTimeout:
-            return "Couldn't get your fans to max in time."
+            return tr("Couldn't get your fans to max in time.")
         }
     }
 
@@ -546,8 +546,10 @@ public final class DaemonSupervisor: @unchecked Sendable {
             throw DaemonSupervisorError.launchFailed("daemon launch was cancelled")
         }
         notifyStatusObserver()
+        // Logs are pasted into bug reports; the command line goes in with
+        // every secret flag value masked, never verbatim.
         await logStore.append(
-            "launched \(command.executableURL.path) \(command.arguments.joined(separator: " "))",
+            "launched \(command.redactedCommandLine)",
             stream: .system
         )
 

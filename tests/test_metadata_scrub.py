@@ -151,3 +151,42 @@ def test_lists_of_paths_are_redacted():
         f"{REDACTED_PATH}/a.safetensors",
         "relative/b.safetensors",
     ]
+
+
+def test_routes_and_slash_strings_outside_path_keys_survive():
+    payload = {
+        "endpoint": "/v1/chat/completions",
+        "bos_token": "/",
+        "notes": ["/opt/models/x is a shared mount"],
+    }
+
+    assert scrub_runtime_metadata(payload) == payload
+    assert runtime_metadata_leaks(payload) == []
+
+
+def test_absolute_paths_under_path_keys_are_redacted_even_outside_home():
+    scrubbed = scrub_runtime_metadata({"source_path": "/opt/models/trunk"})
+
+    assert scrubbed["source_path"] == f"{REDACTED_PATH}/trunk"
+    assert runtime_metadata_leaks({"output_dir": "/opt/models/out"}) == ["/opt/models/out"]
+
+
+def test_scrub_json_documents_returns_only_leaking_documents(tmp_path):
+    import json
+
+    from mtplx.metadata_scrub import scrub_json_documents
+
+    (tmp_path / "config.json").write_text('{"model_type": "qwen3"}', encoding="utf-8")
+    (tmp_path / "mtplx_runtime.json").write_text(
+        json.dumps({"base_trunk": "/Users/someone/.mtplx/models/Owner--Trunk"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+
+    documents = scrub_json_documents(tmp_path)
+
+    assert [document.name for document in documents] == ["mtplx_runtime.json"]
+    assert documents[0].leaks == ("/Users/someone/.mtplx/models/Owner--Trunk",)
+    assert documents[0].document == {"base_trunk": f"{REDACTED_PATH}/Owner--Trunk"}
+    assert json.loads(documents[0].payload) == documents[0].document
+    assert runtime_metadata_leaks(documents[0].document) == []

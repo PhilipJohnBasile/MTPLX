@@ -48,7 +48,7 @@ struct ThinkingIndicatorDots: View {
                 }
             }
         }
-        .accessibilityLabel("Working")
+        .accessibilityLabel(tr("Working"))
     }
 
     /// 0→1→0 ease-in-out pulse, staggered per dot — same visual as the

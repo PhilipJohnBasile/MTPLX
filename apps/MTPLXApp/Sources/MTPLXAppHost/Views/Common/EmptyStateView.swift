@@ -1,4 +1,5 @@
 import SwiftUI
+import MTPLXAppCore
 
 // MARK: - EmptyStateView
 //
@@ -12,7 +13,7 @@ struct EmptyStateView: View {
     let title: String
     let message: String
     var action: (() -> Void)? = nil
-    var actionLabel: String = "Start"
+    var actionLabel: String = tr("Start")
 
     var body: some View {
         VStack(spacing: 14) {

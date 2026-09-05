@@ -21,8 +21,9 @@ mtplx help
 The installer checks Homebrew Python paths directly, so it works even if a fresh
 Terminal tab has not put `/opt/homebrew/bin` on PATH yet. It installs MTPLX from
 PyPI into `~/.mtplx/venv` and writes a durable launcher at `~/.local/bin/mtplx`.
-On Apple Silicon Homebrew installs, it also writes `/opt/homebrew/bin/mtplx` when
-that directory is writable.
+It never writes into Homebrew's directories, so it can be used alongside
+`brew install youssofal/mtplx/mtplx`; set `MTPLX_GLOBAL_BIN` to also link the
+launcher from a directory of your choice.
 
 Python-only install:
 

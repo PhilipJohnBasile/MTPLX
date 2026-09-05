@@ -19,6 +19,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from mtplx.jsonc import load_config_file
+
 OPENCODE_PROVIDER_ID = "mtplx"
 OPENCODE_NPM_PACKAGE = "@ai-sdk/openai-compatible"
 OPENCODE_DEFAULT_CONTEXT_WINDOW = 262_144
@@ -337,17 +339,6 @@ def build_opencode_provider_config(
         "model": opencode_model_ref(str(model_id)),
         "small_model": opencode_model_ref(str(model_id)),
     }
-
-
-def _backup_invalid_config(path: Path) -> Path:
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.name}.invalid-{stamp}.bak")
-    counter = 1
-    while backup.exists():
-        backup = path.with_name(f"{path.name}.invalid-{stamp}-{counter}.bak")
-        counter += 1
-    path.replace(backup)
-    return backup
 
 
 def merge_opencode_config(
@@ -676,13 +667,24 @@ def ensure_opencode_reasoning_summaries_visible(
     existing_data: str | None = None
 
     if store_path.exists():
+        # A store that cannot be read is OpenCode Desktop's to repair. It used
+        # to be moved aside and replaced with a store holding only this one
+        # setting, which threw away every other Desktop setting for a
+        # cosmetic tweak; now the tweak is skipped and the store left alone.
         try:
             existing_data = store_path.read_text(encoding="utf-8")
             parsed = json.loads(existing_data)
-            root = parsed if isinstance(parsed, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            backup_path = _backup_invalid_config(store_path)
-            root = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "supported": True,
+                "status": "unreadable_store",
+                "path": str(store_path),
+                "did_change": False,
+                "backup_path": None,
+                "setting": "settings.v3.general.showReasoningSummaries",
+                "error": str(exc),
+            }
+        root = parsed if isinstance(parsed, dict) else {}
 
     raw_settings = root.get(OPENCODE_DESKTOP_SETTINGS_KEY)
     settings: dict[str, Any] = {}
@@ -760,12 +762,12 @@ def write_opencode_config(
     backup_path: Path | None = None
     existing: dict[str, Any] | None = None
     if config_path.exists():
-        try:
-            parsed = json.loads(config_path.read_text(encoding="utf-8"))
-            existing = parsed if isinstance(parsed, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            backup_path = _backup_invalid_config(config_path)
-            existing = {}
+        # OpenCode reads this file as JSONC (comments, trailing commas), so
+        # MTPLX does too. A file that still does not parse is the user's to
+        # fix: InvalidConfigFile propagates and nothing here is moved or
+        # written, instead of the old move-aside that replaced their
+        # providers, agents and keybinds with an MTPLX-only config.
+        existing, _existing_text = load_config_file(config_path)
 
     fragment = build_opencode_provider_config(
         base_url=base_url,
@@ -790,7 +792,15 @@ def write_opencode_config(
         provider_id=provider_id,
         session_headers_plugin_path=session_headers_plugin_path,
     )
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    # A file whose content already matches is left untouched, comments and
+    # formatting included. When a rewrite is needed the previous file is kept
+    # next to it and the copy's path is reported so every renderer can say so.
+    written = existing is None or merged != existing
+    if written:
+        if existing is not None:
+            backup_path = _unique_backup(config_path, "before-mtplx")
+            shutil.copy2(config_path, backup_path)
+        config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     try:
         config_path.chmod(0o600)
     except OSError:
@@ -811,5 +821,5 @@ def write_opencode_config(
         "session_headers_plugin_path": str(session_headers_plugin_path),
         "reasoning_visibility": reasoning_visibility,
         "no_hidden_max_tokens": True,
-        "written": True,
+        "written": written,
     }
