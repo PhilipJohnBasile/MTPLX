@@ -58,15 +58,16 @@ jobs:
             echo "FIXED $b $(git rev-parse HEAD)"
           }
 
-          # PR #365: keep current dashboard auth/settings behavior, add Systems API,
-          # then regenerate bundled static assets from the merged source.
+          build_dashboard() {
+            (cd dashboard && npx --yes bun@latest install --frozen-lockfile && npx --yes bun@latest run build)
+          }
+
           b=feat/runtime-systems-dashboard
           prepare "$b"
           git show upstream/main:dashboard/src/lib/api.ts > /tmp/api.ts
           python3 <<'PY'
           from pathlib import Path
-          p = Path('/tmp/api.ts')
-          s = p.read_text()
+          s = Path('/tmp/api.ts').read_text()
           if 'RuntimeSystemsPayload,' not in s:
               s = s.replace('  PrefillHistoryPayload,\n', '  PrefillHistoryPayload,\n  RuntimeSystemsPayload,\n', 1)
           needle = '  getSnapshot: () => getJson<DashboardSnapshot>("/v1/mtplx/snapshot"),\n'
@@ -78,18 +79,16 @@ jobs:
           PY
           rm -rf mtplx/dashboard/_static
           git add -A mtplx/dashboard/_static dashboard/src/lib/api.ts
-          (cd dashboard && npm ci && npm run build)
+          build_dashboard
           finish "$b"
 
-          # PR #364: only generated dashboard output conflicts; merged source is authoritative.
           b=feat/native-operations-dashboard
           prepare "$b"
           rm -rf mtplx/dashboard/_static
           git add -A mtplx/dashboard/_static
-          (cd dashboard && npm ci && npm run build)
+          build_dashboard
           finish "$b"
 
-          # PR #355: preserve expert-locality instrumentation and upstream allocator cap propagation.
           b=feat/expert-locality-telemetry
           prepare "$b"
           python3 <<'PY'
@@ -107,7 +106,6 @@ jobs:
           python3 -m py_compile mtplx/server/openai.py mtplx/expert_locality.py
           finish "$b"
 
-          # PR #350: keep semantic message-boundary anchors plus current PLE/Qwen4 restore inputs.
           b=feat/semantic-session-anchors
           prepare "$b"
           python3 <<'PY'
@@ -120,36 +118,30 @@ jobs:
               s = s.replace(old, new, 1)
           elif 'from .semantic_anchors import merge_mandatory_edges' not in s:
               raise SystemExit('semantic import block changed')
-
           sig = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
           rep = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
           if sig in s:
               s = s.replace(sig, rep, 1)
           elif 'mandatory_prefix_edges: Sequence[int] | None = None' not in s or 'plan_ids: Sequence[int] | None = None' not in s:
               raise SystemExit('prefill restored suffix signature changed')
-
           target = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
           repl = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
           if target in s:
               s = s.replace(target, repl, 1)
-
           target = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                    )'
           repl = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                        plan_ids=prompt_ids,\n                    )'
           if target in s:
               s = s.replace(target, repl, 1)
-
           p.write_text(s)
           PY
           python3 -m py_compile mtplx/generation.py mtplx/semantic_anchors.py
           finish "$b"
 
-          # PR #377: keep safe model removal while retaining upstream scheduling state and row styling.
           b=codex/issue-374-remove-model
           prepare "$b"
           python3 <<'PY'
           from pathlib import Path
           import subprocess
-
           path = 'apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
           p = Path(path)
           s = p.read_text()
@@ -163,15 +155,11 @@ jobs:
                   raise SystemExit('BackendStore applyConfiguration anchor changed')
               s = s.replace(anchor, block + anchor, 1)
           p.write_text(s)
-
           p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Models/ModelPickerOverlay.swift')
-          s = p.read_text().replace('Color.white.opacity(0.05)', 'Brand.wash.opacity(0.05)')
-          p.write_text(s)
+          p.write_text(p.read_text().replace('Color.white.opacity(0.05)', 'Brand.wash.opacity(0.05)'))
           PY
           finish "$b"
 
-          # PR #373: the PR intentionally provides the native Hermes session path;
-          # retain it while adopting current localization where the hunks overlap.
           b=codex/repair-pr220-hermes-app-only
           prepare "$b"
           python3 <<'PY'
