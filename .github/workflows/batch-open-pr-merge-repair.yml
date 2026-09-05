@@ -1,4 +1,4 @@
-name: Repair PR 254 against current main
+name: Repair PR 387 with Swift 6
 
 on:
   push:
@@ -19,55 +19,15 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      - name: Run semantic PR 254 repair
+      - name: Run PR 387 repair with Xcode 16.2
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "Philip John Basile"
-          git config user.email "PBasile@Basilecom.com"
-          git remote add upstream https://github.com/youssofal/MTPLX.git || true
-          git fetch upstream main
-          python -m pip install -U pip >/dev/null
-          python -m pip install -e '.[dev,server]' >/dev/null
-
-          prepare() {
-            local b="$1"
-            git reset --hard
-            git clean -fd
-            git fetch origin "$b"
-            git checkout -B "$b" "origin/$b"
-            set +e
-            git merge --no-commit --no-ff -X ours upstream/main
-            local rc=$?
-            set -e
-            echo "merge rc=$rc for $b"
-          }
-
-          finish() {
-            local b="$1"
-            git add -A
-            local unresolved
-            unresolved="$(git diff --name-only --diff-filter=U)"
-            if [ -n "$unresolved" ]; then
-              echo "unresolved paths in $b:" >&2
-              echo "$unresolved" >&2
-              exit 1
-            fi
-            if git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.swift' '*.py' '*.ts' '*.tsx'; then
-              echo "conflict markers remain in $b" >&2
-              exit 1
-            fi
-            git commit -m "Merge upstream main into $b"
-            git diff upstream/main...HEAD --check
-            git push origin "HEAD:$b"
-            echo "FIXED $b $(git rev-parse HEAD)"
-          }
-
-          git show f43cc97255b515cdfbd4b3408d00063a5edbd757:.github/workflows/batch-open-pr-merge-repair.yml > /tmp/final-two.yml
+          git show b8a61e614ff718b689c18b199d875ff0e233e530:.github/workflows/batch-open-pr-merge-repair.yml > /tmp/repair387-source.yml
           python <<'PY'
           from pathlib import Path
 
-          lines = Path('/tmp/final-two.yml').read_text().splitlines()
+          lines = Path('/tmp/repair387-source.yml').read_text().splitlines()
           start = next(i for i, line in enumerate(lines) if line == '        run: |') + 1
           body = []
           for line in lines[start:]:
@@ -78,10 +38,16 @@ jobs:
               else:
                   break
           script = '\n'.join(body) + '\n'
-          marker = '# PR #254 — DeepSeek V4 target-only external mlx-serve backend.'
-          if marker not in script:
-              raise SystemExit('PR 254 repair marker not found')
-          tail = script[script.index(marker):]
-          Path('/tmp/repair254-tail.sh').write_text(tail)
+          old = 'raise ValueError(f"refusing to update through top-level symlink: {raw_destination}")'
+          new = 'raise ValueError(f"refusing to update through top-level symlink; path does not remain directly inside cache: {raw_destination}")'
+          if old not in script:
+              raise SystemExit('symlink error contract anchor changed')
+          script = script.replace(old, new, 1)
+          build = 'swift build --package-path apps/MTPLXApp --product MTPLXApp'
+          replacement = 'sudo xcode-select -s /Applications/Xcode_16.2.app\nswift --version\n' + build
+          if build not in script:
+              raise SystemExit('Swift build anchor changed')
+          script = script.replace(build, replacement, 1)
+          Path('/tmp/repair387.sh').write_text(script)
           PY
-          source /tmp/repair254-tail.sh
+          bash /tmp/repair387.sh
