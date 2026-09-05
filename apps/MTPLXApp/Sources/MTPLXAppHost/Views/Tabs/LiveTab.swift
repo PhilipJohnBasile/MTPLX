@@ -123,7 +123,7 @@ struct LiveTab: View {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Brand.warning)
-                    Text("ALL-TIME MAX \(Format.tps(max)) TPS")
+                    Text(tr("ALL-TIME MAX %@ TPS", Format.tps(max)))
                         .font(.system(size: 11, weight: .heavy, design: .monospaced))
                         .tracking(2)
                         .chromeText()
@@ -223,20 +223,20 @@ struct LiveTab: View {
     private func prefillTokenCaption(_ state: PrefillState) -> String {
         let done = state.tokensDone ?? 0
         let total = state.tokensTotal
-        var parts = ["\(Format.integer(done))/\(Format.integer(total)) tok"]
+        var parts = [tr("%@/%@ tok", Format.integer(done), Format.integer(total))]
         if let cached = state.cachedTokens, cached > 0 {
-            parts.append("cached \(Format.integer(cached))")
+            parts.append(tr("cached %@", Format.integer(cached)))
         }
         if let newPrefill = state.newPrefillTokens {
-            parts.append("new \(Format.integer(newPrefill))")
+            parts.append(tr("new %@", Format.integer(newPrefill)))
         }
         if let restore = state.ssdRestoreS, restore > 0 {
-            parts.append("SSD \(Format.duration(restore))")
+            parts.append(tr("SSD %@", Format.duration(restore)))
         } else if let source = state.cacheSource, !source.isEmpty, source != "none" {
             parts.append(source.uppercased())
         }
         if let eta = state.etaSeconds {
-            parts.append("ETA \(Format.duration(eta))")
+            parts.append(tr("ETA %@", Format.duration(eta)))
         }
         return parts.joined(separator: " · ")
     }
@@ -320,7 +320,7 @@ private struct PortFallbackBanner: View {
                 .foregroundStyle(Color.mtplxWarning)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Port changed")
+                Text(tr("Port changed"))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(Brand.typeHi)
                 Text(message)

@@ -10,17 +10,21 @@ import { NewMaxTPSToast } from "./components/NewMaxTPSToast";
 import { OverviewTab } from "./components/OverviewTab";
 import { RequestsTab } from "./components/RequestsTab";
 import { Shell, type TabId } from "./components/Shell";
+import { SignInGate } from "./components/SignInGate";
 import { SpeculativeTab } from "./components/SpeculativeTab";
 import { ThermalTab } from "./components/ThermalTab";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useMetricsStream } from "./hooks/useMetricsStream";
+import { UnauthorizedError } from "./lib/api";
 import { useDashboardStore } from "./state/store";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000,
-      retry: 1,
+      // One retry for transient failures; a 401 will not change on retry,
+      // the sign-in gate handles it.
+      retry: (failureCount, error) => !(error instanceof UnauthorizedError) && failureCount < 1,
     },
   },
 });
@@ -31,6 +35,7 @@ export default function App() {
       <DashboardRoot />
       <NewMaxTPSToast />
       <KeyboardShortcutsOverlay />
+      <SignInGate />
     </QueryClientProvider>
   );
 }
