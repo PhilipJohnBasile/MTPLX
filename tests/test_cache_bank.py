@@ -7,7 +7,12 @@ from pathlib import Path
 import mlx.core as mx
 
 from mtplx.cache_bank import SessionBankColdTier
-from mtplx.cache_bank.codec import decode_payload, encode_payload
+from mtplx.cache_bank.codec import (
+    decode_payload,
+    decode_payload_prefix,
+    encode_payload,
+    payload_supports_prefix_decode,
+)
 from mtplx.cache_state import CacheSnapshot
 from mtplx.session_bank import SessionBank
 
@@ -112,6 +117,163 @@ def test_cache_bank_codec_chunks_large_sequence_tensors():
     assert len(state_spec["blocks"]) == 2
     decoded = decode_payload(encoded.spec, encoded.tensors.__getitem__)
     assert decoded.cache_snapshot.states[0][0].shape == (1, 1, 512, 2)
+
+
+def test_cache_bank_codec_prefix_decode_reads_only_needed_kv_blocks():
+    """A boundary restore must not hydrate the long snapshot tail.
+
+    This is the regression behind a short foreground request waiting on a
+    multi-GB SSD entry: only KV through the chosen boundary and that boundary's
+    recurrent state may be read.
+    """
+
+    snapshot = CacheSnapshot(
+        states=(
+            mx.zeros((1, 1, 1024, 2), dtype=mx.float16),
+            mx.full((1, 4), 9.0, dtype=mx.float16),
+        ),
+        meta_states=(None, None),
+    )
+    boundary = CacheSnapshot(
+        states=(None, mx.full((1, 4), 7.0, dtype=mx.float16)),
+        meta_states=(None, None),
+    )
+    encoded = encode_payload(
+        cache_snapshot=snapshot,
+        logits=None,
+        hidden=None,
+        mtp_history_snapshot=None,
+        gdn_boundaries=[(256, boundary, None)],
+        has_recurrent=True,
+        block_size=256,
+    )
+    reads: list[str] = []
+
+    def read_tensor(name: str) -> bytes:
+        reads.append(name)
+        return encoded.tensors[name]
+
+    decoded = decode_payload_prefix(
+        encoded.spec,
+        read_tensor,
+        cache_prefix_len=256,
+        boundary_prefix_len=256,
+    )
+    state_spec = encoded.spec["cache_snapshot"]["states"]["items"][0]
+    later_blocks = {block["name"] for block in state_spec["blocks"][1:]}
+
+    assert decoded.cache_snapshot_prefix_len == 256
+    assert decoded.cache_snapshot.states[0].shape == (1, 1, 256, 2)
+    assert decoded.cache_snapshot.states[1] is None
+    assert decoded.gdn_boundaries[0][0] == 256
+    assert decoded.gdn_boundaries[0][1].states[1].tolist() == [[7.0] * 4]
+    assert not later_blocks.intersection(reads)
+
+
+def test_cache_bank_codec_prefix_decode_reads_only_needed_mtp_history():
+    """Committed MTP history is shifted by one target token."""
+
+    snapshot = CacheSnapshot(
+        states=(mx.zeros((1, 1, 1024, 2), dtype=mx.float16),),
+        meta_states=(None,),
+    )
+    mtp_snapshot = CacheSnapshot(
+        states=(mx.full((1, 1, 1024, 2), 3.0, dtype=mx.float16),),
+        meta_states=(None,),
+    )
+    encoded = encode_payload(
+        cache_snapshot=snapshot,
+        logits=None,
+        hidden=None,
+        mtp_history_snapshot=mtp_snapshot,
+        block_size=256,
+    )
+
+    decoded = decode_payload_prefix(
+        encoded.spec,
+        encoded.tensors.__getitem__,
+        cache_prefix_len=256,
+        mtp_history_prefix_len=255,
+    )
+
+    assert decoded.cache_snapshot.states[0].shape == (1, 1, 256, 2)
+    assert decoded.mtp_history_snapshot_prefix_len == 255
+    assert decoded.mtp_history_snapshot is not None
+    assert decoded.mtp_history_snapshot.states[0].shape == (1, 1, 255, 2)
+
+
+def test_cache_bank_codec_rejects_prefix_decode_for_coupled_cache_metadata():
+    """Ring/compressor cache metadata cannot be reconstructed by KV slicing."""
+
+    snapshot = CacheSnapshot(
+        states=(mx.zeros((1, 1, 1024, 2), dtype=mx.float16),),
+        meta_states=(("mtplx-deepseek-v4-cache-v1", "1024", "0", "8", "2"),),
+    )
+    encoded = encode_payload(
+        cache_snapshot=snapshot,
+        logits=None,
+        hidden=None,
+        mtp_history_snapshot=None,
+        block_size=256,
+    )
+
+    assert payload_supports_prefix_decode(encoded.spec) is False
+
+
+def test_cold_tier_keeps_tiny_recurrent_prefix_without_boundary(tmp_path, monkeypatch):
+    """Tiny tokenizer-drift restores retain the pre-prefix-decode behavior."""
+
+    monkeypatch.setenv("MTPLX_SESSION_BLOCK_PREFIX_RESTORE", "1")
+    cold = SessionBankColdTier(
+        base_dir=tmp_path / "session-bank",
+        mode="on",
+        min_prefix_tokens=2,
+    )
+
+    class RecurrentStub:
+        def __init__(self):
+            self.state = [mx.ones((2, 2)), None]
+            self.meta_state = ("owned_recurrent_state", "persistent_eval")
+
+        def is_trimmable(self):
+            return False
+
+    try:
+        runtime = FakeRuntime()
+        bank = SessionBank(cold_tier=cold)
+        entry = bank.put(
+            runtime=runtime,
+            token_ids=list(range(41)),
+            cache=[RecurrentStub()],
+            logits=mx.zeros((1, 4)),
+            hidden=None,
+            template_hash="template-a",
+            policy_fingerprint="policy-a",
+            snapshot_epoch=41,
+            gdn_boundaries=[],
+        )
+        assert entry is not None
+        assert entry.has_recurrent is True
+        assert cold.flush(timeout_s=5.0) is True
+        bank.clear()
+
+        candidates = bank.near_prefix_candidates(
+            list(range(40)) + [99_001],
+            max_token_gap=8,
+            min_matched_tokens=4,
+            block_size=8,
+            block_min_matched_tokens=8,
+            model_path=str(runtime.model_path),
+            mtp_enabled=runtime.mtp_enabled,
+            template_hash="template-a",
+            policy_fingerprint="policy-a",
+        )
+
+        assert candidates
+        assert candidates[0][1] == 40
+        assert getattr(candidates[0][0], "cache_source") == "ssd"
+    finally:
+        cold.close()
 
 
 def test_session_bank_cold_tier_write_only_writes_but_does_not_restore(tmp_path):
@@ -856,20 +1018,38 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
             def replace_state(self, value):
                 self.state = list(value)
 
+        class AttentionStub:
+            """Tiny trimmable KV stand-in with an on-disk block tail."""
+
+            def __init__(self, tokens: int):
+                self.state = (
+                    mx.full((1, 1, tokens, 2), 5.0, dtype=mx.float16),
+                    mx.full((1, 1, tokens, 2), 6.0, dtype=mx.float16),
+                )
+                self.meta_state = None
+
+            def is_trimmable(self):
+                return True
+
         boundary_state = CacheSnapshot(
-            states=(mx.full((2, 2), 7.0),),
-            meta_states=(None,),
+            states=(None, mx.full((2, 2), 7.0)),
+            meta_states=(None, ("boundary_recurrent_state",)),
         )
         hidden_last = mx.full((1, 1, 4), 3.0)
         entry = bank.put(
             runtime=runtime,
             token_ids=list(range(1200)),
-            cache=[RecurrentStub()],
+            cache=[AttentionStub(1200), RecurrentStub()],
             logits=mx.zeros((1, 4)),
             hidden=None,
             session_id="hybrid-session",
             template_hash="template-a",
+            mtp_history_policy="committed",
             policy_fingerprint="policy-a",
+            mtp_history_snapshot=CacheSnapshot(
+                states=(AttentionStub(1199).state,),
+                meta_states=(None,),
+            ),
             snapshot_epoch=1200,
             gdn_boundaries=[(1024, boundary_state, hidden_last)],
         )
@@ -893,6 +1073,15 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
         assert getattr(ssd_entry, "cache_source") == "ssd"
         assert ssd_entry.has_recurrent is True
         assert [b for b, _, _ in ssd_entry.gdn_boundaries] == [1024]
+        assert ssd_entry.cache_snapshot_prefix_len == 1024
+        restored_k, restored_v = ssd_entry.cache_snapshot.states[0]
+        assert restored_k.shape == (1, 1, 1024, 2)
+        assert restored_v.shape == (1, 1, 1024, 2)
+        assert ssd_entry.cache_snapshot.states[1] is None
+        assert ssd_entry.mtp_history_snapshot_prefix_len == 1023
+        assert ssd_entry.mtp_history_snapshot is not None
+        assert ssd_entry.mtp_history_snapshot.states[0][0].shape == (1, 1, 1023, 2)
+        assert ssd_entry.mtp_history_snapshot.states[0][1].shape == (1, 1, 1023, 2)
         restored_hidden = ssd_entry.gdn_boundaries[0][2]
         assert restored_hidden is not None
         assert float(mx.max(mx.abs(restored_hidden - hidden_last)).item()) == 0.0
@@ -902,14 +1091,24 @@ def test_cold_tier_v3_roundtrips_gdn_boundaries_and_boundary_restores(tmp_path, 
             ssd_entry,
             int(matched),
             mode="clone",
-            cache_factory=lambda: [RecurrentStub()],
+            # The foreground near-prefix path supplies a target-specific
+            # factory.  Boundary metadata must still replace this cache's
+            # initial recurrent metadata.
+            cache_factory=lambda: [AttentionStub(0), RecurrentStub()],
+            mtp_cache_factory=lambda: [AttentionStub(0)],
         )
         assert restored is not None
-        cache, _mtp, mode, restore_point, boundary_hidden = restored
+        cache, mtp_cache, mode, restore_point, boundary_hidden = restored
         assert restore_point == 1024
         assert boundary_hidden is not None
-        recurrent = cache[0]
+        attention, recurrent = cache
+        assert attention.state[0].shape == (1, 1, 1024, 2)
+        assert attention.state[1].shape == (1, 1, 1024, 2)
+        assert mtp_cache is not None
+        assert mtp_cache[0].state[0].shape == (1, 1, 1023, 2)
+        assert mtp_cache[0].state[1].shape == (1, 1, 1023, 2)
         assert float(mx.max(mx.abs(recurrent.state[0] - mx.full((2, 2), 7.0))).item()) == 0.0
+        assert recurrent.meta_state == ("boundary_recurrent_state",)
     finally:
         cold.close()
 

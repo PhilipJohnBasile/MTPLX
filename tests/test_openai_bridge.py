@@ -2783,3 +2783,183 @@ def test_anthropic_usage_clamps_cached_over_prompt():
     )
     assert out["input_tokens"] == 0
     assert out["cache_read_input_tokens"] == 100
+
+
+# --- #441: Anthropic image blocks reach the vision tower ---------------------
+
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA"
+    "60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _anthropic_image_block(data: str = _TINY_PNG_B64) -> dict:
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": data},
+    }
+
+
+def test_anthropic_text_only_content_stays_a_plain_string():
+    from mtplx.server.openai import (
+        _anthropic_content_to_chat_content,
+        _anthropic_content_to_text,
+    )
+
+    content = [
+        {"type": "text", "text": "hello"},
+        {"type": "thinking", "thinking": " pondering"},
+        {"type": "tool_result", "content": [{"type": "text", "text": " world"}]},
+    ]
+
+    rendered = _anthropic_content_to_chat_content(content)
+
+    assert isinstance(rendered, str)
+    assert rendered == _anthropic_content_to_text(content)
+    assert _anthropic_content_to_chat_content("plain") == "plain"
+    assert _anthropic_content_to_chat_content(None) == ""
+
+
+def test_anthropic_image_blocks_become_image_url_parts_in_order():
+    from mtplx.server.openai import _anthropic_content_to_chat_content
+
+    parts = _anthropic_content_to_chat_content(
+        [
+            {"type": "text", "text": "What is "},
+            {"type": "text", "text": "in this image?"},
+            _anthropic_image_block(),
+            {"type": "text", "text": "Answer briefly."},
+            {"type": "image", "source": {"type": "url", "url": "https://x/y.png"}},
+        ]
+    )
+
+    assert parts == [
+        {"type": "text", "text": "What is in this image?"},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{_TINY_PNG_B64}"},
+        },
+        {"type": "text", "text": "Answer briefly."},
+        {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+    ]
+
+
+def test_anthropic_malformed_image_block_keeps_the_text_rendering():
+    from mtplx.server.openai import (
+        _anthropic_content_to_chat_content,
+        _anthropic_content_to_text,
+        _anthropic_image_block_to_openai_part,
+    )
+
+    broken = [
+        {"type": "image", "source": {"type": "base64", "data": ""}},
+        {"type": "image", "source": "not-a-dict"},
+        {"type": "image"},
+        {"type": "image", "source": {"type": "file", "file_id": "f1"}},
+    ]
+    for block in broken:
+        assert _anthropic_image_block_to_openai_part(block) is None
+
+    rendered = _anthropic_content_to_chat_content(broken)
+
+    assert isinstance(rendered, str)
+    assert rendered == _anthropic_content_to_text(broken)
+
+
+def test_anthropic_user_message_with_image_carries_parts_to_the_vision_path():
+    from mtplx.server.openai import (
+        AnthropicMessage,
+        _anthropic_message_to_chat_messages,
+        _vision_extract_and_flatten,
+        _VISION_PLACEHOLDER,
+    )
+
+    messages = _anthropic_message_to_chat_messages(
+        AnthropicMessage(
+            role="user",
+            content=[
+                {"type": "text", "text": "Read this: "},
+                _anthropic_image_block(),
+            ],
+        )
+    )
+
+    assert len(messages) == 1
+    assert messages[0].role == "user"
+    assert isinstance(messages[0].content, list)
+
+    flattened, images = _vision_extract_and_flatten(messages)
+
+    assert len(images) == 1
+    assert images[0][:8] == b"\x89PNG\r\n\x1a\n"
+    assert flattened[0].content == "Read this: " + _VISION_PLACEHOLDER
+
+
+def test_anthropic_tool_result_image_stays_an_image_on_the_tool_message():
+    """Claude Code's Read tool returns an image file as an ``image`` block
+    nested inside ``tool_result``; it must reach the tool message as a part,
+    not as base64 prose."""
+    from mtplx.server.openai import (
+        AnthropicMessage,
+        _anthropic_message_to_chat_messages,
+        _vision_extract_and_flatten,
+        _VISION_PLACEHOLDER,
+    )
+
+    messages = _anthropic_message_to_chat_messages(
+        AnthropicMessage(
+            role="user",
+            content=[
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": [
+                        {"type": "text", "text": "file contents:"},
+                        _anthropic_image_block(),
+                    ],
+                },
+                {"type": "text", "text": "What does it show?"},
+            ],
+        )
+    )
+
+    assert [m.role for m in messages] == ["tool", "user"]
+    assert messages[0].tool_call_id == "toolu_1"
+    assert messages[0].content[0] == {"type": "text", "text": "file contents:"}
+    assert messages[0].content[1]["type"] == "image_url"
+    assert messages[1].content == "What does it show?"
+
+    flattened, images = _vision_extract_and_flatten(messages)
+
+    assert len(images) == 1
+    assert flattened[0].content == "file contents:" + _VISION_PLACEHOLDER
+    assert flattened[1].content == "What does it show?"
+
+
+def test_anthropic_request_with_image_round_trips_to_chat_request():
+    from mtplx.server.openai import (
+        AnthropicMessage,
+        AnthropicMessagesRequest,
+        _anthropic_to_chat_request,
+    )
+
+    request = AnthropicMessagesRequest(
+        model="mtplx",
+        max_tokens=32,
+        messages=[
+            AnthropicMessage(
+                role="user",
+                content=[{"type": "text", "text": "hi"}, _anthropic_image_block()],
+            ),
+            AnthropicMessage(role="assistant", content="hello"),
+            AnthropicMessage(role="user", content="text only"),
+        ],
+    )
+
+    chat = _anthropic_to_chat_request(request)
+
+    assert chat.messages[0].role == "user"
+    assert chat.messages[0].content[0] == {"type": "text", "text": "hi"}
+    assert chat.messages[0].content[1]["type"] == "image_url"
+    assert chat.messages[1].content == "hello"
+    assert chat.messages[2].content == "text only"

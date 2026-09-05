@@ -101,9 +101,12 @@ public enum MTPLXCodeHighlighter {
 
     // MARK: Palette
 
-    /// Fixed dark-theme palette (matches the app's code viewport
-    /// background). Kept here rather than on Brand so Core stays
-    /// self-contained and unit-testable.
+    /// Code viewport palettes. `dark` is the jet set (unchanged), `light`
+    /// is tuned for the cream code surface, and `adaptive` resolves
+    /// between them from the drawing appearance. Kept here rather than
+    /// on Brand so Core stays self-contained and unit-testable; the
+    /// app-side BrandPaletteTests and CodeSyntaxPaletteContrastTests keep
+    /// the code surfaces and these hues in step.
     public struct Palette: Sendable {
         public let base: NSColor
         public let keyword: NSColor
@@ -124,6 +127,50 @@ public enum MTPLXCodeHighlighter {
             function: NSColor(srgbRed: 0.31, green: 0.69, blue: 1.00, alpha: 1.0),
             decorator: NSColor(srgbRed: 0.85, green: 0.80, blue: 0.47, alpha: 1.0)
         )
+
+        /// Cream code surface palette: warm ink base, GitHub-light-style
+        /// hues darkened until every role holds 4.5:1 on the cream fence.
+        public static let light = Palette(
+            base: srgb(0x2B2620),
+            keyword: srgb(0xA3286A),
+            type: srgb(0x0F6B8A),
+            string: srgb(0xA24E12),
+            comment: srgb(0x716960),
+            number: srgb(0x6F42C1),
+            function: srgb(0x1F5FAD),
+            decorator: srgb(0x7A6200)
+        )
+
+        /// Appearance-adaptive palette. Every color is a dynamic NSColor
+        /// that resolves to `dark` or `light` from the drawing appearance,
+        /// so cached attributed runs stay correct across a theme switch
+        /// without re-lexing.
+        public static let adaptive = Palette(
+            base: adaptiveColor(\.base),
+            keyword: adaptiveColor(\.keyword),
+            type: adaptiveColor(\.type),
+            string: adaptiveColor(\.string),
+            comment: adaptiveColor(\.comment),
+            number: adaptiveColor(\.number),
+            function: adaptiveColor(\.function),
+            decorator: adaptiveColor(\.decorator)
+        )
+
+        private static func srgb(_ hex: UInt32) -> NSColor {
+            NSColor(
+                srgbRed: Double((hex >> 16) & 0xFF) / 255.0,
+                green: Double((hex >> 8) & 0xFF) / 255.0,
+                blue: Double(hex & 0xFF) / 255.0,
+                alpha: 1.0
+            )
+        }
+
+        private static func adaptiveColor(_ role: KeyPath<Palette, NSColor>) -> NSColor {
+            NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                return (isDark ? Palette.dark : Palette.light)[keyPath: role]
+            }
+        }
     }
 
     // NSFont isn't Sendable; fonts are cheap lookups, so derive per use.
@@ -411,7 +458,7 @@ public enum MTPLXCodeHighlighter {
         language: Language,
         entryState: LexState
     ) -> (line: NSAttributedString, endState: LexState) {
-        let palette = Palette.dark
+        let palette = Palette.adaptive
         let rules = rules(for: language)
         let out = NSMutableAttributedString()
         let chars = Array(text)

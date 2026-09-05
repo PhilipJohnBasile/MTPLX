@@ -27,6 +27,16 @@ from typing import Any, Callable, Iterator, Mapping
 DAEMON_PROBE_PORTS: tuple[int, ...] = (8000, 18083, 18084, 18085)
 ATTACH_PROBE_ENV = "MTPLX_START_ATTACH_PROBE"
 _PROBE_DISABLED_VALUES = frozenset({"0", "off", "no", "false", "disabled"})
+# Attached chat runs against a daemon on this machine, so the TCP connect
+# either succeeds at once or the daemon is gone.
+ATTACH_CHAT_CONNECT_TIMEOUT_S = 5.0
+# A healthy streamed request never goes quiet for long: the server writes an
+# SSE keep-alive comment every 5 s before the first token (10 s progress
+# chunks fill any later gap), and its own stall watchdog fails a frozen model
+# owner with an error frame well inside 300 s. Only a daemon that is wedged
+# (or a dead connection) puts nothing on the wire for this long, so waiting
+# it out never trips on a slow prefill of a large prompt.
+ATTACH_CHAT_INACTIVITY_TIMEOUT_S = 120.0
 
 
 @dataclass(frozen=True)
@@ -217,6 +227,55 @@ def classify_port_occupant(
     return PortOccupant(kind=PORT_MTPLX_SERVER, daemon=daemon)
 
 
+def app_configured_port() -> int | None:
+    """The port the macOS app has persisted, or None when there is no app
+    setting. Public alias so caller lanes can ask "did the user configure
+    this port?" without reaching into a private helper."""
+
+    return _app_persisted_port()
+
+
+# A stopping MTPLX server keeps its listener while it drains, but its
+# /health stops answering first, so classify_port_occupant reads it as
+# PORT_FOREIGN for those few seconds. Issue #409: every stop/start cycle
+# then tripped the "in use by another app" fallback and silently moved a
+# configured 1234 to 1235. Long enough to cover a normal drain, short
+# enough that a genuinely foreign listener does not stall a launch.
+PORT_SETTLE_TIMEOUT_S = 5.0
+PORT_SETTLE_POLL_S = 0.25
+
+
+def wait_for_port_settle(
+    host: str,
+    port: int,
+    *,
+    timeout_s: float = PORT_SETTLE_TIMEOUT_S,
+    poll_s: float = PORT_SETTLE_POLL_S,
+    api_key: str | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> PortOccupant:
+    """Re-classify a foreign-looking port until it settles, or time out.
+
+    Returns the last classification. Anything other than PORT_FOREIGN is
+    terminal and returns immediately.
+
+    This does NOT claim to identify the owning process; it separates a
+    TRANSIENT occupant that clears on its own (our own draining server,
+    a socket in the tail of TIME_WAIT, a listener mid-restart) from a
+    STEADY foreign listener that is still there after the window. That is
+    the distinction the caller's decision actually needs, and it needs no
+    lsof, no psutil, and no new dependency.
+    """
+
+    deadline = clock() + max(0.0, float(timeout_s))
+    occupant = classify_port_occupant(host, port, api_key=api_key)
+    while occupant.kind == PORT_FOREIGN and clock() < deadline:
+        sleep(max(0.0, float(poll_s)))
+        occupant = classify_port_occupant(host, port, api_key=api_key)
+    return occupant
+
+
 def port_busy_advice(occupant: PortOccupant, *, port: int) -> list[str]:
     """Actionable, occupant-aware copy for a busy port."""
 
@@ -388,11 +447,13 @@ class AttachChatSession:
         daemon: RunningDaemon,
         *,
         api_key: str | None = None,
-        timeout: float | None = None,
+        connect_timeout: float = ATTACH_CHAT_CONNECT_TIMEOUT_S,
+        inactivity_timeout: float = ATTACH_CHAT_INACTIVITY_TIMEOUT_S,
     ) -> None:
         self.daemon = daemon
         self.api_key = api_key
-        self.timeout = timeout
+        self.connect_timeout = float(connect_timeout)
+        self.inactivity_timeout = float(inactivity_timeout)
         self.history: list[dict[str, str]] = []
         self.last_stats: Mapping[str, Any] | None = None
 
@@ -420,7 +481,7 @@ class AttachChatSession:
         connection = http.client.HTTPConnection(
             self.daemon.host,
             self.daemon.port,
-            timeout=self.timeout,
+            timeout=self.connect_timeout,
         )
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -428,6 +489,17 @@ class AttachChatSession:
         stats: Mapping[str, Any] | None = None
         cancelled = False
         try:
+            try:
+                connection.connect()
+            except TimeoutError:
+                raise AttachChatError(
+                    f"could not connect to the server within {self.connect_timeout:.0f}s"
+                ) from None
+            # The short timeout above governed the TCP connect only. From here
+            # on the socket waits at most the inactivity deadline for the
+            # response headers and then between SSE frames: a wedged daemon
+            # used to leave this loop blocked forever with a blank answer.
+            connection.sock.settimeout(self.inactivity_timeout)
             connection.request(
                 "POST", "/v1/chat/completions", body=body, headers=self._headers()
             )
@@ -465,6 +537,11 @@ class AttachChatSession:
                 # Closing the connection triggers the server's
                 # disconnect-cancel path, so generation stops promptly.
                 cancelled = True
+        except TimeoutError:
+            raise AttachChatError(
+                "server stopped responding "
+                f"(nothing received for {self.inactivity_timeout:.0f}s)"
+            ) from None
         finally:
             try:
                 connection.close()
