@@ -31,8 +31,6 @@ jobs:
           git checkout -B codex/multiple-model-directories origin/codex/multiple-model-directories
           git merge --no-commit --no-ff -X ours upstream/main
 
-          # AppConfiguration: use current settings schema/lenient decoder and layer
-          # the ordered model-library fields back onto it.
           git show upstream/main:apps/MTPLXApp/Sources/MTPLXAppCore/Models/AppConfiguration.swift \
             > apps/MTPLXApp/Sources/MTPLXAppCore/Models/AppConfiguration.swift
           python <<'PY'
@@ -41,37 +39,13 @@ jobs:
           s = p.read_text()
           def once(old, new, label):
               global s
-              if old not in s:
-                  raise SystemExit(f'{label} anchor changed')
+              if old not in s: raise SystemExit(f'{label} anchor changed')
               s = s.replace(old, new, 1)
-
-          once(
-              '    public var customModels: [MTPLXModelOption]\n',
-              '    public var customModels: [MTPLXModelOption]\n'
-              '    public var primaryModelDirectory: String\n'
-              '    public var additionalModelDirectories: [String]\n',
-              'customModels property',
-          )
-          once(
-              '        customModels: [MTPLXModelOption] = [],\n',
-              '        customModels: [MTPLXModelOption] = [],\n'
-              '        primaryModelDirectory: String = ModelLibrary.defaultPrimaryDirectory().path,\n'
-              '        additionalModelDirectories: [String] = [],\n',
-              'init params',
-          )
-          once(
-              '        self.customModels = customModels\n',
-              '        self.customModels = customModels\n'
-              '        let modelLibrary = ModelLibrary(\n'
-              '            primaryDirectory: primaryModelDirectory,\n'
-              '            additionalDirectories: additionalModelDirectories\n'
-              '        )\n'
-              '        self.primaryModelDirectory = modelLibrary.primaryDirectory.path\n'
-              '        self.additionalModelDirectories = modelLibrary.additionalDirectories.map(\\.path)\n',
-              'init assignments',
-          )
-          methods_anchor = '    public mutating func rememberCustomModel(repoID: String) {\n'
-          methods = '''    public var modelLibrary: ModelLibrary {
+          once('    public var customModels: [MTPLXModelOption]\n','    public var customModels: [MTPLXModelOption]\n    public var primaryModelDirectory: String\n    public var additionalModelDirectories: [String]\n','customModels property')
+          once('        customModels: [MTPLXModelOption] = [],\n','        customModels: [MTPLXModelOption] = [],\n        primaryModelDirectory: String = ModelLibrary.defaultPrimaryDirectory().path,\n        additionalModelDirectories: [String] = [],\n','init params')
+          once('        self.customModels = customModels\n','        self.customModels = customModels\n        let modelLibrary = ModelLibrary(\n            primaryDirectory: primaryModelDirectory,\n            additionalDirectories: additionalModelDirectories\n        )\n        self.primaryModelDirectory = modelLibrary.primaryDirectory.path\n        self.additionalModelDirectories = modelLibrary.additionalDirectories.map(\\.path)\n','init assignments')
+          methods_anchor='    public mutating func rememberCustomModel(repoID: String) {\n'
+          methods='''    public var modelLibrary: ModelLibrary {
               ModelLibrary(
                   primaryDirectory: primaryModelDirectory,
                   additionalDirectories: additionalModelDirectories
@@ -108,16 +82,10 @@ jobs:
           }
 
           '''
-          once(methods_anchor, methods + methods_anchor, 'model-library methods')
-          once(
-              '        case customModels = "custom_models"\n',
-              '        case customModels = "custom_models"\n'
-              '        case primaryModelDirectory = "primary_model_directory"\n'
-              '        case additionalModelDirectories = "additional_model_directories"\n',
-              'CodingKeys',
-          )
-          decode_anchor = '        huggingFaceHandle = field(String.self, .huggingFaceHandle)\n'
-          decode = '''        primaryModelDirectory = field(String.self, .primaryModelDirectory)
+          once(methods_anchor,methods+methods_anchor,'model-library methods')
+          once('        case customModels = "custom_models"\n','        case customModels = "custom_models"\n        case primaryModelDirectory = "primary_model_directory"\n        case additionalModelDirectories = "additional_model_directories"\n','CodingKeys')
+          decode_anchor='        huggingFaceHandle = field(String.self, .huggingFaceHandle)\n'
+          decode='''        primaryModelDirectory = field(String.self, .primaryModelDirectory)
               ?? defaults.primaryModelDirectory
           additionalModelDirectories = container.lenientDecodeArrayIfPresent(
               of: String.self,
@@ -125,84 +93,59 @@ jobs:
               issues: issues
           ) ?? defaults.additionalModelDirectories
           '''
-          once(decode_anchor, decode + decode_anchor, 'decoder')
-          once(
-              '    public mutating func sanitizeLaunchCriticalFields() {\n',
-              '    public mutating func sanitizeLaunchCriticalFields() {\n'
-              '        normalizeModelDirectories()\n',
-              'sanitize',
-          )
+          once(decode_anchor,decode+decode_anchor,'decoder')
+          once('    public mutating func sanitizeLaunchCriticalFields() {\n','    public mutating func sanitizeLaunchCriticalFields() {\n        normalizeModelDirectories()\n','sanitize')
           p.write_text(s)
           PY
 
-          # Preserve both feature-side resolution helpers and newer upstream app behavior.
           python <<'PY'
           from pathlib import Path
           import subprocess
-
-          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift')
-          s = p.read_text()
+          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift'); s=p.read_text()
           if 'public var isLocalFolder: Bool' not in s:
-              up = subprocess.check_output(['git','show','upstream/main:apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift'], text=True)
-              start = up.index('    public var isLocalFolder: Bool {')
-              end = up.index('\n    }', start) + len('\n    }')
-              anchor = '    /// First `localCandidates` entry'
+              up=subprocess.check_output(['git','show','upstream/main:apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift'],text=True)
+              start=up.index('    public var isLocalFolder: Bool {'); end=up.index('\n    }',start)+len('\n    }')
+              anchor='    /// First `localCandidates` entry'
               if anchor not in s: raise SystemExit('MTPLXModelOption anchor changed')
-              s = s.replace(anchor, up[start:end] + '\n\n' + anchor, 1)
+              s=s.replace(anchor,up[start:end]+'\n\n'+anchor,1)
           p.write_text(s)
-
-          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/ModelDownloader.swift')
-          s = p.read_text()
+          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/ModelDownloader.swift'); s=p.read_text()
           if 'self.streamBuildObserver?()' not in s:
-              anchor = '        return AsyncStream<DownloadEvent> { continuation in\n'
+              anchor='        return AsyncStream<DownloadEvent> { continuation in\n'
               if anchor not in s: raise SystemExit('ModelDownloader stream anchor changed')
-              s = s.replace(anchor, anchor + '            self.streamBuildObserver?()\n', 1)
+              s=s.replace(anchor,anchor+'            self.streamBuildObserver?()\n',1)
           p.write_text(s)
           PY
 
-          # Current nonblocking update task plus feature-selected model root.
           python <<'PY'
           from pathlib import Path
           import subprocess
-          path='apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
-          p=Path(path); s=p.read_text()
-          up=subprocess.check_output(['git','show',f'upstream/main:{path}'], text=True)
-          start=up.index('    public func updateModelPack(_ update: ModelUpdateInfo) {')
-          end=up.index('    private enum ModelPackUpdateEventOutcome', start)
-          block=up[start:end]
+          path='apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'; p=Path(path); s=p.read_text()
+          up=subprocess.check_output(['git','show',f'upstream/main:{path}'],text=True)
+          start=up.index('    public func updateModelPack(_ update: ModelUpdateInfo) {'); end=up.index('    private enum ModelPackUpdateEventOutcome',start); block=up[start:end]
           anchor='        let downloader = modelDownloader\n'
           if anchor not in block: raise SystemExit('BackendStore downloader anchor changed')
-          block=block.replace(anchor, anchor + '        let cacheRoot = update.path\n            .map { URL(fileURLWithPath: $0).deletingLastPathComponent() }\n            ?? configuration.modelLibrary.primaryDirectory\n', 1)
+          block=block.replace(anchor,anchor+'        let cacheRoot = update.path\n            .map { URL(fileURLWithPath: $0).deletingLastPathComponent() }\n            ?? configuration.modelLibrary.primaryDirectory\n',1)
           block=block.replace('[weak self, downloader, update] in','[weak self, downloader, update, cacheRoot] in',1)
           stream='                sizeProbePath: update.path\n'
           if stream not in block: raise SystemExit('BackendStore stream anchor changed')
           block=block.replace(stream,'                sizeProbePath: update.path,\n                cacheRoot: cacheRoot\n',1)
-          cs=s.index('    public func updateModelPack(_ update: ModelUpdateInfo) {')
-          ce=s.index('    private enum ModelPackUpdateEventOutcome',cs)
+          cs=s.index('    public func updateModelPack(_ update: ModelUpdateInfo) {'); ce=s.index('    private enum ModelPackUpdateEventOutcome',cs)
           p.write_text(s[:cs]+block+s[ce:])
           PY
 
-          # Python conflict semantics.
           python <<'PY'
           from pathlib import Path
-          import subprocess, re
-
-          p=Path('mtplx/cli.py'); s=p.read_text()
-          old='    bench_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")\n'
-          if old in s:
-              s=s.replace(old,'    bench_p.add_argument(\n        "--prompts",\n        help="Prompt suite name or .jsonl path; defaults to the packaged default suite",\n    )\n',1)
+          import subprocess,re
+          p=Path('mtplx/cli.py'); s=p.read_text(); old='    bench_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")\n'
+          if old in s: s=s.replace(old,'    bench_p.add_argument(\n        "--prompts",\n        help="Prompt suite name or .jsonl path; defaults to the packaged default suite",\n    )\n',1)
           if '_add_model_search_dir_args(bench_p)' not in s: raise SystemExit('CLI lost model search dirs')
           p.write_text(s)
-
-          p=Path('mtplx/commands/public.py'); s=p.read_text()
-          old='    if key == "profile":\n        value = resolve_profile_name(value)\n'
-          if old in s:
-              s=s.replace(old,'    if key == "profile":\n        try:\n            value = resolve_profile_name(value)\n        except ValueError as exc:\n            raise SystemExit(str(exc)) from None\n',1)
+          p=Path('mtplx/commands/public.py'); s=p.read_text(); old='    if key == "profile":\n        value = resolve_profile_name(value)\n'
+          if old in s: s=s.replace(old,'    if key == "profile":\n        try:\n            value = resolve_profile_name(value)\n        except ValueError as exc:\n            raise SystemExit(str(exc)) from None\n',1)
           if 'if key == "model_dirs":' not in s: raise SystemExit('public config lost model_dirs')
           p.write_text(s)
-
           p=Path('mtplx/hf_loader.py'); s=p.read_text()
-          # Prefer the current shared token resolver in doctor output.
           if 'token_source = hf_token_source()' not in s:
               pat=re.compile(r'    token_present = bool\(os\.environ\.get\("HF_TOKEN"\).*?            token_present = False\n',re.S)
               s,n=pat.subn('    token_source = hf_token_source()\n    token_present = token_source is not None\n',s,count=1)
@@ -210,22 +153,26 @@ jobs:
           if 'roots = model_library_roots(cache_dir, search_dirs=search_dirs)' not in s: raise SystemExit('hf_loader lost roots')
           p.write_text(s)
 
-          # Keep PR multi-root discovery above, but use current upstream's entire
-          # update implementation/tail for symlink safety, stale rollback, and
-          # completeness validation.
-          p=Path('mtplx/model_updates.py'); s=p.read_text()
-          up=subprocess.check_output(['git','show','upstream/main:mtplx/model_updates.py'],text=True)
-          us=up.index('def update_cached_model(')
-          cs=s.index('def update_cached_model(')
-          s=s[:cs]+up[us:]
-          # The feature's earlier functions use these additions.
-          if '    cached_model_is_complete,\n' not in s:
-              s=s.replace('    cached_model_path,\n','    cached_model_is_complete,\n    cached_model_path,\n',1)
+          # Use current upstream update logic, then restore the feature's two
+          # additional fail-closed guards validated by its tests.
+          p=Path('mtplx/model_updates.py'); s=p.read_text(); up=subprocess.check_output(['git','show','upstream/main:mtplx/model_updates.py'],text=True)
+          us=up.index('def update_cached_model('); cs=s.index('def update_cached_model('); s=s[:cs]+up[us:]
+          if '    cached_model_is_complete,\n' not in s: s=s.replace('    cached_model_path,\n','    cached_model_is_complete,\n    cached_model_path,\n',1)
+          # Top-level symlink must be rejected explicitly before Path.resolve().
+          anchor='    if destination_path is not None:\n        # Resolve the destination itself, not just its parent:'
+          repl='    if destination_path is not None:\n        raw_destination = Path(destination_path).expanduser().absolute()\n        if raw_destination.is_symlink():\n            raise ValueError(f"refusing to update through top-level symlink: {raw_destination}")\n        # Resolve the destination itself, not just its parent:'
+          if anchor not in s: raise SystemExit('update destination anchor changed')
+          s=s.replace(anchor,repl,1)
+          # Validate every remote filename before diff/staging so ../ and other
+          # unsafe paths fail before pull_model can run.
+          anchor='        if remote_files:\n            _, changed = _diff_against_remote(marker, remote_files)\n'
+          repl='        if remote_files:\n            for name in remote_files:\n                _safe_destination_for_repo_file(\n                    destination, RepoFile(path=name, size_bytes=None)\n                )\n            _, changed = _diff_against_remote(marker, remote_files)\n'
+          if anchor not in s: raise SystemExit('remote file validation anchor changed')
+          s=s.replace(anchor,repl,1)
           p.write_text(s)
 
           p=Path('tests/test_hf_loader.py'); s=p.read_text()
-          if '    _call_hub_with_anonymous_fallback,\n' not in s:
-              s=s.replace('    RepoFile,\n','    RepoFile,\n    _call_hub_with_anonymous_fallback,\n',1)
+          if '    _call_hub_with_anonymous_fallback,\n' not in s: s=s.replace('    RepoFile,\n','    RepoFile,\n    _call_hub_with_anonymous_fallback,\n',1)
           if '    manifest_bytes_on_disk,\n' not in s:
               anchor='    model_library_roots,\n'
               if anchor not in s: raise SystemExit('test_hf_loader roots import missing')
@@ -233,12 +180,10 @@ jobs:
           p.write_text(s)
           PY
 
-          # Localize path preview without changing the selected model root.
           python <<'PY'
           from pathlib import Path
           p=Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Forge/Stages/PlanStage.swift')
-          s=p.read_text().replace('        "Forge will save \\(expandedModelPath)/"','        tr("Forge will save %@/", expandedModelPath)')
-          p.write_text(s)
+          p.write_text(p.read_text().replace('        "Forge will save \\(expandedModelPath)/"','        tr("Forge will save %@/", expandedModelPath)'))
           PY
 
           python -m pip install -e '.[dev,server]' >/dev/null
