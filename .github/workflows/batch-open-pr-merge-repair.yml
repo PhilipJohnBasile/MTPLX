@@ -52,8 +52,8 @@ jobs:
               echo "conflict markers remain in $b" >&2
               exit 1
             fi
-            git diff --check --cached
             git commit -m "Merge upstream main into $b"
+            git diff upstream/main...HEAD --check
             git push origin "HEAD:$b"
             echo "FIXED $b $(git rev-parse HEAD)"
           }
