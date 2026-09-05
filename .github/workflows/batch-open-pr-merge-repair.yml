@@ -1,4 +1,4 @@
-name: Repair PR 387 with Swift 6
+name: Repair PR 254 on current main
 
 on:
   push:
@@ -19,35 +19,296 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      - name: Run PR 387 repair with Xcode 16.2
+      - name: Resolve validate and push PR 254
         shell: bash
         run: |
           set -euo pipefail
-          git show b8a61e614ff718b689c18b199d875ff0e233e530:.github/workflows/batch-open-pr-merge-repair.yml > /tmp/repair387-source.yml
+          git config user.name "Philip John Basile"
+          git config user.email "PBasile@Basilecom.com"
+          git remote add upstream https://github.com/youssofal/MTPLX.git || true
+          git fetch upstream main
+          git fetch origin codex/deepseek-v4-mlxserve-v26
+          git checkout -B codex/deepseek-v4-mlxserve-v26 origin/codex/deepseek-v4-mlxserve-v26
+          set +e
+          git merge --no-commit --no-ff -X ours upstream/main
+          rc=$?
+          set -e
+          echo "merge rc=$rc"
+
           python <<'PY'
           from pathlib import Path
+          import subprocess
 
-          lines = Path('/tmp/repair387-source.yml').read_text().splitlines()
-          start = next(i for i, line in enumerate(lines) if line == '        run: |') + 1
-          body = []
-          for line in lines[start:]:
-              if line.startswith('          '):
-                  body.append(line[10:])
-              elif not line.strip():
-                  body.append('')
-              else:
-                  break
-          script = '\n'.join(body) + '\n'
-          old = 'raise ValueError(f"refusing to update through top-level symlink: {raw_destination}")'
-          new = 'raise ValueError(f"refusing to update through top-level symlink; path does not remain directly inside cache: {raw_destination}")'
-          if old not in script:
-              raise SystemExit('symlink error contract anchor changed')
-          script = script.replace(old, new, 1)
-          build = 'swift build --package-path apps/MTPLXApp --product MTPLXApp'
-          replacement = 'sudo xcode-select -s /Applications/Xcode_16.2.app\nswift --version\n' + build
-          if build not in script:
-              raise SystemExit('Swift build anchor changed')
-          script = script.replace(build, replacement, 1)
-          Path('/tmp/repair387.sh').write_text(script)
+          # Keep DeepSeek's external target-only copy while adopting current localization.
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift')
+          s = p.read_text()
+          s = s.replace(
+              '? "Experimental target-only route. Requires mlx-serve and a 128 GB Apple Silicon Mac; no MTP or DSpark."',
+              '? tr("Experimental target-only route. Requires mlx-serve and a 128 GB Apple Silicon Mac; no MTP or DSpark.")',
+          )
+          s = s.replace(
+              ': "Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar.",',
+              ': tr("Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar."),',
+          )
+          p.write_text(s)
+
+          # Current metrics cadence + external mlx-serve no-metrics watchdog.
+          path = 'apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
+          p = Path(path)
+          s = p.read_text()
+          s = s.replace(
+              '            return "Can\'t reach MTPLX at \\(url.absoluteString)."',
+              '            return tr("Can\'t reach MTPLX at %@.", url.absoluteString)',
+          )
+          s = s.replace(
+              '            return "MTPLX\'s benchmark, metrics, and live-control endpoints are unavailable for the external mlx-serve route."',
+              '            return tr("MTPLX\'s benchmark, metrics, and live-control endpoints are unavailable for the external mlx-serve route.")',
+          )
+          s = s.replace(
+              '            occupantDescription = "an MTPLX server started outside the app"',
+              '            occupantDescription = tr("an MTPLX server started outside the app")',
+          )
+          s = s.replace(
+              '            occupantDescription = "an external mlx-serve server"',
+              '            occupantDescription = tr("an external mlx-serve server")',
+          )
+          upstream = subprocess.check_output(['git','show',f'upstream/main:{path}'], text=True)
+          up_start = upstream.index('    /// Snapshot cadence floor while a chat turn streams.')
+          up_end = upstream.index('    func applySupervisorSnapshot', up_start)
+          block = upstream[up_start:up_end]
+          signature = '    public func startMetricsStream(retainingOpenState: Bool = false) {\n'
+          if signature not in block:
+              raise SystemExit('metrics signature changed')
+          block = block.replace(
+              signature,
+              signature
+              + '        guard supportsMTPLXLiveControls else {\n'
+              + '            streamTask?.cancel()\n'
+              + '            streamTask = nil\n'
+              + '            connectionState = .healthyWithoutMetrics\n'
+              + '            startExternalMlxServeHealthWatchdog()\n'
+              + '            return\n'
+              + '        }\n',
+              1,
+          )
+          cur_start = s.find('    /// Snapshot cadence floor while a chat turn streams.')
+          if cur_start == -1:
+              cur_start = s.index('    public func startMetricsStream')
+          cur_end = s.index('    func applySupervisorSnapshot', cur_start)
+          s = s[:cur_start] + block + s[cur_end:]
+          p.write_text(s)
+
+          # Rebase Chrome onto current localization and add the external healthy state.
+          chrome = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Chrome.swift')
+          cs = subprocess.check_output(['git','show','upstream/main:apps/MTPLXApp/Sources/MTPLXAppHost/Views/Chrome.swift'], text=True)
+          old = '''    /// True only when both the daemon is `.running` and the SSE stream
+              /// is `.open`. Used to gate the pulse so the indicator never lies
+              /// about health.
+              private var isHealthy: Bool {
+                  if case .running = daemonState, case .open = connectionState { return true }
+                  return false
+              }
+          '''
+          new = '''    /// Native backends are healthy when the SSE stream is open. External
+              /// backends use their liveness watchdog because they expose no metrics.
+              private var isHealthy: Bool {
+                  guard case .running = daemonState else { return false }
+                  return switch connectionState {
+                  case .open, .healthyWithoutMetrics: true
+                  default: false
+                  }
+              }
+          '''
+          if old not in cs:
+              raise SystemExit('Chrome health anchor changed')
+          cs = cs.replace(old, new, 1)
+          cs = cs.replace('        case .open: return "open"\n','        case .open: return "open"\n        case .healthyWithoutMetrics: return "healthy-without-metrics"\n',1)
+          cs = cs.replace('            case .open: return tr("Running")\n','            case .open: return tr("Running")\n            case .healthyWithoutMetrics: return tr("Running")\n',1)
+          cs = cs.replace('        if isHealthy { return tr("Running and ready.") }\n        switch daemonState {\n','        switch daemonState {\n',1)
+          cs = cs.replace('            case .open: return tr("Running.")\n','            case .open: return tr("Running and ready.")\n            case .healthyWithoutMetrics:\n                return tr("Running and ready. External backend live stats are unavailable.")\n',1)
+          chrome.write_text(cs)
           PY
-          bash /tmp/repair387.sh
+
+          python <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = 'mtplx/hf_loader.py'
+          p = Path(path)
+          s = p.read_text()
+          upstream = subprocess.check_output(['git','show',f'upstream/main:{path}'], text=True)
+
+          # Preserve the DeepSeek pinned-file verifier from the feature branch.
+          helper_start = s.index('def _verify_downloaded_file(')
+          helper_end = s.index('def _download_repo_file(', helper_start)
+          verify_helper = s[helper_start:helper_end]
+
+          # Start with current progress/auth/LFS download implementation.
+          up_start = upstream.index('def _emit_current_download_size(')
+          up_end = upstream.index('@dataclass(frozen=True)\nclass CachedModel', up_start)
+          block = upstream[up_start:up_end]
+          block = block.replace(
+              '    last_emit_size: int,\n    measure: Callable[[], int] | None = None,\n    token: str | bool | None = None,\n',
+              '    last_emit_size: int,\n    force: bool = False,\n    expected_sha256: str | None = None,\n    measure: Callable[[], int] | None = None,\n    token: str | bool | None = None,\n',
+              1,
+          )
+          block = block.replace(
+              '    if expected_size is not None and target.exists() and target.stat().st_size == expected_size:\n',
+              '    if not force and expected_size is not None and target.exists() and target.stat().st_size == expected_size:\n',
+              1,
+          )
+          block = block.replace(
+              '    if expected_size is None and target.exists() and target.stat().st_size > 0:\n',
+              '    if not force and expected_size is None and target.exists() and target.stat().st_size > 0:\n',
+              1,
+          )
+          stale = '''    if target.exists():
+              # A size-mismatched final file is a stale version of a file that
+              # changed upstream (e.g. a repaired index gaining vision entries),
+              # not an interrupted download. Resuming from it would append the
+              # remote tail onto old content and corrupt the file, so discard it.
+              # Only a leftover *.incomplete partial may be range-resumed.
+              target.unlink()
+          '''
+          replacement = '''    if force:
+              # Retain the known-bad final target until its verified replacement lands.
+              partial.unlink(missing_ok=True)
+          elif target.exists():
+              # A size-mismatched final file is stale, not an interrupted partial.
+              target.unlink()
+          '''
+          if stale not in block:
+              raise SystemExit('current stale target block changed')
+          block = block.replace(stale, replacement, 1)
+          early = '            _land(partial)\n            return _emit_current_download_size(\n'
+          if early not in block:
+              raise SystemExit('416 landing anchor changed')
+          block = block.replace(
+              early,
+              '            _verify_downloaded_file(\n                partial, repo_file=repo_file, expected_sha256=expected_sha256\n            )\n            _land(partial)\n            return _emit_current_download_size(\n',
+              1,
+          )
+          final = '    _land(partial)\n    return _emit_current_download_size(\n'
+          pos = block.rfind(final)
+          if pos == -1:
+              raise SystemExit('final landing anchor changed')
+          block = block[:pos] + '    _verify_downloaded_file(\n        partial, repo_file=repo_file, expected_sha256=expected_sha256\n    )\n' + block[pos:]
+          block = block.replace(
+              '    progress_interval_s: float,\n) -> tuple[Path, int | None]:\n',
+              '    progress_interval_s: float,\n    force_paths: frozenset[str] = frozenset(),\n) -> tuple[Path, int | None]:\n',
+              1,
+          )
+          call_anchor = '                last_emit_size=last_emit_size,\n                measure=measure,\n'
+          if call_anchor not in block:
+              raise SystemExit('structured call anchor changed')
+          block = block.replace(
+              call_anchor,
+              '                last_emit_size=last_emit_size,\n                force=repo_file.path in force_paths,\n                expected_sha256=(\n                    _pinned_file_sha256(repo_id, repo_file.path)\n                    if repo_file.path in force_paths\n                    else None\n                ),\n                measure=measure,\n',
+              1,
+          )
+          block = block.replace('\ndef _download_repo_file(', '\n' + verify_helper + 'def _download_repo_file(', 1)
+          cur_start = s.index('def _emit_current_download_size(')
+          cur_end = s.index('@dataclass(frozen=True)\nclass CachedModel', cur_start)
+          s = s[:cur_start] + block + s[cur_end:]
+
+          # Use current anonymous-auth freshness check.
+          up_local_start = upstream.index('def _local_matches_remote_index(')
+          up_local_end = upstream.index('def pull_model(', up_local_start)
+          local_block = upstream[up_local_start:up_local_end]
+          cur_local_start = s.index('def _local_matches_remote_index(')
+          cur_local_end = s.index('def pull_model(', cur_local_start)
+          s = s[:cur_local_start] + local_block + s[cur_local_end:]
+
+          # Start pull_model from current manifest/transient accounting, then layer
+          # pinned DeepSeek repair paths and exact validation onto it.
+          pull_start = upstream.index('def pull_model(')
+          pull_end = upstream.index('def resolve_cached_model_target(', pull_start)
+          pull = upstream[pull_start:pull_end]
+          anchor = '        return _local_matches_remote_index(destination, repo_id, revision)\n\n'
+          if anchor not in pull:
+              raise SystemExit('freshness anchor changed')
+          pinned = '''        return _local_matches_remote_index(destination, repo_id, revision)
+
+              pinned_integrity_errors = (
+                  _pinned_artifact_integrity_errors(destination, repo_id)
+                  if destination.is_dir() and _pinned_source_identity(repo_id) is not None
+                  else None
+              )
+              repair_paths = (
+                  frozenset(
+                      error.partition(":")[0]
+                      for error in pinned_integrity_errors
+                      if error.partition(":")[0]
+                  )
+                  if pinned_integrity_errors
+                  else frozenset()
+              )
+              pinned_integrity_checked = pinned_integrity_errors is not None
+
+          '''
+          pull = pull.replace(anchor, pinned, 1)
+          pull = pull.replace(
+              '        and _cached_model_ready_for_repo(destination, repo_id)\n',
+              '        and _cached_model_ready_for_repo(\n            destination, repo_id, pinned_integrity_errors=pinned_integrity_errors\n        )\n',
+              1,
+          )
+          pull = pull.replace('_validate_pinned_laguna_files(resolved, repo_id)', '_validate_pinned_model_files(resolved, repo_id)')
+          size_anchor = '        if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():\n            total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES\n'
+          if size_anchor not in pull:
+              raise SystemExit('total bytes anchor changed')
+          pull = pull.replace(
+              size_anchor,
+              size_anchor
+              + '        elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():\n'
+              + '            total_bytes = DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES\n',
+              1,
+          )
+          pull = pull.replace('            if progress_callback is not None:\n','            if progress_callback is not None or repair_paths:\n',1)
+          structured = '                    progress_interval_s=progress_interval_s,\n                )\n'
+          if structured not in pull:
+              raise SystemExit('structured pull call changed')
+          pull = pull.replace(
+              structured,
+              '                    progress_interval_s=progress_interval_s,\n                    force_paths=repair_paths,\n                )\n',
+              1,
+          )
+          pull = pull.replace(
+              '        "validation": _pull_validation(resolved, repo_id),\n',
+              '        "validation": _pull_validation(\n            resolved, repo_id, pinned_integrity_checked=pinned_integrity_checked\n        ),\n',
+              1,
+          )
+          cur_pull_start = s.index('def pull_model(')
+          cur_pull_end = s.index('def resolve_cached_model_target(', cur_pull_start)
+          s = s[:cur_pull_start] + pull + s[cur_pull_end:]
+
+          # Current shared token resolver in doctor output.
+          old = '''    token_present = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+              token_source = "environment" if token_present else None
+              if not token_present:
+                  try:
+                      from huggingface_hub import get_token
+
+                      token_present = bool(get_token())
+                      token_source = "huggingface_hub" if token_present else None
+                  except Exception:
+                      token_present = False
+          '''
+          if old in s:
+              s = s.replace(old, '    token_source = hf_token_source()\n    token_present = token_source is not None\n', 1)
+
+          p.write_text(s)
+          PY
+
+          python -m pip install -e '.[dev,server]' >/dev/null
+          python -m py_compile mtplx/hf_loader.py mtplx/backends/deepseek_v4_mlxserve.py mtplx/models/deepseek_v4_target_only_config.py
+          python -m pytest -q tests/test_deepseek_v4_mlxserve_backend.py tests/test_canon_policy_smalls.py
+          sudo xcode-select -s /Applications/Xcode_16.2.app
+          swift --version
+          swift build --package-path apps/MTPLXApp --product MTPLXApp
+          git add -A
+          test -z "$(git diff --name-only --diff-filter=U)"
+          ! git grep -n -E '^(<<<<<<<|>>>>>>>)' -- '*.swift' '*.py' '*.ts' '*.tsx'
+          git commit -m "Merge upstream main into codex/deepseek-v4-mlxserve-v26"
+          git diff upstream/main...HEAD --check
+          git push origin HEAD:codex/deepseek-v4-mlxserve-v26
+          echo "FIXED $(git rev-parse HEAD)"
