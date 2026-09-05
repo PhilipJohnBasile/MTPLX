@@ -1,4 +1,4 @@
-name: Repair remaining bounded PR conflicts
+name: Repair final two PR conflicts
 
 on:
   push:
@@ -11,12 +11,15 @@ permissions:
 
 jobs:
   repair:
-    runs-on: ubuntu-24.04
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve and push bounded conflicts
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Resolve validate and push final branches
         shell: bash
         run: |
           set -euo pipefail
@@ -24,6 +27,8 @@ jobs:
           git config user.email "PBasile@Basilecom.com"
           git remote add upstream https://github.com/youssofal/MTPLX.git || true
           git fetch upstream main
+          python -m pip install -U pip >/dev/null
+          python -m pip install -e '.[dev,server]' >/dev/null
 
           prepare() {
             local b="$1"
@@ -58,123 +63,618 @@ jobs:
             echo "FIXED $b $(git rev-parse HEAD)"
           }
 
-          build_dashboard() {
-            (cd dashboard && npx --yes bun@latest install --frozen-lockfile && npx --yes bun@latest run build)
+          # ------------------------------------------------------------------
+          # PR #387 — ordered model library directories.
+          # Preserve current upstream settings/scheduling/downloader hardening,
+          # then layer the model-library feature back onto those current files.
+          # ------------------------------------------------------------------
+          b=codex/multiple-model-directories
+          prepare "$b"
+
+          git show upstream/main:apps/MTPLXApp/Sources/MTPLXAppCore/Models/AppConfiguration.swift \
+            > apps/MTPLXApp/Sources/MTPLXAppCore/Models/AppConfiguration.swift
+          python <<'PY'
+          from pathlib import Path
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/AppConfiguration.swift')
+          s = p.read_text()
+
+          anchor = '    public var customModels: [MTPLXModelOption]\n'
+          if anchor not in s:
+              raise SystemExit('AppConfiguration customModels property anchor changed')
+          s = s.replace(
+              anchor,
+              anchor
+              + '    public var primaryModelDirectory: String\n'
+              + '    public var additionalModelDirectories: [String]\n',
+              1,
+          )
+
+          anchor = '        customModels: [MTPLXModelOption] = [],\n'
+          if anchor not in s:
+              raise SystemExit('AppConfiguration init parameter anchor changed')
+          s = s.replace(
+              anchor,
+              anchor
+              + '        primaryModelDirectory: String = ModelLibrary.defaultPrimaryDirectory().path,\n'
+              + '        additionalModelDirectories: [String] = [],\n',
+              1,
+          )
+
+          anchor = '        self.customModels = customModels\n'
+          if anchor not in s:
+              raise SystemExit('AppConfiguration init assignment anchor changed')
+          s = s.replace(
+              anchor,
+              anchor
+              + '        let modelLibrary = ModelLibrary(\n'
+              + '            primaryDirectory: primaryModelDirectory,\n'
+              + '            additionalDirectories: additionalModelDirectories\n'
+              + '        )\n'
+              + '        self.primaryModelDirectory = modelLibrary.primaryDirectory.path\n'
+              + '        self.additionalModelDirectories = modelLibrary.additionalDirectories.map(\\.path)\n',
+              1,
+          )
+
+          methods_anchor = '    public mutating func rememberCustomModel(repoID: String) {\n'
+          if methods_anchor not in s:
+              raise SystemExit('AppConfiguration rememberCustomModel anchor changed')
+          methods = '''    public var modelLibrary: ModelLibrary {
+              ModelLibrary(
+                  primaryDirectory: primaryModelDirectory,
+                  additionalDirectories: additionalModelDirectories
+              )
           }
 
-          b=feat/runtime-systems-dashboard
-          prepare "$b"
-          git show upstream/main:dashboard/src/lib/api.ts > /tmp/api.ts
-          python3 <<'PY'
-          from pathlib import Path
-          s = Path('/tmp/api.ts').read_text()
-          if 'RuntimeSystemsPayload,' not in s:
-              s = s.replace('  PrefillHistoryPayload,\n', '  PrefillHistoryPayload,\n  RuntimeSystemsPayload,\n', 1)
-          needle = '  getSnapshot: () => getJson<DashboardSnapshot>("/v1/mtplx/snapshot"),\n'
-          if 'getSystems:' not in s:
-              if needle not in s:
-                  raise SystemExit('dashboard getSnapshot anchor changed')
-              s = s.replace(needle, needle + '  getSystems: () => getJson<RuntimeSystemsPayload>("/v1/mtplx/systems"),\n', 1)
-          Path('dashboard/src/lib/api.ts').write_text(s)
-          PY
-          rm -rf mtplx/dashboard/_static
-          git add -A mtplx/dashboard/_static dashboard/src/lib/api.ts
-          build_dashboard
-          finish "$b"
+          public mutating func normalizeModelDirectories() {
+              let library = modelLibrary
+              primaryModelDirectory = library.primaryDirectory.path
+              additionalModelDirectories = library.additionalDirectories.map(\.path)
+          }
 
-          b=feat/native-operations-dashboard
-          prepare "$b"
-          rm -rf mtplx/dashboard/_static
-          git add -A mtplx/dashboard/_static
-          build_dashboard
-          finish "$b"
+          public mutating func setPrimaryModelDirectory(_ path: String, preservePrevious: Bool = true) {
+              let current = modelLibrary
+              var additional = current.additionalDirectories.map(\.path)
+              if preservePrevious,
+                 current.primaryDirectory.path != ModelLibrary.canonicalURL(for: path).path
+              {
+                  additional.insert(current.primaryDirectory.path, at: 0)
+              }
+              let next = ModelLibrary(primaryDirectory: path, additionalDirectories: additional)
+              primaryModelDirectory = next.primaryDirectory.path
+              additionalModelDirectories = next.additionalDirectories.map(\.path)
+          }
 
-          b=feat/expert-locality-telemetry
-          prepare "$b"
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('mtplx/server/openai.py')
-          s = p.read_text()
-          if 'self.runtime.metal_memory_limit_bytes = int(pinned_limit)' not in s:
-              needle = '            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'
-              block = '''            LOGGER.warning("expert-locality instrumentation: %s", exc)\n        pinned_limit = self.metal_memory_caps.get("memory_limit_bytes")\n        if isinstance(pinned_limit, int) and pinned_limit > 0:\n            self.runtime.metal_memory_limit_bytes = int(pinned_limit)\n        self.backend_descriptor = descriptor_from_runtime(self.runtime, args)'''
-              if needle not in s:
-                  raise SystemExit('expert-locality insertion point changed')
-              s = s.replace(needle, block, 1)
+          public mutating func addModelDirectories(_ paths: [String]) {
+              let current = modelLibrary
+              let next = ModelLibrary(
+                  primaryDirectory: current.primaryDirectory,
+                  additionalDirectories: current.additionalDirectories.map(\.path) + paths
+              )
+              primaryModelDirectory = next.primaryDirectory.path
+              additionalModelDirectories = next.additionalDirectories.map(\.path)
+          }
+
+          '''
+          s = s.replace(methods_anchor, methods + methods_anchor, 1)
+
+          anchor = '        case customModels = "custom_models"\n'
+          if anchor not in s:
+              raise SystemExit('AppConfiguration CodingKeys anchor changed')
+          s = s.replace(
+              anchor,
+              anchor
+              + '        case primaryModelDirectory = "primary_model_directory"\n'
+              + '        case additionalModelDirectories = "additional_model_directories"\n',
+              1,
+          )
+
+          decode_anchor = '        huggingFaceHandle = field(String.self, .huggingFaceHandle)\n'
+          if decode_anchor not in s:
+              raise SystemExit('AppConfiguration decoder anchor changed')
+          decode = '''        primaryModelDirectory = field(String.self, .primaryModelDirectory)
+              ?? defaults.primaryModelDirectory
+          additionalModelDirectories = container.lenientDecodeArrayIfPresent(
+              of: String.self,
+              forKey: .additionalModelDirectories,
+              issues: issues
+          ) ?? defaults.additionalModelDirectories
+          '''
+          s = s.replace(decode_anchor, decode + decode_anchor, 1)
+
+          sanitize_anchor = '    public mutating func sanitizeLaunchCriticalFields() {\n'
+          if sanitize_anchor not in s:
+              raise SystemExit('AppConfiguration sanitize anchor changed')
+          s = s.replace(
+              sanitize_anchor,
+              sanitize_anchor + '        normalizeModelDirectories()\n',
+              1,
+          )
           p.write_text(s)
           PY
-          python3 -m py_compile mtplx/server/openai.py mtplx/expert_locality.py
-          finish "$b"
 
-          b=feat/semantic-session-anchors
-          prepare "$b"
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('mtplx/generation.py')
-          s = p.read_text()
-          old = 'from .runtime_options import block_prefix_restore_enabled, env_bool\nfrom .semantic_anchors import merge_mandatory_edges\n'
-          new = '''from .runtime_options import (\n    block_prefix_restore_enabled,\n    env_bool,\n    qwen4_opdiet_enabled,\n)\nfrom .route_tape import RouteTape, counter_deltas\nfrom .semantic_anchors import merge_mandatory_edges\n'''
-          if old in s:
-              s = s.replace(old, new, 1)
-          elif 'from .semantic_anchors import merge_mandatory_edges' not in s:
-              raise SystemExit('semantic import block changed')
-          sig = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
-          rep = '    stable_prefix_len: int | None = None,\n    mandatory_prefix_edges: Sequence[int] | None = None,\n    plan_ids: Sequence[int] | None = None,\n) -> tuple[Any, Any, float, float]:'
-          if sig in s:
-              s = s.replace(sig, rep, 1)
-          elif 'mandatory_prefix_edges: Sequence[int] | None = None' not in s or 'plan_ids: Sequence[int] | None = None' not in s:
-              raise SystemExit('prefill restored suffix signature changed')
-          target = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,'
-          repl = '                    mandatory_prefix_edges=mandatory_prefix_edges,\n                    vision_splice=vision_splice,\n                    plan_ids=prompt_ids,'
-          if target in s:
-              s = s.replace(target, repl, 1)
-          target = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                    )'
-          repl = '                        mandatory_prefix_edges=mandatory_prefix_edges,\n                        plan_ids=prompt_ids,\n                    )'
-          if target in s:
-              s = s.replace(target, repl, 1)
-          p.write_text(s)
-          PY
-          python3 -m py_compile mtplx/generation.py mtplx/semantic_anchors.py
-          finish "$b"
-
-          b=codex/issue-374-remove-model
-          prepare "$b"
-          python3 <<'PY'
+          python <<'PY'
           from pathlib import Path
           import subprocess
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift')
+          s = p.read_text()
+          if 'public var isLocalFolder: Bool' not in s:
+              up = subprocess.check_output(
+                  ['git', 'show', 'upstream/main:apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift'],
+                  text=True,
+              )
+              start = up.index('    public var isLocalFolder: Bool {')
+              end = up.index('\n    }', start) + len('\n    }')
+              block = up[start:end] + '\n\n'
+              anchor = '    /// First `localCandidates` entry'
+              if anchor not in s:
+                  raise SystemExit('MTPLXModelOption localCandidates anchor changed')
+              s = s.replace(anchor, block + anchor, 1)
+          p.write_text(s)
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/ModelDownloader.swift')
+          s = p.read_text()
+          observer = '            self.streamBuildObserver?()\n'
+          if observer not in s:
+              anchor = '        return AsyncStream<DownloadEvent> { continuation in\n'
+              if anchor not in s:
+                  raise SystemExit('ModelDownloader AsyncStream anchor changed')
+              s = s.replace(anchor, anchor + observer, 1)
+          p.write_text(s)
+          PY
+
+          python <<'PY'
+          from pathlib import Path
+          import subprocess
+
           path = 'apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
           p = Path(path)
           s = p.read_text()
-          if 'applySchedulingPresetSelection' not in s:
-              upstream = subprocess.check_output(['git', 'show', f'upstream/main:{path}'], text=True)
-              start = upstream.index('    /// Commit a Performance mode pick')
-              end = upstream.index('    public func applyConfiguration(', start)
-              block = upstream[start:end]
-              anchor = '    public func applyConfiguration('
-              if anchor not in s:
-                  raise SystemExit('BackendStore applyConfiguration anchor changed')
-              s = s.replace(anchor, block + anchor, 1)
+          up = subprocess.check_output(['git', 'show', f'upstream/main:{path}'], text=True)
+          start = up.index('    public func updateModelPack(_ update: ModelUpdateInfo) {')
+          end = up.index('    private enum ModelPackUpdateEventOutcome', start)
+          block = up[start:end]
+          block = block.replace(
+              '        guard modelPackUpdatingRepoID == nil else { return }\n',
+              '        guard update.isUpdateAvailable,\n'
+              '              update.canUpdateInPlace,\n'
+              '              modelPackUpdatingRepoID == nil\n'
+              '        else { return }\n',
+              1,
+          )
+          anchor = '        let downloader = modelDownloader\n'
+          if anchor not in block:
+              raise SystemExit('BackendStore downloader anchor changed')
+          block = block.replace(
+              anchor,
+              anchor
+              + '        let cacheRoot = update.path\n'
+              + '            .map { URL(fileURLWithPath: $0).deletingLastPathComponent() }\n'
+              + '            ?? configuration.modelLibrary.primaryDirectory\n',
+              1,
+          )
+          block = block.replace(
+              '[weak self, downloader, update] in',
+              '[weak self, downloader, update, cacheRoot] in',
+              1,
+          )
+          stream_anchor = '                sizeProbePath: update.path\n'
+          if stream_anchor not in block:
+              raise SystemExit('BackendStore update stream anchor changed')
+          block = block.replace(
+              stream_anchor,
+              '                sizeProbePath: update.path,\n'
+              '                cacheRoot: cacheRoot\n',
+              1,
+          )
+          current_start = s.index('    public func updateModelPack(_ update: ModelUpdateInfo) {')
+          current_end = s.index('    private enum ModelPackUpdateEventOutcome', current_start)
+          s = s[:current_start] + block + s[current_end:]
           p.write_text(s)
-          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Models/ModelPickerOverlay.swift')
-          p.write_text(p.read_text().replace('Color.white.opacity(0.05)', 'Brand.wash.opacity(0.05)'))
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Forge/Stages/PlanStage.swift')
+          s = p.read_text()
+          s = s.replace(
+              '        "Forge will save \\(expandedModelPath)/"',
+              '        tr("Forge will save %@/", expandedModelPath)',
+          )
+          p.write_text(s)
           PY
+
+          python <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('mtplx/cli.py')
+          s = p.read_text()
+          old = '    bench_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")\n'
+          if old in s:
+              s = s.replace(
+                  old,
+                  '    bench_p.add_argument(\n'
+                  '        "--prompts",\n'
+                  '        help="Prompt suite name or .jsonl path; defaults to the packaged default suite",\n'
+                  '    )\n',
+                  1,
+              )
+          if '_add_model_search_dir_args(bench_p)' not in s:
+              raise SystemExit('CLI lost model search-dir args')
+          p.write_text(s)
+
+          p = Path('mtplx/commands/public.py')
+          s = p.read_text()
+          old = '    if key == "profile":\n        value = resolve_profile_name(value)\n'
+          if old in s:
+              s = s.replace(
+                  old,
+                  '    if key == "profile":\n'
+                  '        try:\n'
+                  '            value = resolve_profile_name(value)\n'
+                  '        except ValueError as exc:\n'
+                  '            raise SystemExit(str(exc)) from None\n',
+                  1,
+              )
+          if 'if key == "model_dirs":' not in s:
+              raise SystemExit('public config lost model_dirs validation')
+          p.write_text(s)
+
+          p = Path('mtplx/hf_loader.py')
+          s = p.read_text()
+          if 'token_source = hf_token_source()' not in s:
+              pattern = re.compile(
+                  r'    token_present = bool\(os\.environ\.get\("HF_TOKEN"\).*?'
+                  r'            token_present = False\n',
+                  re.S,
+              )
+              replacement = (
+                  '    # Keep doctor and pull on the same credential resolver.\n'
+                  '    token_source = hf_token_source()\n'
+                  '    token_present = token_source is not None\n'
+              )
+              s, count = pattern.subn(replacement, s, count=1)
+              if count != 1:
+                  raise SystemExit('hf_cache_report token block changed')
+          if 'roots = model_library_roots(cache_dir, search_dirs=search_dirs)' not in s:
+              raise SystemExit('hf_loader lost model library roots')
+          p.write_text(s)
+          PY
+
+          python <<'PY'
+          from pathlib import Path
+
+          p = Path('mtplx/model_updates.py')
+          s = p.read_text()
+          if '    cached_model_is_complete,\n' not in s:
+              anchor = '    _safe_destination_for_repo_file,\n'
+              if anchor not in s:
+                  raise SystemExit('model_updates import anchor changed')
+              s = s.replace(anchor, anchor + '    cached_model_is_complete,\n', 1)
+
+          old = '''        destination = Path(destination_path).expanduser().absolute()
+          if destination.parent.resolve() != cache_root:
+              raise ValueError(f"update path must be a direct child of {cache_root}")
+          if destination.is_symlink():
+              raise ValueError(
+                  f"refusing to update through top-level symlink: {destination}"
+              )
+          '''
+          new = '''        # Resolve the destination itself: mutations inside a cache symlink
+          # must never escape the configured cache root.
+          destination = Path(destination_path).expanduser().resolve()
+          if destination.parent != cache_root:
+              raise ValueError(
+                  f"update path must be a directory directly inside {cache_root} "
+                  f"(resolved to {destination})"
+              )
+          '''
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          symlink_block = '''        if destination.is_symlink():
+              raise ValueError(
+                  f"refusing to update through top-level symlink: {destination}"
+              )
+          '''
+          if symlink_block in s:
+              s = s.replace(
+                  symlink_block,
+                  '    if destination.exists():\n        _recover_stale_copies(destination)\n',
+                  1,
+              )
+          elif '_recover_stale_copies(destination)' not in s:
+              raise SystemExit('model_updates stale-copy recovery missing')
+          p.write_text(s)
+
+          p = Path('tests/test_hf_loader.py')
+          s = p.read_text()
+          if '    _call_hub_with_anonymous_fallback,\n' not in s:
+              s = s.replace('    RepoFile,\n', '    RepoFile,\n    _call_hub_with_anonymous_fallback,\n', 1)
+          if '    manifest_bytes_on_disk,\n' not in s:
+              anchor = '    model_library_roots,\n'
+              if anchor not in s:
+                  raise SystemExit('test_hf_loader model_library_roots import missing')
+              s = s.replace(anchor, anchor + '    manifest_bytes_on_disk,\n', 1)
+          p.write_text(s)
+          PY
+
+          python -m py_compile mtplx/cli.py mtplx/commands/public.py mtplx/hf_loader.py mtplx/model_updates.py
+          python -m pytest -q tests/test_config.py tests/test_hf_loader.py tests/test_model_updates.py tests/test_public_cli.py
+          swift build --package-path apps/MTPLXApp --product MTPLXApp
           finish "$b"
 
-          b=codex/repair-pr220-hermes-app-only
+          # ------------------------------------------------------------------
+          # PR #254 — DeepSeek V4 target-only external mlx-serve backend.
+          # Keep the external backend contract while preserving current download,
+          # auth, metrics cadence and localized app behavior.
+          # ------------------------------------------------------------------
+          b=codex/deepseek-v4-mlxserve-v26
           prepare "$b"
-          python3 <<'PY'
+
+          python <<'PY'
           from pathlib import Path
-          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Hermes/HermesOverlay.swift')
+          import subprocess
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppCore/Models/MTPLXModelOption.swift')
           s = p.read_text()
-          replacements = {
-              '.help("New Agent")': '.help(tr("New Agent"))',
-              'localError = "MTPLX is not ready yet."': 'localError = tr("MTPLX is not ready yet.")',
-              'Text("New Agent")': 'Text(tr("New Agent"))',
-              '.accessibilityLabel("Create a new Hermes agent")': '.accessibilityLabel(tr("Create a new Hermes agent"))',
-              'Text(hermes.selectedProfile == nil ? "Select a Hermes Profile" : "Start a Hermes Agent")': 'Text(hermes.selectedProfile == nil ? tr("Select a Hermes Profile") : tr("Start a Hermes Agent"))',
-          }
-          for old, new in replacements.items():
-              s = s.replace(old, new)
+          s = s.replace(
+              '? "Experimental target-only route. Requires mlx-serve and a 128 GB Apple Silicon Mac; no MTP or DSpark."',
+              '? tr("Experimental target-only route. Requires mlx-serve and a 128 GB Apple Silicon Mac; no MTP or DSpark.")',
+          )
+          s = s.replace(
+              ': "Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar.",',
+              ': tr("Custom Hugging Face model. MTPLX will use MTP when the repo includes a sidecar."),',
+          )
+          p.write_text(s)
+
+          path = 'apps/MTPLXApp/Sources/MTPLXAppCore/Stores/MTPLXBackendStore.swift'
+          p = Path(path)
+          s = p.read_text()
+          s = s.replace(
+              '            return "Can\'t reach MTPLX at \\(url.absoluteString)."',
+              '            return tr("Can\'t reach MTPLX at %@.", url.absoluteString)',
+          )
+          s = s.replace(
+              '            return "MTPLX\'s benchmark, metrics, and live-control endpoints are unavailable for the external mlx-serve route."',
+              '            return tr("MTPLX\'s benchmark, metrics, and live-control endpoints are unavailable for the external mlx-serve route.")',
+          )
+          s = s.replace(
+              '            occupantDescription = "an MTPLX server started outside the app"',
+              '            occupantDescription = tr("an MTPLX server started outside the app")',
+          )
+          s = s.replace(
+              '            occupantDescription = "an external mlx-serve server"',
+              '            occupantDescription = tr("an external mlx-serve server")',
+          )
+
+          up = subprocess.check_output(['git', 'show', f'upstream/main:{path}'], text=True)
+          up_start = up.index('    /// Snapshot cadence floor while a chat turn streams.')
+          up_end = up.index('    func applySupervisorSnapshot', up_start)
+          block = up[up_start:up_end]
+          signature = '    public func startMetricsStream(retainingOpenState: Bool = false) {\n'
+          if signature not in block:
+              raise SystemExit('upstream metrics stream signature changed')
+          block = block.replace(
+              signature,
+              signature
+              + '        guard supportsMTPLXLiveControls else {\n'
+              + '            streamTask?.cancel()\n'
+              + '            streamTask = nil\n'
+              + '            connectionState = .healthyWithoutMetrics\n'
+              + '            startExternalMlxServeHealthWatchdog()\n'
+              + '            return\n'
+              + '        }\n',
+              1,
+          )
+          cur_start = s.index('    public func startMetricsStream')
+          cur_end = s.index('    func applySupervisorSnapshot', cur_start)
+          # Include current upstream cadence properties immediately before the method.
+          prefix_start = s.rfind('    /// Snapshot cadence floor while a chat turn streams.', 0, cur_start)
+          if prefix_start != -1:
+              cur_start = prefix_start
+          s = s[:cur_start] + block + s[cur_end:]
           p.write_text(s)
           PY
+
+          git show upstream/main:apps/MTPLXApp/Sources/MTPLXAppHost/Views/Chrome.swift \
+            > apps/MTPLXApp/Sources/MTPLXAppHost/Views/Chrome.swift
+          python <<'PY'
+          from pathlib import Path
+
+          p = Path('apps/MTPLXApp/Sources/MTPLXAppHost/Views/Chrome.swift')
+          s = p.read_text()
+          s = s.replace(
+              '// when the daemon is fully running AND the SSE metrics stream is open;',
+              '// when the daemon is fully running and its health signal is ready;',
+              1,
+          )
+          old = '''    /// True only when both the daemon is `.running` and the SSE stream
+              /// is `.open`. Used to gate the pulse so the indicator never lies
+              /// about health.
+              private var isHealthy: Bool {
+                  if case .running = daemonState, case .open = connectionState { return true }
+                  return false
+              }
+          '''
+          new = '''    /// Native backends are healthy when the SSE stream is open. External
+              /// backends use their liveness watchdog because they expose no metrics.
+              private var isHealthy: Bool {
+                  guard case .running = daemonState else { return false }
+                  return switch connectionState {
+                  case .open, .healthyWithoutMetrics: true
+                  default: false
+                  }
+              }
+          '''
+          if old not in s:
+              raise SystemExit('Chrome isHealthy anchor changed')
+          s = s.replace(old, new, 1)
+          s = s.replace(
+              '        case .open: return "open"\n',
+              '        case .open: return "open"\n        case .healthyWithoutMetrics: return "healthy-without-metrics"\n',
+              1,
+          )
+          s = s.replace(
+              '            case .open: return tr("Running")\n',
+              '            case .open: return tr("Running")\n            case .healthyWithoutMetrics: return tr("Running")\n',
+              1,
+          )
+          s = s.replace(
+              '        if isHealthy { return tr("Running and ready.") }\n        switch daemonState {\n',
+              '        switch daemonState {\n',
+              1,
+          )
+          s = s.replace(
+              '            case .open: return tr("Running.")\n',
+              '            case .open: return tr("Running and ready.")\n'
+              '            case .healthyWithoutMetrics:\n'
+              '                return tr("Running and ready. External backend live stats are unavailable.")\n',
+              1,
+          )
+          p.write_text(s)
+          PY
+
+          python <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          path = 'mtplx/hf_loader.py'
+          p = Path(path)
+          s = p.read_text()
+          up = subprocess.check_output(['git', 'show', f'upstream/main:{path}'], text=True)
+          start = up.index('def _download_repo_file(')
+          end = up.index('@dataclass(frozen=True)\nclass CachedModel', start)
+          block = up[start:end]
+
+          sig = '    last_emit_size: int,\n    measure: Callable[[], int] | None = None,\n'
+          if sig not in block:
+              raise SystemExit('hf_loader download signature changed')
+          block = block.replace(
+              sig,
+              '    last_emit_size: int,\n'
+              '    force: bool = False,\n'
+              '    expected_sha256: str | None = None,\n'
+              '    measure: Callable[[], int] | None = None,\n',
+              1,
+          )
+          block = block.replace(
+              '    if expected_size is not None and target.exists() and target.stat().st_size == expected_size:\n',
+              '    if not force and expected_size is not None and target.exists() and target.stat().st_size == expected_size:\n',
+              1,
+          )
+          block = block.replace(
+              '    if expected_size is None and target.exists() and target.stat().st_size > 0:\n',
+              '    if not force and expected_size is None and target.exists() and target.stat().st_size > 0:\n',
+              1,
+          )
+          target_block = '''    if target.exists():
+              # A size-mismatched final file is a stale version of a file that
+              # changed upstream (e.g. a repaired index gaining vision entries),
+              # not an interrupted download. Resuming from it would append the
+              # remote tail onto old content and corrupt the file, so discard it.
+              # Only a leftover *.incomplete partial may be range-resumed.
+              target.unlink()
+          '''
+          replacement = '''    if force:
+              # Retain a known-bad target until its replacement is complete and
+              # pinned-hash verified; failed repair must not discard the only copy.
+              if partial.exists():
+                  partial.unlink()
+          elif target.exists():
+              # A size-mismatched final file is stale, not an interrupted partial.
+              target.unlink()
+          '''
+          if target_block not in block:
+              raise SystemExit('hf_loader stale-target block changed')
+          block = block.replace(target_block, replacement, 1)
+
+          block = block.replace(
+              '        elif existing > 0 and status_code == 416 and expected_size is not None and existing == expected_size:\n'
+              '            _land(partial)\n',
+              '        elif existing > 0 and status_code == 416 and expected_size is not None and existing == expected_size:\n'
+              '            _verify_downloaded_file(\n'
+              '                partial, repo_file=repo_file, expected_sha256=expected_sha256\n'
+              '            )\n'
+              '            _land(partial)\n',
+              1,
+          )
+          final_land = '    _land(partial)\n    return _emit_current_download_size(\n'
+          if final_land not in block:
+              raise SystemExit('hf_loader final land anchor changed')
+          block = block.replace(
+              final_land,
+              '    _verify_downloaded_file(\n'
+              '        partial, repo_file=repo_file, expected_sha256=expected_sha256\n'
+              '    )\n'
+              '    _land(partial)\n'
+              '    return _emit_current_download_size(\n',
+              1,
+          )
+
+          snap_sig = '    progress_interval_s: float,\n) -> tuple[Path, int | None]:\n'
+          if snap_sig not in block:
+              raise SystemExit('hf_loader structured snapshot signature changed')
+          block = block.replace(
+              snap_sig,
+              '    progress_interval_s: float,\n'
+              '    force_paths: frozenset[str] = frozenset(),\n'
+              ') -> tuple[Path, int | None]:\n',
+              1,
+          )
+          call_anchor = '                last_emit_size=last_emit_size,\n                measure=measure,\n'
+          if call_anchor not in block:
+              raise SystemExit('hf_loader structured call anchor changed')
+          block = block.replace(
+              call_anchor,
+              '                last_emit_size=last_emit_size,\n'
+              '                force=repo_file.path in force_paths,\n'
+              '                expected_sha256=(\n'
+              '                    _pinned_file_sha256(repo_id, repo_file.path)\n'
+              '                    if repo_file.path in force_paths\n'
+              '                    else None\n'
+              '                ),\n'
+              '                measure=measure,\n',
+              1,
+          )
+
+          cur_start = s.index('def _download_repo_file(')
+          cur_end = s.index('@dataclass(frozen=True)\nclass CachedModel', cur_start)
+          s = s[:cur_start] + block + s[cur_end:]
+
+          # Reapply current-manifest semantics where the old feature branch won
+          # conflict hunks, while retaining the DeepSeek pinned-repair behavior.
+          s = s.replace('_validate_pinned_laguna_files(resolved, repo_id)', '_validate_pinned_model_files(resolved, repo_id)')
+          if 'elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():' not in s:
+              anchor = '        if repo_id.casefold() == LAGUNA_S_2_1_REPO_ID.casefold():\n            total_bytes: int | None = LAGUNA_S_2_1_REPO_BYTES\n'
+              if anchor not in s:
+                  raise SystemExit('hf_loader total-bytes anchor changed')
+              s = s.replace(
+                  anchor,
+                  anchor
+                  + '        elif repo_id.casefold() == DEEPSEEK_V4_TARGET_ONLY_REPO_ID.casefold():\n'
+                  + '            total_bytes = DEEPSEEK_V4_TARGET_ONLY_REPO_BYTES\n',
+                  1,
+              )
+          # The branch already computes repair_paths; make sure the structured
+          # downloader is selected for pinned repair even without progress UI.
+          s = s.replace(
+              '            if progress_callback is not None:\n',
+              '            if progress_callback is not None or repair_paths:\n',
+              1,
+          )
+          call = '                    progress_interval_s=progress_interval_s,\n                )\n'
+          if 'force_paths=repair_paths' not in s and call in s:
+              s = s.replace(
+                  call,
+                  '                    progress_interval_s=progress_interval_s,\n'
+                  '                    force_paths=repair_paths,\n'
+                  '                )\n',
+                  1,
+              )
+          p.write_text(s)
+          PY
+
+          python -m py_compile mtplx/hf_loader.py mtplx/backends/deepseek_v4_mlxserve.py mtplx/models/deepseek_v4_target_only_config.py
+          python -m pytest -q tests/test_deepseek_v4_mlxserve_backend.py tests/test_canon_policy_smalls.py
+          swift build --package-path apps/MTPLXApp --product MTPLXApp
           finish "$b"
