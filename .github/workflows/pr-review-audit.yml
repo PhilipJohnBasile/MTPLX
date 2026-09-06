@@ -1,4 +1,4 @@
-name: PR review client contract audit
+name: Published PR review validation
 on:
   push:
     branches: [codex/pr-review-audit-20260906]
@@ -6,101 +6,55 @@ on:
 permissions:
   contents: read
 jobs:
-  audit:
+  validate:
     if: github.repository == 'PhilipJohnBasile/MTPLX'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c73af258def9abdef32765a89b502d9f41b662b6
+          ref: 892a0d346f542ed3b71c9e378ac1158bdcfc610b
           path: anchors
+          fetch-depth: 4
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: '22'
+          ref: a47ea5eaf08f600b657ade1dfbe1baf51fce90aa
+          path: responses
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install exact maintainer-tested client
+          python-version: '3.12'
+      - run: python -m pip install ruff
+      - name: Published source tests and checks
+        working-directory: anchors
         run: |
-          npm install --global @openai/codex@0.144.1
-          python -m pip install zstandard
-      - name: Capture first-request tool types without a model or account
-        shell: bash
+          set -o pipefail
+          mkdir -p ../receipts
+          python -m unittest discover -s tests -p test_semantic_anchor_replay.py -v 2>&1 | tee ../receipts/anchor-tests.log
+          python -m ruff check scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py 2>&1 | tee ../receipts/ruff.log
+          python -m compileall -q scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
+          git diff c73af258def9abdef32765a89b502d9f41b662b6...HEAD --check
+          sha256sum scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py > ../receipts/source-sha256.txt
+      - name: Validate committed Codex capture receipt
         run: |
-          mkdir -p receipts
           python - <<'PY'
-          import gzip, json, os, pathlib, subprocess, tempfile, threading, zlib
-          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-          import zstandard
-          received = []
-          class Handler(BaseHTTPRequestHandler):
-              def log_message(self, *args):
-                  pass
-              def do_POST(self):
-                  data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
-                  encoding = self.headers.get('Content-Encoding', '')
-                  if encoding == 'zstd':
-                      with zstandard.ZstdDecompressor().stream_reader(data) as reader:
-                          data = reader.read(4 * 1024 * 1024)
-                  elif encoding == 'gzip': data = gzip.decompress(data)
-                  elif encoding == 'deflate': data = zlib.decompress(data)
-                  body = json.loads(data)
-                  tools = body.get('tools', [])
-                  received.append({'path': self.path, 'tool_types': sorted(set(t.get('type', '') for t in tools)), 'tool_count': len(tools), 'request_bytes': len(data)})
-                  response = json.dumps({'error': {'message': 'Intentional capture-only rejection; no inference performed', 'type': 'invalid_request_error'}}).encode()
-                  self.send_response(400)
-                  self.send_header('Content-Type', 'application/json')
-                  self.send_header('Content-Length', str(len(response)))
-                  self.end_headers()
-                  self.wfile.write(response)
-              def do_GET(self):
-                  response = json.dumps({'object': 'list', 'data': []}).encode()
-                  self.send_response(200)
-                  self.send_header('Content-Type', 'application/json')
-                  self.send_header('Content-Length', str(len(response)))
-                  self.end_headers()
-                  self.wfile.write(response)
-          server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-          threading.Thread(target=server.serve_forever, daemon=True).start()
-          report = {'version': subprocess.check_output(['codex', '--version'], text=True).strip(), 'scope': 'CLI request construction only; no real model, account, or MTPLX inference', 'cases': []}
-          cases = [
-              ('default', []),
-              ('web_disabled', ['-c', 'web_search="disabled"']),
-              ('hosted_disabled', ['-c', 'web_search="disabled"', '--disable', 'image_generation']),
-              ('local_minimal', ['-c', 'web_search="disabled"', '--disable', 'image_generation', '--disable', 'apps']),
-          ]
-          with tempfile.TemporaryDirectory() as tmp:
-              for name, flags in cases:
-                  home = pathlib.Path(tmp) / name
-                  home.mkdir()
-                  (home / 'config.toml').write_text('model = "mtplx-test"\nmodel_provider = "mtplx"\ncheck_for_update_on_startup = false\n[model_providers.mtplx]\nname = "Local capture only"\nbase_url = "http://127.0.0.1:%d/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n' % server.server_port)
-                  env = dict(os.environ, CODEX_HOME=str(home))
-                  env.pop('OPENAI_API_KEY', None)
-                  env.pop('CODEX_API_KEY', None)
-                  feature_result = subprocess.run(['codex', *flags, 'features', 'list'], env=env, capture_output=True, text=True, timeout=30)
-                  before = len(received)
-                  result = subprocess.run(['codex', *flags, 'exec', '--skip-git-repo-check', 'Reply OK without using tools.'], env=env, cwd=tmp, capture_output=True, text=True, timeout=60)
-                  captures = received[before:]
-                  report['cases'].append({'name': name, 'flags': flags, 'feature_list_exit': feature_result.returncode, 'features': feature_result.stdout, 'client_exit': result.returncode, 'capture': captures, 'diagnostic_tail': result.stderr[-2000:]})
-          server.shutdown()
-          pathlib.Path('receipts/codex-contract.json').write_text(json.dumps(report, indent=2))
-          print(json.dumps(report, indent=2))
-          for case in report['cases'][2:]:
-              assert case['feature_list_exit'] == 0, case['name']
-              assert case['capture'], 'No first-request capture: ' + case['name']
-              for capture in case['capture']:
-                  assert not {'web_search', 'web_search_preview', 'image_generation'}.intersection(capture['tool_types']), case['name']
+          import json, pathlib
+          receipt = json.loads(pathlib.Path('responses/docs/validation/codex-0.144.1-local-tool-profile.json').read_text())
+          assert receipt['client'] == 'codex-cli 0.144.1'
+          assert len(receipt['cases']) == 4
+          assert 'web_search' in receipt['cases'][0]['tool_types']
+          for case in receipt['cases'][2:]:
+              assert case['feature_list_exit'] == 0
+              assert case['image_generation_enabled'] is False
+              assert set(case['tool_types']) == {'function', 'namespace'}
+          assert receipt['cases'][3]['apps_enabled'] is False
+          pathlib.Path('receipts/codex-receipt-check.txt').write_text('Committed receipt schema/content assertions passed; live capture evidence remains run 34064490796. No model was run.\n')
           PY
-      - name: Archive exact anchor source for benchmark harness validation
-        if: always()
-        run: |
-          git -C anchors archive --format=tar.gz c73af258def9abdef32765a89b502d9f41b662b6 -o "$GITHUB_WORKSPACE/receipts/mtplx-anchor-source.tar.gz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mtplx-review-audit
+          name: published-pr-review-validation
           path: receipts/
           retention-days: 7
           if-no-files-found: error
