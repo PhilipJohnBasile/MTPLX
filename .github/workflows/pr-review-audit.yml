@@ -1,4 +1,4 @@
-name: Published PR review validation
+name: MTPLX readiness integration inspection
 on:
   push:
     branches: [codex/pr-review-audit-20260906]
@@ -6,87 +6,49 @@ on:
 permissions:
   contents: read
 jobs:
-  validate:
+  inspect:
     if: github.repository == 'PhilipJohnBasile/MTPLX'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 892a0d346f542ed3b71c9e378ac1158bdcfc610b
-          path: anchors
-          fetch-depth: 4
+          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: a47ea5eaf08f600b657ade1dfbe1baf51fce90aa
-          path: responses
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python -m pip install ruff
-      - name: Normalize and validate the exact harness source
-        working-directory: anchors
+      - name: Export exact integration candidates without publishing
         run: |
-          set -o pipefail
-          mkdir -p ../receipts
-          chmod +x scripts/bench_semantic_anchor_replay.py
-          python -m ruff check --fix scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          python -m ruff format scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          python -m unittest discover -s tests -p test_semantic_anchor_replay.py -v 2>&1 | tee ../receipts/anchor-tests.log
-          python -m ruff check scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py 2>&1 | tee ../receipts/ruff.log
-          python -m ruff format --check scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          python -m compileall -q scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          git diff --check
-          git diff --binary -- scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py > ../receipts/reviewed.patch
-          sha256sum scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py > ../receipts/source-sha256.txt
-      - name: Validate committed Codex capture receipt
-        run: |
+          mkdir -p /tmp/inspection
+          git config user.name 'Source inspection'
+          git config user.email 'inspection@example.invalid'
+          git fetch --no-tags https://github.com/youssofal/MTPLX.git 21be78b3f51820eecef020e5e4855c0715eaf9a5
+          git archive --format=tar.gz 21be78b3f51820eecef020e5e4855c0715eaf9a5 -o /tmp/inspection/upstream.tar.gz
           python - <<'PY'
-          import json, pathlib
-          receipt = json.loads(pathlib.Path('responses/docs/validation/codex-0.144.1-local-tool-profile.json').read_text())
-          assert receipt['client'] == 'codex-cli 0.144.1'
-          assert len(receipt['cases']) == 4
-          assert 'web_search' in receipt['cases'][0]['tool_types']
-          for case in receipt['cases'][2:]:
-              assert case['feature_list_exit'] == 0
-              assert case['image_generation_enabled'] is False
-              assert set(case['tool_types']) == {'function', 'namespace'}
-          assert receipt['cases'][3]['apps_enabled'] is False
-          pathlib.Path('receipts/codex-receipt-check.txt').write_text('Committed receipt assertions passed; live capture evidence is run 34064490796. No model was run.\n')
+          import json,pathlib,subprocess
+          heads={219:'a47ea5eaf08f600b657ade1dfbe1baf51fce90aa',350:'bdb763e44c57dffbcb49a5d0af1e8a547be5d318',362:'11cfc4a6cfa098ec5f6f9ff71a30801577735d97',399:'48b18fc443688000f39406a47c8b634c5451b726',364:'baeae5ed5c19410ae81b75f5cac8b88504424b49',365:'b8d15162ba18c1f6a8388c367327c4727de64f76'}
+          for number,head in heads.items():
+              out=pathlib.Path('/tmp/inspection')/str(number);out.mkdir()
+              work=pathlib.Path('/tmp')/f'mtplx-{number}'
+              subprocess.run(['git','worktree','add','--detach',str(work),head],check=True)
+              def git(*args,check=True):
+                  return subprocess.run(['git','-C',str(work),*args],capture_output=True,check=check)
+              base=git('merge-base',head,'21be78b3f51820eecef020e5e4855c0715eaf9a5').stdout.decode().strip()
+              result=git('merge','--no-commit','--no-ff','21be78b3f51820eecef020e5e4855c0715eaf9a5',check=False)
+              (out/'merge.log').write_bytes(result.stdout+result.stderr)
+              if result.returncode not in (0,1): raise RuntimeError(f'Merge inspection failed: {number}')
+              paths=git('diff','--name-only','--diff-filter=U').stdout.decode().splitlines()
+              (out/'conflicts.diff').write_bytes(git('diff','--cc').stdout)
+              for name in paths:
+                  for stage,label in ((1,'base'),(2,'ours'),(3,'theirs')):
+                      result=git('show',f':{stage}:{name}',check=False)
+                      if result.returncode==0:
+                          target=out/'stages'/label/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(result.stdout)
+              (out/'summary.json').write_text(json.dumps({'number':number,'head':head,'base':base,'upstream':'21be78b3f51820eecef020e5e4855c0715eaf9a5','conflicts':paths},indent=2))
+              subprocess.run(['tar','--exclude=.git','-czf',str(out/'merged-worktree.tar.gz'),'-C',str(work),'.'],check=True)
+              print(number,paths,flush=True)
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: published-pr-review-validation
-          path: receipts/
+          name: mtplx-current-main-inspection
+          path: /tmp/inspection/
           retention-days: 7
           if-no-files-found: error
-  candidate:
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: 892a0d346f542ed3b71c9e378ac1158bdcfc610b
-      - uses: actions/download-artifact@v4
-        with:
-          name: published-pr-review-validation
-          path: /tmp/receipts
-      - name: Publish source-only formatting candidate
-        run: |
-          test "$(git rev-parse HEAD)" = 892a0d346f542ed3b71c9e378ac1158bdcfc610b
-          git apply --check /tmp/receipts/reviewed.patch
-          git apply /tmp/receipts/reviewed.patch
-          git diff --check
-          test -z "$(git diff --name-only -- .github)"
-          git add scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          git config user.name 'Philip John Basile'
-          git config user.email 'PBasile@Basilecom.com'
-          git commit -m 'style(cache): normalize replay harness imports and executable mode'
-          git push origin HEAD:refs/heads/codex/pr350-reviewed-${{ github.run_id }}
-          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
