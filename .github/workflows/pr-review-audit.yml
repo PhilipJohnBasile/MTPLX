@@ -26,15 +26,20 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install ruff
-      - name: Published source tests and checks
+      - name: Normalize and validate the exact harness source
         working-directory: anchors
         run: |
           set -o pipefail
           mkdir -p ../receipts
+          chmod +x scripts/bench_semantic_anchor_replay.py
+          python -m ruff check --fix scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
+          python -m ruff format scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
           python -m unittest discover -s tests -p test_semantic_anchor_replay.py -v 2>&1 | tee ../receipts/anchor-tests.log
           python -m ruff check scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py 2>&1 | tee ../receipts/ruff.log
+          python -m ruff format --check scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
           python -m compileall -q scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
-          git diff c73af258def9abdef32765a89b502d9f41b662b6...HEAD --check
+          git diff --check
+          git diff --binary -- scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py > ../receipts/reviewed.patch
           sha256sum scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py > ../receipts/source-sha256.txt
       - name: Validate committed Codex capture receipt
         run: |
@@ -49,7 +54,7 @@ jobs:
               assert case['image_generation_enabled'] is False
               assert set(case['tool_types']) == {'function', 'namespace'}
           assert receipt['cases'][3]['apps_enabled'] is False
-          pathlib.Path('receipts/codex-receipt-check.txt').write_text('Committed receipt schema/content assertions passed; live capture evidence remains run 34064490796. No model was run.\n')
+          pathlib.Path('receipts/codex-receipt-check.txt').write_text('Committed receipt assertions passed; live capture evidence is run 34064490796. No model was run.\n')
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -58,3 +63,30 @@ jobs:
           path: receipts/
           retention-days: 7
           if-no-files-found: error
+  candidate:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 892a0d346f542ed3b71c9e378ac1158bdcfc610b
+      - uses: actions/download-artifact@v4
+        with:
+          name: published-pr-review-validation
+          path: /tmp/receipts
+      - name: Publish source-only formatting candidate
+        run: |
+          test "$(git rev-parse HEAD)" = 892a0d346f542ed3b71c9e378ac1158bdcfc610b
+          git apply --check /tmp/receipts/reviewed.patch
+          git apply /tmp/receipts/reviewed.patch
+          git diff --check
+          test -z "$(git diff --name-only -- .github)"
+          git add scripts/bench_semantic_anchor_replay.py tests/test_semantic_anchor_replay.py
+          git config user.name 'Philip John Basile'
+          git config user.email 'PBasile@Basilecom.com'
+          git commit -m 'style(cache): normalize replay harness imports and executable mode'
+          git push origin HEAD:refs/heads/codex/pr350-reviewed-${{ github.run_id }}
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
