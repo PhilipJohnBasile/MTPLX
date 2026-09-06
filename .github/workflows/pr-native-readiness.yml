@@ -1,0 +1,43 @@
+name: Integrated MTPLX native readiness
+on:
+  push:
+    branches: [codex/pr-review-audit-20260906]
+    paths: [.github/workflows/pr-native-readiness.yml]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'PhilipJohnBasile/MTPLX'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 48b18fc443688000f39406a47c8b634c5451b726
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Integrate exact current main without publishing
+        run: |
+          mkdir -p /tmp/native-receipts
+          git config user.name 'Source validation'
+          git config user.email 'validation@example.invalid'
+          git fetch --no-tags https://github.com/youssofal/MTPLX.git 21be78b3f51820eecef020e5e4855c0715eaf9a5
+          git merge --no-commit --no-ff 21be78b3f51820eecef020e5e4855c0715eaf9a5
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --cached --check
+          swift --version > /tmp/native-receipts/swift-version.txt
+      - name: Build the native app
+        run: |
+          set -o pipefail
+          swift build --package-path apps/MTPLXApp --product MTPLXApp 2>&1 | tee /tmp/native-receipts/build.log
+      - name: Execute Swift core and host contracts
+        run: |
+          set -o pipefail
+          swift test --package-path apps/MTPLXApp 2>&1 | tee /tmp/native-receipts/tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mtplx-native-readiness
+          path: /tmp/native-receipts/
+          retention-days: 7
+          if-no-files-found: error
