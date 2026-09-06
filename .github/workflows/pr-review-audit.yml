@@ -18,8 +18,8 @@ jobs:
           - {number: 399, head: 48b18fc443688000f39406a47c8b634c5451b726}
           - {number: 364, head: baeae5ed5c19410ae81b75f5cac8b88504424b49}
           - {number: 365, head: b8d15162ba18c1f6a8388c367327c4727de64f76}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: macos-14
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +33,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - uses: actions/setup-node@v4
         if: matrix.number == 364 || matrix.number == 365
         with:
@@ -56,9 +56,18 @@ jobs:
           if [ '${{ matrix.number }}' = 362 ]; then git add mtplx/runtime_systems.py mtplx/server/openai.py mtplx/server/runtime_status.py tests/test_runtime_serving_status.py docs/runtime-systems.md; fi
           test -z "$(git diff --name-only --diff-filter=U)"
           git diff --cached --check
-      - name: Install test toolchain
+      - name: Install supported test toolchain
         working-directory: source
-        run: python -m pip install -q -e '.[dev,server]' openai==2.52.0 pytest-timeout
+        run: |
+          python -m pip install -q -e '.[dev,server]' openai==2.52.0 pytest-timeout
+          python -c 'import mlx.core as mx; import platform; print(platform.platform(), platform.machine()); print(mx.metal.device_info())' > ../receipts/mlx-host.txt
+      - name: Normalize new provider source before running tests
+        if: matrix.number == 362
+        working-directory: source
+        run: |
+          python -m ruff check --fix mtplx/runtime_systems.py mtplx/server/runtime_status.py tests/test_runtime_serving_status.py
+          python -m ruff format mtplx/runtime_systems.py mtplx/server/runtime_status.py tests/test_runtime_serving_status.py
+          git add mtplx/runtime_systems.py mtplx/server/runtime_status.py tests/test_runtime_serving_status.py
       - name: Validate scoped source, API and integration behavior
         working-directory: source
         env:
@@ -68,21 +77,15 @@ jobs:
           import os,pathlib,subprocess,sys
           number=int(os.environ['PR_NUMBER'])
           common=['tests/test_server_openai.py','tests/test_dashboard_endpoints.py','tests/test_no_mlx_imports.py']
-          extra={
-            219:['tests/test_server_responses.py','tests/test_request_observability_golden.py','tests/test_endpoint_probe_hygiene.py'],
-            350:['tests/test_semantic_anchors.py','tests/test_semantic_anchor_replay.py']+[str(p) for p in pathlib.Path('tests').glob('test_session_bank*.py')],
-            362:['tests/test_runtime_systems.py','tests/test_runtime_serving_status.py'],
-            399:['tests/test_agent_profiles.py','tests/test_workspace_tools.py','tests/test_graphs.py','tests/test_memory.py','tests/test_memory_plan.py','tests/test_agent_orchestrator.py','tests/test_agent_cli.py','tests/test_graph_executor.py','tests/test_skills.py'],
-            364:[],365:[]}
+          extra={219:['tests/test_server_responses.py','tests/test_request_observability_golden.py','tests/test_endpoint_probe_hygiene.py'],350:['tests/test_semantic_anchors.py','tests/test_semantic_anchor_replay.py']+[str(p) for p in pathlib.Path('tests').glob('test_session_bank*.py')],362:['tests/test_runtime_systems.py','tests/test_runtime_serving_status.py'],399:['tests/test_agent_profiles.py','tests/test_workspace_tools.py','tests/test_graphs.py','tests/test_memory.py','tests/test_memory_plan.py','tests/test_agent_orchestrator.py','tests/test_agent_cli.py','tests/test_graph_executor.py','tests/test_skills.py'],364:[],365:[]}
           paths=common+extra[number]
           assert all(pathlib.Path(p).is_file() for p in paths)
           with open('../receipts/tests.log','w') as log:
               result=subprocess.run([sys.executable,'-m','pytest','-q',*paths,'--timeout=60','--junitxml=../receipts/tests.xml'],stdout=log,stderr=subprocess.STDOUT)
-          print(pathlib.Path('../receipts/tests.log').read_text()[-12000:])
+          print(pathlib.Path('../receipts/tests.log').read_text()[-15000:])
           if result.returncode: raise SystemExit(result.returncode)
           touched={219:['mtplx/server/openai.py','tests/test_request_observability_golden.py'],362:['mtplx/runtime_systems.py','mtplx/server/runtime_status.py','tests/test_runtime_serving_status.py']}.get(number,[])
-          if touched:
-              subprocess.run([sys.executable,'-m','ruff','check',*touched],check=True)
+          if touched: subprocess.run([sys.executable,'-m','ruff','check',*touched],check=True)
           subprocess.run([sys.executable,'-m','compileall','-q','mtplx','tests'],check=True)
           PY
       - name: Build dashboard without committing regenerated assets
