@@ -15,43 +15,43 @@ jobs:
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - name: Install runtime and apply scoped candidate
+      - name: Install runtime and compile source-level diagnostics
         working-directory: source
         run: |
           mkdir -p ../receipts
           python -m pip install -q -e '.[dev,server]'
           python3 ../audit/.review/native_fixes.py .
           python3 ../audit/.review/native_dispatch_fix.py .
-          python3 ../audit/.review/native_concurrency_fix.py .
+          python3 ../audit/.review/native_fixture_readiness.py .
+          git diff --check
           git diff -- apps/MTPLXApp > ../receipts/native.patch
-          python3 ../audit/.review/native_diagnostics.py .
-          python3 ../audit/.review/native_transport_diagnostics.py .
           swift --version > ../receipts/swift-version.txt
           swift test --package-path apps/MTPLXApp list > ../receipts/test-list.log 2>&1
-      - name: Run failures and static-state regressions independently
+      - name: Run fixture checks and capture crash stack under LLDB
         working-directory: source
         run: |
           python3 - <<'PY'
           import pathlib,subprocess,os,json
           framework=next(pathlib.Path('apps/MTPLXApp/.build').rglob('Sparkle.framework'))
-          env=dict(os.environ,DYLD_FRAMEWORK_PATH=str(framework.parent.resolve()),NSUnbufferedIO='YES',PYTHONUNBUFFERED='1')
-          names=['testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS','testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest','testCancelDuringStartupLeavesAppStoppedAndRestoresFans','testRefreshStaticState']
+          env=dict(os.environ,DYLD_FRAMEWORK_PATH=str(framework.parent.resolve()),NSUnbufferedIO='YES')
+          names=['testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS','testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest']
           results=[]
           for name in names:
               with open('../receipts/'+name+'.log','w') as log:
-                  try:
-                      result=subprocess.run(['swift','test','--skip-build','--package-path','apps/MTPLXApp','--filter',name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)
-                      code=result.returncode
-                  except subprocess.TimeoutExpired:code='timeout'
-              results.append({'test':name,'exit':code})
+                  result=subprocess.run(['swift','test','--skip-build','--package-path','apps/MTPLXApp','--filter',name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=45)
+              results.append({'test':name,'exit':result.returncode})
+          bundle=next(pathlib.Path('apps/MTPLXApp/.build').rglob('MTPLXAppPackageTests.xctest')).resolve()
+          xctest=subprocess.check_output(['xcrun','--find','xctest'],text=True).strip()
+          command=['lldb','--batch','-o','run','-o','thread backtrace all','--',xctest,'-XCTest','MTPLXAppCoreTests.MTPLXAppCoreTests/testCancelDuringStartupLeavesAppStoppedAndRestoresFans',str(bundle)]
+          with open('../receipts/startup-lldb.log','w') as log:
+              try:
+                  result=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)
+                  code=result.returncode
+              except subprocess.TimeoutExpired:code='timeout'
+          results.append({'test':'startup-under-lldb','exit':code})
           pathlib.Path('../receipts/results.json').write_text(json.dumps(results,indent=2))
           print(json.dumps(results,indent=2))
           PY
-      - name: Preserve task crash diagnostics
-        if: always()
-        run: |
-          mkdir -p receipts/crashes
-          find "$HOME/Library/Logs/DiagnosticReports" -name '*MTPLX*' -type f -mmin -20 -exec cp {} receipts/crashes/ \; 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: native-isolation, path: 'receipts/', retention-days: 7, if-no-files-found: error}
