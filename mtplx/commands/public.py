@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from mtplx.artifacts import inspect_model
 from mtplx.benchmarks.validators.basic import (
+    ValidationResult,
     summarize_benchmark_quality,
     validate_balanced_delimiters,
     validate_no_degenerate_loop,
@@ -442,11 +443,37 @@ def _runtime_env_with_model_contract_overrides(
     runtime_env: dict[str, str],
     inspection: dict[str, Any],
     profile: Any,
+    *,
+    model: str | None = None,
 ) -> dict[str, str]:
-    return runtime_env_with_contract_overrides(
+    resolved = runtime_env_with_contract_overrides(
         runtime_env,
         _profile_scoped_model_runtime_contract(inspection, profile),
     )
+    if model is not None and _model_config_is_qwen4_exp(model):
+        from mtplx.profiles import (
+            MODEL_RUNTIME_ENV_OVERRIDE_KEYS,
+            PROFILE_ENV_USER_OVERRIDE_KEYS,
+        )
+        from mtplx.server.openai import (
+            _server_runtime_env_overrides,
+            load_runtime_contract,
+        )
+
+        # Resolve before applying any profile: profile defaults must not look
+        # like operator exports to the serve contract's hardware/pack gates.
+        # Keep the same precedence as serve: explicit runtime env, then the
+        # family overrides (which remove operator-owned lane keys themselves).
+        for key in MODEL_RUNTIME_ENV_OVERRIDE_KEYS | PROFILE_ENV_USER_OVERRIDE_KEYS:
+            value = os.environ.get(key)
+            if value is not None and value.strip():
+                resolved[key] = value
+        contract, _ = load_runtime_contract(model)
+        resolved.update(_server_runtime_env_overrides(
+            SimpleNamespace(model=model, generation_mode="mtp", verify_strategy="batched"),
+            contract.runtime_env_overrides if contract is not None else {},
+        ))
+    return resolved
 
 
 def _bench_run_console_summary(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -2250,6 +2277,18 @@ def _exact_paged_env_from_args(args: Any) -> dict[str, str]:
     return exact_paged_attention_env(**_exactness_profile_kwargs(args))
 
 
+
+def _model_config_is_qwen4_exp(model: str) -> bool:
+    """Mirror of the server's qwen4_exp predicate: read the pack config."""
+    try:
+        with open(Path(str(model)) / "config.json", "rb") as fh:
+            cfg = json.load(fh)
+    except Exception:
+        return False
+    mt = str(cfg.get("model_type") or "").lower()
+    tmt = str((cfg.get("text_config") or {}).get("model_type") or "").lower()
+    return "qwen4_exp" in (mt, tmt) or "qwen4_exp_text" in (mt, tmt)
+
 def _depth_sweep_native60(
     *,
     model: str,
@@ -2276,8 +2315,11 @@ def _depth_sweep_native60(
 ) -> dict[str, Any]:
     from mtplx.benchmarks.runners.mtp_depth_sweep import run_mtp_depth_sweep
 
+    _family_batched = _model_config_is_qwen4_exp(model)
     previous = apply_profile_env("performance-cold")
     if runtime_env:
+        for key in runtime_env:
+            previous.setdefault(key, os.environ.get(key))
         os.environ.update({key: str(value) for key, value in runtime_env.items()})
     draft_lm_head = draft_lm_head or {
         "bits": 4,
@@ -2288,11 +2330,11 @@ def _depth_sweep_native60(
     # the model in-process; pin the serve-path Metal allocator caps first.
     from mtplx.server.openai import apply_memory_caps_preflight
 
-    memory_preflight = apply_memory_caps_preflight(
-        entry="bench.depth_sweep",
-        model=str(model),
-    )
     try:
+        memory_preflight = apply_memory_caps_preflight(
+            entry="bench.depth_sweep",
+            model=str(model),
+        )
         result = run_mtp_depth_sweep(
             model,
             prompt_suite,
@@ -2313,9 +2355,15 @@ def _depth_sweep_native60(
             mtp_cache_policy=mtp_cache_policy,
             mtp_history_policy=mtp_history_policy,
             min_speculative_depth=1,
-            verify_strategy="capture_commit",
+            # qwen4_exp cannot run the qwen3-next structure verify lanes: their
+            # capture stack introspects the qwen3-next DecoderLayer layout
+            # (input_layernorm et al.) and raises on Flash-Next hyper-connection
+            # layers. The family's repair-free lane wraps the batched verify
+            # (MTPLX_FAMILY_CAPTURE_COMMIT), so batched is the base strategy
+            # there -- the same coercion the server applies at boot.
+            verify_strategy="batched" if _family_batched else "capture_commit",
             draft_core=str(draft_core or "stock"),
-            verify_core="linear-gdn-from-conv-tape",
+            verify_core="stock" if _family_batched else "linear-gdn-from-conv-tape",
             draft_lm_head_bits=int(draft_lm_head["bits"]),
             draft_lm_head_group_size=int(draft_lm_head["group_size"]),
             draft_lm_head_mode=str(draft_lm_head["mode"]),
@@ -3801,6 +3849,7 @@ def _cmd_tune_candidate(args: Any) -> int:
             profile.env_dict(),
             inspection,
             profile,
+            model=runtime_model,
         )
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, profile)
@@ -6092,6 +6141,7 @@ def _cmd_bench_run(args: Any) -> int:
         runtime_env,
         inspection,
         selected_profile,
+        model=runtime_model,
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, selected_profile)
     draft_sampler = _model_draft_sampler_spec(inspection, selected_profile)
@@ -9615,6 +9665,13 @@ def cmd_serve_public(args: Any) -> int:
     context_window = getattr(args, "context_window", None)
     if context_window is not None:
         cmd.extend(["--context-window", str(context_window)])
+    stream_stall_deadline_s = getattr(args, "stream_stall_deadline_s", None)
+    if stream_stall_deadline_s is not None:
+        # Issue #448: the app's Stall watchdog setting rides this flag; the
+        # module owns the value, the wrapper only has to know the flag.
+        cmd.extend(
+            ["--stream-stall-deadline-s", format(float(stream_stall_deadline_s), "g")]
+        )
     if bool(getattr(args, "allow_swap", False)):
         cmd.append("--allow-swap")
     mtp_adapter = getattr(args, "mtp_adapter", None)
@@ -10180,6 +10237,36 @@ def _piped_prompt_text() -> str:
         return ""
 
 
+def _in_process_runtime_env_overrides(
+    args: Any, runtime_model: str, *, generation_mode: str
+) -> dict[str, str]:
+    """The shared serve contract for all in-process CLI entrypoints (#463).
+
+    ``mtplx run`` and ``chat`` load the runtime in-process and applied only
+    the profile defaults, so Flash-Next never received the family lanes serve
+    stamps at boot (family capture commit, recurrent-state snapshot kept,
+    fixed-M4 verify). The turbo profile's MTPLX_SKIP_VERIFY_SNAPSHOT=1 then
+    left the pre-verify snapshot empty and the legacy capture walker raised
+    on the hyper-connection layers. Resolve exactly what serve resolves:
+    the pack contract, then the family overrides, with explicit exports kept.
+    """
+    from mtplx.server.openai import (
+        _server_runtime_env_overrides,
+        load_runtime_contract,
+    )
+
+    contract, _error = load_runtime_contract(runtime_model)
+    return _server_runtime_env_overrides(
+        SimpleNamespace(
+            model=runtime_model,
+            generation_mode=generation_mode,
+            verify_strategy=getattr(args, "verify_strategy", None),
+            scheduler_mode=getattr(args, "scheduler_mode", "serial"),
+        ),
+        contract.runtime_env_overrides if contract is not None else {},
+    )
+
+
 def _generate_one_shot_public(
     args: Any, *, command: str
 ) -> tuple[int, dict[str, Any], list[Any]]:
@@ -10243,8 +10330,16 @@ def _generate_one_shot_public(
     # made `mtplx run` silently benchmark the slow profile (2026-08-16
     # redp314 board investigation).
     profile = get_profile(_resolved_default_profile_name(args))
-    apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
+    # The same runtime contract serve and tune resolve (#463): the pack's env
+    # overrides plus the family lanes, with serve's precedence over the
+    # profile defaults.
+    apply_profile_env(
+        profile.name,
+        runtime_env_overrides=_in_process_runtime_env_overrides(
+            args, runtime_model, generation_mode=generation_mode
+        ),
+    )
     draft_lm_head = (
         _model_draft_lm_head_spec(inspection, profile)
         if generation_mode == GENERATION_MODE_MTP
@@ -10379,8 +10474,8 @@ def _generate_one_shot_public(
                     mtp_hidden_variant="post_norm",
                     mtp_cache_policy="persistent",
                     mtp_history_policy="committed",
-                    verify_strategy="capture_commit",
-                    verify_core="linear-gdn-from-conv-tape",
+                    verify_strategy=getattr(args, "verify_strategy", None) or "capture_commit",
+                    verify_core=getattr(args, "verify_core", None) or "linear-gdn-from-conv-tape",
                 )
         finally:
             if smart_fans is not None and smart_request_id is not None:
@@ -10389,12 +10484,33 @@ def _generate_one_shot_public(
         if max_session is not None:
             max_session.stop()
             thermal = max_session.thermal
+    validation_text = out.text
+    if args.expect_python:
+        from mtplx.reasoning_codecs import split_reasoning_text
+
+        # Validate the delivered program, not the model's thought channel.
+        # Only unwrap a complete outer fence; malformed or multiple blocks
+        # must still fail the normal Python validator.
+        codec = reasoning_policy_for_model(model_ref=runtime_model, inspection=inspection)
+        validation_text = split_reasoning_text(
+            out.text, parser=codec.parser, thinking_enabled=reasoning_mode != "off"
+        ).content.strip()
+        fenced = re.fullmatch(
+            r"```(?:python|py)?[ \t]*\r?\n(.*?)\r?\n```",
+            validation_text, flags=re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            validation_text = fenced.group(1)
     validations = [
         validate_no_degenerate_loop(out.text),
-        validate_balanced_delimiters(out.text),
+        validate_balanced_delimiters(validation_text),
     ]
     if args.expect_python:
-        validations.append(validate_python_syntax(out.text))
+        validations.append(
+            validate_python_syntax(validation_text)
+            if validation_text.strip()
+            else ValidationResult("python_syntax", False, "No Python answer after reasoning")
+        )
     payload = {
         "text": out.text,
         "model": _compact_model_summary(inspection),
@@ -11285,8 +11401,8 @@ def _quickstart_generate(
                 mtp_hidden_variant="post_norm",
                 mtp_cache_policy="persistent",
                 mtp_history_policy="committed",
-                verify_strategy="capture_commit",
-                verify_core="linear-gdn-from-conv-tape",
+                verify_strategy=getattr(args, "verify_strategy", None) or "capture_commit",
+                verify_core=getattr(args, "verify_core", None) or "linear-gdn-from-conv-tape",
                 token_callback=record_tokens,
             )
     finally:
@@ -11548,6 +11664,7 @@ def _hermes_config_yaml(
     api_key: str,
     workspace_path: str,
     reasoning_effort: str | None = None,
+    vision: bool = False,
 ) -> str:
     # SYNC PAIR: HermesIntegration.configYAML — both writers must emit the
     # same template shape or the shared merge sweeps each other's lines.
@@ -11569,6 +11686,8 @@ def _hermes_config_yaml(
         f"  base_url: {_hermes_yaml_quote(base_url)}\n"
         f"  api_key: {_hermes_yaml_quote(api_key)}\n"
         "  api_mode: chat_completions\n"
+        f"  supports_vision: {str(vision).lower()}\n"
+        "  reasoning_echo: true\n"
         "  default_headers:\n"
         "    x-mtplx-client: hermes\n"
         "toolsets:\n"
@@ -11579,10 +11698,16 @@ def _hermes_config_yaml(
         "  tool_use_enforcement: auto\n"
         + effort_line
         + "terminal:\n"
-        "  backend: local\n"
+        # terminal.backend is the user's sandbox choice (local, docker,
+        # ssh, ...), never MTPLX's: hermes defaults it to local when the
+        # key is absent, and the merge keeps a user-set value verbatim
+        # (issue #460: the old hardcoded "local" re-stamped a Docker
+        # sandbox back to the host shell on every launch).
         f"  cwd: {_hermes_yaml_quote(workspace_path)}\n"
         "  timeout: 180\n"
         "  persistent_shell: true\n"
+        "compression:\n"
+        "  tool_image_retention: until_compaction\n"
         "display:\n"
         "  streaming: true\n"
         "  show_reasoning: true\n"
@@ -11756,6 +11881,32 @@ def _hermes_merged_config_yaml(existing: str | None, template: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _hermes_profile_declares_backend(existing: str | None) -> bool:
+    """True when the profile config sets ``terminal.backend`` itself."""
+    _, profile_blocks, _ = _hermes_parse_top_level_blocks(existing or "")
+    return any(
+        block["key"] == "terminal"
+        and any(key == "backend" for key, _ in _hermes_direct_child_blocks(block))
+        for block in profile_blocks
+    )
+
+
+def _hermes_inherit_terminal(existing: str | None, root: str | None) -> str | None:
+    """Seed only execution settings; an explicit profile backend wins (#460)."""
+    if not root or _hermes_profile_declares_backend(existing):
+        return existing
+    _, root_blocks, _ = _hermes_parse_top_level_blocks(root)
+    terminal = next((b for b in root_blocks if b["key"] == "terminal"), None)
+    if terminal is None:
+        return existing
+    # Root config need not use the generated profile's two-space indentation.
+    import textwrap
+
+    body = textwrap.indent(textwrap.dedent("\n".join(terminal["lines"][1:])), "  ")
+    seed = terminal["lines"][0] + "\n" + body + "\n"
+    return _hermes_merged_config_yaml(seed, existing) if existing and existing.strip() else seed
+
+
 def _write_if_changed(path: Path, text: str, *, mode: int = 0o600) -> bool:
     existing = None
     if path.exists():
@@ -11795,17 +11946,22 @@ def _sync_hermes_profile(
     api_key: str,
     workspace_path: str,
     reasoning_effort: str | None = None,
+    vision: bool = False,
 ) -> dict[str, Any]:
     profile_dir = _hermes_profile_dir()
     config_path = profile_dir / "config.yaml"
     env_path = profile_dir / ".env"
     profile_dir.mkdir(parents=True, exist_ok=True)
-    existing_config: str | None = None
-    if config_path.exists():
-        try:
-            existing_config = config_path.read_text(encoding="utf-8")
-        except OSError:
-            existing_config = None
+    existing_config = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    if not _hermes_profile_declares_backend(existing_config):
+        # The root config is read only when a terminal policy has to be
+        # inherited (#460): a profile with its own backend never depends on
+        # it, so an unreadable root cannot fail that profile's launch. When
+        # inheritance is needed, an unreadable root is a loud error rather
+        # than a silently dropped sandbox choice.
+        root_path = _hermes_home() / "config.yaml"
+        root_config = root_path.read_text(encoding="utf-8") if root_path.exists() else None
+        existing_config = _hermes_inherit_terminal(existing_config, root_config)
     config_changed = _write_if_changed(
         config_path,
         _hermes_merged_config_yaml(
@@ -11816,6 +11972,7 @@ def _sync_hermes_profile(
                 api_key=api_key,
                 workspace_path=workspace_path,
                 reasoning_effort=reasoning_effort,
+                vision=vision,
             ),
         ),
     )
@@ -12313,6 +12470,7 @@ def _quickstart_opencode_payload(
         top_k=int(getattr(args, "top_k", 20)),
         reasoning_effort=reasoning_effort,
         reasoning_effort_levels=reasoning_effort_levels,
+        vision=_model_vision_enabled(str(getattr(args, "model", ""))),
     )
     payload = {
         "integration": "opencode",
@@ -12390,6 +12548,7 @@ def _quickstart_opencode_payload(
                 top_k=int(getattr(args, "top_k", 20)),
                 reasoning_effort=reasoning_effort,
                 reasoning_effort_levels=reasoning_effort_levels,
+                vision=_model_vision_enabled(str(getattr(args, "model", ""))),
             )
         except (InvalidConfigFile, OSError) as exc:
             raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
@@ -12553,6 +12712,7 @@ def _quickstart_hermes_payload(
             api_key=api_key,
             workspace_path=workspace_path,
             reasoning_effort=_hermes_client_reasoning_effort(args),
+            vision=_model_vision_enabled(str(getattr(args, "model", ""))),
         )
     return payload
 
@@ -13522,8 +13682,16 @@ def _quickstart_run_terminal_chat_body(
         args, _public_model_id_for_args(args, str(runtime_model))
     )
     profile = get_profile(_resolved_default_profile_name(args))
-    apply_profile_env(profile.name)
+    reasoning_codec = reasoning_policy_for_model(
+        model_ref=runtime_model, inspection=inspection
+    )
     generation_mode = _generation_mode_from_args(args)
+    apply_profile_env(
+        profile.name,
+        runtime_env_overrides=_in_process_runtime_env_overrides(
+            args, runtime_model, generation_mode=generation_mode
+        ),
+    )
     draft_lm_head = (
         _model_draft_lm_head_spec(inspection, profile)
         if getattr(args, "load_mtp", True) is not False
@@ -13666,8 +13834,22 @@ def _quickstart_run_terminal_chat_body(
             _quickstart_line()
             _print_stats_line(_quickstart_stats_line(payload))
         if record_history:
+            from mtplx.reasoning_codecs import split_reasoning_text
+
+            # Generation starts inside the template's thinking block. Store
+            # its two channels separately, as the server does: feeding raw
+            # `thought</think>answer` back as content nests it after an empty
+            # thinking block in Qwen 3.8 and corrupts the next turn's history.
+            parts = split_reasoning_text(
+                text,
+                parser=reasoning_codec.parser,
+                thinking_enabled=_reasoning_mode(args) != "off",
+            )
+            assistant = {"role": "assistant", "content": parts.content}
+            if parts.reasoning:
+                assistant["reasoning_content"] = parts.reasoning
             history.append({"role": "user", "content": prompt})
-            history.append({"role": "assistant", "content": text})
+            history.append(assistant)
         failures = [row for row in payload["validations"] if not row.get("passed")]
         if failures and quality_gate:
             _quickstart_line(
@@ -14575,6 +14757,7 @@ def cmd_integrate_public(args: Any) -> int:
                     else "mtplx-local"
                 ),
                 enable_thinking=reasoning_policy.supported,
+                vision=_model_vision_enabled(str(getattr(args, "model", "") or model_id)),
                 reasoning_effort=reasoning_policy.default_effort,
                 reasoning_effort_levels=(
                     tuple(reasoning_policy.effort_levels)
@@ -14601,6 +14784,7 @@ def cmd_integrate_public(args: Any) -> int:
                 model_name=f"MTPLX {model_id}",
                 api_key=getattr(args, "api_key", None),
                 enable_thinking=reasoning_policy.supported,
+                vision=_model_vision_enabled(str(getattr(args, "model", "") or model_id)),
                 reasoning_effort=reasoning_policy.default_effort,
                 reasoning_effort_levels=(
                     tuple(reasoning_policy.effort_levels)

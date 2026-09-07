@@ -48,6 +48,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import mlx.core as mx
+
+from mtplx.progress_heartbeat import tick as _owner_progress_tick
 import mlx.nn as nn
 from mlx_lm.models.base import BaseModelArgs, create_ssm_mask
 from mlx_lm.models.cache import ArraysCache, KVCache
@@ -329,6 +331,26 @@ def _mrope_cos_sin(
     angles = pos.transpose(1, 0) * inv_freq[None, :]  # [S, F]
     emb = mx.concatenate([angles, angles], axis=-1)
     return mx.cos(emb), mx.sin(emb)
+
+
+def vision_qsa_enabled() -> bool:
+    return os.environ.get("MTPLX_QWEN4_VISION_QSA", "1") != "0"
+
+
+def _vision_position_cos_sin(positions, inv_freq, axes, scaling=1.0):
+    """Share image positions between attention and its QSA indexer.
+
+    Reference: transformers/models/qwen4_exp/modeling_qwen4_exp.py,
+    Qwen4ExpTextQSAIndexer: pooled keys rotate at each block's FIRST token.
+    Decode positions beyond the prompt use equal axes plus the image delta.
+    """
+    table, delta = vision_rope_state()
+    positions3 = mx.broadcast_to((positions + delta)[None, :], (3, positions.size))
+    if table is not None and table.shape[1]:
+        prompt_positions = mx.take(table, mx.clip(positions, 0, table.shape[1] - 1), axis=1)
+        positions3 = mx.where((positions < table.shape[1])[None, :], prompt_positions, positions3)
+    cos, sin = _mrope_cos_sin(positions3, inv_freq, axes)
+    return cos * scaling, sin * scaling
 
 
 def _apply_partial_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
@@ -1475,8 +1497,18 @@ def _qsa_prefill_enabled() -> bool:
         # cannot compile the MPP pipelines (macOS 27, issue #404): honoring
         # the env verbatim there turns into a guaranteed mid-request 500.
         # The probe prints its own diagnostic when it says no.
-        return _qsa_prefill_mpp_compile_ok()
-    return qsa_prefill_lane_auto_supported() and _qsa_prefill_mpp_compile_ok()
+        return _qsa_prefill_producer_compile_ok()
+    return qsa_prefill_lane_auto_supported() and _qsa_prefill_producer_compile_ok()
+
+
+def _qsa_prefill_producer_compile_ok() -> bool:
+    from mtplx.kernels.qsa_indexer_select import qsa_indexer_select_nax_available
+
+    # The portable producer uses bounded MLX score tiles when NAX is absent
+    # (qsa_indexer_prefill_metal). It never dispatches the MPP score kernel.
+    # Requiring that unrelated kernel to compile disables the Steel consumer
+    # on M1-M4 even after a valid native extension has been installed.
+    return not qsa_indexer_select_nax_available() or _qsa_prefill_mpp_compile_ok()
 
 
 def _qsa_prefill_mpp_compile_ok() -> bool:
@@ -1585,14 +1617,17 @@ def _qsa_large_prefill_enabled(rows: int, total_tokens: int) -> bool:
     # existing exact cache path and reserves this matrix-shaped lane for the
     # prompt/SSD-restored prefill it was designed to accelerate.
     return (
-        _qsa_prefill_enabled()
-        and current_attention_phase() == "prefill"
+        current_attention_phase() == "prefill"
         and int(rows) >= _qsa_prefill_min_rows()
         # Gate on the earliest query in the chunk, not its final T.  A large
         # restored/SSD chunk may straddle the crossover; routing it by final T
         # would make its early rows pay the exact fixed-cost pathology this
         # guard exists to avoid.
         and int(total_tokens) - int(rows) >= _qsa_prefill_min_context()
+        # Capability/pipeline resolution is only useful for eligible prefill
+        # chunks. Never pay its imports and native readiness checks on every
+        # AR or speculative decode layer, especially on portable consumers.
+        and _qsa_prefill_enabled()
     )
 
 
@@ -2126,6 +2161,14 @@ class QSAIndexer(nn.Module):
         # and sanitize-time projection fusion have finalized every weight.
         object.__setattr__(self, "_compiled_indexer_core", None)
         object.__setattr__(self, "_compiled_indexer_parameter_signature", None)
+        self._mrope_axes = (
+            mx.array(_build_mrope_axes(args.mrope_section, args.mrope_interleaved), dtype=mx.int32)
+            if args.mrope_section and sum(args.mrope_section) == int(args.rotary_dim) // 2
+            else None
+        )
+
+    def _uses_vision_positions(self) -> bool:
+        return vision_qsa_enabled() and self._mrope_axes is not None and vision_rope_state() is not None
 
     def _pool_keys_eager(
         self,
@@ -2139,11 +2182,12 @@ class QSAIndexer(nn.Module):
         pooled = mx.mean(fresh.astype(mx.float32), axis=2).astype(fresh.dtype)
         pooled = self.k_layernorm(pooled)
         starts = mx.arange(nb_old, nb_total, dtype=mx.int32) * self.ratio
-        cos, sin = _rope_cos_sin(
-            starts,
-            self._inv_freq,
-            self._rope_attention_scaling,
-        )
+        if self._uses_vision_positions():
+            cos, sin = _vision_position_cos_sin(
+                starts, self._inv_freq, self._mrope_axes, self._rope_attention_scaling,
+            )
+        else:
+            cos, sin = _rope_cos_sin(starts, self._inv_freq, self._rope_attention_scaling)
         return _apply_partial_rope(pooled[:, :, None, :], cos, sin)[:, :, 0, :]
 
     def _prepare_kernel_supported(
@@ -2153,7 +2197,7 @@ class QSAIndexer(nn.Module):
         *,
         expected_ndim: int,
     ) -> bool:
-        if not _fused_qsa_indexer_enabled():
+        if self._uses_vision_positions() or not _fused_qsa_indexer_enabled():
             return False
         from mtplx.kernels.qsa_indexer_prepare import (
             qsa_indexer_prepare_supported,
@@ -2318,6 +2362,9 @@ class QSAIndexer(nn.Module):
                 :, nb_total - k_eff :
             ]
             mx.eval(top_t)
+            # Each settled tile is owner progress; a 100k+ sparse prefill
+            # otherwise looks frozen to the stream stall watchdog (#448).
+            _owner_progress_tick()
             parts.append(top_t)
         return mx.concatenate(parts, axis=0)
 
@@ -2671,6 +2718,12 @@ class QSAIndexer(nn.Module):
         """Stock query preparation kept as the numeric oracle."""
 
         q = self.q_layernorm(q)
+        if self._uses_vision_positions():
+            positions = pos_start + mx.arange(q.shape[1], dtype=mx.int32)
+            cos, sin = _vision_position_cos_sin(
+                positions, self._inv_freq, self._mrope_axes, self._rope_attention_scaling,
+            )
+            return _apply_partial_rope(q, cos, sin)
         if qwen4_opdiet_enabled("rope"):
             cos, sin = _shared_rope_cos_sin_half(
                 pos_start,
@@ -2770,7 +2823,7 @@ class QSAIndexer(nn.Module):
     ) -> bool:
         """Static eligibility check; dispatched graph failures are not hidden."""
 
-        if not (_fused_qsa_indexer_enabled() and _compiled_qsa_indexer_enabled()):
+        if self._uses_vision_positions() or not (_fused_qsa_indexer_enabled() and _compiled_qsa_indexer_enabled()):
             return False
         if not mx.metal.is_available() or mx.default_device() != mx.gpu:
             return False
@@ -3343,6 +3396,7 @@ def _qsa_prefill_gather_attention(
             _qsa_stock_rows_gather_kv,
         )
         mx.eval(out_t)
+        _owner_progress_tick()
         outputs.append(out_t)
     return outputs[0] if len(outputs) == 1 else mx.concatenate(outputs, axis=2)
 
@@ -3564,14 +3618,9 @@ class Attention(nn.Module):
         k, v = cache.kv.update_and_fetch(k, v)
         T = k.shape[2]
 
-        if vrope is not None:
-            # Vision request: QSA sparse selection is bypassed and attention
-            # runs dense-causal — the reference qwen4_exp implementation
-            # serves multimodal exactly this way (its sparse fast paths
-            # exclude M-RoPE). The indexer above still ran, so the QSA cache
-            # streams (raw/pooled) stay byte-identical with text serving and
-            # bank state keeps one format. Masks key on sequence order,
-            # which remains correct under M-RoPE; only rope reads the axes.
+        if vrope is not None and not vision_qsa_enabled():
+            # Diagnostic rollback only. The reference model applies QSA to
+            # images too; dropping selection changed its attention function.
             sel_mask = None
 
         if isinstance(sel_mask, tuple) and sel_mask and sel_mask[0] == "flash":
@@ -3959,6 +4008,23 @@ class _SidecarGather:
             self._maps[name] = (mm, info["dtype"])
             itemsize = 4 if info["dtype"] == "U32" else 2
             self._row_meta.append((offset, int(shape[1]) * itemsize))
+        self.row_layout = "planar"
+        row_file = os.environ.get("MTPLX_NGRAM_ROW_FILE")
+        if row_file:
+            from mtplx.ngram_row_layout import open_rows
+
+            row_path = Path(row_file).expanduser()
+            try:
+                maps, record = open_rows(row_path, path, entries)
+                row_fd = os.open(str(row_path), os.O_RDONLY)
+            except Exception:
+                os.close(self._fd)
+                raise
+            os.close(self._fd)
+            self._fd, self._maps, self._row_meta = row_fd, maps, [record]
+            path = row_path
+            self.row_layout = "interleaved"
+            print(f"[qwen4_exp] ngram row layout: interleaved ({record[1]} bytes/row)", flush=True)
         self._pool = None
         self.prefetch_batches = 0
         self.lookahead_batches = 0

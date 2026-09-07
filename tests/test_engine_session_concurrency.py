@@ -12,6 +12,21 @@ from mtplx.engine_session import (
 )
 
 
+def test_prefix_receipt_belongs_to_the_request_even_after_another_resolution():
+    manager = EngineSessionManager()
+    anonymous = {}
+    manager.resolve_session_id(prompt_ids=[1, 2, 3], diagnostic_out=anonymous)
+    assert anonymous["prompt_len"] == 3
+    explicit = {}
+    manager.resolve_session_id(headers={"x-mtplx-session-id": "opencode"},
+                               diagnostic_out=explicit)
+    assert explicit == {}
+    assert manager.last_prefix_diagnostic is None
+    # The awaiting anonymous request keeps its own original evidence.
+    manager.resolve_session_id(prompt_ids=[4, 5], diagnostic_out={})
+    assert anonymous["prompt_len"] == 3
+
+
 def test_busy_implicit_session_forks_to_fresh_anonymous_session():
     manager = EngineSessionManager()
     shared = manager.get_or_create("anon-shared")

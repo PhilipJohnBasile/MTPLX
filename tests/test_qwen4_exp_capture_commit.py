@@ -811,6 +811,63 @@ def test_fixed_m4_capacity_grows_without_leaving_the_installed_lane(
     assert int(pooled.shape[1]) == logical_end // cache[qsa_index].ratio
 
 
+@pytest.mark.parametrize("width", [2, 3, 4, 9])
+def test_fixed_bank_eager_windows_grow_and_preserve_state(tm, monkeypatch, width):
+    """Adaptive and copy windows must renew the same banks as D3 replay.
+
+    Compare every logit and committed state with an unpromoted cache across
+    the initial allocation boundary, then return to the compiled D3 lane.
+    """
+    import mtplx.graphbank as graphbank
+    from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route
+
+    class TinyRuntime:
+        pass
+
+    runtime = TinyRuntime()
+    runtime.model = SimpleNamespace(language_model=tm)
+    install_qwen4_fixed_verify_route(runtime)
+    monkeypatch.setattr(graphbank, "_PREWARM_DONE", True)
+    monkeypatch.setattr(graphbank, "_compiled_verify_bits_gate_ok", lambda _rt: True)
+    monkeypatch.setenv("MTPLX_COMPILED_VERIFY_GROWTH_RESERVE", "4")
+    monkeypatch.setenv("MTPLX_QSA_GATHER", "1")
+    monkeypatch.setenv("MTPLX_QSA_GATHER_MIN_CONTEXT", "18")
+    prefill = _ids(PREFILL, seed=51)
+    cache, golden_cache = tm.make_cache(), tm.make_cache()
+    tm(prefill, cache=cache)
+    tm(prefill, cache=golden_cache)
+    bank = graphbank.CompiledVerifyBank(runtime, max_verify_len=4, request_max_tokens=100)
+    bank.install_fixed_m4(cache, prompt_ids=_host_ids(prefill), hidden_variant=None)
+    completion = []
+    for ordinal in range(10):
+        ids = _ids(width, seed=52 + ordinal)
+        snap = snapshot_untrimmable_cache_lazy(cache)
+        golden_snap = snapshot_untrimmable_cache_lazy(golden_cache)
+        ledger = {"committed_count": ordinal} if ordinal % 2 else {}
+        if width > 4 and ordinal % 3 == 1:
+            # The copy route can bypass compiled dispatch, but still owns
+            # promoted buffers and must reserve before its eager forward.
+            bank.reserve_fixed_m4_window(cache, window_tokens=width, **ledger)
+            actual, hidden, _ = runtime.forward_ar_capture(ids, cache=cache)
+        else:
+            actual, hidden, _ = bank.forward_ar_capture(
+                ids, cache=cache, extended_window=width > 4, **ledger
+            )
+        expected, golden_hidden, _ = runtime.forward_ar_capture(ids, cache=golden_cache)
+        mx.eval(actual, expected, hidden, golden_hidden)
+        assert mx.allclose(actual, expected, atol=2e-5, rtol=2e-5).item(), ordinal
+        assert tm.model.commit_verified_window(cache, snap.states, keep_tokens=1, verified_tokens=width)
+        assert tm.model.commit_verified_window(golden_cache, golden_snap.states, keep_tokens=1, verified_tokens=width)
+        completion.extend(_host_ids(ids[:, :1]))
+    assert bank.stats["fixed_m4_capacity_transitions"] > 0
+    ids = _ids(4, seed=70)
+    actual, _, _ = bank.forward_fixed_m4(ids, host_input_ids=_host_ids(ids),
+        completion_tokens=completion, committed_count=len(completion), cache=cache)
+    expected, _, _ = runtime.forward_ar_capture(ids, cache=golden_cache)
+    assert mx.allclose(actual, expected, atol=2e-5, rtol=2e-5).item()
+    assert bank.last_dispatch_route() == "compiled_bank"
+
+
 def test_fixed_m4_bank_fails_loud_instead_of_falling_back(tm, monkeypatch):
     import mtplx.graphbank as graphbank
     from mtplx.qwen4_fixed_verify import install_qwen4_fixed_verify_route

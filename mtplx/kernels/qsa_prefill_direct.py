@@ -120,15 +120,15 @@ def _import_extension():
     """Import the optional native module; never raise."""
 
     native_path = _extension_dir()
-    if native_path.is_dir() and str(native_path) not in sys.path:
+    built = native_path / "mtplx_qsa_kernels"
+    if any(built.glob("_ext*.so")) and str(native_path) not in sys.path:
         # Source-tree builds live beside the sources (the house pattern used
-        # by mtplx/kernels/native_gdn_tail.py); an installed wheel is found
-        # on the normal path and this insert is a no-op.
+        # by mtplx/kernels/native_gdn_tail.py). An unbuilt source directory
+        # must not shadow a working installed wheel with its empty package.
         sys.path.insert(0, str(native_path))
     try:
         import mtplx_qsa_kernels  # type: ignore
     except Exception as exc:  # pragma: no cover - depends on a local build
-        built = native_path / "mtplx_qsa_kernels"
         if built.is_dir() and any(built.glob("_ext*.so")):
             # A built extension that fails to load is a real defect (usually
             # an unresolved @rpath to the mlx wheel's libmlx.dylib). Leave a

@@ -1440,6 +1440,18 @@ def test_metrics_envelope_excludes_ssd_restore_from_decode_timing():
     assert envelope["display_decode_tok_s"] == 12.8
 
 
+def test_decode_timing_preserves_native_prompt_setup_accounting():
+    rate, seconds = openai._decode_timing({
+        "generated_tokens": 5252,
+        "elapsed_s": 140.07,
+        "prompt_eval_time_s": 13.35,
+        "prompt_state_total_time_s": 24.44,
+        "decode_elapsed_s": 115.63,
+    })
+    assert seconds == pytest.approx(115.63)
+    assert rate == pytest.approx(5252 / 115.63)
+
+
 def test_ar_batch_keeps_tool_history_turns_in_fair_lane():
     assert (
         openai._ar_batch_history_bypass_reason(
@@ -11504,10 +11516,27 @@ def test_chat_stream_tool_call_preamble_is_stored_for_postcommit(monkeypatch):
         }
 
 
-def test_chat_stream_hermes_suppresses_tool_call_preamble(monkeypatch):
+@pytest.mark.parametrize("with_vision", [False, True])
+def test_chat_stream_hermes_suppresses_tool_call_preamble(monkeypatch, with_vision):
     state = _fake_streaming_session_state()
     state.args.stream_interval = 1
     state.args.enable_thinking = False
+    if with_vision:
+        state._vision_spec_cache = SimpleNamespace()
+        splice = SimpleNamespace(
+            image_pad_token_id=999999, image_digests=[123], pad_counts=[1], total_rows=1,
+        )
+        monkeypatch.setattr(openai, "_vision_extract_and_flatten", lambda messages: (messages, [object()]))
+        monkeypatch.setattr(openai, "_materialize_vision_splice", lambda state, images, ids: (ids + [999999], splice))
+    commits = []
+    def capture_final(*_args, **kwargs):
+        commits.append(kwargs)
+        return {"stored": False, "mode": "unsafe", "reason": "tool_call_history_rewrite"}
+    def capture_idle(*_args, **kwargs):
+        commits.append(kwargs)
+        return {"stored": False, "mode": "async_pending"}
+    monkeypatch.setattr(openai, "_store_generation_final_history_snapshot", capture_final)
+    monkeypatch.setattr(openai, "_schedule_idle_postcommit_snapshot", capture_idle)
     monkeypatch.setattr(
         openai,
         "_run_generation",
@@ -11520,7 +11549,7 @@ def test_chat_stream_hermes_suppresses_tool_call_preamble(monkeypatch):
     with TestClient(create_app(state)) as client:
         response = client.post(
             "/v1/chat/completions",
-            headers={"x-mtplx-client": "hermes"},
+            headers={"x-mtplx-client": "hermes", "x-mtplx-session-id": "hermes-preamble"},
             json={
                 "messages": [{"role": "user", "content": "Status."}],
                 "tools": [_tool_schema()],
@@ -11541,6 +11570,14 @@ def test_chat_stream_hermes_suppresses_tool_call_preamble(monkeypatch):
         payload["choices"][0].get("finish_reason") == "tool_calls"
         for payload in payloads
     )
+    assert len(commits) == 2
+    for commit in commits:
+        assert commit["assistant_content"] == ""
+        assert commit["strip_tool_call_preamble_text"] is True
+    if with_vision:
+        # Even the unsafe/idle-postcommit arm must not publish raw image
+        # placeholders as a session frontier that different pixels can adopt.
+        assert state.sessions.peek("hermes-preamble").committed_token_ids == ()
 
 
 def test_chat_stream_hermes_defers_content_until_native_tool_extraction(monkeypatch):
