@@ -403,14 +403,15 @@ def _install_split_attention_hook(attn: Any) -> bool:
                 # M<=32 windows (QL<=5 at GQA 6): 0.917 vs 1.015 ms/layer at 72.7k, 0.257 vs
                 # 0.306 at 16k. Variant A covers the wider windows (QL 6-10). Both bail to
                 # the scalar routes on any contract miss.
-                output = sdpa_nax_flash_dsplit(
-                    queries=queries,
-                    keys=cache.keys,
-                    values=cache.values,
-                    offset=cache.offset,
-                    scale=self.scale,
-                )
-                if output is None:
+                if not lane_disabled("nax_flash_dsplit_sdpa"):
+                    output = sdpa_nax_flash_dsplit(
+                        queries=queries,
+                        keys=cache.keys,
+                        values=cache.values,
+                        offset=cache.offset,
+                        scale=self.scale,
+                    )
+                if output is None and not lane_disabled("nax_flash_sdpa"):
                     output = sdpa_nax_flash(
                         queries=queries,
                         keys=cache.keys,
@@ -441,7 +442,11 @@ def _install_split_attention_hook(attn: Any) -> bool:
             # kernel for q_len >= 6 — the M-curve regime where the scalar
             # kernels pay (Battery A + spot receipts: QL9 +34%/+45% at
             # 71k/128k). Bails fall through to the scalar routes unchanged.
-            elif _env_enabled("MTPLX_NAX_TILE_ROUTE") and int(queries.shape[2]) >= 6:
+            elif (
+                _env_enabled("MTPLX_NAX_TILE_ROUTE")
+                and int(queries.shape[2]) >= 6
+                and not lane_disabled("nax_tile_sdpa")
+            ):
                 from .kernels.sdpa_nax_tile import sdpa_nax_tile
 
                 output = sdpa_nax_tile(

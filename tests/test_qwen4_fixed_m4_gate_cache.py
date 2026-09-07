@@ -64,3 +64,50 @@ def test_nothing_cached_means_no_second_read(monkeypatch) -> None:
     assert fits is False
     assert releases == 1  # asked, nothing to release
     assert "released" not in announced[0]
+
+
+def test_shallow_depth_does_not_promote_or_evict(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a depth with no compiled forward must not enter memory admission")
+
+    monkeypatch.setattr(gen, "_qwen4_fixed_m4_lane_fits", unexpected)
+    for depth in (1, 2):
+        receipt = {}
+        assert not gen._qwen4_fixed_m4_compiled_verify_requested(
+            SimpleNamespace(qwen4_fixed_m4_compiled_verify=True),
+            verify_strategy="batched", compiled_mode="on", max_tokens=10000,
+            cached_tokens=0, prompt_tokens=128000, speculative_depth=depth,
+            receipt=receipt,
+        )
+        assert receipt["reason"] == "depth_below_compiled_window"
+
+
+def test_idle_bank_yields_but_logical_eviction_is_not_proof_of_freed_memory(monkeypatch):
+    state = {"live": 99 * GB}
+    monkeypatch.setattr(gen, "_mlx_live_memory_bytes", lambda: state["live"])
+    monkeypatch.setattr(gen, "_mlx_release_allocator_cache", lambda: 0)
+    monkeypatch.setattr(gen, "_qwen4_fixed_m4_promotion_bytes_per_token", lambda rt: 28416)
+    monkeypatch.setattr(gen, "_metal_memory_limit_bytes", lambda rt: 103079215104)
+    monkeypatch.setattr(gen, "_fixed_m4_initial_growth_reserve", lambda: 4096)
+    monkeypatch.delenv("MTPLX_QWEN4_FIXED_M4_MAX_CONTEXT", raising=False)
+
+    class Bank:
+        total_nbytes = 8 * GB
+        physical_reclaim = False
+
+        def shrink_for_admission(self, target, *, protect_tokens, reason):
+            assert protect_tokens == [1, 2, 3]
+            assert reason == "fixed_m4_admission"
+            self.total_nbytes = target
+            if self.physical_reclaim:
+                state["live"] = 90 * GB
+            return 1, 0
+
+    bank = Bank()
+    assert not gen._qwen4_fixed_m4_lane_fits(SimpleNamespace(), prompt_tokens=128000,
+                                          session_bank=bank, prompt_ids=[1, 2, 3])
+    bank.physical_reclaim = True
+    receipt = {}
+    assert gen._qwen4_fixed_m4_lane_fits(SimpleNamespace(), prompt_tokens=128000,
+                                      session_bank=bank, prompt_ids=[1, 2, 3], receipt=receipt)
+    assert receipt["live_bytes_after"] == 90 * GB

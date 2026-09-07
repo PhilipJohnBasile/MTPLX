@@ -146,7 +146,6 @@ struct TileRow: View {
         let liveRolling = hasRealRequest ? rolling : nil
         let liveLatest = hasRealRequest ? latest : nil
         let liveSmoothed = hasRealRequest ? smoothed : SmoothedMetrics()
-        let liveSnapshot = hasRealRequest ? snapshot : nil
 
         // `lifted` is true only once the daemon has actually reached
         // `.running` — `.starting` and `.warming` keep the row flat
@@ -206,10 +205,10 @@ struct TileRow: View {
             ),
             TileSpec(
                 label: tr("Avg Prefill"),
-                value: avgPrefillValue(snapshot: liveSnapshot, latest: liveLatest),
+                value: Format.tps(snapshot?.prefillRates?.averageTokS),
                 unit: "TPS",
                 systemImage: "gauge.with.dots.needle.bottom.50percent",
-                caption: avgPrefillCaption(snapshot: liveSnapshot, latest: liveLatest),
+                caption: snapshot?.prefillRates?.peakTokS.map { tr("peak %@", Format.tps($0)) },
                 liftIndex: 4
             ),
         ]
@@ -272,7 +271,7 @@ struct TileRow: View {
     /// a misleading max.
     ///
     /// The "current" signal cascades through the freshest source:
-    ///   1. Any in-flight request's prompt token count.
+    ///   1. Any in-flight request's prompt plus generated token count.
     ///   2. The largest prefix length across active engine sessions
     ///      (covers the read-only "between requests, last chat is
     ///      still loaded" case).
@@ -287,8 +286,8 @@ struct TileRow: View {
     }
 
     private func currentContextTokens() -> Int {
-        if let inFlightPrompt = backend.inFlight.lazy.compactMap(\.promptTokens).max() {
-            return inFlightPrompt
+        if let inFlightContext = backend.inFlight.lazy.compactMap(\.contextTokens).max() {
+            return inFlightContext
         }
         if let sessions = backend.sessions?.sessions, !sessions.isEmpty {
             return sessions.map(\.prefixLen).max() ?? 0
@@ -386,39 +385,4 @@ struct TileRow: View {
         return base
     }
 
-    // MARK: Average prefill tile
-    //
-    // Replaces the old "Depth" tile, which only echoed the depth the
-    // user already set in Settings. Prefill throughput is the metric
-    // the user actually cares about here: how fast the model ingests
-    // the prompt. The headline is the mean prefill rate across recent
-    // completed requests; the caption shows the peak so a single fast
-    // cache-warm read doesn't read as the steady rate.
-
-    private func avgPrefillValue(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> String {
-        let samples = prefillSamples(snapshot: snapshot, latest: latest)
-        guard !samples.isEmpty else { return "—" }
-        let avg = samples.reduce(0, +) / Double(samples.count)
-        return Format.tps(avg)
-    }
-
-    private func avgPrefillCaption(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> String? {
-        let samples = prefillSamples(snapshot: snapshot, latest: latest)
-        guard let peak = samples.max() else { return nil }
-        return tr("peak %@", Format.tps(peak))
-    }
-
-    /// Positive, finite prefill-rate samples from recent completed
-    /// requests, falling back to the freshest single reading when the
-    /// recent buffer is empty.
-    private func prefillSamples(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> [Double] {
-        let recent = (snapshot?.recent ?? [])
-            .compactMap(\.prefillTokS)
-            .filter { $0 > 0 && $0.isFinite }
-        if !recent.isEmpty { return recent }
-        if let single = latest?.prefillTokS, single > 0, single.isFinite {
-            return [single]
-        }
-        return []
-    }
 }

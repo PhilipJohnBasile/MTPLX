@@ -26,14 +26,13 @@ from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
-
-from mtplx.server import openai
-from mtplx.server.openai import create_app
-
 from test_server_openai import (  # noqa: E402 - shared fixtures
     ForegroundState,
     _fake_state,
 )
+
+from mtplx.server import openai
+from mtplx.server.openai import create_app
 
 GOLDEN_DIR = Path(__file__).parent / "golden" / "request_observability"
 UPDATE = os.environ.get("MTPLX_UPDATE_GOLDENS", "").strip() in {"1", "true", "yes"}
@@ -606,3 +605,17 @@ def test_tool_call_stream_matches_golden_and_nonstream(monkeypatch):
     assert final.get("mtplx_stats"), "final chunk must carry mtplx_stats"
 
     _assert_stream_golden("plain_chat_tool_call_stream", final["mtplx_stats"])
+
+
+def test_current_main_request_links_survive_responses_integration():
+    from mtplx.server.openai import ChatCompletionRequest, _request_observability
+
+    request = ChatCompletionRequest(model="test", messages=[{"role": "user", "content": "hello"}])
+    result = _request_observability(
+        request,
+        headers={"x-mtplx-client-turn-id": "turn-123", "x-mtplx-client-entry-id": "bad value\nsecret"},
+        metadata={}, session_source=None, request_generation_mode="mtp", request_depth=1,
+    )
+    assert result["request_client_turn_id"] == "turn-123"
+    assert "request_client_entry_id" not in result
+    assert result["request_message_count"] == 1
