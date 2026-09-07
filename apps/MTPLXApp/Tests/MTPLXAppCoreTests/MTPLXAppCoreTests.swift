@@ -8861,6 +8861,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         await viewModel.cancel()
     }
 
+    @MainActor
     func testMetricsStreamConnectsWithAppAPIKey() async throws {
         let port = try freeTCPPort()
         let script = try makeExecutable(
