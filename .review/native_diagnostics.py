@@ -5,9 +5,6 @@ s=p.read_text()
 for name in ('testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS','testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest'):
     a=s.index('    func '+name+'(');b=s.index('\n    }',a)+6
     block=s[a:b]
-    needle='        backend.startMetricsStream()'
-    assert block.count(needle)==1
-    block=block.replace(needle,needle+'\n        defer { backend.stopMetricsStream() }')
     needle='        XCTAssertEqual('
     i=block.index(needle)
     block=block[:i]+'        print("METRICS_DIAGNOSTIC", backend.connectionState, backend.baseURL, backend.latest as Any, process.isRunning)\n'+block[i:]
