@@ -1,0 +1,61 @@
+name: Readiness recovery inventory
+on:
+  push:
+    branches: [codex/pr-review-audit-20260906]
+    paths: [.github/workflows/readiness-recovery.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Collect exact PR heads, latest audit jobs and helper sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p receipts
+          python3 - <<'PY'
+          import json,os,pathlib,urllib.request,urllib.parse,base64
+          root=pathlib.Path('receipts')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/'+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
+          result={}
+          for short,upstream,numbers in [('unsloth','unslothai/unsloth',[9987,9859,9673]),('MTPLX','youssofal/MTPLX',[219,350,362,364,365,399])]:
+              repo='PhilipJohnBasile/'+short
+              runs=get('repos/'+repo+'/actions/runs?branch=codex%2Fpr-review-audit-20260906&per_page=40')['workflow_runs']
+              latest={}
+              for r in runs:
+                  if r['path'] not in latest:latest[r['path']]=r
+              records=[]
+              for r in latest.values():
+                  jobs=get(f'repos/{repo}/actions/runs/{r["id"]}/jobs')['jobs']
+                  artifacts=get(f'repos/{repo}/actions/runs/{r["id"]}/artifacts')['artifacts']
+                  records.append({k:r[k] for k in ('id','path','name','head_sha','status','conclusion','html_url')}|{'jobs':[{'id':j['id'],'name':j['name'],'conclusion':j['conclusion'],'steps':[{'name':s['name'],'conclusion':s.get('conclusion')} for s in j['steps'] if s.get('conclusion') not in ('success',None)]} for j in jobs], 'artifacts':[{'id':a['id'],'name':a['name'],'size':a['size_in_bytes']} for a in artifacts]})
+              prs=[]
+              for number in numbers:
+                  p=get(f'repos/{upstream}/pulls/{number}')
+                  prs.append({'number':number,'head':p['head']['sha'],'branch':p['head']['ref'],'draft':p['draft'],'mergeable':p['mergeable'],'body':p['body']})
+              refs=get(f'repos/{repo}/git/matching-refs/heads/codex/pr')
+              result[short]={'runs':records,'prs':prs,'refs':[{'ref':r['ref'],'sha':r['object']['sha']} for r in refs]}
+              for folder in ('.review','.github/workflows'):
+                  items=get(f'repos/{repo}/contents/{folder}?ref=codex%2Fpr-review-audit-20260906')
+                  for item in items:
+                      if item['type']!='file':continue
+                      if folder=='.github/workflows' and 'readiness' not in item['name'] and 'pr-review-audit' not in item['name']:continue
+                      blob=get(f'repos/{repo}/git/blobs/{item["sha"]}')
+                      target=root/short/item['path'];target.parent.mkdir(parents=True,exist_ok=True)
+                      target.write_bytes(base64.b64decode(blob['content']))
+          (root/'inventory.json').write_text(json.dumps(result,indent=2))
+          for repo,data in result.items():
+              print(repo,[(r['name'],r['id'],r['conclusion']) for r in data['runs']])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: readiness-recovery
+          path: receipts/
+          retention-days: 7
+          if-no-files-found: error
