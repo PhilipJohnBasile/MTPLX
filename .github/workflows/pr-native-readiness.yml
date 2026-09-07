@@ -3,27 +3,22 @@ on:
   push:
     branches: [codex/pr-review-audit-20260906]
     paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py]
-permissions:
-  contents: read
+permissions: {contents: read}
 jobs:
   native:
     if: github.repository == 'PhilipJohnBasile/MTPLX'
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with: {path: audit, persist-credentials: false}
       - uses: actions/checkout@v4
-        with: {ref: 48b18fc443688000f39406a47c8b634c5451b726, path: source, fetch-depth: 0, persist-credentials: false}
-      - name: Integrate exact current main and scoped SDK fixes
+        with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
+      - name: Apply SDK-safe fixes to the published current-main head
         working-directory: source
         run: |
           mkdir -p ../native-receipts
-          git config user.name 'Source validation'
-          git config user.email 'validation@example.invalid'
-          git fetch --no-tags https://github.com/youssofal/MTPLX.git 21be78b3f51820eecef020e5e4855c0715eaf9a5
-          git merge --no-commit --no-ff 21be78b3f51820eecef020e5e4855c0715eaf9a5
-          test -z "$(git diff --name-only --diff-filter=U)"
+          test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
           python3 ../audit/.review/native_fixes.py .
           git diff --check
           git diff -- apps/MTPLXApp > ../native-receipts/native.patch
@@ -33,11 +28,37 @@ jobs:
         run: |
           set -o pipefail
           swift build --package-path apps/MTPLXApp --product MTPLXApp 2>&1 | tee ../native-receipts/build.log
-      - name: Execute Swift core and host contracts
+      - name: Execute the full Swift core and host suite
         working-directory: source
         run: |
           set -o pipefail
+          framework=$(find apps/MTPLXApp/.build -name Sparkle.framework -type d | head -1)
+          if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
           swift test --package-path apps/MTPLXApp 2>&1 | tee ../native-receipts/tests.log
+          git diff --check
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: mtplx-native-readiness, path: 'native-receipts/', retention-days: 7, if-no-files-found: error}
+  candidate:
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: 0dec47d37001efa614d622cc933a6bd633633321}
+      - uses: actions/download-artifact@v4
+        with: {name: mtplx-native-readiness, path: /tmp/receipts}
+      - name: Publish tested native source candidate only
+        run: |
+          test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
+          git apply --check /tmp/receipts/native.patch
+          git apply /tmp/receipts/native.patch
+          git diff --check
+          test -z "$(git diff --name-only -- .github .review)"
+          git add apps/MTPLXApp
+          git config user.name 'Philip John Basile'
+          git config user.email 'PBasile@Basilecom.com'
+          git commit -m 'fix(app): preserve Swift 6.1 actor isolation and native test compatibility'
+          git push origin HEAD:refs/heads/codex/pr399-native-${{ github.run_id }}
+          git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
