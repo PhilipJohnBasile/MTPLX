@@ -66,9 +66,9 @@ struct LiftedSurface: View {
                 .strokeBorder(
                     LinearGradient(
                         stops: [
-                            .init(color: Color.white.opacity(0.16), location: 0.0),
-                            .init(color: Color.white.opacity(0.05), location: 0.5),
-                            .init(color: Color.white.opacity(0.03), location: 1.0),
+                            .init(color: Brand.wash.opacity(0.16), location: 0.0),
+                            .init(color: Brand.wash.opacity(0.05), location: 0.5),
+                            .init(color: Brand.wash.opacity(0.03), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom

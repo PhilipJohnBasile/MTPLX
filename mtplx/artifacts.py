@@ -159,6 +159,53 @@ def _num_mtp_layers(config: dict[str, Any]) -> int:
     )
 
 
+def appended_mtp_layer_range(config: dict[str, Any]) -> range:
+    """Layer indices holding an appended-layer MTP head.
+
+    GLM MoE checkpoints ship the MTP head as extra decoder layers starting
+    at ``num_hidden_layers`` (``model.layers.47.*`` for GLM-4.7-Flash),
+    rather than under an ``mtp.`` prefix.  Returns an empty range when the
+    config does not describe that layout.
+    """
+    tcfg = text_config(config)
+    start = int(tcfg.get("num_hidden_layers") or config.get("num_hidden_layers") or 0)
+    count = _num_mtp_layers(config)
+    if start <= 0 or count <= 0:
+        return range(0)
+    return range(start, start + count)
+
+
+def is_mtp_layers_namespace_key(key: str, config: dict[str, Any]) -> bool:
+    """Match an MTP head kept in its own ``model.mtp_layers.N.`` namespace.
+
+    MiMo stores the head neither under an ``mtp.`` prefix nor as an appended
+    decoder layer, but in a separate namespace beside ``model.layers.*``.
+    ``mimo_mtp_patch`` already reads that form, so extraction only has to
+    select the keys; no rewrite is needed.
+    """
+    text = str(key)
+    count = _num_mtp_layers(config)
+    return count > 0 and any(
+        text.startswith(f"model.mtp_layers.{index}.") for index in range(count)
+    )
+
+
+def uses_mtp_layers_namespace(config: dict[str, Any]) -> bool:
+    return _num_mtp_layers(config) > 0
+
+
+def uses_appended_layer_mtp(config: dict[str, Any]) -> bool:
+    return len(appended_mtp_layer_range(config)) > 0
+
+
+def is_appended_layer_mtp_key(key: str, config: dict[str, Any]) -> bool:
+    text = str(key)
+    return any(
+        text.startswith(f"model.layers.{index}.")
+        for index in appended_mtp_layer_range(config)
+    )
+
+
 def _qwen_moe_numbered_expert_keys(
     config: dict[str, Any],
     *,
@@ -669,15 +716,21 @@ def _hf_download_json(
         from huggingface_hub import hf_hub_download
     except Exception as exc:
         return None, None, f"huggingface_hub is required for HF inspection: {exc}"
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback, hf_token_for_download
+
     try:
         cache_dir = _hf_download_cache_dir()
         kwargs = {"cache_dir": str(cache_dir)} if cache_dir else {}
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            repo_type="model",
-            revision=revision,
-            **kwargs,
+        path, _token = _call_hub_with_anonymous_fallback(
+            lambda token: hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="model",
+                revision=revision,
+                token=token,
+                **kwargs,
+            ),
+            hf_token_for_download(),
         )
     except Exception as exc:
         return None, None, str(exc)
@@ -726,17 +779,19 @@ def _hf_list_repo_files(
         from huggingface_hub import HfApi
     except Exception as exc:
         return set(), f"huggingface_hub is required for HF inspection: {exc}"
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback, hf_token_for_download
+
     try:
-        return (
-            set(
-                HfApi().list_repo_files(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    revision=revision,
-                )
+        files, _token = _call_hub_with_anonymous_fallback(
+            lambda token: HfApi().list_repo_files(
+                repo_id=repo_id,
+                repo_type="model",
+                revision=revision,
+                token=token,
             ),
-            None,
+            hf_token_for_download(),
         )
+        return set(files), None
     except Exception as exc:
         return set(), str(exc)
 
@@ -748,25 +803,26 @@ def _hf_url(repo_id: str, filename: str) -> str:
 
 
 def _hf_token() -> str | None:
-    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    if token:
-        return token
-    try:
-        from huggingface_hub import get_token
+    # One token policy for every Hub call MTPLX makes; see hf_token_for_download.
+    from mtplx.hf_loader import hf_token_for_download
 
-        return get_token()
-    except Exception:
-        return None
+    token = hf_token_for_download()
+    return token if isinstance(token, str) and token else None
 
 
 def _hf_fetch_prefix(repo_id: str, filename: str, *, end: int) -> bytes:
-    headers = {"Range": f"bytes=0-{end}", "User-Agent": "mtplx-inspect/0.1"}
-    token = _hf_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(_hf_url(repo_id, filename), headers=headers)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read()
+    from mtplx.hf_loader import _call_hub_with_anonymous_fallback
+
+    def fetch(token: str | bool) -> bytes:
+        headers = {"Range": f"bytes=0-{end}", "User-Agent": "mtplx-inspect/0.1"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(_hf_url(repo_id, filename), headers=headers)
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read()
+
+    data, _token = _call_hub_with_anonymous_fallback(fetch, _hf_token() or False)
+    return data
 
 
 def _remote_safetensors_keys(repo_id: str, filename: str) -> tuple[tuple[str, ...], str | None]:

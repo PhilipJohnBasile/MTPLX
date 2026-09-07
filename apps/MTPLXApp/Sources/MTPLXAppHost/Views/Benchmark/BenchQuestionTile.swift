@@ -112,36 +112,36 @@ struct BenchQuestionTile: View {
     }
 
     private var tooltip: String {
-        let base = "Q\(result.idx) · \(result.problem.set) #\(result.problem.index)"
+        let base = tr("Q%lld · %@ #%lld", result.idx, result.problem.set, result.problem.index)
         switch result.status {
         case .pending:
-            return isRunning ? "\(base) — solving…" : base
+            return isRunning ? tr("%@ — solving…", base) : base
         case .correct:
-            return "\(base) — correct (answer \(result.problem.answer))"
+            return tr("%@ — correct (answer %lld)", base, result.problem.answer)
         case .wrong:
             if let extracted = result.extracted {
-                return "\(base) — wrong: expected \(result.problem.answer), got \(extracted)"
+                return tr("%@ — wrong: expected %lld, got %lld", base, result.problem.answer, extracted)
             }
-            return "\(base) — wrong: expected \(result.problem.answer)"
+            return tr("%@ — wrong: expected %lld", base, result.problem.answer)
         case .abstain:
-            return "\(base) — no parseable answer (expected \(result.problem.answer))"
+            return tr("%@ — no parseable answer (expected %lld)", base, result.problem.answer)
         }
     }
 
     private var accessibilityLabel: String {
-        "Problem \(result.idx)"
+        tr("Problem %lld", result.idx)
     }
 
     private var accessibilityValue: String {
         switch result.status {
-        case .pending: return isRunning ? "solving" : "pending"
-        case .correct: return "correct"
+        case .pending: return isRunning ? tr("solving") : tr("pending")
+        case .correct: return tr("correct")
         case .wrong:
             if let extracted = result.extracted {
-                return "wrong, expected \(result.problem.answer), got \(extracted)"
+                return tr("wrong, expected %lld, got %lld", result.problem.answer, extracted)
             }
-            return "wrong"
-        case .abstain: return "no answer"
+            return tr("wrong")
+        case .abstain: return tr("no answer")
         }
     }
 }

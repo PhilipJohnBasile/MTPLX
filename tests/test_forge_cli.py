@@ -2202,9 +2202,21 @@ def test_calibrate_sidecar_rejects_existing_zero_mtp_payload(tmp_path):
 
 def test_publish_reads_one_token_line_and_keeps_artifacts_secret_free(tmp_path, monkeypatch):
     local = tmp_path / "model"
-    _write_json(local / "mtplx_runtime.json", {"forge_provenance": {"forged_locally": True}})
+    trunk_path = "/Users/someone/.mtplx/models/Owner--Trunk"
+    _write_json(
+        local / "mtplx_runtime.json",
+        {
+            "base_trunk": trunk_path,
+            "forge_provenance": {
+                "forged_locally": True,
+                "source_repo": trunk_path,
+                "forge_inputs": {"trunk_path": trunk_path},
+            },
+        },
+    )
     (local / "config.json").write_text("{}", encoding="utf-8")
     calls: list[tuple[str, str | None]] = []
+    uploads: dict[str, object] = {}
 
     class FakeApi:
         def create_repo(self, **kwargs):
@@ -2212,10 +2224,12 @@ def test_publish_reads_one_token_line_and_keeps_artifacts_secret_free(tmp_path, 
 
         def upload_folder(self, **kwargs):
             calls.append(("folder", kwargs.get("token")))
+            uploads["ignore_patterns"] = kwargs.get("ignore_patterns")
             return SimpleNamespace(oid="rev-folder")
 
         def upload_file(self, **kwargs):
             calls.append(("file", kwargs.get("token")))
+            uploads[str(kwargs.get("path_in_repo"))] = kwargs.get("path_or_fileobj")
             return SimpleNamespace(oid="rev-file")
 
         def model_info(self, repo_id, *, token=None):
@@ -2256,6 +2270,36 @@ def test_publish_reads_one_token_line_and_keeps_artifacts_secret_free(tmp_path, 
     assert "hf_secret" not in publish_json
     assert "hf_secret" not in runtime_json
     assert json.loads(runtime_json)["forge_provenance"]["published_to_hf"]["repo"] == "owner/Fixture-MTPLX-Speed"
+    # The local contract keeps its paths; the published copy carries none.
+    assert trunk_path in runtime_json
+    assert uploads["ignore_patterns"] == ["mtplx_runtime.json"]
+    published = json.loads(uploads["mtplx_runtime.json"].decode("utf-8"))
+    assert "/Users/" not in json.dumps(published)
+    assert published["base_trunk"] == "<redacted>/Owner--Trunk"
+    assert published["forge_provenance"]["forge_inputs"]["trunk_path"] == "<redacted>/Owner--Trunk"
+
+
+def test_stamp_names_a_local_trunk_by_its_pull_marker(tmp_path):
+    trunk = tmp_path / "Owner--Trunk"
+    trunk.mkdir()
+    _write_json(
+        trunk / ".mtplx-source.json",
+        {"repo_id": "Owner/Trunk", "resolved_sha": "abc123", "revision": None},
+    )
+
+    assert forge._resolve_source_identity(str(trunk), "") == ("Owner/Trunk", "abc123")
+    assert forge._resolve_source_identity(str(trunk), "keep") == ("Owner/Trunk", "keep")
+
+
+def test_stamp_names_a_cache_layout_trunk_without_a_marker(tmp_path):
+    trunk = tmp_path / "Owner--Trunk"
+    trunk.mkdir()
+    plain = tmp_path / "just-a-folder"
+    plain.mkdir()
+
+    assert forge._resolve_source_identity(str(trunk), "") == ("Owner/Trunk", "")
+    assert forge._resolve_source_identity(str(plain), "") == (str(plain), "")
+    assert forge._resolve_source_identity("Owner/Trunk", "sha") == ("Owner/Trunk", "sha")
 
 
 def _tiny_vision_config() -> dict:

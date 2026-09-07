@@ -12,6 +12,9 @@ import pytest
 
 from mtplx.kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
 from mtplx.kernels.sdpa_nax_tile import sdpa_nax_tile
+from mtplx.nax_verify import nax_available
+
+pytestmark = pytest.mark.skipif(not nax_available(), reason="NAX hardware/OS unavailable")
 
 HQ, HKV, D = 24, 4, 256
 

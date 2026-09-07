@@ -7,7 +7,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.default_models import is_verified_default_model_ref
@@ -117,11 +117,20 @@ def user_config_path(value: str | Path | None = None) -> Path:
     return DEFAULT_CONFIG_PATH
 
 
-def _warn_bad_config(resolved: Path, detail: str) -> None:
-    """One stderr line, never a traceback. See ``load_user_config``."""
+def _warn_bad_config(resolved: Path, detail: str, *, key: str | None = None) -> None:
+    """One stderr line, never a traceback. See ``load_user_config``.
 
+    With ``key`` the line says which single key is being ignored, because the
+    rest of the file still applies and the user must not read "ignoring
+    <file>" as "none of my settings are active".
+    """
+
+    if key:
+        subject, remedy = f"{key} in {resolved}", "fix or remove that line"
+    else:
+        subject, remedy = str(resolved), "fix or delete the file"
     print(
-        f"mtplx: ignoring {resolved}: {detail}; fix or delete the file; "
+        f"mtplx: ignoring {subject}: {detail}; {remedy}; "
         "`mtplx config show` prints the active config",
         file=sys.stderr,
     )
@@ -148,7 +157,6 @@ def load_user_config(path: str | Path | None = None) -> UserConfig:
     model_dir = data.get("model_dir")
     profile = data.get("profile")
     thermal_control = data.get("thermal_control")
-    paged_kv_quantization = data.get("paged_kv_quantization")
     if profile is not None:
         try:
             profile = resolve_profile_name(str(profile))
@@ -157,14 +165,18 @@ def load_user_config(path: str | Path | None = None) -> UserConfig:
             # diagnostics, but do not let a stale saved profile break unrelated
             # commands before they can parse or explicitly choose a profile.
             profile = str(profile)
-    if paged_kv_quantization is not None:
+
+    def read(key: str, convert: Callable[[Any], Any], default: Any = None) -> Any:
+        # Every typed key is converted inside this try. A badly typed saved
+        # value (`context_window = "64k"`) degrades to that key's default with
+        # one warning, matching the stale-profile handling above; the rest of
+        # the file still applies. One key must not brick every command.
         try:
-            paged_kv_quantization = normalize_paged_kv_quantization(paged_kv_quantization)
-        except (ValueError, TypeError) as exc:
-            # A bad saved value degrades to this key's default, matching the
-            # stale-profile handling above. One key must not brick every command.
-            _warn_bad_config(resolved, f"invalid paged_kv_quantization: {exc}")
-            paged_kv_quantization = None
+            return convert(data.get(key))
+        except (TypeError, ValueError) as exc:
+            _warn_bad_config(resolved, str(exc), key=key)
+            return default
+
     return UserConfig(
         path=resolved,
         exists=True,
@@ -172,35 +184,35 @@ def load_user_config(path: str | Path | None = None) -> UserConfig:
         model_dir=str(model_dir) if model_dir else None,
         profile=str(profile) if profile else None,
         thermal_control=str(thermal_control) if thermal_control else None,
-        paged_kv_quantization=str(paged_kv_quantization) if paged_kv_quantization else None,
-        scheduler_mode=_str_or_none(data.get("scheduler_mode")),
-        batching_preset=_str_or_none(data.get("batching_preset")),
-        mtp_batch_numerics=_str_or_none(data.get("mtp_batch_numerics")),
-        max_active_requests=_int_or_none(data.get("max_active_requests")),
-        decode_batch_max=_int_or_none(data.get("decode_batch_max")),
-        batch_wait_ms=_float_or_none(data.get("batch_wait_ms")),
-        prefill_chunk_tokens=_int_or_none(data.get("prefill_chunk_tokens")),
-        experimental_mtp_cohorts=_bool_or_none(data.get("experimental_mtp_cohorts")),
-        ssd_session_cache=_str_or_none(data.get("ssd_session_cache")),
-        ssd_session_cache_dir=_str_or_none(data.get("ssd_session_cache_dir")),
-        ssd_session_cache_max_size=_str_or_none(data.get("ssd_session_cache_max_size")),
-        ssd_session_cache_min_prefix_tokens=_int_or_none(data.get("ssd_session_cache_min_prefix_tokens")),
-        ram_session_cache_policy=_str_or_none(data.get("ram_session_cache_policy")),
-        ram_session_cache_max_entries=_int_or_none(data.get("ram_session_cache_max_entries")),
-        ram_session_cache_max_size=_str_or_none(data.get("ram_session_cache_max_size")),
-        ram_session_cache_per_session_max_size=_str_or_none(data.get("ram_session_cache_per_session_max_size")),
-        ram_session_block_prefix_restore=_bool_or_none(data.get("ram_session_block_prefix_restore")),
-        context_window=_int_or_none(data.get("context_window")),
-        reasoning=_str_or_none(data.get("reasoning")),
-        reasoning_effort=_str_or_none(data.get("reasoning_effort")),
-        temperature=_float_or_none(data.get("temperature")),
-        top_p=_float_or_none(data.get("top_p")),
-        top_k=_int_or_none(data.get("top_k")),
-        api_key_file=_str_or_none(data.get("api_key_file")),
-        embedding_models=_str_tuple(data.get("embedding_models")),
-        reranker_models=_str_tuple(data.get("reranker_models")),
-        retrieval_max_resident=_int_or_none(data.get("retrieval_max_resident")),
-        retrieval_trust_remote_code=_bool_or_none(data.get("retrieval_trust_remote_code")),
+        paged_kv_quantization=read("paged_kv_quantization", _paged_kv_quantization_or_none),
+        scheduler_mode=read("scheduler_mode", _str_or_none),
+        batching_preset=read("batching_preset", _str_or_none),
+        mtp_batch_numerics=read("mtp_batch_numerics", _str_or_none),
+        max_active_requests=read("max_active_requests", _int_or_none),
+        decode_batch_max=read("decode_batch_max", _int_or_none),
+        batch_wait_ms=read("batch_wait_ms", _float_or_none),
+        prefill_chunk_tokens=read("prefill_chunk_tokens", _int_or_none),
+        experimental_mtp_cohorts=read("experimental_mtp_cohorts", _bool_or_none),
+        ssd_session_cache=read("ssd_session_cache", _str_or_none),
+        ssd_session_cache_dir=read("ssd_session_cache_dir", _str_or_none),
+        ssd_session_cache_max_size=read("ssd_session_cache_max_size", _str_or_none),
+        ssd_session_cache_min_prefix_tokens=read("ssd_session_cache_min_prefix_tokens", _int_or_none),
+        ram_session_cache_policy=read("ram_session_cache_policy", _str_or_none),
+        ram_session_cache_max_entries=read("ram_session_cache_max_entries", _int_or_none),
+        ram_session_cache_max_size=read("ram_session_cache_max_size", _str_or_none),
+        ram_session_cache_per_session_max_size=read("ram_session_cache_per_session_max_size", _str_or_none),
+        ram_session_block_prefix_restore=read("ram_session_block_prefix_restore", _bool_or_none),
+        context_window=read("context_window", _int_or_none),
+        reasoning=read("reasoning", _str_or_none),
+        reasoning_effort=read("reasoning_effort", _str_or_none),
+        temperature=read("temperature", _float_or_none),
+        top_p=read("top_p", _float_or_none),
+        top_k=read("top_k", _int_or_none),
+        api_key_file=read("api_key_file", _str_or_none),
+        embedding_models=read("embedding_models", _str_tuple, ()),
+        reranker_models=read("reranker_models", _str_tuple, ()),
+        retrieval_max_resident=read("retrieval_max_resident", _int_or_none),
+        retrieval_trust_remote_code=read("retrieval_trust_remote_code", _bool_or_none),
     )
 
 
@@ -330,6 +342,8 @@ def _str_tuple(value: Any) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return (value,)
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"expected a list of model names, got {value!r}")
     return tuple(str(item) for item in value if str(item).strip())
 
 
@@ -337,16 +351,29 @@ def _str_or_none(value: Any) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
+def _paged_kv_quantization_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = normalize_paged_kv_quantization(value)
+    return str(normalized) if normalized else None
+
+
 def _int_or_none(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"expected a whole number, got {value!r}") from None
 
 
 def _float_or_none(value: Any) -> float | None:
     if value in (None, ""):
         return None
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"expected a number, got {value!r}") from None
 
 
 def _bool_or_none(value: Any) -> bool | None:

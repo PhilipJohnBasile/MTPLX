@@ -34,7 +34,7 @@ struct FanModeToggle: View {
                 Capsule(style: .continuous)
                     .stroke(Brand.separator, lineWidth: 0.75)
             )
-            .help("Default uses Apple's fan curve, Smart boosts during generation, Max pins verified max.")
+            .help(tr("Default uses Apple's fan curve, Smart boosts during generation, Max pins verified max."))
         }
     }
 

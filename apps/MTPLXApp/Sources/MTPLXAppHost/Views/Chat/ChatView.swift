@@ -113,7 +113,7 @@ private struct UIPerfHUDView: View {
     var body: some View {
         let hud = probe.hud
         VStack(alignment: .trailing, spacing: 2) {
-            Text(hud.isStreaming ? "STREAMING" : "IDLE")
+            Text(hud.isStreaming ? tr("STREAMING") : tr("IDLE"))
                 .font(.system(size: 8, weight: .heavy, design: .monospaced))
                 .foregroundStyle(hud.isStreaming ? Brand.success : Brand.typeTertiary)
             Text(String(format: "flush %4.1f/s  apply %5.1f ms", hud.flushesPerSecond, hud.lastAppendMs))
@@ -126,7 +126,7 @@ private struct UIPerfHUDView: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.black.opacity(0.72))
+                .fill(Brand.hudFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

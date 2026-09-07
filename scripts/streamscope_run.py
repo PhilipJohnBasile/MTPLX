@@ -109,6 +109,16 @@ PROMPTS: dict[str, dict] = {
         "reasoning_effort": "medium",
         "max_tokens": 3072,
     },
+    # The copy-lane repro (2026-09-02): the founder's second turn. The engine's
+    # context-copy lane regurgitates the previous answer in verbatim blocks, so
+    # this arm streams the follow-up with the flappy answer in the history. It
+    # is the only arm that exercises block-sized emits; run it after "flappy".
+    "flappy_followup": {
+        "followup_of": "flappy",
+        "prompt": "Make the pillars blue. Return the complete updated file in one code block.",
+        "reasoning_effort": "medium",
+        "max_tokens": 6144,
+    },
 }
 
 
@@ -287,7 +297,7 @@ def run_sse_prompt(
     body = {
         "model": model,
         "stream": True,
-        "messages": [{"role": "user", "content": spec["prompt"]}],
+        "messages": list(spec.get("history") or []) + [{"role": "user", "content": spec["prompt"]}],
         "max_tokens": spec.get("max_tokens", 4096),
     }
     if spec.get("reasoning_effort"):
@@ -452,6 +462,7 @@ def cmd_api(args: argparse.Namespace) -> int:
         "prompts": {},
     }
 
+    answers: dict[str, str] = {}
     for repeat in range(args.repeat):
         for key in prompt_keys:
             arm = key if args.repeat == 1 else f"{key}-r{repeat + 1}"
@@ -465,12 +476,26 @@ def cmd_api(args: argparse.Namespace) -> int:
                     return 2
             macmon = MacmonSampler(arm_dir / "macmon.jsonl")
             macmon_ok = macmon.start()
+            spec = dict(PROMPTS[key])
+            prior_key = spec.pop("followup_of", None)
+            if prior_key:
+                if prior_key not in answers:
+                    print(f"[streamscope] {arm}: prior arm {prior_key} not in this battery; running it unscored", flush=True)
+                    prior = run_sse_prompt(
+                        args.base_url, args.model, PROMPTS[prior_key], arm_dir / "prior_sse_client.jsonl"
+                    )
+                    answers[prior_key] = prior["content_text"]
+                spec["history"] = [
+                    {"role": "user", "content": PROMPTS[prior_key]["prompt"]},
+                    {"role": "assistant", "content": answers[prior_key]},
+                ]
             print(f"[streamscope] {arm}: streaming …", flush=True)
             t0_wall = time.time()
             try:
                 run = run_sse_prompt(
-                    args.base_url, args.model, PROMPTS[key], arm_dir / "sse_client.jsonl"
+                    args.base_url, args.model, spec, arm_dir / "sse_client.jsonl"
                 )
+                answers[key] = run["content_text"]
             finally:
                 time.sleep(1.0)
                 macmon.stop()

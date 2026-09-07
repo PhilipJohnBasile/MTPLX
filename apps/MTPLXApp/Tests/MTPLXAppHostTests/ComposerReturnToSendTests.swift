@@ -34,7 +34,8 @@ final class ComposerReturnToSendTests: XCTestCase {
                 box.submitted += 1
                 box.textAtSubmit.append(box.text)
             },
-            onFileDrop: { _ in }
+            onFileDrop: { _ in },
+            onImagePaste: { _ in }
         )
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 420, height: 64)
@@ -46,6 +47,7 @@ final class ComposerReturnToSendTests: XCTestCase {
         return (host, textView)
     }
 
+    @MainActor
     private static func firstTextView(in view: NSView) -> NSTextView? {
         if let textView = view as? NSTextView { return textView }
         for child in view.subviews {
@@ -82,4 +84,31 @@ final class ComposerReturnToSendTests: XCTestCase {
             "submit must read the committed view string, not the stale binding"
         )
     }
+    @MainActor
+    func testLongComposerKeepsFullDocumentHeight() throws {
+        let box = Box()
+        let (host, textView) = try mountComposer(box: box)
+        defer { _ = host }
+        textView.string = (1...20).map { "line \($0)" }.joined(separator: "\n")
+        textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+        textView.delegate?.textDidChange?(Notification(name: NSText.didChangeNotification, object: textView))
+
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        let container = try XCTUnwrap(textView.textContainer)
+        layoutManager.ensureLayout(for: container)
+        let contentHeight = layoutManager.usedRect(for: container).height
+            + textView.textContainerInset.height * 2
+        XCTAssertGreaterThan(contentHeight, 160)
+        XCTAssertGreaterThanOrEqual(textView.frame.height, contentHeight)
+        let scrollView = try XCTUnwrap(textView.enclosingScrollView)
+        XCTAssertTrue(scrollView.hasVerticalScroller)
+        textView.scrollRangeToVisible(textView.selectedRange())
+        XCTAssertGreaterThan(scrollView.contentView.bounds.origin.y, 0)
+
+        textView.string = "short draft"
+        textView.delegate?.textDidChange?(Notification(name: NSText.didChangeNotification, object: textView))
+        XCTAssertLessThanOrEqual(textView.frame.height, 160)
+        XCTAssertFalse(scrollView.hasVerticalScroller)
+    }
+
 }

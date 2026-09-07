@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from mtplx.artifacts import inspect_model
 from mtplx.benchmarks.validators.basic import (
+    ValidationResult,
     summarize_benchmark_quality,
     validate_balanced_delimiters,
     validate_no_degenerate_loop,
@@ -40,6 +41,7 @@ from mtplx.benchmarks.validators.basic import (
 from mtplx.constants import DEFAULT_RUNTIME_MODEL_DIR
 from mtplx.default_models import (
     OPTIMIZED_QUALITY_DESCRIPTION,
+    DefaultModelUnavailable,
     is_verified_default_model_ref,
     optimized_quality_model_ref,
     public_model_id_for_ref,
@@ -47,6 +49,7 @@ from mtplx.default_models import (
 )
 from mtplx.env import collect_environment
 from mtplx.fan_mode import FAN_MODE_MAX, FAN_MODE_SMART, fan_mode_from_args
+from mtplx.jsonc import InvalidConfigFile
 from mtplx.kpi import (
     EXIT_EXACTNESS,
     EXIT_QUALITY,
@@ -448,11 +451,37 @@ def _runtime_env_with_model_contract_overrides(
     runtime_env: dict[str, str],
     inspection: dict[str, Any],
     profile: Any,
+    *,
+    model: str | None = None,
 ) -> dict[str, str]:
-    return runtime_env_with_contract_overrides(
+    resolved = runtime_env_with_contract_overrides(
         runtime_env,
         _profile_scoped_model_runtime_contract(inspection, profile),
     )
+    if model is not None and _model_config_is_qwen4_exp(model):
+        from mtplx.profiles import (
+            MODEL_RUNTIME_ENV_OVERRIDE_KEYS,
+            PROFILE_ENV_USER_OVERRIDE_KEYS,
+        )
+        from mtplx.server.openai import (
+            _server_runtime_env_overrides,
+            load_runtime_contract,
+        )
+
+        # Resolve before applying any profile: profile defaults must not look
+        # like operator exports to the serve contract's hardware/pack gates.
+        # Keep the same precedence as serve: explicit runtime env, then the
+        # family overrides (which remove operator-owned lane keys themselves).
+        for key in MODEL_RUNTIME_ENV_OVERRIDE_KEYS | PROFILE_ENV_USER_OVERRIDE_KEYS:
+            value = os.environ.get(key)
+            if value is not None and value.strip():
+                resolved[key] = value
+        contract, _ = load_runtime_contract(model)
+        resolved.update(_server_runtime_env_overrides(
+            SimpleNamespace(model=model, generation_mode="mtp", verify_strategy="batched"),
+            contract.runtime_env_overrides if contract is not None else {},
+        ))
+    return resolved
 
 
 def _bench_run_console_summary(envelope: dict[str, Any]) -> dict[str, Any]:
@@ -2270,6 +2299,18 @@ def _exact_paged_env_from_args(args: Any) -> dict[str, str]:
     return exact_paged_attention_env(**_exactness_profile_kwargs(args))
 
 
+
+def _model_config_is_qwen4_exp(model: str) -> bool:
+    """Mirror of the server's qwen4_exp predicate: read the pack config."""
+    try:
+        with open(Path(str(model)) / "config.json", "rb") as fh:
+            cfg = json.load(fh)
+    except Exception:
+        return False
+    mt = str(cfg.get("model_type") or "").lower()
+    tmt = str((cfg.get("text_config") or {}).get("model_type") or "").lower()
+    return "qwen4_exp" in (mt, tmt) or "qwen4_exp_text" in (mt, tmt)
+
 def _depth_sweep_native60(
     *,
     model: str,
@@ -2296,8 +2337,11 @@ def _depth_sweep_native60(
 ) -> dict[str, Any]:
     from mtplx.benchmarks.runners.mtp_depth_sweep import run_mtp_depth_sweep
 
+    _family_batched = _model_config_is_qwen4_exp(model)
     previous = apply_profile_env("performance-cold")
     if runtime_env:
+        for key in runtime_env:
+            previous.setdefault(key, os.environ.get(key))
         os.environ.update({key: str(value) for key, value in runtime_env.items()})
     draft_lm_head = draft_lm_head or {
         "bits": 4,
@@ -2308,11 +2352,11 @@ def _depth_sweep_native60(
     # the model in-process; pin the serve-path Metal allocator caps first.
     from mtplx.server.openai import apply_memory_caps_preflight
 
-    memory_preflight = apply_memory_caps_preflight(
-        entry="bench.depth_sweep",
-        model=str(model),
-    )
     try:
+        memory_preflight = apply_memory_caps_preflight(
+            entry="bench.depth_sweep",
+            model=str(model),
+        )
         result = run_mtp_depth_sweep(
             model,
             prompt_suite,
@@ -2333,9 +2377,15 @@ def _depth_sweep_native60(
             mtp_cache_policy=mtp_cache_policy,
             mtp_history_policy=mtp_history_policy,
             min_speculative_depth=1,
-            verify_strategy="capture_commit",
+            # qwen4_exp cannot run the qwen3-next structure verify lanes: their
+            # capture stack introspects the qwen3-next DecoderLayer layout
+            # (input_layernorm et al.) and raises on Flash-Next hyper-connection
+            # layers. The family's repair-free lane wraps the batched verify
+            # (MTPLX_FAMILY_CAPTURE_COMMIT), so batched is the base strategy
+            # there -- the same coercion the server applies at boot.
+            verify_strategy="batched" if _family_batched else "capture_commit",
             draft_core=str(draft_core or "stock"),
-            verify_core="linear-gdn-from-conv-tape",
+            verify_core="stock" if _family_batched else "linear-gdn-from-conv-tape",
             draft_lm_head_bits=int(draft_lm_head["bits"]),
             draft_lm_head_group_size=int(draft_lm_head["group_size"]),
             draft_lm_head_mode=str(draft_lm_head["mode"]),
@@ -2557,6 +2607,16 @@ def _render_doctor_report(args: Any, report: dict[str, Any]) -> int:
         print(f"project: {env_info.get('project_root') or os.getcwd()}")
         print(f"model cache: {hf.get('cache_dir') or 'default'}")
         print(f"cached models: {hf.get('cached_models', 'unknown')}")
+        token_source = hf.get("token_source")
+        if token_source == "environment":
+            print("hugging face token: from HF_TOKEN (used by mtplx pull)")
+        elif token_source == "login":
+            print("hugging face token: from `hf auth login` (used by mtplx pull)")
+        else:
+            print(
+                "hugging face token: none (public models need none; for gated "
+                "models run `hf auth login` or export HF_TOKEN)"
+            )
         print(
             "thermal: "
             f"{'available' if thermal.get('available') else 'not configured'}"
@@ -3811,6 +3871,7 @@ def _cmd_tune_candidate(args: Any) -> int:
             profile.env_dict(),
             inspection,
             profile,
+            model=runtime_model,
         )
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, profile)
@@ -5769,6 +5830,13 @@ def cmd_pull_public(args: Any) -> int:
         print(f"model: {result.get('repo_id')}")
         print(f"path: {result.get('path')}")
         print(f"size: {_format_bytes(result.get('size_bytes'))}")
+        stale_bytes = result.get("stale_bytes")
+        if isinstance(stale_bytes, int) and stale_bytes > 0:
+            print(
+                f"leftovers: {_format_bytes(stale_bytes)} in "
+                f"{result.get('stale_files')} partial file(s) from earlier downloads "
+                "(under .cache or *.incomplete); not part of the model, safe to remove"
+            )
         print(
             f"runtime contract: {str(bool(result.get('has_runtime_contract'))).lower()}"
         )
@@ -6095,6 +6163,7 @@ def _cmd_bench_run(args: Any) -> int:
         runtime_env,
         inspection,
         selected_profile,
+        model=runtime_model,
     )
     draft_lm_head = _model_draft_lm_head_spec(inspection, selected_profile)
     draft_sampler = _model_draft_sampler_spec(inspection, selected_profile)
@@ -6747,7 +6816,9 @@ def _bench_suite_model(args: Any) -> str:
     model = getattr(args, "model", None) or DEFAULT_CHAMPION
     cli_flags = getattr(args, "_cli_flags", set()) or set()
     if "model" not in cli_flags and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        # Same refusal as `mtplx start`: a Mac with no runnable default
+        # (Intel, or too little memory) gets the sentence, not a traceback.
+        selection = _select_default_model_or_exit()
         to_dict = getattr(selection, "to_dict", None)
         args._mtplx_default_model_selection = (
             to_dict() if callable(to_dict) else dict(vars(selection))
@@ -9734,6 +9805,15 @@ def cmd_serve_public(args: Any) -> int:
     context_window = getattr(args, "context_window", None)
     if context_window is not None:
         cmd.extend(["--context-window", str(context_window)])
+    stream_stall_deadline_s = getattr(args, "stream_stall_deadline_s", None)
+    if stream_stall_deadline_s is not None:
+        # Issue #448: the app's Stall watchdog setting rides this flag; the
+        # module owns the value, the wrapper only has to know the flag.
+        cmd.extend(
+            ["--stream-stall-deadline-s", format(float(stream_stall_deadline_s), "g")]
+        )
+    if bool(getattr(args, "allow_swap", False)):
+        cmd.append("--allow-swap")
     mtp_adapter = getattr(args, "mtp_adapter", None)
     if mtp_adapter:
         cmd.extend(["--mtp-adapter", str(mtp_adapter)])
@@ -9883,6 +9963,14 @@ def cmd_serve_public(args: Any) -> int:
         cmd.append("--stock-ar")
     elif getattr(args, "load_mtp", True) is False:
         cmd.append("--no-load-mtp")
+    # Tri-state: only an explicit choice is forwarded, so the child's own
+    # MTPLX_NGRAM_PREWARM (and the on-by-default) still decide otherwise.
+    ngram_prewarm = getattr(args, "ngram_prewarm", None)
+    if ngram_prewarm is not None:
+        cmd.extend(["--ngram-prewarm", str(ngram_prewarm)])
+    ngram_prewarm_order = getattr(args, "ngram_prewarm_order", None)
+    if ngram_prewarm_order:
+        cmd.extend(["--ngram-prewarm-order", str(ngram_prewarm_order)])
     api_key_source = str(getattr(args, "api_key_source", "none") or "none")
     api_key_file = getattr(args, "api_key_file", None)
     if api_key and api_key_source == "flag":
@@ -10289,6 +10377,36 @@ def _piped_prompt_text() -> str:
         return ""
 
 
+def _in_process_runtime_env_overrides(
+    args: Any, runtime_model: str, *, generation_mode: str
+) -> dict[str, str]:
+    """The shared serve contract for all in-process CLI entrypoints (#463).
+
+    ``mtplx run`` and ``chat`` load the runtime in-process and applied only
+    the profile defaults, so Flash-Next never received the family lanes serve
+    stamps at boot (family capture commit, recurrent-state snapshot kept,
+    fixed-M4 verify). The turbo profile's MTPLX_SKIP_VERIFY_SNAPSHOT=1 then
+    left the pre-verify snapshot empty and the legacy capture walker raised
+    on the hyper-connection layers. Resolve exactly what serve resolves:
+    the pack contract, then the family overrides, with explicit exports kept.
+    """
+    from mtplx.server.openai import (
+        _server_runtime_env_overrides,
+        load_runtime_contract,
+    )
+
+    contract, _error = load_runtime_contract(runtime_model)
+    return _server_runtime_env_overrides(
+        SimpleNamespace(
+            model=runtime_model,
+            generation_mode=generation_mode,
+            verify_strategy=getattr(args, "verify_strategy", None),
+            scheduler_mode=getattr(args, "scheduler_mode", "serial"),
+        ),
+        contract.runtime_env_overrides if contract is not None else {},
+    )
+
+
 def _generate_one_shot_public(
     args: Any, *, command: str
 ) -> tuple[int, dict[str, Any], list[Any]]:
@@ -10352,8 +10470,16 @@ def _generate_one_shot_public(
     # made `mtplx run` silently benchmark the slow profile (2026-08-16
     # redp314 board investigation).
     profile = get_profile(_resolved_default_profile_name(args))
-    apply_profile_env(profile.name)
     generation_mode = _generation_mode_from_args(args)
+    # The same runtime contract serve and tune resolve (#463): the pack's env
+    # overrides plus the family lanes, with serve's precedence over the
+    # profile defaults.
+    apply_profile_env(
+        profile.name,
+        runtime_env_overrides=_in_process_runtime_env_overrides(
+            args, runtime_model, generation_mode=generation_mode
+        ),
+    )
     draft_lm_head = (
         _model_draft_lm_head_spec(inspection, profile)
         if generation_mode == GENERATION_MODE_MTP
@@ -10488,8 +10614,8 @@ def _generate_one_shot_public(
                     mtp_hidden_variant="post_norm",
                     mtp_cache_policy="persistent",
                     mtp_history_policy="committed",
-                    verify_strategy="capture_commit",
-                    verify_core="linear-gdn-from-conv-tape",
+                    verify_strategy=getattr(args, "verify_strategy", None) or "capture_commit",
+                    verify_core=getattr(args, "verify_core", None) or "linear-gdn-from-conv-tape",
                 )
         finally:
             if smart_fans is not None and smart_request_id is not None:
@@ -10498,12 +10624,33 @@ def _generate_one_shot_public(
         if max_session is not None:
             max_session.stop()
             thermal = max_session.thermal
+    validation_text = out.text
+    if args.expect_python:
+        from mtplx.reasoning_codecs import split_reasoning_text
+
+        # Validate the delivered program, not the model's thought channel.
+        # Only unwrap a complete outer fence; malformed or multiple blocks
+        # must still fail the normal Python validator.
+        codec = reasoning_policy_for_model(model_ref=runtime_model, inspection=inspection)
+        validation_text = split_reasoning_text(
+            out.text, parser=codec.parser, thinking_enabled=reasoning_mode != "off"
+        ).content.strip()
+        fenced = re.fullmatch(
+            r"```(?:python|py)?[ \t]*\r?\n(.*?)\r?\n```",
+            validation_text, flags=re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            validation_text = fenced.group(1)
     validations = [
         validate_no_degenerate_loop(out.text),
-        validate_balanced_delimiters(out.text),
+        validate_balanced_delimiters(validation_text),
     ]
     if args.expect_python:
-        validations.append(validate_python_syntax(out.text))
+        validations.append(
+            validate_python_syntax(validation_text)
+            if validation_text.strip()
+            else ValidationResult("python_syntax", False, "No Python answer after reasoning")
+        )
     payload = {
         "text": out.text,
         "model": _compact_model_summary(inspection),
@@ -10890,11 +11037,25 @@ def _quickstart_heartbeat(
     return _QuickstartHeartbeat(label, interval_s=interval_s)
 
 
+def _select_default_model_or_exit():
+    """The verified default for this Mac, or a clean exit with the reason.
+
+    A Mac that cannot run any MTPLX model (an Intel processor, or less memory
+    than the smallest pack needs) gets the one-sentence message and exit
+    status 1: never a traceback, never a download it cannot use.
+    """
+
+    try:
+        return select_default_model()
+    except DefaultModelUnavailable as exc:
+        raise SystemExit(exc.message) from exc
+
+
 def _quickstart_current_model(args: Any) -> str:
     model = getattr(args, "model", None)
     explicit_model = bool(getattr(args, "_model_explicit", False))
     if not explicit_model and is_verified_default_model_ref(model):
-        selection = select_default_model()
+        selection = _select_default_model_or_exit()
         args._mtplx_default_model_selection = selection.to_dict()
         return selection.model
     return str(model or DEFAULT_MODEL_ID)
@@ -10905,7 +11066,7 @@ def _quickstart_download_ref(model: str) -> str:
 
     if repo_id_from_model_ref(model):
         return model
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     default_local_refs = {
         DEFAULT_MODEL_ID,
         selection.model,
@@ -10939,7 +11100,7 @@ def _quickstart_choose_model(
         return model, download
 
     _quickstart_line(f"MTPLX {_start_command_name(args)}")
-    selection = select_default_model()
+    selection = _select_default_model_or_exit()
     _quickstart_line("Choose a model:")
     _quickstart_line(f"  1. Use verified default for this Mac ({selection.label})")
     quality_ref = optimized_quality_model_ref()
@@ -11380,8 +11541,8 @@ def _quickstart_generate(
                 mtp_hidden_variant="post_norm",
                 mtp_cache_policy="persistent",
                 mtp_history_policy="committed",
-                verify_strategy="capture_commit",
-                verify_core="linear-gdn-from-conv-tape",
+                verify_strategy=getattr(args, "verify_strategy", None) or "capture_commit",
+                verify_core=getattr(args, "verify_core", None) or "linear-gdn-from-conv-tape",
                 token_callback=record_tokens,
             )
     finally:
@@ -11643,6 +11804,7 @@ def _hermes_config_yaml(
     api_key: str,
     workspace_path: str,
     reasoning_effort: str | None = None,
+    vision: bool = False,
 ) -> str:
     # SYNC PAIR: HermesIntegration.configYAML — both writers must emit the
     # same template shape or the shared merge sweeps each other's lines.
@@ -11664,6 +11826,8 @@ def _hermes_config_yaml(
         f"  base_url: {_hermes_yaml_quote(base_url)}\n"
         f"  api_key: {_hermes_yaml_quote(api_key)}\n"
         "  api_mode: chat_completions\n"
+        f"  supports_vision: {str(vision).lower()}\n"
+        "  reasoning_echo: true\n"
         "  default_headers:\n"
         "    x-mtplx-client: hermes\n"
         "toolsets:\n"
@@ -11674,10 +11838,16 @@ def _hermes_config_yaml(
         "  tool_use_enforcement: auto\n"
         + effort_line
         + "terminal:\n"
-        "  backend: local\n"
+        # terminal.backend is the user's sandbox choice (local, docker,
+        # ssh, ...), never MTPLX's: hermes defaults it to local when the
+        # key is absent, and the merge keeps a user-set value verbatim
+        # (issue #460: the old hardcoded "local" re-stamped a Docker
+        # sandbox back to the host shell on every launch).
         f"  cwd: {_hermes_yaml_quote(workspace_path)}\n"
         "  timeout: 180\n"
         "  persistent_shell: true\n"
+        "compression:\n"
+        "  tool_image_retention: until_compaction\n"
         "display:\n"
         "  streaming: true\n"
         "  show_reasoning: true\n"
@@ -11851,6 +12021,32 @@ def _hermes_merged_config_yaml(existing: str | None, template: str) -> str:
     return "\n".join(out) + "\n"
 
 
+def _hermes_profile_declares_backend(existing: str | None) -> bool:
+    """True when the profile config sets ``terminal.backend`` itself."""
+    _, profile_blocks, _ = _hermes_parse_top_level_blocks(existing or "")
+    return any(
+        block["key"] == "terminal"
+        and any(key == "backend" for key, _ in _hermes_direct_child_blocks(block))
+        for block in profile_blocks
+    )
+
+
+def _hermes_inherit_terminal(existing: str | None, root: str | None) -> str | None:
+    """Seed only execution settings; an explicit profile backend wins (#460)."""
+    if not root or _hermes_profile_declares_backend(existing):
+        return existing
+    _, root_blocks, _ = _hermes_parse_top_level_blocks(root)
+    terminal = next((b for b in root_blocks if b["key"] == "terminal"), None)
+    if terminal is None:
+        return existing
+    # Root config need not use the generated profile's two-space indentation.
+    import textwrap
+
+    body = textwrap.indent(textwrap.dedent("\n".join(terminal["lines"][1:])), "  ")
+    seed = terminal["lines"][0] + "\n" + body + "\n"
+    return _hermes_merged_config_yaml(seed, existing) if existing and existing.strip() else seed
+
+
 def _write_if_changed(path: Path, text: str, *, mode: int = 0o600) -> bool:
     existing = None
     if path.exists():
@@ -11890,17 +12086,22 @@ def _sync_hermes_profile(
     api_key: str,
     workspace_path: str,
     reasoning_effort: str | None = None,
+    vision: bool = False,
 ) -> dict[str, Any]:
     profile_dir = _hermes_profile_dir()
     config_path = profile_dir / "config.yaml"
     env_path = profile_dir / ".env"
     profile_dir.mkdir(parents=True, exist_ok=True)
-    existing_config: str | None = None
-    if config_path.exists():
-        try:
-            existing_config = config_path.read_text(encoding="utf-8")
-        except OSError:
-            existing_config = None
+    existing_config = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    if not _hermes_profile_declares_backend(existing_config):
+        # The root config is read only when a terminal policy has to be
+        # inherited (#460): a profile with its own backend never depends on
+        # it, so an unreadable root cannot fail that profile's launch. When
+        # inheritance is needed, an unreadable root is a loud error rather
+        # than a silently dropped sandbox choice.
+        root_path = _hermes_home() / "config.yaml"
+        root_config = root_path.read_text(encoding="utf-8") if root_path.exists() else None
+        existing_config = _hermes_inherit_terminal(existing_config, root_config)
     config_changed = _write_if_changed(
         config_path,
         _hermes_merged_config_yaml(
@@ -11911,6 +12112,7 @@ def _sync_hermes_profile(
                 api_key=api_key,
                 workspace_path=workspace_path,
                 reasoning_effort=reasoning_effort,
+                vision=vision,
             ),
         ),
     )
@@ -12215,15 +12417,26 @@ def _quickstart_pi_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_pi_models_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=api_key,
-            context_window=context_window,
-            vision=vision_enabled,
-        )
+        try:
+            payload["config_write"] = write_pi_models_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=api_key,
+                context_window=context_window,
+                vision=vision_enabled,
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("Pi", exc)) from exc
     return payload
+
+
+def _client_config_refusal(client: str, exc: Exception) -> str:
+    """Plain message for a client config MTPLX could not read: the file was
+    left exactly as it was and nothing was written."""
+
+    detail = str(exc).rstrip(".")
+    return f"{client} config left unchanged: {detail}. Fix or move that file, then try again."
 
 
 def _model_vision_enabled(model_ref: str) -> bool:
@@ -12397,6 +12610,7 @@ def _quickstart_opencode_payload(
         top_k=int(getattr(args, "top_k", 20)),
         reasoning_effort=reasoning_effort,
         reasoning_effort_levels=reasoning_effort_levels,
+        vision=_model_vision_enabled(str(getattr(args, "model", ""))),
     )
     payload = {
         "integration": "opencode",
@@ -12461,19 +12675,23 @@ def _quickstart_opencode_payload(
         ],
     }
     if write_config:
-        payload["config_write"] = write_opencode_config(
-            base_url=base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            context_window=context_window,
-            output_limit=output_limit,
-            enable_thinking=enable_thinking,
-            top_p=float(getattr(args, "top_p", 0.95)),
-            top_k=int(getattr(args, "top_k", 20)),
-            reasoning_effort=reasoning_effort,
-            reasoning_effort_levels=reasoning_effort_levels,
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                context_window=context_window,
+                output_limit=output_limit,
+                enable_thinking=enable_thinking,
+                top_p=float(getattr(args, "top_p", 0.95)),
+                top_k=int(getattr(args, "top_k", 20)),
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_levels=reasoning_effort_levels,
+                vision=_model_vision_enabled(str(getattr(args, "model", ""))),
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     return payload
 
 
@@ -12634,6 +12852,7 @@ def _quickstart_hermes_payload(
             api_key=api_key,
             workspace_path=workspace_path,
             reasoning_effort=_hermes_client_reasoning_effort(args),
+            vision=_model_vision_enabled(str(getattr(args, "model", ""))),
         )
     return payload
 
@@ -12659,7 +12878,7 @@ def _quickstart_print_pi_handoff(
     backup_path = config_write.get("backup_path")
     _quickstart_line(f"      Pi config: {config_path}")
     if backup_path:
-        _quickstart_line(f"      Backed up unreadable old Pi config: {backup_path}")
+        _quickstart_line(f"      Previous Pi config kept at: {backup_path}")
     _quickstart_line(f"      Pi model: {pi.get('model_ref')}")
     _quickstart_line(f"      Loading model: {runtime_model}")
     _quickstart_line("      Keep this terminal open for the MTPLX server.")
@@ -12701,9 +12920,7 @@ def _quickstart_print_opencode_handoff(
     _quickstart_line(f"      OpenCode config: {config_path}")
     _quickstart_line("      MTPLX client header: x-mtplx-client=opencode")
     if backup_path:
-        _quickstart_line(
-            f"      Backed up unreadable old OpenCode config: {backup_path}"
-        )
+        _quickstart_line(f"      Previous OpenCode config kept at: {backup_path}")
     _quickstart_line(f"      OpenCode model: {opencode.get('model_ref')}")
     _quickstart_line(f"      API base URL: {opencode.get('api_base_url')}")
     _quickstart_line(
@@ -12919,6 +13136,11 @@ def _with_server_policy_args(target: Any, source: Any) -> Any:
         ("default_presence_penalty", 0.0),
         ("default_frequency_penalty", 0.0),
         ("paged_kv_quantization", "off"),
+        # None = "the flag was not given", so the child falls back to
+        # MTPLX_NGRAM_PREWARM / the default. Forwarding it as True here would
+        # make every `mtplx start` overrule a shell-set value.
+        ("ngram_prewarm", None),
+        ("ngram_prewarm_order", None),
         ("tool_prompt_mode", "hybrid"),
         ("chat_template_profile", "local_qwen36"),
         ("chat_template_path", None),
@@ -13373,25 +13595,52 @@ def _quickstart_autoselect_busy_port(
 ) -> None:
     """Auto-bump a default port held by a non-MTPLX app.
 
-    Only fires for spawning targets when the user did not pass ``--port``.
-    A healthy MTPLX daemon on the port is left alone: the downstream
-    "MTPLX is already running" reuse path attaches to it instead of
-    spawning a duplicate.
+    Only fires for spawning targets, and only for a port the user did not
+    choose. A healthy MTPLX daemon on the port is left alone: the
+    downstream "MTPLX is already running" reuse path attaches to it
+    instead of spawning a duplicate.
+
+    Issue #409 (reporter kmei3560) closed two holes here:
+
+    1. A STOPPING MTPLX server keeps its listener while it drains but
+       stops answering /health first, so the probe read our own process
+       as another app and bumped. Every stop/start cycle moved the port.
+       Fixed by settling the classification over a bounded window before
+       believing "foreign".
+    2. A port the user CONFIGURED must never be silently relocated. The
+       CLI already honored that for --port; the app's persisted port now
+       counts as configured too, so an app user who pinned 1234 keeps
+       1234 and gets actionable copy instead of a silent 1235.
     """
 
-    if target not in _QUICKSTART_SPAWNING_TARGETS or "port" in cli_flags:
+    if target not in _QUICKSTART_SPAWNING_TARGETS:
         return
     host = str(getattr(args, "host", "127.0.0.1"))
     port = int(getattr(args, "port", 8000))
     try:
         from mtplx.daemon_client import (
             PORT_FOREIGN,
+            app_configured_port,
             classify_port_occupant,
             find_free_port,
+            port_busy_advice,
+            wait_for_port_settle,
         )
 
+        configured = "port" in cli_flags or port == app_configured_port()
         occupant = classify_port_occupant(host, port)
+        if occupant.kind == PORT_FOREIGN:
+            # Give our own drain the few seconds it needs before treating
+            # the listener as a stranger's.
+            occupant = wait_for_port_settle(host, port)
         if occupant.kind != PORT_FOREIGN:
+            return
+        if configured:
+            for line in port_busy_advice(occupant, port=port):
+                _quickstart_line(line)
+            _quickstart_line(
+                f"Keeping the configured port {port} (never moved silently)."
+            )
             return
         free_port = find_free_port(host, port + 1)
     except Exception:
@@ -13573,8 +13822,16 @@ def _quickstart_run_terminal_chat_body(
         args, _public_model_id_for_args(args, str(runtime_model))
     )
     profile = get_profile(_resolved_default_profile_name(args))
-    apply_profile_env(profile.name)
+    reasoning_codec = reasoning_policy_for_model(
+        model_ref=runtime_model, inspection=inspection
+    )
     generation_mode = _generation_mode_from_args(args)
+    apply_profile_env(
+        profile.name,
+        runtime_env_overrides=_in_process_runtime_env_overrides(
+            args, runtime_model, generation_mode=generation_mode
+        ),
+    )
     draft_lm_head = (
         _model_draft_lm_head_spec(inspection, profile)
         if getattr(args, "load_mtp", True) is not False
@@ -13717,8 +13974,22 @@ def _quickstart_run_terminal_chat_body(
             _quickstart_line()
             _print_stats_line(_quickstart_stats_line(payload))
         if record_history:
+            from mtplx.reasoning_codecs import split_reasoning_text
+
+            # Generation starts inside the template's thinking block. Store
+            # its two channels separately, as the server does: feeding raw
+            # `thought</think>answer` back as content nests it after an empty
+            # thinking block in Qwen 3.8 and corrupts the next turn's history.
+            parts = split_reasoning_text(
+                text,
+                parser=reasoning_codec.parser,
+                thinking_enabled=_reasoning_mode(args) != "off",
+            )
+            assistant = {"role": "assistant", "content": parts.content}
+            if parts.reasoning:
+                assistant["reasoning_content"] = parts.reasoning
             history.append({"role": "user", "content": prompt})
-            history.append({"role": "assistant", "content": text})
+            history.append(assistant)
         failures = [row for row in payload["validations"] if not row.get("passed")]
         if failures and quality_gate:
             _quickstart_line(
@@ -14273,7 +14544,7 @@ def cmd_quickstart_public(args: Any) -> int:
                     "selected model" if download_model == model else "verified default"
                 )
             except ValueError:
-                download_model = select_default_model().hf_model
+                download_model = _select_default_model_or_exit().hf_model
                 label = "verified default"
             answer = (
                 input(
@@ -14599,6 +14870,7 @@ def cmd_integrate_public(args: Any) -> int:
     elif action == "opencode":
         from mtplx.opencode import (
             build_opencode_provider_config,
+            opencode_config_path,
             write_opencode_config,
         )
 
@@ -14610,7 +14882,7 @@ def cmd_integrate_public(args: Any) -> int:
             "base_url": api_base_url,
             "api_base_url": api_base_url,
             "model_id": model_id,
-            "config_path": "~/.config/opencode/opencode.json",
+            "config_path": str(opencode_config_path()),
             "server_command": (
                 f"mtplx quickstart --profile {_resolved_default_profile_name(args)} --host {args.host} --port {args.port} "
                 f"{api_key_suffix}--reasoning auto --no-stats-footer"
@@ -14625,6 +14897,7 @@ def cmd_integrate_public(args: Any) -> int:
                     else "mtplx-local"
                 ),
                 enable_thinking=reasoning_policy.supported,
+                vision=_model_vision_enabled(str(getattr(args, "model", "") or model_id)),
                 reasoning_effort=reasoning_policy.default_effort,
                 reasoning_effort_levels=(
                     tuple(reasoning_policy.effort_levels)
@@ -14644,19 +14917,23 @@ def cmd_integrate_public(args: Any) -> int:
         # and OpenCode failed with ProviderModelNotFoundError surfaced as
         # "Unexpected server error" (found live wiring Flash-Next, 2026-08-27).
         # Write through the same merge-preserving writer the app flow uses.
-        payload["config_write"] = write_opencode_config(
-            base_url=api_base_url,
-            model_id=model_id,
-            model_name=f"MTPLX {model_id}",
-            api_key=getattr(args, "api_key", None),
-            enable_thinking=reasoning_policy.supported,
-            reasoning_effort=reasoning_policy.default_effort,
-            reasoning_effort_levels=(
-                tuple(reasoning_policy.effort_levels)
-                if reasoning_policy.supported
-                else None
-            ),
-        )
+        try:
+            payload["config_write"] = write_opencode_config(
+                base_url=api_base_url,
+                model_id=model_id,
+                model_name=f"MTPLX {model_id}",
+                api_key=getattr(args, "api_key", None),
+                enable_thinking=reasoning_policy.supported,
+                vision=_model_vision_enabled(str(getattr(args, "model", "") or model_id)),
+                reasoning_effort=reasoning_policy.default_effort,
+                reasoning_effort_levels=(
+                    tuple(reasoning_policy.effort_levels)
+                    if reasoning_policy.supported
+                    else None
+                ),
+            )
+        except (InvalidConfigFile, OSError) as exc:
+            raise SystemExit(_client_config_refusal("OpenCode", exc)) from exc
     elif action == "swival":
         from mtplx.swival import (
             build_swival_command,
@@ -14718,8 +14995,13 @@ def cmd_integrate_public(args: Any) -> int:
                 print("Docker:")
                 print(f"  {_shell_join(payload['docker_command_argv'])}")
         elif action == "opencode":
+            config_write = payload.get("config_write")
+            if not isinstance(config_write, dict):
+                config_write = {}
             print("OpenCode:")
-            print("  Config path: ~/.config/opencode/opencode.json")
+            print(f"  Config path: {config_write.get('config_path') or payload['config_path']}")
+            if config_write.get("backup_path"):
+                print(f"  Previous config kept at: {config_write['backup_path']}")
             print("  Provider: mtplx")
             print("  Reasoning: controlled by MTPLX server settings")
         elif action == "swival":
@@ -15368,9 +15650,23 @@ def cmd_model_public(args: Any) -> int:
         return _cmd_model_qa_architectures(args)
     if args.model_action != "publish-check":
         raise SystemExit(f"unknown model action: {args.model_action}")
+    from mtplx.metadata_scrub import scrub_json_documents
+
     staging = Path(args.staging_dir)
     manifest_path = staging / "MTPLX_PUBLISH_MANIFEST.json"
     runtime_contract_path = staging / "mtplx_runtime.json"
+    # A staging tree exists to be uploaded, so nothing in it may name this
+    # machine. Forge stamps the paths it read into the runtime contract;
+    # --scrub rewrites the leaking documents in place, otherwise they block.
+    leaking = scrub_json_documents(staging) if staging.exists() else []
+    scrubbed_in_place: list[str] = []
+    if leaking and bool(getattr(args, "scrub", False)):
+        for document in leaking:
+            tmp = staging / f".{document.name}.{os.getpid()}.tmp"
+            tmp.write_bytes(document.payload)
+            os.replace(tmp, staging / document.name)
+            scrubbed_in_place.append(document.name)
+        leaking = []
     symlinks = (
         [str(path) for path in staging.iterdir() if path.is_symlink()]
         if staging.exists()
@@ -15392,6 +15688,7 @@ def cmd_model_public(args: Any) -> int:
         "runtime_contract_exists": runtime_contract_path.exists(),
         "no_symlinks": not symlinks,
         "repo_id_explicit": bool(args.repo_id or (manifest or {}).get("repo_id")),
+        "no_local_paths": not leaking,
         "inspect_verified": bool(
             inspection
             and (inspection.get("compatibility") or {}).get("tier") == "verified"
@@ -15410,6 +15707,8 @@ def cmd_model_public(args: Any) -> int:
         "size_bytes": (manifest or {}).get("size_bytes"),
         "weight_size_bytes": (manifest or {}).get("weight_size_bytes"),
         "uploaded": (manifest or {}).get("upload_policy", {}).get("uploaded"),
+        "local_paths": {document.name: list(document.leaks) for document in leaking},
+        "scrubbed": scrubbed_in_place,
         "gates": gates,
         "passed": all(gates.values()),
     }
@@ -15440,12 +15739,22 @@ def cmd_config_public(args: Any) -> int:
             "config set key must be one of: " + ", ".join(CONFIG_VALUE_KEYS)
         )
     value = str(args.value).strip()
+    # Every conversion below rejects a bad value with one plain line. A value
+    # that gets past here is written verbatim and re-read on every later
+    # command, so a traceback here would also mean a config file the rest of
+    # the CLI has to degrade around.
     if key == "profile":
-        value = resolve_profile_name(value)
+        try:
+            value = resolve_profile_name(value)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
     if key == "thermal_control" and value not in {"auto", "none"}:
         raise SystemExit("thermal_control must be auto or none")
     if key == "paged_kv_quantization":
-        value = normalize_paged_kv_quantization(value)
+        try:
+            value = normalize_paged_kv_quantization(value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
     if key == "scheduler_mode":
         # Single source of truth: the SchedulerMode enum (also feeds the CLI
         # choices), so `mtplx config set` can never trail a new server mode.
@@ -15488,11 +15797,17 @@ def cmd_config_public(args: Any) -> int:
         "context_window",
         "top_k",
     }:
-        value = int(value)
+        try:
+            value = int(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a whole number, got {value!r}") from None
         if value < 1:
             raise SystemExit(f"{key} must be >= 1")
     if key in {"batch_wait_ms", "temperature", "top_p"}:
-        value = float(value)
+        try:
+            value = float(value)
+        except ValueError:
+            raise SystemExit(f"{key} must be a number, got {value!r}") from None
     if key in {"experimental_mtp_cohorts", "ram_session_block_prefix_restore"}:
         value = _parse_config_bool(value, key=key)
     values[key] = value

@@ -36,8 +36,8 @@ struct PlanStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Review the build",
-            subtitle: "Defaults are picked for your Mac. Open Advanced if you want to tweak.",
+            title: tr("Review the build"),
+            subtitle: tr("Defaults are picked for your Mac. Open Advanced if you want to tweak."),
             step: .plan,
             symbol: "checklist",
             symbolTint: Brand.typeBody,
@@ -67,7 +67,7 @@ struct PlanStage: View {
             }
         } footer: {
             ForgePrimaryButton(
-                "Start build",
+                tr("Start build"),
                 icon: "hammer.fill",
                 isEnabled: orchestrator.state.canAdvance && !modelNameCollisionDetected
             ) {
@@ -75,20 +75,20 @@ struct PlanStage: View {
             }
         }
         .confirmationDialog(
-            "Build a model while one is running?",
+            tr("Build a model while one is running?"),
             isPresented: $pendingDaemonConfirm,
             titleVisibility: .visible
         ) {
-            Button("Unload the model and build", role: .destructive) {
+            Button(tr("Unload the model and build"), role: .destructive) {
                 pauseDaemonAndForge()
             }
-            Button("Build anyway (memory may run tight)") {
+            Button(tr("Build anyway (memory may run tight)")) {
                 syncModelNameToState()
                 orchestrator.startBuild()
             }
-            Button("Cancel", role: .cancel) {}
+            Button(tr("Cancel"), role: .cancel) {}
         } message: {
-            Text("Building a model and running one share the same memory. Unloading the running model first is safer.")
+            Text(tr("Building a model and running one share the same memory. Unloading the running model first is safer."))
         }
     }
 
@@ -119,7 +119,7 @@ struct PlanStage: View {
     @ViewBuilder
     private var sourceRow: some View {
         if let probe = orchestrator.state.sourceProbe {
-            section(title: "Source") {
+            section(title: tr("Source")) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(probe.hfRepo)
                         .font(.system(size: 12, design: .monospaced))
@@ -127,7 +127,7 @@ struct PlanStage: View {
                     HStack(spacing: 6) {
                         chip(text: sourceFormatLabel(probe.sourceFormat))
                         if probe.hasMtpWeights {
-                            chip(text: "MTP weights", systemImage: "rays")
+                            chip(text: tr("MTP weights"), systemImage: "rays")
                         }
                         if let bytes = probe.estimatedSizeBytes, bytes > 0 {
                             chip(text: formatGiB(Double(bytes) / 1_073_741_824.0))
@@ -145,10 +145,10 @@ struct PlanStage: View {
 
     @ViewBuilder
     private var modelNameRow: some View {
-        section(title: "Name") {
+        section(title: tr("Name")) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    TextField("Model name", text: $modelNameEdit)
+                    TextField(tr("Model name"), text: $modelNameEdit)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Brand.typeHi)
@@ -167,7 +167,7 @@ struct PlanStage: View {
                             Capsule(style: .continuous)
                                 .fill(Brand.typeBody)
                         )
-                        .accessibilityLabel("MTPLX suffix locked")
+                        .accessibilityLabel(tr("MTPLX suffix locked"))
                 }
                 Text(modelPathPreview)
                     .font(.caption2)
@@ -189,14 +189,14 @@ struct PlanStage: View {
                 .foregroundStyle(Brand.warning)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 4) {
-                Text("A model with this name already exists")
+                Text(tr("A model with this name already exists"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
-                Text("Pick the next available name so Forge does not collide with an existing build.")
+                Text(tr("Pick the next available name so Forge does not collide with an existing build."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Use \(nextAvailableBaseName())") {
+                Button(tr("Use %@", nextAvailableBaseName())) {
                     modelNameEdit = nextAvailableBaseName()
                     syncModelNameToState()
                 }
@@ -220,17 +220,17 @@ struct PlanStage: View {
 
     @ViewBuilder
     private var feasibilityRow: some View {
-        section(title: "Hardware fit") {
+        section(title: tr("Hardware fit")) {
             VStack(alignment: .leading, spacing: 6) {
                 if let verdict = feasibility {
                     feasibilityChip(verdict: verdict)
                 } else {
-                    Text("Detecting hardware…")
+                    Text(tr("Detecting hardware…"))
                         .font(.caption)
                         .foregroundStyle(Brand.typeTertiary)
                 }
                 if let hw = orchestrator.state.hardware {
-                    Text("\(hw.chipName) · \(Int(hw.unifiedMemoryGiB)) GB unified memory")
+                    Text(tr("%@ · %lld GB unified memory", hw.chipName, Int(hw.unifiedMemoryGiB)))
                         .font(.caption2)
                         .foregroundStyle(Brand.typeTertiary)
                 }
@@ -242,13 +242,13 @@ struct PlanStage: View {
         let (text, color, icon): (String, Color, String)
         switch verdict {
         case .recommended:
-            text = "Recommended for this Mac"; color = Brand.success; icon = "checkmark.circle.fill"
+            text = tr("Recommended for this Mac"); color = Brand.success; icon = "checkmark.circle.fill"
         case .tightFit:
-            text = "Tight fit — may swap under long context"; color = Brand.warning; icon = "exclamationmark.triangle.fill"
+            text = tr("Tight fit — may swap under long context"); color = Brand.warning; icon = "exclamationmark.triangle.fill"
         case .insufficientMemory(let needs):
-            text = String(format: "Insufficient memory — needs ~%.0f GB safely", needs); color = Brand.danger; icon = "xmark.octagon.fill"
+            text = tr("Insufficient memory — needs ~%.0f GB safely", needs); color = Brand.danger; icon = "xmark.octagon.fill"
         case .insufficientDisk(let needs):
-            text = String(format: "Insufficient disk — needs ~%.0f GB free", needs); color = Brand.danger; icon = "internaldrive"
+            text = tr("Insufficient disk — needs ~%.0f GB free", needs); color = Brand.danger; icon = "internaldrive"
         }
         return HStack(spacing: 5) {
             Image(systemName: icon)
@@ -284,8 +284,8 @@ struct PlanStage: View {
                 bannerCard(
                     icon: "internaldrive",
                     tint: Brand.warning,
-                    headline: String(format: "Need ~%.0f GB free — you have %.0f GB", neededGiB, freeGiB),
-                    detail: "The build downloads the model and writes a converted copy. Free up disk space or pick a smaller model."
+                    headline: tr("Need ~%.0f GB free — you have %.0f GB", neededGiB, freeGiB),
+                    detail: tr("The build downloads the model and writes a converted copy. Free up disk space or pick a smaller model.")
                 )
             }
         }
@@ -297,8 +297,8 @@ struct PlanStage: View {
             bannerCard(
                 icon: "bolt.fill",
                 tint: Brand.accentChrome,
-                headline: "A model is loaded",
-                detail: "Building will share memory with the running model. You can unload it first when you start the build."
+                headline: tr("A model is loaded"),
+                detail: tr("Building will share memory with the running model. You can unload it first when you start the build.")
             )
         }
     }
@@ -346,16 +346,16 @@ struct PlanStage: View {
 
     @ViewBuilder
     private var recipeSummaryRow: some View {
-        section(title: "Recipe") {
+        section(title: tr("Recipe")) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    chip(text: "\(localRecipe.bodyBits)-bit body")
+                    chip(text: tr("%lld-bit body", localRecipe.bodyBits))
                     chip(text: "g\(localRecipe.bodyGroupSize)")
                     chip(text: localRecipe.bodyMode.rawValue)
                     chip(text: dtypeChipLabel(localRecipe.bodyDtype))
                     chip(text: mtpPolicyLabel(localRecipe.mtpPolicy), systemImage: "shield.lefthalf.filled")
                 }
-                Text("Picked automatically for your Mac. Open Advanced to override.")
+                Text(tr("Picked automatically for your Mac. Open Advanced to override."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeTertiary)
             }
@@ -376,7 +376,7 @@ struct PlanStage: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(showingAdvanced ? 90 : 0))
-                    Text("Advanced")
+                    Text(tr("Advanced"))
                         .font(.system(size: 11, weight: .semibold))
                         .tracking(0.4)
                 }
@@ -407,15 +407,15 @@ struct PlanStage: View {
                 .foregroundStyle(Brand.warning)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 6) {
-                Text("This setting kills the speed boost")
+                Text(tr("This setting kills the speed boost"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
-                Text("Compressing the speed-prediction weights drops accuracy from ~80% to ~10%. The built model won't actually run faster than the slow baseline.")
+                Text(tr("Compressing the speed-prediction weights drops accuracy from ~80% to ~10%. The built model won't actually run faster than the slow baseline."))
                     .font(.caption2)
                     .foregroundStyle(Brand.typeSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Toggle(isOn: ackBinding) {
-                    Text("I understand — build it anyway")
+                    Text(tr("I understand — build it anyway"))
                         .font(.caption)
                         .foregroundStyle(Brand.typeSecondary)
                 }
@@ -475,39 +475,39 @@ struct PlanStage: View {
 
     private func sourceFormatLabel(_ format: ForgeSourceFormat) -> String {
         switch format {
-        case .bf16Native: return "BF16 native"
-        case .mlxAffine: return "MLX-affine"
-        case .mlxAffineWithMtp: return "MLX-affine + MTP"
-        case .compressedTensorsAwq: return "compressed-tensors AWQ"
-        case .hfVllm: return "HF / vLLM"
-        case .unknown: return "Unknown"
+        case .bf16Native: return tr("BF16 native")
+        case .mlxAffine: return tr("MLX-affine")
+        case .mlxAffineWithMtp: return tr("MLX-affine + MTP")
+        case .compressedTensorsAwq: return tr("compressed-tensors AWQ")
+        case .hfVllm: return tr("HF / vLLM")
+        case .unknown: return tr("Unknown")
         }
     }
 
     private func mtpPolicyLabel(_ policy: ForgeRecipe.MTPPolicy) -> String {
         switch policy {
-        case .keepBf16: return "MTP: keep BF16"
-        case .extractFromSidecar: return "MTP: extract from sidecar"
-        case .requantize: return "MTP: requantise (degraded)"
+        case .keepBf16: return tr("MTP: keep BF16")
+        case .extractFromSidecar: return tr("MTP: extract from sidecar")
+        case .requantize: return tr("MTP: requantise (degraded)")
         }
     }
 
     private func dtypeChipLabel(_ dtype: ForgeRecipe.BodyDtype) -> String {
         switch dtype {
         case .auto:
-            return HardwareInspector.hostPrefersFP16Forge() ? "auto fp16" : "auto bf16"
+            return HardwareInspector.hostPrefersFP16Forge() ? tr("auto fp16") : tr("auto bf16")
         case .bf16: return "bf16"
         case .fp16: return "fp16"
         }
     }
 
     private func formatGiB(_ gib: Double) -> String {
-        String(format: "%.1f GB", gib)
+        tr("%.1f GB", gib)
     }
 
     private func loadModelNameFromState() {
         let base = ForgeBrandInfo.baseName(fromBrandedName: orchestrator.state.brand.brandedName)
-        let fallback = orchestrator.state.sourceProbe.map { ForgeBrandInfo.defaultBaseName(sourceRepo: $0.hfRepo) } ?? "Model"
+        let fallback = orchestrator.state.sourceProbe.map { ForgeBrandInfo.defaultBaseName(sourceRepo: $0.hfRepo) } ?? tr("Model")
         let next = base.isEmpty ? fallback : base
         if modelNameEdit != next {
             modelNameEdit = next
@@ -529,7 +529,7 @@ struct PlanStage: View {
     }
 
     private var modelPathPreview: String {
-        "Forge will save ~/Documents/MTPLX/models/\(finalBrandedName)/"
+        tr("Forge will save ~/Documents/MTPLX/models/%@/", finalBrandedName)
     }
 
     private var expandedModelPath: String {
@@ -543,7 +543,7 @@ struct PlanStage: View {
     private func nextAvailableBaseName() -> String {
         let base = ForgeBrandInfo.sanitizedBaseName(
             modelNameEdit,
-            fallback: orchestrator.state.sourceProbe.map { ForgeBrandInfo.defaultBaseName(sourceRepo: $0.hfRepo) } ?? "Model"
+            fallback: orchestrator.state.sourceProbe.map { ForgeBrandInfo.defaultBaseName(sourceRepo: $0.hfRepo) } ?? tr("Model")
         )
         for i in 1...20 {
             let candidateBase = "\(base)-\(i)"
@@ -574,16 +574,16 @@ private struct RecipeAdvancedEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            row(label: "Body bits") {
+            row(label: tr("Body bits")) {
                 Picker("", selection: bitsBinding) {
                     ForEach(bitsOptions, id: \.self) { v in
-                        Text("\(v)-bit").tag(v)
+                        Text(tr("%lld-bit", v)).tag(v)
                     }
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 320)
             }
-            row(label: "Group size") {
+            row(label: tr("Group size")) {
                 Picker("", selection: groupBinding) {
                     ForEach(groupSizeOptions, id: \.self) { v in
                         Text("g\(v)").tag(v)
@@ -592,26 +592,26 @@ private struct RecipeAdvancedEditor: View {
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 220)
             }
-            row(label: "MTP policy") {
+            row(label: tr("MTP policy")) {
                 Picker("", selection: policyBinding) {
-                    Text("Keep BF16").tag(ForgeRecipe.MTPPolicy.keepBf16)
-                    Text("From sidecar").tag(ForgeRecipe.MTPPolicy.extractFromSidecar)
-                    Text("Requantise").tag(ForgeRecipe.MTPPolicy.requantize)
+                    Text(tr("Keep BF16")).tag(ForgeRecipe.MTPPolicy.keepBf16)
+                    Text(tr("From sidecar")).tag(ForgeRecipe.MTPPolicy.extractFromSidecar)
+                    Text(tr("Requantise")).tag(ForgeRecipe.MTPPolicy.requantize)
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 320)
             }
-            row(label: "Precision") {
+            row(label: tr("Precision")) {
                 VStack(alignment: .leading, spacing: 4) {
                     Picker("", selection: dtypeBinding) {
-                        Text(hostPrefersFP16 ? "Auto (FP16)" : "Auto (BF16)")
+                        Text(hostPrefersFP16 ? tr("Auto (FP16)") : tr("Auto (BF16)"))
                             .tag(ForgeRecipe.BodyDtype.auto)
                         Text("BF16").tag(ForgeRecipe.BodyDtype.bf16)
                         Text("FP16").tag(ForgeRecipe.BodyDtype.fp16)
                     }
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 320)
-                    Text("Dtype for the non-quantized weights. FP16 prompt-processes faster on M1/M2 Macs, which have no native BF16.")
+                    Text(tr("Dtype for the non-quantized weights. FP16 prompt-processes faster on M1/M2 Macs, which have no native BF16."))
                         .font(.caption2)
                         .foregroundStyle(Brand.typeTertiary)
                         .fixedSize(horizontal: false, vertical: true)

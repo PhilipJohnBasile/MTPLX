@@ -14,8 +14,8 @@ struct BrandStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Review your model",
-            subtitle: "The MTPLX suffix is locked and this build has passed the speed gate.",
+            title: tr("Review your model"),
+            subtitle: tr("The MTPLX suffix is locked and this build has passed the speed gate."),
             step: .brand,
             symbol: "checkmark.seal.fill",
             symbolTint: Brand.success,
@@ -30,7 +30,7 @@ struct BrandStage: View {
             }
         } footer: {
             ForgePrimaryButton(
-                "Continue",
+                tr("Continue"),
                 icon: "arrow.right",
                 isEnabled: canContinue
             ) {
@@ -42,7 +42,7 @@ struct BrandStage: View {
     @ViewBuilder
     private var nameSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("MODEL NAME")
+            sectionHeader(tr("MODEL NAME"))
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Text(displayName)
@@ -51,7 +51,7 @@ struct BrandStage: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
-                    Text("Ready")
+                    Text(tr("Ready"))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(Brand.success)
                 }
@@ -76,12 +76,12 @@ struct BrandStage: View {
     @ViewBuilder
     private var runtimeMetadataPreview: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionHeader("MTPLX_RUNTIME.JSON PREVIEW")
+            sectionHeader(tr("MTPLX_RUNTIME.JSON PREVIEW"))
             Group {
                 if let metadata = orchestrator.brandedRuntimeMetadata {
                     RuntimeMetadataTable(json: metadata.rawJSON)
                 } else {
-                    Text("Forge will register the model only after the verified MTPLX runtime metadata is available.")
+                    Text(tr("Forge will register the model only after the verified MTPLX runtime metadata is available."))
                         .font(.caption2)
                         .foregroundStyle(Brand.typeTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -117,9 +117,9 @@ struct BrandStage: View {
 
     private var localPathPreview: String {
         if let path = orchestrator.completedLocalPath, !path.isEmpty {
-            return "Saved to \(path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))"
+            return tr("Saved to %@", path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
         }
-        return "Saved as \(displayName)"
+        return tr("Saved as %@", displayName)
     }
 
     private var canContinue: Bool {

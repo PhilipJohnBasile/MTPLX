@@ -371,6 +371,12 @@ public struct MutableSettings: Codable, Equatable, Sendable {
     public var reasoning: String?
     public var reasoningEffort: String?
     public var prefillChunkTokens: Int?
+    /// `none` or a policy name (`expected_value`). Live-mutable like
+    /// `depth`; the daemon builds its depth policy per request.
+    public var adaptivePolicy: String?
+    /// False for a family that owns its own draft policy; the app hides
+    /// the Adaptive depth toggle then.
+    public var adaptiveDepthSupported: Bool?
 
     public init(
         generationMode: String? = nil,
@@ -396,7 +402,9 @@ public struct MutableSettings: Codable, Equatable, Sendable {
         reasoningParser: String? = nil,
         reasoning: String? = nil,
         reasoningEffort: String? = nil,
-        prefillChunkTokens: Int? = nil
+        prefillChunkTokens: Int? = nil,
+        adaptivePolicy: String? = nil,
+        adaptiveDepthSupported: Bool? = nil
     ) {
         self.generationMode = generationMode
         self.depth = depth
@@ -422,6 +430,8 @@ public struct MutableSettings: Codable, Equatable, Sendable {
         self.reasoning = reasoning
         self.reasoningEffort = reasoningEffort
         self.prefillChunkTokens = prefillChunkTokens
+        self.adaptivePolicy = adaptivePolicy
+        self.adaptiveDepthSupported = adaptiveDepthSupported
     }
 
     enum CodingKeys: String, CodingKey {
@@ -449,6 +459,8 @@ public struct MutableSettings: Codable, Equatable, Sendable {
         case reasoning
         case reasoningEffort = "reasoning_effort"
         case prefillChunkTokens = "prefill_chunk_tokens"
+        case adaptivePolicy = "adaptive_policy"
+        case adaptiveDepthSupported = "adaptive_depth_supported"
     }
 }
 
@@ -562,6 +574,15 @@ public struct InFlightRequest: Codable, Equatable, Sendable, Identifiable {
     public var lastProgress: DynamicObject
     public var prefillState: PrefillState?
     public var cancelled: Bool
+
+    /// The attention context grows during generation, even though the input
+    /// prompt stays fixed. Read this request's counters, never another turn's.
+    public var contextTokens: Int? {
+        guard let promptTokens else { return nil }
+        let generated = lastProgress.values["completion_tokens"]?.intValue
+            ?? lastProgress.values["generated_tokens"]?.intValue ?? 0
+        return max(0, promptTokens) + max(0, generated)
+    }
 
     enum CodingKeys: String, CodingKey {
         case requestId = "request_id"
@@ -715,7 +736,7 @@ public struct MetricsLatest: Codable, Equatable, Sendable {
                     : verifyCallsFallback
                 guard drafted > 0 else { return nil }
                 return AcceptanceCounterRow(
-                    label: "D\(idx + 1)",
+                    label: tr("D%lld", idx + 1),
                     accepted: acceptedCount,
                     drafted: drafted
                 )
@@ -729,7 +750,7 @@ public struct MetricsLatest: Codable, Equatable, Sendable {
 
         return [
             AcceptanceCounterRow(
-                label: "ALL",
+                label: tr("ALL"),
                 accepted: accepted,
                 drafted: drafted
             ),
@@ -1393,6 +1414,7 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
     public var inFlight: [InFlightRequest]
     public var latest: MetricsLatest?
     public var recent: [MetricsLatest]
+    public var prefillRates: PrefillRateSummary?
     public var rolling: RollingMetrics
     public var lifetime: LifetimeSnapshot
     public var sessions: SessionsPayload
@@ -1435,6 +1457,7 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
         case inFlight = "in_flight"
         case latest
         case recent
+        case prefillRates = "prefill_rates"
         case rolling
         case lifetime
         case sessions
@@ -1471,6 +1494,25 @@ public struct MemoryGuardEvent: Codable, Equatable, Sendable {
     /// clears the allocator cache even at zero evictions).
     public var didShed: Bool {
         (bankEntriesEvicted ?? 0) > 0 || action == "allocation_failure_shed"
+    }
+}
+
+/// The same measured chunks as the live prefill dial, aggregated by compute
+/// time. Waiting, cache restore and MTP history have separate latency receipts.
+public struct PrefillRateSummary: Codable, Equatable, Sendable {
+    public var tokens: Int
+    public var computeTimeS: Double
+    public var peakTokS: Double?
+
+    public var averageTokS: Double? {
+        guard tokens > 0, computeTimeS.isFinite, computeTimeS > 0 else { return nil }
+        return Double(tokens) / computeTimeS
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tokens
+        case computeTimeS = "compute_time_s"
+        case peakTokS = "peak_tok_s"
     }
 }
 

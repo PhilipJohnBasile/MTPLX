@@ -66,6 +66,12 @@ public struct ModelDownloader: Sendable {
     private let pollInterval: TimeInterval
     private let stalledThreshold: TimeInterval
     private let executableOverride: URL?
+    /// Test seam invoked at the top of `stream`'s build closure, on the
+    /// thread that builds the stream. The closure runs synchronously and
+    /// does blocking work (runtime resolution, directory walks, spawning
+    /// the CLI), so callers must build the stream off the main actor;
+    /// this lets a test prove they do. Production leaves it nil.
+    var streamBuildObserver: (@Sendable () -> Void)?
 
     // MARK: Public surface
 
@@ -99,6 +105,7 @@ public struct ModelDownloader: Sendable {
         sizeProbePath: String? = nil
     ) -> AsyncStream<DownloadEvent> {
         AsyncStream { continuation in
+            self.streamBuildObserver?()
             let destination = sizeProbePath.map { URL(fileURLWithPath: $0) }
                 ?? self.cachedModelPath(for: repo)
             // Make the destination dir up-front so the first poll returns 0
@@ -122,7 +129,7 @@ public struct ModelDownloader: Sendable {
                     ))
                 }
                 continuation.yield(.status(
-                    message: "MTPLX runtime ready",
+                    message: tr("MTPLX runtime ready"),
                     bytesOnDisk: Self.recursiveSize(of: destination),
                     totalBytes: totalBytes,
                     path: destination.path
@@ -195,7 +202,7 @@ public struct ModelDownloader: Sendable {
                 return
             }
             continuation.yield(.status(
-                message: "Resolving files",
+                message: tr("Resolving files"),
                 bytesOnDisk: Self.recursiveSize(of: destination),
                 totalBytes: totalBytes,
                 path: destination.path
@@ -322,10 +329,10 @@ public struct ModelDownloader: Sendable {
 
         switch event {
         case "resolving":
-            return [.status(message: "Resolving files", bytesOnDisk: bytes, totalBytes: total, path: path)]
+            return [.status(message: tr("Resolving files"), bytesOnDisk: bytes, totalBytes: total, path: path)]
         case "start", "resume":
             return [
-                .status(message: "Downloading", bytesOnDisk: bytes ?? 0, totalBytes: total, path: path),
+                .status(message: tr("Downloading"), bytesOnDisk: bytes ?? 0, totalBytes: total, path: path),
             ]
         case "progress":
             let rate = double(payload["rate_bps"]) ?? 0
@@ -350,7 +357,7 @@ public struct ModelDownloader: Sendable {
             }
             return events
         case "verifying":
-            return [.status(message: "Verifying model files", bytesOnDisk: bytes, totalBytes: total, path: path)]
+            return [.status(message: tr("Verifying model files"), bytesOnDisk: bytes, totalBytes: total, path: path)]
         case "complete":
             state.markTerminal()
             return [.complete(bytesOnDisk: bytes ?? Self.recursiveSize(of: destination), path: path)]
@@ -363,14 +370,14 @@ public struct ModelDownloader: Sendable {
             let message = (payload["message"] as? String)
                 ?? (payload["detail"] as? String)
                 ?? (payload["error"] as? String)
-                ?? "Download failed."
+                ?? tr("Download failed.")
             return [.failed(exitCode: nil, stderrTail: message)]
         case "failed", "error":
             state.markTerminal()
             let message = (payload["message"] as? String)
                 ?? (payload["detail"] as? String)
                 ?? (payload["error"] as? String)
-                ?? "Download failed."
+                ?? tr("Download failed.")
             return [.failed(exitCode: nil, stderrTail: message)]
         case "cancelled", "interrupted":
             state.markTerminal()
@@ -430,18 +437,28 @@ public struct ModelDownloader: Sendable {
             .appendingPathComponent("models", isDirectory: true)
     }
 
-    /// Recursive sum of all regular file sizes under `url`. Returns 0
-    /// if the directory doesn't exist yet (first poll, before HF
-    /// writes anything).
+    /// Recursive sum of the regular file sizes under `url`, used only as
+    /// the display fallback when the CLI emits no structured progress.
+    /// Returns 0 if the directory doesn't exist yet (first poll, before
+    /// anything is written). The hub cache's `.cache` staging tree is
+    /// skipped: older pulls left multi-GB `*.incomplete` partials there
+    /// that no download consumes. The structured path counts the
+    /// download manifest instead.
     public static func recursiveSize(of url: URL) -> Int64 {
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey],
             options: []
         ) else { return 0 }
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
-            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            let values = try? fileURL.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey, .isDirectoryKey]
+            )
+            if values?.isDirectory == true, fileURL.lastPathComponent == ".cache" {
+                enumerator.skipDescendants()
+                continue
+            }
             if values?.isRegularFile == true {
                 total += Int64(values?.fileSize ?? 0)
             }

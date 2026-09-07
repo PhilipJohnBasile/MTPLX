@@ -25,6 +25,7 @@ ICNS_SOURCE="$ROOT/Resources/AppIcon.icns"
 THERMALFORGE_SOURCE="${MTPLX_THERMALFORGE_BINARY:-$HOME/.mtplx/bin/thermalforge}"
 REQUIRE_THERMALFORGE_RESOURCE="${MTPLX_REQUIRE_THERMALFORGE_RESOURCE:-0}"
 RUNTIME_WHEEL_SOURCE="${MTPLX_RUNTIME_WHEEL:-}"
+NATIVE_RUNTIME_WHEEL_SOURCE="${MTPLX_NATIVE_RUNTIME_WHEEL:-}"
 REQUIRE_RUNTIME_WHEEL_RESOURCE="${MTPLX_REQUIRE_RUNTIME_WHEEL_RESOURCE:-0}"
 BUNDLED_PYTHON_DIR="${MTPLX_BUNDLED_PYTHON_DIR:-}"
 REQUIRE_BUNDLED_PYTHON_RESOURCE="${MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE:-0}"
@@ -228,20 +229,29 @@ kill_tree() {
   /bin/kill "$pid" >/dev/null 2>&1 || true
 }
 
-while read -r pid; do
-  [[ -n "$pid" ]] || continue
-  kill_tree "$pid"
-done < <(app_pids)
-while read -r pid; do
-  [[ -n "$pid" ]] || continue
-  kill_tree "$pid"
-done < <(misdirected_app_pids)
-for _ in {1..50}; do
-  if [[ -z "$(app_pids)" && -z "$(misdirected_app_pids)" ]]; then
-    break
+# Packaging must not interrupt an app the user is currently using. Refuse
+# to overwrite the exact running target; a separate bundle can be built safely.
+if [[ "$NO_LAUNCH" == "1" ]]; then
+  if [[ -n "$(app_pids)" ]]; then
+    echo "error: target bundle is running; set MTPLX_APP_BUNDLE_DIR to a separate output path" >&2
+    exit 1
   fi
-  sleep 0.1
-done
+else
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    kill_tree "$pid"
+  done < <(app_pids)
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    kill_tree "$pid"
+  done < <(misdirected_app_pids)
+  for _ in {1..50}; do
+    if [[ -z "$(app_pids)" && -z "$(misdirected_app_pids)" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+fi
 
 swift build -c "$BUILD_CONFIG" --product "$APP_NAME"
 
@@ -285,6 +295,26 @@ if [[ -d "$ROOT/Sources/MTPLXAppCore/Resources/StepAdapters" ]]; then
     "$ROOT/Sources/MTPLXAppCore/Resources/StepAdapters" \
     "$BUNDLE_DIR/Contents/Resources/StepAdapters"
 fi
+# Localized string tables. Each <code>.lproj is copied to the standard
+# Contents/Resources/<code>.lproj location so Bundle.main resolves it at
+# runtime (L10n opens each lproj as its own bundle). The list mirrors
+# AppLanguage.allCases (a unit test keeps them in sync); a missing or
+# unparsable table fails the build so a broken language never ships.
+LOCALIZATION_SOURCE="$ROOT/Sources/MTPLXAppCore/Resources/Localization"
+LOCALIZATION_CODES=(en zh-Hans es hi ar pt-BR fr ru ja de ko id)
+for code in "${LOCALIZATION_CODES[@]}"; do
+  table="$LOCALIZATION_SOURCE/$code.lproj/Localizable.strings"
+  if [[ ! -f "$table" ]]; then
+    echo "error: localization table missing for $code at $table" >&2
+    exit 1
+  fi
+  if ! /usr/bin/plutil -lint "$table" >/dev/null 2>&1; then
+    echo "error: localization table for $code does not parse: $table" >&2
+    exit 1
+  fi
+  mkdir -p "$BUNDLE_DIR/Contents/Resources/$code.lproj"
+  /usr/bin/ditto --norsrc "$table" "$BUNDLE_DIR/Contents/Resources/$code.lproj/Localizable.strings"
+done
 if [[ -f "$THERMALFORGE_SOURCE" ]]; then
   mkdir -p "$BUNDLE_DIR/Contents/Resources/ThermalForge"
   /usr/bin/ditto --norsrc \
@@ -307,6 +337,17 @@ elif [[ "$REQUIRE_RUNTIME_WHEEL_RESOURCE" == "1" ]]; then
   echo "error: runtime wheel resource missing at $RUNTIME_WHEEL_SOURCE" >&2
   echo "set MTPLX_RUNTIME_WHEEL to the mtplx release wheel before building the release app" >&2
   exit 1
+fi
+if [[ -n "$NATIVE_RUNTIME_WHEEL_SOURCE" ]]; then
+  if [[ ! -f "$NATIVE_RUNTIME_WHEEL_SOURCE" || ! -f "$RUNTIME_WHEEL_SOURCE" ]]; then
+    echo "error: native runtime requires both native and pure fallback wheels" >&2
+    exit 1
+  fi
+  mkdir -p "$BUNDLE_DIR/Contents/Resources/Runtime/Native"
+  /usr/bin/ditto --norsrc "$NATIVE_RUNTIME_WHEEL_SOURCE" \
+    "$BUNDLE_DIR/Contents/Resources/Runtime/Native/$(basename "$NATIVE_RUNTIME_WHEEL_SOURCE")"
+  /usr/bin/ditto --norsrc "$REPO_ROOT/scripts/select_runtime_wheel.py" \
+    "$BUNDLE_DIR/Contents/Resources/Runtime/select_runtime_wheel.py"
 fi
 # Bundled Python interpreter (python-build-standalone install_only_stripped
 # tree). With it in Contents/Resources/PythonRuntime, the app can build its
@@ -346,6 +387,8 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
   <key>CFBundleExecutable</key>
   <string>$APP_NAME</string>
   <key>CFBundleIconFile</key>
@@ -354,6 +397,10 @@ cat > "$BUNDLE_DIR/Contents/Info.plist" <<PLIST
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_IDENTIFIER</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+$(for code in "${LOCALIZATION_CODES[@]}"; do printf '    <string>%s</string>\n' "$code"; done)
+  </array>
   <key>CFBundleName</key>
   <string>$BUNDLE_DISPLAY_NAME</string>
   <key>CFBundlePackageType</key>

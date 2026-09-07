@@ -25,8 +25,8 @@ struct ForgeTab: View {
             if orchestrator.backendUnavailable {
                 EmptyStateView(
                     symbol: "hammer.fill",
-                    title: "Forge backend not available",
-                    message: "Install or update MTPLX 1.x to use the model-creation surface. The rest of the app still works while Forge is offline."
+                    title: tr("Forge backend not available"),
+                    message: tr("Install or update MTPLX 1.x to use the model-creation surface. The rest of the app still works while Forge is offline.")
                 )
             } else {
                 VStack(spacing: 0) {
@@ -110,7 +110,7 @@ private struct OrphanResumeBanner: View {
 
     private var summaryRow: some View {
         let count = runs.count
-        let phase = runs.first?.lastWrittenPhase?.rawValue.capitalized ?? "in progress"
+        let phase = runs.first?.lastWrittenPhase?.rawValue.capitalized ?? tr("in progress")
         return HStack(spacing: 10) {
             Button {
                 expanded.toggle()
@@ -119,13 +119,13 @@ private struct OrphanResumeBanner: View {
                     Image(systemName: "arrow.uturn.backward.circle.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Brand.warning)
-                    Text(count == 1 ? "1 unfinished forge" : "\(count) unfinished forges")
+                    Text(count == 1 ? tr("1 unfinished forge") : tr("%lld unfinished forges", count))
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(Brand.typeHi)
                     Text("·")
                         .font(.system(size: 11))
                         .foregroundStyle(Brand.typeTertiary)
-                    Text("last step \(phase.lowercased())")
+                    Text(tr("last step %@", phase.lowercased()))
                         .font(.system(size: 11))
                         .foregroundStyle(Brand.typeSecondary)
                         .lineLimit(1)
@@ -139,7 +139,7 @@ private struct OrphanResumeBanner: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(expanded ? "Hide the unfinished forges" : "Show the unfinished forges with per-build actions")
+            .help(expanded ? tr("Hide the unfinished forges") : tr("Show the unfinished forges with per-build actions"))
 
             Spacer(minLength: 8)
 
@@ -147,7 +147,7 @@ private struct OrphanResumeBanner: View {
                 Button {
                     onReveal(first)
                 } label: {
-                    Text("Diagnostics")
+                    Text(tr("Diagnostics"))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Brand.typeBody)
                         .padding(.horizontal, 8)
@@ -155,13 +155,13 @@ private struct OrphanResumeBanner: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Open diagnostics for the latest unfinished build")
+                .help(tr("Open diagnostics for the latest unfinished build"))
             }
 
             Button {
                 onDiscardAll()
             } label: {
-                Text(count == 1 ? "Discard" : "Discard all")
+                Text(count == 1 ? tr("Discard") : tr("Discard all"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Brand.danger)
                     .padding(.horizontal, 8)
@@ -169,7 +169,7 @@ private struct OrphanResumeBanner: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Remove every leftover file from interrupted builds")
+            .help(tr("Remove every leftover file from interrupted builds"))
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 7)
@@ -186,7 +186,7 @@ private struct OrphanResumeBanner: View {
                 )
             }
             HStack(spacing: 8) {
-                Text("Resume from a partial build isn't supported yet — Forge starts each build from scratch.")
+                Text(tr("Resume from a partial build isn't supported yet — Forge starts each build from scratch."))
                     .font(.system(size: 10.5))
                     .foregroundStyle(Brand.typeTertiary)
                 Spacer(minLength: 0)
@@ -232,7 +232,7 @@ private struct OrphanRunRow: View {
                 HStack(spacing: 4) {
                     Image(systemName: "folder")
                         .font(.system(size: 9, weight: .semibold))
-                    Text("Diagnostics")
+                    Text(tr("Diagnostics"))
                         .font(.system(size: 10.5, weight: .semibold))
                 }
                 .foregroundStyle(Brand.typeBody)
@@ -245,8 +245,8 @@ private struct OrphanRunRow: View {
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .help("Open diagnostics for this partial build")
-            .accessibilityLabel("Open orphan diagnostics")
+            .help(tr("Open diagnostics for this partial build"))
+            .accessibilityLabel(tr("Open orphan diagnostics"))
             Button(action: onDiscard) {
                 Image(systemName: "trash")
                     .font(.system(size: 10, weight: .semibold))
@@ -256,14 +256,14 @@ private struct OrphanRunRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Delete this partial build")
-            .accessibilityLabel("Delete orphan build")
+            .help(tr("Delete this partial build"))
+            .accessibilityLabel(tr("Delete orphan build"))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.025))
+                .fill(Brand.wash.opacity(0.025))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

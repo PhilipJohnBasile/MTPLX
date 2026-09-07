@@ -364,8 +364,11 @@ _MPP_SCORE_SOURCE = r"""
     mpp::tensor_ops::matmul2d<descriptor, metal::execution_simdgroup> matmul;
     auto left = matmul.get_left_input_cooperative_tensor<InT, InT, float>();
     auto right = matmul.get_right_input_cooperative_tensor<InT, InT, float>();
+    // macOS 27 MPP SDK rejects address-space-qualified template operands
+    // (issue #404); strip them like mlx's steel/gemm/nax.h does.
     auto accumulator = matmul.get_destination_cooperative_tensor<
-        decltype(left), decltype(right), float>();
+        metal::remove_addrspace_t<decltype(left)>,
+        metal::remove_addrspace_t<decltype(right)>, float>();
 
     constexpr short ELEMENTS_PER_FRAGMENT = 8;
     constexpr short ELEMENT_COLUMNS = 4;

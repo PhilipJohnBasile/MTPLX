@@ -17,15 +17,23 @@ function bandColor(value: number): string {
 
 export function TPSGauge() {
   const liveTokS = useDashboardStore((s) => s.liveTokS);
+  const lastTokS = useDashboardStore((s) => s.latest?.decode_tok_s ?? null);
   const rolling = useDashboardStore((s) => s.rolling);
   const prefill = usePrimaryActivePrefill();
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const targetValue = Math.max(0, liveTokS ?? 0);
+  // Live while a request is decoding; otherwise the last finished request's
+  // speed is shown held, in a muted arc, and labelled as such. The needle
+  // never pretends an idle server is generating.
+  const isLive = typeof liveTokS === "number";
+  const heldTokS = isLive ? liveTokS : lastTokS;
+  const targetValue = Math.max(0, heldTokS ?? 0);
   const motionValue = useMotionValue(targetValue);
   const springValue = useSpring(motionValue, { stiffness: 140, damping: 22, mass: 0.6 });
   const displayValue = useTransform(springValue, (v) => v.toFixed(1));
+  const isLiveRef = useRef(isLive);
+  isLiveRef.current = isLive;
 
   useEffect(() => {
     motionValue.set(targetValue);
@@ -86,18 +94,22 @@ export function TPSGauge() {
         );
       });
 
-      // Value arc
+      // Value arc: full colour and glow only while decoding; a held value
+      // draws dimmed with no glow so an idle page reads as idle.
+      const live = isLiveRef.current;
       const ratio = Math.min(1, value / SCALE_MAX);
       const valueAngle = startAngle + sweep * ratio;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, startAngle, valueAngle);
       ctx.strokeStyle = bandColor(value);
+      ctx.globalAlpha = live ? 1 : 0.35;
       ctx.shadowColor = bandColor(value);
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = live ? 16 : 0;
       ctx.lineWidth = 14;
       ctx.lineCap = "round";
       ctx.stroke();
       ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
 
       // Center reading
       ctx.fillStyle = "rgba(255,255,255,0.7)";
@@ -116,9 +128,11 @@ export function TPSGauge() {
     return () => cancelAnimationFrame(raf);
   }, [springValue]);
 
-  const max = rolling?.max ?? rolling?.sticky_all_time_max ?? 0;
-  const min = rolling?.min ?? 0;
-  const peak = rolling?.sticky_all_time_max ?? 0;
+  // Window min/max are null when nothing ran in the window; show a dash
+  // rather than borrowing the all-time figure under a different label.
+  const max = rolling?.max ?? null;
+  const min = rolling?.min ?? null;
+  const peak = rolling?.sticky_all_time_max ?? null;
 
   return (
     <Card
@@ -126,9 +140,11 @@ export function TPSGauge() {
       subtitle={
         prefill.active
           ? `prefilling ${prefill.pct.toFixed(0)}% — decode not started`
-          : liveTokS
+          : isLive
             ? `current ${fmtTokS(liveTokS)} tok/s`
-            : "waiting for generation"
+            : heldTokS !== null
+              ? `idle · last request ${fmtTokS(heldTokS)} tok/s`
+              : "waiting for generation"
       }
     >
       <div className="relative grid place-items-center min-h-[220px]">
@@ -147,11 +163,15 @@ export function TPSGauge() {
               </>
             ) : (
               <>
-                <motion.span className="block text-[44px] font-semibold tabular-nums leading-none text-[var(--text-primary)]">
+                <motion.span
+                  className={`block text-[44px] font-semibold tabular-nums leading-none ${
+                    isLive ? "text-[var(--text-primary)]" : "text-[var(--text-muted)]"
+                  }`}
+                >
                   {displayValue}
                 </motion.span>
                 <span className="text-xs text-[var(--text-muted)] mt-1 block">
-                  live · spring-tuned
+                  {isLive ? "live" : heldTokS !== null ? "last request" : "idle"}
                 </span>
               </>
             )}

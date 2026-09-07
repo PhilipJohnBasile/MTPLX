@@ -36,8 +36,8 @@ struct ChatHeaderView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(sidebarCollapsed ? "Show sidebar" : "Hide sidebar")
-            .accessibilityLabel("Toggle sidebar")
+            .help(sidebarCollapsed ? tr("Show sidebar") : tr("Hide sidebar"))
+            .accessibilityLabel(tr("Toggle sidebar"))
 
             Text(title)
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -90,15 +90,15 @@ struct ChatHeaderView: View {
     }
 
     private var title: String {
-        viewModel.current?.title ?? "Chat"
+        viewModel.current?.title ?? tr("Chat")
     }
 
     @ViewBuilder
     private var tpsChip: some View {
         if case .live(let value) = displayedReading {
-            chipLabel(text: "\(Format.tps(value)) tok/s", accent: Brand.accentChrome)
+            chipLabel(text: tr("%@ tok/s", Format.tps(value)), accent: Brand.accentChrome)
         } else if case .held(let value, _) = displayedReading {
-            chipLabel(text: "\(Format.tps(value)) tok/s · last", accent: Brand.typeSecondary)
+            chipLabel(text: tr("%@ tok/s · last", Format.tps(value)), accent: Brand.typeSecondary)
         } else {
             EmptyView()
         }
@@ -148,7 +148,7 @@ struct ChatHeaderView: View {
         .padding(.vertical, 4)
         .background(
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.04))
+                .fill(Brand.wash.opacity(0.04))
                 .overlay(
                     Capsule(style: .continuous)
                         .stroke(Brand.separator, lineWidth: 0.5)

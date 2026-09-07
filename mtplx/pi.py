@@ -10,19 +10,21 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from mtplx.jsonc import load_config_file
 
 PI_PROVIDER_ID = "mtplx"
 PI_LOCAL_API_KEY = "mtplx-local"
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
 PI_DEFAULT_CONTEXT_WINDOW = 131_072
 PI_DEFAULT_MAX_TOKENS: int | None = None
-# Pi serializes a 16,384 output ceiling for models whose metadata omits
-# maxTokens. The extension strips exactly this value; any other cap is a
-# deliberate client choice and must reach MTPLX intact.
+# Legacy Pi fallback when model metadata omits maxTokens. Configured models
+# pass their advertised value to the bridge instead of assuming this value.
 PI_INJECTED_DEFAULT_MAX_TOKENS = 16_384
 PI_REQUEST_POLICY_EXTENSION_NAME = "mtplx-request-policy.ts"
 # Connection identity MTPLX must keep correct for the integration to work at
@@ -61,11 +63,12 @@ def build_pi_request_policy_extension_source(
     model_id: str,
     *,
     uncapped: bool,
+    injected_max_tokens: int = PI_INJECTED_DEFAULT_MAX_TOKENS,
 ) -> str:
     """Build Pi's request/session bridge for the configured MTPLX model.
 
-    Pi defaults omitted ``maxTokens`` metadata to 16,384 and serializes that
-    default on every request. The extension removes only Pi's generated output
+    Pi serializes the model's advertised ``maxTokens`` (or its legacy default)
+    on every request. The extension removes only Pi's generated output
     ceiling for the exact MTPLX model while leaving explicit user caps alone.
     It also gives MTPLX Pi's real session id so prompt-cache reuse is stable.
     """
@@ -78,7 +81,7 @@ def build_pi_request_policy_extension_source(
 // the mtplx identifiers below are gone from it.
 const mtplxModelID = {model_literal};
 const mtplxUncapped = {uncapped_literal};
-const mtplxPiInjectedDefaultMaxTokens = {PI_INJECTED_DEFAULT_MAX_TOKENS};
+const mtplxPiInjectedDefaultMaxTokens = {int(injected_max_tokens)};
 
 export default function (pi: any) {{
   pi.on("before_provider_headers", (event: any, ctx: any) => {{
@@ -91,6 +94,8 @@ export default function (pi: any) {{
     event.headers["x-mtplx-session-id"] = String(
       ctx.sessionManager.getSessionId(),
     );
+    const leaf = ctx.sessionManager.getLeafId();
+    if (leaf) event.headers["x-mtplx-client-entry-id"] = String(leaf);
   }});
 
   pi.on("before_provider_request", (event: any) => {{
@@ -120,12 +125,15 @@ def write_pi_request_policy_extension(
     *,
     model_id: str,
     uncapped: bool,
+    injected_max_tokens: int = PI_INJECTED_DEFAULT_MAX_TOKENS,
     path: str | Path | None = None,
 ) -> Path:
     """Install the small Pi bridge owned by the MTPLX provider config."""
 
     extension_path = pi_request_policy_extension_path(path)
-    source = build_pi_request_policy_extension_source(model_id, uncapped=uncapped)
+    source = build_pi_request_policy_extension_source(
+        model_id, uncapped=uncapped, injected_max_tokens=injected_max_tokens,
+    )
     if extension_path.exists():
         try:
             current = extension_path.read_text(encoding="utf-8")
@@ -271,14 +279,13 @@ def build_pi_provider_config(
     }
 
 
-def _backup_invalid_config(path: Path) -> Path:
+def _unique_backup(path: Path, reason: str) -> Path:
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = path.with_name(f"{path.name}.invalid-{stamp}.bak")
+    backup = path.with_name(f"{path.name}.{reason}-{stamp}.bak")
     counter = 1
     while backup.exists():
-        backup = path.with_name(f"{path.name}.invalid-{stamp}-{counter}.bak")
+        backup = path.with_name(f"{path.name}.{reason}-{stamp}-{counter}.bak")
         counter += 1
-    path.replace(backup)
     return backup
 
 
@@ -435,12 +442,11 @@ def write_pi_models_config(
     backup_path: Path | None = None
     existing: dict[str, Any] | None = None
     if config_path.exists():
-        try:
-            parsed = json.loads(config_path.read_text(encoding="utf-8"))
-            existing = parsed if isinstance(parsed, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            backup_path = _backup_invalid_config(config_path)
-            existing = {}
+        # Pi strips // comments and trailing commas from models.json, so MTPLX
+        # reads it the same way. A file that still does not parse is the
+        # user's to fix: InvalidConfigFile propagates and nothing here is
+        # moved or written.
+        existing, _existing_text = load_config_file(config_path)
 
     provider_config = build_pi_provider_config(
         base_url=base_url,
@@ -457,7 +463,14 @@ def write_pi_models_config(
         provider_id=provider_id,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    # Unchanged content leaves the file exactly as the user wrote it. A
+    # rewrite keeps the previous file next to it and reports the copy's path.
+    written = existing is None or merged != existing
+    if written:
+        if existing is not None:
+            backup_path = _unique_backup(config_path, "before-mtplx")
+            shutil.copy2(config_path, backup_path)
+        config_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     try:
         config_path.chmod(0o600)
     except OSError:
@@ -465,6 +478,7 @@ def write_pi_models_config(
     request_policy_extension_path = write_pi_request_policy_extension(
         model_id=model_id,
         uncapped=max_tokens is None,
+        injected_max_tokens=int(provider_config["models"][0]["maxTokens"]),
         path=config_path,
     )
     return {
@@ -481,5 +495,5 @@ def write_pi_models_config(
         "no_hidden_max_tokens": max_tokens is None,
         "request_policy_extension_path": str(request_policy_extension_path),
         "uncapped_request_policy": max_tokens is None,
-        "written": True,
+        "written": written,
     }

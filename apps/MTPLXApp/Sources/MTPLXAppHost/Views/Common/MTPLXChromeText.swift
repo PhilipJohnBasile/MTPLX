@@ -4,7 +4,7 @@ import SwiftUI
 //
 // Paints text (or any small graphic) with the polished-steel
 // `chromeAccent` 5-stop gradient plus a 1px-equivalent specular
-// highlight slice at the top of the glyphs and a soft white ambient
+// highlight slice at the top of the glyphs and a soft ambient
 // halo. Reads as light catching curved metal — what the wordmark PNG
 // shows but produced live for the < 14pt fallback, the gauge hero TPS
 // number, and the ALL-TIME MAX badge.
@@ -25,7 +25,7 @@ struct MTPLXChromeText: ViewModifier {
                     .offset(y: -0.5)
                     .allowsHitTesting(false)
             }
-            .shadow(color: Color.white.opacity(0.06), radius: 8)
+            .shadow(color: Brand.chromeHalo, radius: 8)
     }
 }
 

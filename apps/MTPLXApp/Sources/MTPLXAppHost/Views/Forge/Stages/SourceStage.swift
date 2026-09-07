@@ -39,8 +39,8 @@ struct SourceStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Pick a model",
-            subtitle: "Paste a Hugging Face link. We'll check the model before downloading anything.",
+            title: tr("Pick a model"),
+            subtitle: tr("Paste a Hugging Face link. We'll check the model before downloading anything."),
             step: .source,
             symbol: "link.circle.fill",
             symbolTint: Brand.accentChrome
@@ -74,7 +74,7 @@ struct SourceStage: View {
             }
         } footer: {
             ForgePrimaryButton(
-                "Next",
+                tr("Next"),
                 isEnabled: orchestrator.state.canAdvance
             ) {
                 orchestrator.goNext()
@@ -120,7 +120,7 @@ struct SourceStage: View {
                             .controlSize(.mini)
                             .tint(Brand.bgOuter)
                     }
-                    Text(orchestrator.isProbing ? "Checking…" : "Check")
+                    Text(orchestrator.isProbing ? tr("Checking…") : tr("Check"))
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .padding(.horizontal, 14)
@@ -144,7 +144,7 @@ struct SourceStage: View {
 
     @ViewBuilder
     private var helperLine: some View {
-        Text("Example: `cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit` or `https://huggingface.co/Qwen/Qwen3.6-27B`.")
+        Text(markdown: tr("Example: `cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit` or `https://huggingface.co/Qwen/Qwen3.6-27B`."))
             .font(.caption2)
             .foregroundStyle(Brand.typeTertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -212,7 +212,7 @@ private struct ForgeSourceProbeRow: View {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 11, weight: .semibold))
-                            Text("Install instead")
+                            Text(tr("Install instead"))
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .padding(.horizontal, 12)
@@ -257,7 +257,7 @@ private struct ForgeSourceProbeRow: View {
         HStack(spacing: 6) {
             chip(text: sourceFormatLabel)
             if probe.hasMtpWeights {
-                chip(text: "MTP weights", systemImage: "rays")
+                chip(text: tr("MTP weights"), systemImage: "rays")
             }
             if let bytes = probe.estimatedSizeBytes, bytes > 0 {
                 chip(text: formatGiB(bytes))
@@ -285,17 +285,17 @@ private struct ForgeSourceProbeRow: View {
 
     private var sourceFormatLabel: String {
         switch probe.sourceFormat {
-        case .bf16Native: return "BF16 native"
-        case .mlxAffine: return "MLX-affine"
-        case .mlxAffineWithMtp: return "MLX-affine + MTP"
-        case .compressedTensorsAwq: return "compressed-tensors AWQ"
-        case .hfVllm: return "HF / vLLM"
-        case .unknown: return "Unknown format"
+        case .bf16Native: return tr("BF16 native")
+        case .mlxAffine: return tr("MLX-affine")
+        case .mlxAffineWithMtp: return tr("MLX-affine + MTP")
+        case .compressedTensorsAwq: return tr("compressed-tensors AWQ")
+        case .hfVllm: return tr("HF / vLLM")
+        case .unknown: return tr("Unknown format")
         }
     }
 
     private func formatGiB(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        return String(format: "%.1f GB", gib)
+        return tr("%.1f GB", gib)
     }
 }

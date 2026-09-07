@@ -644,7 +644,7 @@ def test_from_scalar_cache_degenerate_seed():
 
 
 # ---------------------------------------------------------------------------
-# Item 3 (fable-main review): host-side monotone capacity bound -- update_and_fetch
+# Item 3 (PR #391-main review): host-side monotone capacity bound -- update_and_fetch
 # performs ZERO device syncs when a host bound is seeded (a device-valued
 # write_start must not block the pipelined fold-in forward).
 # ---------------------------------------------------------------------------

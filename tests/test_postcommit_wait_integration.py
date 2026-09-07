@@ -554,3 +554,47 @@ def test_running_idle_postcommit_finishes_within_foreground_grace(
         assert outcomes[-1] == {"stored": True, "mode": "retokenized_history"}
     finally:
         scheduler.shutdown(wait=True, cancel_futures=True)
+
+
+def test_pending_record_seeds_token_count_from_frontier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#432: the record must know its size at ADMISSION, not only after the
+    job renders the conversation.
+
+    `update_token_count` fires inside `_store_retokenized_history_snapshot`,
+    after the whole history has been re-encoded, which on a 200k session is
+    many seconds in. The interleaved foreign request that decides whether
+    this commit survives arrives ~1s in, so size-keyed policy (marathon
+    protection) read 0 for exactly the commits it exists to protect. The
+    session's committed frontier is a sound lower bound available now.
+    """
+    state = _fake_state_with_executor()
+    barrier = threading.Event()
+
+    def fake_store(*_args, **_kwargs):
+        barrier.wait(timeout=2.0)
+        return {
+            "stored": True,
+            "mode": "retokenized_history",
+            "prefix_len": 1,
+            "nbytes": 1,
+        }
+
+    monkeypatch.setattr(openai, "_store_retokenized_history_snapshot", fake_store)
+    monkeypatch.setattr(openai, "_server_console_enabled", lambda _state: True)
+
+    session = EngineSession("sess-seed")
+    session.committed_token_ids = tuple(range(60_000))
+
+    openai._schedule_idle_postcommit_snapshot(
+        state, **_kwargs(session_id="sess-seed", session=session)
+    )
+
+    admin = session.pending_postcommit_admin()
+    assert admin is not None
+    assert admin["token_count"] == 60_000
+
+    barrier.set()
+    session.wait_for_pending_postcommit(timeout_s=2.0)
+    state.generation_executor.shutdown(wait=True)

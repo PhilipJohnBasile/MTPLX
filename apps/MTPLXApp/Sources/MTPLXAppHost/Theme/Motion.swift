@@ -62,7 +62,7 @@ enum Motion {
     static let rowHoverSpring: Animation = .spring(response: 0.28, dampingFraction: 0.80)
 
     /// Background fill applied to a hovered row card.
-    static let rowHoverFill: Color = Color.white.opacity(0.05)
+    static let rowHoverFill: Color = Brand.wash.opacity(0.05)
 
     /// Shadow opacity applied to a hovered row card.
     static let rowHoverShadowOpacity: Double = 0.55

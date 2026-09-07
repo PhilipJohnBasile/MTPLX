@@ -89,12 +89,12 @@ public enum MTPLXRuntimeInstallKind: String, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .appOwned: return "App-managed"
-        case .homebrew: return "Homebrew"
-        case .sourceCheckout: return "Source checkout"
-        case .pipLike: return "Python"
-        case .custom: return "Custom"
-        case .missing: return "Missing"
+        case .appOwned: return tr("App-managed")
+        case .homebrew: return tr("Homebrew")
+        case .sourceCheckout: return tr("Source checkout")
+        case .pipLike: return tr("Python")
+        case .custom: return tr("Custom")
+        case .missing: return tr("Missing")
         }
     }
 }
@@ -139,9 +139,9 @@ public enum MTPLXRuntimeUpdateError: Error, LocalizedError, Equatable, Sendable 
     public var errorDescription: String? {
         switch self {
         case .manualUpdateRequired(let command):
-            return "This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: \(command)"
+            return tr("This MTPLX runtime is too old, but it is not managed by Homebrew. Update it manually, then press Retry: %@", command)
         case .homebrewRequired:
-            return "MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry."
+            return tr("MTPLX runtime is missing and Homebrew was not found. Install Homebrew from brew.sh, then press Retry.")
         }
     }
 }
@@ -149,19 +149,41 @@ public enum MTPLXRuntimeUpdateError: Error, LocalizedError, Equatable, Sendable 
 public struct MTPLXRuntimeUpdateService: Sendable {
     public static let defaultManifestURL = URL(string: "https://mtplx.com/releases/latest.json")!
 
+    /// The published manifest is advisory (it feeds the runtime status
+    /// card), so its fetch is allowed a few seconds and no more. A Mac
+    /// behind a captive portal or firewall must see the card say
+    /// "couldn't check", not sit on a request for a minute.
+    public static let manifestRequestTimeout: TimeInterval = 3
+
+    /// Ephemeral session for the manifest: no cache, no cookies, and both
+    /// the per-request and whole-resource timeouts bounded to
+    /// `manifestRequestTimeout` so a silent or unroutable host gives up
+    /// on time. Shared across service values; a session is meant to be
+    /// reused, and every fetch is a one-shot GET of one small file.
+    public static let manifestSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = manifestRequestTimeout
+        configuration.timeoutIntervalForResource = manifestRequestTimeout
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
     public var manifestURL: URL
     public var environment: [String: String]
+    public var session: URLSession
 
     public init(
         manifestURL: URL = Self.defaultManifestURL,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        session: URLSession = Self.manifestSession
     ) {
         self.manifestURL = manifestURL
         self.environment = environment
+        self.session = session
     }
 
     public func fetchManifest() async throws -> MTPLXReleaseManifest {
-        let (data, response) = try await URLSession.shared.data(from: manifestURL)
+        let (data, response) = try await session.data(from: manifestURL)
         if let http = response as? HTTPURLResponse,
            !(200..<300).contains(http.statusCode) {
             throw URLError(.badServerResponse)
@@ -178,65 +200,18 @@ public struct MTPLXRuntimeUpdateService: Sendable {
         return snapshot(manifest: manifest)
     }
 
+    /// The runtime a daemon launch runs on, decided from local state only:
+    /// the wheel this bundle ships and the app-owned venv installed from
+    /// it (a fast no-op when they already match, a reinstall when the app
+    /// moved ahead of the venv, and the version-floor check for a
+    /// user-managed CLI when the bundle ships no wheel). The published
+    /// manifest is never consulted here — Play, Restart and first launch
+    /// must not wait on the network, and the runtime card refreshes from
+    /// the manifest in the background instead. Blocking work (version
+    /// probe, pip install) runs on the caller's non-main executor because
+    /// this is a nonisolated async function.
     public func prepareRuntimeForLaunch() async throws -> URL {
-        let manifest = try? await fetchManifest()
-        guard let manifest else {
-            return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-        }
-
-        if let existing = try? MTPLXCommandBuilder.resolveInstalledExecutable(environment: environment) {
-            let kind = Self.installKind(for: existing, environment: environment)
-            if kind == .appOwned {
-                // The app-owned venv tracks the bundled wheel, not the
-                // published manifest: installOrUpdate is a fast no-op when
-                // the venv already satisfies the app's version floor and
-                // reinstalls from the wheel when the app moved ahead of it
-                // (e.g. right after a Sparkle update).
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            }
-            // Whenever this bundle ships a wheel, the daemon runtime is
-            // the app-owned venv, full stop. A user-managed CLI on PATH
-            // that happens to satisfy the manifest (a stale dev pip
-            // install reporting the release version, as on the founder's
-            // Mac Mini) is the user's tool, not the engine — its Python
-            // and dependency state are unknown. installOrUpdate is a
-            // fast no-op once the venv matches the bundled wheel.
-            if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            }
-            let version = Self.runtimeVersion(executableURL: existing, environment: environment)
-            let action = Self.action(
-                version: version,
-                installKind: kind,
-                manifest: manifest,
-                hasHomebrew: MTPLXCommandBuilder.resolveHomebrewExecutable(environment: environment) != nil
-            )
-            switch action {
-            case .updateBundledRequired:
-                return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-            case .updateHomebrewRequired:
-                if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                    return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-                }
-                return try MTPLXRuntimeBootstrapper(environment: environment).upgradeHomebrewRuntime()
-            case .manualUpdateRequired(let command):
-                // A stale pip/source CLI on PATH must never block the app
-                // when the bundled wheel can install an app-owned runtime
-                // beside it instead.
-                if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) != nil {
-                    return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
-                }
-                throw MTPLXRuntimeUpdateError.manualUpdateRequired(command: command)
-            default:
-                return existing
-            }
-        }
-
-        if MTPLXCommandBuilder.bundledRuntimeWheelPath(environment: environment) == nil,
-           MTPLXCommandBuilder.resolveHomebrewExecutable(environment: environment) == nil {
-            throw MTPLXRuntimeUpdateError.homebrewRequired
-        }
-        return try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
+        try MTPLXRuntimeBootstrapper(environment: environment).installOrUpdate()
     }
 
     public static func snapshot(
@@ -262,7 +237,7 @@ public struct MTPLXRuntimeUpdateService: Sendable {
                 minimumCLIVersion: manifest?.minimumCLIVersion,
                 recommendedCLIVersion: manifest?.recommendedCLIVersion,
                 action: action,
-                title: "Runtime missing",
+                title: tr("Runtime missing"),
                 detail: wheelAvailable
                     ? "MTPLX can install its bundled runtime automatically."
                     : (brewAvailable
@@ -408,13 +383,13 @@ public struct MTPLXRuntimeUpdateService: Sendable {
 
     private static func title(for action: MTPLXRuntimeUpdateAction) -> String {
         switch action {
-        case .useExisting: return "Runtime ready"
-        case .installHomebrew: return "Install runtime"
-        case .updateBundledRequired: return "Runtime update required"
-        case .updateHomebrewRequired: return "Runtime update required"
-        case .updateHomebrewRecommended: return "Runtime update available"
-        case .manualUpdateRequired: return "Manual runtime update required"
-        case .homebrewRequired: return "Homebrew required"
+        case .useExisting: return tr("Runtime ready")
+        case .installHomebrew: return tr("Install runtime")
+        case .updateBundledRequired: return tr("Runtime update required")
+        case .updateHomebrewRequired: return tr("Runtime update required")
+        case .updateHomebrewRecommended: return tr("Runtime update available")
+        case .manualUpdateRequired: return tr("Manual runtime update required")
+        case .homebrewRequired: return tr("Homebrew required")
         }
     }
 
@@ -426,21 +401,21 @@ public struct MTPLXRuntimeUpdateService: Sendable {
         switch action {
         case .useExisting:
             if manifest == nil {
-                return "Couldn't check the latest release, but the installed runtime is usable."
+                return tr("Couldn't check the latest release, but the installed runtime is usable.")
             }
-            return "App and runtime are compatible."
+            return tr("App and runtime are compatible.")
         case .installHomebrew:
-            return "MTPLX can install the command-line runtime with Homebrew."
+            return tr("MTPLX can install the command-line runtime with Homebrew.")
         case .updateBundledRequired:
-            return "MTPLX reinstalls its app-managed runtime from the bundled wheel automatically."
+            return tr("MTPLX reinstalls its app-managed runtime from the bundled wheel automatically.")
         case .updateHomebrewRequired:
-            return "The installed Homebrew runtime is below the compatibility floor."
+            return tr("The installed Homebrew runtime is below the compatibility floor.")
         case .updateHomebrewRecommended:
-            return "A newer Homebrew runtime is available."
+            return tr("A newer Homebrew runtime is available.")
         case .manualUpdateRequired(let command):
-            return "\(kind.displayName) runtime needs a manual update: \(command)"
+            return tr("%@ runtime needs a manual update: %@", kind.displayName, command)
         case .homebrewRequired:
-            return "Install Homebrew from brew.sh, then press Retry."
+            return tr("Install Homebrew from brew.sh, then press Retry.")
         }
     }
 

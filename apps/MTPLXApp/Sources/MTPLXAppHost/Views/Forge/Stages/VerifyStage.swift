@@ -25,8 +25,8 @@ struct VerifyStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Measuring real speed",
-            subtitle: "Running your new model on this Mac to see how fast it actually is.",
+            title: tr("Measuring real speed"),
+            subtitle: tr("Running your new model on this Mac to see how fast it actually is."),
             step: .verify,
             symbol: "checkmark.seal.fill",
             symbolTint: Brand.success
@@ -61,22 +61,22 @@ struct VerifyStage: View {
             heading: "Verify candidates",
             rows: [
                 ForgePhaseRow(
-                    label: "Baseline",
+                    label: tr("Baseline"),
                     state: candidateState(depth: 0),
                     detail: detail(for: 0)
                 ),
                 ForgePhaseRow(
-                    label: "Depth 1",
+                    label: tr("Depth 1"),
                     state: candidateState(depth: 1),
                     detail: detail(for: 1)
                 ),
                 ForgePhaseRow(
-                    label: "Depth 2",
+                    label: tr("Depth 2"),
                     state: candidateState(depth: 2),
                     detail: detail(for: 2)
                 ),
                 ForgePhaseRow(
-                    label: "Depth 3",
+                    label: tr("Depth 3"),
                     state: candidateState(depth: 3),
                     detail: detail(for: 3)
                 )
@@ -151,7 +151,7 @@ struct VerifyStage: View {
             }),
             bestDepth: winningDepth,
             multiplierVsAr: winningDepth == 0 ? 1.0 : multiplierVsAr,
-            verifiedOnHardware: orchestrator.state.hardware?.chipName ?? "Apple Silicon",
+            verifiedOnHardware: orchestrator.state.hardware?.chipName ?? tr("Apple Silicon"),
             sampler: ForgeSampler()
         )
         return AcceptanceRevealData.from(synthVerification)
@@ -167,7 +167,7 @@ struct VerifyStage: View {
                 Button {
                     openDiagnostics()
                 } label: {
-                    Label("Diagnostics", systemImage: "folder")
+                    Label(tr("Diagnostics"), systemImage: "folder")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Brand.typeBody)
                         .padding(.horizontal, 14)
@@ -189,7 +189,7 @@ struct VerifyStage: View {
             }
         } else if revealData != nil, !orchestrator.isBuilding, orchestrator.completedLocalPath != nil {
             ForgePrimaryButton(
-                "Continue",
+                tr("Continue"),
                 icon: "arrow.right",
                 isEnabled: orchestrator.state.hasSpeedWinningVerification
             ) {
@@ -197,7 +197,7 @@ struct VerifyStage: View {
             }
         } else {
             ForgePrimaryButton(
-                "Cancel build",
+                tr("Cancel build"),
                 icon: "xmark",
                 isEnabled: orchestrator.isBuilding
             ) {
@@ -224,7 +224,7 @@ struct VerifyStage: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Brand.warning)
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Converted, not accelerated")
+                    Text(tr("Converted, not accelerated"))
                         .font(.system(.title3, design: .rounded).weight(.semibold))
                         .foregroundStyle(Brand.typeHi)
                     Text(outcome.message)
@@ -242,7 +242,7 @@ struct VerifyStage: View {
                     .truncationMode(.middle)
                     .lineLimit(1)
             }
-            Text("No picker registration was made.")
+            Text(tr("No picker registration was made."))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Brand.typeBody)
         }
@@ -262,11 +262,11 @@ struct VerifyStage: View {
         VStack(spacing: 0) {
             ForEach(outcome.verifyRows.sorted(by: { $0.depth < $1.depth }), id: \.depth) { row in
                 HStack(spacing: 10) {
-                    Text(row.depth == 0 ? "Base" : "D\(row.depth)")
+                    Text(row.depth == 0 ? tr("Base") : tr("D%lld", row.depth))
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
                         .foregroundStyle(row.depth == 0 ? Brand.typeHi : Brand.warning)
                         .frame(width: 34, alignment: .leading)
-                    Text(String(format: "%.2f tok/s", row.tokS))
+                    Text(tr("%.2f tok/s", row.tokS))
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Brand.typeBody)
                         .frame(width: 96, alignment: .leading)
@@ -299,10 +299,10 @@ struct VerifyStage: View {
     }
 
     private func acceptanceText(_ row: ForgeVerifyRow) -> String {
-        guard row.depth > 0 else { return "baseline" }
-        guard !row.acceptanceByPosition.isEmpty else { return "accept n/a" }
+        guard row.depth > 0 else { return tr("baseline") }
+        guard !row.acceptanceByPosition.isEmpty else { return tr("accept n/a") }
         let parts = row.acceptanceByPosition.enumerated().map { index, value in
-            "p\(index + 1) \(Int((value * 100).rounded()))%"
+            tr("p%lld %lld%%", index + 1, Int((value * 100).rounded()))
         }
         return parts.joined(separator: " · ")
     }

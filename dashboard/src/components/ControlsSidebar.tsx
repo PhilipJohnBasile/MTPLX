@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Trash } from "lucide-react";
 import { api } from "../lib/api";
@@ -6,7 +6,9 @@ import type { MutableSettings } from "../lib/types";
 import { Card } from "./Card";
 import { useDashboardStore } from "../state/store";
 
-const MUTABLE_SETTINGS_KEYS: (keyof MutableSettings)[] = [
+type MutableKey = keyof MutableSettings;
+
+const MUTABLE_SETTINGS_KEYS: MutableKey[] = [
   "depth",
   "temperature",
   "top_p",
@@ -19,6 +21,7 @@ const MUTABLE_SETTINGS_KEYS: (keyof MutableSettings)[] = [
 ];
 
 const DEBOUNCE_MS = 250;
+const CHANGED_ON_SERVER_HINT_MS = 6000;
 
 export function ControlsSidebar() {
   return (
@@ -38,38 +41,105 @@ export function ControlsSidebar() {
 
 function DefaultsCard() {
   const settings = useDashboardStore((s) => s.settings);
+  // `draft` is what the controls show. Every key the user is not editing
+  // follows the server on each snapshot; only keys in `dirty` (edited here,
+  // not yet applied) are ever sent. Posting a full diff against the live
+  // settings used to write a stale draft back over values changed from the
+  // native app, the CLI or another tab.
   const [draft, setDraft] = useState<MutableSettings | null>(settings);
+  const [dirty, setDirty] = useState<ReadonlySet<MutableKey>>(() => new Set());
+  const [changedOnServer, setChangedOnServer] = useState<MutableKey[]>([]);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const mergeSettings = useDashboardStore((s) => s.mergeSettings);
   const queryClient = useQueryClient();
   const mutation = useMutation({
     mutationFn: (payload: Partial<MutableSettings>) => api.postSettings(payload),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // The response carries the server's settings after the write (with
+      // any clamping); adopt them now rather than waiting for the next
+      // snapshot, so the controls never snap back to the pre-write values.
+      const written: Partial<MutableSettings> = {};
+      MUTABLE_SETTINGS_KEYS.forEach((key) => {
+        if (key in res) (written as Record<string, unknown>)[key] = res[key];
+      });
+      mergeSettings(written);
       queryClient.invalidateQueries({ queryKey: ["snapshot"] });
     },
   });
   const [lastApplied, setLastApplied] = useState<Partial<MutableSettings> | null>(null);
 
   useEffect(() => {
-    if (settings) setDraft((prev) => prev ?? settings);
-  }, [settings]);
+    if (!settings) return;
+    const shown = draftRef.current;
+    if (!shown) {
+      setDraft(settings);
+      return;
+    }
+    // A key the user is not editing whose server value differs from what
+    // the controls show moved underneath us: follow the server and say so.
+    const moved = MUTABLE_SETTINGS_KEYS.filter(
+      (key) => !dirty.has(key) && shown[key] !== settings[key],
+    );
+    if (moved.length === 0) return;
+    setDraft((prev) => {
+      if (!prev) return settings;
+      const next = { ...prev };
+      moved.forEach((key) => {
+        (next as Record<string, unknown>)[key] = settings[key];
+      });
+      return next;
+    });
+    setChangedOnServer(moved);
+  }, [settings, dirty]);
 
   useEffect(() => {
-    if (!draft || !settings) return;
-    const diff: Partial<MutableSettings> = {};
-    // Diff ONLY the mutable keys. `draft` is seeded from the full settings
-    // GET payload at runtime, so Object.keys(draft) also yields the
-    // informational keys (object-valued ones differ by reference after every
-    // snapshot refresh) and the echo-back used to trip the server's
-    // all-or-nothing unknown_settings 400 — the 2026-07-02
-    // presence-penalty-persistence bug.
-    MUTABLE_SETTINGS_KEYS.forEach((key) => {
+    if (changedOnServer.length === 0) return;
+    const handle = window.setTimeout(() => setChangedOnServer([]), CHANGED_ON_SERVER_HINT_MS);
+    return () => window.clearTimeout(handle);
+  }, [changedOnServer]);
+
+  const edit = <K extends MutableKey>(key: K, value: MutableSettings[K]) => {
+    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setDirty((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!draft || !settings || dirty.size === 0) return;
+    // Send only the keys the user moved, and only the mutable ones: the
+    // draft carries the full settings payload, whose informational keys
+    // would trip the server's all-or-nothing unknown_settings 400.
+    const payload: Partial<MutableSettings> = {};
+    dirty.forEach((key) => {
       if (draft[key] !== settings[key]) {
-        (diff as Record<string, unknown>)[key] = draft[key];
+        (payload as Record<string, unknown>)[key] = draft[key];
       }
     });
-    if (Object.keys(diff).length === 0) return;
+    const keys = Object.keys(payload) as MutableKey[];
+    if (keys.length === 0) {
+      // Every edit landed back on the server's value; nothing is pending.
+      setDirty(new Set());
+      return;
+    }
     const handle = window.setTimeout(() => {
-      mutation.mutate(diff, {
-        onSuccess: (res) => setLastApplied(res.applied),
+      mutation.mutate(payload, {
+        onSuccess: (res) => {
+          setLastApplied(res.applied ?? payload);
+          // A key stays dirty if the user moved it again while the request
+          // was in flight; the next debounce sends the newer value.
+          setDirty((prev) => {
+            const next = new Set(prev);
+            keys.forEach((key) => {
+              if (draftRef.current?.[key] === payload[key]) next.delete(key);
+            });
+            return next;
+          });
+        },
       });
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
@@ -91,7 +161,9 @@ function DefaultsCard() {
       title="Defaults"
       subtitle="server-side defaults applied to every chat completion"
       action={
-        lastApplied ? (
+        mutation.isPending ? (
+          <span className="text-xs text-[var(--text-muted)]">applying…</span>
+        ) : lastApplied ? (
           <span className="text-xs text-[var(--text-muted)]">
             applied · {Object.keys(lastApplied).join(", ")}
           </span>
@@ -104,7 +176,7 @@ function DefaultsCard() {
           value={draft.depth}
           min={0}
           max={5}
-          onChange={(v) => setDraft({ ...draft, depth: v })}
+          onChange={(v) => edit("depth", v)}
         />
         <NumberField
           label="temperature"
@@ -112,7 +184,7 @@ function DefaultsCard() {
           min={0}
           max={2}
           step={0.05}
-          onChange={(v) => setDraft({ ...draft, temperature: v })}
+          onChange={(v) => edit("temperature", v)}
         />
         <NumberField
           label="top_p"
@@ -120,7 +192,7 @@ function DefaultsCard() {
           min={0}
           max={1}
           step={0.01}
-          onChange={(v) => setDraft({ ...draft, top_p: v })}
+          onChange={(v) => edit("top_p", v)}
         />
         <NumberField
           label="top_k"
@@ -128,7 +200,7 @@ function DefaultsCard() {
           min={0}
           max={2000}
           step={1}
-          onChange={(v) => setDraft({ ...draft, top_k: v })}
+          onChange={(v) => edit("top_k", v)}
         />
         <NumberField
           label="presence_penalty"
@@ -136,7 +208,7 @@ function DefaultsCard() {
           min={0}
           max={2}
           step={0.05}
-          onChange={(v) => setDraft({ ...draft, presence_penalty: v })}
+          onChange={(v) => edit("presence_penalty", v)}
           description="0 is exact (best for coding); 0.5-1.5 discourages repetition."
         />
         <NumberField
@@ -145,20 +217,25 @@ function DefaultsCard() {
           min={1}
           max={32}
           step={1}
-          onChange={(v) => setDraft({ ...draft, stream_interval: v })}
+          onChange={(v) => edit("stream_interval", v)}
         />
         <ToggleField
           label="enable_thinking"
           value={draft.enable_thinking}
-          onChange={(v) => setDraft({ ...draft, enable_thinking: v })}
+          onChange={(v) => edit("enable_thinking", v)}
           description="When on, requests default to including reasoning content."
         />
         <SelectField
           label="reasoning_parser"
           value={draft.reasoning_parser}
           options={["qwen3", "poolside_v1", "none"]}
-          onChange={(v) => setDraft({ ...draft, reasoning_parser: v })}
+          onChange={(v) => edit("reasoning_parser", v)}
         />
+        {changedOnServer.length > 0 ? (
+          <div className="text-xs text-[var(--accent-warm)]">
+            updated on the server: {changedOnServer.join(", ")}
+          </div>
+        ) : null}
         {mutation.isError ? (
           <div className="text-xs text-[var(--accent-hot)]">
             {String((mutation.error as Error).message)}

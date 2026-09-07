@@ -119,6 +119,7 @@ struct InferenceParamsOverlay: View, Equatable {
     @State private var topK: Int = 20
     @State private var presencePenalty: Double = 0
     @State private var depth: Int = 3
+    @State private var adaptiveDepth: Bool = false
 
     // Reasoning draft — live-mutable. "auto" lets the daemon decide per
     // turn, "on" always reasons, "off" suppresses reasoning entirely.
@@ -319,7 +320,7 @@ struct InferenceParamsOverlay: View, Equatable {
                     .trim(from: 0, to: borderProgress)
                     .stroke(Brand.separatorStrong, lineWidth: 0.75)
             }
-            .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 10)
+            .shadow(color: Brand.shade.opacity(0.55), radius: 18, x: 0, y: 10)
         )
     }
 
@@ -351,7 +352,7 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Settings")
+            Text(tr("Settings"))
                 .font(.system(.callout, design: .rounded).weight(.semibold))
                 .foregroundStyle(Brand.typeBody)
             Text(modelControls?.displayName ?? fallbackDisplayName)
@@ -368,9 +369,9 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var samplingSection: some View {
         InferenceSection(visible: rowsVisibleCount > 1) {
-            sectionHeader("SAMPLING")
+            sectionHeader(tr("SAMPLING"))
             paramSlider(
-                title: "Temperature",
+                title: tr("Temperature"),
                 value: Binding(get: { temperature }, set: { temperature = $0 }),
                 range: 0...Self.temperatureMax,
                 step: 0.05,
@@ -381,7 +382,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 onCommit: { commitLiveSettings() }
             )
             paramSlider(
-                title: "Top P",
+                title: tr("Top P"),
                 value: Binding(get: { topP }, set: { topP = $0 }),
                 range: Self.topPMin...Self.topPMax,
                 step: 0.05,
@@ -398,7 +399,7 @@ struct InferenceParamsOverlay: View, Equatable {
             // 20–50 coding band, 100/200 for creative sampling.
             // Values above 200 are rare and clamped on slider entry.
             paramSlider(
-                title: "Top K",
+                title: tr("Top K"),
                 value: Binding(
                     get: { Double(topK) },
                     set: { topK = Int($0.rounded()) }
@@ -412,7 +413,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 onCommit: { commitLiveSettings() }
             )
             paramSlider(
-                title: "Presence Penalty",
+                title: tr("Presence Penalty"),
                 value: Binding(get: { presencePenalty }, set: { presencePenalty = $0 }),
                 range: 0...Self.presencePenaltyMax,
                 step: 0.05,
@@ -422,7 +423,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 hapticPattern: .alignment,
                 onCommit: { commitLiveSettings() }
             )
-            Text("Discourages reusing tokens the reply already contains. 0 is exact and best for coding; try 0.5–1.5 for creative or repetitive output.")
+            Text(tr("Discourages reusing tokens the reply already contains. 0 is exact and best for coding; try 0.5–1.5 for creative or repetitive output."))
                 .font(.caption2)
                 .foregroundStyle(Brand.typeTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -432,8 +433,8 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var reasoningSection: some View {
         InferenceSection(visible: rowsVisibleCount > 2) {
-            sectionHeader("REASONING")
-            Picker("Reasoning", selection: Binding(
+            sectionHeader(tr("REASONING"))
+            Picker(tr("Reasoning"), selection: Binding(
                 get: { reasoningMode },
                 set: { mode in
                     guard reasoningSupported else { return }
@@ -441,16 +442,16 @@ struct InferenceParamsOverlay: View, Equatable {
                     commitReasoning()
                 }
             )) {
-                Text("Auto").tag("auto")
-                Text("On").tag("on")
-                Text("Off").tag("off")
+                Text(tr("Auto")).tag("auto")
+                Text(tr("On")).tag("on")
+                Text(tr("Off")).tag("off")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .controlHoverLift(motionEnabled: motionEnabled)
             .disabled(!reasoningSupported)
             if reasoningEffortSupported && reasoningMode != "off" {
-                Picker("Reasoning effort", selection: Binding(
+                Picker(tr("Reasoning effort"), selection: Binding(
                     get: { reasoningEffort },
                     set: { effort in
                         reasoningEffort = normalizedReasoningEffort(effort)
@@ -475,8 +476,8 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var fanModeSection: some View {
         InferenceSection(visible: rowsVisibleCount > 3) {
-            sectionHeader("FAN MODE")
-            Picker("Fan Mode", selection: Binding(
+            sectionHeader(tr("FAN MODE"))
+            Picker(tr("Fan Mode"), selection: Binding(
                 get: { fanMode },
                 set: { mode in
                     fanMode = MTPLXFanMode.normalized(mode).rawValue
@@ -583,12 +584,12 @@ struct InferenceParamsOverlay: View, Equatable {
     }
     private var fallbackDisplayName: String {
         switch selectedModelFamily {
-        case "gemma4": return "Gemma assistant MTP"
-        case "step": return "Step experimental MTP"
-        case "qwen3_5", "qwen3_6", "qwen3_8", "qwen4_exp": return "Qwen native MTP"
-        case "glm": return "GLM MTP"
-        case "deepseek": return "DeepSeek MTP"
-        default: return "Custom model"
+        case "gemma4": return tr("Gemma assistant MTP")
+        case "step": return tr("Step experimental MTP")
+        case "qwen3_5", "qwen3_6", "qwen3_8", "qwen4_exp": return tr("Qwen native MTP")
+        case "glm": return tr("GLM MTP")
+        case "deepseek": return tr("DeepSeek MTP")
+        default: return tr("Custom model")
         }
     }
     private var fallbackSamplingDefaults: SamplingDefaults {
@@ -598,21 +599,21 @@ struct InferenceParamsOverlay: View, Equatable {
                 temperature: 1.0,
                 topP: 0.95,
                 topK: 64,
-                familyDefaultReason: "Gemma sampler defaults"
+                familyDefaultReason: tr("Gemma sampler defaults")
             )
         case "step":
             return SamplingDefaults(
                 temperature: 0.6,
                 topP: 0.95,
                 topK: 20,
-                familyDefaultReason: "Step sampler defaults"
+                familyDefaultReason: tr("Step sampler defaults")
             )
         case "qwen3_8":
             return SamplingDefaults(
                 temperature: 1.0,
                 topP: 0.95,
                 topK: 20,
-                familyDefaultReason: "Qwen 3.8 native sampler"
+                familyDefaultReason: tr("Qwen 3.8 native sampler")
             )
         case "qwen4_exp":
             // Flash-Next ships the same official thinking-mode triple as the
@@ -623,14 +624,14 @@ struct InferenceParamsOverlay: View, Equatable {
                 temperature: 1.0,
                 topP: 0.95,
                 topK: 20,
-                familyDefaultReason: "Native MTP sampler"
+                familyDefaultReason: tr("Native MTP sampler")
             )
         default:
             return SamplingDefaults(
                 temperature: 0.6,
                 topP: 0.95,
                 topK: 20,
-                familyDefaultReason: "Qwen coding sampler"
+                familyDefaultReason: tr("Qwen coding sampler")
             )
         }
     }
@@ -645,7 +646,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 minimum: 2,
                 maximum: 8,
                 unit: "block",
-                valueLabels: (2...8).map { "Block \($0)" }
+                valueLabels: (2...8).map { tr("Block %lld", $0) }
             )
         case "unknown":
             return DraftControl(
@@ -752,7 +753,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_validated",
-                disabledReason: "KV quantization is not supported for Gemma."
+                disabledReason: tr("KV quantization is not supported for Gemma.")
             )
         case "step":
             return KVQuantPolicy(
@@ -760,7 +761,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_validated",
-                disabledReason: "KV quantization is not supported for Step."
+                disabledReason: tr("KV quantization is not supported for Step.")
             )
         case "qwen4_exp":
             // Mirrors QWEN4_EXP_KV_QUANT_POLICY in backends/descriptors.py:
@@ -771,7 +772,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_validated",
-                disabledReason: "Flash-Next keeps KV on 12 of 48 layers (~24 KB/token), and its QSA attention has no validated quantized-cache lane yet."
+                disabledReason: tr("Flash-Next keeps KV on 12 of 48 layers (~24 KB/token), and its QSA attention has no validated quantized-cache lane yet.")
             )
         default:
             return KVQuantPolicy(
@@ -779,7 +780,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 modes: ["off"],
                 restartRequired: true,
                 proofLevel: "not_validated",
-                disabledReason: "KV quantization is not supported for this model."
+                disabledReason: tr("KV quantization is not supported for this model.")
             )
         }
     }
@@ -805,10 +806,10 @@ struct InferenceParamsOverlay: View, Equatable {
     }
     private var reasoningStatusCopy: String {
         guard reasoningSupported else {
-            return "Reasoning is not supported for \(contextWindowModelLabel)."
+            return tr("Reasoning is not supported for %@.", contextWindowModelLabel)
         }
         if reasoningEffortSupported && reasoningMode != "off" {
-            return "Reasoning effort: \(reasoningEffort.capitalized)."
+            return tr("Reasoning effort: %@.", reasoningEffort.capitalized)
         }
         return Self.reasoningHint(for: reasoningMode)
     }
@@ -844,15 +845,12 @@ struct InferenceParamsOverlay: View, Equatable {
     private var depthDefault: Int {
         min(depthMax, max(depthMin, draftControl?.defaultValue ?? depthMax))
     }
-    private var depthValuePrefix: String {
-        draftControl?.unit == "block" ? "Block " : "D"
-    }
     private var draftLabelBase: Int {
         max(1, draftControl?.minimum ?? 1)
     }
     private func draftValueLabel(for value: Int) -> String {
         if depthControlSupportsMtpOff && value <= 0 {
-            return "MTP off"
+            return tr("MTP off")
         }
         if let labels = draftControl?.valueLabels {
             let index = value - draftLabelBase
@@ -860,13 +858,13 @@ struct InferenceParamsOverlay: View, Equatable {
                 return labels[index]
             }
         }
-        return "\(depthValuePrefix)\(value)"
+        return draftControl?.unit == "block" ? tr("Block %lld", value) : tr("D%lld", value)
     }
 
     @ViewBuilder
     private var depthSection: some View {
         InferenceSection(visible: rowsVisibleCount > 4) {
-            sectionHeader(draftControl?.displayLabel?.uppercased() ?? "MTP HEADS")
+            sectionHeader(draftControl?.displayLabel?.uppercased() ?? tr("MTP HEADS"))
             // Range/label/unit come from the loaded backend's draft-control
             // descriptor, so a model with more MTP heads (e.g. Gemma's
             // draft blocks 2-8) is no longer clamped to Qwen's D1-D3. Each
@@ -874,7 +872,7 @@ struct InferenceParamsOverlay: View, Equatable {
             // pipeline, so the haptic stays a firm `.levelChange`.
             if let sliderRange = depthSliderRange {
                 paramSlider(
-                    title: draftControl?.displayLabel ?? "Depth",
+                    title: draftControl?.displayLabel ?? tr("Depth"),
                     value: Binding(
                         get: { Double(depth) },
                         set: {
@@ -894,7 +892,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 // Supported but only one valid value — show it, don't
                 // build a degenerate slider.
                 HStack {
-                    Text(draftControl?.displayLabel ?? "Depth")
+                    Text(draftControl?.displayLabel ?? tr("Depth"))
                         .font(.system(size: 12))
                         .foregroundStyle(Brand.typeBody)
                     Spacer()
@@ -904,20 +902,65 @@ struct InferenceParamsOverlay: View, Equatable {
                         .monospacedDigit()
                 }
             } else {
-                Text("Draft control is not available for this model.")
+                Text(tr("Draft control is not available for this model."))
                     .font(.caption2)
                     .foregroundStyle(Brand.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if adaptiveDepthSupported {
+                adaptiveDepthRow
+            }
         }
+    }
+
+    /// Hidden for a family that owns its own draft policy (the daemon
+    /// says so); before the daemon answers, the depth-style control is
+    /// the tell.
+    private var adaptiveDepthSupported: Bool {
+        compatibleSettings?.adaptiveDepthSupported ?? (draftControl?.requestField == "depth")
+    }
+
+    /// Sits under the depth slider because it qualifies that slider: on,
+    /// the engine may stop a draft short of the chosen depth when the next
+    /// token is unlikely to be accepted; off, every cycle drafts to the
+    /// full depth. Live like depth itself, persisted so a relaunch boots
+    /// the daemon with the same policy.
+    @ViewBuilder
+    private var adaptiveDepthRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(tr("Adaptive depth"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Brand.typeBody)
+                Text(tr("Stops a draft early when the next token is unlikely to be accepted. Off drafts to the full depth every cycle."))
+                    .font(.caption2)
+                    .foregroundStyle(Brand.typeTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Toggle("", isOn: Binding(
+                get: { adaptiveDepth },
+                set: { isOn in
+                    guard isOn != adaptiveDepth else { return }
+                    Haptics.tick(.levelChange)
+                    adaptiveDepth = isOn
+                    commitAdaptiveDepth()
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlHoverLift(motionEnabled: motionEnabled)
+            .disabled(!draftControlSupported || depth <= 0)
+        }
+        .padding(.top, 6)
     }
 
     @ViewBuilder
     private var prefillSection: some View {
         InferenceSection(visible: rowsVisibleCount > 5) {
-            sectionHeader("PREFILL", hint: "next request")
+            sectionHeader(tr("PREFILL"), hint: tr("next request"))
             paramSlider(
-                title: "Batch step size",
+                title: tr("Batch step size"),
                 value: Binding(
                     get: { Double(prefillChunk) },
                     set: { prefillChunk = Int($0.rounded()) }
@@ -925,7 +968,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 range: 256...32768,
                 step: 256,
                 valueText: { v in
-                    Text(Int(v.rounded()), format: .number) + Text(" tok")
+                    Text(Int(v.rounded()), format: .number) + Text(tr(" tok"))
                 },
                 hapticPattern: .alignment,
                 onCommit: { commitPrefill() }
@@ -937,10 +980,10 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var contextWindowSection: some View {
         InferenceSection(visible: rowsVisibleCount > 6) {
-            sectionHeader("CONTEXT WINDOW", hint: "restart")
+            sectionHeader(tr("CONTEXT WINDOW"), hint: "restart")
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Window")
+                    Text(tr("Window"))
                         .font(.system(size: 12))
                         .foregroundStyle(Brand.typeBody)
                     Spacer()
@@ -970,11 +1013,11 @@ struct InferenceParamsOverlay: View, Equatable {
                 }
             }
             contextPresetChips
-            Text("Max for \(contextWindowModelLabel): \(Self.formatTokensVerbose(modelMaxContext)).")
+            Text(tr("Max for %@: %@.", contextWindowModelLabel, Self.formatTokensVerbose(modelMaxContext)))
                 .font(.caption2)
                 .foregroundStyle(Brand.typeTertiary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Responses run until the model stops or fills its context. No length cap.")
+            Text(tr("Responses run until the model stops or fills its context. No length cap."))
                 .font(.caption2)
                 .foregroundStyle(Brand.typeTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -995,7 +1038,7 @@ struct InferenceParamsOverlay: View, Equatable {
                     contextWindowDirty = preset != currentContextWindow
                 }
             }
-            contextChip(label: "Max", isOn: contextWindow == modelMaxContext) {
+            contextChip(label: tr("Max"), isOn: contextWindow == modelMaxContext) {
                 contextWindow = modelMaxContext
                 contextWindowDirty = modelMaxContext != currentContextWindow
             }
@@ -1064,10 +1107,10 @@ struct InferenceParamsOverlay: View, Equatable {
         InferenceSection(visible: rowsVisibleCount > 0) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Performance mode")
+                    Text(tr("Performance mode"))
                         .font(.system(.callout))
                         .foregroundStyle(Brand.typeBody)
-                    Text("Calms the UI so it doesn't slow down the model. Turn on for accurate benchmarks.")
+                    Text(tr("Calms the UI so it doesn't slow down the model. Turn on for accurate benchmarks."))
                         .font(.caption2)
                         .foregroundStyle(Brand.typeTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1084,8 +1127,8 @@ struct InferenceParamsOverlay: View, Equatable {
     @ViewBuilder
     private var kvQuantizationSection: some View {
         InferenceSection(visible: rowsVisibleCount > 7) {
-            sectionHeader("KV QUANTIZATION", hint: "restart")
-            Picker("KV quantization", selection: Binding(
+            sectionHeader(tr("KV QUANTIZATION"), hint: "restart")
+            Picker(tr("KV quantization"), selection: Binding(
                 get: { kvQuantization },
                 set: { mode in
                     guard kvQuantSupported else { return }
@@ -1105,7 +1148,7 @@ struct InferenceParamsOverlay: View, Equatable {
             .controlHoverLift(motionEnabled: motionEnabled)
             .disabled(!kvQuantSupported)
             if !kvQuantSupported {
-                Text(kvQuantPolicy?.disabledReason ?? "KV quantization is not supported for this model.")
+                Text(kvQuantPolicy?.disabledReason ?? tr("KV quantization is not supported for this model."))
                     .font(.caption2)
                     .foregroundStyle(Brand.warning)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1121,7 +1164,7 @@ struct InferenceParamsOverlay: View, Equatable {
                 .font(.caption2)
                 .foregroundStyle(Brand.warning)
             Spacer()
-            Button("Revert") {
+            Button(tr("Revert")) {
                 kvQuantization = currentKVQuantization
                 kvDirty = false
                 contextWindow = currentContextWindow
@@ -1129,7 +1172,7 @@ struct InferenceParamsOverlay: View, Equatable {
             }
             .buttonStyle(.borderless)
             .disabled(applying)
-            Button("Apply") {
+            Button(tr("Apply")) {
                 applyPendingChanges()
             }
             .buttonStyle(.borderedProminent)
@@ -1147,11 +1190,11 @@ struct InferenceParamsOverlay: View, Equatable {
     /// about it needing an Apply step.
     private var applyBarMessage: String {
         let restartParts: [String] = [
-            kvDirty ? "KV quantization" : nil,
-            contextWindowDirty ? "context window" : nil,
+            kvDirty ? tr("KV quantization") : nil,
+            contextWindowDirty ? tr("context window") : nil,
         ].compactMap { $0 }
         let joined = restartParts.joined(separator: " and ")
-        return "Applying \(joined) restarts the engine."
+        return tr("Applying %@ restarts the engine.", joined)
     }
 
     // MARK: - Helpers
@@ -1264,6 +1307,18 @@ struct InferenceParamsOverlay: View, Equatable {
         }
     }
 
+    /// Adaptive depth is live (the daemon builds its depth policy per
+    /// request) and persisted, so the next launch passes the same policy.
+    private func commitAdaptiveDepth() {
+        var config = backend.configuration
+        config.adaptiveDepth = adaptiveDepth
+        try? backend.saveSettings(config)
+        let live = currentLiveSettingsDraft()
+        Task {
+            try? await backend.updateLiveSettings(live)
+        }
+    }
+
     private func commitReasoning() {
         let draft = currentLiveSettingsDraft()
         Task {
@@ -1312,6 +1367,16 @@ struct InferenceParamsOverlay: View, Equatable {
             }
         } else {
             draft.depth = min(depthMax, max(depthMin, depth))
+        }
+        if adaptiveDepthSupported {
+            // Turning it on restores the engine default unless the daemon
+            // already runs another named policy (a CLI-launched daemon).
+            let current = compatibleSettings?.adaptivePolicy ?? "expected_value"
+            draft.adaptivePolicy = adaptiveDepth
+                ? (current == "none" ? "expected_value" : current)
+                : "none"
+        } else {
+            draft.adaptivePolicy = nil
         }
         if reasoningSupported {
             draft.reasoning = reasoningMode
@@ -1414,6 +1479,9 @@ struct InferenceParamsOverlay: View, Equatable {
         } else {
             depth = min(depthMax, max(draftLabelBase, settings?.depth ?? liveDepth ?? tunedDraftValue ?? depthDefault))
         }
+        adaptiveDepth = (settings?.adaptivePolicy).map { $0 != "none" }
+            ?? snapshot.configuration.adaptiveDepth
+            ?? false
         reasoningMode = normalizedReasoningMode(
             settings?.reasoning
                 ?? compatibleConfigurationReasoning
@@ -1453,7 +1521,7 @@ struct InferenceParamsOverlay: View, Equatable {
         switch mode {
         case "q8": return "q8"
         case "q4": return "q4"
-        default: return "Off"
+        default: return tr("Off")
         }
     }
 
@@ -1523,12 +1591,12 @@ struct InferenceParamsOverlay: View, Equatable {
 
     private var contextWindowModelLabel: String {
         switch selectedModelFamily {
-        case "gemma4": return "Gemma"
-        case "step": return "Step"
-        case "qwen3_5", "qwen3_6", "qwen3_8": return "Qwen"
-        case "glm": return "GLM"
-        case "deepseek": return "DeepSeek"
-        default: return "this model"
+        case "gemma4": return tr("Gemma")
+        case "step": return tr("Step")
+        case "qwen3_5", "qwen3_6", "qwen3_8": return tr("Qwen")
+        case "glm": return tr("GLM")
+        case "deepseek": return tr("DeepSeek")
+        default: return tr("this model")
         }
     }
 
@@ -1612,11 +1680,11 @@ struct InferenceParamsOverlay: View, Equatable {
     private static func reasoningHint(for mode: String) -> String {
         switch mode {
         case "on":
-            return "Always reasons before answering. Best quality, more tokens."
+            return tr("Always reasons before answering. Best quality, more tokens.")
         case "off":
-            return "Skips reasoning. Fastest replies, weaker on hard prompts."
+            return tr("Skips reasoning. Fastest replies, weaker on hard prompts.")
         default:
-            return "Model decides per turn based on prompt difficulty."
+            return tr("Model decides per turn based on prompt difficulty.")
         }
     }
 
@@ -1625,7 +1693,7 @@ struct InferenceParamsOverlay: View, Equatable {
         formatter.numberStyle = .decimal
         formatter.groupingSeparator = ","
         let formatted = formatter.string(from: NSNumber(value: tokens)) ?? "\(tokens)"
-        return "\(formatted) tok"
+        return tr("%@ tok", formatted)
     }
 
     private static func formatTokensShort(_ tokens: Int) -> String {
@@ -1685,7 +1753,7 @@ private struct ControlHoverLift: ViewModifier {
         content
             .offset(y: hovering ? Motion.controlHoverOffsetY : 0)
             .shadow(
-                color: .black.opacity(hovering ? Motion.controlHoverShadowOpacity : 0),
+                color: Brand.shade.opacity(hovering ? Motion.controlHoverShadowOpacity : 0),
                 radius: hovering ? Motion.controlHoverShadowRadius : 0,
                 x: 0,
                 y: hovering ? Motion.controlHoverShadowYOffset : 0

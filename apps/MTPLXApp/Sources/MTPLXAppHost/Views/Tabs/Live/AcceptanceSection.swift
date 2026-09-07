@@ -87,7 +87,7 @@ struct AcceptanceSection: View {
     @ViewBuilder
     private func header(smoothed: SmoothedMetrics) -> some View {
         HStack(spacing: 8) {
-            Text("ACCEPTANCE")
+            Text(tr("ACCEPTANCE"))
                 .font(.system(size: 11, weight: .heavy, design: .monospaced))
                 .tracking(3)
                 .foregroundStyle(Brand.textHighlight)
@@ -95,7 +95,7 @@ struct AcceptanceSection: View {
             Spacer()
             if backend.observedCompletionCount > 0,
                let meanAcceptance = smoothed.meanAcceptance {
-                Text("mean P=\(Format.percent(meanAcceptance))")
+                Text(tr("mean P=%@", Format.percent(meanAcceptance)))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.textHighlight.opacity(0.65))
                     .contentTransition(.numericText())
@@ -129,7 +129,7 @@ struct AcceptanceSection: View {
                 }
             }
             .frame(height: 10)
-            Text(meanProbability.map { "mean P=\(Format.percent($0))" } ?? " ")
+            Text(meanProbability.map { tr("mean P=%@", Format.percent($0)) } ?? " ")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(Brand.textHighlight.opacity(0.45))
                 .lineLimit(1)
@@ -176,9 +176,9 @@ struct AcceptanceSection: View {
 
     private var emptyStateText: String {
         if isARMode {
-            return "MTP acceptance appears when draft depth is on."
+            return tr("MTP acceptance appears when draft depth is on.")
         }
-        return "Counters appear after your first MTP response."
+        return tr("Counters appear after your first MTP response.")
     }
 
     private var isARMode: Bool {

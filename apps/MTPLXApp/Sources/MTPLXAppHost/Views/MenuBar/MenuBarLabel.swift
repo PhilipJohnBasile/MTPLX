@@ -14,7 +14,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         Image(systemName: iconName)
-            .accessibilityLabel("MTPLX — \(backend.daemonState.kind.label)")
+            .accessibilityLabel(tr("MTPLX — %@", backend.daemonState.kind.label))
     }
 
     private var iconName: String {

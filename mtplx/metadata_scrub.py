@@ -11,7 +11,9 @@ Pure standard library so it can run anywhere a manifest can be read.
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,21 +24,41 @@ DROPPED_PROVENANCE_KEYS = ("intended_hf_repo",)
 #: Replacement stand-in for a scrubbed absolute path.
 REDACTED_PATH = "<redacted>"
 
-#: Keys whose values are paths that should be reduced to a basename.
+#: Keys whose values are paths: any absolute path under them is local.
 _PATH_KEY_RE = re.compile(r"(^|_)(path|dir|directory|file|root|location)s?$")
 
-_HOME_PREFIX_RE = re.compile(r"^(/Users/|/home/|/var/folders/|/private/var/folders/)")
-_ABSOLUTE_PATH_IN_TEXT_RE = re.compile(
+#: Prefixes that name a machine: a home directory or a per-user temp folder.
+_MACHINE_PREFIX_RE = re.compile(r"^(/Users/|/home/|/var/folders/|/private/var/folders/)")
+_MACHINE_PATH_IN_TEXT_RE = re.compile(
     r"(?:/Users/|/home/|/private/var/folders/|/var/folders/)[^\s\"';,)]*"
 )
 
 
-def _looks_like_local_path(value: str) -> bool:
+def _is_absolute_path(value: str) -> bool:
+    return value.startswith("/") or value.startswith("~")
+
+
+def _is_machine_path(value: str) -> bool:
+    """A path that identifies the machine it came from."""
+
     if not value:
         return False
-    if value.startswith("~"):
+    return value.startswith("~") or bool(_MACHINE_PREFIX_RE.match(value))
+
+
+def _is_local_path(key: str | None, value: str) -> bool:
+    """Whether ``value`` is a local path in the position ``key`` gives it.
+
+    A home or temp path is local wherever it appears. Any other absolute
+    path counts only under a key that names a path (``source_path``,
+    ``output_dir``): an API route such as ``/v1/chat/completions`` or a
+    tokenizer string that happens to start with a slash is data, not a
+    location, and stays as it is.
+    """
+
+    if _is_machine_path(value):
         return True
-    return value.startswith("/") or bool(_HOME_PREFIX_RE.match(value))
+    return key is not None and bool(_PATH_KEY_RE.search(key)) and _is_absolute_path(value)
 
 
 def scrub_path_value(value: str) -> str:
@@ -47,16 +69,16 @@ def scrub_path_value(value: str) -> str:
     Everything above it is dropped.
     """
 
-    if not _looks_like_local_path(value):
+    if not value or not _is_absolute_path(value):
         return value
     name = Path(value.rstrip("/")).name
     return f"{REDACTED_PATH}/{name}" if name else REDACTED_PATH
 
 
 def scrub_text_value(value: str) -> str:
-    """Redact absolute local paths embedded inside a free-text string."""
+    """Redact machine paths embedded inside a free-text string."""
 
-    return _ABSOLUTE_PATH_IN_TEXT_RE.sub(
+    return _MACHINE_PATH_IN_TEXT_RE.sub(
         lambda match: scrub_path_value(match.group(0)), value
     )
 
@@ -73,9 +95,7 @@ def _scrub_value(key: str | None, value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_scrub_value(key, item) for item in value)
     if isinstance(value, str):
-        if key is not None and _PATH_KEY_RE.search(key) and _looks_like_local_path(value):
-            return scrub_path_value(value)
-        if _looks_like_local_path(value):
+        if _is_local_path(key, value):
             return scrub_path_value(value)
         return scrub_text_value(value)
     return value
@@ -84,9 +104,10 @@ def _scrub_value(key: str | None, value: Any) -> Any:
 def scrub_runtime_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Return a publish-safe copy of a runtime-metadata dict.
 
-    - Absolute local paths (``/Users/...``, ``/home/...``, temp dirs) are cut
-      down to ``<redacted>/<basename>``, wherever they appear — as a value, a
-      list element, or embedded in a longer string.
+    - Home and temp paths (``/Users/...``, ``/home/...``, ``/var/folders``)
+      are cut down to ``<redacted>/<basename>`` wherever they appear: as a
+      value, a list element, or embedded in a longer string. Other absolute
+      paths are cut down only under path-named keys.
     - Machine-identifying provenance keys (``intended_hf_repo``) are removed.
     - Everything else, including ``source_repo``, ``source_sha``,
       ``forge_recipe`` and version stamps, is preserved verbatim.
@@ -100,26 +121,69 @@ def scrub_runtime_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 
 def runtime_metadata_leaks(metadata: Any) -> list[str]:
-    """Return every absolute local path still present in ``metadata``.
+    """Return every local path still present in ``metadata``.
 
     Intended as a publish-time assertion: an empty list means the payload
-    carries no home-directory or temp-directory paths.
+    carries no home-directory, temp-directory or path-keyed absolute path.
     """
 
     leaks: list[str] = []
 
-    def walk(value: Any) -> None:
+    def walk(key: str | None, value: Any) -> None:
         if isinstance(value, dict):
-            for child in value.values():
-                walk(child)
+            for child_key, child in value.items():
+                walk(child_key, child)
         elif isinstance(value, (list, tuple)):
             for item in value:
-                walk(item)
+                walk(key, item)
         elif isinstance(value, str):
-            if _looks_like_local_path(value):
+            if _is_local_path(key, value):
                 leaks.append(value)
             else:
-                leaks.extend(_ABSOLUTE_PATH_IN_TEXT_RE.findall(value))
+                leaks.extend(_MACHINE_PATH_IN_TEXT_RE.findall(value))
 
-    walk(metadata)
+    walk(None, metadata)
     return leaks
+
+
+@dataclass(frozen=True)
+class ScrubbedDocument:
+    """A top-level JSON document of a pack that needed scrubbing."""
+
+    name: str
+    document: dict[str, Any]
+    leaks: tuple[str, ...]
+
+    @property
+    def payload(self) -> bytes:
+        return (json.dumps(self.document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def scrub_json_documents(directory: Path | str) -> list[ScrubbedDocument]:
+    """Scrubbed copies of the top-level JSON documents that carry local paths.
+
+    A pack directory holds its runtime contract, its config, its weight
+    index and sometimes a conversion manifest. Every one that leaks comes
+    back scrubbed, with what it leaked; a clean directory yields an empty
+    list. Documents that do not parse are skipped, they are another gate's
+    concern.
+    """
+
+    documents: list[ScrubbedDocument] = []
+    for path in sorted(Path(directory).glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        leaks = runtime_metadata_leaks(payload)
+        if leaks:
+            documents.append(
+                ScrubbedDocument(
+                    name=path.name,
+                    document=scrub_runtime_metadata(payload),
+                    leaks=tuple(leaks),
+                )
+            )
+    return documents

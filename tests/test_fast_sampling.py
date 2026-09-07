@@ -8,6 +8,7 @@ import mtplx.fast_sampling as fs
 from mtplx.fast_sampling import (
     batched_sparse_distributions_from_mlx_logits,
     sparse_distribution_from_mlx_logits,
+    sparse_distribution_from_mlx_logits_relaxed_ties,
     sparse_distributions_from_mlx_logits,
 )
 from mtplx.sampling import SamplerConfig, distribution_from_logits
@@ -115,6 +116,26 @@ def test_single_sparse_sampling_preserves_dense_vocab_order_and_rng():
         dense, dense_rng
     )
     assert sparse_rng.random() == dense_rng.random()
+
+
+def test_relaxed_ties_match_exact_support_probabilities_and_rng_without_ties():
+    logits = np.random.default_rng(91).normal(size=256).astype(np.float32)
+    config = SamplerConfig(temperature=1.0, top_p=0.95, top_k=20)
+    exact = sparse_distribution_from_mlx_logits(mx.array(logits), config)
+    relaxed = sparse_distribution_from_mlx_logits_relaxed_ties(
+        mx.array(logits), config
+    )
+    exact_rng = np.random.default_rng(20260829)
+    relaxed_rng = np.random.default_rng(20260829)
+
+    assert exact is not None
+    assert relaxed is not None
+    assert np.array_equal(relaxed.token_ids, exact.token_ids)
+    assert np.array_equal(relaxed.probs, exact.probs)
+    assert sample_from_distribution(relaxed, relaxed_rng) == sample_from_distribution(
+        exact, exact_rng
+    )
+    assert relaxed_rng.random() == exact_rng.random()
 
 
 def test_sparse_row_list_sampling_preserves_dense_vocab_order_and_rng():

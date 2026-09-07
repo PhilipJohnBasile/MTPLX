@@ -249,6 +249,39 @@ public enum ToolTraceStatus: String, Codable, Sendable, CaseIterable {
     case failed
 }
 
+// MARK: - Versioned schema
+//
+// V1 is exactly the four models above as shipped today. Every store on a
+// user's Mac was created from these definitions (earlier field additions
+// were all optional, so they went through lightweight migration), and the
+// versioned container opens those stores unchanged. The next change to a
+// model that lightweight migration cannot absorb adds a V2 here and a
+// stage to `ChatSchemaMigrationPlan` instead of failing every upgrading
+// user's store open.
+
+public enum ChatSchemaV1: VersionedSchema {
+    public static let versionIdentifier = Schema.Version(1, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ChatConversation.self,
+            ChatMessage.self,
+            ChatAttachment.self,
+            ToolTraceRecord.self,
+        ]
+    }
+}
+
+public enum ChatSchemaMigrationPlan: SchemaMigrationPlan {
+    public static var schemas: [any VersionedSchema.Type] {
+        [ChatSchemaV1.self]
+    }
+
+    public static var stages: [MigrationStage] {
+        []
+    }
+}
+
 // MARK: - Decoded helpers
 
 /// Decoded shape of one tool call as it appears on the assistant turn's

@@ -134,3 +134,41 @@ def test_decode_trace_tolerates_lane_specific_counter_sets(tmp_path, monkeypatch
     assert len(rows) == 2
     assert rows[1]["generated_tokens_delta"] == 2
     assert rows[1]["target_distribution_materialized_rows_delta"] == 0
+
+
+def test_prompt_suite_path_is_absolute_and_exists_from_any_directory(monkeypatch, tmp_path):
+    # The suites used to be cwd-relative strings ("mtplx/benchmarks/prompts/
+    # default.jsonl"), so `mtplx bench` crashed with FileNotFoundError from
+    # every directory except a checkout root. They ship inside the package
+    # and must resolve against it.
+    from pathlib import Path
+
+    from mtplx.kpi.runtime_kpis import PROMPT_SUITES, prompt_suite_path
+
+    monkeypatch.chdir(tmp_path)
+
+    for suite in (None, *PROMPT_SUITES):
+        resolved = Path(prompt_suite_path(suite))
+        assert resolved.is_absolute(), suite
+        assert resolved.is_file(), suite
+        assert resolved.parent.name == "prompts"
+        assert resolved.parent.parent.name == "benchmarks"
+
+
+def test_prompt_suite_path_accepts_a_file_and_names_the_suites_on_a_bad_name(tmp_path):
+    from pathlib import Path
+
+    import pytest
+
+    from mtplx.kpi.runtime_kpis import prompt_suite_path
+
+    custom = tmp_path / "mine.jsonl"
+    custom.write_text('{"prompt": "hi"}\n', encoding="utf-8")
+
+    assert Path(prompt_suite_path(str(custom))) == custom
+
+    with pytest.raises(SystemExit) as excinfo:
+        prompt_suite_path("no-such-suite")
+    message = str(excinfo.value.code)
+    assert "unknown prompt suite 'no-such-suite'" in message
+    assert "flappy" in message and ".jsonl" in message

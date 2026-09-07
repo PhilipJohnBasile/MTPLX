@@ -34,6 +34,13 @@ def _rate_by_depth(accepted: list[int], drafted: list[int]) -> list[float | None
     return [(a / d if d else None) for a, d in zip(accepted, drafted)]
 
 
+def _accepted_drafts_per_cycle(accepted: int, drafted_by_depth: list[int]) -> float | None:
+    # The first proposal counts draft cycles even when event recording is off.
+    # Verification calls also include copy/bonus forwards, so use proposals.
+    cycles = int(drafted_by_depth[0]) if drafted_by_depth else 0
+    return accepted / cycles if cycles else None
+
+
 def _token_budget(max_tokens: int, case_max_tokens: int) -> int:
     return min(int(max_tokens), int(case_max_tokens))
 
@@ -247,6 +254,7 @@ def run_mtp_depth_sweep(
             ar_rows.append(
                 {
                     "prompt_id": case.id,
+                    "prompt_tokens": len(ids),
                     "category": case.category,
                     "generation_started_at": generation_started_at,
                     "generation_ended_at": generation_ended_at,
@@ -339,6 +347,7 @@ def run_mtp_depth_sweep(
             rows.append(
                 {
                     "prompt_id": case.id,
+                    "prompt_tokens": len(ids),
                     "category": case.category,
                     "prompt_sha256": case.prompt_sha256,
                     "generation_started_at": generation_started_at,
@@ -392,8 +401,10 @@ def run_mtp_depth_sweep(
                         out.stats.accepted_by_depth,
                         out.stats.drafted_by_depth,
                     ),
-                    "mean_accepted_drafts_per_cycle": (
-                        out.stats.accepted_drafts / max(1, len(out.stats.events))
+                    "draft_cycles": (out.stats.drafted_by_depth[0]
+                                     if out.stats.drafted_by_depth else 0),
+                    "mean_accepted_drafts_per_cycle": _accepted_drafts_per_cycle(
+                        out.stats.accepted_drafts, out.stats.drafted_by_depth
                     ),
                     "acceptance_rate": (
                         out.stats.accepted_drafts / out.stats.drafted_tokens

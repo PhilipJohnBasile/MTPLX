@@ -20,13 +20,13 @@ struct HardwareScanStep: View {
 
     var body: some View {
         OnboardingStepContainer(
-            title: "Your Mac",
-            subtitle: "Optimizing setup for your hardware.",
-            stepIndex: 1,
+            title: tr("Your Mac"),
+            subtitle: tr("Optimizing setup for your hardware."),
+            stepIndex: OnboardingStep.hardwareScan.index,
             stepCount: OnboardingStep.allCases.count,
             onBack: { orchestrator.goBack() },
             primary: {
-                OnboardingPrimaryButton("Next", isEnabled: revealHardware) {
+                OnboardingPrimaryButton(tr("Next"), isEnabled: revealHardware) {
                     orchestrator.goNext()
                 }
             },
@@ -85,12 +85,12 @@ struct HardwareScanStep: View {
                 .foregroundStyle(Brand.typeHi)
                 .accessibilityLabel(hardware.chipName)
             HStack(spacing: 24) {
-                stat(value: Self.formatMemory(hardware.unifiedMemoryBytes), label: "Unified Memory")
+                stat(value: Self.formatMemory(hardware.unifiedMemoryBytes), label: tr("Unified Memory"))
                 if let cores = hardware.gpuCoreCount, cores > 0 {
-                    stat(value: "\(cores)", label: "GPU Cores")
+                    stat(value: "\(cores)", label: tr("GPU Cores"))
                 }
                 if let cores = hardware.cpuCoreCount, cores > 0 {
-                    stat(value: "\(cores)", label: "CPU Cores")
+                    stat(value: "\(cores)", label: tr("CPU Cores"))
                 }
             }
         }
@@ -154,7 +154,7 @@ struct HardwareScanStep: View {
 
     private static func formatMemory(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        if gib >= 100 { return String(format: "%.0f GB", gib) }
-        return String(format: "%.0f GB", gib.rounded())
+        if gib >= 100 { return tr("%.0f GB", gib) }
+        return tr("%.0f GB", gib.rounded())
     }
 }

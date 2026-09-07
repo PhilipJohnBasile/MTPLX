@@ -116,6 +116,46 @@ public struct MTPLXAPIClient: Sendable {
         )
     }
 
+    /// One-time browser sign-in ticket minted by the daemon. Opening
+    /// `url` sets the browser-auth cookie without the API key ever being
+    /// part of a URL, so the key stays out of browser history and logs.
+    public struct BrowserAuthTicket: Decodable, Equatable, Sendable {
+        public let url: URL
+        public let expiresIn: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case url
+            case expiresIn = "expires_in"
+        }
+    }
+
+    /// `POST /mtplx/browser-auth/ticket` with `{"next": next}`, Bearer
+    /// authenticated. Throws on any transport failure or non-2xx answer,
+    /// including the 404 an older daemon returns for the route.
+    public func browserAuthTicket(next: String) async throws -> BrowserAuthTicket {
+        try await post("/mtplx/browser-auth/ticket", body: ["next": next])
+    }
+
+    /// Client for the one-shot browser hand-off: an ephemeral session
+    /// whose request and resource timeouts are both `timeout` seconds, so
+    /// a daemon that is slow or gone cannot hold the Open Dashboard button
+    /// for longer than that before the caller falls back.
+    public static func browserAuthClient(
+        baseURL: URL,
+        apiKey: String?,
+        timeout: TimeInterval = 3
+    ) -> MTPLXAPIClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.waitsForConnectivity = false
+        return MTPLXAPIClient(
+            baseURL: baseURL,
+            apiKey: apiKey,
+            session: URLSession(configuration: configuration)
+        )
+    }
+
     public func capabilities() async throws -> AppCapabilities {
         try await get("/v1/mtplx/app/capabilities")
     }

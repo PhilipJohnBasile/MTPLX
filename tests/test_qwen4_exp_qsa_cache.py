@@ -18,6 +18,7 @@ parity surface).
 import mlx.core as mx
 import pytest
 
+import mtplx.graphbank as graphbank
 from mtplx.cache_state import (
     rollback_after_verify,
     snapshot_untrimmable_cache,
@@ -152,3 +153,72 @@ def test_rollback_below_engage_threshold_still_exact(attn):
         golden = attn(chunk, fresh)
 
     assert mx.allclose(out, golden, atol=0, rtol=0).item()
+
+
+def test_tensor_offset_qsa_cache_trim_matches_stock(attn):
+    """The compiled-verifier cache owns fixed banks without changing QSA math."""
+    x_pre = _hidden(PREFILL, seed=14)
+    x_rejected = _hidden(STEP, seed=15)
+    x_next = _hidden(STEP, seed=16)
+
+    cache = [QSACache(compress_ratio=attn.indexer.ratio)]
+    attn(x_pre, cache[0])
+    promoted, failures = graphbank.promote_kv_cache_offsets(
+        cache,
+        reserve_tokens=STEP,
+        initial_reserve_tokens=16,
+    )
+
+    assert promoted == 1
+    assert failures == {}
+    assert isinstance(cache[0], graphbank.TensorOffsetQSACache)
+    assert cache[0].size() == PREFILL
+
+    attn(x_rejected, cache[0])
+    assert cache[0].trim(STEP) == STEP
+    out = attn(x_next, cache[0])
+
+    fresh = QSACache(compress_ratio=attn.indexer.ratio)
+    attn(x_pre, fresh)
+    golden = attn(x_next, fresh)
+
+    assert mx.allclose(out, golden, atol=0, rtol=0).item()
+
+
+def test_compiled_verify_bank_threads_qsa_state_without_fallback(attn):
+    class TinyQSARuntime:
+        def __init__(self):
+            mx.random.seed(17)
+            self.attn = attn
+            self.embed = mx.random.normal((32, 64)).astype(mx.float32)
+            self.head = mx.random.normal((64, 32)).astype(mx.float32)
+
+        def forward_ar_capture(
+            self,
+            input_ids,
+            *,
+            cache,
+            return_hidden=True,
+            hidden_variant=None,
+            capture_backend=None,
+        ):
+            del hidden_variant, capture_backend
+            hidden = self.attn(self.embed[input_ids], cache[0])
+            logits = hidden @ self.head
+            return logits, hidden, {}
+
+    rt = TinyQSARuntime()
+    cache = [QSACache(compress_ratio=attn.indexer.ratio)]
+    rt.forward_ar_capture(
+        mx.arange(PREFILL, dtype=mx.int32).reshape(1, -1), cache=cache
+    )
+    bank = graphbank.CompiledVerifyBank(rt, request_max_tokens=16)
+
+    bank.forward_ar_capture(mx.array([[1, 2, 3, 4]]), cache=cache)
+    bank.forward_ar_capture(mx.array([[5, 6, 7, 8]]), cache=cache)
+
+    assert bank.stats["fallback_calls"] == 0, bank.stats["fallback_reasons"]
+    assert bank.stats["compiled_calls"] == 2
+    assert bank.stats["traces"] == 1
+    assert isinstance(cache[0], graphbank.TensorOffsetQSACache)
+    assert cache[0].size() == PREFILL + 8

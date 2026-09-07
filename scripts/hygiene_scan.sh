@@ -76,6 +76,14 @@ record_model_artifact() {
     apps/MTPLXApp/Sources/MTPLXAppCore/Resources/*|./apps/MTPLXApp/Sources/MTPLXAppCore/Resources/*)
       return 0
       ;;
+    # The shipped FR-Spec lookup is 65,536 int32 vocabulary token IDs,
+    # not model parameters. Only these reviewed bytes are exempt; a changed
+    # table or any other NPY still requires review and fails this check.
+    mtplx/data/qwen38_code_ranked_64k.npy|./mtplx/data/qwen38_code_ranked_64k.npy)
+      if [[ "$(shasum -a 256 "$path" | cut -d ' ' -f 1)" == "922a4d0570ce0a79e03c1e1ecb25e6c8c1e9cae943b2c0d5ce11874d42d74a17" ]]; then
+        return 0
+      fi
+      ;;
     # The deepseek_v4 parity suite gates the whole forward against a 2.3 MB
     # deterministic golden (toy dims, float32 arrays, no pickled objects) —
     # a test fixture, not a checkpoint. Exempted by exact path; everything

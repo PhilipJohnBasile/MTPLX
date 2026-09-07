@@ -9,6 +9,7 @@ from typing import Callable
 import mlx.core as mx
 import numpy as np
 
+from .runtime_options import qwen4_opdiet_enabled
 from .sampling import (
     PENALTY_MAX,
     PENALTY_MIN,
@@ -186,6 +187,104 @@ def _order_bounded_mlx_top_k_support(
         mx.take_along_axis(top_idx, order, axis=-1),
         mx.take_along_axis(top_vals, order, axis=-1),
     )
+
+
+# ---------------------------------------------------------------------------
+# MTPLX_QWEN4_OPDIET - fused, value-identical twin of
+# ``_order_bounded_mlx_top_k_support(_deterministic_mlx_top_k_support(x, k))``.
+# ---------------------------------------------------------------------------
+
+#: ``arange`` constants, built and materialized once per size so the eager K20
+#: support carries graph constants instead of re-emitting them per cycle.
+_OPDIET_ARANGE: dict[tuple[int, object], mx.array] = {}
+
+
+def _opdiet_arange(size: int, dtype) -> mx.array:
+    key = (int(size), dtype)
+    value = _OPDIET_ARANGE.get(key)
+    if value is None:
+        value = mx.arange(int(size), dtype=dtype)
+        mx.eval(value)
+        _OPDIET_ARANGE[key] = value
+    return value
+
+
+def _opdiet_ordered_top_k_support(
+    scaled: mx.array,
+    top_k: int,
+) -> tuple[mx.array, mx.array]:
+    """Top-``k`` support ordered by (value desc, id asc), tie-exact.
+
+    Value-identical to ``_order_bounded_mlx_top_k_support`` applied to
+    ``_deterministic_mlx_top_k_support`` -- the pair every PR391 K20 call site
+    runs back to back -- for finite rows. Same selection rule: everything
+    strictly above the k-th largest value, then the LOWEST vocabulary ids among
+    the values tied with it, exactly filling k.
+
+    The stock pair spends a second full-vocabulary ``argpartition`` and a full
+    ``cumsum`` (plus six full-width compares and two bool->int32 widenings) on
+    resolving the cutoff tie. This form pays one full-vocabulary select for the
+    tied-id key and one full-vocabulary partition, and does all of the tie
+    bookkeeping on the 2k-wide candidate set instead: ``higher_count`` is
+    counted from the k provisional values (every value above the cutoff is
+    provably already in the provisional set), and the tied owners are the m
+    smallest tied ids, which arrive sorted. Ranking the 2k candidates then
+    emits the final order directly, so the quadratic ordering pass is not run
+    separately either.
+    """
+
+    prefix = scaled.shape[:-1]
+    rows = scaled.reshape(-1, scaled.shape[-1])
+    vocab = int(rows.shape[-1])
+    ids = _opdiet_arange(vocab, mx.uint32)
+
+    provisional = mx.argpartition(-rows, kth=top_k - 1, axis=-1)[:, :top_k]
+    provisional_values = mx.take_along_axis(rows, provisional, axis=-1)
+    cutoff = mx.min(provisional_values, axis=-1, keepdims=True)
+
+    # Owners of the cutoff value, lowest id first (non-tied lanes park at
+    # ``vocab`` so they sort behind every real tie; they are never kept).
+    tied_key = mx.where(rows == cutoff, ids, mx.array(vocab, dtype=mx.uint32))
+    tied_small = mx.sort(
+        mx.partition(tied_key, kth=top_k - 1, axis=-1)[:, :top_k], axis=-1
+    )
+    tied_small = mx.minimum(tied_small, mx.array(vocab - 1, dtype=mx.uint32))
+
+    keep_high = provisional_values > cutoff
+    higher_count = mx.sum(keep_high.astype(mx.int32), axis=-1, keepdims=True)
+    keep_tied = _opdiet_arange(top_k, mx.int32)[None, :] < (top_k - higher_count)
+
+    candidates = mx.concatenate([provisional, tied_small], axis=-1)
+    keep = mx.concatenate([keep_high, keep_tied], axis=-1)
+    candidate_values = mx.take_along_axis(rows, candidates, axis=-1)
+
+    other_values = candidate_values[..., None, :]
+    own_values = candidate_values[..., :, None]
+    other_ids = candidates[..., None, :]
+    own_ids = candidates[..., :, None]
+    better = (
+        (other_values > own_values)
+        | ((other_values == own_values) & (other_ids < own_ids))
+    ) & keep[..., None, :]
+    rank = mx.sum(better.astype(mx.int32), axis=-1)
+    rank = mx.where(keep, rank, 2 * top_k)
+    order = mx.argsort(rank, axis=-1)[:, :top_k]
+
+    top_idx = mx.take_along_axis(candidates, order, axis=-1)
+    top_vals = mx.take_along_axis(candidate_values, order, axis=-1)
+    return top_idx.reshape(*prefix, top_k), top_vals.reshape(*prefix, top_k)
+
+
+def ordered_top_k_support(
+    scaled: mx.array,
+    top_k: int,
+) -> tuple[mx.array, mx.array]:
+    """One K20 support ordered by (value desc, id asc); op diet aware."""
+
+    if qwen4_opdiet_enabled("k20"):
+        return _opdiet_ordered_top_k_support(scaled, top_k)
+    top_idx, top_vals = _deterministic_mlx_top_k_support(scaled, top_k)
+    return _order_bounded_mlx_top_k_support(top_idx, top_vals)
 
 
 def _fixed_top_k_support(
@@ -394,6 +493,59 @@ def _device_serial_support_arrays(
     return token_rows, prob_rows, vocab_size
 
 
+def _device_serial_support_arrays_relaxed_ties(
+    logits: mx.array,
+    config: SamplerConfig,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Serial support without the 4k cutoff-tie proof superset.
+
+    The selected top-k set may differ only when multiple vocabulary rows tie
+    exactly at the cutoff. Probability arithmetic, support ordering, nucleus
+    filtering, and the host RNG remain unchanged.
+    """
+    rows = logits.reshape(-1, logits.shape[-1]).astype(mx.float32)
+    vocab_size = int(rows.shape[-1])
+    k = min(int(config.top_k), vocab_size)
+    scaled = rows * (1.0 / float(config.temperature))
+
+    cand_idx = mx.argpartition(-scaled, kth=k - 1, axis=-1)[:, :k]
+    cand_vals = mx.take_along_axis(scaled, cand_idx, axis=-1)
+    top_p_active = 0.0 < float(config.top_p) < 1.0
+    if top_p_active:
+        log_total = mx.logsumexp(scaled, axis=-1, keepdims=True)
+        cand_probs = mx.exp(cand_vals - log_total)
+        mx.eval(cand_idx, cand_vals, cand_probs)
+        prob_rows = np.asarray(cand_probs, dtype=np.float64)
+    else:
+        mx.eval(cand_idx, cand_vals)
+        prob_rows = None
+    token_rows = np.asarray(cand_idx, dtype=np.int64)
+    value_rows = np.asarray(cand_vals, dtype=np.float32)
+
+    order = np.lexsort((token_rows, -value_rows), axis=1)
+    token_rows = np.take_along_axis(token_rows, order, axis=1)
+    value_rows = np.take_along_axis(value_rows, order, axis=1)
+    if prob_rows is not None:
+        prob_rows = np.take_along_axis(prob_rows, order, axis=1)
+        cumulative_before = np.concatenate(
+            (
+                np.zeros((prob_rows.shape[0], 1), dtype=np.float64),
+                np.cumsum(prob_rows[:, :-1], axis=1),
+            ),
+            axis=1,
+        )
+        prob_rows = np.where(
+            cumulative_before < float(config.top_p), prob_rows, 0.0
+        )
+    else:
+        vals64 = value_rows.astype(np.float64)
+        vals64 -= np.max(vals64, axis=1, keepdims=True)
+        prob_rows = np.exp(vals64)
+        prob_rows /= np.sum(prob_rows, axis=1, keepdims=True)
+
+    return token_rows, prob_rows, vocab_size
+
+
 def _serial_row_distribution(
     token_ids: np.ndarray,
     probs: np.ndarray,
@@ -450,6 +602,24 @@ def sparse_distribution_from_mlx_logits(
         return dist
     # Non-finite mass (NaN/inf logits): keep the host reference's one-hot
     # fallback semantics.
+    mx.eval(row)
+    return _host_sparse_distribution(np.asarray(row, dtype=np.float32), config)
+
+
+def sparse_distribution_from_mlx_logits_relaxed_ties(
+    logits: mx.array,
+    config: SamplerConfig,
+) -> SparseDistribution | None:
+    """Return the serial distribution while permitting cutoff tie flips."""
+    if config.temperature <= 0 or config.top_k <= 0:
+        return None
+    row = logits.reshape(-1).astype(mx.float32)
+    token_rows, prob_rows, vocab_size = (
+        _device_serial_support_arrays_relaxed_ties(row, config)
+    )
+    dist = _serial_row_distribution(token_rows[0], prob_rows[0], vocab_size)
+    if dist is not None:
+        return dist
     mx.eval(row)
     return _host_sparse_distribution(np.asarray(row, dtype=np.float32), config)
 
