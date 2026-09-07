@@ -29,3 +29,9 @@ replace('apps/MTPLXApp/Sources/MTPLXAppCore/Onboarding/OnboardingOrchestrator.sw
     '''                // Hop directly to the owning actor. Do not capture the
                 // task's weak reference inside another actor-isolated closure.
                 await self?.handleDownloadEvent(event)''')
+wordmark='apps/MTPLXApp/Sources/MTPLXAppHost/Views/WordmarkView.swift'
+# NSImage is reference-backed and not Sendable in the supported SDK. Every
+# cache reader is a SwiftUI View; retain caching with explicit UI-actor ownership.
+for declaration in ('private let cachedWordmarkImage:', 'private let cachedWordmarkInkImage:',
+                    'func wordmarkNSImage() -> NSImage?', 'func wordmarkNSImage(for scheme: ColorScheme) -> NSImage?'):
+    replace(wordmark, declaration, '@MainActor\n'+declaration)
