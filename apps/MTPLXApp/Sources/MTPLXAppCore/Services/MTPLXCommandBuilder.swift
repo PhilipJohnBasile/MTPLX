@@ -307,6 +307,16 @@ public struct MTPLXCommandBuilder: Sendable {
         if let contextWindow = resolved.contextWindow, contextWindow > 0 {
             arguments.append(contentsOf: ["--context-window", String(contextWindow)])
         }
+        // Issue #448: the stall watchdog deadline is a setting, not a shell
+        // export the GUI-launched daemon can never see. Only a changed value
+        // rides on argv so the daemon's own default stays authoritative.
+        if configuration.streamStallDeadlineSeconds
+            != MTPLXAppConfiguration.defaultStreamStallDeadlineSeconds {
+            arguments.append(contentsOf: [
+                "--stream-stall-deadline-s",
+                Self.formatSeconds(configuration.streamStallDeadlineSeconds),
+            ])
+        }
         // The key never rides on argv: every local process can read a
         // process's arguments through `ps`, and the supervisor writes the
         // launched command line into the Logs pane that users paste into
@@ -370,6 +380,11 @@ public struct MTPLXCommandBuilder: Sendable {
         }
         if let reasoningEffort = resolved.reasoningEffort {
             arguments.append(contentsOf: ["--reasoning-effort", reasoningEffort])
+        }
+        if configuration.adaptiveDepth == false {
+            // The daemon's own default is no policy. Off is still said
+            // explicitly so a launch preset cannot re-enable it.
+            arguments.append(contentsOf: ["--adaptive-policy", "none"])
         }
         if let adaptivePolicy = resolved.adaptivePolicy, adaptivePolicy != "none" {
             arguments.append(contentsOf: ["--adaptive-policy", adaptivePolicy])
@@ -677,6 +692,15 @@ public struct MTPLXCommandBuilder: Sendable {
     /// Where the daemon reads its API key from (`--api-key-file`). Kept
     /// beside `settings.json`, which is the durable copy of the key; this
     /// file is a 0600 hand-off to the daemon process only.
+    /// Render a seconds value for argv without a trailing ".0" (0 reads as
+    /// the documented off switch, 120 as 120).
+    static func formatSeconds(_ value: Double) -> String {
+        if value == value.rounded(), abs(value) < 1e15 {
+            return String(Int(value))
+        }
+        return String(value)
+    }
+
     public static func daemonAPIKeyFileURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -964,7 +988,18 @@ struct ResolvedDaemonArgs {
             : preset.draftTopK
         toolPromptMode = preset.toolPromptMode
         chatTemplateProfile = preset.chatTemplateProfile
-        adaptivePolicy = preset.adaptivePolicy
+        // The daemon starts with no depth policy unless told otherwise, so
+        // "on" has to name the policy at launch to survive a relaunch. Unset
+        // keeps the target's preset: Pi and Hermes name expected_value, the
+        // other targets pass nothing.
+        switch configuration.adaptiveDepth {
+        case .some(false):
+            adaptivePolicy = "none"
+        case .some(true):
+            adaptivePolicy = preset.adaptivePolicy ?? "expected_value"
+        case .none:
+            adaptivePolicy = preset.adaptivePolicy
+        }
         adaptiveMinDepth = preset.adaptiveMinDepth
         adaptiveEVBaseDepth = preset.adaptiveEVBaseDepth
         adaptiveEVWarmupFullDepthCycles = preset.adaptiveEVWarmupFullDepthCycles

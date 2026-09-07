@@ -38,6 +38,18 @@ private final class StatusCapture: @unchecked Sendable {
 }
 
 final class MTPLXAppCoreTests: XCTestCase {
+    func testContextIncludesOnlyItsOwnGeneratedTokens() throws {
+        var request = InFlightRequest(requestId: "current", startedS: 0, ageS: 1,
+            sessionId: "session", model: "model", promptPreview: "", promptTokens: 16000,
+            lastProgress: DynamicObject(values: ["completion_tokens": .number(23000)]),
+            prefillState: nil, cancelled: false)
+        XCTAssertEqual(request.contextTokens, 39000)
+        request.lastProgress = DynamicObject()
+        XCTAssertEqual(request.contextTokens, 16000)
+        request.promptTokens = nil
+        XCTAssertNil(request.contextTokens)
+    }
+
     func testReleaseManifestParsesStableUpdateMetadata() throws {
         let data = """
         {
@@ -1618,6 +1630,93 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertFalse(configuration.pinFansAtMaxOnStart)
     }
 
+    func testAppConfigurationAdaptiveDepthDefaultsToTargetPresetAndRoundTrips() throws {
+        // Unset keeps each launch target's shipped policy, so a settings
+        // file without the key changes nothing; a choice round-trips.
+        XCTAssertNil(MTPLXAppConfiguration().adaptiveDepth)
+        let legacy = try JSONDecoder().decode(MTPLXAppConfiguration.self, from: Data("{}".utf8))
+        XCTAssertNil(legacy.adaptiveDepth)
+        let unsetRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(MTPLXAppConfiguration()))
+                as? [String: Any]
+        )
+        XCTAssertNil(unsetRoot["adaptive_depth"])
+        for choice in [true, false] {
+            var configuration = MTPLXAppConfiguration()
+            configuration.adaptiveDepth = choice
+            let decoded = try JSONDecoder().decode(
+                MTPLXAppConfiguration.self, from: JSONEncoder().encode(configuration))
+            XCTAssertEqual(decoded.adaptiveDepth, choice)
+        }
+    }
+
+    func testCommandBuilderPassesExplicitNoneWhenAdaptiveDepthIsOff() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: [
+            "PATH": fake.deletingLastPathComponent().path,
+            "MTPLX_APP_TEST_PHYSICAL_MEMORY_BYTES": "137438953472",
+        ])
+        var configuration = MTPLXAppConfiguration(
+            executablePath: fake.path, model: "/models/qwen", profile: "sustained")
+        configuration.adaptiveDepth = false
+        let command = try builder.buildServeCommand(
+            configuration: configuration, target: .hermes, launchID: "hermes-launch")
+        // The daemon's default is no policy; off is still explicit so a
+        // launch preset cannot re-enable it.
+        XCTAssertTrue(command.arguments.containsInOrder(["--adaptive-policy", "none"]))
+        XCTAssertFalse(command.arguments.contains("--adaptive-min-depth"))
+        XCTAssertFalse(command.arguments.contains("--adaptive-ev-base-depth"))
+    }
+
+    func testCommandBuilderPassesExpectedValueWhenAdaptiveDepthIsOn() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: [
+            "PATH": fake.deletingLastPathComponent().path,
+            "MTPLX_APP_TEST_PHYSICAL_MEMORY_BYTES": "137438953472",
+        ])
+        var configuration = MTPLXAppConfiguration(
+            executablePath: fake.path, model: "/models/qwen", profile: "sustained")
+        configuration.adaptiveDepth = true
+        let command = try builder.buildServeCommand(
+            configuration: configuration, target: .hermes, launchID: "hermes-launch")
+        // The daemon starts with no policy, so "on" has to name it at
+        // launch for the switch to survive a relaunch. The Hermes preset
+        // names the policy itself and carries its tuned parameters.
+        XCTAssertTrue(command.arguments.containsInOrder(["--adaptive-policy", "expected_value"]))
+        XCTAssertFalse(command.arguments.containsInOrder(["--adaptive-policy", "none"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--adaptive-min-depth", "1"]))
+        XCTAssertTrue(command.arguments.containsInOrder(["--adaptive-ev-base-depth", "2"]))
+
+        // Chat has no preset policy: "on" still names it, without parameters.
+        let chat = try builder.buildServeCommand(
+            configuration: configuration, target: .chat, launchID: "chat-launch")
+        XCTAssertTrue(chat.arguments.containsInOrder(["--adaptive-policy", "expected_value"]))
+        XCTAssertFalse(chat.arguments.contains("--adaptive-min-depth"))
+        XCTAssertFalse(chat.arguments.contains("--adaptive-ev-base-depth"))
+    }
+
+    func testCommandBuilderKeepsTargetPresetPolicyWhenAdaptiveDepthIsUnset() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: [
+            "PATH": fake.deletingLastPathComponent().path,
+            "MTPLX_APP_TEST_PHYSICAL_MEMORY_BYTES": "137438953472",
+        ])
+        let configuration = MTPLXAppConfiguration(
+            executablePath: fake.path, model: "/models/qwen", profile: "sustained")
+        XCTAssertNil(configuration.adaptiveDepth)
+        // Shipped behavior per target: Hermes and Pi name the policy through
+        // their presets, chat passes no policy at all.
+        let hermes = try builder.buildServeCommand(
+            configuration: configuration, target: .hermes, launchID: "hermes-launch")
+        XCTAssertTrue(hermes.arguments.containsInOrder(["--adaptive-policy", "expected_value"]))
+        let pi = try builder.buildServeCommand(
+            configuration: configuration, target: .pi, launchID: "pi-launch")
+        XCTAssertTrue(pi.arguments.containsInOrder(["--adaptive-policy", "expected_value"]))
+        let chat = try builder.buildServeCommand(
+            configuration: configuration, target: .chat, launchID: "chat-launch")
+        XCTAssertFalse(chat.arguments.contains("--adaptive-policy"))
+    }
+
     func testAppConfigurationMigratesLegacyPinnedFansToMax() throws {
         let configuration = try JSONDecoder().decode(
             MTPLXAppConfiguration.self,
@@ -1663,6 +1762,62 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(backend.configuration.fanMode, "smart")
         XCTAssertFalse(backend.configuration.pinFansAtMaxOnStart)
         XCTAssertNil(backend.currentFanMode)
+    }
+
+    /// Issue #448: the stall watchdog deadline is an app setting that rides
+    /// on argv only when the user changed it; 0 is the documented off switch.
+    func testCommandBuilderPassesStreamStallDeadlineOnlyWhenChanged() throws {
+        let fake = try makeExecutable(named: "mtplx")
+        let builder = MTPLXCommandBuilder(environment: ["PATH": fake.deletingLastPathComponent().path])
+        let untouched = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(executablePath: fake.path, model: "/models/qwen"),
+            target: nil,
+            launchID: "stall-default"
+        )
+        XCTAssertFalse(untouched.arguments.contains("--stream-stall-deadline-s"))
+
+        let disabled = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                streamStallDeadlineSeconds: 0
+            ),
+            target: nil,
+            launchID: "stall-off"
+        )
+        XCTAssertTrue(disabled.arguments.containsInOrder(["--stream-stall-deadline-s", "0"]))
+
+        let longer = try builder.buildServeCommand(
+            configuration: MTPLXAppConfiguration(
+                executablePath: fake.path,
+                model: "/models/qwen",
+                streamStallDeadlineSeconds: 900
+            ),
+            target: nil,
+            launchID: "stall-long"
+        )
+        XCTAssertTrue(longer.arguments.containsInOrder(["--stream-stall-deadline-s", "900"]))
+    }
+
+    func testStreamStallDeadlineDecodesWithDefaultAndClampsNegative() throws {
+        let decoder = JSONDecoder()
+        let legacy = try decoder.decode(
+            MTPLXAppConfiguration.self,
+            from: Data(#"{"model":"/models/qwen"}"#.utf8)
+        )
+        XCTAssertEqual(legacy.streamStallDeadlineSeconds, MTPLXAppConfiguration.defaultStreamStallDeadlineSeconds)
+        let negative = try decoder.decode(
+            MTPLXAppConfiguration.self,
+            from: Data(#"{"model":"/models/qwen","stream_stall_deadline_s":-5}"#.utf8)
+        )
+        XCTAssertEqual(negative.streamStallDeadlineSeconds, 0)
+        let roundTrip = try decoder.decode(
+            MTPLXAppConfiguration.self,
+            from: try JSONEncoder().encode(
+                MTPLXAppConfiguration(model: "/models/qwen", streamStallDeadlineSeconds: 0)
+            )
+        )
+        XCTAssertEqual(roundTrip.streamStallDeadlineSeconds, 0)
     }
 
     func testCommandBuilderOpenCodePresetKeepsMeasuredSamplerButUsesAppReasoning() throws {
@@ -4915,6 +5070,31 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(reloadedBackend.settings?.topK, 32)
         XCTAssertEqual(reloadedBackend.settings?.reasoning, "on")
         XCTAssertEqual(reloadedBackend.settings?.enableThinking, true)
+    }
+
+    func testLiveSettingsUpdatePatchCarriesAdaptivePolicyAndTheCarriedPatchDoesNot() throws {
+        var settings = MutableSettings(depth: 3, temperature: 1.0)
+        settings.adaptivePolicy = "expected_value"
+        settings.adaptiveDepthSupported = true
+
+        let update = MTPLXBackendStore.liveSettingsUpdatePatch(from: settings)
+        let updateRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(update)) as? [String: Any]
+        )
+        // The direct live update names the policy; the daemon builds its
+        // depth policy per request, so the switch applies without a restart.
+        XCTAssertEqual(updateRoot["adaptive_policy"] as? String, "expected_value")
+        XCTAssertEqual(updateRoot["depth"] as? Int, 3)
+        XCTAssertNil(updateRoot["adaptive_depth_supported"])
+
+        let carried = MTPLXBackendStore.liveMutableSettingsPatch(from: settings)
+        let carriedRoot = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(carried)) as? [String: Any]
+        )
+        // The patch carried into the next launch leaves the policy to the
+        // launch arguments: a family that owns its draft policy rejects it.
+        XCTAssertNil(carriedRoot["adaptive_policy"])
+        XCTAssertEqual(carriedRoot["depth"] as? Int, 3)
     }
 
     func testLiveSettingsPatchDoesNotEchoDescriptorFields() throws {
@@ -10406,6 +10586,30 @@ final class MTPLXAppCoreTests: XCTestCase {
         )
     }
 
+    func testNativeWheelSelectionOwnsTheManagedRuntimeFingerprint() throws {
+        let fixture = try makeRuntimeFixture(wheelContents: "pure-wheel")
+        let nativeDir = fixture.home.appendingPathComponent("Native")
+        try FileManager.default.createDirectory(at: nativeDir, withIntermediateDirectories: true)
+        let native = nativeDir.appendingPathComponent("mtplx-1.0.0-cp314-cp314-macosx_15_0_arm64.whl")
+        try Data("native-wheel".utf8).write(to: native)
+        let python = fixture.runtimeDir.appendingPathComponent("bin/python")
+        try Data("#!/bin/sh\nprintf '%s\\n' '\(native.path)'\n".utf8).write(to: python)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        let bootstrapper = MTPLXRuntimeBootstrapper(environment: fixture.environment)
+        MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: fixture.wheel, runtimeDir: fixture.runtimeDir)
+        XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ), "An OS upgrade that enables the native artifact must refresh a pure installation")
+        MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: native, runtimeDir: fixture.runtimeDir)
+        XCTAssertTrue(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ))
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: python)
+        XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+            installedExecutable: fixture.managedExecutable
+        ), "A failed selector must not silently bless an unknown installed artifact")
+    }
+
     func testSameVersionWheelRebuildForcesVenvRefresh() throws {
         let fixture = try makeRuntimeFixture(wheelContents: "wheel-A")
         MTPLXRuntimeBootstrapper.recordWheelFingerprint(
@@ -10422,6 +10626,35 @@ final class MTPLXAppCoreTests: XCTestCase {
             ),
             "a rebuilt wheel under the same version must refresh the venv"
         )
+    }
+
+    func testNativeSelectorFailureUsesThePureWheelAndItsExactFingerprint() throws {
+        for script in ["exit 1", "printf '/missing/selected.whl\\n'"] {
+            let fixture = try makeRuntimeFixture(wheelContents: "pure-wheel")
+            let nativeDir = fixture.home.appendingPathComponent("Native")
+            try FileManager.default.createDirectory(at: nativeDir, withIntermediateDirectories: true)
+            let native = nativeDir.appendingPathComponent("mtplx-1.0.0-cp314-cp314-macosx_15_0_arm64.whl")
+            try Data("native-wheel".utf8).write(to: native)
+            let python = fixture.runtimeDir.appendingPathComponent("bin/python")
+            try Data("#!/bin/sh\n\(script)\n".utf8).write(to: python)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+            let bootstrapper = MTPLXRuntimeBootstrapper(environment: fixture.environment)
+            XCTAssertEqual(try bootstrapper.selectedBundledRuntimeWheel(
+                fallback: fixture.wheel, python: python
+            ), fixture.wheel)
+            MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: native, runtimeDir: fixture.runtimeDir)
+            XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+                installedExecutable: fixture.managedExecutable
+            ))
+            MTPLXRuntimeBootstrapper.recordWheelFingerprint(for: fixture.wheel, runtimeDir: fixture.runtimeDir)
+            XCTAssertTrue(bootstrapper.installedRuntimeMatchesBundledWheel(
+                installedExecutable: fixture.managedExecutable
+            ))
+            try Data("rebuilt-pure-wheel".utf8).write(to: fixture.wheel)
+            XCTAssertFalse(bootstrapper.installedRuntimeMatchesBundledWheel(
+                installedExecutable: fixture.managedExecutable
+            ), "A selector error must not bypass the fallback wheel fingerprint")
+        }
     }
 
     func testShimSymlinkToManagedVenvIsTreatedAsManaged() throws {
@@ -10711,6 +10944,9 @@ final class MTPLXAppCoreTests: XCTestCase {
             configuration: MTPLXAppConfiguration(port: occupiedPort),
             settingsStore: MTPLXSettingsStore(settingsURL: settingsURL)
         )
+        // A steady foreign listener is still foreign after the settle
+        // window; keep the window short so the test stays fast.
+        await MainActor.run { backend.portSettleTimeoutSeconds = 0.5 }
         let (port, notice) = await backend.preflightOutcomeForTest(
             target: nil,
             launchID: "test-launch"
@@ -10723,6 +10959,34 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertTrue(fallbackNotice.contains("\(port)"), fallbackNotice)
         let persisted = try MTPLXSettingsStore(settingsURL: settingsURL).load()
         XCTAssertEqual(persisted.port, port)
+    }
+
+    /// Issue #409: a foreign-looking occupant that clears inside the settle
+    /// window (our own draining daemon on stop/start, the predecessor of an
+    /// in-app update) must not cost the user the configured port.
+    func testPreflightKeepsConfiguredPortWhenTransientOccupantClears() async throws {
+        let occupiedPort = try freeTCPPort()
+        let garbage = try startGarbageHTTPServer(port: occupiedPort)
+        _ = try await waitForNonFreeClassification(port: occupiedPort)
+        let settingsURL = temporaryDirectory().appendingPathComponent("settings.json")
+
+        let backend = await MTPLXBackendStore(
+            configuration: MTPLXAppConfiguration(port: occupiedPort),
+            settingsStore: MTPLXSettingsStore(settingsURL: settingsURL)
+        )
+        await MainActor.run { backend.portSettleTimeoutSeconds = 5 }
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            garbage.terminate()
+        }
+        let (port, notice) = await backend.preflightOutcomeForTest(
+            target: nil,
+            launchID: "test-launch"
+        )
+
+        XCTAssertEqual(port, occupiedPort)
+        XCTAssertNil(notice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: settingsURL.path))
     }
 
     func testPreflightMovesPortAwayFromExternalMTPLXServer() async throws {

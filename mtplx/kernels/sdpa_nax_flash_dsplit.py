@@ -24,8 +24,14 @@ from functools import lru_cache
 
 import mlx.core as mx
 
+from ..nax_verify import nax_available
 from .sdpa_gqa_packed import _paged_reduce_kernel
 from .sdpa_nax_flash import _HEADER
+
+nax_flash_dsplit_bail_counts: dict[str, int] = {}
+# Successful dispatches, so /health can show the route engaged (not only
+# its bails) — the one-line receipt the #459 reports needed.
+nax_flash_dsplit_dispatch_counts: dict[str, int] = {}
 
 # Template params: InT, D, QL, GQA_F.
 _SOURCE = r"""
@@ -271,6 +277,7 @@ def _nax_flash_dsplit_kernel():
 
 
 def _bail(reason: str):
+    nax_flash_dsplit_bail_counts[reason] = nax_flash_dsplit_bail_counts.get(reason, 0) + 1
     if os.environ.get("MTPLX_NAX_FLASH_DEBUG"):
         print(f"[nax-flash-dsplit bail] {reason}")
     return None
@@ -301,6 +308,8 @@ def sdpa_nax_flash_dsplit(
         return _bail("env_disabled")
     if not mx.metal.is_available():
         return _bail("metal_unavailable")
+    if not nax_available():
+        return _bail("gpu_family_or_os")
     if queries.ndim != 4 or keys.ndim != 4 or values.ndim != 4:
         return _bail("ndim")
     bsz, hq, q_len, d = (int(x) for x in queries.shape)
@@ -375,4 +384,5 @@ def sdpa_nax_flash_dsplit(
         output_shapes=[(bsz, hq, q_len, d)],
         output_dtypes=[queries.dtype],
     )
+    nax_flash_dsplit_dispatch_counts["dispatched"] = nax_flash_dsplit_dispatch_counts.get("dispatched", 0) + 1
     return out

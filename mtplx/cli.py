@@ -576,6 +576,16 @@ def _comma_floats(value: str) -> tuple[float, ...]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _comma_ints(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError("expected comma-separated ints")
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -2004,6 +2014,7 @@ def _cmd_mtp_adaptive(args: argparse.Namespace) -> int:
         limit=args.limit,
         enable_thinking=False if args.disable_thinking else None,
         compare_ar=args.compare_ar,
+        compare_static=args.compare_static,
         mtp_hidden_variant=args.mtp_hidden_variant,
         mtp_cache_policy=args.mtp_cache_policy,
         mtp_history_policy=args.mtp_history_policy,
@@ -2675,7 +2686,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the MTPLX stats footer",
     )
     ask_p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    ask_p.add_argument("--expect-python", action="store_true")
+    ask_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         ask_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -3041,7 +3055,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated MTP depths or Gemma draft blocks to compare against AR",
     )
-    tune_p.add_argument("--max-tokens", type=int, default=512)
+    tune_p.add_argument("--max-tokens", type=int, default=512,
+                        help="Per-case upper bound; the prompt suite's token budget also applies")
     tune_p.add_argument("--limit", type=int, default=1)
     tune_p.add_argument("--seed", type=int, default=0)
     tune_p.add_argument("--run-id")
@@ -3196,6 +3211,13 @@ def build_parser() -> argparse.ArgumentParser:
             help="opencode.db path",
         )
         p.add_argument("--json", action="store_true", help="machine-readable output")
+
+        p.add_argument("--request-log", help="explicit request JSONL, including its rotation files")
+        p.add_argument("--flight-log", help="explicit flight JSONL, including its rotation files")
+        p.add_argument("--pi-session", help="Pi session JSONL instead of the OpenCode database")
+        p.add_argument("--hermes-db", help="Hermes state.db instead of the OpenCode database")
+        p.add_argument("--hermes-log", help="Hermes agent.log for API tokens and completion times")
+        p.add_argument("--ar-tok-s", type=float, help="measured AR decode TPS for the same hardware, model and workload; never a default estimate")
 
     trace_sessions_p = trace_sub.add_parser(
         "sessions", help="List recent OpenCode sessions with server-request matches"
@@ -3540,7 +3562,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reasoning_effort_arg(run_p)
     run_p.add_argument("--quiet", action="store_true", help="Hide the stats footer")
     run_p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    run_p.add_argument("--expect-python", action="store_true")
+    run_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         run_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -3578,7 +3603,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat_p.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
-    chat_p.add_argument("--expect-python", action="store_true")
+    chat_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         chat_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -3704,6 +3732,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-window",
         type=_positive_int,
         help="Override context window. Default reads the model/tokenizer config.",
+    )
+    serve_p.add_argument(
+        "--stream-stall-deadline-s",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Fail a stream whose model owner makes no progress for this many "
+            "seconds; 0 turns the watchdog off. Default: "
+            "$MTPLX_STREAM_STALL_DEADLINE_S or 300 (issue #448). The app "
+            "passes its Stall watchdog setting through this flag."
+        ),
     )
     serve_p.add_argument(
         "--allow-swap",
@@ -5141,6 +5181,12 @@ def build_parser() -> argparse.ArgumentParser:
     adaptive_p.add_argument("--limit", type=int)
     adaptive_p.add_argument("--disable-thinking", action="store_true")
     adaptive_p.add_argument("--compare-ar", action="store_true")
+    adaptive_p.add_argument(
+        "--compare-static",
+        type=_comma_ints,
+        default=(),
+        help="Also run fixed-depth baselines on the same suite, e.g. 2,3",
+    )
     adaptive_p.add_argument("--mtp-hidden-variant", default="post_norm")
     adaptive_p.add_argument(
         "--mtp-cache-policy", choices=["persistent", "fresh"], default="persistent"

@@ -29,7 +29,10 @@ from functools import lru_cache
 
 import mlx.core as mx
 
+from ..nax_verify import nax_available
 from .sdpa_gqa_packed import _blocks_for_capacity, _paged_reduce_kernel
+
+nax_tile_bail_counts: dict[str, int] = {}
 
 _HEADER = r"""
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
@@ -311,6 +314,7 @@ def _nax_tile_kernel():
 
 
 def _bail(reason: str):
+    nax_tile_bail_counts[reason] = nax_tile_bail_counts.get(reason, 0) + 1
     if os.environ.get("MTPLX_NAX_TILE_DEBUG"):
         print(f"[nax-tile bail] {reason}")
     return None
@@ -329,6 +333,8 @@ def sdpa_nax_tile(
         return _bail("env_disabled")
     if not mx.metal.is_available():
         return _bail("metal_unavailable")
+    if not nax_available():
+        return _bail("gpu_family_or_os")
     if queries.ndim != 4 or keys.ndim != 4 or values.ndim != 4:
         return _bail("ndim")
     bsz, hq, q_len, d = (int(x) for x in queries.shape)
