@@ -14,10 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: baseline
-            source: f47c18dca0b3f686c195337bca45811f1850d543
           - label: direct-default-probes
-            source: d27c8963321c54338b831c8fed96a26a16b6b144
+            source: 764a844fea3ffa2560d16e939ad427e2b8256c8c
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +43,12 @@ jobs:
           if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
           swift test --package-path apps/MTPLXApp --skip-build --filter testCancelDuringStartupLeavesAppStoppedAndRestoresFans 2>&1 | tee native-receipts/startup.log
           grep -q 'Executed 1 test, with 0 failures' native-receipts/startup.log
+      - name: Metrics fixture regressions
+        run: |
+          set -o pipefail
+          framework=$(find apps/MTPLXApp/.build -name Sparkle.framework -type d | head -1)
+          if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
+          swift test --package-path apps/MTPLXApp --skip-build --filter 'testMetricsStreamConnectsWithAppAPIKey|testBackendHeadlineDecode' 2>&1 | tee native-receipts/metrics.log
       - name: Complete native suite
         run: |
           set -o pipefail
