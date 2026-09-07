@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - label: direct-default-probes
-            source: 764a844fea3ffa2560d16e939ad427e2b8256c8c
+            source: e6ce36dd5f120be61332277aadca54c4df66f086
     steps:
       - uses: actions/checkout@v4
         with:
