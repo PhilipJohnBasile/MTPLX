@@ -1,0 +1,64 @@
+name: Native failure isolation
+on:
+  push:
+    branches: [codex/pr-review-audit-20260906]
+    paths: [.github/workflows/native-failure-isolation.yml, .review/native_diagnostics.py]
+permissions: {contents: read}
+jobs:
+  isolate:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {path: audit, persist-credentials: false}
+      - uses: actions/checkout@v4
+        with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
+      - name: Select and record newest installed SDK
+        run: |
+          mkdir -p receipts
+          python3 - <<'PY'
+          import glob,re,os,pathlib
+          paths=glob.glob('/Applications/Xcode_*.app')
+          paths=[p for p in paths if re.fullmatch(r'/Applications/Xcode_[0-9.]+\.app',p)]
+          paths.sort(key=lambda p:tuple(int(n) for n in re.search(r'Xcode_([0-9.]+)\.app',p).group(1).split('.')))
+          assert paths
+          pathlib.Path('receipts/installed-sdks.txt').write_text('\n'.join(paths))
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('DEVELOPER_DIR='+paths[-1]+'/Contents/Developer\n')
+          PY
+      - name: Build tests with diagnostics, no PR mutation
+        working-directory: source
+        run: |
+          set -o pipefail
+          python3 ../audit/.review/native_fixes.py .
+          python3 ../audit/.review/native_dispatch_fix.py .
+          python3 ../audit/.review/native_diagnostics.py .
+          swift --version | tee ../receipts/swift-version.txt
+          swift test --package-path apps/MTPLXApp list > ../receipts/test-list.log 2>&1
+          git diff --check
+      - name: Run each failing test independently
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          import pathlib,subprocess,os,json
+          framework=next(pathlib.Path('apps/MTPLXApp/.build').rglob('Sparkle.framework'))
+          env=dict(os.environ,DYLD_FRAMEWORK_PATH=str(framework.parent.resolve()))
+          names=['testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS','testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest','testCancelDuringStartupLeavesAppStoppedAndRestoresFans']
+          results=[]
+          for name in names:
+              with open('../receipts/'+name+'.log','w') as log:
+                  try:
+                      result=subprocess.run(['swift','test','--skip-build','--package-path','apps/MTPLXApp','--filter',name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=120)
+                      code=result.returncode
+                  except subprocess.TimeoutExpired:code='timeout'
+              results.append({'test':name,'exit':code})
+          pathlib.Path('../receipts/results.json').write_text(json.dumps(results,indent=2))
+          print(json.dumps(results,indent=2))
+          PY
+      - name: Preserve crash diagnostics if produced
+        if: always()
+        run: |
+          mkdir -p receipts/crashes
+          find "$HOME/Library/Logs/DiagnosticReports" -name '*MTPLX*' -type f -mmin -20 -exec cp {} receipts/crashes/ \; 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: native-isolation, path: 'receipts/', retention-days: 7, if-no-files-found: error}
