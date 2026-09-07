@@ -2,7 +2,7 @@ name: Integrated MTPLX native readiness
 on:
   push:
     branches: [codex/pr-review-audit-20260906]
-    paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py]
+    paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py, .review/native_dispatch_fix.py]
 permissions: {contents: read}
 jobs:
   native:
@@ -14,12 +14,13 @@ jobs:
         with: {path: audit, persist-credentials: false}
       - uses: actions/checkout@v4
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
-      - name: Apply SDK-safe fixes to the published current-main head
+      - name: Apply SDK and typed-dispatch fixes to the pinned PR head
         working-directory: source
         run: |
           mkdir -p ../native-receipts
           test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
           python3 ../audit/.review/native_fixes.py .
+          python3 ../audit/.review/native_dispatch_fix.py .
           git diff --check
           git diff -- apps/MTPLXApp > ../native-receipts/native.patch
           swift --version > ../native-receipts/swift-version.txt
@@ -59,6 +60,6 @@ jobs:
           git add apps/MTPLXApp
           git config user.name 'Philip John Basile'
           git config user.email 'PBasile@Basilecom.com'
-          git commit -m 'fix(app): preserve Swift 6.1 actor isolation and native test compatibility'
+          git commit -m 'fix(app): preserve actor isolation and typed dispatch boundary tests'
           git push origin HEAD:refs/heads/codex/pr399-native-${{ github.run_id }}
           git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
